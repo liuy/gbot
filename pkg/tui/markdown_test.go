@@ -736,3 +736,88 @@ func TestRender_Table_CJK(t *testing.T) {
 		t.Errorf("expected bottom border with └, got: %q", lines[len(lines)-1])
 	}
 }
+
+func runeWidth(r rune) int {
+	// ASCII printable
+	if r >= 0x20 && r <= 0x7E {
+		return 1
+	}
+	// Control chars
+	if r < 0x20 || r == 0x7F {
+		return 0
+	}
+	// Combining diacritical marks
+	if r >= 0x300 && r <= 0x36F {
+		return 0
+	}
+	// Box drawing (0x2500-0x259F) — single width
+	if r >= 0x2500 && r <= 0x259F {
+		return 1
+	}
+	// CJK ranges
+	if r >= 0x1100 && r <= 0x115F { // Hangul
+		return 2
+	}
+	if r >= 0x3000 && r <= 0x9FFF { // CJK Unified Ideographs + punctuation + Hiragana/Katakana
+		return 2
+	}
+	if r >= 0xAC00 && r <= 0xD7AF { // Hangul Syllables
+		return 2
+	}
+	if r >= 0xF900 && r <= 0xFAFF { // CJK Compatibility Ideographs
+		return 2
+	}
+	if r >= 0xFF00 && r <= 0xFF60 { // Halfwidth and Fullwidth Forms
+		if r == 0xFF00 || r == 0xFF60 {
+			return 1
+		}
+		return 2
+	}
+	if r >= 0x20000 && r <= 0x2FA1F { // CJK Extension B-F
+		return 2
+	}
+	// Default: 1
+	return 1
+}
+
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeWidth(r)
+	}
+	return w
+}
+
+func TestRender_Table_BordersAligned(t *testing.T) {
+	t.Parallel()
+	input := `| 姓名 | 分数 |
+|------|------|
+| 张三 | 85 |
+| 李四 | 78 |`
+	result := Render(input)
+	lines := strings.Split(result, "\n")
+
+	// All border lines (top, sep, bottom) should have the same display width
+	borderWidths := []int{displayWidth(lines[0])}
+	if len(lines) > 2 {
+		borderWidths = append(borderWidths, displayWidth(lines[2]))
+	}
+	borderWidths = append(borderWidths, displayWidth(lines[len(lines)-1]))
+
+	for i, bw := range borderWidths {
+		for j, bw2 := range borderWidths {
+			if bw != bw2 {
+				t.Errorf("border line %d width=%d != border line %d width=%d", i, bw, j, bw2)
+			}
+		}
+	}
+
+	// All content lines should match border width
+	borderW := borderWidths[0]
+	for i, line := range lines {
+		w := displayWidth(line)
+		if w != borderW {
+			t.Errorf("line %d width=%d != border width=%d (%q)", i, w, borderW, line)
+		}
+	}
+}
