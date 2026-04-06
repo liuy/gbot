@@ -788,6 +788,28 @@ func TestMessageView_ToolCallEmptyOutput(t *testing.T) {
 // renderMessages
 // ---------------------------------------------------------------------------
 
+func TestRenderMessages_NoExtraTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	// 单条消息，末尾不应有多余换行（renderMessages 加一个 + MessageView.View 加一个 = 2个）
+	msgs := []MessageView{
+		{Role: "assistant", Content: "hello"},
+	}
+	v := renderMessages(msgs, 80, 10)
+	// Count trailing newlines
+	trailing := 0
+	for i := len(v) - 1; i >= 0; i-- {
+		if v[i] == '\n' {
+			trailing++
+		} else {
+			break
+		}
+	}
+	if trailing > 1 {
+		t.Errorf("expected at most 1 trailing newline, got %d: %q", trailing, v)
+	}
+}
+
 func TestRenderMessages_Empty(t *testing.T) {
 	t.Parallel()
 

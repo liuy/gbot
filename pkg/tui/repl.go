@@ -325,5 +325,5 @@ func renderMessages(messages []MessageView, width, maxHeight int) string {
 		}
 	}
 
-	return strings.Join(lines, "\n") + "\n"
+	return strings.Join(lines, "\n")
 }
