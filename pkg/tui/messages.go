@@ -46,3 +46,6 @@ type submitMsg struct {
 type errMsg struct {
 	Err error
 }
+
+// spinnerTickMsg is an internal message to animate the spinner.
+type spinnerTickMsg struct{}

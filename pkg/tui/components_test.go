@@ -933,3 +933,221 @@ func TestStripAnsi_OnlyEscape(t *testing.T) {
 		t.Errorf("stripAnsi(only escapes) = %q, want empty", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// wordWrap
+// ---------------------------------------------------------------------------
+
+func TestWordWrap_ShortText(t *testing.T) {
+	result := wordWrap("hello", 80)
+	if result != "hello" {
+		t.Errorf("expected 'hello', got %q", result)
+	}
+}
+
+func TestWordWrap_ZeroWidth(t *testing.T) {
+	result := wordWrap("hello world", 0)
+	if result != "hello world" {
+		t.Errorf("zero width should return original, got %q", result)
+	}
+}
+
+func TestWordWrap_NegativeWidth(t *testing.T) {
+	result := wordWrap("hello", -1)
+	if result != "hello" {
+		t.Errorf("negative width should return original, got %q", result)
+	}
+}
+
+func TestWordWrap_LongLine(t *testing.T) {
+	result := wordWrap("abcdefghij", 5)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+	}
+	if lines[0] != "abcde" {
+		t.Errorf("first line = %q, want 'abcde'", lines[0])
+	}
+	if lines[1] != "fghij" {
+		t.Errorf("second line = %q, want 'fghij'", lines[1])
+	}
+}
+
+func TestWordWrap_Newlines(t *testing.T) {
+	result := wordWrap("hello\nworld", 80)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	if lines[0] != "hello" {
+		t.Errorf("first line = %q", lines[0])
+	}
+}
+
+func TestWordWrap_CJK(t *testing.T) {
+	// CJK chars are 2-wide, width=4 should fit 2 CJK chars per line
+	result := wordWrap("你好世界", 4)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines for CJK, got %d: %q", len(lines), result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runeDisplayWidth
+// ---------------------------------------------------------------------------
+
+func TestRuneDisplayWidth_ASCII(t *testing.T) {
+	if w := runeDisplayWidth('A'); w != 1 {
+		t.Errorf("ASCII 'A' width = %d, want 1", w)
+	}
+}
+
+func TestRuneDisplayWidth_Control(t *testing.T) {
+	if w := runeDisplayWidth('\t'); w != 0 {
+		t.Errorf("tab width = %d, want 0", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJK(t *testing.T) {
+	if w := runeDisplayWidth('你'); w != 2 {
+		t.Errorf("CJK '你' width = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_Hangul(t *testing.T) {
+	if w := runeDisplayWidth('한'); w != 2 {
+		t.Errorf("Hangul width = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_Japanese(t *testing.T) {
+	if w := runeDisplayWidth('あ'); w != 2 {
+		t.Errorf("Hiragana width = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_Emoji(t *testing.T) {
+	// Emoji outside CJK ranges should default to 1
+	if w := runeDisplayWidth('😀'); w != 1 {
+		t.Errorf("emoji width = %d, want 1", w)
+	}
+}
+
+func TestRuneDisplayWidth_AllCJKRanges(t *testing.T) {
+	tests := []struct {
+		name string
+		r    rune
+		want int
+	}{
+		{"Hangul Jamo", 0x1100, 2},
+		{"CJK Misc 2E80", 0x2E80, 2},
+		{"CJK Compatibility F900", 0xF900, 2},
+		{"CJK Forms FE30", 0xFE30, 2},
+		{"Fullwidth Forms FF01", 0xFF01, 2},
+		{"Fullwidth Signs FFE0", 0xFFE0, 2},
+		{"CJK Extension B 20000", 0x20000, 2},
+		{"CJK Extension G 30000", 0x30000, 2},
+		{"Latin extended default", 'é', 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runeDisplayWidth(tt.r); got != tt.want {
+				t.Errorf("runeDisplayWidth(%U) = %d, want %d", tt.r, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// min
+// ---------------------------------------------------------------------------
+
+func TestMin_ALessThanB(t *testing.T) {
+	if v := min(1, 2); v != 1 {
+		t.Errorf("min(1,2) = %d, want 1", v)
+	}
+}
+
+func TestMin_BLessThanA(t *testing.T) {
+	if v := min(3, 2); v != 2 {
+		t.Errorf("min(3,2) = %d, want 2", v)
+	}
+}
+
+func TestMin_Equal(t *testing.T) {
+	if v := min(5, 5); v != 5 {
+		t.Errorf("min(5,5) = %d, want 5", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InsertChar cursor > len(value) edge case
+// ---------------------------------------------------------------------------
+
+func TestInput_InsertChar_CursorPastEnd(t *testing.T) {
+	i := NewInput()
+	i.SetValue("abc")
+	// Force cursor past the end (shouldn't normally happen)
+	i.cursor = 100
+	i.InsertChar('X')
+	if i.Value() != "abcX" {
+		t.Errorf("expected 'abcX', got %q", i.Value())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input.View — cursor in middle of text
+// ---------------------------------------------------------------------------
+
+func TestInput_View_CursorInMiddle(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("abcde")
+	i.Focus()
+	// Move cursor to position 2 (between 'b' and 'c')
+	i.CursorLeft()
+	i.CursorLeft()
+	i.CursorLeft()
+	v := i.View()
+	if !strings.Contains(v, "abcde") {
+		t.Errorf("View() = %q, should contain full text", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MessageView — edge cases for tool call rendering
+// ---------------------------------------------------------------------------
+
+func TestMessageView_ToolCallError_NoOutput(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role:    "assistant",
+		Content: "failed",
+		ToolCalls: []ToolCallView{
+			{Name: "Bash", Output: "", Done: true, IsError: true},
+		},
+	}
+	v := m.View(80)
+	if !strings.Contains(v, "ERROR") {
+		t.Errorf("View() = %q, should contain 'ERROR'", v)
+	}
+}
+
+func TestMessageView_ToolCallRunning_NoInput(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role:    "assistant",
+		Content: "working",
+		ToolCalls: []ToolCallView{
+			{Name: "Read", Input: "", Done: false},
+		},
+	}
+	v := m.View(80)
+	if !strings.Contains(v, "running...") {
+		t.Errorf("View() = %q, should contain 'running...'", v)
+	}
+}

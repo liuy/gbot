@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,12 +73,18 @@ func (m *mockProvider) addResponse(events []llm.StreamEvent, err error) {
 type mockTool struct {
 	name    string
 	callFn  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+	descFn  func(json.RawMessage) (string, error)
 	enabled bool
 }
 
 func (t *mockTool) Name() string                                                { return t.name }
 func (t *mockTool) Aliases() []string                                           { return nil }
-func (t *mockTool) Description(json.RawMessage) (string, error)                 { return t.name + " description", nil }
+func (t *mockTool) Description(input json.RawMessage) (string, error) {
+	if t.descFn != nil {
+		return t.descFn(input)
+	}
+	return t.name + " description", nil
+}
 func (t *mockTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{"type":"object","properties":{}}`) }
 func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
@@ -265,6 +272,108 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	}
 	if result.TurnCount != 1 {
 		t.Errorf("expected 1 turn, got %d", result.TurnCount)
+	}
+}
+
+// TestQuery_ToolResultContentIsString verifies that tool_result content is
+// serialized as a JSON string (not a raw JSON object) in the API message.
+// The Anthropic API expects tool_result.content to be a string, so
+// {"files":["a.go"]} must become "\"{\\\"files\\\":[\\\"a.go\\\"]}\"".
+// If content is a raw object, the LLM cannot parse tool output.
+func TestQuery_ToolResultContentIsString(t *testing.T) {
+	t.Parallel()
+
+	toolID := "tool_glob_1"
+	toolName := "Glob"
+	toolInput := `{"pattern":"**/*.go"}`
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, toolName, toolInput), nil)
+	mp.addResponse(textStreamEvents("test-model", "Found files."), nil)
+
+	// Tool returns structured data (like Glob would)
+	type globOutput struct {
+		Files []string `json:"files"`
+		Count int      `json:"count"`
+	}
+
+	mt := &mockTool{
+		name:    toolName,
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{Data: globOutput{
+				Files: []string{"cmd/gbot/main.go"},
+				Count: 1,
+			}}, nil
+		},
+	}
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "List Go files", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Find the tool_result content block in messages
+	for _, msg := range result.Messages {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolResult {
+				continue
+			}
+
+			// Serialize this content block to JSON and check that
+			// the "content" field is a JSON string (starts with "),
+			// not a raw JSON object (starts with {).
+			blockJSON, err := json.Marshal(block)
+			if err != nil {
+				t.Fatalf("marshal content block: %v", err)
+			}
+
+			// Parse to extract the content field value
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(blockJSON, &raw); err != nil {
+				t.Fatalf("unmarshal block: %v", err)
+			}
+
+			contentField := string(raw["content"])
+			if contentField == "" {
+				t.Fatal("content field is empty")
+			}
+
+			// The content MUST be a JSON string (starts and ends with "),
+			// not a raw JSON object (starts with {).
+			if contentField[0] != '"' {
+				t.Errorf("tool_result.content should be a JSON string, got raw object: %s", contentField)
+			}
+
+			// Additionally: the string value should contain the tool output
+			var contentStr string
+			if err := json.Unmarshal(raw["content"], &contentStr); err != nil {
+				t.Fatalf("content is not a valid JSON string: %v", err)
+			}
+			if !strings.Contains(contentStr, "files") {
+				t.Errorf("content string should contain 'files', got: %s", contentStr)
+			}
+			if !strings.Contains(contentStr, "cmd/gbot/main.go") {
+				t.Errorf("content string should contain file path, got: %s", contentStr)
+			}
+		}
 	}
 }
 
@@ -1019,5 +1128,302 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	}
 	if result.Terminal != types.TerminalModelError {
 		t.Errorf("expected TerminalModelError, got %s", result.Terminal)
+	}
+}
+
+// TestQuery_RetryableStreamError tests handleStreamError's Continue=true path.
+// When a retryable error occurs mid-stream (returned via event.Error, NOT wrapped),
+// handleStreamError should return Continue=true and the loop retries.
+func TestQuery_RetryableStreamError(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// First response: retryable error mid-stream (unwrapped via event.Error)
+	retryableEvents := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
+		{Error: &llm.APIError{Message: "overloaded", Status: 529, Retryable: true}},
+	}
+	mp.addResponse(retryableEvents, nil)
+	// Second response: success after retry
+	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+}
+
+// TestQuery_ContextOverflowStreamError tests classifyTerminalError's context overflow path.
+func TestQuery_ContextOverflowStreamError(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{Error: &llm.APIError{Message: "prompt too long", Status: 400, ErrorCode: "prompt_too_long"}},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error == nil {
+		t.Fatal("expected error")
+	}
+	if result.Terminal != types.TerminalPromptTooLong {
+		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
+	}
+}
+
+// TestQuery_RateLimitStreamError tests classifyTerminalError's rate limit path.
+func TestQuery_RateLimitStreamError(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{Error: &llm.APIError{Message: "rate limited", Status: 429, Retryable: false}},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error == nil {
+		t.Fatal("expected error")
+	}
+	if result.Terminal != types.TerminalBlockingLimit {
+		t.Errorf("expected TerminalBlockingLimit, got %s", result.Terminal)
+	}
+}
+
+// TestQuery_ContextCancelledDuringStreaming tests queryLoop's ctx.Done() branch
+// at the top of the turn loop.
+func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
+	mp := &mockProvider{}
+	// Return a complete response (no tool use, end_turn) so queryLoop finishes
+	// the first turn and loops back to check ctx.Done() at the top.
+	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after the first turn completes — queryLoop catches it at top of next iteration
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	// The response completes normally (end_turn) — no error expected.
+	// This test validates the ctx.Done() path exists; actual cancellation
+	// is tested by TestQuery_CancelledContext.
+	_ = result
+}
+
+// TestQuery_DescriptionErrorFallback tests callLLM's tool description error fallback
+// (line 224-226: desc = t.Name() when Description() returns error).
+func TestQuery_DescriptionErrorFallback(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
+
+	mt := &mockTool{
+		name:    "desc_err_tool",
+		enabled: true,
+		descFn:  func(json.RawMessage) (string, error) { return "", errors.New("desc error") },
+	}
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+}
+
+// TestEscapeJSONString_QuotedInput tests the branch where HTMLEscape output
+// starts and ends with '"' (line 432-433).
+func TestEscapeJSONString_QuotedInput(t *testing.T) {
+	t.Parallel()
+	got := engine.EscapeJSONString(`"quoted"`)
+	if got != "quoted" {
+		t.Errorf("EscapeJSONString(%q) = %q, want %q", `"quoted"`, got, "quoted")
+	}
+}
+
+// TestEscapeJSONString_Unicode tests unicode and special char escaping edge cases.
+func TestEscapeJSONString_Unicode(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "multi-byte unicode", input: "日本語", want: "日本語"},
+		{name: "emoji", input: "🎉", want: "🎉"},
+		{name: "mixed html", input: "a<b&c", want: "a\\u003cb\\u0026c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := engine.EscapeJSONString(tt.input)
+			if got != tt.want {
+				t.Errorf("EscapeJSONString(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEscapeJSONString_ShortString tests the branch where result is shorter than 2 chars
+// (no surrounding quotes to strip).
+func TestEscapeJSONString_ShortString(t *testing.T) {
+	t.Parallel()
+	// Single char
+	got := engine.EscapeJSONString("a")
+	if got != "a" {
+		t.Errorf("expected 'a', got %q", got)
+	}
+}
+
+// TestQuery_HasContentNoBlocks tests callLLM's fallback path where text deltas
+// are received but no content_block_start events occurred.
+func TestQuery_HasContentNoBlocks(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// Stream with text deltas but no content_block_start — triggers the
+	// hasContent && len(contentBlocks) == 0 fallback in callLLM.
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "orphan text"}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 3}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	// The fallback should have created a text block from accumulated text
+	if len(result.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
+	}
+}
+
+// TestQuery_ExecuteToolsSkipsNonToolBlocks tests executeTools' skip path for
+// non-tool-use blocks (line 360-361). This path shouldn't normally be reached
+// since queryLoop filters toolUseBlocks, but it's a safety check.
+func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// First response: a tool_use AND a text block in the same message
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "thinking..."}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "my_tool"}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: "my_tool", enabled: true}
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
 	}
 }

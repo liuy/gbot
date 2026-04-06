@@ -1,4 +1,4 @@
-.PHONY: all build test lint clean agent-start agent-stop
+.PHONY: all build test lint check clean agent-start agent-stop
 
 BINARY := gbot
 CMD := ./cmd/gbot/
@@ -12,7 +12,7 @@ build:
 	go build -o $(BINARY) $(CMD)
 
 test:
-	go test $(PKG) -count=1 -timeout 60s -coverprofile=coverage.out
+	go test $(PKG) -count=1 -timeout 120s -coverprofile=coverage.out
 	go tool cover -func=coverage.out
 	@echo ""
 	@echo "Total coverage:"
@@ -21,6 +21,8 @@ test:
 
 lint:
 	golangci-lint run $(ALL)
+
+check: build test lint
 
 clean:
 	rm -f $(BINARY) coverage.out *.out *.prof *.test

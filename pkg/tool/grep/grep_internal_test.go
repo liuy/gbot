@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -320,6 +321,221 @@ func TestParseRGOutput_BlankLines(t *testing.T) {
 	matches := parseRGOutput(output)
 	if len(matches) != 2 {
 		t.Errorf("len(matches) = %d, want 2 (blank lines skipped)", len(matches))
+	}
+}
+
+func TestParseRGOutput_EmptyString(t *testing.T) {
+	t.Parallel()
+
+	matches := parseRGOutput("")
+	if len(matches) != 0 {
+		t.Errorf("expected 0 matches for empty string, got %d", len(matches))
+	}
+}
+
+func TestParseRGOutput_NoColon(t *testing.T) {
+	t.Parallel()
+
+	// Line with no colon at all — should be skipped
+	output := "just a plain line with no colons\n"
+	matches := parseRGOutput(output)
+	if len(matches) != 0 {
+		t.Errorf("expected 0 matches for no-colon line, got %d", len(matches))
+	}
+}
+
+func TestParseRGOutput_OneColonOnly(t *testing.T) {
+	t.Parallel()
+
+	// Only one colon — no second colon for line number — should be skipped
+	output := "file.txt:some content without line number\n"
+	matches := parseRGOutput(output)
+	if len(matches) != 0 {
+		t.Errorf("expected 0 matches for single-colon line, got %d", len(matches))
+	}
+}
+
+func TestParseRGOutput_NonNumericLineNumber(t *testing.T) {
+	t.Parallel()
+
+	// Two colons but second field is not a number — Sscanf fails, line defaults to 0
+	output := "file.txt:abc:some content\n"
+	matches := parseRGOutput(output)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	if matches[0].Line != 0 {
+		t.Errorf("Line = %d, want 0 for non-numeric line number", matches[0].Line)
+	}
+	if matches[0].File != "file.txt" {
+		t.Errorf("File = %q, want %q", matches[0].File, "file.txt")
+	}
+	if matches[0].Content != "some content" {
+		t.Errorf("Content = %q, want %q", matches[0].Content, "some content")
+	}
+}
+
+func TestParseRGOutput_SingleLine(t *testing.T) {
+	t.Parallel()
+
+	output := "main.go:42:func main()"
+	matches := parseRGOutput(output)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	if matches[0].File != "main.go" {
+		t.Errorf("File = %q, want %q", matches[0].File, "main.go")
+	}
+	if matches[0].Line != 42 {
+		t.Errorf("Line = %d, want 42", matches[0].Line)
+	}
+	if matches[0].Content != "func main()" {
+		t.Errorf("Content = %q, want %q", matches[0].Content, "func main()")
+	}
+}
+
+func TestParseRGOutput_TrailingNewlineOnly(t *testing.T) {
+	t.Parallel()
+
+	output := "\n"
+	matches := parseRGOutput(output)
+	if len(matches) != 0 {
+		t.Errorf("expected 0 matches for bare newline, got %d", len(matches))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// goGrep additional edge cases
+// ---------------------------------------------------------------------------
+
+func TestGoGrep_SingleFileError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create a subdirectory and pass it as if it were a file
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	// goGrep with a path that is not a regular file: Stat succeeds but grepFile fails
+	result, err := goGrep(context.Background(), "pattern", subdir, "")
+	if err != nil {
+		// It's a directory, so goGrep takes the IsDir branch, not single file
+		t.Fatalf("goGrep() error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if output.Count != 0 {
+		t.Errorf("Count = %d, want 0 for empty directory", output.Count)
+	}
+}
+
+func TestGoGrep_UnreadableFileInDirectory(t *testing.T) {
+	// Skip on Windows where permission bits behave differently
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	// Create a readable file with a match
+	goodFile := filepath.Join(dir, "good.txt")
+	if err := os.WriteFile(goodFile, []byte("findme here\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create an unreadable file
+	badFile := filepath.Join(dir, "bad.txt")
+	if err := os.WriteFile(badFile, []byte("findme too\n"), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(badFile, 0o644) // restore for cleanup
+	}()
+
+	result, err := goGrep(context.Background(), "findme", dir, "")
+	if err != nil {
+		t.Fatalf("goGrep() error: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	// Only the good file should match; the bad file's grepFile error is
+	// silently continued past (line 223-224 coverage).
+	if output.Count != 1 {
+		t.Errorf("Count = %d, want 1 (only readable file matches)", output.Count)
+	}
+}
+
+func TestGoGrep_DirectoryReadDirError(t *testing.T) {
+	// Cover the ReadDir error path by using a deleted directory.
+	// We create a dir, get its path, then remove it — Stat will fail first.
+	// To cover ReadDir specifically, we need Stat to succeed but ReadDir to fail.
+	// This is hard to trigger naturally; instead we use a file as the searchPath
+	// to ensure the IsDir=false branch is tested (line 205-210).
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "single.txt")
+	if err := os.WriteFile(fp, []byte("test content\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	result, err := goGrep(context.Background(), "test", fp, "")
+	if err != nil {
+		t.Fatalf("goGrep() error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if output.Count != 1 {
+		t.Errorf("Count = %d, want 1", output.Count)
+	}
+}
+
+func TestGoGrep_ReadDirErrorViaPermission(t *testing.T) {
+	// Cover the os.ReadDir error path by removing execute permission on a directory
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+
+	dir := t.TempDir()
+	innerDir := filepath.Join(dir, "inner")
+	if err := os.Mkdir(innerDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	// Put a file in inner so ReadDir would find it
+	if err := os.WriteFile(filepath.Join(innerDir, "f.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Remove execute permission so ReadDir fails
+	if err := os.Chmod(innerDir, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(innerDir, 0o755) }()
+
+	// Now pass innerDir to goGrep — Stat should succeed (we own it)
+	// but ReadDir should fail due to no execute permission
+	_, err := goGrep(context.Background(), "hello", innerDir, "")
+	if err == nil {
+		t.Fatal("expected ReadDir error due to permissions")
+	}
+}
+
+func TestGoGrep_SingleFileGrepFileError(t *testing.T) {
+	// Cover the single-file grepFile error path (lines 207-209)
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "unreadable.txt")
+	if err := os.WriteFile(fp, []byte("test\n"), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() { _ = os.Chmod(fp, 0o644) }()
+
+	_, err := goGrep(context.Background(), "test", fp, "")
+	if err == nil {
+		t.Fatal("expected error for unreadable single file")
 	}
 }
 

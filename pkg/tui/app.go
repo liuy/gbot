@@ -1,21 +1,16 @@
 package tui
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/user/gbot/pkg/engine"
-	"github.com/user/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
-// App — source: App.tsx → bubbletea root Model
+// App — bubbletea root Model
 // ---------------------------------------------------------------------------
 
 // App is the root bubbletea Model.
@@ -25,36 +20,27 @@ type App struct {
 	height int
 
 	// Components
-	input    *Input
-	messages []MessageView
-	status   StatusBar
-	spinner  Spinner
+	input   *Input
+	status  StatusBar
+	spinner Spinner
 
-	// State
-	engine        *engine.Engine
-	systemPrompt  json.RawMessage
-	streaming     bool
-	pendingTool   map[string]*ToolCallView // tool use ID -> in-progress tool call
-	assistantBuf  strings.Builder          // accumulates streaming text
+	// REPL session state (delegated to repl.go)
+	repl *ReplState
 
-	// Cancellation
-	cancelFunc context.CancelFunc
-
-	// Channels from the current query (nil when idle)
-	eventCh  <-chan types.QueryEvent
-	resultCh <-chan engine.QueryResult
+	// Engine
+	engine       *engine.Engine
+	systemPrompt json.RawMessage
 }
 
 // NewApp creates a new App model.
 func NewApp(eng *engine.Engine, systemPrompt json.RawMessage) *App {
 	return &App{
 		input:        NewInput(),
-		messages:     []MessageView{},
 		status:       NewStatusBar(),
 		spinner:      NewSpinner(),
+		repl:         NewReplState(),
 		engine:       eng,
 		systemPrompt: systemPrompt,
-		pendingTool:  make(map[string]*ToolCallView),
 	}
 }
 
@@ -81,50 +67,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return a.handleKey(m)
 
-	case streamChunkMsg:
-		a.assistantBuf.WriteString(m.Text)
-		return a, a.readEvents()
-
-	case streamToolUseMsg:
-		tcv := &ToolCallView{
-			Name:  m.Name,
-			Input: m.Input,
-			Done:  false,
+	// All REPL messages are handled by repl.go
+	case streamChunkMsg, streamToolUseMsg, streamToolResultMsg,
+		streamCompleteMsg, errMsg, submitMsg, spinnerTickMsg:
+		handled, cmd := a.updateRepl(msg)
+		if handled {
+			return a, cmd
 		}
-		a.pendingTool[m.ID] = tcv
-		return a, a.readEvents()
-
-	case streamToolResultMsg:
-		if tcv, ok := a.pendingTool[m.ToolUseID]; ok {
-			tcv.Output = m.Output
-			tcv.IsError = m.IsError
-			tcv.Done = true
-		}
-		return a, a.readEvents()
-
-	case streamCompleteMsg:
-		a.finishStream(m.Err)
-		return a, nil
-
-	case errMsg:
-		a.status.SetError(m.Err.Error())
-		a.streaming = false
-		a.spinner.Stop()
-		a.input.Focus()
-		return a, nil
-
-	case submitMsg:
-		return a.handleSubmit(m.Text)
-
-	// Periodic spinner tick while streaming
-	case spinnerTickMsg:
-		if a.streaming {
-			a.spinner.Tick()
-			return a, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-				return spinnerTickMsg{}
-			})
-		}
-		return a, nil
 	}
 
 	return a, nil
@@ -144,30 +93,11 @@ func (a *App) View() string {
 		availHeight = 3
 	}
 
-	// Render visible messages from bottom
-	rendered := renderMessages(a.messages, a.width, availHeight)
+	rendered := renderMessages(a.repl.Messages(), a.width, availHeight)
 	sb.WriteString(rendered)
 
-	// Show current assistant stream
-	if a.streaming {
-		text := a.assistantBuf.String()
-		if text != "" || a.spinner.Active() {
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-			sb.WriteString(style.Render("gbot: "))
-			sb.WriteString(wordWrap(text, a.width-8))
-			sb.WriteString(a.spinner.View())
-			sb.WriteString("\n")
-		}
-
-		// Show pending tool calls
-		for _, tcv := range a.pendingTool {
-			if !tcv.Done {
-				toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-				sb.WriteString(toolStyle.Render(fmt.Sprintf("  [%s] running...", tcv.Name)))
-				sb.WriteString("\n")
-			}
-		}
-	}
+	// Streaming assistant output and pending tools (from repl.go)
+	a.replView(&sb)
 
 	// Status bar
 	sb.WriteString(a.status.View())
@@ -187,13 +117,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 
 	case tea.KeyCtrlC:
-		if a.streaming {
+		if a.repl.IsStreaming() {
 			// Cancel current query
-			if a.cancelFunc != nil {
-				a.cancelFunc()
-				a.cancelFunc = nil
+			if a.repl.cancelFunc != nil {
+				a.repl.cancelFunc()
+				a.repl.cancelFunc = nil
 			}
-			a.finishStream(nil)
+			a.repl.FinishStream(nil)
 			return a, nil
 		}
 		// Not streaming: quit
@@ -204,7 +134,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(text) == "" {
 			return a, nil
 		}
-		return a.handleSubmit(text)
+		return a, a.handleSubmitRepl(text)
 
 	case tea.KeyBackspace:
 		a.input.Backspace()
@@ -253,195 +183,3 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	return a, nil
 }
-
-// ---------------------------------------------------------------------------
-// Submit / streaming
-// ---------------------------------------------------------------------------
-
-func (a *App) handleSubmit(text string) (tea.Model, tea.Cmd) {
-	if a.streaming {
-		// Already streaming, ignore
-		return a, nil
-	}
-
-	// Add user message view
-	a.messages = append(a.messages, MessageView{
-		Role:    "user",
-		Content: text,
-	})
-
-	a.input.Reset()
-
-	// Start streaming
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancelFunc = cancel
-
-	eventCh, resultCh := a.engine.Query(ctx, text, a.systemPrompt)
-	a.eventCh = eventCh
-	a.resultCh = resultCh
-	a.streaming = true
-	a.assistantBuf.Reset()
-	a.pendingTool = make(map[string]*ToolCallView)
-	a.status.SetStreaming(true)
-	a.spinner.Start()
-
-	// Start spinner tick and read first events
-	return a, tea.Batch(
-		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-			return spinnerTickMsg{}
-		}),
-		a.readEvents(),
-	)
-}
-
-// readEvents reads the next event from the engine channels and converts
-// it to a bubbletea message. This is called as a tea.Cmd.
-func (a *App) readEvents() tea.Cmd {
-	return func() tea.Msg {
-		if a.eventCh == nil {
-			return streamCompleteMsg{}
-		}
-
-		// Try to read an event
-		select {
-		case evt, ok := <-a.eventCh:
-			if !ok {
-				// Event channel closed, read result
-				a.eventCh = nil
-				return streamCompleteMsg{}
-			}
-			return a.engineEventToMsg(evt)
-
-		case result, ok := <-a.resultCh:
-			if !ok {
-				return streamCompleteMsg{}
-			}
-			a.resultCh = nil
-			return streamCompleteMsg{Err: result.Error}
-		}
-	}
-}
-
-// engineEventToMsg converts a types.QueryEvent to a bubbletea message.
-func (a *App) engineEventToMsg(evt types.QueryEvent) tea.Msg {
-	switch evt.Type {
-	case types.EventTextDelta:
-		return streamChunkMsg{Text: evt.Text}
-
-	case types.EventToolUseStart:
-		if evt.ToolUse != nil {
-			input := prettyJSON(evt.ToolUse.Input)
-			return streamToolUseMsg{
-				ID:    evt.ToolUse.ID,
-				Name:  evt.ToolUse.Name,
-				Input: input,
-			}
-		}
-
-	case types.EventToolResult:
-		if evt.ToolResult != nil {
-			return streamToolResultMsg{
-				ToolUseID: evt.ToolResult.ToolUseID,
-				Output:    prettyJSON(evt.ToolResult.Output),
-				IsError:   evt.ToolResult.IsError,
-				Timing:    evt.ToolResult.Timing.String(),
-			}
-		}
-
-	case types.EventError:
-		return errMsg{Err: evt.Error}
-
-	case types.EventComplete:
-		return streamCompleteMsg{}
-	}
-
-	// Unknown event type: read next
-	return a.readEvents()()
-}
-
-// finishStream finalizes the current streaming response.
-func (a *App) finishStream(err error) {
-	a.streaming = false
-	a.status.SetStreaming(false)
-	a.spinner.Stop()
-	a.input.Focus()
-
-	if a.cancelFunc != nil {
-		a.cancelFunc()
-		a.cancelFunc = nil
-	}
-
-	// Build assistant message view
-	text := a.assistantBuf.String()
-	var toolCalls []ToolCallView
-	for _, tcv := range a.pendingTool {
-		toolCalls = append(toolCalls, *tcv)
-	}
-
-	if text != "" || len(toolCalls) > 0 {
-		a.messages = append(a.messages, MessageView{
-			Role:      "assistant",
-			Content:   text,
-			ToolCalls: toolCalls,
-		})
-	}
-
-	a.assistantBuf.Reset()
-	a.pendingTool = make(map[string]*ToolCallView)
-
-	if err != nil {
-		a.messages = append(a.messages, MessageView{
-			Role:    "system",
-			Content: fmt.Sprintf("Error: %v", err),
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// prettyJSON formats JSON for display.
-func prettyJSON(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return string(raw)
-	}
-	pretty, err := json.MarshalIndent(v, "  ", "  ")
-	if err != nil {
-		return string(raw)
-	}
-	return string(pretty)
-}
-
-// renderMessages renders the visible message list within the given bounds.
-func renderMessages(messages []MessageView, width, maxHeight int) string {
-	if len(messages) == 0 {
-		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
-		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.") + "\n"
-	}
-
-	// Render from the end (most recent) to fill available height
-	var lines []string
-	usedLines := 0
-
-	for i := len(messages) - 1; i >= 0 && usedLines < maxHeight; i-- {
-		rendered := messages[i].View(width)
-		msgLines := strings.Split(rendered, "\n")
-		// Add lines in reverse order (bottom-up)
-		for j := len(msgLines) - 1; j >= 0 && usedLines < maxHeight; j-- {
-			if msgLines[j] != "" {
-				lines = append([]string{msgLines[j]}, lines...)
-				usedLines++
-			}
-		}
-	}
-
-	return strings.Join(lines, "\n") + "\n"
-}
-
-// spinnerTickMsg is an internal message to animate the spinner.
-type spinnerTickMsg struct{}

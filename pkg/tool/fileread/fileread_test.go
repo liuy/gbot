@@ -301,6 +301,31 @@ func TestExecute_Directory(t *testing.T) {
 	}
 }
 
+func TestExecute_StatPermissionDenied(t *testing.T) {
+	t.Parallel()
+	// Create a directory without execute permission to trigger non-IsNotExist stat error
+	dir := t.TempDir()
+	restricted := filepath.Join(dir, "restricted")
+	if err := os.MkdirAll(restricted, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(restricted, "secret.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Remove execute permission from parent directory
+	if err := os.Chmod(restricted, 0000); err != nil {
+		t.Skip("chmod not supported")
+	}
+	defer func() { _ = os.Chmod(restricted, 0755) }() // restore for cleanup
+
+	input := json.RawMessage(`{"file_path":"` + target + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error for permission denied")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Output JSON
 // ---------------------------------------------------------------------------

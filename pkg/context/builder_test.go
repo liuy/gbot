@@ -322,6 +322,18 @@ func TestLoadGBOTMD(t *testing.T) {
 	}
 }
 
+func TestPlatformInfo_EmptyShell(t *testing.T) {
+	origShell := os.Getenv("SHELL")
+	_ = os.Setenv("SHELL", "")
+	defer func() { _ = os.Setenv("SHELL", origShell) }()
+
+	b := context.NewBuilder("/test")
+	info := b.PlatformInfo()
+	if !strings.Contains(info, "/bin/bash") {
+		t.Errorf("expected /bin/bash fallback, got %q", info)
+	}
+}
+
 func TestBaseSystemPrompt(t *testing.T) {
 	b := context.NewBuilder("/work")
 	prompt := b.BaseSystemPrompt()

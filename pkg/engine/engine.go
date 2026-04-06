@@ -385,7 +385,11 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 			continue
 		}
 
-		outputJSON, _ := json.Marshal(result.Data)
+	 rawJSON, _ := json.Marshal(result.Data)
+		// Wrap as a JSON string so the Anthropic API receives content as a
+		// string, not a raw JSON object.  The API expects tool_result.content
+		// to be string | ContentBlock[], not an arbitrary JSON object.
+		outputJSON, _ := json.Marshal(string(rawJSON))
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
 		eventCh <- types.QueryEvent{
 			Type: types.EventToolResult,

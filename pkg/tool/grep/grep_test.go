@@ -197,3 +197,61 @@ func TestGrepToolCall_NonexistentPath(t *testing.T) {
 		t.Fatal("Execute() should return error for nonexistent path")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// New() — covers tool construction (was 0% coverage)
+// ---------------------------------------------------------------------------
+
+func TestNew_ReturnsValidTool(t *testing.T) {
+	g := grep.New()
+	if g == nil {
+		t.Fatal("New() returned nil")
+	}
+	if g.Name() != "Grep" {
+		t.Errorf("Name() = %q, want %q", g.Name(), "Grep")
+	}
+	aliases := g.Aliases()
+	if len(aliases) != 1 || aliases[0] != "grep" {
+		t.Errorf("Aliases() = %v, want [grep]", aliases)
+	}
+	if !g.IsReadOnly(nil) {
+		t.Error("IsReadOnly should be true")
+	}
+	if !g.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe should be true")
+	}
+	if !g.IsEnabled() {
+		t.Error("IsEnabled should be true")
+	}
+	if g.Prompt() == "" {
+		t.Error("Prompt should not be empty")
+	}
+	schema := g.InputSchema()
+	if !json.Valid(schema) {
+		t.Errorf("InputSchema returned invalid JSON: %s", string(schema))
+	}
+}
+
+func TestNew_DescriptionWithPattern(t *testing.T) {
+	g := grep.New()
+	desc, err := g.Description(json.RawMessage(`{"pattern":"TODO"}`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != "Grep: TODO" {
+		t.Errorf("Description() = %q, want %q", desc, "Grep: TODO")
+	}
+}
+
+func TestNew_DescriptionWithInvalidJSON(t *testing.T) {
+	g := grep.New()
+	desc, err := g.Description(json.RawMessage(`{invalid}`))
+	if err != nil {
+		t.Fatalf("Description() should not error on bad JSON: %v", err)
+	}
+	// Falls back to default description
+	if desc != "Search file contents with regex" {
+		t.Errorf("Description fallback = %q, want %q", desc, "Search file contents with regex")
+	}
+}
+

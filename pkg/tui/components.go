@@ -335,7 +335,7 @@ func (m MessageView) View(width int) string {
 	case "assistant":
 		asstStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 		prefix = asstStyle.Render("gbot: ")
-		content = m.Content
+		content = Render(m.Content)
 	default:
 		prefix = ""
 		content = m.Content
