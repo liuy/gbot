@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# gbot agent bridge — start/stop gbot in a detached screen session.
+# Agent can send messages, watch output, just like a human.
+#
+# Usage:
+#   ./gbot-agent start                  # start gbot in screen
+#   ./gbot-agent send "Say hello"       # type a message (char by char)
+#   ./gbot-agent screen                 # capture current screen (ANSI)
+#   ./gbot-agent screen --plain         # capture current screen (plain text)
+#   ./gbot-agent wait [--timeout 60]    # wait until response done (spinner stops)
+#   ./gbot-agent send "What is 2+2?"    # another turn
+#   ./gbot-agent stop                   # kill gbot
+
+set -euo pipefail
+
+SESSION="gbot"
+BINARY="./gbot"
+SCREENSHOT="/tmp/gbot-screen.txt"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-help}" in
+start)
+    cd "$SCRIPT_DIR"
+    # Build
+    if [ "${2:-}" != "--no-build" ]; then
+        echo "[agent] building..." >&2
+        go build -o "$BINARY" ./cmd/gbot/ || { echo "build FAILED" >&2; exit 1; }
+    fi
+    # Kill existing session
+    screen -S "$SESSION" -X quit 2>/dev/null || true
+    sleep 0.3
+    # Start in detached screen with clean env
+    # Must unset inherited vars that override gbot's own settings file
+    env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+        -u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u API_TIMEOUT_MS \
+        screen -dmS "$SESSION" "$BINARY"
+    # Wait for it to start
+    for i in $(seq 1 20); do
+        if screen -list | grep -q "$SESSION"; then
+            echo "gbot started in screen session '$SESSION'"
+            echo "  send:   ./gbot-agent send 'your message'"
+            echo "  screen: ./gbot-agent screen [--plain]"
+            echo "  wait:   ./gbot-agent wait"
+            echo "  stop:   ./gbot-agent stop"
+            exit 0
+        fi
+        sleep 0.1
+    done
+    echo "FAILED to start gbot" >&2
+    exit 1
+    ;;
+
+send)
+    msg="${2:-}"
+    if [ -z "$msg" ]; then
+        echo "Usage: ./gbot-agent send 'your message'" >&2
+        exit 1
+    fi
+    if ! screen -list | grep -q "$SESSION"; then
+        echo "gbot not running. Start with: ./gbot-agent start" >&2
+        exit 1
+    fi
+    # Type message char by char into screen
+    # screen -X stuff sends keystrokes to the session
+    for (( i=0; i<${#msg}; i++ )); do
+        ch="${msg:$i:1}"
+        screen -S "$SESSION" -X stuff "$ch"
+        # Space needs a tiny delay for bubbletea to register
+        if [ "$ch" = " " ]; then
+            sleep 0.04
+        else
+            sleep 0.015
+        fi
+    done
+    # Press Enter
+    screen -S "$SESSION" -X stuff $'\r'
+    echo "sent: $msg"
+    ;;
+
+screen)
+    if ! screen -list | grep -q "$SESSION"; then
+        echo "gbot not running" >&2
+        exit 1
+    fi
+    # Capture screen to file
+    screen -S "$SESSION" -X hardcopy "$SCREENSHOT"
+    sleep 0.1
+    if [ ! -f "$SCREENSHOT" ]; then
+        echo "no screen data yet"
+        exit 0
+    fi
+    if [ "${2:-}" = "--plain" ]; then
+        # Strip ANSI for readability
+        sed 's/\x1b\[[^a-zA-Z]*[a-zA-Z]//g' "$SCREENSHOT" | sed '/^$/d'
+    else
+        cat "$SCREENSHOT"
+    fi
+    ;;
+
+wait)
+    timeout=60
+    if [ "${2:-}" = "--timeout" ] && [ -n "${3:-}" ]; then
+        timeout="$3"
+    elif [ "${2:-}" -gt 0 ] 2>/dev/null; then
+        timeout="$2"
+    fi
+    # Wait until spinner stops (no ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ chars in screen)
+    elapsed=0
+    idle_count=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        screen -S "$SESSION" -X hardcopy "$SCREENSHOT" 2>/dev/null || break
+        if [ -f "$SCREENSHOT" ]; then
+            if ! grep -qP '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|working' "$SCREENSHOT" 2>/dev/null; then
+                idle_count=$((idle_count + 1))
+                if [ "$idle_count" -ge 6 ]; then
+                    echo "idle (${elapsed}ms elapsed)"
+                    exit 0
+                fi
+            else
+                idle_count=0
+            fi
+        fi
+        sleep 0.05
+        elapsed=$((elapsed + 50))
+    done
+    echo "timeout after ${timeout}s"
+    ;;
+
+stop)
+    screen -S "$SESSION" -X quit 2>/dev/null || true
+    rm -f "$SCREENSHOT"
+    echo "gbot stopped"
+    ;;
+
+help|*)
+    echo "gbot agent bridge — start/stop gbot in a detached screen session"
+    echo ""
+    echo "Commands:"
+    echo "  start [--no-build]      Start gbot in screen"
+    echo "  send 'message'          Type a message into gbot"
+    echo "  screen [--plain]        Show current screen"
+    echo "  wait [--timeout N]      Wait until gbot finishes responding"
+    echo "  stop                    Kill gbot"
+    ;;
+esac

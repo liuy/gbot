@@ -1,0 +1,640 @@
+package types_test
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/user/gbot/pkg/types"
+)
+
+// ---------------------------------------------------------------------------
+// Role constants
+// ---------------------------------------------------------------------------
+
+func TestRoleConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		role     types.Role
+		expected string
+	}{
+		{"user", types.RoleUser, "user"},
+		{"assistant", types.RoleAssistant, "assistant"},
+		{"system", types.RoleSystem, "system"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.role) != tc.expected {
+				t.Errorf("Role %s = %q, want %q", tc.name, tc.role, tc.expected)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ContentType constants
+// ---------------------------------------------------------------------------
+
+func TestContentTypeConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		ct       types.ContentType
+		expected string
+	}{
+		{"text", types.ContentTypeText, "text"},
+		{"tool_use", types.ContentTypeToolUse, "tool_use"},
+		{"tool_result", types.ContentTypeToolResult, "tool_result"},
+		{"thinking", types.ContentTypeThinking, "thinking"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.ct) != tc.expected {
+				t.Errorf("ContentType %s = %q, want %q", tc.name, tc.ct, tc.expected)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ContentBlock constructors
+// ---------------------------------------------------------------------------
+
+func TestNewTextBlock(t *testing.T) {
+	t.Parallel()
+
+	block := types.NewTextBlock("hello world")
+	if block.Type != types.ContentTypeText {
+		t.Errorf("Type = %q, want %q", block.Type, types.ContentTypeText)
+	}
+	if block.Text != "hello world" {
+		t.Errorf("Text = %q, want %q", block.Text, "hello world")
+	}
+}
+
+func TestNewToolUseBlock(t *testing.T) {
+	t.Parallel()
+
+	input := json.RawMessage(`{"cmd":"ls"}`)
+	block := types.NewToolUseBlock("id-1", "Bash", input)
+	if block.Type != types.ContentTypeToolUse {
+		t.Errorf("Type = %q, want %q", block.Type, types.ContentTypeToolUse)
+	}
+	if block.ID != "id-1" {
+		t.Errorf("ID = %q, want %q", block.ID, "id-1")
+	}
+	if block.Name != "Bash" {
+		t.Errorf("Name = %q, want %q", block.Name, "Bash")
+	}
+	if string(block.Input) != `{"cmd":"ls"}` {
+		t.Errorf("Input = %s, want %s", block.Input, `{"cmd":"ls"}`)
+	}
+}
+
+func TestNewToolResultBlock(t *testing.T) {
+	t.Parallel()
+
+	content := json.RawMessage(`"done"`)
+	block := types.NewToolResultBlock("use-1", content, false)
+	if block.Type != types.ContentTypeToolResult {
+		t.Errorf("Type = %q, want %q", block.Type, types.ContentTypeToolResult)
+	}
+	if block.ToolUseID != "use-1" {
+		t.Errorf("ToolUseID = %q, want %q", block.ToolUseID, "use-1")
+	}
+	if block.IsError {
+		t.Error("IsError = true, want false")
+	}
+
+	errBlock := types.NewToolResultBlock("use-2", content, true)
+	if !errBlock.IsError {
+		t.Error("IsError = false, want true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ContentBlock JSON round-trip
+// ---------------------------------------------------------------------------
+
+func TestContentBlockJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		block types.ContentBlock
+	}{
+		{
+			"text block",
+			types.NewTextBlock("some text"),
+		},
+		{
+			"tool use block",
+			types.NewToolUseBlock("id-2", "Grep", json.RawMessage(`{"pattern":"foo"}`)),
+		},
+		{
+			"tool result block",
+			types.NewToolResultBlock("use-3", json.RawMessage(`"output"`), true),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tc.block)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+
+			var got types.ContentBlock
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+
+			if got.Type != tc.block.Type {
+				t.Errorf("Type = %q, want %q", got.Type, tc.block.Type)
+			}
+			if got.Text != tc.block.Text {
+				t.Errorf("Text = %q, want %q", got.Text, tc.block.Text)
+			}
+			if got.ID != tc.block.ID {
+				t.Errorf("ID = %q, want %q", got.ID, tc.block.ID)
+			}
+			if got.Name != tc.block.Name {
+				t.Errorf("Name = %q, want %q", got.Name, tc.block.Name)
+			}
+			if got.ToolUseID != tc.block.ToolUseID {
+				t.Errorf("ToolUseID = %q, want %q", got.ToolUseID, tc.block.ToolUseID)
+			}
+			if got.IsError != tc.block.IsError {
+				t.Errorf("IsError = %v, want %v", got.IsError, tc.block.IsError)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Message JSON
+// ---------------------------------------------------------------------------
+
+func TestMessageJSON(t *testing.T) {
+	t.Parallel()
+
+	msg := types.Message{
+		ID:         "msg-1",
+		Role:       types.RoleUser,
+		Content:    []types.ContentBlock{types.NewTextBlock("hello")},
+		Model:      "claude-4-sonnet",
+		StopReason: "end_turn",
+		Usage: &types.Usage{
+			InputTokens:  10,
+			OutputTokens: 5,
+		},
+		Timestamp: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got types.Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.ID != "msg-1" {
+		t.Errorf("ID = %q, want %q", got.ID, "msg-1")
+	}
+	if got.Role != types.RoleUser {
+		t.Errorf("Role = %q, want %q", got.Role, types.RoleUser)
+	}
+	if len(got.Content) != 1 {
+		t.Fatalf("Content length = %d, want 1", len(got.Content))
+	}
+	if got.Content[0].Text != "hello" {
+		t.Errorf("Content[0].Text = %q, want %q", got.Content[0].Text, "hello")
+	}
+	if got.Model != "claude-4-sonnet" {
+		t.Errorf("Model = %q, want %q", got.Model, "claude-4-sonnet")
+	}
+	if got.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", got.StopReason, "end_turn")
+	}
+	if got.Usage == nil {
+		t.Fatal("Usage is nil")
+	}
+	if got.Usage.InputTokens != 10 {
+		t.Errorf("Usage.InputTokens = %d, want 10", got.Usage.InputTokens)
+	}
+	if got.Usage.OutputTokens != 5 {
+		t.Errorf("Usage.OutputTokens = %d, want 5", got.Usage.OutputTokens)
+	}
+}
+
+func TestMessageOmitEmpty(t *testing.T) {
+	t.Parallel()
+
+	// Minimal message — optional fields should be omitted
+	msg := types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	// Ensure optional fields are not present in JSON output
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal to map: %v", err)
+	}
+
+	if _, ok := raw["id"]; ok {
+		t.Error("id should be omitted")
+	}
+	if _, ok := raw["model"]; ok {
+		t.Error("model should be omitted")
+	}
+	if _, ok := raw["stop_reason"]; ok {
+		t.Error("stop_reason should be omitted")
+	}
+	if _, ok := raw["usage"]; ok {
+		t.Error("usage should be omitted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Usage JSON
+// ---------------------------------------------------------------------------
+
+func TestUsageJSON(t *testing.T) {
+	t.Parallel()
+
+	u := types.Usage{
+		InputTokens:              100,
+		OutputTokens:             50,
+		CacheCreationInputTokens: 20,
+		CacheReadInputTokens:     10,
+	}
+
+	data, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got types.Usage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", got.InputTokens)
+	}
+	if got.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", got.OutputTokens)
+	}
+	if got.CacheCreationInputTokens != 20 {
+		t.Errorf("CacheCreationInputTokens = %d, want 20", got.CacheCreationInputTokens)
+	}
+	if got.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens = %d, want 10", got.CacheReadInputTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PermissionMode constants
+// ---------------------------------------------------------------------------
+
+func TestPermissionModeConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mode types.PermissionMode
+		want string
+	}{
+		{"acceptEdits", types.PermissionModeAcceptEdits, "acceptEdits"},
+		{"bypass", types.PermissionModeBypass, "bypassPermissions"},
+		{"default", types.PermissionModeDefault, "default"},
+		{"dontAsk", types.PermissionModeDontAsk, "dontAsk"},
+		{"plan", types.PermissionModePlan, "plan"},
+		{"auto", types.PermissionModeAuto, "auto"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.mode) != tc.want {
+				t.Errorf("PermissionMode %s = %q, want %q", tc.name, tc.mode, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PermissionBehavior constants
+// ---------------------------------------------------------------------------
+
+func TestPermissionBehaviorConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		b    types.PermissionBehavior
+		want string
+	}{
+		{"allow", types.BehaviorAllow, "allow"},
+		{"deny", types.BehaviorDeny, "deny"},
+		{"ask", types.BehaviorAsk, "ask"},
+		{"passthrough", types.BehaviorPassthrough, "passthrough"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.b) != tc.want {
+				t.Errorf("PermissionBehavior %s = %q, want %q", tc.name, tc.b, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PermissionResult implementations
+// ---------------------------------------------------------------------------
+
+func TestPermissionAllowDecision(t *testing.T) {
+	t.Parallel()
+
+	var d types.PermissionResult = types.PermissionAllowDecision{}
+	if d.Behavior() != types.BehaviorAllow {
+		t.Errorf("Behavior() = %q, want %q", d.Behavior(), types.BehaviorAllow)
+	}
+}
+
+func TestPermissionAskDecision(t *testing.T) {
+	t.Parallel()
+
+	var d types.PermissionResult = types.PermissionAskDecision{Message: "confirm?"}
+	if d.Behavior() != types.BehaviorAsk {
+		t.Errorf("Behavior() = %q, want %q", d.Behavior(), types.BehaviorAsk)
+	}
+}
+
+func TestPermissionDenyDecision(t *testing.T) {
+	t.Parallel()
+
+	var d types.PermissionResult = types.PermissionDenyDecision{Message: "forbidden"}
+	if d.Behavior() != types.BehaviorDeny {
+		t.Errorf("Behavior() = %q, want %q", d.Behavior(), types.BehaviorDeny)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QueryEventType constants
+// ---------------------------------------------------------------------------
+
+func TestQueryEventTypeConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		et   types.QueryEventType
+		want string
+	}{
+		{"stream_start", types.EventStreamStart, "stream_start"},
+		{"text_delta", types.EventTextDelta, "text_delta"},
+		{"tool_use_start", types.EventToolUseStart, "tool_use_start"},
+		{"tool_use_delta", types.EventToolUseDelta, "tool_use_delta"},
+		{"tool_result", types.EventToolResult, "tool_result"},
+		{"message", types.EventMessage, "message"},
+		{"error", types.EventError, "error"},
+		{"complete", types.EventComplete, "complete"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.et) != tc.want {
+				t.Errorf("QueryEventType %s = %q, want %q", tc.name, tc.et, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QueryEvent JSON
+// ---------------------------------------------------------------------------
+
+func TestQueryEventJSON(t *testing.T) {
+	t.Parallel()
+
+	evt := types.QueryEvent{
+		Type: types.EventTextDelta,
+		Text: "hello",
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got types.QueryEvent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.Type != types.EventTextDelta {
+		t.Errorf("Type = %q, want %q", got.Type, types.EventTextDelta)
+	}
+	if got.Text != "hello" {
+		t.Errorf("Text = %q, want %q", got.Text, "hello")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TerminalReason constants
+// ---------------------------------------------------------------------------
+
+func TestTerminalReasonConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason types.TerminalReason
+		want   string
+	}{
+		{"completed", types.TerminalCompleted, "completed"},
+		{"aborted_streaming", types.TerminalAbortedStreaming, "aborted_streaming"},
+		{"aborted_tools", types.TerminalAbortedTools, "aborted_tools"},
+		{"model_error", types.TerminalModelError, "model_error"},
+		{"blocking_limit", types.TerminalBlockingLimit, "blocking_limit"},
+		{"prompt_too_long", types.TerminalPromptTooLong, "prompt_too_long"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.reason) != tc.want {
+				t.Errorf("TerminalReason %s = %q, want %q", tc.name, tc.reason, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ContinueReason constants
+// ---------------------------------------------------------------------------
+
+func TestContinueReasonConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason types.ContinueReason
+		want   string
+	}{
+		{"next_turn", types.ContinueNextTurn, "next_turn"},
+		{"max_tokens_retry", types.ContinueMaxTokensRetry, "max_tokens_retry"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.reason) != tc.want {
+				t.Errorf("ContinueReason %s = %q, want %q", tc.name, tc.reason, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LoopAction
+// ---------------------------------------------------------------------------
+
+func TestLoopAction(t *testing.T) {
+	t.Parallel()
+
+	action := types.LoopAction{
+		Continue: true,
+		Reason:   types.ContinueNextTurn,
+	}
+
+	if !action.Continue {
+		t.Error("Continue = false, want true")
+	}
+	if action.Reason != types.ContinueNextTurn {
+		t.Errorf("Reason = %q, want %q", action.Reason, types.ContinueNextTurn)
+	}
+
+	terminal := types.LoopAction{
+		Continue: false,
+		Terminal: types.TerminalCompleted,
+	}
+
+	if terminal.Continue {
+		t.Error("Continue = true, want false")
+	}
+	if terminal.Terminal != types.TerminalCompleted {
+		t.Errorf("Terminal = %q, want %q", terminal.Terminal, types.TerminalCompleted)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolUseEvent / ToolResultEvent JSON
+// ---------------------------------------------------------------------------
+
+func TestToolUseEventJSON(t *testing.T) {
+	t.Parallel()
+
+	evt := types.ToolUseEvent{
+		ID:    "tu-1",
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"ls"}`),
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got types.ToolUseEvent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.ID != "tu-1" {
+		t.Errorf("ID = %q, want %q", got.ID, "tu-1")
+	}
+	if got.Name != "Bash" {
+		t.Errorf("Name = %q, want %q", got.Name, "Bash")
+	}
+}
+
+func TestToolResultEventJSON(t *testing.T) {
+	t.Parallel()
+
+	evt := types.ToolResultEvent{
+		ToolUseID: "tu-1",
+		Output:    json.RawMessage(`"ok"`),
+		IsError:   false,
+		Timing:    150 * time.Millisecond,
+	}
+
+	data, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got types.ToolResultEvent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.ToolUseID != "tu-1" {
+		t.Errorf("ToolUseID = %q, want %q", got.ToolUseID, "tu-1")
+	}
+	if got.IsError {
+		t.Error("IsError = true, want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolUseContext
+// ---------------------------------------------------------------------------
+
+func TestToolUseContext(t *testing.T) {
+	t.Parallel()
+
+	tctx := &types.ToolUseContext{
+		ToolUseID:  "tu-ctx-1",
+		WorkingDir: "/tmp",
+		Options: types.ToolUseOptions{
+			Debug:   true,
+			Verbose: true,
+		},
+	}
+
+	if tctx.ToolUseID != "tu-ctx-1" {
+		t.Errorf("ToolUseID = %q, want %q", tctx.ToolUseID, "tu-ctx-1")
+	}
+	if tctx.WorkingDir != "/tmp" {
+		t.Errorf("WorkingDir = %q, want %q", tctx.WorkingDir, "/tmp")
+	}
+	if !tctx.Options.Debug {
+		t.Error("Options.Debug = false, want true")
+	}
+	if !tctx.Options.Verbose {
+		t.Error("Options.Verbose = false, want true")
+	}
+}

@@ -1,0 +1,29 @@
+# Binaries
+gbot
+
+# Test/build artifacts
+*.out
+*.prof
+*.test
+coverage.out
+
+# Agent temp files
+/tmp/gbot-screen.raw
+/tmp/gbot-agent.pid
+/tmp/gbot-input
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# OMC state
+.omc/
+Thumbs.db
+
+# Go
+vendor/
