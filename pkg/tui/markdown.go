@@ -401,39 +401,67 @@ func (r *ansiRenderer) renderTable() {
 		}
 	}
 
+	// Render top border: ┌ ... ┬ ... ┐
+	r.write("┌")
+	for i := 0; i < numCols; i++ {
+		r.write(strings.Repeat("─", colWidths[i]+2))
+		if i < numCols-1 {
+			r.write("┬")
+		}
+	}
+	r.write("┐\n")
+
 	// Render header row
 	if len(t.header) > 0 {
-		r.write("| ")
+		r.write("│ ")
 		for i, cell := range t.header {
 			if i < numCols {
 				dw := stringWidth(stripANSI(cell))
 				r.write(padAligned(cell, dw, colWidths[i], tableAlign(t.align, i)))
-				r.write(" | ")
+				r.write(" │")
+				if i < numCols-1 {
+					r.write(" ")
+				}
 			}
 		}
 		r.write("\n")
 
-		// Separator row (dashes, no alignment colons in output — matches TS)
-		r.write("|")
+		// Separator row: ├───┼───┤ (or ┬ if single column)
+		r.write("├")
 		for i := 0; i < numCols; i++ {
-			sep := strings.Repeat("-", colWidths[i]+2)
-			r.write(sep + "|")
+			r.write(strings.Repeat("─", colWidths[i]+2))
+			if i < numCols-1 {
+				r.write("┼")
+			}
 		}
-		r.write("\n")
+		r.write("┤\n")
 	}
 
 	// Data rows
 	for _, row := range t.rows {
-		r.write("| ")
+		r.write("│ ")
 		for i, cell := range row {
 			if i < numCols {
 				dw := stringWidth(stripANSI(cell))
 				r.write(padAligned(cell, dw, colWidths[i], tableAlign(t.align, i)))
-				r.write(" | ")
+				r.write(" │")
+				if i < numCols-1 {
+					r.write(" ")
+				}
 			}
 		}
 		r.write("\n")
 	}
+
+	// Render bottom border: └ ... ┴ ... ┘
+	r.write("└")
+	for i := 0; i < numCols; i++ {
+		r.write(strings.Repeat("─", colWidths[i]+2))
+		if i < numCols-1 {
+			r.write("┴")
+		}
+	}
+	r.write("┘")
 }
 
 func tableAlign(aligns []ast.CellAlignFlags, idx int) ast.CellAlignFlags {

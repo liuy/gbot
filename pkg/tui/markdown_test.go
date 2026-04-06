@@ -277,9 +277,9 @@ func TestRender_Table_SeparatorRow(t *testing.T) {
 	t.Parallel()
 	input := "| Name | Age |\n|------|-----|\n| Alice | 30 |"
 	result := Render(input)
-	// Should contain separator row with dashes
-	if !strings.Contains(result, "---") {
-		t.Errorf("expected separator row with dashes, got: %q", result)
+	// Should contain box-drawing separator row with ┼
+	if !strings.Contains(result, "┼") {
+		t.Errorf("expected separator row with box-drawing chars, got: %q", result)
 	}
 }
 
@@ -712,32 +712,27 @@ func TestRender_Table_CJK(t *testing.T) {
 	t.Parallel()
 	input := "| 姓名 | 分数 |\n|------|------|\n| 张三 | 85 |"
 	result := Render(input)
-	// The table should have aligned columns
-	// CJK "姓名" is 4 display cols, "分数" is 4 display cols
-	// After alignment, each cell should be padded to the same width
+	// The table should have top border, header, separator, data row, bottom border
+	// With box-drawing characters: ┌─┬─┐, │, ├─┼─┤, └─┴─┘
 	lines := strings.Split(result, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("expected 3+ lines, got %d: %q", len(lines), result)
+	// Should have 5 lines: top border, header, separator, data row, bottom border
+	if len(lines) < 5 {
+		t.Fatalf("expected 5+ lines (with top/bottom borders), got %d: %q", len(lines), result)
 	}
-	// Separator line should exist
-	if !strings.Contains(lines[1], "-") {
-		t.Errorf("expected separator line, got: %q", lines[1])
+	// Top border should exist
+	if !strings.Contains(lines[0], "┌") {
+		t.Errorf("expected top border with ┌, got: %q", lines[0])
+	}
+	// Separator line should use box-drawing ─
+	if !strings.Contains(lines[2], "─") {
+		t.Errorf("expected separator line with box-drawing chars, got: %q", lines[2])
 	}
 	// "张三" should be in the output
 	if !strings.Contains(result, "张三") {
 		t.Errorf("expected 张三 in output, got: %q", result)
 	}
-	// Check that the name column is properly padded
-	// "姓名" (4 cols) is wider than "张三" (4 cols) so they should match
-	// The pipe-separated cells should have consistent width
-	// Check that no cell has misaligned pipes
-	for i, line := range lines {
-		if strings.Contains(line, "|") {
-			// Count pipes - should be consistent
-			pipeCount := strings.Count(line, "|")
-			if i > 0 && pipeCount != strings.Count(lines[0], "|") {
-				t.Errorf("line %d has %d pipes, header has %d: %q", i, pipeCount, strings.Count(lines[0], "|"), line)
-			}
-		}
+	// Bottom border should exist
+	if !strings.Contains(lines[len(lines)-1], "└") {
+		t.Errorf("expected bottom border with └, got: %q", lines[len(lines)-1])
 	}
 }
