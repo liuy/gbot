@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -385,6 +386,7 @@ func (m MessageView) View(width int) string {
 // wordWrap wraps text to the given width, breaking at word boundaries.
 // For CJK characters, allows breaking between any characters since CJK
 // doesn't use spaces as word boundaries.
+// ANSI escape sequences are preserved intact — never split across lines.
 func wordWrap(text string, width int) string {
 	if width <= 0 {
 		return text
@@ -394,23 +396,38 @@ func wordWrap(text string, width int) string {
 	var currentLine strings.Builder
 	currentLen := 0
 
-	for _, r := range text {
-		if r == '\n' {
+	i := 0
+	for i < len(text) {
+		// Handle newlines
+		if text[i] == '\n' {
 			lines = append(lines, currentLine.String())
 			currentLine.Reset()
 			currentLen = 0
+			i++
 			continue
 		}
 
-		runeWidth := runeDisplayWidth(r)
-		if currentLen+runeWidth > width && currentLen > 0 {
+		// Handle ANSI escape sequences — consume entirely, no width counted
+		if text[i] == '\x1b' {
+			seq := consumeAnsiEscape(text[i:])
+			currentLine.WriteString(seq)
+			i += len(seq)
+			continue
+		}
+
+		// Visible character
+		r, size := utf8.DecodeRuneInString(text[i:])
+		rw := runeDisplayWidth(r)
+
+		if currentLen+rw > width && currentLen > 0 {
 			lines = append(lines, currentLine.String())
 			currentLine.Reset()
 			currentLen = 0
 		}
 
 		currentLine.WriteRune(r)
-		currentLen += runeWidth
+		currentLen += rw
+		i += size
 	}
 
 	if currentLine.Len() > 0 {
@@ -418,6 +435,47 @@ func wordWrap(text string, width int) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// consumeAnsiEscape consumes a complete ANSI escape sequence from the start of s.
+// Supports CSI (\x1b[...final), OSC (\x1b]...\x07 or \x1b]...\x1b\\), and
+// other 2-byte sequences (\x1b + one char).
+func consumeAnsiEscape(s string) string {
+	if len(s) < 2 || s[0] != '\x1b' {
+		return s[:1]
+	}
+
+	switch s[1] {
+	case '[':
+		// CSI sequence: \x1b[ <params> <intermediate> <final>
+		// Final byte is 0x40..0x7E
+		j := 2
+		for j < len(s) && (s[j] < 0x40 || s[j] > 0x7E) {
+			j++
+		}
+		if j < len(s) {
+			j++ // include final byte
+		}
+		return s[:j]
+	case ']':
+		// OSC sequence: \x1b] ... (BEL \x07 or ST \x1b\\)
+		j := 2
+		for j < len(s) {
+			if s[j] == '\x07' {
+				j++ // include BEL
+				break
+			}
+			if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+				j += 2 // include ST (\x1b\\)
+				break
+			}
+			j++
+		}
+		return s[:j]
+	default:
+		// Other escape: \x1b + one char (e.g. \x1b\\)
+		return s[:2]
+	}
 }
 
 // runeDisplayWidth returns the display width of a rune.

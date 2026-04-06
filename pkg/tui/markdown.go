@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
-	"github.com/charmbracelet/lipgloss"
 	ast "github.com/gomarkdown/markdown/ast"
 	"github.com/gomarkdown/markdown/parser"
 )
@@ -18,18 +20,18 @@ import (
 // Source: utils/markdown.ts applyMarkdown → Go port
 func Render(text string) string {
 	extensions := parser.CommonExtensions | parser.AutoHeadingIDs | parser.Footnotes
+	// Disable strikethrough: ~ is often used for "approximate" (e.g., ~100),
+	// not actual strikethrough. Matches TS: marked.use({ tokenizer: { del() { return undefined } } })
+	extensions &^= parser.Strikethrough
+
 	p := parser.NewWithExtensions(extensions)
 
 	doc := p.Parse([]byte(text))
-	if doc == nil {
-		return text
-	}
 
 	var buf strings.Builder
 	r := &ansiRenderer{
-		w:          &buf,
-		listStack:  []listCtx{},
-		tableCells: nil,
+		w:         &buf,
+		listStack: []listCtx{},
 	}
 
 	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
@@ -53,13 +55,40 @@ type listCtx struct {
 	counter int
 }
 
+// tableCollector buffers table cell data during AST walk for proper column-width rendering.
+type tableCollector struct {
+	header   []string
+	rows     [][]string
+	align    []ast.CellAlignFlags
+	current  []string // cells being collected for current row
+	inHeader bool
+}
+
 // ansiRenderer walks the markdown AST and writes ANSI-styled output.
 type ansiRenderer struct {
-	w          io.Writer
-	listStack  []listCtx
-	tableCells []string // collects cells for current table row
-	tableAlign []ast.CellAlignFlags
+	w           io.Writer
+	listStack   []listCtx
+	table       *tableCollector // non-nil when inside a table
+	savedWriter []io.Writer     // stack for writer-swap during inline styling
 }
+
+// ---- ANSI SGR codes for inline styling (matches TS chalk output) ----
+// Using targeted reset codes (22=boldOff, 23=italicOff, 24=underlineOff)
+// ensures nested styles compose correctly.
+const (
+	ansiBoldOn      = "\x1b[1m"
+	ansiBoldOff     = "\x1b[22m"
+	ansiItalicOn    = "\x1b[3m"
+	ansiItalicOff   = "\x1b[23m"
+	ansiULOn        = "\x1b[4m"
+	ansiULOff       = "\x1b[24m"
+	ansiReset       = "\x1b[0m"
+	ansiFgWhite     = "\x1b[38;5;15m"
+	ansiBgPurple    = "\x1b[48;5;62m"
+	ansiFgBlue      = "\x1b[38;5;12m"
+	ansiFgGray      = "\x1b[38;5;243m"
+	ansiFgDimGray   = "\x1b[38;5;8m"
+)
 
 func (r *ansiRenderer) write(s string) {
 	_, _ = r.w.Write([]byte(s))
@@ -76,10 +105,40 @@ func (r *ansiRenderer) popList() {
 }
 
 func (r *ansiRenderer) currentList() *listCtx {
-	if len(r.listStack) == 0 {
-		return nil
-	}
 	return &r.listStack[len(r.listStack)-1]
+}
+
+func (r *ansiRenderer) listDepth() int {
+	return len(r.listStack)
+}
+
+// pushStyleBuffer saves the current writer and swaps to a new buffer.
+// Children content will be collected into the buffer. Call popStyleBuffer
+// to restore the original writer and apply the style to the buffered content.
+// This mirrors TS: chalk.bold(children.map(formatToken).join(''))
+func (r *ansiRenderer) pushStyleBuffer() {
+	r.savedWriter = append(r.savedWriter, r.w)
+	var buf strings.Builder
+	r.w = &buf
+}
+
+// popStyleBufferANSI restores the previous writer and writes the buffered content
+// wrapped in raw ANSI start/end sequences. Uses targeted reset codes (e.g. \x1b[22m
+// for bold off) instead of universal reset (\x1b[0m) so nested styles compose correctly.
+func (r *ansiRenderer) popStyleBufferANSI(startSeq, endSeq string) {
+	buf, ok := r.w.(*strings.Builder)
+	var content string
+	if ok {
+		content = buf.String()
+	}
+	// Restore previous writer
+	if len(r.savedWriter) > 0 {
+		r.w = r.savedWriter[len(r.savedWriter)-1]
+		r.savedWriter = r.savedWriter[:len(r.savedWriter)-1]
+	}
+	if content != "" {
+		r.write(startSeq + content + endSeq)
+	}
 }
 
 func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
@@ -92,12 +151,15 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.Heading:
 		if entering {
-			style := lipgloss.NewStyle().Bold(true)
-			if n.Level == 1 {
-				style = style.Italic(true).Underline(true)
-			}
-			r.write(style.Render(""))
+			r.pushStyleBuffer()
 		} else {
+			if n.Level == 1 {
+				// bold + italic + underline, targeted resets
+				r.popStyleBufferANSI(ansiBoldOn+ansiItalicOn+ansiULOn, ansiBoldOff+ansiItalicOff+ansiULOff)
+			} else {
+				// bold only
+				r.popStyleBufferANSI(ansiBoldOn, ansiBoldOff)
+			}
 			r.write("\n\n")
 		}
 
@@ -108,7 +170,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.BlockQuote:
 		if entering {
-			r.write(lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render("│ "))
+			r.write(ansiFgGray + "│ " + ansiReset)
 		} else {
 			r.write("\n")
 		}
@@ -127,10 +189,13 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			lc := r.currentList()
 			if lc != nil {
 				lc.counter++
+				depth := r.listDepth()
+				indent := strings.Repeat("  ", depth-1)
 				if lc.ordered {
-					r.write(fmt.Sprintf("  %d. ", lc.counter))
+					num := getListNumber(depth, lc.counter)
+					r.write(indent + num + ". ")
 				} else {
-					r.write("  - ")
+					r.write(indent + "- ")
 				}
 			}
 		} else {
@@ -146,7 +211,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.HorizontalRule:
 		if entering {
-			r.write(lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render("───"))
+			r.write(ansiFgGray + "───" + ansiReset)
 			r.write("\n")
 		}
 
@@ -154,105 +219,128 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.Table:
 		if entering {
-			r.tableCells = nil
+			r.table = &tableCollector{}
 		} else {
-			r.tableCells = nil
-			r.tableAlign = nil
+			r.renderTable()
+			r.table = nil
 			r.write("\n")
 		}
 
 	case *ast.TableHeader:
-		// collect alignment info from first header row
-		return ast.GoToNext
+		if r.table != nil {
+			r.table.inHeader = entering
+		}
 
 	case *ast.TableBody:
 		return ast.GoToNext
 
 	case *ast.TableRow:
-		if entering {
-			r.tableCells = r.tableCells[:0]
-		} else {
-			// Render the row
-			if len(r.tableCells) > 0 {
-				r.write("| ")
-				for _, cell := range r.tableCells {
-					r.write(cell)
-					r.write(" | ")
+		if r.table != nil && entering {
+			r.table.current = nil
+		} else if r.table != nil && !entering {
+			if r.table.current != nil {
+				if r.table.inHeader {
+					r.table.header = r.table.current
+				} else {
+					r.table.rows = append(r.table.rows, r.table.current)
 				}
-				r.write("\n")
 			}
+			r.table.current = nil
 		}
 
 	case *ast.TableCell:
-		if entering {
-			r.tableCells = append(r.tableCells, "")
+		if entering && r.table != nil {
+			r.table.current = append(r.table.current, "")
+			// Collect alignment from header cells
+			if r.table.inHeader {
+				r.table.align = append(r.table.align, n.Align)
+			}
 		}
-		// On leaving, cell text was already appended by Text children
 
 	// ---- Inline nodes ----
 
 	case *ast.Text:
 		if entering {
 			content := string(n.Literal)
-			// If inside a TableCell, append to the cell buffer
-			if len(r.tableCells) > 0 {
-				r.tableCells[len(r.tableCells)-1] += content
+			// Don't linkify inside tables (would interfere with width calculation)
+			if r.table == nil {
+				content = linkifyIssueReferences(content)
+			}
+			if r.table != nil && len(r.table.current) > 0 {
+				r.table.current[len(r.table.current)-1] += content
 			} else {
 				r.write(content)
 			}
 		}
 
 	case *ast.Softbreak:
-		if entering {
-			r.write("\n")
-		}
+		r.write("\n")
 
 	case *ast.Hardbreak:
-		if entering {
-			r.write("\n")
-		}
-
+		r.write("\n")
 	case *ast.Code:
 		if entering {
-			codeStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("15")).
-				Background(lipgloss.Color("62"))
-			r.write(codeStyle.Render(string(n.Literal)))
+			r.write(ansiFgWhite + ansiBgPurple + string(n.Literal) + ansiReset)
 		}
 
 	case *ast.Emph:
 		if entering {
-			r.write(lipgloss.NewStyle().Italic(true).Render(""))
+			r.pushStyleBuffer()
+		} else {
+			r.popStyleBufferANSI(ansiItalicOn, ansiItalicOff)
 		}
 
 	case *ast.Strong:
 		if entering {
-			r.write(lipgloss.NewStyle().Bold(true).Render(""))
-		}
-
-	case *ast.Del:
-		if entering {
-			r.write(lipgloss.NewStyle().Strikethrough(true).Render(""))
+			r.pushStyleBuffer()
+		} else {
+			r.popStyleBufferANSI(ansiBoldOn, ansiBoldOff)
 		}
 
 	case *ast.Link:
 		if entering {
-			r.write(lipgloss.NewStyle().
-				Foreground(lipgloss.Color("12")).
-				Underline(true).
-				Render(""))
+			// mailto: links show email as plain text
+			if strings.HasPrefix(string(n.Destination), "mailto:") {
+				email := strings.TrimPrefix(string(n.Destination), "mailto:")
+				r.write(email)
+				return ast.SkipChildren
+			}
+			r.pushStyleBuffer()
 		} else {
+			// mailto already handled in entering phase
+			if strings.HasPrefix(string(n.Destination), "mailto:") {
+				return ast.GoToNext
+			}
+			// Collect buffered child text
+			var linkText string
+			if buf, ok := r.w.(*strings.Builder); ok {
+				linkText = buf.String()
+			}
+			// Restore previous writer
+			if len(r.savedWriter) > 0 {
+				r.w = r.savedWriter[len(r.savedWriter)-1]
+				r.savedWriter = r.savedWriter[:len(r.savedWriter)-1]
+			}
 			if len(n.Destination) > 0 {
 				dest := string(n.Destination)
-				r.write(lipgloss.NewStyle().
-					Foreground(lipgloss.Color("8")).
-					Render(fmt.Sprintf(" (%s)", dest)))
+				if supportsHyperlinks() {
+					plainText := stripANSI(linkText)
+					if plainText != "" && plainText != dest {
+						r.write(createHyperlink(dest, linkText))
+					} else {
+						r.write(createHyperlink(dest))
+					}
+				} else {
+					// Style the link text + show URL in parens
+					r.write(ansiFgBlue + ansiULOn + linkText + ansiULOff + ansiReset)
+					r.write(ansiFgDimGray + fmt.Sprintf(" (%s)", dest) + ansiReset)
+				}
 			}
 		}
 
 	case *ast.Image:
 		if entering {
-			r.write(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render(string(n.Destination)))
+			r.write(ansiFgBlue + string(n.Destination) + ansiReset)
 		}
 		return ast.SkipChildren
 
@@ -276,12 +364,83 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Footnotes:
 		return ast.SkipChildren
 
-	case *ast.Caption:
-	case *ast.CaptionFigure:
-	case *ast.Callout:
 	}
 
 	return ast.GoToNext
+}
+
+// renderTable outputs the collected table with column widths, separator row, and alignment.
+// Source: utils/markdown.ts table token handler
+func (r *ansiRenderer) renderTable() {
+	t := r.table
+
+	// Collect all rows
+	allRows := make([][]string, 0, 1+len(t.rows))
+	if len(t.header) > 0 {
+		allRows = append(allRows, t.header)
+	}
+	allRows = append(allRows, t.rows...)
+
+	numCols := len(allRows[0])
+
+	// Calculate column widths from visible text
+	colWidths := make([]int, numCols)
+	for _, row := range allRows {
+		for i, cell := range row {
+			if i < numCols {
+				w := stringWidth(stripANSI(cell))
+				if w > colWidths[i] {
+					colWidths[i] = w
+				}
+			}
+		}
+	}
+	for i := range colWidths {
+		if colWidths[i] < 3 {
+			colWidths[i] = 3
+		}
+	}
+
+	// Render header row
+	if len(t.header) > 0 {
+		r.write("| ")
+		for i, cell := range t.header {
+			if i < numCols {
+				dw := stringWidth(stripANSI(cell))
+				r.write(padAligned(cell, dw, colWidths[i], tableAlign(t.align, i)))
+				r.write(" | ")
+			}
+		}
+		r.write("\n")
+
+		// Separator row (dashes, no alignment colons in output — matches TS)
+		r.write("|")
+		for i := 0; i < numCols; i++ {
+			sep := strings.Repeat("-", colWidths[i]+2)
+			r.write(sep + "|")
+		}
+		r.write("\n")
+	}
+
+	// Data rows
+	for _, row := range t.rows {
+		r.write("| ")
+		for i, cell := range row {
+			if i < numCols {
+				dw := stringWidth(stripANSI(cell))
+				r.write(padAligned(cell, dw, colWidths[i], tableAlign(t.align, i)))
+				r.write(" | ")
+			}
+		}
+		r.write("\n")
+	}
+}
+
+func tableAlign(aligns []ast.CellAlignFlags, idx int) ast.CellAlignFlags {
+	if aligns == nil || idx >= len(aligns) {
+		return ast.CellAlignFlags(0)
+	}
+	return aligns[idx]
 }
 
 // highlightCode uses chroma to syntax-highlight code for terminal output.
@@ -290,31 +449,144 @@ func highlightCode(code, language string) string {
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}
+	lexer = chroma.Coalesce(lexer)
 
-	// Ensure coalesce is set
-	type coalescer interface{ SetCoalesce(bool) }
-	if c, ok := lexer.(coalescer); ok {
-		c.SetCoalesce(true)
-	}
-
-	iterator, err := lexer.Tokenise(nil, code)
-	if err != nil {
-		return code
-	}
+	iterator, _ := lexer.Tokenise(nil, code)
 
 	formatter := formatters.Get("terminal256")
-	if formatter == nil {
-		formatter = formatters.Fallback
-	}
-
 	style := styles.Get("monokai")
-	if style == nil {
-		style = styles.Fallback
-	}
 
 	var buf bytes.Buffer
-	if err := formatter.Format(&buf, style, iterator); err != nil {
-		return code
-	}
+	_ = formatter.Format(&buf, style, iterator)
 	return buf.String()
+}
+
+// ---- Numbering helpers (from TS markdown.ts) ----
+
+func numberToLetter(n int) string {
+	result := ""
+	for n > 0 {
+		n--
+		result = string(rune('a'+(n%26))) + result
+		n = n / 26
+	}
+	return result
+}
+
+var romanValues = []struct {
+	value   int
+	numeral string
+}{
+	{1000, "m"}, {900, "cm"}, {500, "d"}, {400, "cd"},
+	{100, "c"}, {90, "xc"}, {50, "l"}, {40, "xl"},
+	{10, "x"}, {9, "ix"}, {5, "v"}, {4, "iv"}, {1, "i"},
+}
+
+func numberToRoman(n int) string {
+	result := ""
+	for _, rv := range romanValues {
+		for n >= rv.value {
+			result += rv.numeral
+			n -= rv.value
+		}
+	}
+	return result
+}
+
+// getListNumber returns the formatted list number based on depth.
+// depth 0-1: numbers (1, 2, 3)   depth 2: letters (a, b, c)   depth 3: roman (i, ii, iii)
+func getListNumber(depth, num int) string {
+	switch depth {
+	case 0, 1:
+		return fmt.Sprintf("%d", num)
+	case 2:
+		return numberToLetter(num)
+	case 3:
+		return numberToRoman(num)
+	default:
+		return fmt.Sprintf("%d", num)
+	}
+}
+
+// padAligned pads content to targetWidth based on alignment.
+// Source: utils/markdown.ts padAligned
+func padAligned(content string, displayWidth, targetWidth int, align ast.CellAlignFlags) string {
+	padding := targetWidth - displayWidth
+	if padding < 0 {
+		padding = 0
+	}
+	switch align {
+	case ast.TableAlignmentCenter:
+		leftPad := padding / 2
+		return strings.Repeat(" ", leftPad) + content + strings.Repeat(" ", padding-leftPad)
+	case ast.TableAlignmentRight:
+		return strings.Repeat(" ", padding) + content
+	default:
+		return content + strings.Repeat(" ", padding)
+	}
+}
+
+// ---- OSC 8 hyperlinks ----
+
+// supportsHyperlinks returns true if the terminal likely supports OSC 8 hyperlinks.
+func supportsHyperlinks() bool {
+	return os.Getenv("TERM") != "dumb"
+}
+
+// createHyperlink wraps text in an OSC 8 terminal hyperlink.
+// If text is empty, the URL is used as the display text.
+func createHyperlink(url string, text ...string) string {
+	const (
+		osc8Start = "\x1b]8;;"
+		osc8Sep   = "\x1b\\"
+		osc8End   = "\x1b]8;;\x1b\\"
+	)
+	display := url
+	if len(text) > 0 && text[0] != "" {
+		display = text[0]
+	}
+	return osc8Start + url + osc8Sep + display + osc8End
+}
+
+// ---- Issue reference linkification (from TS markdown.ts) ----
+
+// issueRefPattern matches owner/repo#NNN GitHub issue/PR references.
+// Source: utils/markdown.ts ISSUE_REF_PATTERN
+var issueRefPattern = regexp.MustCompile(`(^|[^\w./-])([A-Za-z0-9][\w-]*\/[A-Za-z0-9][\w.-]*)#(\d+)\b`)
+
+// linkifyIssueReferences replaces owner/repo#123 with OSC 8 hyperlinks to GitHub.
+func linkifyIssueReferences(text string) string {
+	if !supportsHyperlinks() {
+		return text
+	}
+	return issueRefPattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := issueRefPattern.FindStringSubmatch(match)
+		prefix := parts[1]
+		repo := parts[2]
+		num := parts[3]
+		return prefix + createHyperlink(
+			fmt.Sprintf("https://github.com/%s/issues/%s", repo, num),
+			repo+"#"+num,
+		)
+	})
+}
+
+// ---- ANSI utilities ----
+
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x1b\\`)
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	return ansiEscapeRe.ReplaceAllString(s, "")
+}
+
+// stringWidth returns the display width of a string (excluding ANSI sequences).
+// CJK characters count as 2 columns, matching TS stringWidth behavior.
+func stringWidth(s string) int {
+	clean := stripANSI(s)
+	width := 0
+	for _, r := range clean {
+		width += runeDisplayWidth(r)
+	}
+	return width
 }
