@@ -497,6 +497,47 @@ func TestRender_TableEmpty(t *testing.T) {
 	}
 }
 
+func TestRender_TrailingBlankLine(t *testing.T) {
+	t.Parallel()
+	result := Render("hello\n\n")
+	// Gomarkdown合并末尾空行，所以输出一个换行
+	if result != "hello\n" {
+		t.Errorf("expected \"hello\\n\", got: %q", result)
+	}
+}
+
+func TestRender_MultipleTrailingBlankLines(t *testing.T) {
+	t.Parallel()
+	result := Render("hello\n\n\n")
+	// Gomarkdown合并末尾空行，所以输出一个换行
+	if result != "hello\n" {
+		t.Errorf("expected \"hello\\n\", got: %q", result)
+	}
+}
+
+func TestRender_BlankLineBetweenParagraphs(t *testing.T) {
+	t.Parallel()
+	// Blank line between paragraphs should produce blank line in output.
+	// "line1\n\nline2" → output preserves blank line exactly
+	result := Render("line1\n\nline2")
+	lines := strings.Split(result, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected multiple lines, got %d: %q", len(lines), result)
+	}
+	// First line is "line1"
+	if lines[0] != "line1" {
+		t.Errorf("expected first line \"line1\", got: %q", lines[0])
+	}
+	// Second line is "line2" (no blank before it in the split)
+	if lines[1] != "line2" {
+		t.Errorf("expected second line \"line2\", got: %q", lines[1])
+	}
+	// Third line is blank (the separator between paragraphs)
+	if len(lines) < 3 || lines[2] != "" {
+		t.Errorf("expected blank line at index 2, got: %v", lines)
+	}
+}
+
 func TestRender_Softbreak(t *testing.T) {
 	t.Parallel()
 	// Single newline within paragraph → Softbreak node
@@ -715,9 +756,17 @@ func TestRender_Table_CJK(t *testing.T) {
 	// The table should have top border, header, separator, data row, bottom border
 	// With box-drawing characters: ┌─┬─┐, │, ├─┼─┤, └─┴─┘
 	lines := strings.Split(result, "\n")
-	// Should have 5 lines: top border, header, separator, data row, bottom border
-	if len(lines) < 5 {
-		t.Fatalf("expected 5+ lines (with top/bottom borders), got %d: %q", len(lines), result)
+	// Should have 5+ lines: top border, header, separator, data row, bottom border
+	// Note: last element may be empty due to trailing \n, so find last non-empty
+	lastNonEmpty := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i] != "" {
+			lastNonEmpty = i
+			break
+		}
+	}
+	if len(lines) < 5 || lastNonEmpty < 4 {
+		t.Fatalf("expected 5+ lines, got %d lines, lastNonEmpty=%d: %q", len(lines), lastNonEmpty, result)
 	}
 	// Top border should exist
 	if !strings.Contains(lines[0], "┌") {
@@ -731,9 +780,9 @@ func TestRender_Table_CJK(t *testing.T) {
 	if !strings.Contains(result, "张三") {
 		t.Errorf("expected 张三 in output, got: %q", result)
 	}
-	// Bottom border should exist
-	if !strings.Contains(lines[len(lines)-1], "└") {
-		t.Errorf("expected bottom border with └, got: %q", lines[len(lines)-1])
+	// Bottom border should exist (last non-empty line)
+	if !strings.Contains(lines[lastNonEmpty], "└") {
+		t.Errorf("expected bottom border with └, got: %q", lines[lastNonEmpty])
 	}
 }
 
@@ -796,6 +845,11 @@ func TestRender_Table_BordersAligned(t *testing.T) {
 | 李四 | 78 |`
 	result := Render(input)
 	lines := strings.Split(result, "\n")
+
+	// Strip trailing empty lines (blank line between paragraphs adds \n at end)
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 
 	// All border lines (top, sep, bottom) should have the same display width
 	borderWidths := []int{displayWidth(lines[0])}

@@ -840,6 +840,28 @@ func TestRenderMessages_HeightLimit(t *testing.T) {
 	}
 }
 
+func TestRenderMessages_PreservesBlankLines(t *testing.T) {
+	t.Parallel()
+
+	// 中间有空白行的消息，空行必须保留
+	msgs := []MessageView{
+		{Role: "assistant", Content: "第一段\n\n第二段"},
+	}
+	v := renderMessages(msgs, 80, 10)
+	lines := strings.Split(v, "\n")
+	// 统计空行（ANSI prefix之后）
+	blankCount := 0
+	for _, line := range lines {
+		if line == "" {
+			blankCount++
+		}
+	}
+	// 输入有2个\n，产生至少2个空行段
+	if blankCount < 2 {
+		t.Errorf("blank lines not preserved: got %d blank lines in %v", blankCount, lines)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // prettyJSON
 // ---------------------------------------------------------------------------

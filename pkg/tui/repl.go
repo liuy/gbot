@@ -320,10 +320,8 @@ func renderMessages(messages []MessageView, width, maxHeight int) string {
 		rendered := messages[i].View(width)
 		msgLines := strings.Split(rendered, "\n")
 		for j := len(msgLines) - 1; j >= 0 && usedLines < maxHeight; j-- {
-			if msgLines[j] != "" {
-				lines = append([]string{msgLines[j]}, lines...)
-				usedLines++
-			}
+			lines = append([]string{msgLines[j]}, lines...)
+			usedLines++
 		}
 	}
 

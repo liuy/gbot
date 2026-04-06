@@ -38,7 +38,7 @@ func Render(text string) string {
 		return r.renderNode(node, entering)
 	})
 
-	return strings.TrimSpace(buf.String())
+	return buf.String()
 }
 
 // RenderWidth renders markdown with word wrapping.
@@ -166,6 +166,19 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Paragraph:
 		if !entering {
 			r.write("\n")
+			// If previous sibling is also a paragraph, this was a blank-line
+			// separator between two paragraphs — preserve the blank line.
+			if parent := node.GetParent(); parent != nil {
+				children := parent.GetChildren()
+				for i, child := range children {
+					if child == node && i > 0 {
+						if _, ok := children[i-1].(*ast.Paragraph); ok {
+							r.write("\n")
+						}
+						break
+					}
+				}
+			}
 		}
 
 	case *ast.BlockQuote:
@@ -380,6 +393,10 @@ func (r *ansiRenderer) renderTable() {
 		allRows = append(allRows, t.header)
 	}
 	allRows = append(allRows, t.rows...)
+
+	if len(allRows) == 0 {
+		return
+	}
 
 	numCols := len(allRows[0])
 
