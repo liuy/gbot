@@ -38,7 +38,8 @@ func Render(text string) string {
 		return r.renderNode(node, entering)
 	})
 
-	return buf.String()
+	// TS: applyMarkdown does .join('').trim()
+	return strings.TrimSpace(buf.String())
 }
 
 // RenderWidth renders markdown with word wrapping.

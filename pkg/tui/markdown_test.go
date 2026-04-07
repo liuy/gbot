@@ -524,19 +524,19 @@ func TestRender_TableEmpty(t *testing.T) {
 
 func TestRender_TrailingBlankLine(t *testing.T) {
 	t.Parallel()
+	// TS: applyMarkdown does .trim() — no trailing newlines
 	result := Render("hello\n\n")
-	// Gomarkdown合并末尾空行，所以输出一个换行
-	if result != "hello\n" {
-		t.Errorf("expected \"hello\\n\", got: %q", result)
+	if result != "hello" {
+		t.Errorf("expected \"hello\" (no trailing newline), got: %q", result)
 	}
 }
 
 func TestRender_MultipleTrailingBlankLines(t *testing.T) {
 	t.Parallel()
+	// TS: .trim() removes all trailing whitespace
 	result := Render("hello\n\n\n")
-	// Gomarkdown合并末尾空行，所以输出一个换行
-	if result != "hello\n" {
-		t.Errorf("expected \"hello\\n\", got: %q", result)
+	if result != "hello" {
+		t.Errorf("expected \"hello\" (no trailing newline), got: %q", result)
 	}
 }
 
