@@ -8,13 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/gbot/pkg/tool"
 	"github.com/user/gbot/pkg/tool/fileedit"
 )
-
-// ---------------------------------------------------------------------------
-// New — tool metadata
-// ---------------------------------------------------------------------------
 
 func TestNew(t *testing.T) {
 	t.Parallel()
@@ -33,14 +28,11 @@ func TestNew(t *testing.T) {
 	if tt.IsConcurrencySafe(nil) {
 		t.Error("IsConcurrencySafe() = true, want false")
 	}
-	if tt.InterruptBehavior() != tool.InterruptCancel {
-		t.Errorf("InterruptBehavior() = %d, want %d", tt.InterruptBehavior(), tool.InterruptCancel)
+	if !tt.IsEnabled() {
+		t.Error("IsEnabled() = false, want true")
 	}
 	if tt.Prompt() == "" {
 		t.Error("Prompt() is empty")
-	}
-	if !tt.IsEnabled() {
-		t.Error("IsEnabled() = false, want true")
 	}
 }
 
@@ -83,10 +75,6 @@ func TestDescription(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Execute — happy paths
-// ---------------------------------------------------------------------------
-
 func TestExecute_SingleReplacement(t *testing.T) {
 	t.Parallel()
 
@@ -107,14 +95,17 @@ func TestExecute_SingleReplacement(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want *fileedit.Output", result.Data)
 	}
-	if !output.Success {
-		t.Error("Success = false, want true")
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
 	}
-	if output.Path != fp {
-		t.Errorf("Path = %q, want %q", output.Path, fp)
+	if output.OldString != "hello world" {
+		t.Errorf("OldString = %q, want %q", output.OldString, "hello world")
 	}
-	if output.Replacements != 1 {
-		t.Errorf("Replacements = %d, want 1", output.Replacements)
+	if output.NewString != "hello gbot" {
+		t.Errorf("NewString = %q, want %q", output.NewString, "hello gbot")
+	}
+	if output.ReplaceAll {
+		t.Error("ReplaceAll = true, want false")
 	}
 
 	// Verify file was actually modified
@@ -144,41 +135,212 @@ func TestExecute_ReplaceAll(t *testing.T) {
 	}
 
 	output := result.Data.(*fileedit.Output)
-	if output.Replacements != 3 {
-		t.Errorf("Replacements = %d, want 3", output.Replacements)
+	if !output.ReplaceAll {
+		t.Error("ReplaceAll = false, want true")
 	}
 
 	data, _ := os.ReadFile(fp)
 	if strings.Contains(string(data), "foo") {
 		t.Errorf("File still contains 'foo': %q", string(data))
 	}
+	got := string(data)
+	want := "qux bar qux baz qux\n"
+	if got != want {
+		t.Errorf("File content = %q, want %q", got, want)
+	}
 }
 
-func TestExecute_SameOldAndNew(t *testing.T) {
+func TestExecute_NewFileCreation(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	fp := filepath.Join(dir, "same.txt")
-	content := "hello\n"
-	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	fp := filepath.Join(dir, "newfile.txt")
 
-	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"hello"}`)
+	// old_string="" on nonexistent file → creates new file
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"","new_string":"hello new file\n"}`)
 	result, err := fileedit.Execute(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
 	output := result.Data.(*fileedit.Output)
-	if !output.Success {
-		t.Error("Success = false, want true")
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+
+	data, _ := os.ReadFile(fp)
+	if string(data) != "hello new file\n" {
+		t.Errorf("File content = %q, want %q", string(data), "hello new file\n")
+	}
+
+	// Verify file is readable (perm 0644, not 0000)
+	info, statErr := os.Stat(fp)
+	if statErr != nil {
+		t.Fatalf("Stat: %v", statErr)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o444 == 0 {
+		t.Errorf("File permissions = %o, should be readable", perm)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Execute — error paths
-// ---------------------------------------------------------------------------
+func TestExecute_EmptyFileEdit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(fp, []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// old_string="" on empty existing file → valid
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"","new_string":"now has content"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	if string(data) != "now has content" {
+		t.Errorf("File content = %q, want %q", string(data), "now has content")
+	}
+	_ = result
+}
+
+func TestExecute_CurlyQuoteMatching(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "quotes.txt")
+	// File has curly quotes
+	content := "\u201CHello World\u201D\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Search with straight quotes — should match via normalization
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"\"Hello World\"","new_string":"\"Goodbye World\""}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*fileedit.Output)
+	// oldString should be the actual curly-quoted string from the file
+	if output.OldString != "\u201CHello World\u201D" {
+		t.Errorf("OldString = %q, want curly-quoted version", output.OldString)
+	}
+	// newString should have curly quotes preserved
+	if output.NewString != "\u201CGoodbye World\u201D" {
+		t.Errorf("NewString = %q, want curly-quoted version", output.NewString)
+	}
+
+	data, _ := os.ReadFile(fp)
+	// File should have curly quotes
+	if !strings.Contains(string(data), "\u201CGoodbye World\u201D") {
+		t.Errorf("File content = %q, should have curly quotes", string(data))
+	}
+}
+
+func TestExecute_CRLFNormalization(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "crlf.txt")
+	// File with CRLF line endings
+	content := "line1\r\nline2\r\nline3\r\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Search with LF — should match after CRLF normalization
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"line2","new_string":"replaced"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	got := string(data)
+	// CRLF should be preserved in output
+	if !strings.Contains(got, "line1\r\n") {
+		t.Errorf("CRLF should be preserved in output, got: %q", got)
+	}
+	if !strings.Contains(got, "replaced\r\n") {
+		t.Errorf("replaced line should have CRLF, got: %q", got)
+	}
+	_ = result
+}
+
+func TestExecute_UTF16LEWithBOM(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "bom.txt")
+
+	// Write UTF-16 LE with BOM
+	bom := []byte{0xFF, 0xFE}
+	content := "hello world"
+	encoded := make([]byte, len(bom)+len(content)*2)
+	copy(encoded, bom)
+	for i, r := range content {
+		v := uint16(r)
+		encoded[len(bom)+i*2] = byte(v)
+		encoded[len(bom)+i*2+1] = byte(v >> 8)
+	}
+	if err := os.WriteFile(fp, encoded, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Edit the file — should detect BOM and decode/encode correctly
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	// Read back and verify it's still UTF-16 LE with BOM
+	data, _ := os.ReadFile(fp)
+	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xFE {
+		t.Fatal("File should start with UTF-16 LE BOM")
+	}
+	// Decode the content after BOM
+	decoded := make([]uint16, (len(data)-2)/2)
+	for i := range decoded {
+		decoded[i] = uint16(data[2+i*2]) | uint16(data[2+i*2+1])<<8
+	}
+	text := strings.ToLower(string(rune(decoded[0])))
+	if text != "g" {
+		t.Errorf("First decoded char = %q, want 'g' (from 'goodbye')", text)
+	}
+	_ = result
+}
+
+func TestExecute_DeleteWithTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "delete.txt")
+	content := "line1\nline2\nline3\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Delete "line2" with empty new_string — should strip trailing newline too
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"line2","new_string":""}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	got := string(data)
+	// Should be "line1\nline3\n" — the trailing newline after "line2" was stripped
+	if got != "line1\nline3\n" {
+		t.Errorf("File content = %q, want %q", got, "line1\nline3\n")
+	}
+	_ = result
+}
 
 func TestExecute_InvalidJSON(t *testing.T) {
 	t.Parallel()
@@ -186,6 +348,9 @@ func TestExecute_InvalidJSON(t *testing.T) {
 	_, err := fileedit.Execute(context.Background(), json.RawMessage(`{invalid`), nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("Error = %q, want 'parse input'", err.Error())
 	}
 }
 
@@ -201,15 +366,23 @@ func TestExecute_EmptyFilePath(t *testing.T) {
 	}
 }
 
-func TestExecute_EmptyOldString(t *testing.T) {
+func TestExecute_SameOldAndNewString(t *testing.T) {
 	t.Parallel()
 
-	_, err := fileedit.Execute(context.Background(), json.RawMessage(`{"file_path":"/tmp/test.txt","old_string":"","new_string":"b"}`), nil)
-	if err == nil {
-		t.Fatal("Execute() error = nil, want error")
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "same.txt")
+	content := "hello\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
-	if !strings.Contains(err.Error(), "old_string is required") {
-		t.Errorf("Error = %q, want 'old_string is required'", err.Error())
+
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"hello"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error for same old/new string")
+	}
+	if !strings.Contains(err.Error(), "no changes to make") {
+		t.Errorf("Error = %q, want 'no changes to make'", err.Error())
 	}
 }
 
@@ -220,6 +393,9 @@ func TestExecute_FileNotFound(t *testing.T) {
 	_, err := fileedit.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for missing file")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("Error = %q, want 'does not exist'", err.Error())
 	}
 }
 
@@ -257,22 +433,42 @@ func TestExecute_NonUniqueOldString(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for non-unique old_string")
 	}
-	if !strings.Contains(err.Error(), "not unique") {
-		t.Errorf("Error = %q, want 'not unique'", err.Error())
+	if !strings.Contains(err.Error(), "replace_all is false") {
+		t.Errorf("Error = %q, want 'replace_all is false'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "found 2 matches") {
+		t.Errorf("Error = %q, want 'found 2 matches'", err.Error())
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Output JSON
-// ---------------------------------------------------------------------------
+func TestExecute_ExistingFileWithEmptyOldString(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "exists.txt")
+	if err := os.WriteFile(fp, []byte("has content\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Empty old_string on existing non-empty file → error
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"","new_string":"new content"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error for existing non-empty file with empty old_string")
+	}
+	if !strings.Contains(err.Error(), "file already exists") {
+		t.Errorf("Error = %q, want 'file already exists'", err.Error())
+	}
+}
 
 func TestOutputJSON(t *testing.T) {
 	t.Parallel()
 
 	output := fileedit.Output{
-		Success:      true,
-		Path:         "/tmp/test.txt",
-		Replacements: 2,
+		FilePath:   "/tmp/test.txt",
+		OldString:  "old",
+		NewString:  "new",
+		ReplaceAll: true,
 	}
 
 	data, err := json.Marshal(output)
@@ -285,13 +481,41 @@ func TestOutputJSON(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if got.Success != true {
-		t.Error("Success = false, want true")
+	if got.FilePath != "/tmp/test.txt" {
+		t.Errorf("FilePath = %q, want /tmp/test.txt", got.FilePath)
 	}
-	if got.Path != "/tmp/test.txt" {
-		t.Errorf("Path = %q, want /tmp/test.txt", got.Path)
+	if got.OldString != "old" {
+		t.Errorf("OldString = %q, want 'old'", got.OldString)
 	}
-	if got.Replacements != 2 {
-		t.Errorf("Replacements = %d, want 2", got.Replacements)
+	if got.NewString != "new" {
+		t.Errorf("NewString = %q, want 'new'", got.NewString)
+	}
+	if !got.ReplaceAll {
+		t.Error("ReplaceAll = false, want true")
+	}
+}
+
+func TestExecute_PreservesPermissions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "perm.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	info, statErr := os.Stat(fp)
+	if statErr != nil {
+		t.Fatalf("Stat: %v", statErr)
+	}
+	perm := info.Mode().Perm()
+	if perm != 0o600 {
+		t.Errorf("Permissions = %o, want 0600", perm)
 	}
 }
