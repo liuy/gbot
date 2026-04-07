@@ -588,6 +588,25 @@ func TestRender_BlankLineBetweenParaAndList(t *testing.T) {
 	}
 }
 
+func TestRender_BlankLineBetweenHRAndParagraph(t *testing.T) {
+	t.Parallel()
+	// TS: hr("---") + space("\n") + paragraph("below\n") → "---\nbelow"
+	result := Render("above\n\n---\n\nbelow")
+	// HR and "below" must be on separate lines
+	if !strings.Contains(result, "---\n") && !strings.Contains(stripANSI(result), "───\n") {
+		t.Errorf("expected newline after HR before next text, got: %q", result)
+	}
+}
+
+func TestRender_BlankLineBetweenListAndParagraph(t *testing.T) {
+	t.Parallel()
+	// TS: list("- item1\n") + space("\n") + paragraph("p2\n") → "- item1\n\np2"
+	result := Render("- item1\n\np2")
+	if !strings.Contains(result, "item1\n\n") {
+		t.Errorf("expected blank line between list and paragraph, got: %q", result)
+	}
+}
+
 func TestRender_Softbreak(t *testing.T) {
 	t.Parallel()
 	// Single newline within paragraph → Softbreak node

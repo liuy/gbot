@@ -95,6 +95,23 @@ func (r *ansiRenderer) write(s string) {
 	_, _ = r.w.Write([]byte(s))
 }
 
+// hasNextSiblingAtDocLevel returns true if node is a direct child of Document
+// and has a next sibling. Used to decide whether to add a blank-line separator
+// between Document-level blocks (equivalent to TS "space" token).
+func hasNextSiblingAtDocLevel(node ast.Node) bool {
+	doc, ok := node.GetParent().(*ast.Document)
+	if !ok {
+		return false
+	}
+	children := doc.GetChildren()
+	for i, child := range children {
+		if child == node {
+			return i < len(children)-1
+		}
+	}
+	return false
+}
+
 func (r *ansiRenderer) pushList(ordered bool) {
 	r.listStack = append(r.listStack, listCtx{ordered: ordered, counter: 0})
 }
@@ -167,17 +184,8 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Paragraph:
 		if !entering {
 			r.write("\n")
-			// TS: space token adds EOL between ANY top-level blocks.
-			// gomarkdown doesn't preserve blank-line info, but consecutive
-			// siblings at Document level always imply a blank line in source.
-			if _, ok := node.GetParent().(*ast.Document); ok {
-				children := node.GetParent().GetChildren()
-				for i, child := range children {
-					if child == node && i < len(children)-1 {
-						r.write("\n")
-						break
-					}
-				}
+			if hasNextSiblingAtDocLevel(node) {
+				r.write("\n")
 			}
 		}
 
@@ -219,7 +227,10 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 				}
 			}
 			r.write(out.String())
-		}
+				if hasNextSiblingAtDocLevel(node) {
+					r.write("\n")
+				}
+			}
 
 	case *ast.List:
 		if entering {
@@ -227,6 +238,9 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			r.pushList(ordered)
 		} else {
 			r.popList()
+			if hasNextSiblingAtDocLevel(node) {
+				r.write("\n")
+			}
 		}
 
 	case *ast.ListItem:
@@ -249,12 +263,18 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 		if entering {
 			r.write(highlightCode(string(n.Literal), string(n.Info)))
 			r.write("\n")
+			if hasNextSiblingAtDocLevel(node) {
+				r.write("\n")
+			}
 		}
 		return ast.SkipChildren
 
 	case *ast.HorizontalRule:
 		if entering {
 			r.write(ansiFgGray + "───" + ansiReset)
+			if hasNextSiblingAtDocLevel(node) {
+				r.write("\n")
+			}
 		}
 
 	// ---- Table ----
@@ -266,6 +286,9 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			r.renderTable()
 			r.table = nil
 			r.write("\n")
+			if hasNextSiblingAtDocLevel(node) {
+				r.write("\n")
+			}
 		}
 
 	case *ast.TableHeader:
@@ -410,8 +433,6 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	return ast.GoToNext
 }
-
-// renderTable outputs the collected table with column widths, separator row, and alignment.
 // Source: utils/markdown.ts table token handler
 func (r *ansiRenderer) renderTable() {
 	t := r.table
