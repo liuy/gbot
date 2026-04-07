@@ -194,7 +194,6 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			r.pushList(ordered)
 		} else {
 			r.popList()
-			r.write("\n")
 		}
 
 	case *ast.ListItem:
@@ -211,8 +210,6 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 					r.write(indent + "- ")
 				}
 			}
-		} else {
-			r.write("\n")
 		}
 
 	case *ast.CodeBlock:
@@ -225,7 +222,6 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.HorizontalRule:
 		if entering {
 			r.write(ansiFgGray + "───" + ansiReset)
-			r.write("\n")
 		}
 
 	// ---- Table ----
