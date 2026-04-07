@@ -95,15 +95,20 @@ func (r *ansiRenderer) write(s string) {
 	_, _ = r.w.Write([]byte(s))
 }
 
-// hasNextSiblingAtDocLevel returns true if node is a direct child of Document
-// and has a next sibling. Used to decide whether to add a blank-line separator
-// between Document-level blocks (equivalent to TS "space" token).
-func hasNextSiblingAtDocLevel(node ast.Node) bool {
-	doc, ok := node.GetParent().(*ast.Document)
-	if !ok {
+// needsBlockSeparator returns true if node should emit a blank-line separator
+// before its next sibling. Applies to block-level children of Document and
+// BlockQuote (matching TS "space" token behavior).
+func needsBlockSeparator(node ast.Node) bool {
+	parent := node.GetParent()
+	if parent == nil {
 		return false
 	}
-	children := doc.GetChildren()
+	switch parent.(type) {
+	case *ast.Document, *ast.BlockQuote:
+	default:
+		return false
+	}
+	children := parent.GetChildren()
 	for i, child := range children {
 		if child == node {
 			return i < len(children)-1
@@ -184,7 +189,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Paragraph:
 		if !entering {
 			r.write("\n")
-			if hasNextSiblingAtDocLevel(node) {
+			if needsBlockSeparator(node) {
 				r.write("\n")
 			}
 		}
@@ -215,19 +220,17 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 				plain := strings.TrimSpace(stripANSI(line))
 				if plain != "" {
 					out.WriteString(bar + ansiItalicOn + line + ansiItalicOff)
-				} else if i < len(lines)-1 {
-					// Keep empty lines (blank line between paragraphs in quote)
-					// but skip the very last trailing empty from Paragraph's \n
-					continue
-				} else {
+				} else if i == len(lines)-1 {
+					// Skip the very last trailing empty from Paragraph's \n
 					continue
 				}
+				// Empty non-last lines: keep as blank line (no content, \n added below)
 				if i < len(lines)-1 {
 					out.WriteString("\n")
 				}
 			}
 			r.write(out.String())
-				if hasNextSiblingAtDocLevel(node) {
+				if needsBlockSeparator(node) {
 					r.write("\n")
 				}
 			}
@@ -238,7 +241,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			r.pushList(ordered)
 		} else {
 			r.popList()
-			if hasNextSiblingAtDocLevel(node) {
+			if needsBlockSeparator(node) {
 				r.write("\n")
 			}
 		}
@@ -263,7 +266,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 		if entering {
 			r.write(highlightCode(string(n.Literal), string(n.Info)))
 			r.write("\n")
-			if hasNextSiblingAtDocLevel(node) {
+			if needsBlockSeparator(node) {
 				r.write("\n")
 			}
 		}
@@ -272,7 +275,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.HorizontalRule:
 		if entering {
 			r.write(ansiFgGray + "───" + ansiReset)
-			if hasNextSiblingAtDocLevel(node) {
+			if needsBlockSeparator(node) {
 				r.write("\n")
 			}
 		}
@@ -286,7 +289,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			r.renderTable()
 			r.table = nil
 			r.write("\n")
-			if hasNextSiblingAtDocLevel(node) {
+			if needsBlockSeparator(node) {
 				r.write("\n")
 			}
 		}

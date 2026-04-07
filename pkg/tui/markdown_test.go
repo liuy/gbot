@@ -207,6 +207,17 @@ func TestRender_BlockQuote_EveryLineHasPrefix(t *testing.T) {
 	}
 }
 
+func TestRender_BlockQuote_BlankLineBetweenParagraphs(t *testing.T) {
+	t.Parallel()
+	// TS: > line1\n>\n> line2 → │ line1\n\n│ line2 (blank line between paragraphs)
+	result := Render("> line1\n>\n> line2")
+	plain := stripANSI(result)
+	// Should have a blank line between the two blockquote content lines
+	if !strings.Contains(plain, "│ line1\n\n│ line2") {
+		t.Errorf("expected blank line between blockquote paragraphs, got: %q", plain)
+	}
+}
+
 func TestRender_BlockQuote_SingleLine(t *testing.T) {
 	t.Parallel()
 	result := Render("> hello")
@@ -904,6 +915,171 @@ func displayWidth(s string) int {
 		w += runeWidth(r)
 	}
 	return w
+}
+
+// TestRender_AllMarkdownSyntax is an integration test exercising every supported
+// markdown construct in a single document. It verifies: content presence, ANSI
+// styling, blank-line separators between blocks, blockquote prefix, table
+// borders, and trailing-trim behavior.
+func TestRender_AllMarkdownSyntax(t *testing.T) {
+	t.Parallel()
+
+	input := `# Main Title
+
+Some **bold** and *italic* and ***bold italic*** text with ` + "`inline`" + `.
+
+## Section Two
+
+- item one
+- item two
+  - nested a
+  - nested b
+- item three
+
+1. first
+2. second
+   1. sub-a
+   2. sub-b
+3. third
+
+### Section Three
+
+> quote line one
+>
+> quote line two
+
+Above
+---
+
+| Name | Value |
+|------|-------|
+| Alice | 100 |
+| Bob | 200 |
+
+[click here](https://example.com)
+
+![img](https://example.com/pic.png)
+
+` + "```go\nfmt.Println(\"hello\")\n```" + `
+
+See anthropics/claude-code#42 for details.
+
+End text.`
+
+	result := Render(input)
+
+	// ---- No trailing whitespace ----
+	if result != strings.TrimRight(result, "\n") {
+		t.Error("result should have no trailing newlines")
+	}
+
+	// ---- Content presence (stripped) ----
+	plain := stripANSI(result)
+	checks := []string{
+		"Main Title",
+		"bold",
+		"italic",
+		"bold italic",
+		"inline",
+		"Section Two",
+		"item one",
+		"nested a",
+		"first",
+		"sub-a",
+		"Section Three",
+		"quote line one",
+		"quote line two",
+		"Above",
+		"Name",
+		"Alice",
+		"Bob",
+		"click here",
+		"https://example.com/pic.png",
+		"fmt",
+		"Println",
+		"anthropics/claude-code#42",
+		"End text.",
+	}
+	for _, want := range checks {
+		if !strings.Contains(plain, want) {
+			t.Errorf("missing expected content %q in output:\n%s", want, plain)
+		}
+	}
+
+	// ---- ANSI styling ----
+	if !hasANSIStyle(result) {
+		t.Error("expected ANSI styling in rendered output")
+	}
+	// Bold, italic, inline code all present
+	if !strings.Contains(result, "\x1b[1m") {
+		t.Error("expected bold ANSI (\\x1b[1m)")
+	}
+	if !strings.Contains(result, "\x1b[3m") {
+		t.Error("expected italic ANSI (\\x1b[3m)")
+	}
+	if !strings.Contains(result, "\x1b[38;5;15m") {
+		t.Error("expected inline code fg color")
+	}
+
+	// ---- Blockquote: every content line has │ prefix ----
+	bqLines := []string{}
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "quote line") {
+			bqLines = append(bqLines, line)
+		}
+	}
+	for _, line := range bqLines {
+		if !strings.HasPrefix(line, "│ ") {
+			t.Errorf("blockquote line should start with '│ ', got: %q", line)
+		}
+	}
+	// Blockquote should have blank line between paragraphs
+	if !strings.Contains(plain, "quote line one\n\n│ quote line two") {
+		t.Errorf("expected blank line between blockquote paragraphs, got:\n%s", plain)
+	}
+
+	// ---- Table borders ----
+	if !strings.Contains(result, "┌") || !strings.Contains(result, "┬") {
+		t.Error("expected table top border with ┌┬")
+	}
+	if !strings.Contains(result, "┼") {
+		t.Error("expected table separator row with ┼")
+	}
+	if !strings.Contains(result, "└") || !strings.Contains(result, "┴") {
+		t.Error("expected table bottom border with └┴")
+	}
+
+	// ---- Blank lines between major blocks ----
+	// Paragraph → Heading
+	if !strings.Contains(plain, "inline.\n\n") {
+		t.Error("expected blank line after paragraph before heading")
+	}
+	// List → Heading
+	if !strings.Contains(plain, "third\n\n") {
+		t.Error("expected blank line after list before heading")
+	}
+	// Blockquote → Paragraph
+	if !strings.Contains(plain, "quote line two\n\nAbove") {
+		t.Error("expected blank line between blockquote and paragraph")
+	}
+
+	// ---- Horizontal rule ----
+	if !strings.Contains(plain, "───") {
+		t.Error("expected horizontal rule (───)")
+	}
+
+	// ---- OSC 8 hyperlink ----
+	if !strings.Contains(result, "\x1b]8;;") {
+		t.Error("expected OSC 8 hyperlink escape")
+	}
+	if !strings.Contains(result, "https://github.com/anthropics/claude-code/issues/42") {
+		t.Error("expected GitHub issue URL in hyperlink")
+	}
+
+	// ---- Code block content ----
+	if !strings.Contains(result, "fmt") || !strings.Contains(result, "Println") {
+		t.Error("expected code block content")
+	}
 }
 
 func TestRender_Table_BordersAligned(t *testing.T) {
