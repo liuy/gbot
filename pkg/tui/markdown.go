@@ -69,7 +69,7 @@ type ansiRenderer struct {
 	w           io.Writer
 	listStack   []listCtx
 	table       *tableCollector // non-nil when inside a table
-	savedWriter []io.Writer     // stack for writer-swap during inline styling
+	savedWriter []io.Writer     // stack for writer-swap during inline styling / blockquote
 }
 
 // ---- ANSI SGR codes for inline styling (matches TS chalk output) ----
@@ -166,15 +166,14 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Paragraph:
 		if !entering {
 			r.write("\n")
-			// If previous sibling is also a paragraph, this was a blank-line
-			// separator between two paragraphs — preserve the blank line.
-			if parent := node.GetParent(); parent != nil {
-				children := parent.GetChildren()
+			// TS: space token adds EOL between ANY top-level blocks.
+			// gomarkdown doesn't preserve blank-line info, but consecutive
+			// siblings at Document level always imply a blank line in source.
+			if _, ok := node.GetParent().(*ast.Document); ok {
+				children := node.GetParent().GetChildren()
 				for i, child := range children {
-					if child == node && i > 0 {
-						if _, ok := children[i-1].(*ast.Paragraph); ok {
-							r.write("\n")
-						}
+					if child == node && i < len(children)-1 {
+						r.write("\n")
 						break
 					}
 				}
@@ -183,9 +182,42 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.BlockQuote:
 		if entering {
-			r.write(ansiFgGray + "│ " + ansiReset)
+			// Swap writer to buffer — render inner content first, then post-process
+			// like TS: split by \n, prefix each non-empty line with "│ " + italic.
+			r.savedWriter = append(r.savedWriter, r.w)
+			var buf strings.Builder
+			r.w = &buf
 		} else {
-			r.write("\n")
+			// Collect rendered inner content
+			var inner string
+			if buf, ok := r.w.(*strings.Builder); ok {
+				inner = buf.String()
+			}
+			// Restore previous writer
+			if len(r.savedWriter) > 0 {
+				r.w = r.savedWriter[len(r.savedWriter)-1]
+				r.savedWriter = r.savedWriter[:len(r.savedWriter)-1]
+			}
+			// Post-process: split by \n, add │ prefix + italic to each non-empty line.
+			bar := ansiFgGray + "│ " + ansiReset
+			lines := strings.Split(inner, "\n")
+			var out strings.Builder
+			for i, line := range lines {
+				plain := strings.TrimSpace(stripANSI(line))
+				if plain != "" {
+					out.WriteString(bar + ansiItalicOn + line + ansiItalicOff)
+				} else if i < len(lines)-1 {
+					// Keep empty lines (blank line between paragraphs in quote)
+					// but skip the very last trailing empty from Paragraph's \n
+					continue
+				} else {
+					continue
+				}
+				if i < len(lines)-1 {
+					out.WriteString("\n")
+				}
+			}
+			r.write(out.String())
 		}
 
 	case *ast.List:

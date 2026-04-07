@@ -190,6 +190,31 @@ func TestRender_HorizontalRule(t *testing.T) {
 	}
 }
 
+func TestRender_BlockQuote_EveryLineHasPrefix(t *testing.T) {
+	t.Parallel()
+	// TS behavior: blockquote renders inner content first, then splits by \n
+	// and adds "│ " prefix to every non-empty line. Both lines must have prefix.
+	result := Render("> q1\n>\n> q2")
+	lines := strings.Split(result, "\n")
+	for _, line := range lines {
+		stripped := stripANSI(line)
+		if stripped == "" {
+			continue // empty lines have no prefix
+		}
+		if !strings.HasPrefix(stripped, "│ ") {
+			t.Errorf("expected every non-empty blockquote line to start with '│ ', got: %q (full: %q)", stripped, result)
+		}
+	}
+}
+
+func TestRender_BlockQuote_SingleLine(t *testing.T) {
+	t.Parallel()
+	result := Render("> hello")
+	if !strings.Contains(stripANSI(result), "│ hello") {
+		t.Errorf("expected blockquote with │ prefix, got: %q", result)
+	}
+}
+
 func TestRender_Strikethrough_Disabled(t *testing.T) {
 	t.Parallel()
 	// Strikethrough is disabled; ~~ should be treated as literal text
@@ -517,24 +542,49 @@ func TestRender_MultipleTrailingBlankLines(t *testing.T) {
 
 func TestRender_BlankLineBetweenParagraphs(t *testing.T) {
 	t.Parallel()
-	// Blank line between paragraphs should produce blank line in output.
-	// "line1\n\nline2" → output preserves blank line exactly
+	// TS: paragraph("line1\n") + space("\n") + paragraph("line2\n")
+	// → "line1\n\nline2\n"
 	result := Render("line1\n\nline2")
 	lines := strings.Split(result, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected multiple lines, got %d: %q", len(lines), result)
+	// lines = ["line1", "", "line2", ""]
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines, got %d: %q", len(lines), result)
 	}
-	// First line is "line1"
 	if lines[0] != "line1" {
 		t.Errorf("expected first line \"line1\", got: %q", lines[0])
 	}
-	// Second line is "line2" (no blank before it in the split)
-	if lines[1] != "line2" {
-		t.Errorf("expected second line \"line2\", got: %q", lines[1])
+	// Blank line between paragraphs
+	if lines[1] != "" {
+		t.Errorf("expected blank line at index 1, got: %q", lines[1])
 	}
-	// Third line is blank (the separator between paragraphs)
-	if len(lines) < 3 || lines[2] != "" {
-		t.Errorf("expected blank line at index 2, got: %v", lines)
+	if lines[2] != "line2" {
+		t.Errorf("expected \"line2\" at index 2, got: %q", lines[2])
+	}
+}
+
+func TestRender_BlankLineBetweenParaAndHeading(t *testing.T) {
+	t.Parallel()
+	// TS: paragraph("p1\n") + space("\n") + heading("h2\n\n") → "p1\n\nH2\n\n"
+	// There should be a blank line between paragraph text and heading text.
+	result := Render("p1\n\n## h2")
+	if !strings.Contains(result, "p1\n\n") {
+		t.Errorf("expected blank line between paragraph and heading, got: %q", result)
+	}
+}
+
+func TestRender_BlankLineBetweenParaAndCodeBlock(t *testing.T) {
+	t.Parallel()
+	result := Render("p1\n\n```\ncode\n```")
+	if !strings.Contains(result, "p1\n\n") {
+		t.Errorf("expected blank line between paragraph and code, got: %q", result)
+	}
+}
+
+func TestRender_BlankLineBetweenParaAndList(t *testing.T) {
+	t.Parallel()
+	result := Render("p1\n\n- item1")
+	if !strings.Contains(result, "p1\n\n") {
+		t.Errorf("expected blank line between paragraph and list, got: %q", result)
 	}
 }
 
