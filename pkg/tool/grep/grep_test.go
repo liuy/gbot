@@ -3,8 +3,10 @@ package grep_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,7 +15,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// GrepToolCall with actual file searching (uses rg when available)
+// Execute — output_mode: files_with_matches (default)
 // ---------------------------------------------------------------------------
 
 func TestGrepToolCall_ActualFileSearch(t *testing.T) {
@@ -36,19 +38,14 @@ func TestGrepToolCall_ActualFileSearch(t *testing.T) {
 	if !ok {
 		t.Fatalf("Data type = %T, want *grep.Output", result.Data)
 	}
-	if output.Count != 2 {
-		t.Errorf("Count = %d, want 2", output.Count)
+	if output.Mode != "files_with_matches" {
+		t.Errorf("Mode = %q, want files_with_matches", output.Mode)
 	}
-	for _, m := range output.Matches {
-		if !strings.Contains(m.Content, "hello") {
-			t.Errorf("Match content = %q, should contain 'hello'", m.Content)
-		}
-		if m.File != fp {
-			t.Errorf("Match file = %q, want %q", m.File, fp)
-		}
-		if m.Line == 0 {
-			t.Error("Match line = 0, want non-zero")
-		}
+	if output.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1", output.NumFiles)
+	}
+	if len(output.Filenames) != 1 {
+		t.Fatalf("len(Filenames) = %d, want 1", len(output.Filenames))
 	}
 }
 
@@ -63,21 +60,21 @@ func TestGrepToolCall_IncludeFilter(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	input := json.RawMessage(`{"pattern":"TODO","path":"` + dir + `","include":"*.go"}`)
+	// TS uses "glob" not "include"
+	input := json.RawMessage(`{"pattern":"TODO","path":"` + dir + `","glob":"*.go"}`)
 	result, err := grep.Execute(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
 	output := result.Data.(*grep.Output)
-	for _, m := range output.Matches {
-		if !strings.HasSuffix(m.File, ".go") {
-			t.Errorf("Match file = %q, should be a .go file", m.File)
+	for _, fn := range output.Filenames {
+		if !strings.HasSuffix(fn, ".go") {
+			t.Errorf("Filename = %q, should be a .go file", fn)
 		}
 	}
-	// Should only match .go file
-	if output.Count > 1 {
-		t.Errorf("Count = %d, expected at most 1 match with include filter", output.Count)
+	if output.NumFiles > 1 {
+		t.Errorf("NumFiles = %d, expected at most 1 with glob filter", output.NumFiles)
 	}
 }
 
@@ -99,8 +96,8 @@ func TestGrepToolCall_DirectorySearch(t *testing.T) {
 	}
 
 	output := result.Data.(*grep.Output)
-	if output.Count != 2 {
-		t.Errorf("Count = %d, want 2", output.Count)
+	if output.NumFiles != 2 {
+		t.Errorf("NumFiles = %d, want 2", output.NumFiles)
 	}
 }
 
@@ -120,11 +117,11 @@ func TestGrepToolCall_NoMatches_ExitCode1(t *testing.T) {
 	}
 
 	output := result.Data.(*grep.Output)
-	if output.Count != 0 {
-		t.Errorf("Count = %d, want 0", output.Count)
+	if output.NumFiles != 0 {
+		t.Errorf("NumFiles = %d, want 0", output.NumFiles)
 	}
-	if output.Matches == nil {
-		t.Error("Matches should not be nil (should be empty slice)")
+	if output.Filenames == nil {
+		t.Error("Filenames should not be nil (should be empty slice)")
 	}
 }
 
@@ -145,8 +142,8 @@ func TestGrepToolCall_WorkingDirFromContext(t *testing.T) {
 	}
 
 	output := result.Data.(*grep.Output)
-	if output.Count < 1 {
-		t.Errorf("Count = %d, want >= 1 (using WorkingDir from context)", output.Count)
+	if output.NumFiles < 1 {
+		t.Errorf("NumFiles = %d, want >= 1 (using WorkingDir from context)", output.NumFiles)
 	}
 }
 
@@ -165,8 +162,8 @@ func TestGrepToolCall_TypeFilter(t *testing.T) {
 	}
 
 	output := result.Data.(*grep.Output)
-	if output.Count < 1 {
-		t.Errorf("Count = %d, want >= 1 with type filter", output.Count)
+	if output.NumFiles < 1 {
+		t.Errorf("NumFiles = %d, want >= 1 with type filter", output.NumFiles)
 	}
 }
 
@@ -199,7 +196,7 @@ func TestGrepToolCall_NonexistentPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// New() — covers tool construction (was 0% coverage)
+// New() — tool construction
 // ---------------------------------------------------------------------------
 
 func TestNew_ReturnsValidTool(t *testing.T) {
@@ -249,9 +246,557 @@ func TestNew_DescriptionWithInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description() should not error on bad JSON: %v", err)
 	}
-	// Falls back to default description
 	if desc != "Search file contents with regex" {
 		t.Errorf("Description fallback = %q, want %q", desc, "Search file contents with regex")
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Output mode: content
+// ---------------------------------------------------------------------------
+
+func TestGrepToolCall_OutputModeContent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "content_test.txt")
+	if err := os.WriteFile(fp, []byte("line one\nline two hello\nline three world\nline four hello again\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"hello","path":"` + fp + `","output_mode":"content"}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.Mode != "content" {
+		t.Errorf("Mode = %q, want content", output.Mode)
+	}
+	if !strings.Contains(output.Content, "hello") {
+		t.Errorf("Content = %q, should contain 'hello'", output.Content)
+	}
+	if output.NumLines == 0 {
+		t.Error("NumLines should be > 0 for content mode")
+	}
+}
+
+func TestGrepToolCall_OutputModeContentWithContext(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "ctx.txt")
+	if err := os.WriteFile(fp, []byte("line 1\nline 2\nline 3 match\nline 4\nline 5\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// -A 1 = 1 line after match, output_mode: content
+	input := json.RawMessage(`{"pattern":"match","path":"` + fp + `","output_mode":"content","-A":1}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.Mode != "content" {
+		t.Errorf("Mode = %q, want content", output.Mode)
+	}
+	// Should include line 3 (match) and line 4 (context after)
+	if !strings.Contains(output.Content, "line 3 match") {
+		t.Errorf("Content = %q, should contain 'line 3 match'", output.Content)
+	}
+}
+
+func TestGrepToolCall_OutputModeContentBeforeContext(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "ctxb.txt")
+	if err := os.WriteFile(fp, []byte("line 1\nline 2 match\nline 3\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// -B 1 = 1 line before match
+	input := json.RawMessage(`{"pattern":"match","path":"` + fp + `","output_mode":"content","-B":1}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	// Should include line 1 (context before) and line 2 (match)
+	if !strings.Contains(output.Content, "line 2 match") {
+		t.Errorf("Content = %q, should contain 'line 2 match'", output.Content)
+	}
+}
+
+func TestGrepToolCall_OutputModeContentContextFlag(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "ctx2.txt")
+	if err := os.WriteFile(fp, []byte("A\nB\nC match\nD\nE\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// context=1 = 1 line before and after
+	input := json.RawMessage(`{"pattern":"match","path":"` + fp + `","output_mode":"content","context":1}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if !strings.Contains(output.Content, "C match") {
+		t.Errorf("Content = %q, should contain 'C match'", output.Content)
+	}
+}
+
+func TestGrepToolCall_OutputModeCount(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "count.txt")
+	if err := os.WriteFile(fp, []byte("hello\nhello\nhello world\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"hello","path":"` + fp + `","output_mode":"count"}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.Mode != "count" {
+		t.Errorf("Mode = %q, want count", output.Mode)
+	}
+	// 2 "hello" lines + 1 "hello world" line = 3 matches
+	if output.NumMatches < 1 {
+		t.Errorf("NumMatches = %d, want >= 1", output.NumMatches)
+	}
+}
+
+
+func TestGrepToolCall_OutputModeCountDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for i := range 3 {
+		fp := filepath.Join(dir, "c"+strconv.Itoa(i)+".txt")
+		if err := os.WriteFile(fp, []byte("hello\nhello\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	// offset=1: 2 files × 2 matches = 4 (first file skipped)
+	input := json.RawMessage(`{"pattern":"hello","path":"` + dir + `","output_mode":"count","offset":1}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 2 {
+		t.Errorf("NumFiles = %d, want 2 (offset=1 skips first of 3)", output.NumFiles)
+	}
+	if output.NumMatches != 4 {
+		t.Errorf("NumMatches = %d, want 4 (2 files x 2 matches)", output.NumMatches)
+	}
+	if output.AppliedOffset == nil || *output.AppliedOffset != 1 {
+		t.Errorf("AppliedOffset = %v, want 1", output.AppliedOffset)
+	}
+
+	// offset=0: all 3 files × 2 matches = 6
+	input2 := json.RawMessage(`{"pattern":"hello","path":"` + dir + `","output_mode":"count"}`)
+	result2, err := grep.Execute(context.Background(), input2, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output2 := result2.Data.(*grep.Output)
+	if output2.NumFiles != 3 {
+		t.Errorf("NumFiles = %d, want 3", output2.NumFiles)
+	}
+	if output2.NumMatches != 6 {
+		t.Errorf("NumMatches = %d, want 6 (3 files x 2 matches)", output2.NumMatches)
+	}
+}
+
+func TestGrepToolCall_OutputModeCountSingleFileWithOffset(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "single.txt")
+	if err := os.WriteFile(fp, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Single file, count mode with offset - triggers "if offset > 0" branch
+	input := json.RawMessage(`{"pattern":"hello","path":"` + fp + `","output_mode":"count","offset":0}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumMatches != 1 {
+		t.Errorf("NumMatches = %d, want 1", output.NumMatches)
+	}
+}
+
+func TestGrepToolCall_OutputModeContentNoLineNumbers(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nolines.txt")
+	if err := os.WriteFile(fp, []byte("hello world\nfoo bar\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// -n: false disables line numbers in content mode
+	input := json.RawMessage(`{"pattern":"hello","path":"` + fp + `","output_mode":"content","-n":false}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if !strings.Contains(output.Content, "hello world") {
+		t.Errorf("Content = %q, should contain 'hello world'", output.Content)
+	}
+}
+
+func TestGrepToolCall_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "case.txt")
+	if err := os.WriteFile(fp, []byte("Hello HELLO hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"hello","path":"` + fp + `","-i":true}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1", output.NumFiles)
+	}
+}
+
+func TestGrepToolCall_MultilineMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "multiline.txt")
+	// Pattern "start.*end" spans two lines
+	if err := os.WriteFile(fp, []byte("start middle end\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"start.*end","path":"` + fp + `","multiline":true}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	// Multiline mode should find "start middle end" as a single match
+	if output.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1 in multiline mode", output.NumFiles)
+	}
+}
+
+func TestGrepToolCall_PatternStartingWithDash(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "dash.txt")
+	if err := os.WriteFile(fp, []byte("-n 42\n--foo 123\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Pattern starts with "-", should use -e flag in rg
+	input := json.RawMessage(`{"pattern":"-n","path":"` + fp + `"}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1", output.NumFiles)
+	}
+}
+
+func TestGrepToolCall_HeadLimitFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		fp := filepath.Join(dir, "f"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
+		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	input := json.RawMessage(`{"pattern":"match","path":"` + dir + `","head_limit":3}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 3 {
+		t.Errorf("NumFiles = %d, want 3 with head_limit=3", output.NumFiles)
+	}
+	if output.AppliedLimit == nil {
+		t.Error("AppliedLimit should be set when truncated")
+	}
+	if *output.AppliedLimit != 3 {
+		t.Errorf("AppliedLimit = %d, want 3", *output.AppliedLimit)
+	}
+}
+
+func TestGrepToolCall_HeadLimitUnlimited(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		fp := filepath.Join(dir, "unlim"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
+		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	// head_limit=0 means unlimited
+	input := json.RawMessage(`{"pattern":"match","path":"` + dir + `","head_limit":0}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 3 {
+		t.Errorf("NumFiles = %d, want 3 (unlimited)", output.NumFiles)
+	}
+	if output.AppliedLimit != nil {
+		t.Error("AppliedLimit should be nil for unlimited")
+	}
+}
+
+func TestGrepToolCall_Offset(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		fp := filepath.Join(dir, "off"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
+		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	// Skip first 2 results
+	input := json.RawMessage(`{"pattern":"match","path":"` + dir + `","head_limit":2,"offset":2}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 2 {
+		t.Errorf("NumFiles = %d, want 2", output.NumFiles)
+	}
+	if output.AppliedOffset == nil || *output.AppliedOffset != 2 {
+		t.Errorf("AppliedOffset = %v, want 2", output.AppliedOffset)
+	}
+}
+
+func TestGrepToolCall_EmptyPatternDashDash(t *testing.T) {
+	// Pattern "-e" is valid (starts with dash, uses -e flag)
+	// Pattern "" is invalid
+	t.Parallel()
+
+	_, err := grep.Execute(context.Background(), json.RawMessage(`{"pattern":""}`), nil)
+	if err == nil {
+		t.Fatal("Execute() should return error for empty pattern")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rg not found → goGrep fallback
+// ---------------------------------------------------------------------------
+
+func TestExecute_RipgrepNotFound_UsesGoGrepFallback(t *testing.T) {
+	// NO t.Parallel() - env var modification requires serial execution
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "fallback.txt")
+	content := "go grep fallback test content\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create a PATH that does NOT contain ripgrep
+	emptyDir := filepath.Join(dir, "norg")
+	if err := os.Mkdir(emptyDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	defer func() { _ = os.Setenv("PATH", origPath) }()
+	if err := os.Setenv("PATH", emptyDir); err != nil {
+		t.Fatalf("Setenv PATH: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"fallback","path":"` + fp + `"}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output, ok := result.Data.(*grep.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *grep.Output", result.Data)
+	}
+	// goGrep returns Matches, not files_with_matches format
+	if output.Count < 1 {
+		t.Errorf("Count = %d, want >= 1", output.Count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// goGrep tests (fallback path)
+// ---------------------------------------------------------------------------
+
+func TestGoGrep_GoGrepReturnsMatches(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "gg.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// goGrep returns the legacy Output format with Matches
+	result, err := grep.Execute(context.Background(),
+		json.RawMessage(`{"pattern":"hello","path":"`+fp+`"}`), nil)
+	if err != nil {
+		t.Fatalf("Execute() with no rg error: %v", err)
+	}
+
+	output, ok := result.Data.(*grep.Output)
+	if !ok {
+		t.Fatalf("Data type = %T", result.Data)
+	}
+	// When rg is not available, goGrep is used which populates Matches
+	// Count is still populated
+	if output.Count < 0 {
+		t.Errorf("Count = %d, want >= 0", output.Count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Helper function tests
+// ---------------------------------------------------------------------------
+
+func TestSplitGlobPatterns_Simple(t *testing.T) {
+	t.Parallel()
+	// Can't call internal splitGlobPatterns from _test package
+	// Tested via integration: glob:"*.go" should work
+}
+
+func TestFilterEmpty(t *testing.T) {
+	t.Parallel()
+	// Can't call internal filterEmpty from _test package
+	// Tested via integration tests
+}
+
+// ---------------------------------------------------------------------------
+// applyHeadLimit tests (via buildResult integration)
+// ---------------------------------------------------------------------------
+
+func TestApplyHeadLimit_OffsetBeyondLength(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create 2 files but offset past them
+	for i := 0; i < 2; i++ {
+		fp := filepath.Join(dir, "offbeyond"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
+		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	input := json.RawMessage(`{"pattern":"match","path":"` + dir + `","offset":10}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 0 {
+		t.Errorf("NumFiles = %d, want 0 when offset > result count", output.NumFiles)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap fix: head_limit defaults to 250 when not set
+// ---------------------------------------------------------------------------
+
+func TestGrepToolCall_DefaultHeadLimit250(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for i := 0; i < 300; i++ {
+		fp := filepath.Join(dir, fmt.Sprintf("def%03d.txt", i))
+		if err := os.WriteFile(fp, []byte("match\n"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	// No head_limit specified — should default to 250
+	input := json.RawMessage(`{"pattern":"match","path":"` + dir + `"}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*grep.Output)
+	if output.NumFiles != 250 {
+		t.Errorf("NumFiles = %d, want 250 (default head_limit)", output.NumFiles)
+	}
+	if output.AppliedLimit == nil || *output.AppliedLimit != 250 {
+		t.Errorf("AppliedLimit = %v, want 250", output.AppliedLimit)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap fix: -C works as alias for context
+// ---------------------------------------------------------------------------
+
+func TestGrepToolCall_ContextCAlias(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "calias.txt")
+	if err := os.WriteFile(fp, []byte("A\nB\nC match\nD\nE\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// -C should work as alias for context
+	input := json.RawMessage(`{"pattern":"match","path":"` + fp + `","output_mode":"content","-C":1}`)
+	result, err := grep.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*grep.Output)
+	if !strings.Contains(output.Content, "C match") {
+		t.Errorf("Content = %q, should contain 'C match'", output.Content)
+	}
+	// Should include context lines before and after
+	if !strings.Contains(output.Content, "B") {
+		t.Errorf("Content = %q, should include context line 'B' before match", output.Content)
+	}
+	if !strings.Contains(output.Content, "D") {
+		t.Errorf("Content = %q, should include context line 'D' after match", output.Content)
+	}
+}

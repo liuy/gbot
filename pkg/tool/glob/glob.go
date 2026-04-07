@@ -10,12 +10,17 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/user/gbot/pkg/tool"
 	"github.com/user/gbot/pkg/types"
 )
+
+// Maximum number of files returned by a single glob call.
+// Source: GlobTool.ts — globLimits.maxResults.
+const MaxGlobResults = 100
 
 // Input is the glob tool input schema.
 // Source: GlobTool.ts — Zod schema for glob input.
@@ -27,8 +32,10 @@ type Input struct {
 // Output is the glob tool output.
 // Source: GlobTool.ts — tool result data.
 type Output struct {
-	Files []string `json:"files"`
-	Count int      `json:"count"`
+	Files      []string `json:"filenames"`
+	Count      int      `json:"numFiles"`
+	DurationMs int64    `json:"durationMs"`
+	Truncated  bool     `json:"truncated"`
 }
 
 // New creates the Glob tool.
@@ -75,6 +82,8 @@ func New() tool.Tool {
 // Execute finds files matching a glob pattern.
 // Source: GlobTool.ts:call() — 1:1 port.
 func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	start := time.Now()
+
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -112,8 +121,17 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	// Sort matches for deterministic output
 	sort.Strings(matches)
 
+	// Apply truncation limit (same as TS: globLimits.maxResults = 100)
+	truncated := false
+	if len(matches) > MaxGlobResults {
+		matches = matches[:MaxGlobResults]
+		truncated = true
+	}
+
 	return &tool.ToolResult{Data: &Output{
-		Files: matches,
-		Count: len(matches),
+		Files:      matches,
+		Count:      len(matches),
+		DurationMs: time.Since(start).Milliseconds(),
+		Truncated:  truncated,
 	}}, nil
 }

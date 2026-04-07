@@ -245,8 +245,8 @@ func TestExecute_WorkingDirFromToolUseContext(t *testing.T) {
 	}
 
 	output := result.Data.(*Output)
-	if output.Count < 1 {
-		t.Errorf("Count = %d, want >= 1 (WorkingDir=%s)", output.Count, dir)
+	if output.NumFiles < 1 {
+		t.Errorf("NumFiles = %d, want >= 1 (WorkingDir=%s)", output.NumFiles, dir)
 	}
 }
 
@@ -278,129 +278,6 @@ func TestExecute_ToolUseContextEmptyWorkingDir(t *testing.T) {
 	output := result.Data.(*Output)
 	if output == nil {
 		t.Error("Output is nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// parseRGOutput — additional coverage
-// ---------------------------------------------------------------------------
-
-func TestParseRGOutput_MultipleFiles(t *testing.T) {
-	t.Parallel()
-
-	output := "a.go:10:hello\nb.go:20:world\na.go:30:foo\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 3 {
-		t.Fatalf("len(matches) = %d, want 3", len(matches))
-	}
-	if matches[0].File != "a.go" || matches[0].Line != 10 {
-		t.Errorf("matches[0] = {File:%q, Line:%d}, want {a.go, 10}", matches[0].File, matches[0].Line)
-	}
-	if matches[1].File != "b.go" || matches[1].Line != 20 {
-		t.Errorf("matches[1] = {File:%q, Line:%d}, want {b.go, 20}", matches[1].File, matches[1].Line)
-	}
-}
-
-func TestParseRGOutput_ColonInContent(t *testing.T) {
-	t.Parallel()
-
-	output := "main.go:5:time.Duration(10 * time.Second)\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 1 {
-		t.Fatalf("len(matches) = %d, want 1", len(matches))
-	}
-	if matches[0].Content != "time.Duration(10 * time.Second)" {
-		t.Errorf("Content = %q, want full content after second colon", matches[0].Content)
-	}
-}
-
-func TestParseRGOutput_BlankLines(t *testing.T) {
-	t.Parallel()
-
-	output := "file.go:1:test\n\nfile.go:3:test2\n\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 2 {
-		t.Errorf("len(matches) = %d, want 2 (blank lines skipped)", len(matches))
-	}
-}
-
-func TestParseRGOutput_EmptyString(t *testing.T) {
-	t.Parallel()
-
-	matches := parseRGOutput("")
-	if len(matches) != 0 {
-		t.Errorf("expected 0 matches for empty string, got %d", len(matches))
-	}
-}
-
-func TestParseRGOutput_NoColon(t *testing.T) {
-	t.Parallel()
-
-	// Line with no colon at all — should be skipped
-	output := "just a plain line with no colons\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 0 {
-		t.Errorf("expected 0 matches for no-colon line, got %d", len(matches))
-	}
-}
-
-func TestParseRGOutput_OneColonOnly(t *testing.T) {
-	t.Parallel()
-
-	// Only one colon — no second colon for line number — should be skipped
-	output := "file.txt:some content without line number\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 0 {
-		t.Errorf("expected 0 matches for single-colon line, got %d", len(matches))
-	}
-}
-
-func TestParseRGOutput_NonNumericLineNumber(t *testing.T) {
-	t.Parallel()
-
-	// Two colons but second field is not a number — Sscanf fails, line defaults to 0
-	output := "file.txt:abc:some content\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 1 {
-		t.Fatalf("expected 1 match, got %d", len(matches))
-	}
-	if matches[0].Line != 0 {
-		t.Errorf("Line = %d, want 0 for non-numeric line number", matches[0].Line)
-	}
-	if matches[0].File != "file.txt" {
-		t.Errorf("File = %q, want %q", matches[0].File, "file.txt")
-	}
-	if matches[0].Content != "some content" {
-		t.Errorf("Content = %q, want %q", matches[0].Content, "some content")
-	}
-}
-
-func TestParseRGOutput_SingleLine(t *testing.T) {
-	t.Parallel()
-
-	output := "main.go:42:func main()"
-	matches := parseRGOutput(output)
-	if len(matches) != 1 {
-		t.Fatalf("expected 1 match, got %d", len(matches))
-	}
-	if matches[0].File != "main.go" {
-		t.Errorf("File = %q, want %q", matches[0].File, "main.go")
-	}
-	if matches[0].Line != 42 {
-		t.Errorf("Line = %d, want 42", matches[0].Line)
-	}
-	if matches[0].Content != "func main()" {
-		t.Errorf("Content = %q, want %q", matches[0].Content, "func main()")
-	}
-}
-
-func TestParseRGOutput_TrailingNewlineOnly(t *testing.T) {
-	t.Parallel()
-
-	output := "\n"
-	matches := parseRGOutput(output)
-	if len(matches) != 0 {
-		t.Errorf("expected 0 matches for bare newline, got %d", len(matches))
 	}
 }
 
@@ -540,56 +417,211 @@ func TestGoGrep_SingleFileGrepFileError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// parseRGOutput benchmarks
+// Helper function tests
 // ---------------------------------------------------------------------------
 
-// buildRGOutput creates synthetic ripgrep output with numLines match lines.
-func buildRGOutput(numLines int) string {
-	var buf strings.Builder
-	for i := range numLines {
-		buf.WriteString("pkg/engine/engine.go:")
-		// Format line number as zero-padded 3 digits
-		buf.WriteByte(byte('0' + (i/100)%10))
-		buf.WriteByte(byte('0' + (i/10)%10))
-		buf.WriteByte(byte('0' + i%10))
-		buf.WriteByte(':')
-		buf.WriteString("func processRequest(ctx context.Context, input json.RawMessage) (*types.Response, error) {")
-		buf.WriteByte('\n')
-	}
-	return buf.String()
-}
+func TestEmptyResult(t *testing.T) {
+	t.Parallel()
 
-func BenchmarkParseRGOutput_Small(b *testing.B) {
-	output := buildRGOutput(10)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_ = parseRGOutput(output)
+	// Test all three modes
+	result := emptyResult("content")
+	out := result.Data.(*Output)
+	if out.Mode != "content" || out.Content != "" || out.NumLines != 0 {
+		t.Errorf("content emptyResult = %+v", out)
+	}
+
+	result = emptyResult("count")
+	out = result.Data.(*Output)
+	if out.Mode != "count" || out.NumFiles != 0 || out.NumMatches != 0 {
+		t.Errorf("count emptyResult = %+v", out)
+	}
+
+	result = emptyResult("files_with_matches")
+	out = result.Data.(*Output)
+	if out.Mode != "files_with_matches" || out.NumFiles != 0 || len(out.Filenames) != 0 {
+		t.Errorf("files_with_matches emptyResult = %+v", out)
 	}
 }
 
-func BenchmarkParseRGOutput_Medium(b *testing.B) {
-	output := buildRGOutput(100)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_ = parseRGOutput(output)
+func TestApplyHeadLimit_Truncation(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b", "c", "d", "e"}
+	// limit=2, offset=0: 5 items → 2, truncation (5 > 2) → return limit
+	limited, applied := applyHeadLimit(items, 2, 0)
+	if len(limited) != 2 {
+		t.Errorf("len = %d, want 2", len(limited))
+	}
+	if applied == nil || *applied != 2 {
+		t.Errorf("applied = %v, want 2", applied)
 	}
 }
 
-func BenchmarkParseRGOutput_Large(b *testing.B) {
-	output := buildRGOutput(1000)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_ = parseRGOutput(output)
+func TestApplyHeadLimit_NoTruncation(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b"}
+	// limit=2, offset=0: 2 items → 2, no truncation (2 not > 2) → nil
+	limited, applied := applyHeadLimit(items, 2, 0)
+	if len(limited) != 2 {
+		t.Errorf("len = %d, want 2", len(limited))
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil (no truncation)", applied)
 	}
 }
 
-func BenchmarkParseRGOutput_Empty(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_ = parseRGOutput("")
+func TestApplyHeadLimit_OffsetUnlimited(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b", "c"}
+	// limit=0 (unlimited), offset=1 → return items[1:]
+	limited, applied := applyHeadLimit(items, 0, 1)
+	if len(limited) != 2 || limited[0] != "b" {
+		t.Errorf("limited = %v, want [b, c]", limited)
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil", applied)
+	}
+}
+
+func TestApplyHeadLimit_OffsetBeyondLength(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b"}
+	// offset=5 >= len(items)=2 → empty
+	limited, applied := applyHeadLimit(items, 3, 5)
+	if len(limited) != 0 {
+		t.Errorf("len = %d, want 0", len(limited))
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil", applied)
+	}
+}
+
+func TestApplyHeadLimit_LimitBeyondLength(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b"}
+	// limit=10, offset=0: end=10 > len=2 → end=2, no truncation (2-0=2 not > 2)
+	limited, applied := applyHeadLimit(items, 10, 0)
+	if len(limited) != 2 {
+		t.Errorf("len = %d, want 2", len(limited))
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil (no truncation)", applied)
+	}
+}
+
+func TestToRelativePath(t *testing.T) {
+	t.Parallel()
+
+	// Normal case: abs path → relative
+	abs := "/home/user/project/file.go"
+	rel := toRelativePath(abs)
+	// Should be something like "../../../file.go" relative to cwd
+	if rel == "" {
+		t.Error("toRelativePath returned empty string")
+	}
+
+	// Error case: impossible path (outside any common root)
+	// filepath.Rel may fail for paths with no common prefix
+	// The function should return abs path on error
+	abs2 := toRelativePath("/")
+	if abs2 == "" {
+		t.Error("toRelativePath returned empty for root")
+	}
+}
+
+func TestGrepFile_RegexPattern(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "regex.txt")
+	if err := os.WriteFile(fp, []byte("abc\ndef\nghi\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Valid regex pattern
+	matches, err := grepFile(fp, "a.*c")
+	if err != nil {
+		t.Fatalf("grepFile() error: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Content != "abc" {
+		t.Errorf("matches = %+v, want [abc]", matches)
+	}
+}
+
+func TestGrepFile_InvalidRegexFallsBackToContains(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "invalid.txt")
+	if err := os.WriteFile(fp, []byte("[invalid(regex\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Invalid regex: falls back to strings.Contains
+	matches, err := grepFile(fp, "[invalid(regex")
+	if err != nil {
+		t.Fatalf("grepFile() error: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Content != "[invalid(regex" {
+		t.Errorf("matches = %+v, want [[invalid(regex]]", matches)
+	}
+}
+
+func TestGrepFile_ScannerError(t *testing.T) {
+	// Skip on Windows
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on Windows")
+	}
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "scanerr.txt")
+	// Create a file that the scanner will error on.
+	// The default scanner buffer is 64K. A very long line (> 64K) triggers bufio.Scanner: token too long.
+	// We need to write a line longer than the max token size (64K default).
+	longLine := strings.Repeat("x", 70000) // 70K > 64K
+	if err := os.WriteFile(fp, []byte(longLine+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := grepFile(fp, "x")
+	if err == nil {
+		t.Fatal("grepFile() should return error for token too long")
+	}
+	// Error message should indicate the issue
+	if !strings.Contains(err.Error(), "token") && !strings.Contains(err.Error(), "Buf") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestSplitGlobPatterns_BraceExpansion(t *testing.T) {
+	t.Parallel()
+
+	// TS logic: brace patterns kept intact, others split on comma
+	patterns := splitGlobPatterns("*.{ts,tsx,js}")
+	if len(patterns) != 1 || patterns[0] != "*.{ts,tsx,js}" {
+		t.Errorf("patterns = %v, want [*.{ts,tsx,js}]", patterns)
+	}
+
+	patterns = splitGlobPatterns("*.go *.rs")
+	if len(patterns) != 2 || patterns[0] != "*.go" || patterns[1] != "*.rs" {
+		t.Errorf("patterns = %v, want [*.go, *.rs]", patterns)
+	}
+
+	patterns = splitGlobPatterns("foo,bar,baz")
+	if len(patterns) != 3 {
+		t.Errorf("len(patterns) = %d, want 3", len(patterns))
+	}
+}
+
+func TestSplitGlobPatterns_Empty(t *testing.T) {
+	t.Parallel()
+
+	patterns := splitGlobPatterns("")
+	if len(patterns) != 0 {
+		t.Errorf("patterns = %v, want []", patterns)
 	}
 }

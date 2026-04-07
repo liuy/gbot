@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/user/gbot/pkg/tool/fileedit"
+	"github.com/user/gbot/pkg/types"
 )
 
 func TestNew(t *testing.T) {
@@ -517,5 +519,197 @@ func TestExecute_PreservesPermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0o600 {
 		t.Errorf("Permissions = %o, want 0600", perm)
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Task #20: Must-read-first + staleness rejection
+// ---------------------------------------------------------------------------
+
+func TestExecute_MustReadFirst_RejectsUnread(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "unread.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tctx := &types.ToolUseContext{
+		ReadFileState: make(map[string]types.FileState),
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
+	_, err := fileedit.Execute(context.Background(), input, tctx)
+	if err == nil {
+		t.Fatal("Execute() should reject edit to unread file")
+	}
+	if !strings.Contains(err.Error(), "not been read") && !strings.Contains(err.Error(), "read it first") {
+		t.Errorf("Error = %q, want 'not been read' or 'read it first'", err.Error())
+	}
+}
+
+func TestExecute_MustReadFirst_RejectsPartialRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "partial.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(fp)
+	tctx := &types.ToolUseContext{
+		ReadFileState: map[string]types.FileState{
+			fp: {
+				Content:       "hello world\n",
+				Timestamp:     info.ModTime().UnixMilli(),
+				IsPartialView: true,
+			},
+		},
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
+	_, err := fileedit.Execute(context.Background(), input, tctx)
+	if err == nil {
+		t.Fatal("Execute() should reject edit to partially-read file")
+	}
+	if !strings.Contains(err.Error(), "not been read") && !strings.Contains(err.Error(), "read it first") {
+		t.Errorf("Error = %q, want 'not been read' or 'read it first'", err.Error())
+	}
+}
+
+func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "stale.txt")
+	if err := os.WriteFile(fp, []byte("old content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(fp)
+	oldMtime := info.ModTime().UnixMilli()
+	tctx := &types.ToolUseContext{
+		ReadFileState: map[string]types.FileState{
+			fp: {
+				Content:       "old content\n",
+				Timestamp:     oldMtime,
+				IsPartialView: false,
+			},
+		},
+	}
+	// Modify file after recording read state
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(fp, []byte("modified by others\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"old content","new_string":"new content"}`)
+	_, err := fileedit.Execute(context.Background(), input, tctx)
+	if err == nil {
+		t.Fatal("Execute() should reject edit to stale file")
+	}
+	if !strings.Contains(err.Error(), "modified since read") && !strings.Contains(err.Error(), "read it again") {
+		t.Errorf("Error = %q, want 'modified since read' or 'read it again'", err.Error())
+	}
+}
+
+func TestExecute_MustReadFirst_AllowsNewFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "new.txt")
+	// File doesn't exist — no read required
+	tctx := &types.ToolUseContext{
+		ReadFileState: make(map[string]types.FileState),
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"","new_string":"hello new file\n"}`)
+	result, err := fileedit.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+}
+
+func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "fullread.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(fp)
+	tctx := &types.ToolUseContext{
+		ReadFileState: map[string]types.FileState{
+			fp: {
+				Content:       "hello world\n",
+				Timestamp:     info.ModTime().UnixMilli(),
+				IsPartialView: false,
+			},
+		},
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
+	result, err := fileedit.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if output.NewString != "goodbye" {
+		t.Errorf("NewString = %q, want 'goodbye'", output.NewString)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task #20: Desanitize — sanitized tags should match their real counterparts
+// ---------------------------------------------------------------------------
+
+func TestExecute_DesanitizeMatchesFunctionResults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "desanitize.txt")
+	content := "before\n<function_results>data here</function_results>\nafter\n"
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Model sends sanitized <fnr> but file has <function_results>
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"<fnr>data here</fnr>","new_string":"<fnr>replaced</fnr>"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v (desanitize should handle <fnr>)", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	// The actual old/new strings should be the desanitized versions
+	if !strings.Contains(output.OldString, "<function_results>") {
+		t.Errorf("OldString = %q, should contain '<function_results>'", output.OldString)
+	}
+	if !strings.Contains(output.NewString, "<function_results>") {
+		t.Errorf("NewString = %q, should contain '<function_results>'", output.NewString)
+	}
+	data, _ := os.ReadFile(fp)
+	if strings.Contains(string(data), "<fnr>") {
+		t.Errorf("File should not contain sanitized '<fnr>', got: %q", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task #20: Structured patch output
+// ---------------------------------------------------------------------------
+
+
+func TestExecute_StructuredPatchOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "patch.txt")
+	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"line2","new_string":"replaced"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if output.OriginalFile == nil {
+		t.Error("OriginalFile = nil, want original content")
+	} else if *output.OriginalFile != "line1\nline2\nline3\n" {
+		t.Errorf("OriginalFile = %q, want original content", *output.OriginalFile)
+	}
+	if len(output.StructuredPatch) == 0 {
+		t.Error("StructuredPatch is empty, want at least one hunk")
 	}
 }

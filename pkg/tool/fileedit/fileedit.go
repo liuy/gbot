@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf16"
 
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/user/gbot/pkg/tool"
 	"github.com/user/gbot/pkg/types"
 )
@@ -21,11 +23,23 @@ type Input struct {
 	ReplaceAll bool   `json:"replace_all,omitempty"`
 }
 
+// PatchHunk represents a single hunk in a unified diff.
+// Source: FileEditTool/types.ts — hunkSchema.
+type PatchHunk struct {
+	OldStart int      `json:"oldStart"`
+	OldLines int      `json:"oldLines"`
+	NewStart int      `json:"newStart"`
+	NewLines int      `json:"newLines"`
+	Lines    []string `json:"lines"`
+}
+
 type Output struct {
-	FilePath   string `json:"filePath"`
-	OldString  string `json:"oldString"`
-	NewString  string `json:"newString"`
-	ReplaceAll bool   `json:"replaceAll"`
+	FilePath        string     `json:"filePath"`
+	OldString       string     `json:"oldString"`
+	NewString       string     `json:"newString"`
+	ReplaceAll      bool       `json:"replaceAll"`
+	OriginalFile    *string    `json:"originalFile"`
+	StructuredPatch []PatchHunk `json:"structuredPatch"`
 }
 
 type fileReadResult struct {
@@ -90,43 +104,63 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 		return nil, fmt.Errorf("file_path is required")
 	}
 
+	// Expand path
+	fp := in.FilePath
+	if !filepath.IsAbs(fp) && !strings.HasPrefix(fp, "~/") && tctx != nil && tctx.WorkingDir != "" {
+		fp = filepath.Join(tctx.WorkingDir, fp)
+	}
+	fullFilePath := expandPath(fp)
+
 	if in.OldString == in.NewString {
 		return nil, fmt.Errorf("no changes to make: old_string and new_string are exactly the same")
 	}
 
-	stat, statErr := os.Stat(in.FilePath)
+	stat, statErr := os.Stat(fullFilePath)
 	if statErr == nil {
 		if stat.Size() > MaxEditFileSize {
 			return nil, fmt.Errorf("file is too large to edit (%d bytes). Maximum editable file size is %d bytes", stat.Size(), MaxEditFileSize)
 		}
 	}
 
-	fr := readFileForEdit(in.FilePath)
+	fr := readFileForEdit(fullFilePath)
+
+	// Must-read-first + staleness validation for existing files
+	if fr.fileExists && tctx != nil && tctx.ReadFileState != nil {
+		state, hasState := tctx.ReadFileState[fullFilePath]
+		if !hasState || state.IsPartialView {
+			return nil, fmt.Errorf("file has not been read yet, read it first before editing")
+		}
+		if info, statErr := os.Stat(fullFilePath); statErr == nil {
+			if info.ModTime().UnixMilli() > state.Timestamp {
+				return nil, fmt.Errorf("file has been modified since read, read it again before editing")
+			}
+		}
+	}
 
 	if !fr.fileExists {
 		if in.OldString == "" {
-			if err := os.WriteFile(in.FilePath, []byte(in.NewString), 0o644); err != nil {
+			if err := os.WriteFile(fullFilePath, []byte(in.NewString), 0o644); err != nil {
 				return nil, fmt.Errorf("write file: %w", err)
 			}
 			return &tool.ToolResult{Data: &Output{
-				FilePath:   in.FilePath,
+				FilePath:   fullFilePath,
 				OldString:  "",
 				NewString:  in.NewString,
 				ReplaceAll: false,
 			}}, nil
 		}
-		return nil, fmt.Errorf("file does not exist: %s", in.FilePath)
+		return nil, fmt.Errorf("file does not exist: %s", fullFilePath)
 	}
 
 	if in.OldString == "" {
 		if strings.TrimSpace(fr.content) != "" {
 			return nil, fmt.Errorf("cannot create new file - file already exists")
 		}
-		if err := os.WriteFile(in.FilePath, []byte(in.NewString), fr.fileMode); err != nil {
+		if err := os.WriteFile(fullFilePath, []byte(in.NewString), fr.fileMode); err != nil {
 			return nil, fmt.Errorf("write file: %w", err)
 		}
 		return &tool.ToolResult{Data: &Output{
-			FilePath:   in.FilePath,
+			FilePath:   fullFilePath,
 			OldString:  "",
 			NewString:  in.NewString,
 			ReplaceAll: false,
@@ -134,6 +168,16 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	}
 
 	actualOldString, found := FindActualString(fr.content, in.OldString)
+	var appliedReplacements []struct{ From, To string }
+	if !found {
+		// Try desanitize fallback — API may have sanitized XML-like tags
+		var desanitizedOld string
+		desanitizedOld, appliedReplacements = desanitizeMatchString(in.OldString)
+		if desanitizedOld != in.OldString && strings.Contains(fr.content, desanitizedOld) {
+			actualOldString = desanitizedOld
+			found = true
+		}
+	}
 	if !found {
 		return nil, fmt.Errorf("string to replace not found in file.\nString: %s", in.OldString)
 	}
@@ -146,6 +190,11 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 
 	actualNewString := PreserveQuoteStyle(in.OldString, actualOldString, in.NewString)
 
+	// Apply same desanitize replacements to new_string if any were applied to old_string
+	for _, r := range appliedReplacements {
+		actualNewString = strings.ReplaceAll(actualNewString, r.From, r.To)
+	}
+
 	updatedContent := ApplyEditToFile(fr.content, actualOldString, actualNewString, in.ReplaceAll)
 
 	writeContent := updatedContent
@@ -156,20 +205,26 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	if fr.hasBOM {
 		bom := []byte{0xFF, 0xFE}
 		encoded := append(bom, encodeUTF16LE(writeContent)...)
-		if err := os.WriteFile(in.FilePath, encoded, fr.fileMode); err != nil {
+		if err := os.WriteFile(fullFilePath, encoded, fr.fileMode); err != nil {
 			return nil, fmt.Errorf("write file: %w", err)
 		}
 	} else {
-		if err := os.WriteFile(in.FilePath, []byte(writeContent), fr.fileMode); err != nil {
+		if err := os.WriteFile(fullFilePath, []byte(writeContent), fr.fileMode); err != nil {
 			return nil, fmt.Errorf("write file: %w", err)
 		}
 	}
 
+	// Compute structured patch
+	patch := getStructuredPatch(fr.content, updatedContent)
+	originalFile := fr.content
+
 	return &tool.ToolResult{Data: &Output{
-		FilePath:   in.FilePath,
-		OldString:  actualOldString,
-		NewString:  actualNewString,
-		ReplaceAll: in.ReplaceAll,
+		FilePath:        fullFilePath,
+		OldString:       actualOldString,
+		NewString:       actualNewString,
+		ReplaceAll:      in.ReplaceAll,
+		OriginalFile:    &originalFile,
+		StructuredPatch: patch,
 	}}, nil
 }
 
@@ -226,4 +281,136 @@ func encodeUTF16LE(s string) []byte {
 		data[i*2+1] = byte(r >> 8)
 	}
 	return data
+}
+
+// expandPath returns an absolute path for the given file path.
+func expandPath(filePath string) string {
+	if filepath.IsAbs(filePath) {
+		return filePath
+	}
+	if strings.HasPrefix(filePath, "~/") {
+		if home := os.Getenv("HOME"); home != "" {
+			return filepath.Join(home, filePath[2:])
+		}
+	}
+	abs, _ := filepath.Abs(filePath)
+	return abs
+}
+
+// desanitizations maps API-sanitized tags back to their real counterparts.
+// Source: FileEditTool/utils.ts — DESANITIZATIONS.
+var desanitizations = map[string]string{
+	"<fnr>":        "<function_results>",
+	"</fnr>":       "</function_results>",
+	"<n>":          "<name>",
+	"</n>":         "</name>",
+	"<o>":          "<output>",
+	"</o>":         "</output>",
+	"<e>":          "<error>",
+	"</e>":         "</error>",
+	"<s>":          "<system>",
+	"</s>":         "</system>",
+	"<r>":          "<result>",
+	"</r>":         "</result>",
+	"< META_START >": "<META_START>",
+	"< META_END >":   "<META_END>",
+	"< EOT >":        "<EOT>",
+	"< META >":       "<META>",
+	"< SOS >":        "<SOS>",
+	"\n\nH:":       "\n\nHuman:",
+	"\n\nA:":       "\n\nAssistant:",
+}
+
+// desanitizeMatchString applies desanitization replacements to a match string.
+// Returns the desanitized string and the list of replacements applied.
+func desanitizeMatchString(s string) (string, []struct{ From, To string }) {
+	result := s
+	var applied []struct{ From, To string }
+	for from, to := range desanitizations {
+		before := result
+		result = strings.ReplaceAll(result, from, to)
+		if before != result {
+			applied = append(applied, struct{ From, To string }{from, to})
+		}
+	}
+	return result, applied
+}
+
+// getStructuredPatch computes structured unified diff hunks between old and new content.
+func getStructuredPatch(oldContent, newContent string) []PatchHunk {
+	dmp := diffmatchpatch.New()
+	diffs := dmp.DiffMain(oldContent, newContent, true)
+	diffs = dmp.DiffCleanupSemantic(diffs)
+
+	var hunks []PatchHunk
+	var hunkLines []string
+	var oldLineNum, newLineNum int
+
+	flushHunk := func() {
+		if len(hunkLines) == 0 {
+			return
+		}
+		hasChange := false
+		for _, l := range hunkLines {
+			if len(l) > 0 && (l[0] == '-' || l[0] == '+') {
+				hasChange = true
+				break
+			}
+		}
+		if !hasChange {
+			hunkLines = nil
+			return
+		}
+		var oldCnt, newCnt int
+		for _, l := range hunkLines {
+			switch l[0] {
+			case '-':
+				oldCnt++
+			case '+':
+				newCnt++
+			default:
+				oldCnt++
+				newCnt++
+			}
+		}
+		hunks = append(hunks, PatchHunk{
+			OldStart: oldLineNum - oldCnt + 1,
+			OldLines: oldCnt,
+			NewStart: newLineNum - newCnt + 1,
+			NewLines: newCnt,
+			Lines:    hunkLines,
+		})
+		hunkLines = nil
+	}
+
+	lines := func(text string) []string {
+		parts := strings.Split(text, "\n")
+		n := len(parts)
+		if n > 0 && parts[n-1] == "" {
+			n--
+		}
+		return parts[:n]
+	}
+
+	for _, d := range diffs {
+		for _, line := range lines(d.Text) {
+			switch d.Type {
+			case diffmatchpatch.DiffEqual:
+				flushHunk()
+				hunkLines = append(hunkLines, " "+line)
+				oldLineNum++
+				newLineNum++
+			case diffmatchpatch.DiffDelete:
+				flushHunk()
+				hunkLines = append(hunkLines, "-"+line)
+				oldLineNum++
+			case diffmatchpatch.DiffInsert:
+				flushHunk()
+				hunkLines = append(hunkLines, "+"+line)
+				newLineNum++
+			}
+		}
+	}
+	flushHunk()
+	return hunks
 }

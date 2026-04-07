@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"fmt"
 	"testing"
 
 	"github.com/user/gbot/pkg/tool"
@@ -110,6 +111,12 @@ func TestExecute_MatchGoFiles(t *testing.T) {
 	if output.Count != 2 {
 		t.Errorf("Count = %d, want 2", output.Count)
 	}
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
+	}
+	if output.Truncated {
+		t.Errorf("Truncated = true, want false for 2 files")
+	}
 
 	// Results should be sorted
 	expected := []string{"main.go", "util.go"}
@@ -171,6 +178,9 @@ func TestExecute_NoMatches(t *testing.T) {
 	if len(output.Files) != 0 {
 		t.Errorf("Files = %v, want empty", output.Files)
 	}
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
+	}
 }
 
 func TestExecute_WorkingDirFromContext(t *testing.T) {
@@ -191,6 +201,52 @@ func TestExecute_WorkingDirFromContext(t *testing.T) {
 	output := result.Data.(*glob.Output)
 	if output.Count != 1 {
 		t.Errorf("Count = %d, want 1", output.Count)
+	}
+}
+
+func TestExecute_Truncated(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create more than 100 files to trigger truncation
+	for i := 0; i < 150; i++ {
+		fp := filepath.Join(dir, fmt.Sprintf("file%03d.go", i))
+		if err := os.WriteFile(fp, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if !output.Truncated {
+		t.Errorf("Truncated = false, want true for 150 files")
+	}
+	if output.Count != glob.MaxGlobResults {
+		t.Errorf("Count = %d, want %d (max)", output.Count, glob.MaxGlobResults)
+	}
+	if len(output.Files) != glob.MaxGlobResults {
+		t.Errorf("Files len = %d, want %d", len(output.Files), glob.MaxGlobResults)
+	}
+}
+
+func TestExecute_DurationMs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
 	}
 }
 
@@ -250,8 +306,10 @@ func TestOutputJSON(t *testing.T) {
 	t.Parallel()
 
 	output := glob.Output{
-		Files: []string{"a.go", "b.go"},
-		Count: 2,
+		Files:      []string{"a.go", "b.go"},
+		Count:      2,
+		DurationMs: 5,
+		Truncated:  false,
 	}
 
 	data, err := json.Marshal(output)
@@ -267,7 +325,36 @@ func TestOutputJSON(t *testing.T) {
 	if got.Count != 2 {
 		t.Errorf("Count = %d, want 2", got.Count)
 	}
+	if got.DurationMs != 5 {
+		t.Errorf("DurationMs = %d, want 5", got.DurationMs)
+	}
+	if got.Truncated {
+		t.Errorf("Truncated = true, want false")
+	}
 	if len(got.Files) != 2 {
 		t.Fatalf("Files length = %d, want 2", len(got.Files))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap fix: output JSON field names must match TS (filenames, numFiles)
+// ---------------------------------------------------------------------------
+
+func TestOutput_JSONFieldNames(t *testing.T) {
+	t.Parallel()
+	output := glob.Output{Files: []string{"a.go"}, Count: 1}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := parsed["filenames"]; !ok {
+		t.Error("JSON output missing 'filenames' field (has 'files' instead — must match TS)")
+	}
+	if _, ok := parsed["numFiles"]; !ok {
+		t.Error("JSON output missing 'numFiles' field (has 'count' instead — must match TS)")
 	}
 }
