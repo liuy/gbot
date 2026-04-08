@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/user/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 func TestSchemaBuilder_Empty(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

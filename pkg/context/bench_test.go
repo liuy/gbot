@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/gbot/pkg/context"
+	"github.com/liuy/gbot/pkg/context"
 )
 
 // ---------------------------------------------------------------------------

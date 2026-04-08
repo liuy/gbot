@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/engine"
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // testTool implements tool.Tool for toolloop tests.

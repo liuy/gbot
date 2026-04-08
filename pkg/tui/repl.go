@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/user/gbot/pkg/engine"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

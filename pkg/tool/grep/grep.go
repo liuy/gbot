@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // Default cap on grep results when head_limit is unspecified.

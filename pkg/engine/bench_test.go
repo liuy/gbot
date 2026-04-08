@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/llm"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ func BenchmarkMessageJSONMarshal(b *testing.B) {
 		Content: []types.ContentBlock{
 			types.NewTextBlock("Here's the analysis of your codebase."),
 			types.NewToolUseBlock("toolu_01", "Bash", json.RawMessage(`{"command":"go test ./..."}`)),
-			types.NewToolResultBlock("toolu_01", json.RawMessage(`{"output":"ok  github.com/user/gbot/pkg/types  0.007s"}`), false),
+			types.NewToolResultBlock("toolu_01", json.RawMessage(`{"output":"ok  github.com/liuy/gbot/pkg/types  0.007s"}`), false),
 		},
 		StopReason: "end_turn",
 		Usage:      &types.Usage{InputTokens: 500, OutputTokens: 200},

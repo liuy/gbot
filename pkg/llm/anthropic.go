@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // AnthropicProvider implements Provider for the Anthropic Messages API.

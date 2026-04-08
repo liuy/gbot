@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/gbot/pkg/tool/glob"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool/glob"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

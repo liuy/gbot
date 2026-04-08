@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // CreateUserMessage creates a user message from a text string.

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/llm"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

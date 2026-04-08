@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // Config holds the full application configuration.

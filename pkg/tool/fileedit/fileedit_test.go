@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/tool/fileedit"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestNew(t *testing.T) {

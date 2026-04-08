@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/gbot/pkg/context"
+	"github.com/liuy/gbot/pkg/context"
 )
 
 func TestNewBuilder(t *testing.T) {

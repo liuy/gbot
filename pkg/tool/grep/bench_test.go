@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/user/gbot/pkg/tool/grep"
+	"github.com/liuy/gbot/pkg/tool/grep"
 )
 
 // ---------------------------------------------------------------------------

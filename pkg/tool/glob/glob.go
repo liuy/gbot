@@ -14,8 +14,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // Maximum number of files returned by a single glob call.

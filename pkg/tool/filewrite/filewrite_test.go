@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/tool/filewrite"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/filewrite"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------

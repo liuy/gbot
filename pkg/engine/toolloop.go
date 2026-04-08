@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ToolStatus tracks the execution state of a tool call.

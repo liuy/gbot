@@ -17,8 +17,8 @@ import (
 	"sync"
 
 	"github.com/sergi/go-diff/diffmatchpatch"
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // Source: FileWriteTool.ts — Zod schema for file write input.

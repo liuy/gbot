@@ -10,8 +10,8 @@ import (
 	"unicode/utf16"
 
 	"github.com/sergi/go-diff/diffmatchpatch"
-	"github.com/user/gbot/pkg/tool"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 var MaxEditFileSize int64 = 1024 * 1024 * 1024

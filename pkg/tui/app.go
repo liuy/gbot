@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/user/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/engine"
 )
 
 // ---------------------------------------------------------------------------

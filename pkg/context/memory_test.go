@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/gbot/pkg/context"
+	"github.com/liuy/gbot/pkg/context"
 )
 
 func TestLoadMemoryFiles_Empty(t *testing.T) {

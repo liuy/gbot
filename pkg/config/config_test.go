@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/gbot/pkg/config"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestDefaultConfig(t *testing.T) {

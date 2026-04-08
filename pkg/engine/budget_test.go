@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/user/gbot/pkg/engine"
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestNewBudgetTracker(t *testing.T) {

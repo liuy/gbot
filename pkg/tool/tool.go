@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/user/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
