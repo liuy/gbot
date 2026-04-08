@@ -1,71 +1,106 @@
 #!/usr/bin/env bash
-# gbot agent bridge — start/stop gbot in a detached screen session.
-# Agent can send messages, watch output, just like a human.
+# gbot agent bridge — start/stop gbot and/or claude in detached screen sessions.
+# Agent can send messages, watch output, compare responses.
 #
 # Usage:
-#   ./gbot-agent start                  # start gbot in screen
-#   ./gbot-agent send "Say hello"       # type a message (char by char)
-#   ./gbot-agent screen                 # capture current screen (ANSI)
-#   ./gbot-agent screen --plain         # capture current screen (plain text)
-#   ./gbot-agent wait [--timeout 60]    # wait until response done (spinner stops)
-#   ./gbot-agent send "What is 2+2?"    # another turn
-#   ./gbot-agent stop                   # kill gbot
+#   ./gbot-agent start                        # start gbot (default)
+#   ./gbot-agent start --engine claude        # start claude code
+#   ./gbot-agent start --engine both          # start both
+#   ./gbot-agent send "Say hello"             # send to gbot
+#   ./gbot-agent send --engine claude "Hi"    # send to claude
+#   ./gbot-agent screen [--plain]             # capture gbot screen
+#   ./gbot-agent screen --engine claude       # capture claude screen
+#   ./gbot-agent wait [--timeout 60]          # wait for gbot
+#   ./gbot-agent stop                         # stop gbot
+#   ./gbot-agent stop --engine claude         # stop claude
+#   ./gbot-agent stop --engine both           # stop both
+#   ./gbot-agent compare "Read /tmp/test.txt" # send to both, diff output
+#   ./gbot-agent diff                         # diff last captured screens
 
 set -euo pipefail
 
-SESSION="gbot"
-BINARY="./gbot"
-SCREENSHOT="/tmp/gbot-screen.txt"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-case "${1:-help}" in
-start)
-    cd "$SCRIPT_DIR"
-    # Build
-    if [ "${2:-}" != "--no-build" ]; then
-        echo "[agent] building..." >&2
-        go build -o "$BINARY" ./cmd/gbot/ || { echo "build FAILED" >&2; exit 1; }
-    fi
-    # Kill existing session
-    screen -S "$SESSION" -X quit 2>/dev/null || true
-    sleep 0.3
-    # Start in detached screen with clean env
-    # Must unset inherited vars that override gbot's own settings file
-    env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-        -u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u API_TIMEOUT_MS \
-        screen -dmS "$SESSION" "$BINARY"
-    # Wait for it to start
-    for i in $(seq 1 20); do
-        if screen -list | grep -q "$SESSION"; then
-            echo "gbot started in screen session '$SESSION'"
-            echo "  send:   ./gbot-agent send 'your message'"
-            echo "  screen: ./gbot-agent screen [--plain]"
-            echo "  wait:   ./gbot-agent wait"
-            echo "  stop:   ./gbot-agent stop"
-            exit 0
+# Session and screenshot paths per engine
+GBOT_SESSION="gbot"
+CLAUDE_SESSION="claude-gbot"
+GBOT_SCREENSHOT="/tmp/gbot-screen.txt"
+CLAUDE_SCREENSHOT="/tmp/claude-gbot-screen.txt"
+GBOT_BINARY="./gbot"
+CLAUDE_BINARY="claude"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+parse_engine() {
+    # Parse --engine flag from args, return engine name (gbot/claude/both)
+    local engine="gbot"
+    local args=("$@")
+    for (( i=0; i<${#args[@]}; i++ )); do
+        if [ "${args[$i]}" = "--engine" ] && [ -n "${args[$((i+1))]:-}" ]; then
+            engine="${args[$((i+1))]}"
+            break
+        fi
+    done
+    echo "$engine"
+}
+
+session_for() {
+    case "$1" in
+        gbot)  echo "$GBOT_SESSION" ;;
+        claude) echo "$CLAUDE_SESSION" ;;
+    esac
+}
+
+screenshot_for() {
+    case "$1" in
+        gbot)  echo "$GBOT_SCREENSHOT" ;;
+        claude) echo "$CLAUDE_SCREENSHOT" ;;
+    esac
+}
+
+screen_alive() {
+    screen -list 2>/dev/null | grep -q "$1"
+}
+
+wait_for_idle() {
+    local session="$1"
+    local timeout="${2:-120}"
+    local screenshot="/tmp/${session}-screen.txt"
+    local elapsed=0
+    local idle_count=0
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+        screen -S "$session" -X hardcopy "$screenshot" 2>/dev/null || break
+        if [ -f "$screenshot" ]; then
+            # Detect spinner characters or "working" indicator
+            if ! grep -qP '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|Working|working|Thinking|thinking' "$screenshot" 2>/dev/null; then
+                idle_count=$((idle_count + 1))
+                if [ "$idle_count" -ge 8 ]; then
+                    return 0
+                fi
+            else
+                idle_count=0
+            fi
         fi
         sleep 0.1
+        elapsed=$((elapsed + 100))
     done
-    echo "FAILED to start gbot" >&2
-    exit 1
-    ;;
+    return 1
+}
 
-send)
-    msg="${2:-}"
-    if [ -z "$msg" ]; then
-        echo "Usage: ./gbot-agent send 'your message'" >&2
-        exit 1
+send_to() {
+    local session="$1"
+    local msg="$2"
+    if ! screen_alive "$session"; then
+        echo "session '$session' not running" >&2
+        return 1
     fi
-    if ! screen -list | grep -q "$SESSION"; then
-        echo "gbot not running. Start with: ./gbot-agent start" >&2
-        exit 1
-    fi
-    # Type message char by char into screen
-    # screen -X stuff sends keystrokes to the session
+    # Type message char by char
     for (( i=0; i<${#msg}; i++ )); do
         ch="${msg:$i:1}"
-        screen -S "$SESSION" -X stuff "$ch"
-        # Space needs a tiny delay for bubbletea to register
+        screen -S "$session" -X stuff "$ch"
         if [ "$ch" = " " ]; then
             sleep 0.04
         else
@@ -73,73 +108,277 @@ send)
         fi
     done
     # Press Enter
-    screen -S "$SESSION" -X stuff $'\r'
-    echo "sent: $msg"
-    ;;
+    screen -S "$session" -X stuff $'\r'
+}
 
-screen)
-    if ! screen -list | grep -q "$SESSION"; then
-        echo "gbot not running" >&2
+capture_screen() {
+    local session="$1"
+    local screenshot="$2"
+    local plain="${3:-}"
+    if ! screen_alive "$session"; then
+        echo "session '$session' not running" >&2
+        return 1
+    fi
+    screen -S "$session" -X hardcopy "$screenshot"
+    sleep 0.1
+    if [ ! -f "$screenshot" ]; then
+        echo "no screen data yet"
+        return 0
+    fi
+    if [ "$plain" = "--plain" ]; then
+        sed 's/\x1b\[[^a-zA-Z]*[a-zA-Z]//g' "$screenshot" | sed '/^$/d'
+    else
+        cat "$screenshot"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+do_start() {
+    local engine
+    engine="$(parse_engine "$@")"
+
+    case "$engine" in
+    gbot)
+        cd "$SCRIPT_DIR"
+        if ! echo "$@" | grep -q -- "--no-build"; then
+            echo "[agent] building gbot..." >&2
+            go build -o "$GBOT_BINARY" ./cmd/gbot/ || { echo "build FAILED" >&2; exit 1; }
+        fi
+        screen -S "$GBOT_SESSION" -X quit 2>/dev/null || true
+        sleep 0.3
+        env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+            -u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u API_TIMEOUT_MS \
+            screen -dmS "$GBOT_SESSION" "$GBOT_BINARY"
+        for i in $(seq 1 20); do
+            if screen_alive "$GBOT_SESSION"; then
+                echo "gbot started (session: $GBOT_SESSION)"
+                return 0
+            fi
+            sleep 0.1
+        done
+        echo "FAILED to start gbot" >&2; exit 1
+        ;;
+
+    claude)
+        screen -S "$CLAUDE_SESSION" -X quit 2>/dev/null || true
+        sleep 0.3
+        # Start claude with no prompts — allow all tools for testing
+        screen -dmS "$CLAUDE_SESSION" $CLAUDE_BINARY --dangerously-skip-permissions
+        for i in $(seq 1 20); do
+            if screen_alive "$CLAUDE_SESSION"; then
+                echo "claude started (session: $CLAUDE_SESSION)"
+                return 0
+            fi
+            sleep 0.1
+        done
+        echo "FAILED to start claude" >&2; exit 1
+        ;;
+
+    both)
+        echo "[agent] starting both engines..." >&2
+        # Start gbot (suppress --engine from args)
+        do_start --engine gbot
+        # Start claude
+        do_start --engine claude
+        echo "both engines started"
+        ;;
+
+    *)
+        echo "unknown engine: $engine (use gbot/claude/both)" >&2; exit 1
+        ;;
+    esac
+}
+
+do_send() {
+    local engine msg
+    engine="$(parse_engine "$@")"
+    # Extract message (skip --engine and its value)
+    local args=("$@")
+    local skip_next=false
+    msg=""
+    for arg in "${args[@]}"; do
+        if $skip_next; then skip_next=false; continue; fi
+        if [ "$arg" = "--engine" ]; then skip_next=true; continue; fi
+        msg="$arg"
+    done
+    if [ -z "$msg" ]; then
+        echo "Usage: ./gbot-agent send [--engine gbot|claude|both] 'message'" >&2
         exit 1
     fi
-    # Capture screen to file
-    screen -S "$SESSION" -X hardcopy "$SCREENSHOT"
-    sleep 0.1
-    if [ ! -f "$SCREENSHOT" ]; then
-        echo "no screen data yet"
-        exit 0
-    fi
-    if [ "${2:-}" = "--plain" ]; then
-        # Strip ANSI for readability
-        sed 's/\x1b\[[^a-zA-Z]*[a-zA-Z]//g' "$SCREENSHOT" | sed '/^$/d'
-    else
-        cat "$SCREENSHOT"
-    fi
-    ;;
+    case "$engine" in
+    both)
+        send_to "$GBOT_SESSION" "$msg"
+        sleep 0.3
+        send_to "$CLAUDE_SESSION" "$msg"
+        echo "sent to both: $msg"
+        ;;
+    *)
+        local session
+        session="$(session_for "$engine")"
+        send_to "$session" "$msg"
+        echo "sent to $engine: $msg"
+        ;;
+    esac
+}
 
-wait)
-    timeout=60
-    if [ "${2:-}" = "--timeout" ] && [ -n "${3:-}" ]; then
-        timeout="$3"
-    elif [ "${2:-}" -gt 0 ] 2>/dev/null; then
-        timeout="$2"
-    fi
-    # Wait until spinner stops (no ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ chars in screen)
-    elapsed=0
-    idle_count=0
-    while [ "$elapsed" -lt "$timeout" ]; do
-        screen -S "$SESSION" -X hardcopy "$SCREENSHOT" 2>/dev/null || break
-        if [ -f "$SCREENSHOT" ]; then
-            if ! grep -qP '[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|working' "$SCREENSHOT" 2>/dev/null; then
-                idle_count=$((idle_count + 1))
-                if [ "$idle_count" -ge 6 ]; then
-                    echo "idle (${elapsed}ms elapsed)"
-                    exit 0
-                fi
-            else
-                idle_count=0
-            fi
-        fi
-        sleep 0.05
-        elapsed=$((elapsed + 50))
+do_screen() {
+    local engine plain
+    engine="$(parse_engine "$@")"
+    plain=""
+    for arg in "$@"; do
+        if [ "$arg" = "--plain" ]; then plain="--plain"; fi
     done
-    echo "timeout after ${timeout}s"
-    ;;
+    local session screenshot
+    session="$(session_for "$engine")"
+    screenshot="$(screenshot_for "$engine")"
+    capture_screen "$session" "$screenshot" "$plain"
+}
 
-stop)
-    screen -S "$SESSION" -X quit 2>/dev/null || true
-    rm -f "$SCREENSHOT"
-    echo "gbot stopped"
-    ;;
+do_wait() {
+    local engine timeout
+    engine="$(parse_engine "$@")"
+    timeout=120
+    local args=("$@")
+    for (( i=0; i<${#args[@]}; i++ )); do
+        if [ "${args[$i]}" = "--timeout" ] && [ -n "${args[$((i+1))]:-}" ]; then
+            timeout="${args[$((i+1))]}"
+        elif [[ "${args[$i]}" =~ ^[0-9]+$ ]]; then
+            timeout="${args[$i]}"
+        fi
+    done
+    local session
+    session="$(session_for "$engine")"
+    echo "waiting for $engine (timeout: ${timeout}s)..." >&2
+    if wait_for_idle "$session" "$timeout"; then
+        echo "$engine idle (done responding)"
+    else
+        echo "$engine timeout after ${timeout}s" >&2
+        exit 1
+    fi
+}
+
+do_stop() {
+    local engine
+    engine="$(parse_engine "$@")"
+
+    case "$engine" in
+    gbot)
+        screen -S "$GBOT_SESSION" -X quit 2>/dev/null || true
+        rm -f "$GBOT_SCREENSHOT"
+        echo "gbot stopped"
+        ;;
+    claude)
+        screen -S "$CLAUDE_SESSION" -X quit 2>/dev/null || true
+        rm -f "$CLAUDE_SCREENSHOT"
+        echo "claude stopped"
+        ;;
+    both)
+        screen -S "$GBOT_SESSION" -X quit 2>/dev/null || true
+        screen -S "$CLAUDE_SESSION" -X quit 2>/dev/null || true
+        rm -f "$GBOT_SCREENSHOT" "$CLAUDE_SCREENSHOT"
+        echo "both stopped"
+        ;;
+    esac
+}
+
+do_compare() {
+    local msg="${1:-}"
+    if [ -z "$msg" ]; then
+        echo "Usage: ./gbot-agent compare 'your message'" >&2
+        exit 1
+    fi
+
+    # Verify both sessions running
+    if ! screen_alive "$GBOT_SESSION"; then
+        echo "gbot not running. Start both: ./gbot-agent start --engine both" >&2
+        exit 1
+    fi
+    if ! screen_alive "$CLAUDE_SESSION"; then
+        echo "claude not running. Start both: ./gbot-agent start --engine both" >&2
+        exit 1
+    fi
+
+    # 1. Send to both
+    send_to "$GBOT_SESSION" "$msg"
+    sleep 0.3
+    send_to "$CLAUDE_SESSION" "$msg"
+    echo "sent to both: $msg"
+
+    # 2. Wait for both to finish
+    echo "waiting for responses..." >&2
+    wait_for_idle "$GBOT_SESSION" 180 || echo "gbot: timeout" >&2
+    wait_for_idle "$CLAUDE_SESSION" 180 || echo "claude: timeout" >&2
+
+    # 3. Diff
+    do_diff
+}
+
+do_diff() {
+    # Diff last captured screens without sending new message
+    local gbot_plain="/tmp/gbot-compare.txt"
+    local claude_plain="/tmp/claude-compare.txt"
+
+    # Refresh captures
+    if screen_alive "$GBOT_SESSION"; then
+        screen -S "$GBOT_SESSION" -X hardcopy "$GBOT_SCREENSHOT"
+        tr -d '\0' < "$GBOT_SCREENSHOT" | sed 's/\x1b\[[^a-zA-Z]*[a-zA-Z]//g' | sed '/^$/d' > "$gbot_plain"
+    fi
+    if screen_alive "$CLAUDE_SESSION"; then
+        screen -S "$CLAUDE_SESSION" -X hardcopy "$CLAUDE_SCREENSHOT"
+        tr -d '\0' < "$CLAUDE_SCREENSHOT" | sed 's/\x1b\[[^a-zA-Z]*[a-zA-Z]//g' | sed '/^$/d' > "$claude_plain"
+    fi
+
+    if [ ! -f "$gbot_plain" ] || [ ! -f "$claude_plain" ]; then
+        echo "no captures yet. Run compare first." >&2
+        exit 1
+    fi
+
+    echo "=== DIFF (gbot | claude) ==="
+    diff -a --side-by-side -W 200 "$gbot_plain" "$claude_plain" || true
+}
+
+do_status() {
+    echo "Sessions:"
+    screen_alive "$GBOT_SESSION"  && echo "  gbot:   running ($GBOT_SESSION)" || echo "  gbot:   stopped"
+    screen_alive "$CLAUDE_SESSION" && echo "  claude: running ($CLAUDE_SESSION)" || echo "  claude: stopped"
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+cmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+start)        do_start "$@" ;;
+send)         do_send "$@" ;;
+screen)       do_screen "$@" ;;
+wait)         do_wait "$@" ;;
+stop)         do_stop "$@" ;;
+compare)      do_compare "$@" ;;
+diff)         do_diff ;;
+status)       do_status ;;
 
 help|*)
-    echo "gbot agent bridge — start/stop gbot in a detached screen session"
+    echo "gbot agent bridge — start/stop gbot and/or claude, compare outputs"
     echo ""
     echo "Commands:"
-    echo "  start [--no-build]      Start gbot in screen"
-    echo "  send 'message'          Type a message into gbot"
-    echo "  screen [--plain]        Show current screen"
-    echo "  wait [--timeout N]      Wait until gbot finishes responding"
-    echo "  stop                    Kill gbot"
+    echo "  start [--engine gbot|claude|both] [--no-build]  Start engine(s)"
+    echo "  send [--engine gbot|claude|both] 'msg'           Send message"
+    echo "  screen [--engine gbot|claude] [--plain]         Capture screen"
+    echo "  wait [--engine gbot|claude] [--timeout N]       Wait for idle"
+    echo "  stop [--engine gbot|claude|both]                Stop engine(s)"
+    echo "  compare 'msg'                                   Send to both, diff output"
+    echo "  diff                                            Diff last captured screens"
+    echo "  status                                          Show running sessions"
+    echo ""
+    echo "Examples:"
+    echo "  ./gbot-agent start --engine both"
+    echo "  ./gbot-agent compare 'Read /tmp/test.txt and summarize it'"
+    echo "  ./gbot-agent stop --engine both"
     ;;
 esac
