@@ -22,6 +22,14 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// EventDispatcher is the interface for routing events from Engine to consumers.
+// Engine depends on this abstraction rather than a concrete Hub type,
+// following the Dependency Inversion Principle.
+// *hub.Hub satisfies this interface.
+type EventDispatcher interface {
+	Dispatch(event types.QueryEvent)
+}
+
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
@@ -34,6 +42,7 @@ type Engine struct {
 	messages    []types.Message
 	tokenBudget int
 	turnCount   int
+	dispatcher  EventDispatcher
 }
 
 // Config configures the engine.
@@ -44,6 +53,7 @@ type Config struct {
 	MaxTokens   int
 	TokenBudget int
 	Logger      *slog.Logger
+	Dispatcher  EventDispatcher
 }
 
 // QueryResult is the final result of a query.
@@ -82,6 +92,7 @@ func New(cfg *Config) *Engine {
 		maxTokens:   cfg.MaxTokens,
 		logger:      cfg.Logger,
 		tokenBudget: cfg.TokenBudget,
+		dispatcher:  cfg.Dispatcher,
 	}
 }
 
@@ -102,6 +113,17 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt jso
 	return eventCh, resultCh
 }
 
+// emitEvent sends an event via Hub (if set) or the event channel.
+// When Hub is present, it is the authoritative path — eventCh is skipped
+// to avoid unbounded buffering and potential deadlocks from undrained channels.
+func (e *Engine) emitEvent(eventCh chan<- types.QueryEvent, event types.QueryEvent) {
+	if e.dispatcher != nil {
+		e.dispatcher.Dispatch(event)
+		return
+	}
+	eventCh <- event
+}
+
 // queryLoop is the main agentic loop.
 // Source: query.ts — the while(true) loop with 28 stages.
 func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
@@ -114,7 +136,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		Timestamp: time.Now(),
 	}
 	e.messages = append(e.messages, userMsg)
-	eventCh <- types.QueryEvent{Type: types.EventMessage, Message: &userMsg}
+	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventMessage, Message: &userMsg})
 
 	var totalUsage types.Usage
 	maxTurns := 50
@@ -131,7 +153,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		// Stage 14-15: API call streaming loop
-		eventCh <- types.QueryEvent{Type: types.EventStreamStart}
+		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamStart})
 
 		resp, err := e.callLLM(ctx, systemPrompt, eventCh)
 		if err != nil {
@@ -167,7 +189,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		if !hasToolUse {
-			eventCh <- types.QueryEvent{Type: types.EventComplete}
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventComplete})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -191,7 +213,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		if e.tokenBudget <= 0 {
 			e.logger.Warn("token budget exhausted")
-			eventCh <- types.QueryEvent{Type: types.EventComplete}
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventComplete})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -281,14 +303,14 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				contentBlocks = append(contentBlocks, cb)
 				if cb.Type == types.ContentTypeToolUse {
 					currentToolInput.Reset()
-					eventCh <- types.QueryEvent{
+					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolUseStart,
 						ToolUse: &types.ToolUseEvent{
 							ID:    cb.ID,
 							Name:  cb.Name,
 							Input: cb.Input,
 						},
-					}
+					})
 				}
 			}
 
@@ -298,10 +320,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case "text_delta":
 					currentText.WriteString(event.Delta.Text)
 					hasContent = true
-					eventCh <- types.QueryEvent{
+					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventTextDelta,
 						Text: event.Delta.Text,
-					}
+					})
 				case "input_json_delta":
 					currentToolInput.WriteString(event.Delta.PartialJSON)
 				}
@@ -381,24 +403,24 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 				Timing:    elapsed,
 			}
 			results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
-			eventCh <- types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt}
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt})
 			continue
 		}
 
-	 rawJSON, _ := json.Marshal(result.Data)
+		rawJSON, _ := json.Marshal(result.Data)
 		// Wrap as a JSON string so the Anthropic API receives content as a
 		// string, not a raw JSON object.  The API expects tool_result.content
 		// to be string | ContentBlock[], not an arbitrary JSON object.
 		outputJSON, _ := json.Marshal(string(rawJSON))
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
-		eventCh <- types.QueryEvent{
+		e.emitEvent(eventCh, types.QueryEvent{
 			Type: types.EventToolResult,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID: block.ID,
 				Output:    outputJSON,
 				Timing:    elapsed,
 			},
-		}
+		})
 	}
 
 	return results

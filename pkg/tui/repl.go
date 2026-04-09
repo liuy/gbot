@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,8 +24,7 @@ type ReplState struct {
 	pendingTool map[string]*ToolCallView
 	assistantBuf strings.Builder
 
-	// Channels from the current query (nil when idle)
-	eventCh  <-chan types.QueryEvent
+	// Channel for the final query result (nil when idle)
 	resultCh <-chan engine.QueryResult
 
 	// Cancellation
@@ -46,9 +44,8 @@ func (s *ReplState) AddUserMessage(text string) {
 	s.messages = append(s.messages, MessageView{Role: "user", Content: text})
 }
 
-// StartQuery begins a new streaming query, populating channels.
-func (s *ReplState) StartQuery(eventCh <-chan types.QueryEvent, resultCh <-chan engine.QueryResult) {
-	s.eventCh = eventCh
+// StartQuery begins a new streaming query, storing the result channel.
+func (s *ReplState) StartQuery(resultCh <-chan engine.QueryResult) {
 	s.resultCh = resultCh
 	s.streaming = true
 	s.assistantBuf.Reset()
@@ -109,9 +106,8 @@ func (s *ReplState) FinishStream(err error) {
 	}
 }
 
-// CloseChannels clears the event and result channels.
+// CloseChannels clears the result channel.
 func (s *ReplState) CloseChannels() {
-	s.eventCh = nil
 	s.resultCh = nil
 }
 
@@ -133,6 +129,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case streamChunkMsg:
 		a.repl.AppendChunk(m.Text)
+		return true, a.readEvents()
+
+	case streamStartMsg:
+		return true, a.readEvents()
+
+	case streamMessageMsg:
 		return true, a.readEvents()
 
 	case streamToolUseMsg:
@@ -183,8 +185,9 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.repl.cancelFunc = cancel
 
-	eventCh, resultCh := a.engine.Query(ctx, text, a.systemPrompt)
-	a.repl.StartQuery(eventCh, resultCh)
+	// eventCh is discarded — events flow through Hub → TUIHandler → appCh
+	_, resultCh := a.engine.Query(ctx, text, a.systemPrompt)
+	a.repl.StartQuery(resultCh)
 	a.status.SetStreaming(true)
 	a.spinner.Start()
 
@@ -196,21 +199,21 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	)
 }
 
-// readEvents reads the next event from the engine channels and converts
-// it to a bubbletea message. This is called as a tea.Cmd.
+// readEvents reads the next event from TUIHandler.appCh or the result channel.
+// This is called as a tea.Cmd.
 func (a *App) readEvents() tea.Cmd {
 	return func() tea.Msg {
-		if a.repl.eventCh == nil {
+		if a.tuiHandler == nil {
 			return streamCompleteMsg{}
 		}
 
 		select {
-		case evt, ok := <-a.repl.eventCh:
+		case msg, ok := <-a.tuiHandler.appCh:
 			if !ok {
 				a.repl.CloseChannels()
 				return streamCompleteMsg{}
 			}
-			return a.engineEventToMsg(evt)
+			return msg
 
 		case result, ok := <-a.repl.resultCh:
 			if !ok {
@@ -220,41 +223,6 @@ func (a *App) readEvents() tea.Cmd {
 			return streamCompleteMsg{Err: result.Error}
 		}
 	}
-}
-
-// engineEventToMsg converts a types.QueryEvent to a bubbletea message.
-func (a *App) engineEventToMsg(evt types.QueryEvent) tea.Msg {
-	switch evt.Type {
-	case types.EventTextDelta:
-		return streamChunkMsg{Text: evt.Text}
-
-	case types.EventToolUseStart:
-		if evt.ToolUse != nil {
-			input := prettyJSON(evt.ToolUse.Input)
-			return streamToolUseMsg{
-				ID:    evt.ToolUse.ID,
-				Name:  evt.ToolUse.Name,
-				Input: input,
-			}
-		}
-
-	case types.EventToolResult:
-		if evt.ToolResult != nil {
-			return streamToolResultMsg{
-				ToolUseID: evt.ToolResult.ToolUseID,
-				Output:    prettyJSON(evt.ToolResult.Output),
-				IsError:   evt.ToolResult.IsError,
-			}
-		}
-
-	case types.EventError:
-		return errMsg{Err: evt.Error}
-
-	case types.EventComplete:
-		return streamCompleteMsg{}
-	}
-
-	return a.readEvents()()
 }
 
 // ---------------------------------------------------------------------------

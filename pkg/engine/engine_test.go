@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -1425,5 +1426,279 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	}
 	if result.Terminal != types.TerminalCompleted {
 		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hub integration tests
+// ---------------------------------------------------------------------------
+
+// hubMockHandler records events received via Hub.
+type hubMockHandler struct {
+	mu     sync.Mutex
+	events []hub.Event
+}
+
+func (h *hubMockHandler) Handle(event hub.Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events = append(h.events, event)
+}
+
+func (h *hubMockHandler) Events() []hub.Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]hub.Event, len(h.events))
+	copy(out, h.events)
+	return out
+}
+
+func TestQuery_HubReceivesAllEvents(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	toolID := "tu_hub"
+	toolName := "hub_tool"
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, toolName, `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done via hub."), nil)
+
+	mt := &mockTool{name: toolName, enabled: true}
+
+	h := hub.NewHub()
+	handler := &hubMockHandler{}
+	h.Subscribe(handler)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+		Dispatcher: h,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test hub events", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	hubEvents := handler.Events()
+
+	// Verify we got the key event types
+	var gotStreamStart, gotToolUseStart, gotToolResult, gotTextDelta, gotComplete bool
+	for _, evt := range hubEvents {
+		switch evt.Type {
+		case types.EventStreamStart:
+			gotStreamStart = true
+		case types.EventToolUseStart:
+			gotToolUseStart = true
+		case types.EventToolResult:
+			gotToolResult = true
+		case types.EventTextDelta:
+			gotTextDelta = true
+		case types.EventComplete:
+			gotComplete = true
+		}
+	}
+
+	if !gotStreamStart {
+		t.Error("Hub handler did not receive EventStreamStart")
+	}
+	if !gotToolUseStart {
+		t.Error("Hub handler did not receive EventToolUseStart")
+	}
+	if !gotToolResult {
+		t.Error("Hub handler did not receive EventToolResult")
+	}
+	if !gotTextDelta {
+		t.Error("Hub handler did not receive EventTextDelta")
+	}
+	if !gotComplete {
+		t.Error("Hub handler did not receive EventComplete")
+	}
+
+	// Verify ordering: first event should be EventMessage, last should be EventComplete
+	if len(hubEvents) == 0 {
+		t.Fatal("expected at least one hub event")
+	}
+	if hubEvents[0].Type != types.EventMessage {
+		t.Errorf("expected first event to be EventMessage, got %s", hubEvents[0].Type)
+	}
+	if hubEvents[len(hubEvents)-1].Type != types.EventComplete {
+		t.Errorf("expected last event to be EventComplete, got %s", hubEvents[len(hubEvents)-1].Type)
+	}
+}
+
+// mockDispatcher is a non-hub EventDispatcher for testing interface compliance.
+type mockDispatcher struct {
+	mu     sync.Mutex
+	events []types.QueryEvent
+}
+
+func (d *mockDispatcher) Dispatch(event types.QueryEvent) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, event)
+}
+
+func (d *mockDispatcher) Events() []types.QueryEvent {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]types.QueryEvent, len(d.events))
+	copy(out, d.events)
+	return out
+}
+
+func TestQuery_EventDispatcherInterface(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "via interface"), nil)
+
+	d := &mockDispatcher{}
+	eng := engine.New(&engine.Config{
+		Provider:   mp,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: d,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test interface", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	events := d.Events()
+	if len(events) == 0 {
+		t.Fatal("mockDispatcher should receive events")
+	}
+
+	// Verify key events received through the interface
+	var gotStreamStart, gotTextDelta, gotComplete bool
+	for _, evt := range events {
+		switch evt.Type {
+		case types.EventStreamStart:
+			gotStreamStart = true
+		case types.EventTextDelta:
+			gotTextDelta = true
+		case types.EventComplete:
+			gotComplete = true
+		}
+	}
+	if !gotStreamStart {
+		t.Error("dispatcher did not receive EventStreamStart")
+	}
+	if !gotTextDelta {
+		t.Error("dispatcher did not receive EventTextDelta")
+	}
+	if !gotComplete {
+		t.Error("dispatcher did not receive EventComplete")
+	}
+}
+
+func TestQuery_HubNilWorks(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+		Dispatcher: nil,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test nil hub", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+}
+
+func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Hello Xiaoming!"), nil)
+	mp.addResponse(textStreamEvents("test-model", "Your name is Xiaoming."), nil)
+
+	eng := engine.New(&engine.Config{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Turn 1
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	eventCh1, resultCh1 := eng.Query(ctx1, "My name is Xiaoming", nil)
+	for range eventCh1 {
+	}
+	result1 := <-resultCh1
+	cancel1()
+	if result1.Error != nil {
+		t.Fatalf("turn 1 error: %v", result1.Error)
+	}
+
+	msgs1 := eng.Messages()
+	if len(msgs1) != 2 {
+		t.Fatalf("after turn 1: expected 2 messages, got %d", len(msgs1))
+	}
+
+	// Turn 2
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	eventCh2, resultCh2 := eng.Query(ctx2, "What is my name?", nil)
+	for range eventCh2 {
+	}
+	result2 := <-resultCh2
+	cancel2()
+	if result2.Error != nil {
+		t.Fatalf("turn 2 error: %v", result2.Error)
+	}
+
+	// Engine should accumulate: [user1, assistant1, user2, assistant2]
+	msgs2 := eng.Messages()
+	if len(msgs2) != 4 {
+		t.Fatalf("after turn 2: expected 4 messages, got %d", len(msgs2))
+	}
+	if msgs2[0].Role != types.RoleUser {
+		t.Errorf("msg[0] role = %q, want user", msgs2[0].Role)
+	}
+	if msgs2[1].Role != types.RoleAssistant {
+		t.Errorf("msg[1] role = %q, want assistant", msgs2[1].Role)
+	}
+	if msgs2[2].Role != types.RoleUser {
+		t.Errorf("msg[2] role = %q, want user", msgs2[2].Role)
+	}
+	if msgs2[3].Role != types.RoleAssistant {
+		t.Errorf("msg[3] role = %q, want assistant", msgs2[3].Role)
+	}
+
+	// Turn 1 user message content preserved
+	texts := engine.ExtractTextBlocks(msgs2[0])
+	if len(texts) == 0 || texts[0] != "My name is Xiaoming" {
+		t.Errorf("msg[0] text = %v, want 'My name is Xiaoming'", texts)
 	}
 }

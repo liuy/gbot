@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -63,13 +64,15 @@ func textStreamEvents(model, text string) []llm.StreamEvent {
 	}
 }
 
-// newTestApp creates an App with a mock engine for testing.
+// newTestApp creates an App with a mock engine and Hub for testing.
 func newTestApp(provider *tuiMockProvider) *App {
+	h := hub.NewHub()
 	eng := engine.New(&engine.Config{
 		Provider: provider,
 		Model:    "test-model",
+		Dispatcher: h,
 	})
-	return NewApp(eng, json.RawMessage(`"test system prompt"`))
+	return NewApp(eng, json.RawMessage(`"test system prompt"`), h)
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +198,6 @@ func TestApp_Update_ErrorMsg(t *testing.T) {
 func TestApp_Update_StreamChunk(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.eventCh = make(chan types.QueryEvent) // non-nil so readEvents proceeds
 
 	model, _ := app.Update(streamChunkMsg{Text: "hello "})
 	a := model.(*App)
@@ -211,7 +213,6 @@ func TestApp_Update_StreamChunk(t *testing.T) {
 func TestApp_Update_StreamToolUse(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.eventCh = make(chan types.QueryEvent)
 
 	model, _ := app.Update(streamToolUseMsg{ID: "t1", Name: "Read", Input: `{"file":"test.go"}`})
 	a := model.(*App)
@@ -234,7 +235,6 @@ func TestApp_Update_StreamToolUse(t *testing.T) {
 func TestApp_Update_StreamToolResult(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.eventCh = make(chan types.QueryEvent)
 	app.repl.pendingTool["t1"] = &ToolCallView{Name: "Read", Done: false}
 
 	model, _ := app.Update(streamToolResultMsg{
@@ -633,8 +633,7 @@ func TestApp_FinishStream_CancelsContext(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type: types.EventTextDelta,
 		Text: "hello",
 	})
@@ -645,8 +644,7 @@ func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolUseStart,
 		ToolUse: &types.ToolUseEvent{
 			ID:    "t1",
@@ -664,22 +662,17 @@ func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolUseStart_Nil(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	// ToolUse is nil — falls through to readEvents
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type:    types.EventToolUseStart,
 		ToolUse: nil,
 	})
-	// Should return result of readEvents()() which is streamCompleteMsg
-	_, ok := msg.(streamCompleteMsg)
-	if !ok {
-		t.Errorf("expected streamCompleteMsg for nil ToolUse, got %T", msg)
+	if msg != nil {
+		t.Errorf("expected nil for nil ToolUse, got %T", msg)
 	}
 }
 
 func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolResult,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID: "t1",
@@ -697,20 +690,17 @@ func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type:       types.EventToolResult,
 		ToolResult: nil,
 	})
-	_, ok := msg.(streamCompleteMsg)
-	if !ok {
-		t.Errorf("expected streamCompleteMsg for nil ToolResult, got %T", msg)
+	if msg != nil {
+		t.Errorf("expected nil for nil ToolResult, got %T", msg)
 	}
 }
 
 func TestApp_EngineEventToMsg_Error(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type:  types.EventError,
 		Error: errors.New("test error"),
 	})
@@ -724,8 +714,7 @@ func TestApp_EngineEventToMsg_Error(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_Complete(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	msg := app.engineEventToMsg(types.QueryEvent{
+	msg := convertEventToMsg(types.QueryEvent{
 		Type: types.EventComplete,
 	})
 	_, ok := msg.(streamCompleteMsg)
@@ -735,15 +724,11 @@ func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	// Unknown event type triggers readEvents() fallback
-	msg := app.engineEventToMsg(types.QueryEvent{
-		Type: types.EventStreamStart,
+	msg := convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolUseDelta,
 	})
-	// readEvents returns streamCompleteMsg when eventCh is nil
-	_, ok := msg.(streamCompleteMsg)
-	if !ok {
-		t.Errorf("expected streamCompleteMsg for unknown event, got %T", msg)
+	if msg != nil {
+		t.Errorf("expected nil for unknown event type, got %T", msg)
 	}
 }
 
@@ -751,17 +736,21 @@ func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
 // readEvents
 // ---------------------------------------------------------------------------
 
-func TestApp_ReadEvents_NilChannel(t *testing.T) {
+func TestApp_ReadEvents_NilHandler(t *testing.T) {
 	t.Parallel()
-	app := newTestApp(&tuiMockProvider{})
-	app.repl.eventCh = nil
+	// Create app without hub — tuiHandler will be nil
+	eng := engine.New(&engine.Config{
+		Provider: &tuiMockProvider{},
+		Model:    "test-model",
+	})
+	app := NewApp(eng, json.RawMessage(`"test"`), nil)
 	app.repl.resultCh = nil
 
 	cmd := app.readEvents()
 	msg := cmd()
 	_, ok := msg.(streamCompleteMsg)
 	if !ok {
-		t.Errorf("expected streamCompleteMsg when channels nil, got %T", msg)
+		t.Errorf("expected streamCompleteMsg when tuiHandler nil, got %T", msg)
 	}
 }
 
@@ -776,17 +765,16 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	app.height = 24
 
 	ctx := context.Background()
-	eventCh, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
-	app.repl.eventCh = eventCh
+	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 	app.repl.resultCh = resultCh
 
 	cmd := app.readEvents()
-	// Wait briefly for events to be available
+	// Wait briefly for events to flow through Hub → TUIHandler → appCh
 	time.Sleep(100 * time.Millisecond)
 	msg := cmd()
 	// Should be either streamChunkMsg or streamCompleteMsg
 	switch msg.(type) {
-	case streamChunkMsg, streamCompleteMsg:
+	case streamChunkMsg, streamCompleteMsg, streamStartMsg, streamMessageMsg:
 		// ok
 	default:
 		t.Errorf("expected streamChunkMsg or streamCompleteMsg, got %T", msg)
@@ -924,8 +912,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	eventCh, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
-	app.repl.eventCh = eventCh
+	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 	app.repl.resultCh = resultCh
 
 	// Drain events first so resultCh is the one that fires
@@ -935,7 +922,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	msg := cmd()
 	// Could be streamCompleteMsg or streamChunkMsg depending on timing
 	switch msg.(type) {
-	case streamCompleteMsg, streamChunkMsg:
+	case streamCompleteMsg, streamChunkMsg, streamStartMsg, streamMessageMsg:
 		// ok
 	default:
 		t.Errorf("expected streamCompleteMsg or streamChunkMsg, got %T", msg)

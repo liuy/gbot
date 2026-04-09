@@ -14,6 +14,16 @@ type streamChunkMsg struct {
 	Text string
 }
 
+// streamStartMsg signals that the engine has started a new streaming response.
+// Source: useStreaming hook onStreamStart callback.
+type streamStartMsg struct{}
+
+// streamMessageMsg delivers a full message added to conversation history.
+// Source: useStreaming hook onMessage callback.
+type streamMessageMsg struct {
+	Role string
+}
+
 // streamToolUseMsg signals that the LLM has started a tool invocation.
 // Source: useStreaming hook onToolUseStart callback.
 type streamToolUseMsg struct {

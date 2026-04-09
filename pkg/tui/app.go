@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,18 +31,28 @@ type App struct {
 	// Engine
 	engine       *engine.Engine
 	systemPrompt json.RawMessage
+
+	// Hub — callback-based event routing
+	hub        *hub.Hub
+	tuiHandler *TUIHandler
 }
 
 // NewApp creates a new App model.
-func NewApp(eng *engine.Engine, systemPrompt json.RawMessage) *App {
-	return &App{
+func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
+	a := &App{
 		input:        NewInput(),
 		status:       NewStatusBar(),
 		spinner:      NewSpinner(),
 		repl:         NewReplState(),
 		engine:       eng,
 		systemPrompt: systemPrompt,
+		hub:          h,
 	}
+	if h != nil {
+		a.tuiHandler = NewTUIHandler()
+		h.Subscribe(a.tuiHandler)
+	}
+	return a
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +80,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// All REPL messages are handled by repl.go
 	case streamChunkMsg, streamToolUseMsg, streamToolResultMsg,
-		streamCompleteMsg, errMsg, submitMsg, spinnerTickMsg:
+		streamCompleteMsg, streamStartMsg, streamMessageMsg, errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
