@@ -136,7 +136,7 @@ func toolUseStreamEvents(model, toolID, toolName, toolInput string) []llm.Stream
 func TestNew_Defaults(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -148,7 +148,7 @@ func TestNew_Defaults(t *testing.T) {
 func TestNew_DefaultMaxTokens(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider:    mp,
 		Model:       "test-model",
 		MaxTokens:   0,
@@ -164,7 +164,7 @@ func TestNew_WithTools(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -180,7 +180,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello, world!"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -236,7 +236,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -309,7 +309,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -390,7 +390,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	// Actually, the simplest way is to cancel context during the streaming event
 	// accumulation. We do this by having the stream channel block.
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -436,7 +436,7 @@ func TestQuery_TokenBudgetExhaustion(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider:    mp,
 		Tools:       []tool.Tool{mt},
 		Model:       "test-model",
@@ -465,7 +465,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 	mp.addResponse(events, nil)
 	mp.addResponse(textStreamEvents("test-model", "Tool not found."), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -506,7 +506,7 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -546,7 +546,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 		Retryable: false,
 	})
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -586,7 +586,7 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	// The loop will stop. So we don't add a second response.
 	// This tests the actual behavior: wrapped errors are not seen as retryable.
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -616,7 +616,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	mt := &mockTool{name: "disabled_tool", enabled: false}
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -639,7 +639,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 func TestAddSystemMessage(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -661,7 +661,7 @@ func TestAddSystemMessage(t *testing.T) {
 func TestReset(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -682,7 +682,7 @@ func TestReset(t *testing.T) {
 func TestMessages(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -743,7 +743,7 @@ func TestClassifyTerminalError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_ = engine.New(&engine.Config{
+			_ = engine.New(&engine.Params{
 				Provider: &mockProvider{},
 				Model:    "test",
 				Logger:   slog.Default(),
@@ -816,7 +816,7 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 		return &tool.ToolResult{Data: "b_result"}, nil
 	}}
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{toolA, toolB},
 		Model:    "test-model",
@@ -852,7 +852,7 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -901,7 +901,7 @@ func TestQuery_StreamingTextDeltas(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -937,7 +937,7 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hi"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -985,7 +985,7 @@ func TestQuery_PingEvent(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1018,7 +1018,7 @@ func TestQuery_NilUsage(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1048,7 +1048,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1078,7 +1078,7 @@ func TestQuery_DescriptionError(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
 
 	mt := &mockTool{name: "err_desc_tool", enabled: true}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1110,7 +1110,7 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1148,7 +1148,7 @@ func TestQuery_RetryableStreamError(t *testing.T) {
 	// Second response: success after retry
 	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1180,7 +1180,7 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1212,7 +1212,7 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1242,7 +1242,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 	// the first turn and loops back to check ctx.Done() at the top.
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1279,7 +1279,7 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 		enabled: true,
 		descFn:  func(json.RawMessage) (string, error) { return "", errors.New("desc error") },
 	}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1360,7 +1360,7 @@ func TestQuery_HasContentNoBlocks(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1406,7 +1406,7 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1468,7 +1468,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	handler := &hubMockHandler{}
 	h.Subscribe(handler)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1562,7 +1562,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "via interface"), nil)
 
 	d := &mockDispatcher{}
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider:   mp,
 		Model:      "test-model",
 		Logger:     slog.Default(),
@@ -1615,7 +1615,7 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1645,7 +1645,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Hello Xiaoming!"), nil)
 	mp.addResponse(textStreamEvents("test-model", "Your name is Xiaoming."), nil)
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),

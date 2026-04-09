@@ -45,8 +45,8 @@ type Engine struct {
 	dispatcher  EventDispatcher
 }
 
-// Config configures the engine.
-type Config struct {
+// Params holds the constructor arguments for Engine.
+type Params struct {
 	Provider    llm.Provider
 	Tools       []tool.Tool
 	Model       string
@@ -66,33 +66,33 @@ type QueryResult struct {
 }
 
 // New creates a new Engine.
-func New(cfg *Config) *Engine {
-	if cfg.MaxTokens == 0 {
-		cfg.MaxTokens = 16000
+func New(p *Params) *Engine {
+	if p.MaxTokens == 0 {
+		p.MaxTokens = 16000
 	}
-	if cfg.TokenBudget == 0 {
-		cfg.TokenBudget = 200000
+	if p.TokenBudget == 0 {
+		p.TokenBudget = 200000
 	}
-	if cfg.Logger == nil {
-		cfg.Logger = slog.Default()
+	if p.Logger == nil {
+		p.Logger = slog.Default()
 	}
 
 	toolMap := make(map[string]tool.Tool)
 	var toolOrder []string
-	for _, t := range cfg.Tools {
+	for _, t := range p.Tools {
 		toolMap[t.Name()] = t
 		toolOrder = append(toolOrder, t.Name())
 	}
 
 	return &Engine{
-		provider:    cfg.Provider,
+		provider:    p.Provider,
 		tools:       toolMap,
 		toolOrder:   toolOrder,
-		model:       cfg.Model,
-		maxTokens:   cfg.MaxTokens,
-		logger:      cfg.Logger,
-		tokenBudget: cfg.TokenBudget,
-		dispatcher:  cfg.Dispatcher,
+		model:       p.Model,
+		maxTokens:   p.MaxTokens,
+		logger:      p.Logger,
+		tokenBudget: p.TokenBudget,
+		dispatcher:  p.Dispatcher,
 	}
 }
 

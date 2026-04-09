@@ -67,7 +67,7 @@ func textStreamEvents(model, text string) []llm.StreamEvent {
 // newTestApp creates an App with a mock engine and Hub for testing.
 func newTestApp(provider *tuiMockProvider) *App {
 	h := hub.NewHub()
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: provider,
 		Model:    "test-model",
 		Dispatcher: h,
@@ -739,7 +739,7 @@ func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
 func TestApp_ReadEvents_NilHandler(t *testing.T) {
 	t.Parallel()
 	// Create app without hub — tuiHandler will be nil
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider: &tuiMockProvider{},
 		Model:    "test-model",
 	})

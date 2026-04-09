@@ -61,7 +61,7 @@ func main() {
 
 	h := hub.NewHub()
 
-	eng := engine.New(&engine.Config{
+	eng := engine.New(&engine.Params{
 		Provider:    provider,
 		Tools:       reg.EnabledTools(),
 		Model:       cfg.Model,

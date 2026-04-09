@@ -68,7 +68,7 @@ func (m *benchMockProvider) Stream(ctx context.Context, req *llm.Request) (<-cha
 
 func BenchmarkMarshalMessages(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -83,7 +83,7 @@ func BenchmarkMarshalMessages(b *testing.B) {
 
 func BenchmarkMarshalMessages_WithHistory(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -100,7 +100,7 @@ func BenchmarkMarshalMessages_WithHistory(b *testing.B) {
 
 func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -136,7 +136,7 @@ func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 
 func BenchmarkExecuteTools_SingleTool(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -165,7 +165,7 @@ func BenchmarkExecuteTools_SingleTool(b *testing.B) {
 
 func BenchmarkExecuteTools_MultipleTools(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -199,7 +199,7 @@ func BenchmarkExecuteTools_MultipleTools(b *testing.B) {
 
 func BenchmarkCallLLM_Accumulate(b *testing.B) {
 	mp := &benchMockProvider{}
-	eng := New(&Config{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
