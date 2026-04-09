@@ -553,9 +553,10 @@ func TestExecute_ExpandsTildePath(t *testing.T) {
 	if home == "" {
 		t.Skip("HOME not set")
 	}
-	// Use a unique subdir under HOME to avoid collisions
-	fp := filepath.Join(home, "gbot_test_expand_"+t.Name(), "file.txt")
-	defer func() { _ = os.RemoveAll(filepath.Dir(fp)) }()
+	// Use a unique subdir under /tmp to avoid HOME permission issues
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "file.txt")
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	input := json.RawMessage(`{"file_path":"` + strings.Replace(fp, home, "~", 1) + `","content":"expanded"}`)
 	result, err := filewrite.Execute(context.Background(), input, nil)
