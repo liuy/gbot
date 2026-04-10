@@ -432,28 +432,24 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 }
 
 // humanReadableName converts a tool function name to a human-readable format.
-// e.g., "Read" → "Read", "file_write" → "Write file", "search_code" → "Search code"
+// Matches user preference: Bash, Search, Read, Write, Edit — simple and consistent.
 func humanReadableName(name string) string {
-	// Common tool name mappings
 	switch name {
 	case "Read":
 		return "Read"
 	case "Write", "file_write":
-		return "Write file"
+		return "Write"
 	case "Edit", "file_edit":
-		return "Edit file"
-	case "Glob", "file_glob":
-		return "Find files"
-	case "Grep", "search_code":
-		return "Search code"
+		return "Edit"
+	case "Glob", "Grep", "file_glob", "search_code":
+		return "Search"
 	case "Bash", "shell", "bash":
-		return "Run shell"
+		return "Bash"
 	case "WebFetch", "web_fetch":
-		return "Web fetch"
+		return "Web"
 	case "TodoWrite", "todo_write":
 		return "Todo"
 	default:
-		// Convert snake_case or kebab-case to Title Case
 		name = strings.ReplaceAll(name, "_", " ")
 		name = strings.ReplaceAll(name, "-", " ")
 		if len(name) > 0 {

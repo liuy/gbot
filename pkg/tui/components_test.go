@@ -554,9 +554,9 @@ func TestMessageView_WithToolCalls_Done(t *testing.T) {
 	if !strings.Contains(v, "done") {
 		t.Errorf("View() = %q, should contain 'done'", v)
 	}
-	// Grep is converted to "Search code" via humanReadableName
-	if !strings.Contains(v, "Search code") {
-		t.Errorf("View() = %q, should contain 'Search code'", v)
+	// Grep is converted to "Search" via humanReadableName
+	if !strings.Contains(v, "Search") {
+		t.Errorf("View() = %q, should contain 'Search'", v)
 	}
 }
 

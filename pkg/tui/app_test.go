@@ -992,7 +992,7 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app.spinner.Start()
 	app.repl.PendingToolStarted("t1", "Bash", `{"cmd":"ls"}`)
 	v := app.View()
-	if !strings.Contains(v, "Run shell") {
+	if !strings.Contains(v, "Bash") {
 		t.Errorf("View should show pending tool human-readable name, got: %s", v)
 	}
 	if !strings.Contains(v, "running...") {
