@@ -12,6 +12,16 @@ import (
 // dot is a bullet indicator rendered before tool calls.
 var dot = "●"
 
+// Pre-cached styles to avoid creating new lipgloss.Style on every render call.
+var (
+	styleDotError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	styleDotSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	styleDotDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+	styleNameBold   = lipgloss.NewStyle().Bold(true)
+	styleTimeDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+	styleDim        = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+)
+
 // ---------------------------------------------------------------------------
 // ContentBlock types — interleaved text + tool rendering
 // ---------------------------------------------------------------------------
@@ -381,28 +391,26 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	var dotStr string
 	if tc.Done {
 		if tc.IsError {
-			dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(dot)
+			dotStr = styleDotError.Render(dot)
 		} else {
-			dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(dot)
+			dotStr = styleDotSuccess.Render(dot)
 		}
 	} else {
-		dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(dot)
+		dotStr = styleDotDim.Render(dot)
 	}
 
-	nameStyle := lipgloss.NewStyle().Bold(true)
 	readableName := humanReadableName(tc.Name)
 
 	if tc.Done {
 		if tc.IsError {
-			fmt.Fprintf(sb, "%s %s ERROR", dotStr, nameStyle.Render(readableName))
+			fmt.Fprintf(sb, "%s %s ERROR", dotStr, styleNameBold.Render(readableName))
 			if tc.Output != "" {
 				sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
 			}
 		} else {
-			fmt.Fprintf(sb, "%s %s", dotStr, nameStyle.Render(readableName))
+			fmt.Fprintf(sb, "%s %s", dotStr, styleNameBold.Render(readableName))
 			if tc.Elapsed > 0 {
-				timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
-				sb.WriteString(timeStyle.Render(" (" + formatDuration(tc.Elapsed) + ")"))
+				sb.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
 			}
 			// Show output if expand=true or output is short
 			if tc.Output != "" && (expand || len(tc.Output) < 200) {
@@ -410,8 +418,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			}
 		}
 	} else {
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
-		fmt.Fprintf(sb, "%s %s running...", dotStr, dimStyle.Render(readableName))
+		fmt.Fprintf(sb, "%s %s running...", dotStr, styleDim.Render(readableName))
 		if tc.Input != "" && len(tc.Input) < 200 {
 			sb.WriteString("\n  " + wordWrap(tc.Input, availWidth-2))
 		}
@@ -448,6 +455,17 @@ func humanReadableName(name string) string {
 		}
 		return name
 	}
+}
+
+// firstMeaningfulLine extracts the first non-empty line from text.
+func firstMeaningfulLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // wordWrap wraps text to the given width, breaking at word boundaries.

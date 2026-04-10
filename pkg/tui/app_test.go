@@ -139,9 +139,10 @@ func TestApp_View_Streaming(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.assistantBuf.WriteString("thinking...")
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("thinking...")
 	v := app.View()
 	if !strings.Contains(v, "thinking...") {
 		t.Errorf("View() while streaming should contain assistant text, got %q", v)
@@ -198,11 +199,16 @@ func TestApp_Update_ErrorMsg(t *testing.T) {
 func TestApp_Update_StreamChunk(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.AppendTextItem()
 
 	model, _ := app.Update(streamChunkMsg{Text: "hello "})
 	a := model.(*App)
-	if a.repl.assistantBuf.String() != "hello " {
-		t.Errorf("assistantBuf = %q, want %q", a.repl.assistantBuf.String(), "hello ")
+	if len(a.repl.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(a.repl.messages))
+	}
+	if len(a.repl.messages[0].Blocks) == 0 || a.repl.messages[0].Blocks[0].Text != "hello " {
+		t.Errorf("chunk not appended to blocks, got %v", a.repl.messages[0].Blocks)
 	}
 }
 
@@ -213,6 +219,7 @@ func TestApp_Update_StreamChunk(t *testing.T) {
 func TestApp_Update_StreamToolUse(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
 
 	model, _ := app.Update(streamToolUseMsg{ID: "t1", Name: "Read", Input: `{"file":"test.go"}`})
 	a := model.(*App)
@@ -259,9 +266,10 @@ func TestApp_Update_StreamToolResult(t *testing.T) {
 func TestApp_Update_StreamComplete(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.assistantBuf.WriteString("response text")
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("response text")
 
 	model, cmd := app.Update(streamCompleteMsg{})
 	if cmd != nil {
@@ -271,7 +279,6 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 	if a.repl.streaming {
 		t.Error("streaming should be false after complete")
 	}
-	// Should have added an assistant message
 	if len(a.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(a.repl.messages))
 	}
@@ -354,10 +361,11 @@ func TestApp_Update_SubmitMsg(t *testing.T) {
 	if !a.repl.streaming {
 		t.Error("should be streaming after submit")
 	}
-	if len(a.repl.messages) != 1 {
-		t.Errorf("expected 1 message, got %d", len(a.repl.messages))
+	// Now: user message + assistant message = 2 messages
+	if len(a.repl.messages) != 2 {
+		t.Errorf("expected 2 messages (user + assistant), got %d", len(a.repl.messages))
 	}
-	// Check Blocks instead of Content
+	// First message is the user message
 	if len(a.repl.messages[0].Blocks) == 0 || a.repl.messages[0].Blocks[0].Text != "hi" {
 		t.Errorf("expected user message 'hi', got %v", a.repl.messages[0].Blocks)
 	}
@@ -551,9 +559,10 @@ func TestApp_Update_UnknownMsg(t *testing.T) {
 
 func TestApp_FinishStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.assistantBuf.WriteString("response")
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("response")
 
 	app.repl.FinishStream(nil)
 
@@ -563,7 +572,6 @@ func TestApp_FinishStream(t *testing.T) {
 	if len(app.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
 	}
-	// Check Blocks instead of Content
 	if len(app.repl.messages[0].Blocks) == 0 || app.repl.messages[0].Blocks[0].Text != "response" {
 		t.Errorf("message content = %v, want Blocks with 'response'", app.repl.messages[0].Blocks)
 	}
@@ -584,17 +592,16 @@ func TestApp_FinishStream_Empty(t *testing.T) {
 
 func TestApp_FinishStream_WithTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.assistantBuf.WriteString("done")
-	app.repl.pendingTool["t1"] = &ToolCallView{Name: "Read", Done: true, Output: "contents"}
+	app.repl.PendingToolStarted("t1", "Read", `{}`)
+	app.repl.PendingToolDone("t1", "contents", false, 0)
 
 	app.repl.FinishStream(nil)
 
 	if len(app.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
 	}
-	// Check Blocks instead of ToolCalls
 	hasToolBlock := false
 	for _, blk := range app.repl.messages[0].Blocks {
 		if blk.Type == BlockTool && blk.ToolCall.Name == "Read" {
@@ -608,9 +615,10 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 
 func TestApp_FinishStream_WithError(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.assistantBuf.WriteString("partial")
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("partial")
 
 	app.repl.FinishStream(errors.New("broke"))
 
@@ -621,7 +629,6 @@ func TestApp_FinishStream_WithError(t *testing.T) {
 	if app.repl.messages[1].Role != "system" {
 		t.Errorf("second message role = %q, want 'system'", app.repl.messages[1].Role)
 	}
-	// Check Blocks instead of Content
 	found := false
 	for _, blk := range app.repl.messages[1].Blocks {
 		if blk.Type == BlockText && strings.Contains(blk.Text, "broke") {
@@ -649,6 +656,86 @@ func TestApp_FinishStream_CancelsContext(t *testing.T) {
 	// Verify context was cancelled
 	if ctx.Err() == nil {
 		t.Error("context should be cancelled")
+	}
+}
+
+func TestApp_FinishStream_NoDuplicateRendering(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+
+	// Simulate streaming: blocks grow directly in s.messages
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("The hostname is server_e5")
+
+	// Before FinishStream: View renders from s.messages
+	view1 := app.View()
+	countBefore := strings.Count(view1, "server_e5")
+
+	// FinishStream ends streaming
+	app.repl.FinishStream(nil)
+
+	// After FinishStream: streaming is false, renderMessages still renders from s.messages
+	view2 := app.View()
+
+	// The text should appear exactly once (from s.messages)
+	countAfter := strings.Count(view2, "server_e5")
+	if countAfter != 1 {
+		t.Errorf("text appeared %d times after FinishStream, want exactly 1 (got %d before)", countAfter, countBefore)
+	}
+
+	// Verify the message was added
+	if len(app.repl.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
+	}
+}
+
+// Test that streaming state is cleared after FinishStream.
+func TestApp_FinishStream_ClearsState(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("some text")
+
+	app.repl.FinishStream(nil)
+
+	if app.repl.IsStreaming() {
+		t.Error("IsStreaming should be false after FinishStream")
+	}
+}
+
+// Test that blocks grow incrementally during streaming.
+// StartQuery creates assistant message → AppendTextItem creates block → AppendChunk adds text.
+func TestApp_FinishStream_BlocksGrowIncrementally(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// First text block
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("Hello ")
+
+	// Second text block
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("World")
+
+	app.repl.FinishStream(nil)
+
+	if len(app.repl.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
+	}
+	if len(app.repl.messages[0].Blocks) != 2 {
+		t.Fatalf("expected 2 text blocks, got %d", len(app.repl.messages[0].Blocks))
+	}
+	if app.repl.messages[0].Blocks[0].Text != "Hello " {
+		t.Errorf("first block text = %q, want %q", app.repl.messages[0].Blocks[0].Text, "Hello ")
+	}
+	if app.repl.messages[0].Blocks[1].Text != "World" {
+		t.Errorf("second block text = %q, want %q", app.repl.messages[0].Blocks[1].Text, "World")
 	}
 }
 
@@ -825,21 +912,88 @@ func TestApp_HandleSubmit_AlreadyStreaming(t *testing.T) {
 // Additional coverage — View edge cases
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// readEvents drain behavior — appCh drained before returning complete
+// ---------------------------------------------------------------------------
+
+func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
+	t.Parallel()
+	h := NewTUIHandler()
+	eng := engine.New(&engine.Params{
+		Provider: &tuiMockProvider{},
+		Model:    "test",
+	})
+	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app.tuiHandler = h
+
+	// Simulate: appCh has buffered events, resultCh is already closed
+	app.repl.resultCh = nil // already closed
+
+	// Send a buffered event first
+	h.appCh <- streamChunkMsg{Text: "late event"}
+
+	cmd := app.readEvents()
+	msg := cmd()
+	// Should return the buffered appCh event, not streamCompleteMsg
+	cm, ok := msg.(streamChunkMsg)
+	if !ok {
+		t.Fatalf("expected streamChunkMsg, got %T", msg)
+	}
+	if cm.Text != "late event" {
+		t.Errorf("expected 'late event', got %q", cm.Text)
+	}
+}
+
+func TestApp_ReadEvents_ReturnsCompleteWhenBothChannelsClosed(t *testing.T) {
+	t.Parallel()
+	h := NewTUIHandler()
+	eng := engine.New(&engine.Params{
+		Provider: &tuiMockProvider{},
+		Model:    "test",
+	})
+	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app.tuiHandler = h
+	app.repl.resultCh = nil
+
+	// Both channels closed — should return complete immediately
+	cmd := app.readEvents()
+	msg := cmd()
+	_, ok := msg.(streamCompleteMsg)
+	if !ok {
+		t.Fatalf("expected streamCompleteMsg when both closed, got %T", msg)
+	}
+}
+
+func TestApp_ReadEvents_NilHandlerReturnsComplete(t *testing.T) {
+	t.Parallel()
+	// When tuiHandler is nil, readEvents should immediately return complete
+	eng := engine.New(&engine.Params{
+		Provider: &tuiMockProvider{},
+		Model:    "test",
+	})
+	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app.tuiHandler = nil
+	app.repl.resultCh = nil
+
+	cmd := app.readEvents()
+	msg := cmd()
+	_, ok := msg.(streamCompleteMsg)
+	if !ok {
+		t.Fatalf("expected streamCompleteMsg with nil handler, got %T", msg)
+	}
+}
+
 func TestApp_View_PendingToolCalls(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.pendingTool["t1"] = &ToolCallView{
-		Name:  "Bash",
-		Input: `{"cmd":"ls"}`,
-		Done:  false,
-	}
+	app.repl.PendingToolStarted("t1", "Bash", `{"cmd":"ls"}`)
 	v := app.View()
-	if !strings.Contains(v, "Bash") {
-		t.Errorf("View should show pending tool name, got: %s", v)
+	if !strings.Contains(v, "Run shell") {
+		t.Errorf("View should show pending tool human-readable name, got: %s", v)
 	}
 	if !strings.Contains(v, "running...") {
 		t.Errorf("View should show 'running...' for pending tool, got: %s", v)

@@ -22,7 +22,6 @@ type ReplState struct {
 	messages    []MessageView
 	streaming   bool
 	pendingTool map[string]*ToolCallView
-	assistantBuf strings.Builder
 
 	// Channel for the final query result (nil when idle)
 	resultCh <-chan engine.QueryResult
@@ -48,57 +47,84 @@ func (s *ReplState) AddUserMessage(text string) {
 }
 
 // StartQuery begins a new streaming query, storing the result channel.
+// Creates the assistant message immediately so blocks grow during streaming.
 func (s *ReplState) StartQuery(resultCh <-chan engine.QueryResult) {
 	s.resultCh = resultCh
 	s.streaming = true
-	s.assistantBuf.Reset()
 	s.pendingTool = make(map[string]*ToolCallView)
+	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
 }
 
-// AppendChunk appends a streaming text delta.
+// lastMsg returns a pointer to the last message, or nil.
+func (s *ReplState) lastMsg() *MessageView {
+	if len(s.messages) == 0 {
+		return nil
+	}
+	return &s.messages[len(s.messages)-1]
+}
+
+// AppendChunk appends a streaming text delta to the last text block.
 func (s *ReplState) AppendChunk(text string) {
-	s.assistantBuf.WriteString(text)
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	// Append to last text block if it exists, otherwise create one
+	if len(m.Blocks) > 0 && m.Blocks[len(m.Blocks)-1].Type == BlockText {
+		m.Blocks[len(m.Blocks)-1].Text += text
+	} else {
+		m.Blocks = append(m.Blocks, ContentBlock{Type: BlockText, Text: text})
+	}
+}
+
+// AppendTextItem starts a new empty text block.
+func (s *ReplState) AppendTextItem() {
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockText, Text: ""})
 }
 
 // PendingToolStarted records a new in-progress tool call.
 func (s *ReplState) PendingToolStarted(id, name, input string) {
-	s.pendingTool[id] = &ToolCallView{Name: name, Input: input, Done: false}
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	tcv := &ToolCallView{Name: name, Input: input, Done: false}
+	s.pendingTool[id] = tcv
+	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
 }
 
-// PendingToolDone marks a tool call as completed.
+// PendingToolDone updates a tool call with its result.
 func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration) {
-	if tcv, ok := s.pendingTool[id]; ok {
-		tcv.Output = output
-		tcv.IsError = isError
-		tcv.Done = true
-		tcv.Elapsed = elapsed
+	tcv, ok := s.pendingTool[id]
+	if !ok {
+		return
 	}
-}
+	tcv.Output = output
+	tcv.IsError = isError
+	tcv.Done = true
+	tcv.Elapsed = elapsed
 
-// FinishStream finalizes the streaming session, appending the assistant message.
-func (s *ReplState) FinishStream(err error) {
-	s.streaming = false
-
-	text := s.assistantBuf.String()
-	var toolBlocks []ContentBlock
-	for _, tcv := range s.pendingTool {
-		toolBlocks = append(toolBlocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
+	// Update the tool block in lastMsg
+	m := s.lastMsg()
+	if m == nil {
+		return
 	}
-
-	if text != "" || len(toolBlocks) > 0 {
-		s.messages = append(s.messages, MessageView{
-			Role:   "assistant",
-			Blocks: []ContentBlock{{Type: BlockText, Text: text}},
-		})
-		// Append tool blocks as separate message
-		for _, tb := range toolBlocks {
-			lastIdx := len(s.messages) - 1
-			s.messages[lastIdx].Blocks = append(s.messages[lastIdx].Blocks, tb)
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
+			m.Blocks[i].ToolCall = *tcv
+			return
 		}
 	}
+}
 
-	s.assistantBuf.Reset()
-	s.pendingTool = make(map[string]*ToolCallView)
+// FinishStream finalizes the streaming session.
+// Blocks in s.messages are already built incrementally during streaming.
+func (s *ReplState) FinishStream(err error) {
+	s.streaming = false
 
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
@@ -107,7 +133,6 @@ func (s *ReplState) FinishStream(err error) {
 		})
 	}
 
-	// Cancel and clear the query context
 	if s.cancelFunc != nil {
 		s.cancelFunc()
 		s.cancelFunc = nil
@@ -140,6 +165,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case streamStartMsg:
+		a.repl.AppendTextItem()
 		return true, a.readEvents()
 
 	case streamMessageMsg:
@@ -218,51 +244,42 @@ func (a *App) readEvents() tea.Cmd {
 			return streamCompleteMsg{}
 		}
 
-		select {
-		case msg, ok := <-a.tuiHandler.appCh:
-			if !ok {
+		// Drain loop: prioritize appCh events over resultCh so that tool events
+		// arriving just before resultCh closes are not missed.
+		for {
+			// First try non-blocking drain of any buffered appCh events.
+			select {
+			case msg, ok := <-a.tuiHandler.appCh:
+				if !ok {
+					a.repl.CloseChannels()
+					return streamCompleteMsg{}
+				}
+				return msg
+			default:
+				// appCh empty — fall through to blocking select below.
+			}
+
+			// appCh is empty. Now block waiting for the next event from either
+			// channel. resultCh may be nil (already closed) or closed.
+			if a.repl.resultCh == nil {
+				return streamCompleteMsg{}
+			}
+
+			select {
+			case msg, ok := <-a.tuiHandler.appCh:
+				if !ok {
+					a.repl.CloseChannels()
+					return streamCompleteMsg{}
+				}
+				return msg
+
+			case result, ok := <-a.repl.resultCh:
+				if !ok {
+					return streamCompleteMsg{}
+				}
 				a.repl.CloseChannels()
-				return streamCompleteMsg{}
+				return streamCompleteMsg{Err: result.Error}
 			}
-			return msg
-
-		case result, ok := <-a.repl.resultCh:
-			if !ok {
-				return streamCompleteMsg{}
-			}
-			a.repl.CloseChannels()
-			return streamCompleteMsg{Err: result.Error}
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// REPL View — renders the streaming assistant output and pending tools.
-// Called from App.View in app.go.
-// ---------------------------------------------------------------------------
-
-// replView renders the in-progress streaming assistant output and pending tool calls.
-func (a *App) replView(sb *strings.Builder) {
-	if !a.repl.IsStreaming() {
-		return
-	}
-
-	text := a.repl.assistantBuf.String()
-	if text != "" {
-		sb.WriteString(RenderWidth(text, a.width-2))
-		sb.WriteString("\n")
-	}
-
-	// Pending tool calls: show ● dot in dim color (in-progress) — per TS ToolUseLoader
-	for _, tcv := range a.repl.pendingTool {
-		if !tcv.Done {
-			dimDot := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(dot)
-			dimName := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(tcv.Name)
-			fmt.Fprintf(sb, "%s %s running...", dimDot, dimName)
-			if tcv.Input != "" && len(tcv.Input) < 200 {
-				sb.WriteString("\n  " + wordWrap(tcv.Input, a.width-4))
-			}
-			sb.WriteString("\n")
 		}
 	}
 }

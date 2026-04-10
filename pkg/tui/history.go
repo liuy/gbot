@@ -31,6 +31,10 @@ type History struct {
 // NewHistory creates a new History with optional file persistence.
 // If filePath is non-empty, existing entries are loaded from the JSONL file.
 func NewHistory(filePath string) *History {
+	// Validate: reject relative paths
+	if filePath != "" && !filepath.IsAbs(filePath) {
+		filePath = "" // disable persistence for relative paths
+	}
 	h := &History{
 		items:    make([]string, 0, 100),
 		maxSize:  100,

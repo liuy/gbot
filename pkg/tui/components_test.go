@@ -879,3 +879,28 @@ func TestPrettyJSON_Invalid(t *testing.T) {
 		t.Errorf("prettyJSON(invalid) = %q, want original", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// firstMeaningfulLine
+// ---------------------------------------------------------------------------
+
+func TestFirstMeaningfulLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"hello\nworld", "hello"},
+		{"\n\n  hello\nworld", "hello"},
+		{"", ""},
+		{"\n\n", ""},
+		{"  indented  ", "indented"},
+	}
+	for _, tt := range tests {
+		got := firstMeaningfulLine(tt.input)
+		if got != tt.want {
+			t.Errorf("firstMeaningfulLine(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

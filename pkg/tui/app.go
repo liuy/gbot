@@ -130,9 +130,6 @@ func (a *App) View() string {
 	rendered := renderMessages(a.repl.Messages(), a.width, availHeight, a.allToolsExpanded)
 	sb.WriteString(rendered)
 
-	// Streaming assistant output and pending tools (from repl.go)
-	a.replView(&sb)
-
 	// Progress line: spinner + elapsed + tokens when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		spinnerFrame := a.spinner.View()
