@@ -235,8 +235,8 @@ func TestInput_View_Focused(t *testing.T) {
 	i := NewInput()
 	i.SetValue("hello")
 	v := i.View()
-	if !strings.Contains(v, ">") {
-		t.Error("View() should contain prompt '>'")
+	if !strings.Contains(v, "❯") {
+		t.Error("View() should contain prompt '❯'")
 	}
 	if !strings.Contains(v, "hello") {
 		t.Error("View() should contain value")
@@ -250,7 +250,7 @@ func TestInput_View_Blurred(t *testing.T) {
 	i.SetValue("hello")
 	i.Blur()
 	v := i.View()
-	if !strings.Contains(v, ">") {
+	if !strings.Contains(v, "❯") {
 		t.Error("View() should contain prompt")
 	}
 }
@@ -448,9 +448,49 @@ func TestMessageView_UserRole(t *testing.T) {
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hello there"}},
 	}
 	v := m.View(80, false)
-	// Role prefix is rendered by parent component (MessageList), not here
-	if !strings.Contains(v, "hello there") {
-		t.Errorf("View() = %q, should contain content", v)
+	if !strings.Contains(v, "❯ hello there") {
+		t.Errorf("View() = %q, should contain ❯ prefix", v)
+	}
+}
+
+func TestMessageView_UserRole_MultiLine(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role:   "user",
+		Blocks: []ContentBlock{{Type: BlockText, Text: "this is a very long line that will wrap and continue on the next line"}},
+	}
+	v := m.View(30, false) // narrow width triggers wrapping
+	// First line should have ❯ prefix
+	if !strings.Contains(v, "❯ this") {
+		t.Errorf("View() = %q, should start with ❯", v)
+	}
+	// Continuation lines should be indented (2 spaces to align after ❯)
+	if !strings.Contains(v, "\n  ") {
+		t.Errorf("View() = %q, continuation lines should be indented", v)
+	}
+}
+
+func TestPrefixUserLine(t *testing.T) {
+	t.Parallel()
+
+	// Single line
+	out := prefixUserLine("hello", 80)
+	if out != "❯ hello" {
+		t.Errorf("single line: got %q, want %q", out, "❯ hello")
+	}
+
+	// Multi-line
+	out = prefixUserLine("line1\nline2\nline3", 80)
+	lines := strings.Split(out, "\n")
+	if lines[0] != "❯ line1" {
+		t.Errorf("first line: got %q, want %q", lines[0], "❯ line1")
+	}
+	if lines[1] != "  line2" {
+		t.Errorf("continuation: got %q, want %q", lines[1], "  line2")
+	}
+	if lines[2] != "  line3" {
+		t.Errorf("continuation: got %q, want %q", lines[2], "  line3")
 	}
 }
 

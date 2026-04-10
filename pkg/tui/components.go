@@ -20,6 +20,7 @@ var (
 	styleNameBold   = lipgloss.NewStyle().Bold(true)
 	styleTimeDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
 	styleDim        = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+	stylePrompt     = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 )
 
 // ---------------------------------------------------------------------------
@@ -162,10 +163,10 @@ func (i *Input) End() {
 
 // View renders the input.
 func (i *Input) View() string {
-	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	promptStyle := stylePrompt
 	inputStyle := lipgloss.NewStyle()
 
-	prompt := promptStyle.Render("> ")
+	prompt := promptStyle.Render("❯ ")
 	text := string(i.value)
 	if text == "" && !i.focused {
 		text = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(i.placeholder)
@@ -359,11 +360,16 @@ func (m MessageView) View(width int, expand bool) string {
 
 	// Render using Blocks (interleaved text+tool, per TS).
 	if len(m.Blocks) > 0 {
+		isUser := m.Role == "user"
 		for _, blk := range m.Blocks {
 			switch blk.Type {
 			case BlockText:
 				if blk.Text != "" {
-					sb.WriteString(wordWrap(Render(blk.Text), availWidth))
+					wrapped := wordWrap(Render(blk.Text), availWidth)
+					if isUser {
+						wrapped = prefixUserLine(wrapped, availWidth)
+					}
+					sb.WriteString(wrapped)
 					sb.WriteString("\n")
 				}
 			case BlockTool:
@@ -516,6 +522,25 @@ func wordWrap(text string, width int) string {
 		lines = append(lines, currentLine.String())
 	}
 
+	return strings.Join(lines, "\n")
+}
+
+// prefixUserLine adds ❯ prefix to the first line and aligns continuation lines.
+// Lines are split by \n from wordWrap output.
+func prefixUserLine(text string, width int) string {
+	prompt := stylePrompt.Render("❯ ")
+	promptLen := 2 // width of ❯ in display cells (1 cell)
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 {
+		return text
+	}
+	// First line: prepend prompt
+	lines[0] = prompt + lines[0]
+	// Continuation lines: indent to align with text after prompt
+	indent := strings.Repeat(" ", promptLen)
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
 	return strings.Join(lines, "\n")
 }
 
