@@ -23,6 +23,9 @@ type ReplState struct {
 	streaming   bool
 	pendingTool map[string]*ToolCallView
 
+	// Tracks partial input accumulation per tool ID for summary updates
+	pendingInput map[string]string
+
 	// Channel for the final query result (nil when idle)
 	resultCh <-chan engine.QueryResult
 
@@ -33,8 +36,9 @@ type ReplState struct {
 // NewReplState creates a fresh REPL state.
 func NewReplState() *ReplState {
 	return &ReplState{
-		messages:    []MessageView{},
-		pendingTool: make(map[string]*ToolCallView),
+		messages:     []MessageView{},
+		pendingTool:  make(map[string]*ToolCallView),
+		pendingInput: make(map[string]string),
 	}
 }
 
@@ -52,6 +56,7 @@ func (s *ReplState) StartQuery(resultCh <-chan engine.QueryResult) {
 	s.resultCh = resultCh
 	s.streaming = true
 	s.pendingTool = make(map[string]*ToolCallView)
+	s.pendingInput = make(map[string]string)
 	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
 }
 
@@ -87,12 +92,12 @@ func (s *ReplState) AppendTextItem() {
 }
 
 // PendingToolStarted records a new in-progress tool call.
-func (s *ReplState) PendingToolStarted(id, name, input string) {
+func (s *ReplState) PendingToolStarted(id, name, summary, input string) {
 	m := s.lastMsg()
 	if m == nil {
 		return
 	}
-	tcv := &ToolCallView{Name: name, Input: input, Done: false}
+	tcv := &ToolCallView{ID: id, Name: name, Summary: summary, Input: input, Done: false}
 	s.pendingTool[id] = tcv
 	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
 }
@@ -107,6 +112,35 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 	tcv.IsError = isError
 	tcv.Done = true
 	tcv.Elapsed = elapsed
+
+	// Update the tool block in lastMsg
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
+			m.Blocks[i].ToolCall = *tcv
+			return
+		}
+	}
+}
+
+// PendingToolDelta updates a pending tool's input and summary from engine.
+func (s *ReplState) PendingToolDelta(id, delta, summary string) {
+	s.pendingInput[id] += delta
+
+	tcv, ok := s.pendingTool[id]
+	if !ok {
+		return
+	}
+
+	// Use summary pre-computed by engine (via tool.Description + fallback)
+	if summary != "" {
+		tcv.Summary = summary
+	}
+	inputStr := s.pendingInput[id]
+	tcv.Input = prettyJSON(json.RawMessage(inputStr))
 
 	// Update the tool block in lastMsg
 	m := s.lastMsg()
@@ -172,7 +206,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case streamToolUseMsg:
-		a.repl.PendingToolStarted(m.ID, m.Name, m.Input)
+		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
+		return true, a.readEvents()
+
+	case streamToolDeltaMsg:
+		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
 		return true, a.readEvents()
 
 	case streamToolResultMsg:

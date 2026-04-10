@@ -27,8 +27,8 @@ func TestNew(t *testing.T) {
 
 	tt := fileread.New()
 
-	if tt.Name() != "FileRead" {
-		t.Errorf("Name() = %q, want %q", tt.Name(), "FileRead")
+	if tt.Name() != "Read" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Read")
 	}
 	if !tt.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = false, want true")
@@ -68,7 +68,7 @@ func TestDescription(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"with path", `{"file_path":"/tmp/test.go"}`, "Read file: /tmp/test.go"},
+		{"with path", `{"file_path":"/tmp/test.go"}`, "/tmp/test.go"},
 		{"invalid json", `{invalid`, "Read a file from the filesystem"},
 	}
 
@@ -789,5 +789,54 @@ func TestExecute_DedupDifferentOffset(t *testing.T) {
 	}
 	if textOut.Type != "text" {
 		t.Errorf("Type = %q, want %q (different offset not deduped)", textOut.Type, "text")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — human-readable output for TUI
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_TextOutput(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(&fileread.TextOutput{
+		Type:       "text",
+		FilePath:   "/tmp/test.go",
+		Content:    "package main\nfunc main() {}\n",
+		NumLines:   2,
+		StartLine:  1,
+		TotalLines: 2,
+	})
+	if !strings.Contains(result, "package main") {
+		t.Errorf("RenderResult(TextOutput) = %q, should contain file content", result)
+	}
+	if strings.Contains(result, `"type"`) {
+		t.Errorf("RenderResult(TextOutput) = %q, should not contain raw JSON keys", result)
+	}
+}
+
+func TestRenderResult_ImageOutput(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(&fileread.ImageOutput{
+		Type:           "image",
+		FilePath:       "/tmp/img.png",
+		OriginalWidth:  800,
+		OriginalHeight: 600,
+	})
+	if !strings.Contains(result, "/tmp/img.png") {
+		t.Errorf("RenderResult(ImageOutput) = %q, should contain file path", result)
+	}
+}
+
+func TestRenderResult_FileUnchanged(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(&fileread.FileUnchangedOutput{
+		Type:     "file_unchanged",
+		FilePath: "/tmp/test.go",
+	})
+	if !strings.Contains(result, "unchanged") {
+		t.Errorf("RenderResult(FileUnchangedOutput) = %q, should mention unchanged", result)
 	}
 }

@@ -274,6 +274,8 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	var contentBlocks []types.ContentBlock
 	var currentText strings.Builder
 	var currentToolInput strings.Builder
+	var currentToolID string
+	var currentToolName string
 	var model string
 	var stopReason string
 	var usage types.Usage
@@ -302,13 +304,17 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				cb := *event.ContentBlock
 				contentBlocks = append(contentBlocks, cb)
 				if cb.Type == types.ContentTypeToolUse {
+					currentToolID = cb.ID
+					currentToolName = cb.Name
 					currentToolInput.Reset()
+					summary := e.computeSummary(cb.Name, cb.Input)
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolUseStart,
 						ToolUse: &types.ToolUseEvent{
-							ID:    cb.ID,
-							Name:  cb.Name,
-							Input: cb.Input,
+							ID:      cb.ID,
+							Name:    cb.Name,
+							Input:   cb.Input,
+							Summary: summary,
 						},
 					})
 				}
@@ -326,6 +332,16 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					})
 				case "input_json_delta":
 					currentToolInput.WriteString(event.Delta.PartialJSON)
+					accumulated := currentToolInput.String()
+					summary := e.computeSummary(currentToolName, json.RawMessage(accumulated))
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventToolUseDelta,
+						PartialInput: &types.PartialInputEvent{
+							ID:      currentToolID,
+							Delta:   event.Delta.PartialJSON,
+							Summary: summary,
+						},
+					})
 				}
 			}
 
@@ -403,6 +419,7 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 				Timing:    elapsed,
 			}
 			results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
+			evt.DisplayOutput = err.Error()
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt})
 			continue
 		}
@@ -413,12 +430,14 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 		// to be string | ContentBlock[], not an arbitrary JSON object.
 		outputJSON, _ := json.Marshal(string(rawJSON))
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
-		e.emitEvent(eventCh, types.QueryEvent{
-			Type: types.EventToolResult,
-			ToolResult: &types.ToolResultEvent{
-				ToolUseID: block.ID,
-				Output:    outputJSON,
-				Timing:    elapsed,
+		displayOutput := t.RenderResult(result.Data)
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type: types.EventToolResult,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     block.ID,
+					Output:        outputJSON,
+					DisplayOutput: displayOutput,
+					Timing:        elapsed,
 			},
 		})
 	}
@@ -432,6 +451,71 @@ func (e *Engine) handleStreamError(err error) types.LoopAction {
 		return types.LoopAction{Continue: true, Reason: types.ContinueNextTurn}
 	}
 	return types.LoopAction{Continue: false}
+}
+
+// computeSummary returns a human-readable summary for a tool invocation.
+// Uses tool.Description() when available, falls back to partial JSON extraction.
+func (e *Engine) computeSummary(name string, input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	// Try tool.Description() first (works for complete JSON)
+	if t, ok := e.tools[name]; ok {
+		if desc, err := t.Description(input); err == nil && desc != "" {
+			return desc
+		}
+	}
+	// Fallback: extract from partial JSON via string matching
+	return extractSummaryFromPartial(name, string(input))
+}
+
+// extractSummaryFromPartial extracts a summary from partial JSON using string matching.
+// Handles incomplete JSON where full unmarshal fails.
+func extractSummaryFromPartial(name, partial string) string {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(name, "_", ""), "-", "")
+	switch normalized {
+	case "Bash", "shell":
+		return extractJSONStringField(partial, "command", "", 30)
+	case "Read", "Write", "Edit", "fileread", "filewrite", "fileedit":
+		return extractJSONStringField(partial, "file_path", "", 40)
+	case "Glob", "Grep", "fileglob", "searchcode":
+		return extractJSONStringField(partial, "pattern", "", 40)
+	}
+	return ""
+}
+
+// extractJSONStringField extracts a string field value from potentially incomplete JSON.
+func extractJSONStringField(jsonStr, fieldName, prefix string, maxLen int) string {
+	key := `"` + fieldName + `"`
+	idx := strings.Index(jsonStr, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := jsonStr[idx+len(key):]
+	colonIdx := strings.Index(rest, ":")
+	if colonIdx < 0 {
+		return ""
+	}
+	valueStart := colonIdx + 1
+	for valueStart < len(rest) && (rest[valueStart] == ' ' || rest[valueStart] == '\n' || rest[valueStart] == '\t') {
+		valueStart++
+	}
+	if valueStart >= len(rest) || rest[valueStart] != '"' {
+		return ""
+	}
+	valueStart++
+	valueEnd := valueStart
+	for valueEnd < len(rest) && rest[valueEnd] != '"' && rest[valueEnd] != ',' && rest[valueEnd] != '}' {
+		valueEnd++
+	}
+	value := rest[valueStart:valueEnd]
+	if value == "" {
+		return ""
+	}
+	if len(value) > maxLen {
+		value = value[:maxLen] + "..."
+	}
+	return prefix + value
 }
 
 // classifyTerminalError maps an error to a terminal reason.
@@ -475,6 +559,11 @@ func (e *Engine) AddSystemMessage(content string) {
 // Messages returns the current message history.
 func (e *Engine) Messages() []types.Message {
 	return e.messages
+}
+
+// Tools returns the tool map used by the engine.
+func (e *Engine) Tools() map[string]tool.Tool {
+	return e.tools
 }
 
 // Reset clears the conversation history.

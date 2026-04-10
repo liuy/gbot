@@ -337,7 +337,8 @@ type MessageView struct {
 // ToolCallView renders a tool invocation within a message.
 type ToolCallView struct {
 	ID      string
-	Name    string
+	Name    string // raw tool name (e.g., "Bash", "Grep")
+	Summary string // context-aware display name (e.g., "Listing 1 directory", "Found 5 matches")
 	Input   string
 	Output  string
 	IsError bool
@@ -361,7 +362,7 @@ func (m MessageView) View(width int, expand bool) string {
 	// Render using Blocks (interleaved text+tool, per TS).
 	if len(m.Blocks) > 0 {
 		isUser := m.Role == "user"
-		for _, blk := range m.Blocks {
+		for i, blk := range m.Blocks {
 			switch blk.Type {
 			case BlockText:
 				if blk.Text != "" {
@@ -375,6 +376,10 @@ func (m MessageView) View(width int, expand bool) string {
 			case BlockTool:
 				blk.renderToolCall(&sb, availWidth, expand)
 				sb.WriteString("\n")
+				// Blank line between completed tool and following text block
+				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
+					sb.WriteString("\n")
+				}
 			}
 		}
 		return sb.String()
@@ -382,8 +387,25 @@ func (m MessageView) View(width int, expand bool) string {
 	return ""
 }
 
+// resultPrefix is the indentation prefix for tool output lines.
+const resultPrefix = "\u23bf "
+
+// prefixLine returns the prefix for line index i: first line gets resultPrefix,
+// subsequent lines get spaces of equal width for alignment.
+func prefixLine(i int, text string) string {
+	if i == 0 {
+		return resultPrefix + text
+	}
+	return "  " + text
+}
+
 // renderToolCall renders a tool block using ● dot indicator.
 // When expand is true, full tool output is shown; otherwise output is collapsed.
+// Format matches TS: ● ToolName(summary)
+//
+//	⎿  output line 1
+//	⎿  output line 2
+//	⎿  … +N lines (ctrl+o to expand)
 func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool) {
 	if blk.Type != BlockTool {
 		return
@@ -391,7 +413,6 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	tc := blk.ToolCall
 
 	// Determine dot color per TS ToolUseLoader.tsx:
-	// color = isUnresolved ? undefined : isError ? "error" : "success"
 	// When Done: isError→red(9), else→green(10)
 	// When !Done: dim(8) — "running"
 	var dotStr string
@@ -405,58 +426,79 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		dotStr = styleDotDim.Render(dot)
 	}
 
-	readableName := humanReadableName(tc.Name)
+	// Header: ● ToolName(summary)
+	toolName := styleNameBold.Render(tc.Name)
 
-	if tc.Done {
-		if tc.IsError {
-			fmt.Fprintf(sb, "%s %s ERROR", dotStr, styleNameBold.Render(readableName))
-			if tc.Output != "" {
-				sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
-			}
-		} else {
-			fmt.Fprintf(sb, "%s %s", dotStr, styleNameBold.Render(readableName))
-			if tc.Elapsed > 0 {
-				sb.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
-			}
-			// Show output if expand=true or output is short
-			if tc.Output != "" && (expand || len(tc.Output) < 200) {
-				sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
-			}
+	if !tc.Done {
+		// Running state: dim name, & suffix, no summary
+		fmt.Fprintf(sb, "%s %s&", dotStr, styleDim.Render(tc.Name))
+		return
+	}
+
+	// Done state
+	if tc.IsError {
+		fmt.Fprintf(sb, "%s %s", dotStr, toolName)
+		if tc.Summary != "" {
+			fmt.Fprintf(sb, "(%s)", tc.Summary)
+		}
+		if tc.Output != "" {
+			sb.WriteString("\n" + formatToolOutput(tc.Output, true, expand, availWidth-2))
 		}
 	} else {
-		fmt.Fprintf(sb, "%s %s running...", dotStr, styleDim.Render(readableName))
-		if tc.Input != "" && len(tc.Input) < 200 {
-			sb.WriteString("\n  " + wordWrap(tc.Input, availWidth-2))
+		fmt.Fprintf(sb, "%s %s", dotStr, toolName)
+		if tc.Summary != "" {
+			fmt.Fprintf(sb, "(%s)", tc.Summary)
+		}
+		if tc.Elapsed > 0 {
+			sb.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
+		}
+		if tc.Output != "" {
+			sb.WriteString("\n" + formatToolOutput(tc.Output, false, expand, availWidth-2))
 		}
 	}
 }
 
-// humanReadableName converts a tool function name to a human-readable format.
-// Matches user preference: Bash, Search, Read, Write, Edit — simple and consistent.
-func humanReadableName(name string) string {
-	switch name {
-	case "Read":
-		return "Read"
-	case "Write", "file_write":
-		return "Write"
-	case "Edit", "file_edit":
-		return "Edit"
-	case "Glob", "Grep", "file_glob", "search_code":
-		return "Search"
-	case "Bash", "shell", "bash":
-		return "Bash"
-	case "WebFetch", "web_fetch":
-		return "Web"
-	case "TodoWrite", "todo_write":
-		return "Todo"
-	default:
-		name = strings.ReplaceAll(name, "_", " ")
-		name = strings.ReplaceAll(name, "-", " ")
-		if len(name) > 0 {
-			return strings.ToUpper(name[:1]) + name[1:]
-		}
-		return name
+// formatToolOutput formats tool output with ⎿ prefix and line collapse.
+// Normal: show first 3 lines, then "… +N lines (ctrl+o to expand)".
+// Error: show first 10 lines, red, "… +N lines (ctrl+o to see all)".
+func formatToolOutput(output string, isError bool, expand bool, availWidth int) string {
+	if output == "" {
+		return ""
 	}
+	// Trim trailing newlines to avoid empty prefixed lines
+	output = strings.TrimRight(output, "\n")
+	lines := strings.Split(output, "\n")
+	maxLines := 3
+	if isError {
+		maxLines = 10
+	}
+
+	// Show all lines if expanded or few enough lines
+	if expand || len(lines) <= maxLines+1 {
+		var sb strings.Builder
+		for i, line := range lines {
+			sb.WriteString(prefixLine(i, wordWrap(line, availWidth)) + "\n")
+		}
+		return strings.TrimRight(sb.String(), "\n")
+	}
+
+	// Collapse: show first maxLines lines + hint
+	shown := lines[:maxLines]
+	hidden := len(lines) - maxLines
+
+	var hint string
+	if isError {
+		hint = styleDim.Render(fmt.Sprintf("… +%d lines (ctrl+o to see all)", hidden))
+	} else {
+		hint = styleDim.Render(fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))
+	}
+
+	var sb strings.Builder
+	for i, line := range shown {
+		sb.WriteString(prefixLine(i, wordWrap(line, availWidth)) + "\n")
+	}
+	sb.WriteString(prefixLine(len(shown), hint))
+	return sb.String()
 }
 
 // firstMeaningfulLine extracts the first non-empty line from text.

@@ -37,6 +37,7 @@ func (t *testTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
 func (t *testTool) IsEnabled() bool                            { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                             { return "" }
+func (t *testTool) RenderResult(any) string                      { return "" }
 
 func TestSequentialToolLoop_SingleTool(t *testing.T) {
 	t.Parallel()

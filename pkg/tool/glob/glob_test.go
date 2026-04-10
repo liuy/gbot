@@ -3,10 +3,11 @@ package glob_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -23,8 +24,8 @@ func TestNew(t *testing.T) {
 
 	tt := glob.New()
 
-	if tt.Name() != "Glob" {
-		t.Errorf("Name() = %q, want %q", tt.Name(), "Glob")
+	if tt.Name() != "Find" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Find")
 	}
 	if !tt.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = false, want true")
@@ -64,7 +65,7 @@ func TestDescription(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"with pattern", `{"pattern":"**/*.go"}`, "Glob: **/*.go"},
+		{"with pattern", `{"pattern":"**/*.go"}`, "**/*.go"},
 		{"invalid json", `{invalid`, "Find files matching a glob pattern"},
 	}
 
@@ -356,5 +357,38 @@ func TestOutput_JSONFieldNames(t *testing.T) {
 	}
 	if _, ok := parsed["numFiles"]; !ok {
 		t.Error("JSON output missing 'numFiles' field (has 'count' instead — must match TS)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — human-readable output for TUI
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_Files(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	output := &glob.Output{
+		Files: []string{"src/a.go", "src/b.go", "src/c.go"},
+		Count: 3,
+	}
+	result := tt.RenderResult(output)
+	if !strings.Contains(result, "src/a.go") {
+		t.Errorf("RenderResult(files) = %q, should contain filenames", result)
+	}
+	if strings.Contains(result, `"filenames"`) {
+		t.Errorf("RenderResult(files) = %q, should not contain raw JSON keys", result)
+	}
+}
+
+func TestRenderResult_NoMatches(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	output := &glob.Output{
+		Files: []string{},
+		Count: 0,
+	}
+	result := tt.RenderResult(output)
+	if result == "" {
+		t.Error("RenderResult(no matches) should return non-empty string")
 	}
 }

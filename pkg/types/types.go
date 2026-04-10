@@ -209,27 +209,37 @@ const (
 // QueryEvent represents an event emitted during the query loop.
 // In TS this is yielded by an async generator; in Go sent on a channel.
 type QueryEvent struct {
-	Type       QueryEventType    `json:"type"`
-	Text       string            `json:"text,omitempty"`
-	ToolUse    *ToolUseEvent     `json:"tool_use,omitempty"`
-	ToolResult *ToolResultEvent  `json:"tool_result,omitempty"`
-	Message    *Message          `json:"message,omitempty"`
-	Error      error             `json:"-"`
+	Type          QueryEventType    `json:"type"`
+	Text          string            `json:"text,omitempty"`
+	ToolUse       *ToolUseEvent     `json:"tool_use,omitempty"`
+	ToolResult    *ToolResultEvent  `json:"tool_result,omitempty"`
+	Message       *Message          `json:"message,omitempty"`
+	PartialInput  *PartialInputEvent `json:"partial_input,omitempty"`
+	Error         error             `json:"-"`
+}
+
+// PartialInputEvent carries incremental input for a pending tool call.
+type PartialInputEvent struct {
+	ID      string `json:"id"`              // tool use ID
+	Delta   string `json:"delta"`           // partial JSON string
+	Summary string `json:"summary,omitempty"` // pre-computed summary from engine
 }
 
 // ToolUseEvent represents a tool invocation event.
 type ToolUseEvent struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	ID      string          `json:"id"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	Summary string          `json:"summary,omitempty"` // pre-computed summary from engine
 }
 
 // ToolResultEvent represents a tool execution result event.
 type ToolResultEvent struct {
-	ToolUseID string          `json:"tool_use_id"`
-	Output    json.RawMessage `json:"output"`
-	IsError   bool            `json:"is_error,omitempty"`
-	Timing    time.Duration   `json:"timing,omitempty"`
+	ToolUseID     string          `json:"tool_use_id"`
+	Output        json.RawMessage `json:"output"`
+	DisplayOutput string          `json:"display_output,omitempty"` // human-readable result for TUI
+	IsError       bool            `json:"is_error,omitempty"`
+	Timing        time.Duration   `json:"timing,omitempty"`
 }
 
 // TerminalReason indicates why the query loop exited.

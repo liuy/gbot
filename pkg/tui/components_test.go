@@ -532,8 +532,9 @@ func TestMessageView_WithToolCalls_Running(t *testing.T) {
 		},
 	}
 	v := m.View(80, false)
-	if !strings.Contains(v, "running...") {
-		t.Errorf("View() = %q, should contain 'running...'", v)
+	// & suffix per TS convention for running state
+	if !strings.Contains(v, "&") {
+		t.Errorf("View() = %q, should contain '&' for running state", v)
 	}
 	if !strings.Contains(v, "Read") {
 		t.Errorf("View() = %q, should contain tool name 'Read'", v)
@@ -554,9 +555,9 @@ func TestMessageView_WithToolCalls_Done(t *testing.T) {
 	if !strings.Contains(v, "done") {
 		t.Errorf("View() = %q, should contain 'done'", v)
 	}
-	// Grep is converted to "Search" via humanReadableName
-	if !strings.Contains(v, "Search") {
-		t.Errorf("View() = %q, should contain 'Search'", v)
+	// Tool name is used directly (no humanReadableName mapping)
+	if !strings.Contains(v, "Grep") {
+		t.Errorf("View() = %q, should contain 'Grep'", v)
 	}
 }
 
@@ -571,11 +572,54 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 		},
 	}
 	v := m.View(80, false)
-	if !strings.Contains(v, "ERROR") {
-		t.Errorf("View() = %q, should contain 'ERROR'", v)
+	// Error shows tool name with red dot
+	if !strings.Contains(v, "Bash") {
+		t.Errorf("View() = %q, should contain 'Bash'", v)
 	}
 	if !strings.Contains(v, "exit code 1") {
 		t.Errorf("View() = %q, should contain error output", v)
+	}
+}
+
+func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
+	t.Parallel()
+
+	// Completed tool followed by text block → should have double newline (blank line)
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "ok", Done: true}},
+			{Type: BlockText, Text: "Here is the result"},
+		},
+	}
+	v := m.View(80, false)
+	if !strings.Contains(v, "\n\n") {
+		t.Errorf("completed tool followed by text should have blank line, got: %q", v)
+	}
+
+	// Running tool (not done) → no blank line
+	m2 := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Done: false}},
+			{Type: BlockText, Text: "should be no blank line"},
+		},
+	}
+	v2 := m2.View(80, false)
+	if strings.Contains(v2, "\n\n") {
+		t.Errorf("running tool followed by text should NOT have blank line, got: %q", v2)
+	}
+
+	// Tool at end (no following block) → no extra blank line (no \n\n)
+	m3 := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "done", Done: true}},
+		},
+	}
+	v3 := m3.View(80, false)
+	if strings.Contains(v3, "\n\n") {
+		t.Errorf("tool at end should not have blank line, got: %q", v3)
 	}
 }
 

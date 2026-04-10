@@ -43,12 +43,14 @@ type SearchReadKind struct {
 // Source: Tool.ts:362-695 — 30+ methods. Phase 1 uses a subset.
 //
 // Deliberately excluded (React JSX → TUI ToolRenderer):
-//   - renderToolResultMessage (Tool.ts:566)
-//   - renderToolUseMessage (Tool.ts:605)
 //   - renderToolUseProgressMessage (Tool.ts:625)
 //   - renderToolUseRejectedMessage (Tool.ts:641)
 //   - renderToolUseErrorMessage (Tool.ts:659)
 //   - renderGroupedToolUse (Tool.ts:678)
+//
+// Ported to plain string:
+//   - renderToolResultMessage (Tool.ts:566) → RenderResult
+//   - renderToolUseMessage (Tool.ts:605) → Description
 type Tool interface {
 	// ── Identity ──────────────────────────────────────────
 	Name() string
@@ -56,6 +58,11 @@ type Tool interface {
 
 	// ── Description ───────────────────────────────────────
 	Description(input json.RawMessage) (string, error)
+		// ── Result Rendering ──────────────────────────────────
+		// Source: Tool.ts:566 — renderToolResultMessage
+		// Renders tool result data as a human-readable string for TUI display.
+		RenderResult(data any) string
+
 
 	// ── Schema ────────────────────────────────────────────
 	InputSchema() json.RawMessage
@@ -153,6 +160,10 @@ type ToolDef struct {
 
 	// Permission checking
 	CheckPermissions_ func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult
+
+	// Result rendering
+	RenderResult_ func(data any) string // default: json.Marshal
+
 }
 
 // builtTool wraps a ToolDef with defaults applied.
@@ -184,6 +195,12 @@ func BuildTool(def ToolDef) Tool {
 	if def.MaxResultSizeChars == 0 {
 		def.MaxResultSizeChars = 50000
 	}
+	if def.RenderResult_ == nil {
+		def.RenderResult_ = func(data any) string {
+			b, _ := json.Marshal(data)
+			return string(b)
+		}
+	}
 	return &builtTool{def: def}
 }
 
@@ -203,3 +220,4 @@ func (t *builtTool) IsConcurrencySafe(input json.RawMessage) bool { return t.def
 func (t *builtTool) IsEnabled() bool                            { return t.def.IsEnabled_() }
 func (t *builtTool) InterruptBehavior() InterruptBehavior       { return t.def.InterruptBehavior_ }
 func (t *builtTool) Prompt() string                             { return t.def.Prompt_ }
+func (t *builtTool) RenderResult(data any) string               { return t.def.RenderResult_(data) }

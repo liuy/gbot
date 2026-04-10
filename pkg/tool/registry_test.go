@@ -33,6 +33,7 @@ func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool     { return false }
 func (m *mockTool) IsEnabled() bool                            { return m.enabled }
 func (m *mockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
 func (m *mockTool) Prompt() string                             { return "" }
+func (m *mockTool) RenderResult(any) string                      { return "" }
 
 func TestNewRegistry(t *testing.T) {
 	r := tool.NewRegistry()

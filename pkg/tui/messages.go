@@ -29,9 +29,18 @@ type streamMessageMsg struct {
 // streamToolUseMsg signals that the LLM has started a tool invocation.
 // Source: useStreaming hook onToolUseStart callback.
 type streamToolUseMsg struct {
-	ID    string
-	Name  string
-	Input string // pretty-printed JSON
+	ID      string
+	Name    string
+	Summary string // context-aware display name (e.g., "Listing 1 directory")
+	Input   string // pretty-printed JSON
+}
+
+// streamToolDeltaMsg carries incremental input updates for a pending tool.
+// The TUI uses this to update the display name once input is available.
+type streamToolDeltaMsg struct {
+	ID      string // tool use ID
+	Delta   string // partial JSON delta
+	Summary string // pre-computed summary from engine
 }
 
 // streamToolResultMsg delivers a tool execution result.

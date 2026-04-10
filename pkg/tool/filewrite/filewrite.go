@@ -351,7 +351,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "FileWrite",
+		Name_:  "Write",
 		Aliases_: []string{"filewrite", "write"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -359,7 +359,7 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Write content to a file", nil
 			}
-			return fmt.Sprintf("Write file: %s", in.FilePath), nil
+			return in.FilePath, nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(json.RawMessage) bool {

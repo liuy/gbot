@@ -23,8 +23,8 @@ func TestNew(t *testing.T) {
 
 	tt := filewrite.New()
 
-	if tt.Name() != "FileWrite" {
-		t.Errorf("Name() = %q, want %q", tt.Name(), "FileWrite")
+	if tt.Name() != "Write" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Write")
 	}
 	if tt.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = true, want false")
@@ -67,7 +67,7 @@ func TestDescription(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"with path", `{"file_path":"/tmp/output.txt"}`, "Write file: /tmp/output.txt"},
+		{"with path", `{"file_path":"/tmp/output.txt"}`, "/tmp/output.txt"},
 		{"invalid json", `{invalid`, "Write content to a file"},
 	}
 

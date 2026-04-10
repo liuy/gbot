@@ -65,6 +65,7 @@ func textStreamEvents(model, text string) []llm.StreamEvent {
 }
 
 // newTestApp creates an App with a mock engine and Hub for testing.
+// Uses empty history path to avoid writing to production history file.
 func newTestApp(provider *tuiMockProvider) *App {
 	h := hub.NewHub()
 	eng := engine.New(&engine.Params{
@@ -72,7 +73,9 @@ func newTestApp(provider *tuiMockProvider) *App {
 		Model:    "test-model",
 		Dispatcher: h,
 	})
-	return NewApp(eng, json.RawMessage(`"test system prompt"`), h)
+	app := NewApp(eng, json.RawMessage(`"test system prompt"`), h)
+	app.history = NewHistory("") // in-memory only, no file I/O
+	return app
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +597,7 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.PendingToolStarted("t1", "Read", `{}`)
+	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 	app.repl.PendingToolDone("t1", "contents", false, 0)
 
 	app.repl.FinishStream(nil)
@@ -744,7 +747,7 @@ func TestApp_FinishStream_BlocksGrowIncrementally(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventTextDelta,
 		Text: "hello",
 	})
@@ -755,7 +758,7 @@ func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolUseStart,
 		ToolUse: &types.ToolUseEvent{
 			ID:    "t1",
@@ -773,7 +776,7 @@ func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolUseStart_Nil(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type:    types.EventToolUseStart,
 		ToolUse: nil,
 	})
@@ -783,7 +786,7 @@ func TestApp_EngineEventToMsg_ToolUseStart_Nil(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolResult,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID: "t1",
@@ -801,7 +804,7 @@ func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type:       types.EventToolResult,
 		ToolResult: nil,
 	})
@@ -811,7 +814,7 @@ func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_Error(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type:  types.EventError,
 		Error: errors.New("test error"),
 	})
@@ -825,7 +828,7 @@ func TestApp_EngineEventToMsg_Error(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_Complete(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventComplete,
 	})
 	_, ok := msg.(streamCompleteMsg)
@@ -835,7 +838,7 @@ func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 }
 
 func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolUseDelta,
 	})
 	if msg != nil {
@@ -990,13 +993,11 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery(nil)
 	app.spinner.Start()
-	app.repl.PendingToolStarted("t1", "Bash", `{"cmd":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	v := app.View()
-	if !strings.Contains(v, "Bash") {
-		t.Errorf("View should show pending tool human-readable name, got: %s", v)
-	}
-	if !strings.Contains(v, "running...") {
-		t.Errorf("View should show 'running...' for pending tool, got: %s", v)
+	// Running state shows dim tool name + & suffix (no summary)
+	if !strings.Contains(v, "Bash&") {
+		t.Errorf("View should show 'Bash&' for running state, got: %s", v)
 	}
 }
 

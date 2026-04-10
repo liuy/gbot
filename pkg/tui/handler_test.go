@@ -43,7 +43,8 @@ func TestTUIHandler_DroppedCounter_WhenBufferFull(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_StreamStart(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{Type: types.EventStreamStart})
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventStreamStart})
 	if msg == nil {
 		t.Fatal("EventStreamStart should not return nil")
 	}
@@ -54,7 +55,8 @@ func TestConvertEventToMsg_StreamStart(t *testing.T) {
 }
 
 func TestConvertEventToMsg_EventMessage_WithMessage(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
 		Type: types.EventMessage,
 		Message: &types.Message{
 			Role: types.RoleUser,
@@ -76,7 +78,8 @@ func TestConvertEventToMsg_EventMessage_WithMessage(t *testing.T) {
 }
 
 func TestConvertEventToMsg_EventMessage_NilMessage(t *testing.T) {
-	msg := convertEventToMsg(types.QueryEvent{
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
 		Type:    types.EventMessage,
 		Message: nil,
 	})

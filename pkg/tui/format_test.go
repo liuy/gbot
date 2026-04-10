@@ -44,9 +44,10 @@ func TestFormatElapsed(t *testing.T) {
 
 func TestFormatElapsed_Milliseconds(t *testing.T) {
 	// Not parallel — timing sensitive
+	// formatElapsed always shows seconds (0.1s minimum)
 	start := time.Now().Add(-100 * time.Millisecond)
 	v := formatElapsed(start)
-	if !strings.HasSuffix(v, "ms") {
-		t.Errorf("formatElapsed(100ms ago) = %q, want ms suffix", v)
+	if !strings.HasSuffix(v, "s") {
+		t.Errorf("formatElapsed(100ms ago) = %q, want s suffix", v)
 	}
 }

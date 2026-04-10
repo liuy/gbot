@@ -8,9 +8,6 @@ import (
 // formatElapsed returns a formatted elapsed time string like "1.2s" or "45ms".
 func formatElapsed(start time.Time) string {
 	elapsed := time.Since(start)
-	if elapsed < time.Second {
-		return fmt.Sprintf("%.0fms", float64(elapsed.Milliseconds()))
-	}
 	return fmt.Sprintf("%.1fs", elapsed.Seconds())
 }
 

@@ -29,7 +29,7 @@ func NewTUIHandler() *TUIHandler {
 // Handle converts a Hub event to a bubbletea message and sends to appCh.
 // Non-blocking: drops events if the buffer is full, incrementing the dropped counter.
 func (h *TUIHandler) Handle(event hub.Event) {
-	msg := convertEventToMsg(event)
+	msg := h.convertEventToMsg(event)
 	if msg == nil {
 		return
 	}
@@ -47,8 +47,8 @@ func (h *TUIHandler) Dropped() int64 {
 }
 
 // convertEventToMsg converts a types.QueryEvent to a bubbletea message.
-// Returns nil for unhandled event types (e.g., EventToolUseDelta).
-func convertEventToMsg(evt types.QueryEvent) tea.Msg {
+// Returns nil for unhandled event types.
+func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	switch evt.Type {
 	case types.EventStreamStart:
 		return streamStartMsg{}
@@ -64,20 +64,25 @@ func convertEventToMsg(evt types.QueryEvent) tea.Msg {
 
 	case types.EventToolUseStart:
 		if evt.ToolUse != nil {
-			input := prettyJSON(evt.ToolUse.Input)
 			return streamToolUseMsg{
-				ID:    evt.ToolUse.ID,
-				Name:  evt.ToolUse.Name,
-				Input: input,
+				ID:      evt.ToolUse.ID,
+				Name:    evt.ToolUse.Name,
+				Summary: evt.ToolUse.Summary,
+				Input:   prettyJSON(evt.ToolUse.Input),
 			}
 		}
 
 	case types.EventToolResult:
 		if evt.ToolResult != nil {
+			output := evt.ToolResult.DisplayOutput
+			if output == "" {
+				output = prettyJSON(evt.ToolResult.Output)
+			}
 			return streamToolResultMsg{
 				ToolUseID: evt.ToolResult.ToolUseID,
-				Output:    prettyJSON(evt.ToolResult.Output),
+				Output:    output,
 				IsError:   evt.ToolResult.IsError,
+				Timing:    evt.ToolResult.Timing,
 			}
 		}
 
@@ -86,6 +91,16 @@ func convertEventToMsg(evt types.QueryEvent) tea.Msg {
 
 	case types.EventComplete:
 		return streamCompleteMsg{}
+
+	case types.EventToolUseDelta:
+		if evt.PartialInput != nil {
+			return streamToolDeltaMsg{
+				ID:      evt.PartialInput.ID,
+				Delta:   evt.PartialInput.Delta,
+				Summary: evt.PartialInput.Summary,
+			}
+		}
+		return nil
 	}
 
 	return nil

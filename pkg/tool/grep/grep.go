@@ -143,7 +143,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Grep",
+		Name_:  "Search",
 		Aliases_: []string{"grep"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -151,7 +151,7 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Search file contents with regex", nil
 			}
-			return fmt.Sprintf("Grep: %s", in.Pattern), nil
+			return in.Pattern, nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(json.RawMessage) bool {
@@ -162,6 +162,27 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: "Search file contents using ripgrep (rg). Supports regex patterns, file type filtering, glob includes, and multiple output modes.",
+		RenderResult_: func(data any) string {
+			out, ok := data.(*Output)
+			if !ok {
+				b, _ := json.Marshal(data)
+				return string(b)
+			}
+			switch out.Mode {
+			case "content":
+				return out.Content
+			case "files_with_matches":
+				if len(out.Filenames) == 0 {
+					return "No files matched"
+				}
+				return strings.Join(out.Filenames, "\n")
+			case "count":
+				return fmt.Sprintf("%d matches in %d files", out.NumMatches, out.NumFiles)
+			default:
+				b, _ := json.Marshal(data)
+				return string(b)
+			}
+		},
 	})
 }
 

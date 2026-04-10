@@ -75,7 +75,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "FileEdit",
+		Name_:        "Edit",
 		Aliases_:     []string{"fileedit", "edit"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -83,7 +83,7 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Edit a file with string replacement", nil
 			}
-			return fmt.Sprintf("Edit file: %s", in.FilePath), nil
+			return in.FilePath, nil
 		},
 		Call_:              Execute,
 		IsReadOnly_:        func(json.RawMessage) bool { return false },

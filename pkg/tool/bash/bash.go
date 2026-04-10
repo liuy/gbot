@@ -90,10 +90,11 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Execute a bash command", nil
 			}
-			if in.Description != "" {
-				return truncate(in.Description, 80), nil
+			// TS renderToolUseMessage: always show the command, not the LLM description
+			if in.Command != "" {
+				return truncate(in.Command, 78), nil
 			}
-			return truncate(in.Command, 80), nil
+			return "", nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(input json.RawMessage) bool {
@@ -115,7 +116,30 @@ func New() tool.Tool {
 			return false // Bash commands are never concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "Use this tool to execute terminal commands. Commands run in a bash shell.",
+			Prompt_: "Use this tool to execute terminal commands. Commands run in a bash shell.",
+			RenderResult_: func(data any) string {
+				out, ok := data.(*Output)
+				if !ok {
+					return fmt.Sprintf("%v", data)
+				}
+				var sb strings.Builder
+				if out.Stdout != "" {
+					sb.WriteString(out.Stdout)
+				}
+				if out.Stderr != "" {
+					if sb.Len() > 0 {
+						sb.WriteByte('\n')
+					}
+					sb.WriteString(out.Stderr)
+				}
+				if out.TimedOut {
+					if sb.Len() > 0 {
+						sb.WriteByte('\n')
+					}
+					sb.WriteString("Command timed out")
+				}
+				return sb.String()
+			},
 	})
 }
 

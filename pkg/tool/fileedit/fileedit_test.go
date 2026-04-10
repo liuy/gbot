@@ -18,8 +18,8 @@ func TestNew(t *testing.T) {
 
 	tt := fileedit.New()
 
-	if tt.Name() != "FileEdit" {
-		t.Errorf("Name() = %q, want %q", tt.Name(), "FileEdit")
+	if tt.Name() != "Edit" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Edit")
 	}
 	if tt.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = true, want false")
@@ -59,7 +59,7 @@ func TestDescription(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"with path", `{"file_path":"/tmp/test.go"}`, "Edit file: /tmp/test.go"},
+		{"with path", `{"file_path":"/tmp/test.go"}`, "/tmp/test.go"},
 		{"invalid json", `{invalid`, "Edit a file with string replacement"},
 	}
 

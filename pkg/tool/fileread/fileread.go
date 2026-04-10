@@ -358,7 +358,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "FileRead",
+		Name_:  "Read",
 		Aliases_: []string{"fileread", "read", "cat"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -366,7 +366,7 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Read a file from the filesystem", nil
 			}
-			return fmt.Sprintf("Read file: %s", in.FilePath), nil
+			return in.FilePath, nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(json.RawMessage) bool {
@@ -377,7 +377,37 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: "Read file contents from the local filesystem. Supports line range via offset and limit parameters.",
+		RenderResult_: renderResult,
 	})
+}
+
+// renderResult converts tool output to a human-readable string for the TUI.
+func renderResult(data any) string {
+	switch out := data.(type) {
+	case *TextOutput:
+		return out.Content
+	case TextOutput:
+		return out.Content
+	case *ImageOutput:
+		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
+	case ImageOutput:
+		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
+	case *PDFOutput:
+		return fmt.Sprintf("PDF: %s (%d bytes)", out.FilePath, out.OriginalSize)
+	case PDFOutput:
+		return fmt.Sprintf("PDF: %s (%d bytes)", out.FilePath, out.OriginalSize)
+	case *PartsOutput:
+		return fmt.Sprintf("PDF: %s (%d pages extracted)", out.FilePath, out.Count)
+	case PartsOutput:
+		return fmt.Sprintf("PDF: %s (%d pages extracted)", out.FilePath, out.Count)
+	case *FileUnchangedOutput:
+		return fmt.Sprintf("File unchanged: %s", out.FilePath)
+	case FileUnchangedOutput:
+		return fmt.Sprintf("File unchanged: %s", out.FilePath)
+	default:
+		b, _ := json.Marshal(data)
+		return string(b)
+	}
 }
 
 // countLines returns total line count for a file path.

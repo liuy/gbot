@@ -84,8 +84,9 @@ func TestDescription_WithDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "List files in directory" {
-		t.Errorf("Description() = %q, want %q", desc, "List files in directory")
+	// TS renderToolUseMessage: always shows command, not LLM description
+	if desc != "ls" {
+		t.Errorf("Description() = %q, want %q", desc, "ls")
 	}
 }
 
@@ -468,15 +469,15 @@ func TestDescription_Truncation(t *testing.T) {
 		t.Errorf("Description() = %q, should end with ...", desc)
 	}
 
-	// Description field longer than 80 chars
+	// Command + description: Description shows command, ignores description field
 	longDesc := strings.Repeat("b", 100)
 	input = json.RawMessage(`{"command":"echo","description":"` + longDesc + `"}`)
 	desc, err = tt.Description(input)
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if len(desc) > 80 {
-		t.Errorf("Description() length = %d, want <= 80", len(desc))
+	if desc != "echo" {
+		t.Errorf("Description() = %q, want %q", desc, "echo")
 	}
 }
 

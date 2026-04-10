@@ -204,7 +204,7 @@ func TestNew_ReturnsValidTool(t *testing.T) {
 	if g == nil {
 		t.Fatal("New() returned nil")
 	}
-	if g.Name() != "Grep" {
+	if g.Name() != "Search" {
 		t.Errorf("Name() = %q, want %q", g.Name(), "Grep")
 	}
 	aliases := g.Aliases()
@@ -235,8 +235,8 @@ func TestNew_DescriptionWithPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "Grep: TODO" {
-		t.Errorf("Description() = %q, want %q", desc, "Grep: TODO")
+	if desc != "TODO" {
+		t.Errorf("Description() = %q, want %q", desc, "TODO")
 	}
 }
 
@@ -798,5 +798,54 @@ func TestGrepToolCall_ContextCAlias(t *testing.T) {
 	}
 	if !strings.Contains(output.Content, "D") {
 		t.Errorf("Content = %q, should include context line 'D' after match", output.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — human-readable output for TUI
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_ContentMode(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	output := &grep.Output{
+		Mode:     "content",
+		Content:  "file.go:10:match here\nfile.go:20:another match",
+		NumLines: 2,
+	}
+	result := tt.RenderResult(output)
+	if !strings.Contains(result, "match here") {
+		t.Errorf("RenderResult(content mode) = %q, should contain content", result)
+	}
+	if strings.Contains(result, `"mode"`) {
+		t.Errorf("RenderResult(content mode) = %q, should not contain raw JSON keys", result)
+	}
+}
+
+func TestRenderResult_FilesWithMatches(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	output := &grep.Output{
+		Mode:      "files_with_matches",
+		NumFiles:  2,
+		Filenames: []string{"a.go", "b.go"},
+	}
+	result := tt.RenderResult(output)
+	if !strings.Contains(result, "a.go") || !strings.Contains(result, "b.go") {
+		t.Errorf("RenderResult(files_with_matches) = %q, should contain filenames", result)
+	}
+}
+
+func TestRenderResult_CountMode(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	output := &grep.Output{
+		Mode:       "count",
+		NumFiles:   3,
+		NumMatches: 10,
+	}
+	result := tt.RenderResult(output)
+	if !strings.Contains(result, "10") {
+		t.Errorf("RenderResult(count mode) = %q, should contain match count", result)
 	}
 }

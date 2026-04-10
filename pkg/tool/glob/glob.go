@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -57,7 +58,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Glob",
+		Name_:  "Find",
 		Aliases_: []string{"glob"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -65,7 +66,7 @@ func New() tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Find files matching a glob pattern", nil
 			}
-			return fmt.Sprintf("Glob: %s", in.Pattern), nil
+			return in.Pattern, nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(json.RawMessage) bool {
@@ -76,6 +77,17 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: "Find files matching glob patterns. Uses doublestar v4 for extended glob matching (e.g. '**/*.go').",
+		RenderResult_: func(data any) string {
+			out, ok := data.(*Output)
+			if !ok {
+				b, _ := json.Marshal(data)
+				return string(b)
+			}
+			if len(out.Files) == 0 {
+				return "No files matched"
+			}
+			return strings.Join(out.Files, "\n")
+		},
 	})
 }
 
