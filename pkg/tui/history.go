@@ -159,11 +159,8 @@ func (h *History) save(cmd string) {
 }
 
 // load reads all entries from the JSONL history file into items.
+// Caller guarantees filePath is non-empty (NewHistory guards this).
 func (h *History) load() {
-	if h.filePath == "" {
-		return
-	}
-
 	f, err := os.Open(h.filePath)
 	if err != nil {
 		return // file doesn't exist yet — that's fine

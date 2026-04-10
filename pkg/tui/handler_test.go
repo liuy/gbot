@@ -88,3 +88,80 @@ func TestConvertEventToMsg_EventMessage_NilMessage(t *testing.T) {
 		t.Errorf("EventMessage with nil Message should return nil, got %T", msg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Handle — nil msg (unhandled event)
+// ---------------------------------------------------------------------------
+
+func TestTUIHandler_Handle_UnhandledEvent(t *testing.T) {
+	h := NewTUIHandler()
+	// EventToolUseDelta with nil PartialInput returns nil → Handle does nothing
+	h.Handle(types.QueryEvent{Type: types.EventToolUseDelta, PartialInput: nil})
+	if h.Dropped() != 0 {
+		t.Error("nil msg should not be sent to channel")
+	}
+	// Buffer has room, so valid event should succeed
+	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "ok"})
+	if h.Dropped() != 0 {
+		t.Error("valid event should not be dropped")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — nil ToolUse in ToolUseStart
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_ToolUseStart_NilToolUse(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:    types.EventToolUseStart,
+		ToolUse: nil,
+	})
+	// Falls through to next case → nil
+	// Actually the switch matches EventToolUseStart but ToolUse is nil,
+	// so the if-check returns nothing and falls through.
+	// The result should be nil since there's no explicit return for nil ToolUse
+	// in EventToolUseStart case — let's check actual behavior.
+	// Looking at the code: case EventToolUseStart: if evt.ToolUse != nil { ... }
+	// No return for nil → falls through to end of function → returns nil.
+	if msg != nil {
+		t.Errorf("expected nil for nil ToolUse in ToolUseStart, got %T", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventToolUseDelta with PartialInput
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_ToolUseDelta_WithPartialInput(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolUseDelta,
+		PartialInput: &types.PartialInputEvent{
+			ID:      "t1",
+			Delta:   `{"file":"a.go"}`,
+			Summary: "a.go",
+		},
+	})
+	tdm, ok := msg.(streamToolDeltaMsg)
+	if !ok {
+		t.Fatalf("expected streamToolDeltaMsg, got %T", msg)
+	}
+	if tdm.ID != "t1" {
+		t.Errorf("ID = %q, want %q", tdm.ID, "t1")
+	}
+	if tdm.Summary != "a.go" {
+		t.Errorf("Summary = %q, want %q", tdm.Summary, "a.go")
+	}
+}
+
+func TestConvertEventToMsg_ToolUseDelta_NilPartialInput(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:         types.EventToolUseDelta,
+		PartialInput: nil,
+	})
+	if msg != nil {
+		t.Errorf("expected nil for nil PartialInput, got %T", msg)
+	}
+}

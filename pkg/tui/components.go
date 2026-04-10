@@ -119,6 +119,59 @@ func (i *Input) Backspace() {
 	}
 }
 
+// DeleteForward deletes the rune at the cursor position (forward delete).
+func (i *Input) DeleteForward() {
+	if i.cursor < len(i.value) {
+		i.value = append(i.value[:i.cursor], i.value[i.cursor+1:]...)
+	}
+}
+
+// PrevWord moves the cursor to the start of the previous word.
+// Source: useTextInput.ts — Alt+B / Ctrl+Left
+func (i *Input) PrevWord() {
+	if i.cursor == 0 {
+		return
+	}
+	pos := i.cursor - 1
+	for pos > 0 && i.value[pos] == ' ' {
+		pos--
+	}
+	for pos > 0 && i.value[pos-1] != ' ' {
+		pos--
+	}
+	i.cursor = pos
+}
+
+// NextWord moves the cursor to the start of the next word.
+// Source: useTextInput.ts — Alt+F / Ctrl+Right
+func (i *Input) NextWord() {
+	pos := i.cursor
+	// Skip current word
+	for pos < len(i.value) && i.value[pos] != ' ' {
+		pos++
+	}
+	// Skip spaces
+	for pos < len(i.value) && i.value[pos] == ' ' {
+		pos++
+	}
+	i.cursor = pos
+}
+
+// DeleteWordForward deletes from cursor to start of next word.
+// Source: useTextInput.ts — Alt+D (killWord)
+func (i *Input) DeleteWordForward() string {
+	pos := i.cursor
+	for pos < len(i.value) && i.value[pos] != ' ' {
+		pos++
+	}
+	for pos < len(i.value) && i.value[pos] == ' ' {
+		pos++
+	}
+	deleted := string(i.value[i.cursor:pos])
+	i.value = append(i.value[:i.cursor], i.value[pos:]...)
+	return deleted
+}
+
 // DeleteWord deletes the word before the cursor.
 func (i *Input) DeleteWord() {
 	if i.cursor == 0 {
@@ -569,9 +622,6 @@ func prefixUserLine(text string, width int) string {
 	prompt := stylePrompt.Render("❯ ")
 	promptLen := 2 // width of ❯ in display cells (1 cell)
 	lines := strings.Split(text, "\n")
-	if len(lines) == 0 {
-		return text
-	}
 	// First line: prepend prompt
 	lines[0] = prompt + lines[0]
 	// Continuation lines: indent to align with text after prompt

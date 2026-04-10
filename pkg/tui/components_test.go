@@ -2,9 +2,11 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func stripAnsiPrintable(s string) string {
@@ -986,5 +988,615 @@ func TestFirstMeaningfulLine(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("firstMeaningfulLine(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteForward
+// ---------------------------------------------------------------------------
+
+func TestInput_DeleteForward(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("abc")
+	i.CursorLeft() // cursor at position 2
+	i.DeleteForward()
+	if i.Value() != "ab" {
+		t.Errorf("DeleteForward() = %q, want %q", i.Value(), "ab")
+	}
+}
+
+func TestInput_DeleteForward_AtEnd(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("abc")
+	// cursor at end (position 3) — no-op
+	i.DeleteForward()
+	if i.Value() != "abc" {
+		t.Errorf("DeleteForward at end should be no-op, got %q", i.Value())
+	}
+}
+
+func TestInput_DeleteForward_Empty(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.DeleteForward()
+	if i.Value() != "" {
+		t.Errorf("DeleteForward on empty should be no-op, got %q", i.Value())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PrevWord
+// ---------------------------------------------------------------------------
+
+func TestInput_PrevWord(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello world foo")
+	i.End() // cursor at end
+	i.PrevWord()
+	if i.cursor != 12 { // start of "foo"
+		t.Errorf("PrevWord() cursor = %d, want 12", i.cursor)
+	}
+	i.PrevWord()
+	if i.cursor != 6 { // start of "world"
+		t.Errorf("PrevWord() cursor = %d, want 6", i.cursor)
+	}
+}
+
+func TestInput_PrevWord_AtStart(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello")
+	i.Home()
+	i.PrevWord()
+	if i.cursor != 0 {
+		t.Errorf("PrevWord at start should be no-op, cursor = %d", i.cursor)
+	}
+}
+
+func TestInput_PrevWord_LeadingSpaces(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello   world")
+	i.End()
+	i.PrevWord()
+	if i.cursor != 8 { // start of "world" after spaces
+		t.Errorf("PrevWord() cursor = %d, want 8", i.cursor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NextWord
+// ---------------------------------------------------------------------------
+
+func TestInput_NextWord(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello world foo")
+	i.Home() // cursor at 0
+	i.NextWord()
+	if i.cursor != 6 { // start of "world"
+		t.Errorf("NextWord() cursor = %d, want 6", i.cursor)
+	}
+	i.NextWord()
+	if i.cursor != 12 { // start of "foo"
+		t.Errorf("NextWord() cursor = %d, want 12", i.cursor)
+	}
+}
+
+func TestInput_NextWord_AtEnd(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello")
+	i.End()
+	i.NextWord()
+	if i.cursor != 5 {
+		t.Errorf("NextWord at end should stay at end, cursor = %d", i.cursor)
+	}
+}
+
+func TestInput_NextWord_Empty(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.NextWord()
+	if i.cursor != 0 {
+		t.Errorf("NextWord on empty should be no-op, cursor = %d", i.cursor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteWordForward
+// ---------------------------------------------------------------------------
+
+func TestInput_DeleteWordForward(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello world foo")
+	i.Home() // cursor at 0
+	deleted := i.DeleteWordForward()
+	if deleted != "hello " {
+		t.Errorf("DeleteWordForward() deleted = %q, want %q", deleted, "hello ")
+	}
+	if i.Value() != "world foo" {
+		t.Errorf("DeleteWordForward() Value() = %q, want %q", i.Value(), "world foo")
+	}
+}
+
+func TestInput_DeleteWordForward_AtEnd(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("hello")
+	i.End()
+	deleted := i.DeleteWordForward()
+	if deleted != "" {
+		t.Errorf("DeleteWordForward at end should return empty, got %q", deleted)
+	}
+	if i.Value() != "hello" {
+		t.Errorf("Value() = %q, want %q", i.Value(), "hello")
+	}
+}
+
+func TestInput_DeleteWordForward_Empty(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	deleted := i.DeleteWordForward()
+	if deleted != "" {
+		t.Errorf("DeleteWordForward on empty should return empty, got %q", deleted)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InsertChar — cursor beyond end
+// ---------------------------------------------------------------------------
+
+func TestInput_InsertChar_CursorBeyondEnd(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("abc")
+	// Force cursor beyond end
+	i.cursor = 10
+	i.InsertChar('x')
+	if i.Value() != "abcx" {
+		t.Errorf("InsertChar with cursor beyond end: Value() = %q, want %q", i.Value(), "abcx")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input.View — focused cursor variations
+// ---------------------------------------------------------------------------
+
+func TestInput_View_FocusedCursorAtEnd(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("ab")
+	v := i.View()
+	if !strings.Contains(v, "ab") {
+		t.Errorf("View() should contain value, got %q", v)
+	}
+}
+
+func TestInput_View_FocusedCursorMiddle(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetValue("abc")
+	i.CursorLeft() // cursor at 2 (on 'c')
+	i.CursorLeft() // cursor at 1 (on 'b') — triggers after = "c"
+	v := i.View()
+	if !strings.Contains(v, "abc") {
+		t.Errorf("View() should contain value, got %q", v)
+	}
+	// Cursor at position 1: before="a", cursorChar="b", after="c"
+	// Verify "c" appears in output (from the after branch)
+	if !strings.Contains(v, "c") {
+		t.Errorf("View() should show chars after cursor, got %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner.Tick inactive
+// ---------------------------------------------------------------------------
+
+func TestSpinner_TickInactive(t *testing.T) {
+	t.Parallel()
+
+	s := NewSpinner()
+	idx := s.idx
+	s.Tick()
+	if s.idx != idx {
+		t.Error("Tick on inactive spinner should be no-op")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prefixLine continuation
+// ---------------------------------------------------------------------------
+
+func TestPrefixLine_Continuation(t *testing.T) {
+	out := prefixLine(1, "hello")
+	if out != "  hello" {
+		t.Errorf("prefixLine(1, ...) = %q, want %q", out, "  hello")
+	}
+	out0 := prefixLine(0, "hello")
+	if !strings.Contains(out0, "⎿") {
+		t.Errorf("prefixLine(0, ...) should contain ⎿, got %q", out0)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// formatToolOutput — comprehensive coverage
+// ---------------------------------------------------------------------------
+
+func TestFormatToolOutput_Empty(t *testing.T) {
+	out := formatToolOutput("", false, false, 80)
+	if out != "" {
+		t.Errorf("empty input should return empty, got %q", out)
+	}
+}
+
+func TestFormatToolOutput_FewLines_NoCollapse(t *testing.T) {
+	output := "line1\nline2\nline3"
+	out := formatToolOutput(output, false, false, 80)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("3 lines should not collapse, got: %q", out)
+	}
+}
+
+func TestFormatToolOutput_Collapse(t *testing.T) {
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	output := strings.Join(lines, "\n")
+	out := formatToolOutput(output, false, false, 80)
+	if !strings.Contains(out, "ctrl+o to expand") {
+		t.Errorf("10 lines should collapse with hint, got: %s", out)
+	}
+}
+
+func TestFormatToolOutput_CollapseError(t *testing.T) {
+	lines := make([]string, 15)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("err line%d", i)
+	}
+	output := strings.Join(lines, "\n")
+	out := formatToolOutput(output, true, false, 80)
+	if !strings.Contains(out, "ctrl+o to see all") {
+		t.Errorf("error with many lines should collapse with error hint, got: %s", out)
+	}
+}
+
+func TestFormatToolOutput_Expand(t *testing.T) {
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line%d", i)
+	}
+	output := strings.Join(lines, "\n")
+	out := formatToolOutput(output, false, true, 80)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("expanded should not show collapse hint")
+	}
+}
+
+func TestFormatToolOutput_JustOverThreshold(t *testing.T) {
+	// 4 lines — threshold is 3+1=4, so 4 lines are shown without collapse
+	output := "line1\nline2\nline3\nline4"
+	out := formatToolOutput(output, false, false, 80)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("4 lines (<=3+1) should not collapse, got: %s", out)
+	}
+}
+
+func TestFormatToolOutput_TrailingNewlines(t *testing.T) {
+	output := "line1\nline2\n\n\n"
+	out := formatToolOutput(output, false, false, 80)
+	if strings.HasSuffix(out, "\n") {
+		t.Errorf("trailing newlines should be trimmed, got: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// consumeAnsiEscape — comprehensive coverage
+// ---------------------------------------------------------------------------
+
+func TestConsumeAnsiEscape_CSI(t *testing.T) {
+	seq := consumeAnsiEscape("\x1b[31mrest")
+	if seq != "\x1b[31m" {
+		t.Errorf("CSI sequence = %q, want %q", seq, "\x1b[31m")
+	}
+}
+
+func TestConsumeAnsiEscape_OSC(t *testing.T) {
+	seq := consumeAnsiEscape("\x1b]0;title\x07rest")
+	if seq != "\x1b]0;title\x07" {
+		t.Errorf("OSC sequence = %q, want %q", seq, "\x1b]0;title\x07")
+	}
+}
+
+func TestConsumeAnsiEscape_OSCTerminatedByST(t *testing.T) {
+	seq := consumeAnsiEscape("\x1b]0;title\x1b\\rest")
+	if seq != "\x1b]0;title\x1b\\" {
+		t.Errorf("OSC with ST terminator = %q, want %q", seq, "\x1b]0;title\x1b\\")
+	}
+}
+
+func TestConsumeAnsiEscape_TwoCharEscape(t *testing.T) {
+	// CSI consumes until final byte 0x40-0x7E; 'r' (0x72) is in that range
+	seq := consumeAnsiEscape("\x1b[rest")
+	if seq != "\x1b[r" {
+		t.Errorf("CSI escape = %q, want %q", seq, "\x1b[r")
+	}
+}
+
+func TestConsumeAnsiEscape_BareEscape(t *testing.T) {
+	seq := consumeAnsiEscape("\x1bXrest")
+	if seq != "\x1bX" {
+		t.Errorf("bare escape = %q, want %q", seq, "\x1bX")
+	}
+}
+
+func TestConsumeAnsiEscape_ShortInput(t *testing.T) {
+	seq := consumeAnsiEscape("\x1b")
+	if seq != "\x1b" {
+		t.Errorf("short escape = %q, want %q", seq, "\x1b")
+	}
+}
+
+func TestConsumeAnsiEscape_NotEscape(t *testing.T) {
+	seq := consumeAnsiEscape("hello")
+	if seq != "h" {
+		t.Errorf("non-escape = %q, want %q", seq, "h")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runeDisplayWidth — comprehensive coverage
+// ---------------------------------------------------------------------------
+
+func TestRuneDisplayWidth_Latin1(t *testing.T) {
+	// Latin-1 supplement: 0x80+ falls through to default → 1
+	// (our simplified function doesn't distinguish C1 controls)
+	if w := runeDisplayWidth(0x80); w != 1 {
+		t.Errorf("0x80 = %d, want 1", w)
+	}
+	if w := runeDisplayWidth(0xA0); w != 1 {
+		t.Errorf("NBSP 0xA0 = %d, want 1", w)
+	}
+}
+
+func TestRuneDisplayWidth_Hangul(t *testing.T) {
+	// Hangul Jamo 0x1100-0x115F → width 2
+	if w := runeDisplayWidth(0x1100); w != 2 {
+		t.Errorf("Hangul Jamo 0x1100 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJKRadicals(t *testing.T) {
+	// CJK Radicals 0x2E80-0x303E → width 2
+	if w := runeDisplayWidth(0x2E80); w != 2 {
+		t.Errorf("CJK Radical 0x2E80 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_Katakana(t *testing.T) {
+	// Katakana 0x30A0 → width 2
+	if w := runeDisplayWidth(0x30A0); w != 2 {
+		t.Errorf("Katakana 0x30A0 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJKUnified(t *testing.T) {
+	// CJK Unified Ideographs 0x4E00 → width 2
+	if w := runeDisplayWidth(0x4E00); w != 2 {
+		t.Errorf("CJK Unified 0x4E00 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_HangulSyllables(t *testing.T) {
+	// Hangul Syllables 0xAC00 → width 2
+	if w := runeDisplayWidth(0xAC00); w != 2 {
+		t.Errorf("Hangul Syllable 0xAC00 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJKCompatibility(t *testing.T) {
+	// CJK Compatibility Ideographs 0xF900 → width 2
+	if w := runeDisplayWidth(0xF900); w != 2 {
+		t.Errorf("CJK Compat 0xF900 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_FullwidthForms(t *testing.T) {
+	// Fullwidth Forms 0xFF01 → width 2
+	if w := runeDisplayWidth(0xFF01); w != 2 {
+		t.Errorf("Fullwidth 0xFF01 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_FullwidthCurrency(t *testing.T) {
+	// Fullwidth currency 0xFFE0 → width 2
+	if w := runeDisplayWidth(0xFFE0); w != 2 {
+		t.Errorf("Fullwidth currency 0xFFE0 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJKExtB(t *testing.T) {
+	// CJK Extension B 0x20000 → width 2
+	if w := runeDisplayWidth(0x20000); w != 2 {
+		t.Errorf("CJK Ext B 0x20000 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_CJKExtA(t *testing.T) {
+	// CJK Extension A range 0x3040-0x9FFF covered → 2
+	if w := runeDisplayWidth(0x3400); w != 2 {
+		t.Errorf("CJK Ext A 0x3400 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_SmallFormVariants(t *testing.T) {
+	// Small Form Variants 0xFE50 → width 2
+	if w := runeDisplayWidth(0xFE50); w != 2 {
+		t.Errorf("Small Form 0xFE50 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_OtherWide(t *testing.T) {
+	// 0x30000 → width 2
+	if w := runeDisplayWidth(0x30000); w != 2 {
+		t.Errorf("0x30000 = %d, want 2", w)
+	}
+}
+
+func TestRuneDisplayWidth_OtherNonASCII(t *testing.T) {
+	// Non-ASCII, non-wide → width 1 (default)
+	if w := runeDisplayWidth('é'); w != 1 {
+		t.Errorf("é = %d, want 1", w)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StatusBar.View — narrow width
+// ---------------------------------------------------------------------------
+
+func TestStatusBar_View_NarrowWidth(t *testing.T) {
+	s := NewStatusBar()
+	s.SetWidth(5) // very narrow
+	s.SetModel("test")
+	v := s.View()
+	if v == "" {
+		t.Error("StatusBar should render even with narrow width")
+	}
+}
+
+func TestStatusBar_View_DefaultModel(t *testing.T) {
+	s := NewStatusBar()
+	s.SetWidth(40)
+	v := s.View()
+	if !strings.Contains(v, "gbot") {
+		t.Errorf("default model should show 'gbot', got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prefixUserLine — empty
+// ---------------------------------------------------------------------------
+
+func TestPrefixUserLine_Empty(t *testing.T) {
+	out := prefixUserLine("", 80)
+	// Empty string split by \n gives [""] → prefixUserLine adds prompt to first line
+	if !strings.Contains(out, "❯") {
+		t.Errorf("prefixUserLine('') should contain prompt, got %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MessageView.View — minimum width
+// ---------------------------------------------------------------------------
+
+func TestMessageView_View_MinWidth(t *testing.T) {
+	m := MessageView{
+		Role:   "assistant",
+		Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}},
+	}
+	v := m.View(5, false) // below minimum of 10
+	if !strings.Contains(v, "hello") {
+		t.Errorf("View with small width should still render content, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderToolCall — running state with output (edge case)
+// ---------------------------------------------------------------------------
+
+func TestRenderToolCall_NonToolBlock(t *testing.T) {
+	var sb strings.Builder
+	blk := ContentBlock{Type: BlockText, Text: "hello"}
+	blk.renderToolCall(&sb, 80, false)
+	if sb.Len() != 0 {
+		t.Error("renderToolCall on text block should produce nothing")
+	}
+}
+
+func TestMessageView_WithTool_DoneWithSummaryAndElapsed(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Bash",
+				Summary: "ls -la",
+				Output:  "file1\nfile2",
+				Done:    true,
+				IsError: false,
+				Elapsed: 150 * time.Millisecond,
+			}},
+		},
+	}
+	v := m.View(80, false)
+	if !strings.Contains(v, "Bash") {
+		t.Errorf("should contain tool name, got: %q", v)
+	}
+	if !strings.Contains(v, "ls -la") {
+		t.Errorf("should contain summary, got: %q", v)
+	}
+}
+
+func TestMessageView_WithTool_ErrorWithSummary(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Read",
+				Summary: "/etc/shadow",
+				Output:  "permission denied",
+				Done:    true,
+				IsError: true,
+			}},
+		},
+	}
+	v := m.View(80, false)
+	if !strings.Contains(v, "Read") {
+		t.Errorf("should contain tool name, got: %q", v)
+	}
+	if !strings.Contains(v, "permission denied") {
+		t.Errorf("should contain error output, got: %q", v)
+	}
+}
+
+func TestMessageView_WithTool_DoneNoSummary(t *testing.T) {
+	t.Parallel()
+
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Glob",
+				Done: true,
+			}},
+		},
+	}
+	v := m.View(80, false)
+	if !strings.Contains(v, "Glob") {
+		t.Errorf("should contain tool name, got: %q", v)
 	}
 }

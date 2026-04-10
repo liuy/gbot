@@ -178,6 +178,51 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.allToolsExpanded = !a.allToolsExpanded
 		return a, nil
 
+	case tea.KeyCtrlB:
+		a.input.CursorLeft()
+		return a, nil
+
+	case tea.KeyCtrlF:
+		a.input.CursorRight()
+		return a, nil
+
+	case tea.KeyCtrlP:
+		text, _ := a.history.Up(a.input.Value())
+		a.input.SetValue(text)
+		a.input.End()
+		return a, nil
+
+	case tea.KeyCtrlN:
+		text, _ := a.history.Down()
+		a.input.SetValue(text)
+		a.input.End()
+		return a, nil
+
+	case tea.KeyCtrlH:
+		a.input.Backspace()
+		return a, nil
+
+	case tea.KeyCtrlD:
+		a.input.DeleteForward()
+		return a, nil
+
+	case tea.KeyCtrlL:
+		return a, nil
+
+	case tea.KeyCtrlG:
+		return a, nil
+
+	case tea.KeyCtrlLeft:
+		a.input.PrevWord()
+		return a, nil
+
+	case tea.KeyCtrlRight:
+		a.input.NextWord()
+		return a, nil
+
+	case tea.KeyEscape:
+		return a, nil
+
 	case tea.KeyCtrlA:
 		a.input.Home()
 		return a, nil
@@ -221,6 +266,29 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.handleSubmitRepl(text)
 
 	case tea.KeyRunes:
+		if msg.Alt {
+			if len(msg.Runes) == 1 {
+				switch msg.Runes[0] {
+				case 'b':
+					a.input.PrevWord()
+					return a, nil
+				case 'f':
+					a.input.NextWord()
+					return a, nil
+				case 'd':
+					deleted := a.input.DeleteWordForward()
+					a.killRing.Push(deleted, "append")
+					return a, nil
+				}
+			}
+			return a, nil
+		}
+		if msg.Paste {
+			for _, ch := range msg.Runes {
+				a.input.InsertChar(ch)
+			}
+			return a, nil
+		}
 		a.history.ResetNav()
 		a.killRing.ResetAccumulation()
 		for _, ch := range msg.Runes {
@@ -237,7 +305,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyDelete:
 		a.history.ResetNav()
 		a.killRing.ResetAccumulation()
-		a.input.Backspace()
+		a.input.DeleteForward()
 		return a, nil
 
 	case tea.KeyHome:
@@ -278,6 +346,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyCtrlW:
+		if a.input.cursor == 0 {
+			return a, nil
+		}
 		pos := a.input.cursor - 1
 		for pos > 0 && a.input.value[pos] == ' ' {
 			pos--

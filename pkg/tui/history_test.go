@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -213,4 +215,144 @@ func TestHistory_NilFilePath(t *testing.T) {
 	if h.Len() != 1 {
 		t.Errorf("Len() = %d, want 1", h.Len())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage
+// ---------------------------------------------------------------------------
+
+func TestHistory_RelativePathRejected(t *testing.T) {
+	h := NewHistory("relative/path.jsonl")
+	h.Add("test")
+	// Relative path should disable persistence — no crash
+	if h.Len() != 1 {
+		t.Errorf("Len() = %d, want 1", h.Len())
+	}
+	if h.filePath != "" {
+		t.Errorf("filePath should be empty for relative path, got %q", h.filePath)
+	}
+}
+
+func TestHistory_Up_Empty(t *testing.T) {
+	h := NewHistory("")
+	cmd, ok := h.Up("current")
+	if ok {
+		t.Error("Up on empty history should return false")
+	}
+	if cmd != "current" {
+		t.Errorf("Up on empty should return current, got %q", cmd)
+	}
+}
+
+func TestHistory_Up_ClampedAtStart(t *testing.T) {
+	h := NewHistory("")
+	h.Add("only")
+	h.Up("x")
+	h.Up("x")
+	// Should clamp at index 0
+	cmd, _ := h.Up("x")
+	if cmd != "only" {
+		t.Errorf("clamped Up = %q, want %q", cmd, "only")
+	}
+}
+
+func TestHistory_Down_Empty(t *testing.T) {
+	h := NewHistory("")
+	cmd, ok := h.Down()
+	if ok {
+		t.Error("Down on empty should return false")
+	}
+	if cmd != "" {
+		t.Errorf("Down on empty should return empty, got %q", cmd)
+	}
+}
+
+func TestHistory_Down_ClampedAtEnd(t *testing.T) {
+	h := NewHistory("")
+	h.Add("a")
+	h.Add("b")
+	h.Up("x")
+	// Down twice past end
+	h.Down()
+	cmd, _ := h.Down()
+	if cmd != "b" {
+		t.Errorf("clamped Down = %q, want %q", cmd, "b")
+	}
+}
+
+func TestHistory_Up_CurrentMatchesLast(t *testing.T) {
+	h := NewHistory("")
+	h.Add("first")
+	h.Add("second")
+	// Up with current matching last item should skip to second-to-last
+	cmd, _ := h.Up("second")
+	if cmd != "first" {
+		t.Errorf("Up with current=last should skip, got %q", cmd)
+	}
+}
+
+func TestHistory_Save_MkdirFail(t *testing.T) {
+	// Use a path where parent dir creation will fail (permission denied)
+	h := NewHistory("/proc/nonexistent/history.jsonl")
+	h.Add("test") // should not panic
+	// File won't be saved, but no crash
+}
+
+func TestHistory_Load_EmptyDisplay(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "history.jsonl")
+	// Write entry with empty display
+	if err := os.WriteFile(path, []byte("{\"display\":\"\",\"timestamp\":123}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(path)
+	if h.Len() != 0 {
+		t.Errorf("empty display should be skipped, Len() = %d", h.Len())
+	}
+}
+
+func TestHistory_Load_CapAtMaxSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "history.jsonl")
+	// Write 110 entries
+	var lines []string
+	for i := 0; i < 110; i++ {
+		entry := fmt.Sprintf("{\"display\":\"entry%d\",\"timestamp\":%d}", i, i)
+		lines = append(lines, entry)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(path)
+	if h.Len() != 100 {
+		t.Errorf("should cap at 100, got Len() = %d", h.Len())
+	}
+}
+
+func TestHistory_Save_WriteError(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "subdir", "history.jsonl")
+	// Create file but make parent directory read-only
+	subdir := filepath.Join(tmpDir, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(path)
+	// MkdirAll will succeed on subsequent saves since dir exists
+	// To trigger write error, make the file itself read-only
+	if err := os.WriteFile(path, []byte(""), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	h.Add("test") // Should not panic even if write fails
+}
+
+func TestHistory_Save_FileOpenError(t *testing.T) {
+	// Path to a directory instead of file — OpenFile will fail
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "dir_as_file")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(path)
+	h.Add("test") // Should not panic
 }
