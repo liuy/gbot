@@ -291,11 +291,15 @@ func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 	if a.repl.streaming {
 		t.Error("streaming should be false")
 	}
-	// Should have error message
+	// Should have error message - check Blocks
 	found := false
 	for _, m := range a.repl.messages {
-		if m.Role == "system" && strings.Contains(m.Content, "stream failed") {
-			found = true
+		if m.Role == "system" {
+			for _, blk := range m.Blocks {
+				if blk.Type == BlockText && strings.Contains(blk.Text, "stream failed") {
+					found = true
+				}
+			}
 		}
 	}
 	if !found {
@@ -350,8 +354,12 @@ func TestApp_Update_SubmitMsg(t *testing.T) {
 	if !a.repl.streaming {
 		t.Error("should be streaming after submit")
 	}
-	if len(a.repl.messages) != 1 || a.repl.messages[0].Content != "hi" {
-		t.Errorf("expected user message 'hi', got %v", a.repl.messages)
+	if len(a.repl.messages) != 1 {
+		t.Errorf("expected 1 message, got %d", len(a.repl.messages))
+	}
+	// Check Blocks instead of Content
+	if len(a.repl.messages[0].Blocks) == 0 || a.repl.messages[0].Blocks[0].Text != "hi" {
+		t.Errorf("expected user message 'hi', got %v", a.repl.messages[0].Blocks)
 	}
 }
 
@@ -378,13 +386,13 @@ func TestApp_Update_SubmitMsg_Empty(t *testing.T) {
 // handleKey
 // ---------------------------------------------------------------------------
 
-func TestApp_HandleKey_CtrlC_Quit(t *testing.T) {
+func TestApp_HandleKey_CtrlC_FirstPress(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	// Not streaming → Ctrl+C should quit
+	// Not streaming → first Ctrl+C doesn't quit (double-press required)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd == nil {
-		t.Error("Ctrl+C while not streaming should produce quit command")
+	if cmd != nil {
+		t.Error("first Ctrl+C should not produce quit command (double-press required)")
 	}
 	_ = model
 }
@@ -555,8 +563,9 @@ func TestApp_FinishStream(t *testing.T) {
 	if len(app.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
 	}
-	if app.repl.messages[0].Content != "response" {
-		t.Errorf("message content = %q, want %q", app.repl.messages[0].Content, "response")
+	// Check Blocks instead of Content
+	if len(app.repl.messages[0].Blocks) == 0 || app.repl.messages[0].Blocks[0].Text != "response" {
+		t.Errorf("message content = %v, want Blocks with 'response'", app.repl.messages[0].Blocks)
 	}
 }
 
@@ -577,6 +586,7 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.streaming = true
 	app.spinner.Start()
+	app.repl.assistantBuf.WriteString("done")
 	app.repl.pendingTool["t1"] = &ToolCallView{Name: "Read", Done: true, Output: "contents"}
 
 	app.repl.FinishStream(nil)
@@ -584,8 +594,15 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 	if len(app.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(app.repl.messages))
 	}
-	if len(app.repl.messages[0].ToolCalls) != 1 {
-		t.Errorf("expected 1 tool call, got %d", len(app.repl.messages[0].ToolCalls))
+	// Check Blocks instead of ToolCalls
+	hasToolBlock := false
+	for _, blk := range app.repl.messages[0].Blocks {
+		if blk.Type == BlockTool && blk.ToolCall.Name == "Read" {
+			hasToolBlock = true
+		}
+	}
+	if !hasToolBlock {
+		t.Errorf("expected tool block in message Blocks, got %v", app.repl.messages[0].Blocks)
 	}
 }
 
@@ -604,8 +621,15 @@ func TestApp_FinishStream_WithError(t *testing.T) {
 	if app.repl.messages[1].Role != "system" {
 		t.Errorf("second message role = %q, want 'system'", app.repl.messages[1].Role)
 	}
-	if !strings.Contains(app.repl.messages[1].Content, "broke") {
-		t.Errorf("error message should contain error text, got %q", app.repl.messages[1].Content)
+	// Check Blocks instead of Content
+	found := false
+	for _, blk := range app.repl.messages[1].Blocks {
+		if blk.Type == BlockText && strings.Contains(blk.Text, "broke") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("error message should contain error text, got Blocks: %v", app.repl.messages[1].Blocks)
 	}
 }
 

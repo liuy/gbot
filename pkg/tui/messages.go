@@ -4,6 +4,8 @@
 // messages.go defines the internal tea.Msg types used by the bubbletea Model.
 package tui
 
+import "time"
+
 // ---------------------------------------------------------------------------
 // tea.Msg types — source: React state dispatch → bubbletea messages
 // ---------------------------------------------------------------------------
@@ -36,9 +38,9 @@ type streamToolUseMsg struct {
 // Source: useStreaming hook onToolResult callback.
 type streamToolResultMsg struct {
 	ToolUseID string
-	Output    string // pretty-printed JSON
+	Output    string        // pretty-printed JSON
 	IsError   bool
-	Timing    string // human-readable duration
+	Timing    time.Duration // elapsed time
 }
 
 // streamCompleteMsg signals that the engine has finished processing.

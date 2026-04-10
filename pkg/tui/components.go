@@ -3,10 +3,33 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// dot is a bullet indicator rendered before tool calls.
+var dot = "●"
+
+// ---------------------------------------------------------------------------
+// ContentBlock types — interleaved text + tool rendering
+// ---------------------------------------------------------------------------
+
+// ContentBlockType distinguishes text vs tool content blocks.
+type ContentBlockType int
+
+const (
+	BlockText ContentBlockType = iota
+	BlockTool
+)
+
+// ContentBlock represents a single block in an assistant message.
+type ContentBlock struct {
+	Type     ContentBlockType
+	Text     string       // for BlockText
+	ToolCall ToolCallView // for BlockTool
+}
 
 // ---------------------------------------------------------------------------
 // Input — source: components/Input.tsx
@@ -165,7 +188,6 @@ func (i *Input) View() string {
 // ---------------------------------------------------------------------------
 
 // StatusBar shows model info, token usage, and streaming status.
-// Source: components/StatusBar.tsx → bubbletea status bar.
 type StatusBar struct {
 	model       string
 	streaming   bool
@@ -220,11 +242,6 @@ func (s StatusBar) View() string {
 
 	left := fmt.Sprintf(" %s", modelStr)
 
-	if s.streaming {
-		spinnerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-		left += spinnerStyle.Render(" [working...]")
-	}
-
 	if s.err != "" {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 		left += errStyle.Render(fmt.Sprintf(" err: %s", s.err))
@@ -247,7 +264,6 @@ func (s StatusBar) View() string {
 // ---------------------------------------------------------------------------
 
 // Spinner is a simple animated spinner.
-// Source: components/Spinner.tsx → simplified bubbletea spinner.
 type Spinner struct {
 	frames []string
 	idx    int
@@ -301,92 +317,140 @@ func (s Spinner) View() string {
 // ---------------------------------------------------------------------------
 
 // MessageView renders a single conversation message.
-// Source: components/MessageView.tsx → bubbletea message rendering.
 type MessageView struct {
-	Role      string // "user", "assistant", "system"
-	Content   string
-	ToolCalls []ToolCallView
+	Role        string // "user", "assistant", "system"
+	Blocks      []ContentBlock // interleaved content: text and tool blocks in order
+	ExpandTools bool   // when true, show full tool output instead of collapsed
 }
 
 // ToolCallView renders a tool invocation within a message.
-// Source: components/ToolCallView.tsx.
 type ToolCallView struct {
+	ID      string
 	Name    string
 	Input   string
 	Output  string
 	IsError bool
 	Done    bool
+	Elapsed time.Duration
 }
 
 // View renders the message with word wrapping at the given width.
-func (m MessageView) View(width int) string {
+// When expand is true, tool output is shown fully instead of collapsed.
+func (m MessageView) View(width int, expand bool) string {
 	if width < 10 {
 		width = 10
 	}
 
 	var sb strings.Builder
-
-	var prefix string
-	var content string
-	switch m.Role {
-	case "user":
-		userStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-		prefix = userStyle.Render("You: ")
-		content = m.Content
-	case "assistant":
-		asstStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-		prefix = asstStyle.Render("gbot: ")
-		content = Render(m.Content)
-	default:
-		prefix = ""
-		content = m.Content
-	}
-
-	// Account for prefix length in available width
-	availWidth := width - 6 // prefix + padding margin
+	availWidth := width - 2 // minimal margin
 	if availWidth < 10 {
 		availWidth = 10
 	}
 
-	// Word-wrap the content
-	wrapped := wordWrap(content, availWidth)
-	sb.WriteString(prefix)
-	sb.WriteString(wrapped)
-
-	// Render tool calls
-	for _, tc := range m.ToolCalls {
-		sb.WriteString("\n")
-		toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-
-		if tc.Done {
-			if tc.IsError {
-				sb.WriteString(errStyle.Render(fmt.Sprintf("  [%s] ERROR", tc.Name)))
-				if tc.Output != "" {
-					sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
+	// Render using Blocks (interleaved text+tool, per TS).
+	if len(m.Blocks) > 0 {
+		for _, blk := range m.Blocks {
+			switch blk.Type {
+			case BlockText:
+				if blk.Text != "" {
+					sb.WriteString(wordWrap(Render(blk.Text), availWidth))
+					sb.WriteString("\n")
 				}
-			} else {
-				sb.WriteString(toolStyle.Render(fmt.Sprintf("  [%s] done", tc.Name)))
-				if tc.Output != "" && len(tc.Output) < 200 {
-					sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
-				}
-			}
-		} else {
-			sb.WriteString(toolStyle.Render(fmt.Sprintf("  [%s] running...", tc.Name)))
-			if tc.Input != "" && len(tc.Input) < 200 {
-				sb.WriteString("\n  " + wordWrap(tc.Input, availWidth-2))
+			case BlockTool:
+				blk.renderToolCall(&sb, availWidth, expand)
+				sb.WriteString("\n")
 			}
 		}
+		return sb.String()
+	}
+	return ""
+}
+
+// renderToolCall renders a tool block using ● dot indicator.
+// When expand is true, full tool output is shown; otherwise output is collapsed.
+func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool) {
+	if blk.Type != BlockTool {
+		return
+	}
+	tc := blk.ToolCall
+
+	// Determine dot color per TS ToolUseLoader.tsx:
+	// color = isUnresolved ? undefined : isError ? "error" : "success"
+	// When Done: isError→red(9), else→green(10)
+	// When !Done: dim(8) — "running"
+	var dotStr string
+	if tc.Done {
+		if tc.IsError {
+			dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(dot)
+		} else {
+			dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(dot)
+		}
+	} else {
+		dotStr = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(dot)
 	}
 
-	sb.WriteString("\n")
-	return sb.String()
+	nameStyle := lipgloss.NewStyle().Bold(true)
+	readableName := humanReadableName(tc.Name)
+
+	if tc.Done {
+		if tc.IsError {
+			fmt.Fprintf(sb, "%s %s ERROR", dotStr, nameStyle.Render(readableName))
+			if tc.Output != "" {
+				sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
+			}
+		} else {
+			fmt.Fprintf(sb, "%s %s", dotStr, nameStyle.Render(readableName))
+			if tc.Elapsed > 0 {
+				timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+				sb.WriteString(timeStyle.Render(" (" + formatDuration(tc.Elapsed) + ")"))
+			}
+			// Show output if expand=true or output is short
+			if tc.Output != "" && (expand || len(tc.Output) < 200) {
+				sb.WriteString("\n  " + wordWrap(tc.Output, availWidth-2))
+			}
+		}
+	} else {
+		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+		fmt.Fprintf(sb, "%s %s running...", dotStr, dimStyle.Render(readableName))
+		if tc.Input != "" && len(tc.Input) < 200 {
+			sb.WriteString("\n  " + wordWrap(tc.Input, availWidth-2))
+		}
+	}
+}
+
+// humanReadableName converts a tool function name to a human-readable format.
+// e.g., "Read" → "Read", "file_write" → "Write file", "search_code" → "Search code"
+func humanReadableName(name string) string {
+	// Common tool name mappings
+	switch name {
+	case "Read":
+		return "Read"
+	case "Write", "file_write":
+		return "Write file"
+	case "Edit", "file_edit":
+		return "Edit file"
+	case "Glob", "file_glob":
+		return "Find files"
+	case "Grep", "search_code":
+		return "Search code"
+	case "Bash", "shell", "bash":
+		return "Run shell"
+	case "WebFetch", "web_fetch":
+		return "Web fetch"
+	case "TodoWrite", "todo_write":
+		return "Todo"
+	default:
+		// Convert snake_case or kebab-case to Title Case
+		name = strings.ReplaceAll(name, "_", " ")
+		name = strings.ReplaceAll(name, "-", " ")
+		if len(name) > 0 {
+			return strings.ToUpper(name[:1]) + name[1:]
+		}
+		return name
+	}
 }
 
 // wordWrap wraps text to the given width, breaking at word boundaries.
-// For CJK characters, allows breaking between any characters since CJK
-// doesn't use spaces as word boundaries.
-// ANSI escape sequences are preserved intact — never split across lines.
 func wordWrap(text string, width int) string {
 	if width <= 0 {
 		return text
@@ -438,8 +502,6 @@ func wordWrap(text string, width int) string {
 }
 
 // consumeAnsiEscape consumes a complete ANSI escape sequence from the start of s.
-// Supports CSI (\x1b[...final), OSC (\x1b]...\x07 or \x1b]...\x1b\\), and
-// other 2-byte sequences (\x1b + one char).
 func consumeAnsiEscape(s string) string {
 	if len(s) < 2 || s[0] != '\x1b' {
 		return s[:1]
@@ -447,68 +509,61 @@ func consumeAnsiEscape(s string) string {
 
 	switch s[1] {
 	case '[':
-		// CSI sequence: \x1b[ <params> <intermediate> <final>
-		// Final byte is 0x40..0x7E
 		j := 2
 		for j < len(s) && (s[j] < 0x40 || s[j] > 0x7E) {
 			j++
 		}
 		if j < len(s) {
-			j++ // include final byte
+			j++
 		}
 		return s[:j]
 	case ']':
-		// OSC sequence: \x1b] ... (BEL \x07 or ST \x1b\\)
 		j := 2
 		for j < len(s) {
 			if s[j] == '\x07' {
-				j++ // include BEL
+				j++
 				break
 			}
 			if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
-				j += 2 // include ST (\x1b\\)
+				j += 2
 				break
 			}
 			j++
 		}
 		return s[:j]
 	default:
-		// Other escape: \x1b + one char (e.g. \x1b\\)
 		return s[:2]
 	}
 }
 
 // runeDisplayWidth returns the display width of a rune.
-// CJK characters are typically 2 columns wide.
 func runeDisplayWidth(r rune) int {
-	// Fast path for ASCII
 	if r >= 0x20 && r <= 0x7E {
 		return 1
 	}
 	if r < 0x80 {
-		return 0 // control chars
+		return 0
 	}
-	// CJK ranges — these are double-width in most terminals
 	switch {
-	case r >= 0x1100 && r <= 0x115F: // Hangul Jamo
+	case r >= 0x1100 && r <= 0x115F:
 		return 2
-	case r >= 0x2E80 && r <= 0x303E: // CJK Misc
+	case r >= 0x2E80 && r <= 0x303E:
 		return 2
-	case r >= 0x3040 && r <= 0x9FFF: // Hiragana, Katakana, CJK Unified
+	case r >= 0x3040 && r <= 0x9FFF:
 		return 2
-	case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
+	case r >= 0xAC00 && r <= 0xD7AF:
 		return 2
-	case r >= 0xF900 && r <= 0xFAFF: // CJK Compatibility
+	case r >= 0xF900 && r <= 0xFAFF:
 		return 2
-	case r >= 0xFE30 && r <= 0xFE6F: // CJK Forms
+	case r >= 0xFE30 && r <= 0xFE6F:
 		return 2
-	case r >= 0xFF01 && r <= 0xFF60: // Fullwidth Forms
+	case r >= 0xFF01 && r <= 0xFF60:
 		return 2
-	case r >= 0xFFE0 && r <= 0xFFE6: // Fullwidth Signs
+	case r >= 0xFFE0 && r <= 0xFFE6:
 		return 2
-	case r >= 0x20000 && r <= 0x2FFFD: // CJK Extension B+
+	case r >= 0x20000 && r <= 0x2FFFD:
 		return 2
-	case r >= 0x30000 && r <= 0x3FFFD: // CJK Extension G+
+	case r >= 0x30000 && r <= 0x3FFFD:
 		return 2
 	}
 	return 1
@@ -518,10 +573,9 @@ func runeDisplayWidth(r rune) int {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// stripAnsi removes ANSI escape sequences from a string (simplified).
+// stripAnsi removes ANSI escape sequences from a string.
 func stripAnsi(s string) string {
-	// Simple approach: count only printable chars
-	var n int
+	var result strings.Builder
 	inEscape := false
 	for _, ch := range s {
 		if ch == '\x1b' {
@@ -534,9 +588,9 @@ func stripAnsi(s string) string {
 			}
 			continue
 		}
-		n++
+		result.WriteRune(ch)
 	}
-	return strings.Repeat("x", n)
+	return result.String()
 }
 
 func min(a, b int) int {

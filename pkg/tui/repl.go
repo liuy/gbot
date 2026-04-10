@@ -41,7 +41,10 @@ func NewReplState() *ReplState {
 
 // AddUserMessage appends a user message to the session history.
 func (s *ReplState) AddUserMessage(text string) {
-	s.messages = append(s.messages, MessageView{Role: "user", Content: text})
+	s.messages = append(s.messages, MessageView{
+		Role:   "user",
+		Blocks: []ContentBlock{{Type: BlockText, Text: text}},
+	})
 }
 
 // StartQuery begins a new streaming query, storing the result channel.
@@ -63,11 +66,12 @@ func (s *ReplState) PendingToolStarted(id, name, input string) {
 }
 
 // PendingToolDone marks a tool call as completed.
-func (s *ReplState) PendingToolDone(id, output string, isError bool) {
+func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration) {
 	if tcv, ok := s.pendingTool[id]; ok {
 		tcv.Output = output
 		tcv.IsError = isError
 		tcv.Done = true
+		tcv.Elapsed = elapsed
 	}
 }
 
@@ -76,17 +80,21 @@ func (s *ReplState) FinishStream(err error) {
 	s.streaming = false
 
 	text := s.assistantBuf.String()
-	var toolCalls []ToolCallView
+	var toolBlocks []ContentBlock
 	for _, tcv := range s.pendingTool {
-		toolCalls = append(toolCalls, *tcv)
+		toolBlocks = append(toolBlocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
 	}
 
-	if text != "" || len(toolCalls) > 0 {
+	if text != "" || len(toolBlocks) > 0 {
 		s.messages = append(s.messages, MessageView{
-			Role:      "assistant",
-			Content:   text,
-			ToolCalls: toolCalls,
+			Role:   "assistant",
+			Blocks: []ContentBlock{{Type: BlockText, Text: text}},
 		})
+		// Append tool blocks as separate message
+		for _, tb := range toolBlocks {
+			lastIdx := len(s.messages) - 1
+			s.messages[lastIdx].Blocks = append(s.messages[lastIdx].Blocks, tb)
+		}
 	}
 
 	s.assistantBuf.Reset()
@@ -94,8 +102,8 @@ func (s *ReplState) FinishStream(err error) {
 
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
-			Role:    "system",
-			Content: fmt.Sprintf("Error: %v", err),
+			Role:   "system",
+			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("Error: %v", err)}},
 		})
 	}
 
@@ -142,11 +150,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case streamToolResultMsg:
-		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError)
+		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
 		return true, a.readEvents()
 
 	case streamCompleteMsg:
 		a.repl.FinishStream(m.Err)
+		a.progressStart = time.Time{}
 		return true, nil
 
 	case errMsg:
@@ -180,6 +189,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		return nil
 	}
 	a.repl.AddUserMessage(text)
+	a.history.Add(text)
 	a.input.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -190,6 +200,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.repl.StartQuery(resultCh)
 	a.status.SetStreaming(true)
 	a.spinner.Start()
+	a.progressStart = time.Now()
 
 	return tea.Batch(
 		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
@@ -237,18 +248,20 @@ func (a *App) replView(sb *strings.Builder) {
 	}
 
 	text := a.repl.assistantBuf.String()
-	if text != "" || a.spinner.Active() {
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-		sb.WriteString(style.Render("gbot: "))
-		sb.WriteString(RenderWidth(text, a.width-8))
-		sb.WriteString(a.spinner.View())
+	if text != "" {
+		sb.WriteString(RenderWidth(text, a.width-2))
 		sb.WriteString("\n")
 	}
 
+	// Pending tool calls: show ● dot in dim color (in-progress) — per TS ToolUseLoader
 	for _, tcv := range a.repl.pendingTool {
 		if !tcv.Done {
-			toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-			sb.WriteString(toolStyle.Render(fmt.Sprintf("  [%s] running...", tcv.Name)))
+			dimDot := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(dot)
+			dimName := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true).Render(tcv.Name)
+			fmt.Fprintf(sb, "%s %s running...", dimDot, dimName)
+			if tcv.Input != "" && len(tcv.Input) < 200 {
+				sb.WriteString("\n  " + wordWrap(tcv.Input, a.width-4))
+			}
 			sb.WriteString("\n")
 		}
 	}
@@ -275,7 +288,8 @@ func prettyJSON(raw json.RawMessage) string {
 }
 
 // renderMessages renders the visible message list within the given bounds.
-func renderMessages(messages []MessageView, width, maxHeight int) string {
+// expandTools controls whether tool output is shown fully or collapsed.
+func renderMessages(messages []MessageView, width, maxHeight int, expandTools bool) string {
 	if len(messages) == 0 {
 		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.") + "\n"
@@ -285,7 +299,7 @@ func renderMessages(messages []MessageView, width, maxHeight int) string {
 	usedLines := 0
 
 	for i := len(messages) - 1; i >= 0 && usedLines < maxHeight; i-- {
-		rendered := messages[i].View(width)
+		rendered := messages[i].View(width, expandTools)
 		msgLines := strings.Split(rendered, "\n")
 		for j := len(msgLines) - 1; j >= 0 && usedLines < maxHeight; j-- {
 			lines = append([]string{msgLines[j]}, lines...)
