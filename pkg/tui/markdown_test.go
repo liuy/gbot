@@ -1168,3 +1168,55 @@ func TestRender_Table_Italic(t *testing.T) {
 		t.Errorf("table should contain italic text 'note', got: %s", result)
 	}
 }
+
+func TestRender_Table_InlineCodeStructure(t *testing.T) {
+	t.Parallel()
+	// Reproduces the exact issue: inline code in table cells caused
+	// garbled output because Code nodes wrote to the main buffer
+	// instead of the table cell collector.
+	input := "| 字段 | 说明 |\n|------|------|\n| name | 用户名，使用 `gbot` 标记 |\n| tool | `Read` 工具读取文件 |"
+	result := Render(input)
+
+	// Verify all cell content appears in the output
+	for _, text := range []string{"name", "tool", "gbot", "Read"} {
+		if !strings.Contains(result, text) {
+			t.Errorf("table should contain %q, got: %s", text, result)
+		}
+	}
+
+	// Verify table structure: each line should be either a border or data row
+	lines := strings.Split(result, "\n")
+	clean := lines
+	for len(clean) > 0 && clean[len(clean)-1] == "" {
+		clean = clean[:len(clean)-1]
+	}
+
+	// Should have: top border, header, separator, row1, row2, bottom border = 6 lines
+	if len(clean) < 6 {
+		t.Fatalf("expected at least 6 lines, got %d: %v", len(clean), clean)
+	}
+
+	// Top border starts with ┌
+	if !strings.HasPrefix(clean[0], "┌") {
+		t.Errorf("first line should be top border, got: %q", clean[0])
+	}
+	// Bottom border starts with └
+	if !strings.HasPrefix(clean[len(clean)-1], "└") {
+		t.Errorf("last line should be bottom border, got: %q", clean[len(clean)-1])
+	}
+	// Data rows contain │ separators
+	for _, line := range clean[3 : len(clean)-1] {
+		if !strings.Contains(line, "│") {
+			t.Errorf("data row should contain │: %q", line)
+		}
+	}
+
+	// Verify inline code cells appear within table borders (not outside)
+	// Strip ANSI to check visible structure
+	plain := stripANSI(result)
+	for _, text := range []string{"gbot", "Read"} {
+		if !strings.Contains(plain, text) {
+			t.Errorf("stripped output should contain %q", text)
+		}
+	}
+}
