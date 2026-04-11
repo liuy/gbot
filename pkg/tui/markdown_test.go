@@ -910,11 +910,7 @@ func runeWidth(r rune) int {
 }
 
 func displayWidth(s string) int {
-	w := 0
-	for _, r := range s {
-		w += runeWidth(r)
-	}
-	return w
+	return stringWidth(s)
 }
 
 // TestRender_AllMarkdownSyntax is an integration test exercising every supported
@@ -1217,6 +1213,15 @@ func TestRender_Table_InlineCodeStructure(t *testing.T) {
 	for _, text := range []string{"gbot", "Read"} {
 		if !strings.Contains(plain, text) {
 			t.Errorf("stripped output should contain %q", text)
+		}
+	}
+
+	// All lines should have the same display width
+	borderW := displayWidth(clean[0])
+	for i, line := range clean {
+		w := displayWidth(line)
+		if w != borderW {
+			t.Errorf("line %d width=%d != border width=%d (%q)", i, w, borderW, line)
 		}
 	}
 }
