@@ -1788,3 +1788,32 @@ func TestInput_HasWrappedLines(t *testing.T) {
 		t.Error("long text with narrow width should have wrapped lines")
 	}
 }
+
+func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
+	t.Parallel()
+
+	// Long summary that exceeds narrow width
+	longSummary := strings.Repeat("abc ", 20) // 80 chars
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Bash",
+				Summary: longSummary,
+				Done:    true,
+			}},
+		},
+	}
+	v := m.View(30, false)
+	// Header should be wrapped — output should contain newlines
+	if !strings.Contains(v, "\n") {
+		t.Errorf("long tool header should wrap at width 30, got: %q", v)
+	}
+	// Each stripped line should not exceed width by much
+	for _, line := range strings.Split(v, "\n") {
+		stripped := stripAnsiPrintable(line)
+		if len(stripped) > 40 { // allow margin for ANSI + prefix
+			t.Errorf("header line too long (%d chars): %q", len(stripped), stripped)
+		}
+	}
+}

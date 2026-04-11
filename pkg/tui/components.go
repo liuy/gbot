@@ -670,35 +670,32 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		dotStr = styleDotDim.Render(dot)
 	}
 
-	// Header: ● ToolName(summary)
+	// Header: ● ToolName(summary) (elapsed)
 	toolName := styleNameBold.Render(tc.Name)
 
 	if !tc.Done {
 		// Running state: dim name, & suffix, no summary
-		fmt.Fprintf(sb, "%s %s&", dotStr, styleDim.Render(tc.Name))
+		header := fmt.Sprintf("%s %s&", dotStr, styleDim.Render(tc.Name))
+		sb.WriteString(wordWrap(header, availWidth))
 		return
 	}
 
-	// Done state
-	if tc.IsError {
-		fmt.Fprintf(sb, "%s %s", dotStr, toolName)
-		if tc.Summary != "" {
-			fmt.Fprintf(sb, "(%s)", tc.Summary)
-		}
-		if tc.Output != "" {
-			sb.WriteString("\n" + formatToolOutput(tc.Output, true, expand, availWidth-2))
-		}
-	} else {
-		fmt.Fprintf(sb, "%s %s", dotStr, toolName)
-		if tc.Summary != "" {
-			fmt.Fprintf(sb, "(%s)", tc.Summary)
-		}
-		if tc.Elapsed > 0 {
-			sb.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
-		}
-		if tc.Output != "" {
-			sb.WriteString("\n" + formatToolOutput(tc.Output, false, expand, availWidth-2))
-		}
+	// Done state — build header then wrap
+	var hdr strings.Builder
+	hdr.WriteString(dotStr)
+	hdr.WriteByte(' ')
+	hdr.WriteString(toolName)
+	if tc.Summary != "" {
+		fmt.Fprintf(&hdr, "(%s)", tc.Summary)
+	}
+	if tc.Elapsed > 0 {
+		hdr.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
+	}
+	sb.WriteString(wordWrap(hdr.String(), availWidth))
+
+	if tc.Output != "" {
+		isErr := tc.IsError
+		sb.WriteString("\n" + formatToolOutput(tc.Output, isErr, expand, availWidth-2))
 	}
 }
 
