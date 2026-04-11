@@ -72,19 +72,15 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			}
 		}
 
-	case types.EventToolResult:
-		if evt.ToolResult != nil {
-			output := evt.ToolResult.DisplayOutput
-			if output == "" {
-				output = prettyJSON(evt.ToolResult.Output)
+		case types.EventToolResult:
+			if evt.ToolResult != nil {
+				return streamToolResultMsg{
+					ToolUseID: evt.ToolResult.ToolUseID,
+					Output:    evt.ToolResult.DisplayOutput,
+					IsError:   evt.ToolResult.IsError,
+					Timing:    evt.ToolResult.Timing,
+				}
 			}
-			return streamToolResultMsg{
-				ToolUseID: evt.ToolResult.ToolUseID,
-				Output:    output,
-				IsError:   evt.ToolResult.IsError,
-				Timing:    evt.ToolResult.Timing,
-			}
-		}
 
 	case types.EventError:
 		return errMsg{Err: evt.Error}

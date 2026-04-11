@@ -1521,6 +1521,28 @@ func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
 	}
 }
 
+// Bash tool returns empty DisplayOutput when stdout/stderr are empty.
+// TUI should show empty string, NOT fall back to raw JSON.
+func TestApp_EngineEventToMsg_ToolResult_EmptyDisplayOutput(t *testing.T) {
+	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolResult,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     "t1",
+			Output:        json.RawMessage(`"{\"output\":\"\",\"exitCode\":0}"`),
+			DisplayOutput: "", // empty because Bash had no stdout/stderr
+			IsError:       false,
+		},
+	})
+	trm, ok := msg.(streamToolResultMsg)
+	if !ok {
+		t.Fatalf("expected streamToolResultMsg, got %T", msg)
+	}
+	// Should be empty, NOT the raw JSON
+	if strings.Contains(trm.Output, "exitCode") {
+		t.Errorf("Output should not contain raw JSON when DisplayOutput is empty, got: %q", trm.Output)
+	}
+}
+
 func TestApp_EngineEventToMsg_Error(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type:  types.EventError,
