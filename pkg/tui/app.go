@@ -140,9 +140,6 @@ func (a *App) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Status bar
-	sb.WriteString(a.status.View())
-	sb.WriteString("\n")
 
 	// Input
 	sb.WriteString(a.input.View())

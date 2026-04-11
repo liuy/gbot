@@ -753,7 +753,7 @@ func TestApp_View_StreamingNoProgressStart(t *testing.T) {
 	app.spinner.Start()
 	// progressStart is zero → no progress line (no elapsed time shown)
 	v := app.View()
-	// The status bar always shows "in:X out:Y", so we check for elapsed time specifically
+	// No status bar — check that elapsed time is not shown
 	if strings.Contains(v, "0.0s") {
 		t.Error("should not show elapsed time when progressStart is zero")
 	}
