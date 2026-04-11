@@ -1229,13 +1229,85 @@ func TestSpinner_TickInactive(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrefixLine_Continuation(t *testing.T) {
-	out := prefixLine(1, "hello")
-	if out != "  hello" {
-		t.Errorf("prefixLine(1, ...) = %q, want %q", out, "  hello")
-	}
 	out0 := prefixLine(0, "hello")
-	if !strings.Contains(out0, "⎿") {
-		t.Errorf("prefixLine(0, ...) should contain ⎿, got %q", out0)
+	if !strings.HasPrefix(out0, "| ") {
+		t.Errorf("prefixLine(0, ...) should start with '| ', got %q", out0)
+	}
+	// Continuation lines should use spaces matching resultPrefix display width
+	out1 := prefixLine(1, "hello")
+	if strings.Contains(out1, "|") {
+		t.Errorf("prefixLine(1, ...) should not contain '|', got %q", out1)
+	}
+}
+
+func TestPrefixLine_DisplayWidthConsistent(t *testing.T) {
+	// All lines must have the same prefix display width so output is aligned.
+	prefixWidths := make(map[int]bool)
+	for i := 0; i < 5; i++ {
+		prefixed := prefixLine(i, "text")
+		w := 0
+		for _, r := range prefixed {
+			if r == 't' {
+				break
+			}
+			w += runeDisplayWidth(r)
+		}
+		prefixWidths[w] = true
+	}
+	if len(prefixWidths) != 1 {
+		t.Errorf("prefixLine prefix widths not consistent: %v", prefixWidths)
+	}
+}
+
+func TestPrefixLine_FirstLineHasPrefixContinuationHasSpaces(t *testing.T) {
+	line0 := prefixLine(0, "text")
+	line1 := prefixLine(1, "text")
+
+	// First line uses | prefix
+	if !strings.HasPrefix(line0, "|") {
+		t.Errorf("line0 should start with '|', got %q", line0)
+	}
+	// Continuation uses spaces only (no |)
+	if strings.Contains(line1, "|") {
+		t.Errorf("line1 should not contain '|', got %q", line1)
+	}
+	// But display widths must match
+	w0 := 0
+	for _, r := range line0 {
+		if r == 't' { break }
+		w0 += runeDisplayWidth(r)
+	}
+	w1 := 0
+	for _, r := range line1 {
+		if r == 't' { break }
+		w1 += runeDisplayWidth(r)
+	}
+	if w0 != w1 {
+		t.Errorf("display width mismatch: line0=%d, line1=%d", w0, w1)
+	}
+}
+
+func TestFormatToolOutput_AlignedMultiLine(t *testing.T) {
+	// Multi-line tool output must have aligned prefix display widths
+	output := "line1\nline2\nline3"
+	result := formatToolOutput(output, false, false, 80)
+	lines := strings.Split(result, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected 3+ lines, got %d", len(lines))
+	}
+
+	// Measure prefix display width for each line
+	widths := make(map[int]bool)
+	for _, line := range lines {
+		w := 0
+		for _, r := range line {
+			if r == 'l' { break } // content starts at 'l' in "line..."
+			w += runeDisplayWidth(r)
+		}
+		widths[w] = true
+	}
+	if len(widths) != 1 {
+		t.Errorf("formatToolOutput lines have inconsistent prefix widths: %v\nOutput:\n%s", widths, result)
 	}
 }
 

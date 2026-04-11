@@ -441,7 +441,9 @@ func (m MessageView) View(width int, expand bool) string {
 }
 
 // resultPrefix is the indentation prefix for tool output lines.
-const resultPrefix = "\u23bf "
+// Using ASCII "|" to guarantee consistent display width across all terminals
+// (CJK terminals render ⎿ as 2 cells, breaking alignment).
+const resultPrefix = "| "
 
 // prefixLine returns the prefix for line index i: first line gets resultPrefix,
 // subsequent lines get spaces of equal width for alignment.
@@ -449,7 +451,12 @@ func prefixLine(i int, text string) string {
 	if i == 0 {
 		return resultPrefix + text
 	}
-	return "  " + text
+	// Continuation lines: match the display width of resultPrefix using spaces
+	prefixWidth := 0
+	for _, r := range resultPrefix {
+		prefixWidth += runeDisplayWidth(r)
+	}
+	return strings.Repeat(" ", prefixWidth) + text
 }
 
 // renderToolCall renders a tool block using ● dot indicator.

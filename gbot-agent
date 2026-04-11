@@ -86,9 +86,7 @@ do_start() {
         fi
         screen -S "$GBOT_SESSION" -X quit 2>/dev/null || true
         sleep 0.3
-        env -u ANTHROPIC_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-            -u ANTHROPIC_MODEL -u ANTHROPIC_SMALL_FAST_MODEL -u API_TIMEOUT_MS \
-            screen -dmS "$GBOT_SESSION" "$GBOT_BINARY"
+        screen -dmS "$GBOT_SESSION" "$GBOT_BINARY"
         for i in $(seq 1 20); do
             if screen_alive "$GBOT_SESSION"; then
                 echo "gbot started (session: $GBOT_SESSION)"
