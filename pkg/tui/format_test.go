@@ -8,28 +8,25 @@ import (
 
 func TestFormatDuration_Milliseconds(t *testing.T) {
 	t.Parallel()
-
 	v := formatDuration(500 * time.Millisecond)
-	if !strings.HasSuffix(v, "ms") {
-		t.Errorf("formatDuration(500ms) = %q, want ms suffix", v)
+	if v != "0.5s" {
+		t.Errorf("formatDuration(500ms) = %q, want %q", v, "0.5s")
 	}
 }
 
 func TestFormatDuration_Seconds(t *testing.T) {
 	t.Parallel()
-
 	v := formatDuration(2500 * time.Millisecond)
-	if !strings.HasSuffix(v, "s") {
-		t.Errorf("formatDuration(2.5s) = %q, want s suffix", v)
+	if v != "2.5s" {
+		t.Errorf("formatDuration(2.5s) = %q, want %q", v, "2.5s")
 	}
 }
 
 func TestFormatDuration_Zero(t *testing.T) {
 	t.Parallel()
-
 	v := formatDuration(0)
-	if v != "0ms" {
-		t.Errorf("formatDuration(0) = %q, want %q", v, "0ms")
+	if v != "0.0s" {
+		t.Errorf("formatDuration(0) = %q, want %q", v, "0.0s")
 	}
 }
 

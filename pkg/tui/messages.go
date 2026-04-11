@@ -58,6 +58,20 @@ type streamCompleteMsg struct {
 	Err error // nil on success
 }
 
+// streamUsageMsg carries token usage from the LLM provider during streaming.
+type streamUsageMsg struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// streamThinkingStartMsg signals that the model has started extended thinking.
+type streamThinkingStartMsg struct{}
+
+// streamThinkingEndMsg signals that the model has finished extended thinking.
+type streamThinkingEndMsg struct {
+	Duration time.Duration
+}
+
 // submitMsg is sent when the user presses Enter to submit input.
 type submitMsg struct {
 	Text string

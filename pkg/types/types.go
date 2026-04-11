@@ -196,26 +196,42 @@ type ToolUseOptions struct {
 type QueryEventType string
 
 const (
-	EventStreamStart  QueryEventType = "stream_start"
-	EventTextDelta    QueryEventType = "text_delta"
-	EventToolUseStart QueryEventType = "tool_use_start"
-	EventToolUseDelta QueryEventType = "tool_use_delta"
-	EventToolResult   QueryEventType = "tool_result"
-	EventMessage      QueryEventType = "message"
-	EventError        QueryEventType = "error"
-	EventComplete     QueryEventType = "complete"
+	EventStreamStart   QueryEventType = "stream_start"
+	EventTextDelta     QueryEventType = "text_delta"
+	EventToolUseStart  QueryEventType = "tool_use_start"
+	EventToolUseDelta  QueryEventType = "tool_use_delta"
+	EventToolResult    QueryEventType = "tool_result"
+	EventMessage       QueryEventType = "message"
+	EventUsage         QueryEventType = "usage"
+	EventThinkingStart QueryEventType = "thinking_start"
+	EventThinkingEnd   QueryEventType = "thinking_end"
+	EventError         QueryEventType = "error"
+	EventComplete      QueryEventType = "complete"
 )
 
 // QueryEvent represents an event emitted during the query loop.
 // In TS this is yielded by an async generator; in Go sent on a channel.
 type QueryEvent struct {
-	Type          QueryEventType    `json:"type"`
-	Text          string            `json:"text,omitempty"`
-	ToolUse       *ToolUseEvent     `json:"tool_use,omitempty"`
-	ToolResult    *ToolResultEvent  `json:"tool_result,omitempty"`
-	Message       *Message          `json:"message,omitempty"`
-	PartialInput  *PartialInputEvent `json:"partial_input,omitempty"`
-	Error         error             `json:"-"`
+	Type         QueryEventType     `json:"type"`
+	Text         string             `json:"text,omitempty"`
+	ToolUse      *ToolUseEvent      `json:"tool_use,omitempty"`
+	ToolResult   *ToolResultEvent   `json:"tool_result,omitempty"`
+	Message      *Message           `json:"message,omitempty"`
+	PartialInput *PartialInputEvent `json:"partial_input,omitempty"`
+	Usage        *UsageEvent        `json:"usage_event,omitempty"`
+	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
+	Error        error              `json:"-"`
+}
+
+// UsageEvent carries token usage from the LLM provider during streaming.
+type UsageEvent struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// ThinkingEvent carries thinking state information.
+type ThinkingEvent struct {
+	Duration time.Duration `json:"duration,omitempty"` // time spent thinking (set on ThinkingEnd)
 }
 
 // PartialInputEvent carries incremental input for a pending tool call.

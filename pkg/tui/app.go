@@ -48,6 +48,26 @@ type App struct {
 	// Spinner progress state
 	progressStart      time.Time
 	allToolsExpanded bool
+
+	// Thinking state
+	thinkingActive bool
+	thinkingStart  time.Time
+	thinkingDuration time.Duration // set after thinking ends
+
+	// Completed query stats (shown after streaming ends)
+	lastInputTokens  int
+	lastOutputTokens int
+	lastElapsed      time.Duration
+	lastThinking     time.Duration
+	showStats        bool
+
+	// Dynamic token estimation (source: TS uses responseLength / 4)
+	responseCharCount int
+
+	// Smoothly animated token counters for spinner display
+	displayedInputTokens  int
+	displayedOutputTokens int
+	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
 }
 
 // NewApp creates a new App model.
@@ -103,7 +123,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// All REPL messages are handled by repl.go
 	case streamChunkMsg, streamToolUseMsg, streamToolDeltaMsg, streamToolResultMsg,
-		streamCompleteMsg, streamStartMsg, streamMessageMsg, errMsg, submitMsg, spinnerTickMsg:
+		streamCompleteMsg, streamStartMsg, streamMessageMsg, streamUsageMsg,
+		streamThinkingStartMsg, streamThinkingEndMsg,
+		errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
@@ -130,16 +152,27 @@ func (a *App) View() string {
 	rendered := renderMessages(a.repl.Messages(), a.width, availHeight, a.allToolsExpanded)
 	sb.WriteString(rendered)
 
-	// Progress line: spinner + elapsed + tokens when streaming
+	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		spinnerFrame := a.spinner.View()
 		elapsedStr := formatElapsed(a.progressStart)
-		tokensStr := fmt.Sprintf("in:%d out:%d", a.status.inputTokens, a.status.outTokens)
-		progressLine := spinnerFrame + " " + elapsedStr + "  " + tokensStr
+		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.displayedInputTokens), formatTokenCount(a.displayedOutputTokens))
+		var thinkingStr string
+		if a.thinkingActive {
+			thinkingStr = " · thinking"
+		} else if a.thinkingDuration > 0 {
+			thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.thinkingDuration.Seconds())
+		}
+		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + thinkingStr + ")"
 		sb.WriteString(progressLine)
 		sb.WriteString("\n")
+	} else if a.showStats && !a.repl.IsStreaming() {
+		elapsedStr := fmt.Sprintf("%.1fs", a.lastElapsed.Seconds())
+		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.lastInputTokens), formatTokenCount(a.lastOutputTokens))
+		summaryLine := styleDim.Render(tokensStr + " · " + elapsedStr)
+		sb.WriteString(summaryLine)
+		sb.WriteString("\n")
 	}
-
 
 	// Input
 	sb.WriteString(a.input.View())

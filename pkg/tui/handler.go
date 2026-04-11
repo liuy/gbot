@@ -85,6 +85,22 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventError:
 		return errMsg{Err: evt.Error}
 
+	case types.EventUsage:
+		if evt.Usage != nil {
+			return streamUsageMsg{
+				InputTokens:  evt.Usage.InputTokens,
+				OutputTokens: evt.Usage.OutputTokens,
+			}
+		}
+
+	case types.EventThinkingStart:
+		return streamThinkingStartMsg{}
+
+	case types.EventThinkingEnd:
+		if evt.Thinking != nil {
+			return streamThinkingEndMsg{Duration: evt.Thinking.Duration}
+		}
+
 	case types.EventComplete:
 		return streamCompleteMsg{}
 

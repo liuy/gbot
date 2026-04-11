@@ -739,8 +739,8 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
 	v := app.View()
-	if !strings.Contains(v, "in:") || !strings.Contains(v, "out:") {
-		t.Errorf("streaming view should show tokens, got: %s", v)
+	if !strings.Contains(v, "↓") || !strings.Contains(v, "tokens") {
+		t.Errorf("streaming view should show token count with ↓, got: %s", v)
 	}
 }
 
@@ -997,6 +997,80 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 	_, cmd := app.updateRepl(streamToolResultMsg{ToolUseID: "t1", Output: "ok"})
 	if cmd == nil {
 		t.Error("streamToolResultMsg should return a readEvents cmd")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// updateRepl — streamUsageMsg
+// ---------------------------------------------------------------------------
+
+func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	handled, cmd := app.updateRepl(streamUsageMsg{InputTokens: 100, OutputTokens: 50})
+	if !handled {
+		t.Error("streamUsageMsg should be handled")
+	}
+	if cmd == nil {
+		t.Error("streamUsageMsg should return a readEvents cmd")
+	}
+	if app.status.inputTokens != 100 {
+		t.Errorf("inputTokens = %d, want 100", app.status.inputTokens)
+	}
+	if app.status.outTokens != 50 {
+		t.Errorf("outTokens = %d, want 50", app.status.outTokens)
+	}
+	// Input tokens should snap immediately to actual value
+	if app.displayedInputTokens != 100 {
+		t.Errorf("displayedInputTokens = %d, want 100 (snap)", app.displayedInputTokens)
+	}
+	// Output tokens should NOT snap — they animate via spinner tick
+	if app.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 (not yet animated)", app.displayedOutputTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// updateRepl — streamThinkingStartMsg / streamThinkingEndMsg
+// ---------------------------------------------------------------------------
+
+func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	handled, cmd := app.updateRepl(streamThinkingStartMsg{})
+	if !handled {
+		t.Error("streamThinkingStartMsg should be handled")
+	}
+	if cmd == nil {
+		t.Error("streamThinkingStartMsg should return a readEvents cmd")
+	}
+	if !app.thinkingActive {
+		t.Error("thinkingActive should be true")
+	}
+}
+
+func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.thinkingActive = true
+
+	handled, cmd := app.updateRepl(streamThinkingEndMsg{Duration: 3 * time.Second})
+	if !handled {
+		t.Error("streamThinkingEndMsg should be handled")
+	}
+	if cmd == nil {
+		t.Error("streamThinkingEndMsg should return a readEvents cmd")
+	}
+	if app.thinkingActive {
+		t.Error("thinkingActive should be false after end")
+	}
+	if app.thinkingDuration != 3*time.Second {
+		t.Errorf("thinkingDuration = %v, want 3s", app.thinkingDuration)
 	}
 }
 
@@ -1786,6 +1860,208 @@ func TestApp_HandleSubmit_Direct_AlreadyStreaming(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Spinner e2e — full animation lifecycle
+// ---------------------------------------------------------------------------
+
+// Test: submit → spinner animates input estimate → API responds → snap to actual.
+func TestSpinnerE2E_InputEstimateToSnap(t *testing.T) {
+	t.Parallel()
+	mp := &tuiMockProvider{}
+	mp.responses = append(mp.responses, tuiMockResponse{
+		events: textStreamEvents("test-model", "Hello world response"),
+	})
+	app := newTestApp(mp)
+	app.width = 80
+	app.height = 24
+
+	// 1. Submit query
+	app.handleSubmitRepl("hello, this is a test message")
+	// Estimate should be set from systemPrompt + user text
+	if app.inputTokenTarget <= 0 {
+		t.Fatalf("inputTokenTarget = %d, want > 0 after submit", app.inputTokenTarget)
+	}
+	if app.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 right after submit", app.displayedInputTokens)
+	}
+
+	// 2. Spinner ticks — displayedInputTokens animates toward estimate
+	app.Update(spinnerTickMsg{})
+	if app.displayedInputTokens == 0 {
+		t.Error("displayedInputTokens should increment on first tick")
+	}
+	estimate := app.inputTokenTarget
+	if app.displayedInputTokens > estimate {
+		t.Errorf("displayedInputTokens = %d, should not exceed estimate %d", app.displayedInputTokens, estimate)
+	}
+
+	// 3. More ticks — continues animating
+	prev := app.displayedInputTokens
+	app.Update(spinnerTickMsg{})
+	if app.displayedInputTokens <= prev {
+		t.Errorf("displayedInputTokens = %d, should increase from %d", app.displayedInputTokens, prev)
+	}
+
+	// 4. API responds with actual input tokens — snap
+	actualInput := 500
+	app.Update(streamUsageMsg{InputTokens: actualInput, OutputTokens: 0})
+	if app.displayedInputTokens != actualInput {
+		t.Errorf("displayedInputTokens = %d, want %d after snap", app.displayedInputTokens, actualInput)
+	}
+	if app.inputTokenTarget != actualInput {
+		t.Errorf("inputTokenTarget = %d, want %d after snap", app.inputTokenTarget, actualInput)
+	}
+
+	// 5. Subsequent ticks don't change input (already at target)
+	app.Update(spinnerTickMsg{})
+	if app.displayedInputTokens != actualInput {
+		t.Errorf("displayedInputTokens = %d, should stay at %d after snap", app.displayedInputTokens, actualInput)
+	}
+}
+
+// Test: output tokens animate from 0 as text chunks arrive.
+func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Receive text chunks
+	app.Update(streamChunkMsg{Text: "Hello "})
+	app.Update(streamChunkMsg{Text: "world, this is a long response with many tokens"})
+	// responseCharCount = len("Hello ") + len("world, this is a long response with many tokens")
+	expectedEstimate := app.responseCharCount / 4
+
+	// Before any tick, displayedOutputTokens is still 0
+	if app.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 before first tick", app.displayedOutputTokens)
+	}
+
+	// After tick, starts animating toward estimate
+	app.Update(spinnerTickMsg{})
+	if app.displayedOutputTokens == 0 {
+		t.Error("displayedOutputTokens should increment on tick")
+	}
+	if app.displayedOutputTokens > expectedEstimate {
+		t.Errorf("displayedOutputTokens = %d, should not exceed estimate %d", app.displayedOutputTokens, expectedEstimate)
+	}
+
+	// More chunks + ticks → keeps growing
+	app.Update(streamChunkMsg{Text: " and even more text to stream"})
+	app.Update(spinnerTickMsg{})
+	if app.displayedOutputTokens < 2 {
+		t.Errorf("displayedOutputTokens = %d, should keep growing", app.displayedOutputTokens)
+	}
+}
+
+// Test: completed stats line shown after streaming ends.
+func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now().Add(-2 * time.Second)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("response text")
+
+	// Stream complete — saves stats
+	app.Update(streamCompleteMsg{})
+	if app.repl.IsStreaming() {
+		t.Error("should not be streaming after complete")
+	}
+	if !app.showStats {
+		t.Error("showStats should be true after complete")
+	}
+
+	// View should show completed stats line (no spinner)
+	v := app.View()
+	if !strings.Contains(v, "tokens") {
+		t.Errorf("completed view should show tokens, got: %s", v)
+	}
+	if strings.Contains(v, "thinking") {
+		t.Errorf("completed stats should not show thinking, got: %s", v)
+	}
+}
+
+// Test: thinking state shown during streaming.
+func TestSpinnerE2E_ThinkingState(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Thinking starts
+	app.Update(streamThinkingStartMsg{})
+	if !app.thinkingActive {
+		t.Error("thinkingActive should be true")
+	}
+	v := app.View()
+	if !strings.Contains(v, "thinking") {
+		t.Errorf("view should show 'thinking', got: %s", v)
+	}
+
+	// Thinking ends
+	app.Update(streamThinkingEndMsg{Duration: 3 * time.Second})
+	if app.thinkingActive {
+		t.Error("thinkingActive should be false after end")
+	}
+	v = app.View()
+	if !strings.Contains(v, "thought for 3.0s") {
+		t.Errorf("view should show 'thought for 3.0s', got: %s", v)
+	}
+}
+
+// Test: multiple queries reset state correctly.
+func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
+	t.Parallel()
+	mp := &tuiMockProvider{}
+	mp.responses = append(mp.responses,
+		tuiMockResponse{events: textStreamEvents("test-model", "first")},
+		tuiMockResponse{events: textStreamEvents("test-model", "second")},
+	)
+	app := newTestApp(mp)
+	app.width = 80
+	app.height = 24
+
+	// First query
+	app.handleSubmitRepl("first query")
+	app.Update(streamUsageMsg{InputTokens: 100, OutputTokens: 50})
+	app.Update(streamChunkMsg{Text: "some response text"})
+	app.Update(spinnerTickMsg{})
+	app.Update(streamCompleteMsg{})
+
+	// Verify first query left state
+	if app.displayedInputTokens != 100 {
+		t.Errorf("after first query, displayedInputTokens = %d, want 100", app.displayedInputTokens)
+	}
+	if app.responseCharCount == 0 {
+		t.Error("responseCharCount should be non-zero after first query")
+	}
+
+	// Second query — should reset
+	app.handleSubmitRepl("second query")
+	if app.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 after second submit", app.displayedInputTokens)
+	}
+	if app.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 after second submit", app.displayedOutputTokens)
+	}
+	if app.responseCharCount != 0 {
+		t.Errorf("responseCharCount = %d, want 0 after second submit", app.responseCharCount)
+	}
+	if app.inputTokenTarget <= 0 {
+		t.Errorf("inputTokenTarget = %d, want > 0 after second submit", app.inputTokenTarget)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Additional coverage — spinnerTickMsg returns tick
 // ---------------------------------------------------------------------------
 
@@ -2119,6 +2395,135 @@ func TestPrettyJSON_MarshalIndentError(t *testing.T) {
 	v := prettyJSON(json.RawMessage(`{"a":1}`))
 	if !strings.Contains(v, "a") {
 		t.Errorf("basic JSON should work, got %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// animateTokenValue
+// ---------------------------------------------------------------------------
+
+func TestAnimateTokenValue_Under1000(t *testing.T) {
+	t.Parallel()
+	// Increments by 1 when displayed < 1000
+	got := animateTokenValue(0, 100)
+	if got != 1 {
+		t.Errorf("animateTokenValue(0, 100) = %d, want 1", got)
+	}
+	got = animateTokenValue(99, 100)
+	if got != 100 {
+		t.Errorf("animateTokenValue(99, 100) = %d, want 100 (clamps to target)", got)
+	}
+}
+
+func TestAnimateTokenValue_Over1000(t *testing.T) {
+	t.Parallel()
+	// Increments by 100 (0.1k) when displayed >= 1000
+	got := animateTokenValue(1000, 2000)
+	if got != 1100 {
+		t.Errorf("animateTokenValue(1000, 2000) = %d, want 1100", got)
+	}
+	got = animateTokenValue(1950, 2000)
+	if got != 2000 {
+		t.Errorf("animateTokenValue(1950, 2000) = %d, want 2000 (clamps to target)", got)
+	}
+}
+
+func TestAnimateTokenValue_AlreadyAtTarget(t *testing.T) {
+	t.Parallel()
+	got := animateTokenValue(500, 500)
+	if got != 500 {
+		t.Errorf("animateTokenValue(500, 500) = %d, want 500", got)
+	}
+}
+
+func TestAnimateTokenValue_ExceedsTarget(t *testing.T) {
+	t.Parallel()
+	got := animateTokenValue(600, 500)
+	if got != 500 {
+		t.Errorf("animateTokenValue(600, 500) = %d, want 500 (returns target)", got)
+	}
+}
+
+func TestAnimateTokenValue_CrossThreshold(t *testing.T) {
+	t.Parallel()
+	// 999 → 1000 step is +1 (still under 1000)
+	got := animateTokenValue(999, 5000)
+	if got != 1000 {
+		t.Errorf("animateTokenValue(999, 5000) = %d, want 1000", got)
+	}
+	// 1000 → 1100 step is +100
+	got = animateTokenValue(1000, 5000)
+	if got != 1100 {
+		t.Errorf("animateTokenValue(1000, 5000) = %d, want 1100", got)
+	}
+}
+
+func TestAnimateTokenValue_ZeroTarget(t *testing.T) {
+	t.Parallel()
+	got := animateTokenValue(0, 0)
+	if got != 0 {
+		t.Errorf("animateTokenValue(0, 0) = %d, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner tick animates displayed tokens
+// ---------------------------------------------------------------------------
+
+func TestApp_Update_SpinnerTick_AnimatesTokens(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+	app.status.inputTokens = 100
+	app.responseCharCount = 800 // estimate = 200 output tokens
+
+	app.Update(spinnerTickMsg{})
+	if app.displayedInputTokens != 1 {
+		t.Errorf("displayedInputTokens = %d, want 1", app.displayedInputTokens)
+	}
+	if app.displayedOutputTokens != 1 {
+		t.Errorf("displayedOutputTokens = %d, want 1", app.displayedOutputTokens)
+	}
+
+	// Tick several times — should keep incrementing
+	for i := 0; i < 5; i++ {
+		app.Update(spinnerTickMsg{})
+	}
+	if app.displayedInputTokens != 6 {
+		t.Errorf("after 6 ticks, displayedInputTokens = %d, want 6", app.displayedInputTokens)
+	}
+	if app.displayedOutputTokens != 6 {
+		t.Errorf("after 6 ticks, displayedOutputTokens = %d, want 6", app.displayedOutputTokens)
+	}
+}
+
+func TestApp_HandleSubmitRepl_ResetsDisplayedTokens(t *testing.T) {
+	t.Parallel()
+	mp := &tuiMockProvider{}
+	mp.responses = append(mp.responses, tuiMockResponse{
+		events: textStreamEvents("test-model", "hi"),
+	})
+	app := newTestApp(mp)
+	app.width = 80
+	app.height = 24
+	app.displayedInputTokens = 500
+	app.displayedOutputTokens = 500
+	app.responseCharCount = 999
+
+	app.handleSubmitRepl("test")
+	if app.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0", app.displayedInputTokens)
+	}
+	if app.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0", app.displayedOutputTokens)
+	}
+	if app.responseCharCount != 0 {
+		t.Errorf("responseCharCount = %d, want 0", app.responseCharCount)
+	}
+	// Should have set an input token target estimate
+	if app.inputTokenTarget <= 0 {
+		t.Errorf("inputTokenTarget = %d, want > 0", app.inputTokenTarget)
 	}
 }
 

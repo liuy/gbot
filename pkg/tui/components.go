@@ -521,7 +521,7 @@ type Spinner struct {
 // NewSpinner creates a new Spinner.
 func NewSpinner() Spinner {
 	return Spinner{
-		frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		frames: []string{"○", "◐", "◑", "●", "◑", "◐"},
 		idx:    0,
 		active: false,
 	}

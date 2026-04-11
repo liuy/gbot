@@ -11,6 +11,7 @@ package engine
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
@@ -22,13 +23,14 @@ import (
 // across multiple SSE event types (message_start, content_block_start/delta/stop,
 // message_delta, message_stop).
 type StreamAccumulator struct {
-	contentBlocks   []types.ContentBlock
-	currentText     strings.Builder
+	contentBlocks    []types.ContentBlock
+	currentText      strings.Builder
 	currentToolInput strings.Builder
-	model           string
-	stopReason      string
-	usage           types.Usage
-	hasContent      bool
+	model            string
+	stopReason       string
+	usage            types.Usage
+	thinkingStart    time.Time
+	hasContent       bool
 }
 
 // NewStreamAccumulator creates a new accumulator.
@@ -50,6 +52,13 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 		if event.Message != nil {
 			a.model = event.Message.Model
 			a.usage = event.Message.Usage
+			emitEvent = &types.QueryEvent{
+				Type: types.EventUsage,
+				Usage: &types.UsageEvent{
+					InputTokens:  a.usage.InputTokens,
+					OutputTokens: a.usage.OutputTokens,
+				},
+			}
 		}
 
 	case "content_block_start":
@@ -58,7 +67,8 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 		if event.ContentBlock != nil {
 			cb := *event.ContentBlock
 			a.contentBlocks = append(a.contentBlocks, cb)
-			if cb.Type == types.ContentTypeToolUse {
+			switch cb.Type {
+			case types.ContentTypeToolUse:
 				a.currentToolInput.Reset()
 				emitEvent = &types.QueryEvent{
 					Type: types.EventToolUseStart,
@@ -67,6 +77,11 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 						Name:  cb.Name,
 						Input: cb.Input,
 					},
+				}
+			case types.ContentTypeThinking:
+				a.thinkingStart = time.Now()
+				emitEvent = &types.QueryEvent{
+					Type: types.EventThinkingStart,
 				}
 			}
 		}
@@ -85,6 +100,8 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 				}
 			case "input_json_delta":
 				a.currentToolInput.WriteString(event.Delta.PartialJSON)
+			case "thinking_delta":
+				a.currentText.WriteString(event.Delta.Thinking)
 			}
 		}
 
@@ -101,6 +118,16 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 			case types.ContentTypeToolUse:
 				cb.Input = json.RawMessage(a.currentToolInput.String())
 				a.currentToolInput.Reset()
+			case types.ContentTypeThinking:
+				cb.Text = a.currentText.String()
+				a.currentText.Reset()
+				elapsed := time.Since(a.thinkingStart)
+				emitEvent = &types.QueryEvent{
+					Type: types.EventThinkingEnd,
+					Thinking: &types.ThinkingEvent{
+						Duration: elapsed,
+					},
+				}
 			}
 		}
 
@@ -111,6 +138,13 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 		}
 		if event.Usage != nil {
 			a.usage.OutputTokens = event.Usage.OutputTokens
+			emitEvent = &types.QueryEvent{
+				Type: types.EventUsage,
+				Usage: &types.UsageEvent{
+					InputTokens:  a.usage.InputTokens,
+					OutputTokens: a.usage.OutputTokens,
+				},
+			}
 		}
 
 	case "message_stop":

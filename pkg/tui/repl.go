@@ -196,6 +196,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case streamChunkMsg:
 		a.repl.AppendChunk(m.Text)
+		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 
 	case streamStartMsg:
@@ -219,8 +220,35 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case streamCompleteMsg:
 		a.repl.FinishStream(m.Err)
+		if !a.progressStart.IsZero() {
+			a.lastInputTokens = a.status.inputTokens
+			a.lastOutputTokens = a.status.outTokens
+			a.lastElapsed = time.Since(a.progressStart)
+			a.lastThinking = a.thinkingDuration
+			a.showStats = true
+		}
 		a.progressStart = time.Time{}
+		a.thinkingActive = false
+		a.thinkingDuration = 0
 		return true, nil
+
+	case streamUsageMsg:
+		a.status.inputTokens += m.InputTokens
+		a.status.outTokens += m.OutputTokens
+		// Input tokens arrive all at once — snap immediately
+		a.displayedInputTokens = a.status.inputTokens
+		a.inputTokenTarget = a.status.inputTokens
+		return true, a.readEvents()
+
+	case streamThinkingStartMsg:
+		a.thinkingActive = true
+		a.thinkingStart = time.Now()
+		return true, a.readEvents()
+
+	case streamThinkingEndMsg:
+		a.thinkingActive = false
+		a.thinkingDuration = m.Duration
+		return true, a.readEvents()
 
 	case errMsg:
 		a.status.SetError(m.Err.Error())
@@ -237,6 +265,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case spinnerTickMsg:
 		if a.repl.IsStreaming() {
 			a.spinner.Tick()
+			// Animate displayed tokens toward actual values
+			target := a.inputTokenTarget
+			if a.status.inputTokens > target {
+				target = a.status.inputTokens
+			}
+			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
+			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, a.responseCharCount/4)
 			return true, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
 			})
@@ -265,6 +300,23 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.status.SetStreaming(true)
 	a.spinner.Start()
 	a.progressStart = time.Now()
+	a.thinkingActive = false
+	a.thinkingDuration = 0
+	a.showStats = false
+	a.status.SetUsage(0, 0)
+	a.responseCharCount = 0
+	a.displayedInputTokens = 0
+	a.displayedOutputTokens = 0
+	// Estimate input tokens from context + user message text
+	totalChars := len(a.systemPrompt) + len(text)
+	for _, msg := range a.repl.Messages() {
+		for _, blk := range msg.Blocks {
+			if blk.Type == BlockText {
+				totalChars += len(blk.Text)
+			}
+		}
+	}
+	a.inputTokenTarget = totalChars / 4
 
 	return tea.Batch(
 		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {

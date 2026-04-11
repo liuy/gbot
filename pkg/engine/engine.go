@@ -279,6 +279,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	var model string
 	var stopReason string
 	var usage types.Usage
+	var thinkingStart time.Time
 	hasContent := false
 
 	for event := range streamCh {
@@ -297,13 +298,21 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			if event.Message != nil {
 				model = event.Message.Model
 				usage = event.Message.Usage
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventUsage,
+					Usage: &types.UsageEvent{
+						InputTokens:  usage.InputTokens,
+						OutputTokens: usage.OutputTokens,
+					},
+				})
 			}
 
 		case "content_block_start":
 			if event.ContentBlock != nil {
 				cb := *event.ContentBlock
 				contentBlocks = append(contentBlocks, cb)
-				if cb.Type == types.ContentTypeToolUse {
+				switch cb.Type {
+				case types.ContentTypeToolUse:
 					currentToolID = cb.ID
 					currentToolName = cb.Name
 					currentToolInput.Reset()
@@ -316,6 +325,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							Input:   cb.Input,
 							Summary: summary,
 						},
+					})
+				case types.ContentTypeThinking:
+					thinkingStart = time.Now()
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventThinkingStart,
 					})
 				}
 			}
@@ -342,6 +356,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							Summary: summary,
 						},
 					})
+				case "thinking_delta":
+					// Accumulate thinking text but don't emit to TUI
+					currentText.WriteString(event.Delta.Thinking)
 				}
 			}
 
@@ -356,6 +373,16 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case types.ContentTypeToolUse:
 					cb.Input = json.RawMessage(currentToolInput.String())
 					currentToolInput.Reset()
+				case types.ContentTypeThinking:
+					cb.Text = currentText.String()
+					currentText.Reset()
+					elapsed := time.Since(thinkingStart)
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventThinkingEnd,
+						Thinking: &types.ThinkingEvent{
+							Duration: elapsed,
+						},
+					})
 				}
 			}
 
@@ -365,6 +392,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			}
 			if event.Usage != nil {
 				usage.OutputTokens = event.Usage.OutputTokens
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventUsage,
+					Usage: &types.UsageEvent{
+						InputTokens:  usage.InputTokens,
+						OutputTokens: usage.OutputTokens,
+					},
+				})
 			}
 
 		case "message_stop":
