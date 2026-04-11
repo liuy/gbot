@@ -173,9 +173,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyCtrlP, tea.KeyUp:
+		if a.input.CursorUp() {
+			return a, nil
+		}
 		return a.handleHistoryUp(), nil
 
 	case tea.KeyCtrlN, tea.KeyDown:
+		if a.input.CursorDown() {
+			return a, nil
+		}
 		return a.handleHistoryDown(), nil
 
 	case tea.KeyCtrlH:

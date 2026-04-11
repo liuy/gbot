@@ -1672,3 +1672,119 @@ func TestMessageView_WithTool_DoneNoSummary(t *testing.T) {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Input — auto-wrapping for long text
+// ---------------------------------------------------------------------------
+
+func TestInput_View_Wrapping(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("abcdefghijklmnopqrstuvwxyz") // 26 chars, wraps in 20-wide input
+	v := i.View()
+	// Should contain newlines when text exceeds width
+	if !strings.Contains(v, "\n") {
+		t.Errorf("View() should wrap long text, got: %q", v)
+	}
+}
+
+func TestInput_View_Wrapping_CursorOnSecondLine(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(20)
+	// "abcdefghijklmnop" = 16 chars fits on first line (20 - promptWidth)
+	// Add enough chars to force wrap, then put cursor on second line
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	i.Home()
+	// Move cursor to position 20 (should be on second wrapped line)
+	for j := 0; j < 20; j++ {
+		i.CursorRight()
+	}
+	v := i.View()
+	lines := strings.Split(v, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected 2+ lines, got %d: %q", len(lines), v)
+	}
+	// Second line should have content (the cursor is there)
+	second := stripAnsiPrintable(lines[1])
+	if len(second) == 0 {
+		t.Errorf("second line should have content, got: %q", lines[1])
+	}
+}
+
+func TestInput_WrappedLineCursorUp(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	// Move cursor to second line
+	i.End() // cursor at end (position 26)
+	prevCursor := i.cursor
+	i.CursorUp()
+	// If text wraps, cursor should move up
+	if i.cursor == prevCursor {
+		t.Errorf("CursorUp() should move cursor to previous wrapped line, cursor=%d", i.cursor)
+	}
+}
+
+func TestInput_WrappedLineCursorDown(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	i.Home() // cursor at 0
+	prevCursor := i.cursor
+	i.CursorDown()
+	// If text wraps, cursor should move down
+	if i.cursor == prevCursor {
+		t.Errorf("CursorDown() should move cursor to next wrapped line, cursor=%d", i.cursor)
+	}
+}
+
+func TestInput_View_Wrapping_CJK(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(20)
+	// 10 CJK chars = 20 display cells, should fill exactly one line
+	// Adding more should wrap
+	i.SetValue("你好你好你好你好你好你好") // 12 CJK chars = 24 display cells
+	v := i.View()
+	if !strings.Contains(v, "\n") {
+		t.Errorf("CJK text should wrap, got: %q", v)
+	}
+}
+
+func TestInput_View_Wrapping_NarrowWidth(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	i.SetWidth(0)
+	i.SetValue("hello world")
+	v := i.View()
+	// Should not crash — just no wrapping when width is 0
+	if v == "" {
+		t.Error("View() should not be empty")
+	}
+}
+
+func TestInput_HasWrappedLines(t *testing.T) {
+	t.Parallel()
+
+	i := NewInput()
+	// Short text, no width set → no wrapping
+	if i.HasWrappedLines() {
+		t.Error("short text without width should not have wrapped lines")
+	}
+
+	i.SetWidth(10)
+	i.SetValue("hello world") // 11 chars > 10, should wrap
+	if !i.HasWrappedLines() {
+		t.Error("long text with narrow width should have wrapped lines")
+	}
+}

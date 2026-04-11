@@ -46,6 +46,15 @@ type ContentBlock struct {
 // Input — source: components/Input.tsx
 // ---------------------------------------------------------------------------
 
+// promptDisplayWidth is the display width of "❯ " (❯ = 1 cell + space = 1 cell).
+const promptDisplayWidth = 2
+
+// wrappedLine represents one visual line after wrapping the input value.
+type wrappedLine struct {
+	runes       []rune // runes on this visual line
+	startOffset int    // rune index into original value where this line starts
+}
+
 // Input is a single-line text input component.
 // Source: components/Input.tsx → bubbletea textarea replacement.
 // Cursor is a rune index (not byte offset) to support multibyte characters.
@@ -100,6 +109,134 @@ func (i *Input) Reset() {
 // SetWidth sets the input width.
 func (i *Input) SetWidth(w int) {
 	i.width = w
+}
+
+// wrapLines wraps the input value into visual lines based on display width.
+// Source: Cursor.ts — MeasuredText.measureWrappedText() (simplified rune-based version).
+func (i *Input) wrapLines() []wrappedLine {
+	if i.width <= 0 || len(i.value) == 0 {
+		return []wrappedLine{{runes: i.value, startOffset: 0}}
+	}
+
+	// First line has less room due to prompt prefix
+	availFirst := i.width - promptDisplayWidth
+	if availFirst < 1 {
+		availFirst = 1
+	}
+	availRest := i.width
+	if availRest < 1 {
+		availRest = 1
+	}
+
+	var lines []wrappedLine
+	var current []rune
+	currentLen := 0
+	lineStart := 0
+	avail := availFirst
+
+	for idx, r := range i.value {
+		rw := runeDisplayWidth(r)
+		if currentLen+rw > avail && currentLen > 0 {
+			lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
+			current = nil
+			currentLen = 0
+			lineStart = idx
+			avail = availRest
+		}
+		current = append(current, r)
+		currentLen += rw
+	}
+
+	if len(current) > 0 || len(lines) == 0 {
+		lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
+	}
+
+	return lines
+}
+
+// cursorLine returns the index of the wrapped line containing the cursor.
+func (i *Input) cursorLine(lines []wrappedLine) int {
+	for idx, line := range lines {
+		end := line.startOffset + len(line.runes)
+		if i.cursor <= end {
+			return idx
+		}
+	}
+	return len(lines) - 1
+}
+
+// HasWrappedLines returns true if the current value wraps to multiple visual lines.
+func (i *Input) HasWrappedLines() bool {
+	lines := i.wrapLines()
+	return len(lines) > 1
+}
+
+// CursorUp moves the cursor up one wrapped line.
+// Source: Cursor.ts — Cursor.up()
+// Returns true if cursor moved, false if already on first line.
+func (i *Input) CursorUp() bool {
+	lines := i.wrapLines()
+	if len(lines) <= 1 {
+		return false
+	}
+	cl := i.cursorLine(lines)
+	if cl == 0 {
+		return false
+	}
+	// Find current column (display width from line start to cursor)
+	prevLine := lines[cl-1]
+	curLine := lines[cl]
+	colInLine := 0
+	for _, r := range curLine.runes[:i.cursor-curLine.startOffset] {
+		colInLine += runeDisplayWidth(r)
+	}
+	// Move to same column on previous line, clamped to line end
+	newOffset := prevLine.startOffset
+	colAccum := 0
+	for idx, r := range prevLine.runes {
+		rw := runeDisplayWidth(r)
+		if colAccum+rw > colInLine {
+			break
+		}
+		colAccum += rw
+		newOffset = prevLine.startOffset + idx + 1
+	}
+	i.cursor = newOffset
+	return true
+}
+
+// CursorDown moves the cursor down one wrapped line.
+// Source: Cursor.ts — Cursor.down()
+// Returns true if cursor moved, false if already on last line.
+func (i *Input) CursorDown() bool {
+	lines := i.wrapLines()
+	if len(lines) <= 1 {
+		return false
+	}
+	cl := i.cursorLine(lines)
+	if cl >= len(lines)-1 {
+		return false
+	}
+	// Find current column
+	curLine := lines[cl]
+	nextLine := lines[cl+1]
+	colInLine := 0
+	for _, r := range curLine.runes[:i.cursor-curLine.startOffset] {
+		colInLine += runeDisplayWidth(r)
+	}
+	// Move to same column on next line, clamped to line end
+	newOffset := nextLine.startOffset
+	colAccum := 0
+	for idx, r := range nextLine.runes {
+		rw := runeDisplayWidth(r)
+		if colAccum+rw > colInLine {
+			break
+		}
+		colAccum += rw
+		newOffset = nextLine.startOffset + idx + 1
+	}
+	i.cursor = newOffset
+	return true
 }
 
 // InsertChar inserts a character at the cursor position.
@@ -214,37 +351,84 @@ func (i *Input) End() {
 	i.cursor = len(i.value)
 }
 
-// View renders the input.
+// View renders the input with wrapping support for long text.
+// Source: Cursor.ts — Cursor.render() (simplified rune-based version).
 func (i *Input) View() string {
 	promptStyle := stylePrompt
-	inputStyle := lipgloss.NewStyle()
-
 	prompt := promptStyle.Render("❯ ")
-	text := string(i.value)
-	if text == "" && !i.focused {
-		text = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(i.placeholder)
-	}
+	indent := strings.Repeat(" ", promptDisplayWidth)
 
-	// Build the display with cursor
-	if i.focused {
-		before := string(i.value[:min(i.cursor, len(i.value))])
-		var cursorChar string
-		if i.cursor < len(i.value) {
-			cursorChar = string(i.value[i.cursor])
-		} else {
-			cursorChar = " "
+	// Empty value: show placeholder or cursor-only
+	if len(i.value) == 0 {
+		if !i.focused {
+			ph := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(i.placeholder)
+			return prompt + ph
 		}
-		after := ""
-		if i.cursor+1 < len(i.value) {
-			after = string(i.value[i.cursor+1:])
-		}
-
 		cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))
-		display := before + cursorStyle.Render(cursorChar) + after
-		return prompt + inputStyle.Render(display)
+		return prompt + cursorStyle.Render(" ")
 	}
 
-	return prompt + inputStyle.Render(text)
+	// No wrapping needed (width not set or single line)
+	lines := i.wrapLines()
+	if len(lines) <= 1 {
+		return prompt + i.renderLineSingle(lines)
+	}
+
+	// Multi-line wrapped rendering
+	cl := i.cursorLine(lines)
+	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))
+
+	var sb strings.Builder
+	for li, line := range lines {
+		var rendered string
+		if i.focused && li == cl {
+			// Render this line with cursor
+			cursorInLine := i.cursor - line.startOffset
+			beforeRunes := line.runes[:min(cursorInLine, len(line.runes))]
+			var cursorRune string
+			if cursorInLine < len(line.runes) {
+				cursorRune = string(line.runes[cursorInLine])
+			} else {
+				cursorRune = " "
+			}
+			afterRunes := line.runes[min(cursorInLine+1, len(line.runes)):]
+			rendered = string(beforeRunes) + cursorStyle.Render(cursorRune) + string(afterRunes)
+		} else {
+			rendered = string(line.runes)
+		}
+
+		if li == 0 {
+			sb.WriteString(prompt + rendered)
+		} else {
+			sb.WriteString("\n" + indent + rendered)
+		}
+	}
+	return sb.String()
+}
+
+// renderLineSingle renders a single-line input with cursor (no wrapping).
+func (i *Input) renderLineSingle(lines []wrappedLine) string {
+	if len(lines) == 0 || len(lines[0].runes) == 0 {
+		cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))
+		return cursorStyle.Render(" ")
+	}
+	if !i.focused {
+		return string(i.value)
+	}
+
+	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))
+	before := string(i.value[:min(i.cursor, len(i.value))])
+	var cursorChar string
+	if i.cursor < len(i.value) {
+		cursorChar = string(i.value[i.cursor])
+	} else {
+		cursorChar = " "
+	}
+	after := ""
+	if i.cursor+1 < len(i.value) {
+		after = string(i.value[i.cursor+1:])
+	}
+	return before + cursorStyle.Render(cursorChar) + after
 }
 
 // ---------------------------------------------------------------------------
