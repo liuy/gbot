@@ -1120,3 +1120,51 @@ func TestRender_Table_BordersAligned(t *testing.T) {
 		}
 	}
 }
+
+func TestRender_Table_InlineCode(t *testing.T) {
+	t.Parallel()
+	input := "| Tool | Command |\n|------|---------|\n| gbot | `gbot-agent` |\n| node | `node run` |"
+	result := Render(input)
+	if !strings.Contains(result, "gbot-agent") {
+		t.Errorf("table should contain inline code text 'gbot-agent', got: %s", result)
+	}
+	if !strings.Contains(result, "node run") {
+		t.Errorf("table should contain inline code text 'node run', got: %s", result)
+	}
+	if !strings.Contains(result, "│") {
+		t.Errorf("table should have cell borders, got: %s", result)
+	}
+	lines := strings.Split(result, "\n")
+	clean := lines
+	for len(clean) > 0 && clean[len(clean)-1] == "" {
+		clean = clean[:len(clean)-1]
+	}
+	if len(clean) >= 2 {
+		topW := displayWidth(clean[0])
+		botW := displayWidth(clean[len(clean)-1])
+		if topW != botW {
+			t.Errorf("top border width=%d != bottom border width=%d", topW, botW)
+		}
+	}
+}
+
+func TestRender_Table_Bold(t *testing.T) {
+	t.Parallel()
+	input := "| Name | Status |\n|------|--------|\n| **active** | running |"
+	result := Render(input)
+	if !strings.Contains(result, "active") {
+		t.Errorf("table should contain bold text 'active', got: %s", result)
+	}
+	if !strings.Contains(result, "running") {
+		t.Errorf("table should contain text 'running', got: %s", result)
+	}
+}
+
+func TestRender_Table_Italic(t *testing.T) {
+	t.Parallel()
+	input := "| Name | Value |\n|------|-------|\n| *note* | 42 |"
+	result := Render(input)
+	if !strings.Contains(result, "note") {
+		t.Errorf("table should contain italic text 'note', got: %s", result)
+	}
+}

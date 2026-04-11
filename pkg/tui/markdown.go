@@ -92,6 +92,13 @@ const (
 )
 
 func (r *ansiRenderer) write(s string) {
+	// When collecting table cells, route content into the current cell
+	// instead of the main output buffer. This ensures inline nodes
+	// (Code, Emph, Strong, etc.) render correctly inside table cells.
+	if r.table != nil && len(r.table.current) > 0 {
+		r.table.current[len(r.table.current)-1] += s
+		return
+	}
 	_, _ = r.w.Write([]byte(s))
 }
 
@@ -334,11 +341,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 			if r.table == nil {
 				content = linkifyIssueReferences(content)
 			}
-			if r.table != nil && len(r.table.current) > 0 {
-				r.table.current[len(r.table.current)-1] += content
-			} else {
-				r.write(content)
-			}
+			r.write(content)
 		}
 
 	case *ast.Softbreak:
@@ -439,6 +442,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 // Source: utils/markdown.ts table token handler
 func (r *ansiRenderer) renderTable() {
 	t := r.table
+	r.table = nil // prevent write() from routing borders into cells
 
 	// Collect all rows
 	allRows := make([][]string, 0, 1+len(t.rows))
