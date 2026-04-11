@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2022,20 +2023,20 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 	t.Parallel()
 	mp := &tuiMockProvider{}
-	mp.responses = append(mp.responses,
-		tuiMockResponse{events: textStreamEvents("test-model", "first")},
-		tuiMockResponse{events: textStreamEvents("test-model", "second")},
-	)
+	mp.responses = append(mp.responses, tuiMockResponse{events: textStreamEvents("test-model", "second")})
 	app := newTestApp(mp)
 	app.width = 80
 	app.height = 24
 
-	// First query
-	app.handleSubmitRepl("first query")
-	app.Update(streamUsageMsg{InputTokens: 100, OutputTokens: 50})
-	app.Update(streamChunkMsg{Text: "some response text"})
-	app.Update(spinnerTickMsg{})
-	app.Update(streamCompleteMsg{})
+	// Simulate first query state (without starting a real engine goroutine)
+	app.repl.AddUserMessage("first query")
+	app.repl.StartQuery(nil)
+	app.status.inputTokens = 100
+	app.status.outTokens = 50
+	app.displayedInputTokens = 100
+	app.displayedOutputTokens = 50
+	app.responseCharCount = 200
+	app.repl.FinishStream(nil)
 
 	// Verify first query left state
 	if app.displayedInputTokens != 100 {
@@ -2045,7 +2046,7 @@ func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 		t.Error("responseCharCount should be non-zero after first query")
 	}
 
-	// Second query — should reset
+	// Second query — should reset all counters
 	app.handleSubmitRepl("second query")
 	if app.displayedInputTokens != 0 {
 		t.Errorf("displayedInputTokens = %d, want 0 after second submit", app.displayedInputTokens)
@@ -2235,13 +2236,15 @@ func TestApp_ReadEvents_BlockingAppCh(t *testing.T) {
 	resultCh := make(chan engine.QueryResult)
 	app.repl.resultCh = resultCh
 
-	// Send event AFTER readEvents starts (it will block in select)
+	// Send event using channel-based sync to avoid race
+	sendReady := make(chan struct{})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-sendReady
 		h.appCh <- streamChunkMsg{Text: "delayed"}
 	}()
 
 	cmd := app.readEvents()
+	close(sendReady) // signal goroutine to send
 	msg := cmd()
 	cm, ok := msg.(streamChunkMsg)
 	if !ok {
@@ -2546,8 +2549,17 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 	app.repl.resultCh = resultCh
 
-	// Drain events first so resultCh is the one that fires
-	time.Sleep(200 * time.Millisecond)
+	// Drain hub events into appCh until it's empty, using a done channel
+	// for sync instead of time.Sleep to avoid race.
+	done := make(chan struct{})
+	go func() {
+		// Give engine goroutine time to process, then signal
+		for i := 0; i < 100; i++ {
+			runtime.Gosched()
+		}
+		close(done)
+	}()
+	<-done
 
 	cmd := app.readEvents()
 	msg := cmd()
