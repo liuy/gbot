@@ -158,21 +158,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 
 	case tea.KeyCtrlC:
-		if a.repl.IsStreaming() {
-			// Cancel current query
-			if a.repl.cancelFunc != nil {
-				a.repl.cancelFunc()
-				a.repl.cancelFunc = nil
-			}
-			a.repl.FinishStream(nil)
-			return a, nil
-		}
-		// Double-press Ctrl+C to quit (within 800ms window)
-		if a.doublePress.Press("ctrl-c") {
-			return a, tea.Quit
-		}
-		// First press: reset and wait
-		return a, nil
+		return a.handleCtrlC()
 
 	case tea.KeyCtrlO:
 		a.allToolsExpanded = !a.allToolsExpanded
@@ -186,17 +172,11 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.input.CursorRight()
 		return a, nil
 
-	case tea.KeyCtrlP:
-		text, _ := a.history.Up(a.input.Value())
-		a.input.SetValue(text)
-		a.input.End()
-		return a, nil
+	case tea.KeyCtrlP, tea.KeyUp:
+		return a.handleHistoryUp(), nil
 
-	case tea.KeyCtrlN:
-		text, _ := a.history.Down()
-		a.input.SetValue(text)
-		a.input.End()
-		return a, nil
+	case tea.KeyCtrlN, tea.KeyDown:
+		return a.handleHistoryDown(), nil
 
 	case tea.KeyCtrlH:
 		a.input.Backspace()
@@ -206,10 +186,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.input.DeleteForward()
 		return a, nil
 
-	case tea.KeyCtrlL:
-		return a, nil
-
-	case tea.KeyCtrlG:
+	case tea.KeyCtrlL, tea.KeyCtrlG, tea.KeyEscape:
 		return a, nil
 
 	case tea.KeyCtrlLeft:
@@ -218,9 +195,6 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlRight:
 		a.input.NextWord()
-		return a, nil
-
-	case tea.KeyEscape:
 		return a, nil
 
 	case tea.KeyCtrlA:
@@ -232,30 +206,26 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyCtrlK:
-		after := string(a.input.value[a.input.cursor:])
-		a.killRing.Push(after, "append")
+		a.killRing.Push(string(a.input.value[a.input.cursor:]), "append")
 		a.input.value = a.input.value[:a.input.cursor]
 		return a, nil
 
 	case tea.KeyCtrlY:
-		yanked := a.killRing.Top()
-		if yanked != "" {
+		if yanked := a.killRing.Top(); yanked != "" {
 			for _, ch := range yanked {
 				a.input.InsertChar(ch)
 			}
 		}
 		return a, nil
 
-	case tea.KeyUp:
-		text, _ := a.history.Up(a.input.Value())
-		a.input.SetValue(text)
-		a.input.End()
+	case tea.KeyCtrlU:
+		a.killRing.Push(string(a.input.value[:a.input.cursor]), "prepend")
+		a.input.value = a.input.value[a.input.cursor:]
+		a.input.cursor = 0
 		return a, nil
 
-	case tea.KeyDown:
-		text, _ := a.history.Down()
-		a.input.SetValue(text)
-		a.input.End()
+	case tea.KeyCtrlW:
+		a.handleKillWord()
 		return a, nil
 
 	case tea.KeyEnter:
@@ -266,102 +236,135 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.handleSubmitRepl(text)
 
 	case tea.KeyRunes:
-		if msg.Alt {
-			if len(msg.Runes) == 1 {
-				switch msg.Runes[0] {
-				case 'b':
-					a.input.PrevWord()
-					return a, nil
-				case 'f':
-					a.input.NextWord()
-					return a, nil
-				case 'd':
-					deleted := a.input.DeleteWordForward()
-					a.killRing.Push(deleted, "append")
-					return a, nil
-				}
-			}
-			return a, nil
-		}
-		if msg.Paste {
-			for _, ch := range msg.Runes {
-				a.input.InsertChar(ch)
-			}
-			return a, nil
-		}
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
-		for _, ch := range msg.Runes {
-			a.input.InsertChar(ch)
-		}
-		return a, nil
+		return a.handleRunes(msg)
 
 	case tea.KeyBackspace:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.Backspace()
 		return a, nil
 
 	case tea.KeyDelete:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.DeleteForward()
 		return a, nil
 
 	case tea.KeyHome:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.Home()
 		return a, nil
 
 	case tea.KeyEnd:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.End()
 		return a, nil
 
 	case tea.KeySpace:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.InsertChar(' ')
 		return a, nil
 
 	case tea.KeyLeft:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.CursorLeft()
 		return a, nil
 
 	case tea.KeyRight:
-		a.history.ResetNav()
-		a.killRing.ResetAccumulation()
+		a.resetNavAndAccum()
 		a.input.CursorRight()
-		return a, nil
-
-	case tea.KeyCtrlU:
-		before := string(a.input.value[:a.input.cursor])
-		a.killRing.Push(before, "prepend")
-		a.input.value = a.input.value[a.input.cursor:]
-		a.input.cursor = 0
-		return a, nil
-
-	case tea.KeyCtrlW:
-		if a.input.cursor == 0 {
-			return a, nil
-		}
-		pos := a.input.cursor - 1
-		for pos > 0 && a.input.value[pos] == ' ' {
-			pos--
-		}
-		for pos > 0 && a.input.value[pos-1] != ' ' {
-			pos--
-		}
-		word := string(a.input.value[pos:a.input.cursor])
-		a.killRing.Push(word, "prepend")
-		a.input.value = append(a.input.value[:pos], a.input.value[a.input.cursor:]...)
-		a.input.cursor = pos
 		return a, nil
 	}
 
 	return a, nil
+}
+
+// ---------------------------------------------------------------------------
+// handleKey helpers
+// ---------------------------------------------------------------------------
+
+// resetNavAndAccum resets history navigation and kill ring accumulation.
+func (a *App) resetNavAndAccum() {
+	a.history.ResetNav()
+	a.killRing.ResetAccumulation()
+}
+
+// handleCtrlC handles Ctrl+C: cancel stream or double-press quit.
+func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
+	if a.repl.IsStreaming() {
+		if a.repl.cancelFunc != nil {
+			a.repl.cancelFunc()
+			a.repl.cancelFunc = nil
+		}
+		a.repl.FinishStream(nil)
+		return a, nil
+	}
+	if a.doublePress.Press("ctrl-c") {
+		return a, tea.Quit
+	}
+	return a, nil
+}
+
+// handleHistoryUp navigates to the previous history entry.
+func (a *App) handleHistoryUp() tea.Model {
+	text, _ := a.history.Up(a.input.Value())
+	a.input.SetValue(text)
+	a.input.End()
+	return a
+}
+
+// handleHistoryDown navigates to the next history entry.
+func (a *App) handleHistoryDown() tea.Model {
+	text, _ := a.history.Down()
+	a.input.SetValue(text)
+	a.input.End()
+	return a
+}
+
+// handleRunes handles rune input: Alt combos, paste, and normal typing.
+func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Alt {
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'b':
+				a.input.PrevWord()
+				return a, nil
+			case 'f':
+				a.input.NextWord()
+				return a, nil
+			case 'd':
+				deleted := a.input.DeleteWordForward()
+				a.killRing.Push(deleted, "append")
+				return a, nil
+			}
+		}
+		return a, nil
+	}
+	if msg.Paste {
+		for _, ch := range msg.Runes {
+			a.input.InsertChar(ch)
+		}
+		return a, nil
+	}
+	a.resetNavAndAccum()
+	for _, ch := range msg.Runes {
+		a.input.InsertChar(ch)
+	}
+	return a, nil
+}
+
+// handleKillWord deletes the word before the cursor and pushes it to the kill ring.
+func (a *App) handleKillWord() {
+	if a.input.cursor == 0 {
+		return
+	}
+	pos := a.input.cursor - 1
+	for pos > 0 && a.input.value[pos] == ' ' {
+		pos--
+	}
+	for pos > 0 && a.input.value[pos-1] != ' ' {
+		pos--
+	}
+	word := string(a.input.value[pos:a.input.cursor])
+	a.killRing.Push(word, "prepend")
+	a.input.value = append(a.input.value[:pos], a.input.value[a.input.cursor:]...)
+	a.input.cursor = pos
 }
