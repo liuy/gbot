@@ -598,3 +598,147 @@ func TestExecute_CancelledContext(t *testing.T) {
 		t.Error("CWD should be set")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Description — empty command returns empty string (line 97)
+// ---------------------------------------------------------------------------
+
+func TestDescription_EmptyCommand(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	input := json.RawMessage(`{"command":""}`)
+	desc, err := tt.Description(input)
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != "" {
+		t.Errorf("Description() = %q, want empty string for empty command", desc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — covers lines 120-141 in bash.go
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_StdoutOnly(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stdout:   "hello world",
+		ExitCode: 0,
+	})
+	if result != "hello world" {
+		t.Errorf("RenderResult(stdout only) = %q, want %q", result, "hello world")
+	}
+}
+
+func TestRenderResult_StderrOnly(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stderr:   "error msg",
+		ExitCode: 1,
+	})
+	if result != "error msg" {
+		t.Errorf("RenderResult(stderr only) = %q, want %q", result, "error msg")
+	}
+}
+
+func TestRenderResult_StdoutAndStderr(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stdout:   "output",
+		Stderr:   "error",
+		ExitCode: 1,
+	})
+	want := "output\nerror"
+	if result != want {
+		t.Errorf("RenderResult(stdout+stderr) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_TimedOutOnly(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		TimedOut: true,
+		ExitCode: -1,
+	})
+	if result != "Command timed out" {
+		t.Errorf("RenderResult(timedout only) = %q, want %q", result, "Command timed out")
+	}
+}
+
+func TestRenderResult_StdoutAndTimedOut(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stdout:   "partial output",
+		TimedOut: true,
+		ExitCode: -1,
+	})
+	want := "partial output\nCommand timed out"
+	if result != want {
+		t.Errorf("RenderResult(stdout+timedout) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_StdoutStderrAndTimedOut(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stdout:   "output",
+		Stderr:   "warning",
+		TimedOut: true,
+		ExitCode: -1,
+	})
+	want := "output\nwarning\nCommand timed out"
+	if result != want {
+		t.Errorf("RenderResult(stdout+stderr+timedout) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_NonOutputType(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult("some random string")
+	if !strings.Contains(result, "some random string") {
+		t.Errorf("RenderResult(non-Output) = %q, should contain the input", result)
+	}
+}
+
+func TestRenderResult_EmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		ExitCode: 0,
+	})
+	if result != "" {
+		t.Errorf("RenderResult(empty output) = %q, want empty string", result)
+	}
+}
+
+func TestRenderResult_StderrAndTimedOut(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New()
+	result := tt.RenderResult(&bash.Output{
+		Stderr:   "error",
+		TimedOut: true,
+		ExitCode: -1,
+	})
+	want := "error\nCommand timed out"
+	if result != want {
+		t.Errorf("RenderResult(stderr+timedout) = %q, want %q", result, want)
+	}
+}

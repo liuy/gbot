@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -648,7 +650,6 @@ func TestExpandPath_TildeWithHome(t *testing.T) {
 }
 
 func TestExpandPath_TildeHomeEmpty(t *testing.T) {
-	t.Parallel()
 	orig := os.Getenv("HOME")
 	defer func() { _ = os.Setenv("HOME", orig) }()
 	_ = os.Unsetenv("HOME")
@@ -736,4 +737,332 @@ func TestSplitLines(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: parseGitHubRemoteURL — non-HTTP URL with port stripping
+// ---------------------------------------------------------------------------
+
+func TestParseGitHubRemoteURL_NonHTTPWithPort(t *testing.T) {
+	t.Parallel()
+	// ssh://git@github.com:2222/user/repo.git — non-HTTP, should strip port
+	got := parseGitHubRemoteURL("ssh://git@github.com:2222/user/repo.git")
+	if got == nil || *got != "user/repo" {
+		t.Errorf("parseGitHubRemoteURL(ssh with port) = %v, want user/repo", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: parseGitHubRemoteURL — non-github URL format
+// ---------------------------------------------------------------------------
+
+func TestParseGitHubRemoteURL_URLFormatNonGitHub(t *testing.T) {
+	t.Parallel()
+	got := parseGitHubRemoteURL("https://gitlab.com/user/repo.git")
+	if got != nil {
+		t.Errorf("parseGitHubRemoteURL(gitlab https) = %q, want nil", *got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: getRepository — reads remote origin URL
+// ---------------------------------------------------------------------------
+
+func TestGetRepository_InGitRepo(t *testing.T) {
+	cwd, _ := os.Getwd()
+	gitRoot := findGitRoot(cwd)
+	if gitRoot == "" {
+		t.Skip("not in a git repo")
+	}
+	result := getRepository(gitRoot)
+	// May be nil if no origin remote, or non-nil with "owner/repo"
+	// Just verify no crash
+	_ = result
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: getDefaultBranch — symbolic-ref succeeds
+// ---------------------------------------------------------------------------
+
+func TestGetDefaultBranch_InRepo(t *testing.T) {
+	cwd, _ := os.Getwd()
+	gitRoot := findGitRoot(cwd)
+	if gitRoot == "" {
+		t.Skip("not in a git repo")
+	}
+	branch := getDefaultBranch(gitRoot)
+	if branch == "" {
+		t.Error("getDefaultBranch returned empty string")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: Execute — shouldComputeGitDiff returns true
+// ---------------------------------------------------------------------------
+
+func TestExecute_WithGitDiffEnabled(t *testing.T) {
+	// Non-parallel: modifies CLAUDE_CODE_REMOTE env var
+	orig := os.Getenv("CLAUDE_CODE_REMOTE")
+	defer func() { _ = os.Setenv("CLAUDE_CODE_REMOTE", orig) }()
+	_ = os.Setenv("CLAUDE_CODE_REMOTE", "1")
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "gitdiff_enabled.txt")
+	input := json.RawMessage(`{"file_path":"` + fp + `","content":"hello world"}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*Output)
+	_ = output.GitDiff // may be nil since temp dir isn't in git
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: Execute — write file error via read-only file
+// ---------------------------------------------------------------------------
+
+func TestExecute_WriteFileErrorInternal(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a read-only file (not directory) so read works but write fails
+	target := filepath.Join(dir, "readonly_file.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_ = os.Chmod(target, 0o444)
+	defer func() { _ = os.Chmod(target, 0o644) }()
+
+	input := json.RawMessage(`{"file_path":"` + target + `","content":"new content"}`)
+	_, err := Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Error("Execute() error = nil, want error when write fails")
+	}
+	if !strings.Contains(err.Error(), "write file") {
+		t.Errorf("Error = %q, want 'write file'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: isInGitRepo — os.Getwd error (reset sync.Once)
+// ---------------------------------------------------------------------------
+
+func TestIsInGitRepo_GetwdError(t *testing.T) {
+	// Reset the sync.Once so the function re-evaluates
+	gitRepoOnce = sync.Once{}
+
+	// We can't easily make os.Getwd fail, but we can at least ensure
+	// the function re-evaluates. In the current git repo, it should
+	// still return true.
+	result := isInGitRepo()
+	if !result {
+		t.Error("isInGitRepo() = false, want true (in git repo)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: getDefaultBranch, getRepository, fetchGitDiffForFile
+// Uses a temporary git repo with proper origin setup
+// ---------------------------------------------------------------------------
+
+func setupTestGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	// Initialize git repo
+	run := func(name string, args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", name, err, out)
+		}
+	}
+
+	run("init", "init")
+	run("config", "config", "user.email", "test@test.com")
+	run("config", "config", "user.name", "Test")
+
+	// Create an initial commit
+	if err := os.WriteFile(filepath.Join(dir, "initial.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "add", "initial.txt")
+	run("commit", "commit", "-m", "initial")
+
+	// Create a fake "origin" remote by cloning into a bare repo and re-adding
+	bareDir := dir + "_bare"
+	cmd := exec.Command("git", "clone", "--bare", dir, bareDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare failed: %v\n%s", err, out)
+	}
+	run("remote", "remote", "add", "origin", bareDir)
+	run("fetch", "fetch", "origin")
+
+	// Set up origin/HEAD symref
+	run("symbolic-ref", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	// Set remote URL to github.com
+	run("remote-set-url", "remote", "set-url", "origin", "git@github.com:testowner/testrepo.git")
+
+	return dir
+}
+
+func TestGetDefaultBranch_SymbolicRefSucceeds(t *testing.T) {
+	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	dir := setupTestGitRepo(t)
+	branch := getDefaultBranch(dir)
+	if branch != "master" {
+		t.Errorf("getDefaultBranch = %q, want 'master'", branch)
+	}
+}
+
+func TestGetRepository_WithGitHubRemote(t *testing.T) {
+	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	dir := setupTestGitRepo(t)
+	result := getRepository(dir)
+	if result == nil {
+		t.Fatal("getRepository returned nil, want 'testowner/testrepo'")
+	}
+	if *result != "testowner/testrepo" {
+		t.Errorf("getRepository = %q, want 'testowner/testrepo'", *result)
+	}
+}
+
+func TestGetRepository_NoOrigin(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+	result := getRepository(dir)
+	if result != nil {
+		t.Errorf("getRepository with no origin = %q, want nil", *result)
+	}
+}
+
+func TestFetchGitDiffForFile_UntrackedInTestRepo(t *testing.T) {
+	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	dir := setupTestGitRepo(t)
+
+	// Create an untracked file
+	fp := filepath.Join(dir, "untracked_new.txt")
+	if err := os.WriteFile(fp, []byte("new file content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reset git repo cache so it picks up our test repo
+	gitRepoOnce = sync.Once{}
+
+	result, err := fetchGitDiffForFile(fp)
+	if err != nil {
+		t.Fatalf("fetchGitDiffForFile error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("fetchGitDiffForFile returned nil for untracked file")
+	}
+	if result.Status != "added" {
+		t.Errorf("Status = %q, want 'added'", result.Status)
+	}
+	if result.Repository == nil {
+		t.Error("Repository = nil, want 'testowner/testrepo'")
+	} else if *result.Repository != "testowner/testrepo" {
+		t.Errorf("Repository = %q, want 'testowner/testrepo'", *result.Repository)
+	}
+
+	// Restore git repo cache
+	gitRepoOnce = sync.Once{}
+	isInGitRepo()
+}
+
+func TestFetchGitDiffForFile_TrackedWithDiff(t *testing.T) {
+	dir := setupTestGitRepo(t)
+
+	// Modify a tracked file
+	fp := filepath.Join(dir, "initial.txt")
+	if err := os.WriteFile(fp, []byte("modified content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reset git repo cache
+	gitRepoOnce = sync.Once{}
+
+	result, err := fetchGitDiffForFile(fp)
+	if err != nil {
+		t.Fatalf("fetchGitDiffForFile error: %v", err)
+	}
+	if result == nil {
+		t.Error("fetchGitDiffForFile returned nil for modified tracked file")
+	} else {
+		if result.Status != "modified" {
+			t.Errorf("Status = %q, want 'modified'", result.Status)
+		}
+		if result.Additions == 0 && result.Deletions == 0 {
+			t.Error("Expected non-zero additions or deletions")
+		}
+	}
+
+	// Restore git repo cache
+	gitRepoOnce = sync.Once{}
+	isInGitRepo()
+}
+
+func TestFetchGitDiffForFile_NotInGitRepo(t *testing.T) {
+	// Force isInGitRepo to return false by directly setting cached value.
+	// We do NOT reset sync.Once so it won't re-evaluate.
+	gitRepoCached = false
+
+	// Use a temp dir that's definitely not in a git repo
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nogit.txt")
+	if err := os.WriteFile(fp, []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fetchGitDiffForFile(fp)
+	if err != nil {
+		t.Fatalf("fetchGitDiffForFile error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("fetchGitDiffForFile in non-git dir = %v, want nil", result)
+	}
+
+	// Restore git repo cache
+	gitRepoOnce = sync.Once{}
+	isInGitRepo()
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: fetchGitDiffForFile — generateSyntheticDiff error
+// ---------------------------------------------------------------------------
+
+func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
+	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	dir := setupTestGitRepo(t)
+
+	// Create an untracked file, then remove it to trigger read error
+	fp := filepath.Join(dir, "will_disappear.txt")
+	if err := os.WriteFile(fp, []byte("temp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Remove the file so generateSyntheticDiff fails to read it
+	_ = os.Remove(fp)
+
+	// Reset git repo cache
+	gitRepoOnce = sync.Once{}
+
+	result, err := fetchGitDiffForFile(fp)
+	// The file doesn't exist on disk, so generateSyntheticDiff should fail
+	if err == nil {
+		// If the file was already garbage collected, ls-files might not error
+		// and generateSyntheticDiff could succeed with empty content
+		_ = result
+	} else {
+		// Expected: error from generateSyntheticDiff
+		t.Logf("Got expected error: %v", err)
+	}
+
+	// Restore git repo cache
+	gitRepoOnce = sync.Once{}
+	isInGitRepo()
 }

@@ -2090,7 +2090,7 @@ func TestApp_HandleSubmitRepl_Integration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrettyJSON_MarshalIndentError(t *testing.T) {
-	// After json.Unmarshal into interface{}, values are always basic types
+	// After json.Unmarshal into any, values are always basic types
 	// that MarshalIndent handles. This path is effectively unreachable via
 	// the public API, but we test with extremely deeply nested JSON as a
 	// best-effort attempt. If this doesn't work, the path is dead code.

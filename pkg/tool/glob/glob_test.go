@@ -392,3 +392,38 @@ func TestRenderResult_NoMatches(t *testing.T) {
 		t.Error("RenderResult(no matches) should return non-empty string")
 	}
 }
+
+// RenderResult with non-*Output data covers lines 82-85 in glob.go
+func TestRenderResult_NonOutputData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	// Pass a plain string instead of *glob.Output to trigger the !ok branch
+	result := tt.RenderResult("some random string")
+	if result == "" {
+		t.Error("RenderResult(non-Output) should return non-empty string")
+	}
+	// Should be the JSON-marshaled version of the string
+	if !strings.Contains(result, "some random string") {
+		t.Errorf("RenderResult(non-Output) = %q, should contain input string", result)
+	}
+}
+
+// RenderResult with nil data covers lines 82-85 in glob.go
+func TestRenderResult_NilData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	result := tt.RenderResult(nil)
+	if result == "" {
+		t.Error("RenderResult(nil) should return non-empty string")
+	}
+}
+
+// RenderResult with map data covers lines 82-85 in glob.go
+func TestRenderResult_MapData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	result := tt.RenderResult(map[string]int{"count": 42})
+	if result == "" {
+		t.Error("RenderResult(map) should return non-empty string")
+	}
+}

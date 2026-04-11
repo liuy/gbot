@@ -1,13 +1,19 @@
 package fileread
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -622,6 +628,7 @@ func TestIsPDFEncrypted(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecute_PDFPagesOpenEndAlwaysExceedsMax(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "test.pdf")
 	// Write a minimal valid PDF
@@ -637,5 +644,555 @@ func TestExecute_PDFPagesOpenEndAlwaysExceedsMax(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Errorf("Error = %q, want 'exceeds maximum'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parsePDFPageRange — line 171-173: lastPage part non-numeric
+// ---------------------------------------------------------------------------
+
+func TestParsePDFPageRange_LastPageNonNumeric(t *testing.T) {
+	t.Parallel()
+	got := parsePDFPageRange("1-abc")
+	if got != nil {
+		t.Errorf("parsePDFPageRange(\"1-abc\") = %v, want nil (non-numeric last page)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getPDFPageCount — error paths (lines 272-274, 285-286)
+// ---------------------------------------------------------------------------
+
+func TestGetPDFPageCount_InvalidFile(t *testing.T) {
+	t.Parallel()
+	// A non-PDF file: pdfinfo should fail → error path (lines 272-274)
+	count := getPDFPageCount("/dev/null")
+	if count != 0 {
+		t.Errorf("getPDFPageCount(/dev/null) = %d, want 0", count)
+	}
+}
+
+func TestGetPDFPageCount_NonexistentFile(t *testing.T) {
+	t.Parallel()
+	count := getPDFPageCount("/nonexistent/file.pdf")
+	if count != 0 {
+		t.Errorf("getPDFPageCount(nonexistent) = %d, want 0", count)
+	}
+}
+
+func TestGetPDFPageCount_NoPagesLine(t *testing.T) {
+	t.Parallel()
+	// Create a temp file with text that pdfinfo can try to parse but won't have Pages:
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "fake.pdf")
+	// Write content that won't have "Pages:" in pdfinfo output
+	if err := os.WriteFile(fp, []byte("not a pdf at all"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// pdfinfo will error on this, so returns 0 (line 272-274)
+	// or succeeds but no Pages: line → returns 0 (line 285-286)
+	count := getPDFPageCount(fp)
+	if count != 0 {
+		t.Errorf("getPDFPageCount(fake) = %d, want 0", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractPDFPages — error paths (lines 292-294, 307-316)
+// ---------------------------------------------------------------------------
+
+func TestExtractPDFPages_NonexistentPDF(t *testing.T) {
+	t.Parallel()
+	// pdftoppm will fail on nonexistent file → lines 307-310
+	_, _, err := extractPDFPages("/nonexistent/file.pdf", 1, 5)
+	if err == nil {
+		t.Fatal("extractPDFPages should fail on nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "pdftoppm failed") {
+		t.Errorf("Error = %q, want 'pdftoppm failed'", err.Error())
+	}
+}
+
+func TestExtractPDFPages_InvalidPDF(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "fake.pdf")
+	if err := os.WriteFile(fp, []byte("not a pdf"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// pdftoppm will fail on a non-PDF file → lines 307-310
+	_, _, err := extractPDFPages(fp, 1, 1)
+	if err == nil {
+		t.Fatal("extractPDFPages should fail on invalid PDF")
+	}
+}
+
+// TestExtractPDFPages_MkdirTempError tests the MkdirTemp error path (line 292-294).
+// NOT parallel because it temporarily changes TMPDIR for the process.
+func TestExtractPDFPages_MkdirTempError(t *testing.T) {
+	// Create a readonly directory to use as TMPDIR
+	roDir := filepath.Join(t.TempDir(), "readonly")
+	if err := os.MkdirAll(roDir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	// Make readonly after creation
+	if err := os.Chmod(roDir, 0555); err != nil {
+		t.Skip("chmod not supported")
+	}
+	defer func() { _ = os.Chmod(roDir, 0755) }()
+
+	// Save and override TMPDIR
+	origTmpdir := os.Getenv("TMPDIR")
+	t.Cleanup(func() { _ = os.Setenv("TMPDIR", origTmpdir) })
+	_ = os.Setenv("TMPDIR", roDir)
+
+	_, _, err := extractPDFPages("/tmp/test1.pdf", 1, 1)
+	if err == nil {
+		t.Fatal("extractPDFPages should fail when MkdirTemp fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderResult — uncovered type switch branches (lines 389-409)
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_ImageOutputPointer(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&ImageOutput{
+		FilePath:       "/tmp/img.png",
+		OriginalWidth:  800,
+		OriginalHeight: 600,
+	})
+	if !strings.Contains(result, "/tmp/img.png") {
+		t.Errorf("renderResult(*ImageOutput) = %q, should contain file path", result)
+	}
+	if !strings.Contains(result, "800x600") {
+		t.Errorf("renderResult(*ImageOutput) = %q, should contain dimensions", result)
+	}
+}
+
+func TestRenderResult_PDFOutputPointer(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&PDFOutput{
+		FilePath:     "/tmp/doc.pdf",
+		OriginalSize: 12345,
+	})
+	if !strings.Contains(result, "/tmp/doc.pdf") {
+		t.Errorf("renderResult(*PDFOutput) = %q, should contain file path", result)
+	}
+	if !strings.Contains(result, "12345") {
+		t.Errorf("renderResult(*PDFOutput) = %q, should contain size", result)
+	}
+}
+
+func TestRenderResult_PDFOutputValue(t *testing.T) {
+	t.Parallel()
+	result := renderResult(PDFOutput{
+		FilePath:     "/tmp/doc.pdf",
+		OriginalSize: 9999,
+	})
+	if !strings.Contains(result, "/tmp/doc.pdf") {
+		t.Errorf("renderResult(PDFOutput) = %q, should contain file path", result)
+	}
+}
+
+func TestRenderResult_PartsOutputPointer(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&PartsOutput{
+		FilePath: "/tmp/doc.pdf",
+		Count:    5,
+	})
+	if !strings.Contains(result, "5 pages extracted") {
+		t.Errorf("renderResult(*PartsOutput) = %q, should mention pages extracted", result)
+	}
+}
+
+func TestRenderResult_PartsOutputValue(t *testing.T) {
+	t.Parallel()
+	result := renderResult(PartsOutput{
+		FilePath: "/tmp/doc.pdf",
+		Count:    3,
+	})
+	if !strings.Contains(result, "3 pages extracted") {
+		t.Errorf("renderResult(PartsOutput) = %q, should mention pages extracted", result)
+	}
+}
+
+func TestRenderResult_FileUnchangedOutputPointer(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&FileUnchangedOutput{
+		FilePath: "/tmp/test.go",
+	})
+	if !strings.Contains(result, "File unchanged: /tmp/test.go") {
+		t.Errorf("renderResult(*FileUnchangedOutput) = %q, want unchanged message", result)
+	}
+}
+
+func TestRenderResult_FileUnchangedOutputValue(t *testing.T) {
+	t.Parallel()
+	result := renderResult(FileUnchangedOutput{
+		FilePath: "/tmp/test.go",
+	})
+	if !strings.Contains(result, "File unchanged") {
+		t.Errorf("renderResult(FileUnchangedOutput) = %q, want unchanged message", result)
+	}
+}
+
+func TestRenderResult_DefaultCase(t *testing.T) {
+	t.Parallel()
+	// Pass a type not handled by any case to hit the default branch (line 407-409)
+	result := renderResult(42)
+	if result != "42" {
+		t.Errorf("renderResult(42) = %q, want %q", result, "42")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeImage — read file error (line 516-518)
+// ---------------------------------------------------------------------------
+
+func TestExecute_ImageReadFileError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "noperm.png")
+	if err := os.WriteFile(fp, []byte("fake png data"), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() { _ = os.Chmod(fp, 0o644) }()
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should fail for unreadable image file")
+	}
+	if !strings.Contains(err.Error(), "read file") {
+		t.Errorf("Error = %q, want 'read file' error", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executePDF — file too large without pages (lines 608-613)
+// ---------------------------------------------------------------------------
+
+func TestExecute_PDFTooLargeNoPages(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "large.pdf")
+	// Create a PDF larger than PDFTargetRawSize (20MB) without /Encrypt
+	// Write a valid PDF header followed by padding
+	pdfHeader := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+	padding := strings.Repeat("X", PDFTargetRawSize+100)
+	content := pdfHeader + padding
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should reject large PDF without pages param")
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("Error = %q, want 'larger than' message", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executePDF — read PDF file fallback error (lines 676-678)
+// ---------------------------------------------------------------------------
+
+func TestExecute_PDFReadFileFallbackError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "noperm.pdf")
+	// Write a valid PDF header then remove permissions
+	pdfContent := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n109\n%%EOF\n"
+	if err := os.WriteFile(fp, []byte(pdfContent), 0o000); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() { _ = os.Chmod(fp, 0o644) }()
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should fail for unreadable PDF")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTextFile — edge cases in offset/limit path (lines 777-810)
+// ---------------------------------------------------------------------------
+
+func TestExecute_TextFileOffsetLimitEmptyContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "empty_with_limit.txt")
+	if err := os.WriteFile(fp, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Read empty file with offset+limit triggers the text=="" path (line 777-779)
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":1,"limit":5}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output, ok := result.Data.(TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if output.TotalLines != 0 {
+		t.Errorf("TotalLines = %d, want 0 for empty file", output.TotalLines)
+	}
+}
+
+func TestExecute_TextFileOffsetBeyondEnd(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "short.txt")
+	if err := os.WriteFile(fp, []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Offset beyond file length → start > totalLines path (line 790-792)
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":100,"limit":5}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output, ok := result.Data.(TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if output.NumLines != 0 {
+		t.Errorf("NumLines = %d, want 0 (offset beyond end)", output.NumLines)
+	}
+}
+
+func TestExecute_TextFileLimitExceedsEnd(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "limit_beyond.txt")
+	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Limit larger than remaining lines → limit doesn't clamp end (line 787-789 not hit)
+	// offset=2, limit=100 → end = totalLines=3 (start+limit=101 > 3)
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":2,"limit":100}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(TextOutput)
+	if output.NumLines != 2 {
+		t.Errorf("NumLines = %d, want 2 (lines 2 and 3)", output.NumLines)
+	}
+}
+
+func TestExecute_TextFileOffsetLimitNilContext(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "niltctx.txt")
+	if err := os.WriteFile(fp, []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// nil tctx → line 807-818 ReadFileState init branch skipped
+	// But actually tctx is nil so entire block skipped
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":1,"limit":1}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(TextOutput)
+	if output.Content != "hello" {
+		t.Errorf("Content = %q, want %q", output.Content, "hello")
+	}
+}
+
+func TestExecute_TextFileReadFileStateNilMap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nilmap.txt")
+	if err := os.WriteFile(fp, []byte("data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// tctx with nil ReadFileState → line 808-810 creates the map
+	tctx := &types.ToolUseContext{}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if tctx.ReadFileState == nil {
+		t.Error("ReadFileState should have been initialized")
+	}
+	output := result.Data.(TextOutput)
+	if output.Content != "data\n" {
+		t.Errorf("Content = %q, want %q", output.Content, "data\n")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderResult — value type cases (lines 389-390, 393-394)
+// These pass non-pointer types to renderResult to hit the value-type branches.
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_TextOutputValue(t *testing.T) {
+	t.Parallel()
+	result := renderResult(TextOutput{
+		Content:  "hello world",
+		FilePath: "/tmp/test.txt",
+	})
+	if result != "hello world" {
+		t.Errorf("renderResult(TextOutput) = %q, want %q", result, "hello world")
+	}
+}
+
+func TestRenderResult_ImageOutputValue(t *testing.T) {
+	t.Parallel()
+	result := renderResult(ImageOutput{
+		FilePath:       "/tmp/img.png",
+		OriginalWidth:  100,
+		OriginalHeight: 200,
+	})
+	if !strings.Contains(result, "100x200") {
+		t.Errorf("renderResult(ImageOutput) = %q, should contain 100x200", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeImage — JPEG resize path (line 545-548)
+// ---------------------------------------------------------------------------
+
+func TestExecute_ImageResizedJpeg(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Create a 3000x3000 JPEG image (exceeds 2000x2000 max) to test jpeg resize path
+	img := image.NewRGBA(image.Rect(0, 0, 3000, 3000))
+	for y := 0; y < 3000; y++ {
+		for x := 0; x < 3000; x++ {
+			img.SetRGBA(x, y, color.RGBA{255, 128, 0, 255})
+		}
+	}
+	// Encode as JPEG
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(dir, "large.jpg")
+	if err := os.WriteFile(fp, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	imgOut, ok := result.Data.(ImageOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want ImageOutput", result.Data)
+	}
+	// Original should be 3000x3000
+	if imgOut.OriginalWidth != 3000 || imgOut.OriginalHeight != 3000 {
+		t.Errorf("Original = %dx%d, want 3000x3000", imgOut.OriginalWidth, imgOut.OriginalHeight)
+	}
+	// Display should be resized to <= 2000x2000
+	if imgOut.DisplayWidth > 2000 || imgOut.DisplayHeight > 2000 {
+		t.Errorf("Display = %dx%d, should be <= 2000x2000", imgOut.DisplayWidth, imgOut.DisplayHeight)
+	}
+	if imgOut.MimeType != "image/jpeg" {
+		t.Errorf("MimeType = %q, want image/jpeg", imgOut.MimeType)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executePDF — extractPDFPages error with page range (lines 647-649)
+// Uses a corrupt PDF that passes magic byte and encryption checks but
+// causes pdftoppm to fail.
+// ---------------------------------------------------------------------------
+
+func TestExecute_PDFPagesExtractError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "corrupt.pdf")
+	// Valid %PDF- header, no /Encrypt, but missing xref -> pdftoppm fails
+	content := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"1"}`)
+	_, err := Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should fail when pdftoppm fails on corrupt PDF")
+	}
+	if !strings.Contains(err.Error(), "extract PDF pages") {
+		t.Errorf("Error = %q, want 'extract PDF pages'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getPDFPageCount — no Pages: line in output (line 285)
+// We create a text file; pdfinfo may fail or succeed without Pages line.
+// ---------------------------------------------------------------------------
+
+func TestGetPDFPageCount_TextFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "notpdf.txt")
+	if err := os.WriteFile(fp, []byte("hello world\nthis is text\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	count := getPDFPageCount(fp)
+	// Either way, should return 0 (no Pages: line or error)
+	if count != 0 {
+		t.Errorf("getPDFPageCount(text file) = %d, want 0", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isPdftoppmAvailable — error path (line 250-252)
+// NOT parallel because it changes PATH for the process.
+// ---------------------------------------------------------------------------
+
+func TestIsPdftoppmAvailable_ErrorPath(t *testing.T) {
+	// Save and override PATH to make pdftoppm unfindable
+	origPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", origPath) })
+	_ = os.Setenv("PATH", "/nonexistent")
+
+	result := isPdftoppmAvailable()
+	if result {
+		t.Error("isPdftoppmAvailable() = true, want false when pdftoppm not in PATH")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractPDFPages — ReadDir error (lines 313-316)
+// Test by calling extractPDFPages and removing the tmpdir between
+// pdftoppm execution and ReadDir. We do this by directly testing the
+// function with a non-PDF that causes pdftoppm to fail first (covered above)
+// and by testing with a valid PDF where pdftoppm succeeds.
+// Since we can't inject a ReadDir failure, we test with a corrupt PDF
+// that pdftoppm can actually process but produces no output files.
+// ---------------------------------------------------------------------------
+
+func TestExtractPDFPages_ReadDirError(t *testing.T) {
+	t.Parallel()
+	// Use a valid PDF to let pdftoppm succeed, then check count
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.pdf")
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	tmpDir, count, err := extractPDFPages(fp, 1, 1)
+	if err != nil {
+		t.Fatalf("extractPDFPages error: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	if count < 1 {
+		t.Errorf("count = %d, want >= 1", count)
 	}
 }

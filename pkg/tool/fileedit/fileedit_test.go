@@ -713,3 +713,105 @@ func TestExecute_StructuredPatchOutput(t *testing.T) {
 		t.Error("StructuredPatch is empty, want at least one hunk")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cover fileedit.go:109-111 — relative path with WorkingDir
+// ---------------------------------------------------------------------------
+
+func TestExecute_RelativePathWithWorkingDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "rel.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a relative path "rel.txt" with WorkingDir set to dir
+	info, _ := os.Stat(fp)
+	tctx := &types.ToolUseContext{
+		WorkingDir: dir,
+		ReadFileState: map[string]types.FileState{
+			fp: {
+				Content:   "hello world\n",
+				Timestamp: info.ModTime().UnixMilli(),
+			},
+		},
+	}
+	input := json.RawMessage(`{"file_path":"rel.txt","old_string":"hello","new_string":"goodbye"}`)
+	result, err := fileedit.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	data, _ := os.ReadFile(fp)
+	if !strings.Contains(string(data), "goodbye") {
+		t.Errorf("File content = %q, should contain 'goodbye'", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cover fileedit.go:291-297 — expandPath with ~/ prefix
+// ---------------------------------------------------------------------------
+
+func TestExecute_TildePathExpansion(t *testing.T) {
+	t.Parallel()
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+
+	// Create a temp file directly under HOME so ~/ expansion resolves to it
+	fp := filepath.Join(home, ".gbot_test_tilde_expand.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	defer func() { _ = os.Remove(fp) }()
+
+	tildePath := "~/.gbot_test_tilde_expand.txt"
+
+	input := json.RawMessage(`{"file_path":"` + tildePath + `","old_string":"hello","new_string":"expanded"}`)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	data, _ := os.ReadFile(fp)
+	if !strings.Contains(string(data), "expanded") {
+		t.Errorf("File content = %q, should contain 'expanded'", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cover fileedit.go:296-297 — expandPath with ~/ but HOME empty
+// ---------------------------------------------------------------------------
+
+func TestExecute_TildePathWithNoHome(t *testing.T) {
+	// Save and clear HOME (no t.Parallel — env var is process-global)
+	origHome := os.Getenv("HOME")
+	_ = os.Unsetenv("HOME")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nohome.txt")
+	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// With HOME unset, ~/foo falls back to filepath.Abs which resolves
+	// relative to CWD. We need to give an absolute path disguised with ~
+	// but since HOME is unset, expandPath will call filepath.Abs("~/nohome.txt")
+	// which won't resolve correctly. The test just needs to exercise the fallback
+	// path. We can't make it succeed (the file won't be found), but we can
+	// verify the error path is hit.
+	input := json.RawMessage(`{"file_path":"~/nonexistent_no_home.txt","old_string":"hello","new_string":"world"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should fail when ~ expansion fails")
+	}
+}

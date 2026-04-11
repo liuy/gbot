@@ -849,3 +849,51 @@ func TestRenderResult_CountMode(t *testing.T) {
 		t.Errorf("RenderResult(count mode) = %q, should contain match count", result)
 	}
 }
+
+// RenderResult with non-*Output data covers lines 167-170 in grep.go
+func TestRenderResult_NonOutputData(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	result := tt.RenderResult("some plain string")
+	if result == "" {
+		t.Error("RenderResult(non-Output) should return non-empty string")
+	}
+}
+
+// RenderResult with nil data covers lines 167-170 in grep.go
+func TestRenderResult_NilData(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	result := tt.RenderResult(nil)
+	if result == "" {
+		t.Error("RenderResult(nil) should return non-empty string")
+	}
+}
+
+// RenderResult files_with_matches with empty filenames covers line 175-177
+func TestRenderResult_FilesWithMatchesEmpty(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	output := &grep.Output{
+		Mode:      "files_with_matches",
+		NumFiles:  0,
+		Filenames: []string{},
+	}
+	result := tt.RenderResult(output)
+	if result != "No files matched" {
+		t.Errorf("RenderResult(empty files_with_matches) = %q, want %q", result, "No files matched")
+	}
+}
+
+// RenderResult with unknown mode covers lines 181-183
+func TestRenderResult_UnknownMode(t *testing.T) {
+	t.Parallel()
+	tt := grep.New()
+	output := &grep.Output{
+		Mode: "unknown_mode",
+	}
+	result := tt.RenderResult(output)
+	if result == "" {
+		t.Error("RenderResult(unknown mode) should return non-empty string")
+	}
+}

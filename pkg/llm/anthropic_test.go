@@ -1208,6 +1208,62 @@ func TestComplete_InvalidURL(t *testing.T) {
 	}
 }
 
+func TestComplete_MarshalError(t *testing.T) {
+	t.Parallel()
+	// Trigger json.Marshal error by passing invalid json.RawMessage in System field.
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: "http://127.0.0.1:0",
+		Model:   "test-model",
+		Timeout: 1 * time.Second,
+	})
+
+	ctx := context.Background()
+	_, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		System:    json.RawMessage{0xff}, // invalid JSON triggers marshal error
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("expected error from marshal failure")
+	}
+	if !strings.Contains(err.Error(), "marshal request") {
+		t.Errorf("expected 'marshal request' in error, got: %v", err)
+	}
+}
+
+func TestStream_MarshalError(t *testing.T) {
+	t.Parallel()
+	// Trigger json.Marshal error by passing invalid json.RawMessage in System field.
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: "http://127.0.0.1:0",
+		Model:   "test-model",
+		Timeout: 1 * time.Second,
+	})
+
+	ctx := context.Background()
+	_, err := p.Stream(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		System:    json.RawMessage{0xff}, // invalid JSON triggers marshal error
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("test")}},
+		},
+	})
+
+	if err == nil {
+		t.Fatal("expected error from marshal failure")
+	}
+	if !strings.Contains(err.Error(), "marshal request") {
+		t.Errorf("expected 'marshal request' in error, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Stream — additional error path tests
 // ---------------------------------------------------------------------------

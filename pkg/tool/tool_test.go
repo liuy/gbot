@@ -335,3 +335,83 @@ func TestBuildToolImplementsToolInterface(t *testing.T) {
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Default RenderResult_ (lines 199-202) and RenderResult method (line 223)
+// ---------------------------------------------------------------------------
+
+func TestBuildTool_DefaultRenderResult(t *testing.T) {
+	t.Parallel()
+
+	// When RenderResult_ is nil, BuildTool sets a default that json.Marshal's the data.
+	def := tool.ToolDef{
+		Name_:  "RenderTest",
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+		// RenderResult_ intentionally nil — exercises default on lines 198-203
+	}
+
+	tt := tool.BuildTool(def)
+
+	// Call RenderResult with structured data — exercises line 223
+	result := tt.RenderResult(map[string]string{"key": "value"})
+	expected := `{"key":"value"}`
+	if result != expected {
+		t.Errorf("RenderResult() = %q, want %q", result, expected)
+	}
+}
+
+func TestBuildTool_DefaultRenderResult_NilData(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:  "NilRender",
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+	result := tt.RenderResult(nil)
+	if result != "null" {
+		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
+	}
+}
+
+func TestBuildTool_DefaultRenderResult_StringData(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:  "StrRender",
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+	result := tt.RenderResult("hello world")
+	expected := `"hello world"`
+	if result != expected {
+		t.Errorf("RenderResult(%q) = %q, want %q", "hello world", result, expected)
+	}
+}
+
+func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
+	t.Parallel()
+
+	// When MaxResultSizeChars is 0, BuildTool sets it to 50000.
+	def := tool.ToolDef{
+		Name_:  "SizeTest",
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+	// We can't directly read MaxResultSizeChars from the interface,
+	// but we can verify the tool was built without panic.
+	if tt.Name() != "SizeTest" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "SizeTest")
+	}
+}

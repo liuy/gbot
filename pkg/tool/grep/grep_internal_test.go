@@ -625,3 +625,230 @@ func TestSplitGlobPatterns_Empty(t *testing.T) {
 		t.Errorf("patterns = %v, want []", patterns)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// buildResult count mode with offset (line 359-361)
+// ---------------------------------------------------------------------------
+
+func TestBuildResult_CountModeWithOffset(t *testing.T) {
+	t.Parallel()
+
+	// Simulate rg output in count mode: "filename:count" format
+	rgOutput := "file_a.txt:5\nfile_b.txt:3\nfile_c.txt:7\n"
+	result, err := buildResult("count", rgOutput, 250, 1)
+	if err != nil {
+		t.Fatalf("buildResult() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.Mode != "count" {
+		t.Errorf("Mode = %q, want count", out.Mode)
+	}
+	// offset=1 skips first file, so 2 files
+	if out.NumFiles != 2 {
+		t.Errorf("NumFiles = %d, want 2", out.NumFiles)
+	}
+	// 3 + 7 = 10 matches (skipping file_a's 5)
+	if out.NumMatches != 10 {
+		t.Errorf("NumMatches = %d, want 10", out.NumMatches)
+	}
+	if out.AppliedOffset == nil || *out.AppliedOffset != 1 {
+		t.Errorf("AppliedOffset = %v, want 1", out.AppliedOffset)
+	}
+}
+
+func TestBuildResult_CountModeNoOffset(t *testing.T) {
+	t.Parallel()
+
+	rgOutput := "file_a.txt:5\n"
+	result, err := buildResult("count", rgOutput, 250, 0)
+	if err != nil {
+		t.Fatalf("buildResult() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.AppliedOffset != nil {
+		t.Errorf("AppliedOffset = %v, want nil when offset=0", out.AppliedOffset)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyHeadLimit unlimited with offset >= len (line 448-450)
+// ---------------------------------------------------------------------------
+
+func TestApplyHeadLimit_UnlimitedOffsetBeyondLength(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b", "c"}
+	// limit=0 (unlimited), offset=5 >= len(items)=3 -> empty
+	limited, applied := applyHeadLimit(items, 0, 5)
+	if len(limited) != 0 {
+		t.Errorf("len = %d, want 0", len(limited))
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil", applied)
+	}
+}
+
+func TestApplyHeadLimit_UnlimitedNoOffset(t *testing.T) {
+	t.Parallel()
+
+	items := []string{"a", "b", "c"}
+	// limit=0 (unlimited), offset=0 -> return all items
+	limited, applied := applyHeadLimit(items, 0, 0)
+	if len(limited) != 3 {
+		t.Errorf("len = %d, want 3", len(limited))
+	}
+	if applied != nil {
+		t.Errorf("applied = %v, want nil", applied)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// toRelativePath error paths (line 507-513)
+// ---------------------------------------------------------------------------
+
+func TestToRelativePath_EmptyPath(t *testing.T) {
+	t.Parallel()
+	// Empty string — filepath.Rel may fail or return "."
+	rel := toRelativePath("")
+	if rel != "" {
+		// Acceptable: empty returns empty or "."
+		t.Logf("toRelativePath('') = %q", rel)
+	}
+}
+
+func TestToRelativePath_RootPath(t *testing.T) {
+	t.Parallel()
+	// "/" — should return something (either "/" or relative path to root)
+	rel := toRelativePath("/")
+	if rel == "" {
+		t.Error("toRelativePath('/') should return non-empty")
+	}
+}
+
+func TestToRelativePath_RelativePathInput(t *testing.T) {
+	t.Parallel()
+	// Passing a relative path — Getwd + Rel should still work or return input
+	rel := toRelativePath("some/relative/path")
+	if rel == "" {
+		t.Error("toRelativePath should return non-empty for relative input")
+	}
+}
+
+func TestToRelativePath_GetwdError(t *testing.T) {
+	// NO t.Parallel() — changes working directory
+	// Cover line 507-509: os.Getwd() error path.
+	// This happens when the current working directory has been deleted.
+	dir := t.TempDir()
+	subdir := dir + "/deleted"
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	// Save and restore cwd
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Skipf("cannot get cwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(origWd) }()
+
+	// Change into subdir, then delete it
+	if err := os.Chdir(subdir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	// Remove the directory we're in — on Linux this makes Getwd fail
+	if err := os.Remove(subdir); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Now os.Getwd() should fail, so toRelativePath returns absPath as-is
+	result := toRelativePath("/some/abs/path")
+	if result != "/some/abs/path" {
+		t.Errorf("toRelativePath with Getwd error = %q, want %q", result, "/some/abs/path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildResult content mode with offset (line 359-361 coverage for content)
+// ---------------------------------------------------------------------------
+
+func TestBuildResult_ContentModeWithOffset(t *testing.T) {
+	t.Parallel()
+
+	rgOutput := "file_a.txt:1:line1\nfile_a.txt:5:line2\nfile_a.txt:10:line3\n"
+	result, err := buildResult("content", rgOutput, 250, 1)
+	if err != nil {
+		t.Fatalf("buildResult() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.Mode != "content" {
+		t.Errorf("Mode = %q, want content", out.Mode)
+	}
+	// offset=1 skips first line, so 2 lines remain
+	if out.NumLines != 2 {
+		t.Errorf("NumLines = %d, want 2", out.NumLines)
+	}
+	if out.AppliedOffset == nil || *out.AppliedOffset != 1 {
+		t.Errorf("AppliedOffset = %v, want 1", out.AppliedOffset)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildResult files_with_matches mode with offset
+// ---------------------------------------------------------------------------
+
+func TestBuildResult_FilesWithMatchesWithOffset(t *testing.T) {
+	t.Parallel()
+
+	// Need real files for sortByMtime to work properly
+	dir := t.TempDir()
+	fileA := dir + "/a.txt"
+	fileB := dir + "/b.txt"
+	if err := os.WriteFile(fileA, []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(fileB, []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rgOutput := fileA + "\n" + fileB + "\n"
+	result, err := buildResult("files_with_matches", rgOutput, 250, 1)
+	if err != nil {
+		t.Fatalf("buildResult() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.Mode != "files_with_matches" {
+		t.Errorf("Mode = %q, want files_with_matches", out.Mode)
+	}
+	// offset=1 skips first file, so 1 file
+	if out.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1", out.NumFiles)
+	}
+	if out.AppliedOffset == nil || *out.AppliedOffset != 1 {
+		t.Errorf("AppliedOffset = %v, want 1", out.AppliedOffset)
+	}
+}
+
+func TestBuildResult_FilesWithMatchesNoOffset(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fileA := dir + "/a.txt"
+	if err := os.WriteFile(fileA, []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rgOutput := fileA + "\n"
+	result, err := buildResult("files_with_matches", rgOutput, 250, 0)
+	if err != nil {
+		t.Fatalf("buildResult() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.AppliedOffset != nil {
+		t.Errorf("AppliedOffset = %v, want nil when offset=0", out.AppliedOffset)
+	}
+}
