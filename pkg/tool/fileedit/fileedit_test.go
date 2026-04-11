@@ -815,3 +815,107 @@ func TestExecute_TildePathWithNoHome(t *testing.T) {
 		t.Fatal("Execute() should fail when ~ expansion fails")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RenderResult
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_WithPatch(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	original := "line1\nline2\nline3\n"
+	out := &fileedit.Output{
+		FilePath:   "/tmp/test.txt",
+		OldString:  "line2",
+		NewString:  "replaced",
+		ReplaceAll: false,
+		OriginalFile: &original,
+		StructuredPatch: []fileedit.PatchHunk{
+			{
+				OldStart: 1, OldLines: 3, NewStart: 1, NewLines: 3,
+				Lines: []string{" line1", "-line2", "+replaced", " line3"},
+			},
+		},
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Added") || !strings.Contains(got, "removed") {
+		t.Errorf("expected summary with Added/removed, got: %q", got)
+	}
+}
+
+func TestRenderResult_AdditionsOnly(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	original := "line1\n"
+	out := &fileedit.Output{
+		FilePath:   "/tmp/test.txt",
+		OldString:  "line1",
+		NewString:  "line1\nline2",
+		ReplaceAll: false,
+		OriginalFile: &original,
+		StructuredPatch: []fileedit.PatchHunk{
+			{
+				OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 2,
+				Lines: []string{" line1", "+line2"},
+			},
+		},
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Added") {
+		t.Errorf("expected 'Added', got: %q", got)
+	}
+	if strings.Contains(got, "removed") {
+		t.Errorf("should not contain 'removed' for additions-only, got: %q", got)
+	}
+}
+
+func TestRenderResult_RemovalsOnly(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	original := "line1\nline2\n"
+	out := &fileedit.Output{
+		FilePath:   "/tmp/test.txt",
+		OldString:  "line2",
+		NewString:  "",
+		ReplaceAll: false,
+		OriginalFile: &original,
+		StructuredPatch: []fileedit.PatchHunk{
+			{
+				OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 1,
+				Lines: []string{" line1", "-line2"},
+			},
+		},
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Removed") {
+		t.Errorf("expected 'Removed', got: %q", got)
+	}
+	if strings.Contains(got, "Added") {
+		t.Errorf("should not contain 'Added' for removals-only, got: %q", got)
+	}
+}
+
+func TestRenderResult_NoPatch(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	out := &fileedit.Output{
+		FilePath:        "/tmp/test.txt",
+		OldString:       "old",
+		NewString:       "new",
+		ReplaceAll:      false,
+		StructuredPatch: nil,
+	}
+	got := tt.RenderResult(out)
+	if got != "" {
+		t.Errorf("expected empty for no patch, got: %q", got)
+	}
+}
+
+func TestRenderResult_NonOutputData(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	got := tt.RenderResult(42)
+	if !strings.Contains(got, "42") {
+		t.Errorf("expected fallback string representation, got: %q", got)
+	}
+}

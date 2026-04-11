@@ -108,6 +108,84 @@ func TestGetStructuredPatch_SimpleChange(t *testing.T) {
 	}
 }
 
+func TestGetStructuredPatch_ContextLines(t *testing.T) {
+	t.Parallel()
+
+	// 7-line file, change line4 → "modified"
+	old := "line1\nline2\nline3\nline4\nline5\nline6\nline7\n"
+	new_ := "line1\nline2\nline3\nmodified\nline5\nline6\nline7\n"
+	result := getStructuredPatch(old, new_)
+	if len(result) == 0 {
+		t.Fatal("getStructuredPatch returned empty, want at least one hunk")
+	}
+	hunk := result[0]
+
+	// Hunk should contain context lines before and after the change
+	hasLeadingCtx := false
+	hasTrailingCtx := false
+	for _, l := range hunk.Lines {
+		if l == " line3" {
+			hasLeadingCtx = true
+		}
+		if l == " line5" {
+			hasTrailingCtx = true
+		}
+	}
+	if !hasLeadingCtx {
+		t.Error("hunk missing leading context line ' line3'")
+	}
+	if !hasTrailingCtx {
+		t.Error("hunk missing trailing context line ' line5'")
+	}
+
+	// Verify change lines are present
+	foundDel := false
+	foundIns := false
+	for _, l := range hunk.Lines {
+		if l == "-line4" {
+			foundDel = true
+		}
+		if l == "+modified" {
+			foundIns = true
+		}
+	}
+	if !foundDel {
+		t.Error("hunk missing '-line4'")
+	}
+	if !foundIns {
+		t.Error("hunk missing '+modified'")
+	}
+}
+
+func TestGetStructuredPatch_TwoChangesMergedHunk(t *testing.T) {
+	t.Parallel()
+
+	// Two changes close together — use unrelated strings to force whole-line diffs
+	old := "aaa\nbbb\nccc\nddd\neee\nfff\nggg\nhhh\niii\n"
+	new_ := "aaa\nBBB\nccc\nddd\neee\nfff\nGGG\nhhh\niii\n"
+	result := getStructuredPatch(old, new_)
+	if len(result) == 0 {
+		t.Fatal("getStructuredPatch returned empty")
+	}
+	// Close changes should produce a single merged hunk (or at most 2)
+	if len(result) > 2 {
+		t.Errorf("got %d hunks, expected at most 2 for close changes", len(result))
+	}
+	// Verify both changes are present across all hunks
+	allLines := ""
+	for _, h := range result {
+		for _, l := range h.Lines {
+			allLines += l + "\n"
+		}
+	}
+	if !strings.Contains(allLines, "-bbb") || !strings.Contains(allLines, "+BBB") {
+		t.Error("missing first change (bbb→BBB)")
+	}
+	if !strings.Contains(allLines, "-ggg") || !strings.Contains(allLines, "+GGG") {
+		t.Error("missing second change (ggg→GGG)")
+	}
+}
+
 func TestGetStructuredPatch_EmptyOld(t *testing.T) {
 	t.Parallel()
 

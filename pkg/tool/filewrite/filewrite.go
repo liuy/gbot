@@ -332,6 +332,52 @@ type Output struct {
 	GitDiff         *GitDiff              `json:"gitDiff,omitempty"`
 }
 
+// renderWriteResult converts Write tool output to a human-readable string for TUI.
+// Source: FileWriteTool/UI.tsx — renderToolResultMessage
+func renderWriteResult(data any) string {
+	out, ok := data.(*Output)
+	if !ok {
+		return fmt.Sprintf("%v", data)
+	}
+
+	if out.Type == WriteTypeCreate {
+		numLines := tool.CountLines(out.Content)
+		summary := fmt.Sprintf("Wrote %d lines to %s", numLines, out.FilePath)
+		if out.Content == "" {
+			return summary
+		}
+		return summary + "\n" + strings.TrimRight(out.Content, "\n")
+	}
+
+	// Update: summary + structured diff
+	hunks := convertHunks(out.StructuredPatch)
+	added, removed := tool.CountPatchChanges(hunks)
+	summary := tool.FormatDiffSummary(added, removed)
+	diff := tool.RenderDiff(hunks)
+	if diff == "" {
+		return summary
+	}
+	return summary + "\n" + diff
+}
+
+// convertHunks converts filewrite-specific hunks to tool.DiffHunk.
+func convertHunks(hunks []StructuredPatchHunk) []tool.DiffHunk {
+	if len(hunks) == 0 {
+		return nil
+	}
+	result := make([]tool.DiffHunk, len(hunks))
+	for i, h := range hunks {
+		result[i] = tool.DiffHunk{
+			OldStart: h.OldStart,
+			OldLines: h.OldLines,
+			NewStart: h.NewStart,
+			NewLines: h.NewLines,
+			Lines:    h.Lines,
+		}
+	}
+	return result
+}
+
 // New creates the FileWrite tool.
 // Source: tools/FileWriteTool/FileWriteTool.ts
 func New() tool.Tool {
@@ -373,6 +419,7 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: "Write content to files. Creates parent directories if they do not exist. Overwrites existing files.",
+		RenderResult_: renderWriteResult,
 	})
 }
 
@@ -424,52 +471,97 @@ func splitLines(text string) []string {
 }
 
 // getStructuredPatch computes structured unified diff hunks between old and new content.
-// Source: FileWriteTool.ts — getPatchFromContents() + utils/diff.ts.
+// Each hunk includes up to ctxLines lines of leading/trailing context.
+// Source: diff npm package structuredPatch with context=3.
 func getStructuredPatch(oldContent, newContent string) []StructuredPatchHunk {
+	// Use line-level diff (equivalent to diff npm's diffLines + structuredPatch).
+	// Falls back to diffmatchpatch if content is too large.
+	hunks := tool.ComputePatch(oldContent, newContent)
+	if hunks != nil {
+		result := make([]StructuredPatchHunk, len(hunks))
+		for i, h := range hunks {
+			result[i] = StructuredPatchHunk{
+				OldStart: h.OldStart,
+				OldLines: h.OldLines,
+				NewStart: h.NewStart,
+				NewLines: h.NewLines,
+				Lines:    h.Lines,
+			}
+		}
+		return result
+	}
+
+	// Fallback for very large files: use diffmatchpatch character-level diff.
+	const ctxLines = 3
+
 	dmp := diffmatchpatch.New()
 	diffs := dmp.DiffMain(oldContent, newContent, true)
 	diffs = dmp.DiffCleanupSemantic(diffs)
 
-	var hunks []StructuredPatchHunk
+	var patchHunks []StructuredPatchHunk
 	var hunkLines []string
 	var oldLineNum, newLineNum int
 
-	flushHunk := func() {
-		if len(hunkLines) == 0 {
-			return
-		}
-		// Only emit a hunk if it contains at least one change.
-		hasChange := false
+	hasChanges := func() bool {
 		for _, l := range hunkLines {
-			if l[0] == '-' || l[0] == '+' {
-				hasChange = true
+			if len(l) > 0 && (l[0] == '-' || l[0] == '+') {
+				return true
+			}
+		}
+		return false
+	}
+
+	trailingCtx := func() int {
+		n := 0
+		for i := len(hunkLines) - 1; i >= 0; i-- {
+			if len(hunkLines[i]) > 0 && hunkLines[i][0] == ' ' {
+				n++
+			} else {
 				break
 			}
 		}
-		if !hasChange {
-			hunkLines = nil
+		return n
+	}
+
+	emit := func() {
+		if len(hunkLines) == 0 || !hasChanges() {
 			return
 		}
+		if tc := trailingCtx(); tc > ctxLines {
+			hunkLines = hunkLines[:len(hunkLines)-(tc-ctxLines)]
+		}
+		linesCopy := make([]string, len(hunkLines))
+		copy(linesCopy, hunkLines)
 		var oldCnt, newCnt int
-		for _, l := range hunkLines {
+		for _, l := range linesCopy {
 			switch l[0] {
 			case '-':
 				oldCnt++
 			case '+':
 				newCnt++
-			default: // ' ' context lines
+			default:
 				oldCnt++
 				newCnt++
 			}
 		}
-		hunks = append(hunks, StructuredPatchHunk{
+		patchHunks = append(patchHunks, StructuredPatchHunk{
 			OldStart: oldLineNum - oldCnt + 1,
 			OldLines: oldCnt,
 			NewStart: newLineNum - newCnt + 1,
 			NewLines: newCnt,
-			Lines:    hunkLines,
+			Lines:    linesCopy,
 		})
-		hunkLines = nil
+		tc := trailingCtx()
+		if tc > ctxLines {
+			tc = ctxLines
+		}
+		if tc > 0 {
+			saved := make([]string, tc)
+			copy(saved, hunkLines[len(hunkLines)-tc:])
+			hunkLines = saved
+		} else {
+			hunkLines = nil
+		}
 	}
 
 	for _, d := range diffs {
@@ -477,28 +569,33 @@ func getStructuredPatch(oldContent, newContent string) []StructuredPatchHunk {
 		switch d.Type {
 		case diffmatchpatch.DiffEqual:
 			for _, line := range lines {
-				flushHunk()
 				hunkLines = append(hunkLines, " "+line)
+				if hasChanges() {
+					if trailingCtx() >= ctxLines {
+						emit()
+					}
+				} else {
+					if len(hunkLines) > ctxLines {
+						hunkLines = hunkLines[len(hunkLines)-ctxLines:]
+					}
+				}
 				oldLineNum++
 				newLineNum++
 			}
 		case diffmatchpatch.DiffDelete:
 			for _, line := range lines {
-				flushHunk()
 				hunkLines = append(hunkLines, "-"+line)
 				oldLineNum++
 			}
 		case diffmatchpatch.DiffInsert:
 			for _, line := range lines {
-				flushHunk()
 				hunkLines = append(hunkLines, "+"+line)
 				newLineNum++
 			}
 		}
 	}
-
-	flushHunk()
-	return hunks
+	emit()
+	return patchHunks
 }
 
 // Execute writes content to a file.

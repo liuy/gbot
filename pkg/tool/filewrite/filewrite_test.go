@@ -3,6 +3,7 @@ package filewrite_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -733,5 +734,117 @@ func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
 	output := result.Data.(*filewrite.Output)
 	if output.Type != filewrite.WriteTypeUpdate {
 		t.Errorf("Type = %q, want update", output.Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_Create(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	out := &filewrite.Output{
+		Type:     filewrite.WriteTypeCreate,
+		FilePath: "/tmp/newfile.go",
+		Content:  "package main\n\nfunc main() {}\n",
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Wrote 3 lines") {
+		t.Errorf("expected 'Wrote 3 lines', got: %q", got)
+	}
+	if !strings.Contains(got, "/tmp/newfile.go") {
+		t.Errorf("expected file path, got: %q", got)
+	}
+	// Full content should be included (TUI handles truncation)
+	if !strings.Contains(got, "package main") {
+		t.Errorf("expected content to be included, got: %q", got)
+	}
+}
+
+func TestRenderResult_Create_LongContent(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	// Build 15 lines of content
+	var lines []string
+	for i := 1; i <= 15; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	out := &filewrite.Output{
+		Type:     filewrite.WriteTypeCreate,
+		FilePath: "/tmp/long.go",
+		Content:  content,
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Wrote 15 lines") {
+		t.Errorf("expected 'Wrote 15 lines', got: %q", got)
+	}
+	// Full content should be present (TUI handles truncation via ctrl+o)
+	if !strings.Contains(got, "line 1") || !strings.Contains(got, "line 15") {
+		t.Errorf("expected full content, got: %q", got)
+	}
+}
+
+func TestRenderResult_Create_Empty(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	out := &filewrite.Output{
+		Type:     filewrite.WriteTypeCreate,
+		FilePath: "/tmp/empty.go",
+		Content:  "",
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Wrote 0 lines") {
+		t.Errorf("expected 'Wrote 0 lines', got: %q", got)
+	}
+}
+
+func TestRenderResult_Update_WithDiff(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	oldContent := "line1\nline2\nline3\n"
+	out := &filewrite.Output{
+		Type:            filewrite.WriteTypeUpdate,
+		FilePath:        "/tmp/test.go",
+		Content:         "line1\nreplaced\nline3\n",
+		StructuredPatch: []filewrite.StructuredPatchHunk{
+			{
+				OldStart: 1, OldLines: 3, NewStart: 1, NewLines: 3,
+				Lines: []string{" line1", "-line2", "+replaced", " line3"},
+			},
+		},
+		OriginalFile: &oldContent,
+	}
+	got := tt.RenderResult(out)
+	if !strings.Contains(got, "Added") || !strings.Contains(got, "removed") {
+		t.Errorf("expected summary with Added/removed, got: %q", got)
+	}
+}
+
+func TestRenderResult_Update_NoChanges(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	oldContent := "same\n"
+	out := &filewrite.Output{
+		Type:            filewrite.WriteTypeUpdate,
+		FilePath:        "/tmp/same.go",
+		Content:         "same\n",
+		StructuredPatch: nil,
+		OriginalFile:    &oldContent,
+	}
+	got := tt.RenderResult(out)
+	// No patch changes → empty summary
+	if got != "" {
+		t.Errorf("expected empty for no changes, got: %q", got)
+	}
+}
+
+func TestRenderResult_NonOutputData(t *testing.T) {
+	t.Parallel()
+	tt := filewrite.New()
+	got := tt.RenderResult("not an output")
+	if !strings.Contains(got, "not an output") {
+		t.Errorf("expected fallback string representation, got: %q", got)
 	}
 }
