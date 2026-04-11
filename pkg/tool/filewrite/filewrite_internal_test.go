@@ -3,6 +3,7 @@ package filewrite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1143,4 +1144,101 @@ func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
 	// Restore git repo cache
 	gitRepoOnce = sync.Once{}
 	isInGitRepo()
+}
+
+// ---------------------------------------------------------------------------
+// getStructuredPatch fallback (diffmatchpatch) — requires oldLines*newLines > 10M
+// ---------------------------------------------------------------------------
+
+func TestGetStructuredPatch_LargeFileFallback(t *testing.T) {
+	// Generate large content where len(oldLines)*len(newLines) > 10M
+	// 4000 lines each → 16M entries → ComputePatch returns nil → diffmatchpatch fallback.
+	lines := make([]string, 4000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d unique large file content line\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+
+	// Replace line 2000 uniquely
+	oldLine := lines[2000]
+	newLine := fmt.Sprintf("%05d modified large file content line\n", 2000)
+	newContent := strings.Replace(oldContent, oldLine, newLine, 1)
+
+	// Verify trigger condition
+	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
+	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
+	if oldLineCount*newLineCount <= 10_000_000 {
+		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, newLineCount)
+	}
+
+	result := getStructuredPatch(oldContent, newContent)
+	if len(result) == 0 {
+		t.Fatal("getStructuredPatch returned empty, want at least one hunk")
+	}
+	added, removed := 0, 0
+	for _, hunk := range result {
+		for _, l := range hunk.Lines {
+			if len(l) > 0 {
+				switch l[0] {
+				case '+':
+					added++
+				case '-':
+					removed++
+				}
+			}
+		}
+	}
+	if added != 1 || removed != 1 {
+		t.Errorf("expected 1 added, 1 removed; got %d added, %d removed", added, removed)
+	}
+}
+
+func TestGetStructuredPatch_LargeFileInsert(t *testing.T) {
+	lines := make([]string, 5000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d insert large line\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+	newContent := oldContent + fmt.Sprintf("%05d appended large line\n", 5000)
+
+	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
+	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
+	if oldLineCount*newLineCount <= 10_000_000 {
+		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, newLineCount)
+	}
+
+	result := getStructuredPatch(oldContent, newContent)
+	if len(result) == 0 {
+		t.Fatal("getStructuredPatch returned empty")
+	}
+	added := 0
+	for _, hunk := range result {
+		for _, l := range hunk.Lines {
+			if len(l) > 0 && l[0] == '+' {
+				added++
+			}
+		}
+	}
+	if added == 0 {
+		t.Error("expected at least one addition")
+	}
+}
+
+func TestGetStructuredPatch_LargeFileDelete(t *testing.T) {
+	lines := make([]string, 5000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d delete large line\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+	newContent := strings.TrimSuffix(oldContent, lines[4999])
+
+	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
+	if oldLineCount*oldLineCount <= 10_000_000 {
+		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, oldLineCount)
+	}
+
+	result := getStructuredPatch(oldContent, newContent)
+	if len(result) == 0 {
+		t.Fatal("getStructuredPatch returned empty")
+	}
 }

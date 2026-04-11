@@ -88,7 +88,7 @@ const (
 	ansiBgPurple    = "\x1b[48;5;62m"
 	ansiFgBlue      = "\x1b[38;5;12m"
 	ansiFgGray      = "\x1b[38;5;243m"
-	ansiFgDimGray   = "\x1b[38;5;8m"
+	ansiFgDimGray = "\x1b[38;5;246m"
 )
 
 func (r *ansiRenderer) write(s string) {

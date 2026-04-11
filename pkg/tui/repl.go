@@ -398,7 +398,7 @@ func prettyJSON(raw json.RawMessage) string {
 // expandTools controls whether tool output is shown fully or collapsed.
 func renderMessages(messages []MessageView, width, maxHeight int, expandTools bool) string {
 	if len(messages) == 0 {
-		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
+		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.") + "\n"
 	}
 

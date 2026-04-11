@@ -391,7 +391,7 @@ const (
 	diffAddFg   = "\x1b[38;5;10m" // green decoration for added marker/line#
 	diffDelBg   = "\x1b[48;5;52m" // dark red bg for deleted lines
 	diffDelFg   = "\x1b[38;5;9m"  // red decoration for deleted marker/line#
-	diffDimFg   = "\x1b[38;5;8m"  // dim gray for context line numbers
+	diffDimFg = "\x1b[38;5;246m" // dim gray for context line numbers
 )
 
 // CountLines counts lines in content.

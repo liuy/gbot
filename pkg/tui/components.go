@@ -16,10 +16,10 @@ var dot = "●"
 var (
 	styleDotError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	styleDotSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	styleDotDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+	styleDotDim = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	styleNameBold   = lipgloss.NewStyle().Bold(true)
-	styleTimeDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
-	styleDim        = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Faint(true)
+	styleTimeDim = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	stylePrompt     = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 )
 
@@ -361,7 +361,7 @@ func (i *Input) View() string {
 	// Empty value: show placeholder or cursor-only
 	if len(i.value) == 0 {
 		if !i.focused {
-			ph := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(i.placeholder)
+			ph := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render(i.placeholder)
 			return prompt + ph
 		}
 		cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))

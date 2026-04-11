@@ -3,6 +3,7 @@ package fileedit_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -917,5 +918,112 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 	got := tt.RenderResult(42)
 	if !strings.Contains(got, "42") {
 		t.Errorf("expected fallback string representation, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getStructuredPatch fallback (diffmatchpatch) — requires oldLines*newLines > 10M
+// ---------------------------------------------------------------------------
+
+func TestExecute_LargeFileFallbackPath(t *testing.T) {
+	// Generate large content where len(oldLines)*len(newLines) > 10M
+	// 4000 lines each → 16M entries → triggers ComputePatch → nil → diffmatchpatch fallback.
+	// Each line ~50 bytes → total ~200KB, very fast in memory.
+	// Lines are globally unique (numbered) to avoid "non-unique old_string" error.
+	lines := make([]string, 4000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d unique content line for large file test\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+
+	// Replace line 2000 uniquely
+	oldLine := lines[2000]
+	newLine := fmt.Sprintf("%05d modified content line for large file test\n", 2000)
+	newContent := strings.Replace(oldContent, oldLine, newLine, 1)
+
+	// Verify trigger condition
+	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
+	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
+	if oldLineCount*newLineCount <= 10_000_000 {
+		t.Fatalf("test content too small to trigger fallback: %d*%d <= 10M", oldLineCount, newLineCount)
+	}
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "large.txt")
+	if err := os.WriteFile(fp, []byte(oldContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Edit one line — triggers fallback path in getStructuredPatch
+	inp := fileedit.Input{FilePath: fp, OldString: strings.TrimSpace(oldLine), NewString: strings.TrimSpace(newLine)}
+	inputBytes, _ := json.Marshal(inp)
+	input := json.RawMessage(inputBytes)
+	result, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*fileedit.Output)
+	if len(output.StructuredPatch) == 0 {
+		t.Error("StructuredPatch should have at least one hunk")
+	}
+	added, removed := 0, 0
+	for _, hunk := range output.StructuredPatch {
+		for _, l := range hunk.Lines {
+			if len(l) > 0 {
+				switch l[0] {
+				case '+':
+					added++
+				case '-':
+					removed++
+				}
+			}
+		}
+	}
+	if added != 1 || removed != 1 {
+		t.Errorf("expected 1 added, 1 removed; got %d added, %d removed", added, removed)
+	}
+}
+
+func TestExecute_LargeFileInsert(t *testing.T) {
+	// Test fallback with an insertion: add a line at the end
+	lines := make([]string, 5000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d insert test line\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "insert.txt")
+	if err := os.WriteFile(fp, []byte(oldContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Replace last line: append a new line after it
+	lastLine := fmt.Sprintf("%05d insert test line", 4999)
+	newLine := fmt.Sprintf("%05d insert test line\n%05d appended new line", 4999, 5000)
+	inp := fileedit.Input{FilePath: fp, OldString: lastLine, NewString: newLine}
+	inputBytes, _ := json.Marshal(inp)
+	input := json.RawMessage(inputBytes)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+}
+
+func TestExecute_LargeFileDelete(t *testing.T) {
+	// Test fallback with a deletion
+	lines := make([]string, 5000)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%05d delete test line\n", i)
+	}
+	oldContent := strings.Join(lines, "")
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "delete.txt")
+	if err := os.WriteFile(fp, []byte(oldContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	firstLine := fmt.Sprintf("%05d delete test line", 0)
+	input := json.RawMessage(`{"file_path":"`+fp+`","old_string":"`+firstLine+`","new_string":""}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
 	}
 }
