@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -686,12 +688,7 @@ func linkifyIssueReferences(text string) string {
 var stripANSI = tool.StripANSI
 
 // stringWidth returns the display width of a string (excluding ANSI sequences).
-// CJK characters count as 2 columns, matching TS stringWidth behavior.
+// Uses go-runewidth for accurate terminal column width including emoji.
 func stringWidth(s string) int {
-	clean := stripANSI(s)
-	width := 0
-	for _, r := range clean {
-		width += runeDisplayWidth(r)
-	}
-	return width
+	return runewidth.StringWidth(stripANSI(s))
 }
