@@ -20,6 +20,12 @@ import (
 // Render converts markdown text to ANSI-styled terminal output.
 // Source: utils/markdown.ts applyMarkdown → Go port
 func Render(text string) string {
+	// Strip redundant VS16 from default-colorful emoji before rendering.
+	// LLM agents often emit emoji+VS16 (e.g., "🏞️") but VS16 is redundant
+	// for Emoji_Presentation=Yes codepoints and causes visible artifacts
+	// on some terminals, breaking table alignment.
+	text = stripRedundantVS16(text)
+
 	extensions := parser.CommonExtensions | parser.AutoHeadingIDs | parser.Footnotes
 	// Disable strikethrough: ~ is often used for "approximate" (e.g., ~100),
 	// not actual strikethrough. Matches TS: marked.use({ tokenizer: { del() { return undefined } } })

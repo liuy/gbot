@@ -1891,6 +1891,14 @@ func TestRuneDisplayWidth_Emoji(t *testing.T) {
 		{'❤', "heart U+2764"},           // miscellaneous symbols
 		{'⚠', "warning U+26A0"},         // miscellaneous symbols
 		{'✓', "check U+2713"},           // dingbats
+		{'⌚', "watch U+231A"},           // BMP emoji below 0x2600
+		{'⏩', "fast-forward U+23E9"},   // BMP emoji below 0x2600
+		{'⏰', "alarm U+23F0"},          // BMP emoji below 0x2600
+		{'⏳', "hourglass U+23F3"},      // BMP emoji below 0x2600
+		{'◾', "black small square U+25FE"}, // BMP emoji below 0x2600
+		{'⭐', "star U+2B50"},           // BMP Emoji_Presentation above 0x27BF
+		{'⭕', "circle U+2B55"},         // BMP Emoji_Presentation above 0x27BF
+		{'⬛', "black square U+2B1B"},   // BMP Emoji_Presentation above 0x27BF
 		{0x1F000, "mahjong U+1F000"},    // start of emoji block
 		{0x1FAFF, "end of emoji block"},
 	}
@@ -1898,6 +1906,28 @@ func TestRuneDisplayWidth_Emoji(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if w := runeDisplayWidth(tc.r); w != 2 {
 				t.Errorf("runeDisplayWidth(%s) = %d, want 2", tc.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_TextPresentationEmoji(t *testing.T) {
+	// Emoji (not Emoji_Presentation) — text presentation, width 1 by default
+	// Source: emoji-data.txt — these are Emoji but NOT Emoji_Presentation
+	textEmoji := []struct {
+		r    rune
+		name string
+	}{
+		{'⬅', "left arrow U+2B05"},
+		{'⬆', "up arrow U+2B06"},
+		{'⬇', "down arrow U+2B07"},
+		{'⤴', "arrow curving up U+2934"},
+		{'⤵', "arrow curving down U+2935"},
+	}
+	for _, tc := range textEmoji {
+		t.Run(tc.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tc.r); w != 1 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 1", tc.name, w)
 			}
 		})
 	}
@@ -2175,5 +2205,199 @@ func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 		if len(stripped) > 40 { // allow margin for ANSI + prefix
 			t.Errorf("header line too long (%d chars): %q", len(stripped), stripped)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isEmojiPresentation
+// ---------------------------------------------------------------------------
+
+func TestIsEmojiPresentation_SMPColorful(t *testing.T) {
+	t.Parallel()
+	// 1F000+ emoji default to colorful
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{'😀', "grinning face"},
+		{'😎', "sunglasses"},
+		{'🌺', "hibiscus"},
+		{'🌳', "tree"},
+		{'💪', "bicep"},
+		{0x1F300, "cyclone"},
+		{0x1F64F, "pray"},
+		{0x1FAF8, "push hand"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isEmojiPresentation(tt.r) {
+				t.Errorf("isEmojiPresentation(%U %s) = false, want true", tt.r, tt.name)
+			}
+		})
+	}
+}
+
+func TestIsEmojiPresentation_BMPColorful(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{'⌚', "watch"},
+		{'⌛', "hourglass"},
+		{'⏩', "fast-forward"},
+		{'⏰', "alarm"},
+		{'⏳', "hourglass not done"},
+		{'☔', "umbrella rain"},
+		{'☕', "coffee"},
+		{'♈', "aries"},
+		{'♿', "wheelchair"},
+		{'⚓', "anchor"},
+		{'⚡', "high voltage"},
+		{'⚽', "soccer"},
+		{'⛄', "snowman"},
+		{'⛔', "no entry"},
+		{'✅', "check"},
+		{'✊', "fist"},
+		{'✨', "sparkles"},
+		{'❌', "cross mark"},
+		{'❓', "question"},
+		{'➕', "plus"},
+		{'⭐', "star"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isEmojiPresentation(tt.r) {
+				t.Errorf("isEmojiPresentation(%U %s) = false, want true", tt.r, tt.name)
+			}
+		})
+	}
+}
+
+func TestIsEmojiPresentation_TextPresentation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{'#', "hash sign"},
+		{'*', "asterisk"},
+		{'0', "digit zero"},
+		{'©', "copyright"},
+		{'®', "registered"},
+		{'™', "trademark"},
+		{'↔', "left-right arrow"},
+		{'⏏', "eject"},
+		{'⏭', "next track"},
+		{'▶', "play"},
+		{'◀', "reverse"},
+		{'☀', "sun"},
+		{'☁', "cloud"},
+		{'☂', "umbrella"},
+		{'☎', "telephone"},
+		{'✓', "check mark"},
+		{'❤', "red heart"},
+
+		{'⚠', "warning"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if isEmojiPresentation(tt.r) {
+				t.Errorf("isEmojiPresentation(%U %s) = true, want false (text presentation)", tt.r, tt.name)
+			}
+		})
+	}
+}
+
+func TestIsEmojiPresentation_NonEmoji(t *testing.T) {
+	t.Parallel()
+	for _, r := range []rune{'a', 'Z', '0' - 1, 0x200, '你'} {
+		if isEmojiPresentation(r) {
+			t.Errorf("isEmojiPresentation(%U) = true, want false", r)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stripRedundantVS16
+// ---------------------------------------------------------------------------
+
+func TestStripRedundantVS16_ColorfulEmoji(t *testing.T) {
+	t.Parallel()
+	// 🏞 = U+1F3DE, Emoji_Presentation=Yes -> VS16 stripped
+	input := "🏞\ufe0f test"
+	got := stripRedundantVS16(input)
+	want := "🏞 test"
+	if got != want {
+		t.Errorf("stripRedundantVS16(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestStripRedundantVS16_TextEmoji(t *testing.T) {
+	t.Parallel()
+	// ☀ = U+2600, Emoji_Presentation=No -> VS16 kept
+	input := "☀\ufe0f test"
+	got := stripRedundantVS16(input)
+	if got != input {
+		t.Errorf("stripRedundantVS16(%q) = %q, want unchanged", input, got)
+	}
+}
+
+func TestStripRedundantVS16_NoVS16(t *testing.T) {
+	t.Parallel()
+	input := "hello world"
+	got := stripRedundantVS16(input)
+	if got != input {
+		t.Errorf("stripRedundantVS16(%q) = %q, want unchanged", input, got)
+	}
+}
+
+func TestStripRedundantVS16_Empty(t *testing.T) {
+	t.Parallel()
+	got := stripRedundantVS16("")
+	if got != "" {
+		t.Errorf("stripRedundantVS16('') = %q, want empty", got)
+	}
+}
+
+func TestStripRedundantVS16_MultipleEmoji(t *testing.T) {
+	t.Parallel()
+	// Mix of colorful (strip) and text-presentation (keep) emoji
+	input := "😀\ufe0f ☀\ufe0f 😎\ufe0f"
+	got := stripRedundantVS16(input)
+	want := "😀 ☀\ufe0f 😎"
+	if got != want {
+		t.Errorf("stripRedundantVS16(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestStripRedundantVS16_ZWJSequence(t *testing.T) {
+	t.Parallel()
+	// 👨 is Emoji_Presentation=Yes -> VS16 stripped
+	input := "👨\ufe0f test"
+	got := stripRedundantVS16(input)
+	want := "👨 test"
+	if got != want {
+		t.Errorf("stripRedundantVS16(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestStripRedundantVS16_VS16AtStart(t *testing.T) {
+	t.Parallel()
+	// VS16 at start of string - no preceding emoji, keep it
+	input := "\ufe0f hello"
+	got := stripRedundantVS16(input)
+	if got != input {
+		t.Errorf("stripRedundantVS16(%q) = %q, want unchanged", input, got)
+	}
+}
+
+func TestStripRedundantVS16_TableEmojiAlignment(t *testing.T) {
+	t.Parallel()
+	input := "🏞\ufe0f test"
+	got := stripRedundantVS16(input)
+	w := stringWidth(got)
+	if w != 7 {
+		t.Errorf("after stripRedundantVS16, stringWidth = %d, want 7 (got: %q)", w, got)
 	}
 }

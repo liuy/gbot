@@ -959,6 +959,20 @@ func runeDisplayWidth(r rune) int {
 	// Source: ink/stringWidth.ts — needsSegmentation() checks 0x2600..0x27BF
 	case r >= 0x2600 && r <= 0x27BF:
 		return 2
+	// BMP Emoji_Presentation below 0x2600
+	case r >= 0x231A && r <= 0x231B:
+		return 2
+	case r >= 0x23E9 && r <= 0x23F3:
+		return 2
+	case r >= 0x25FD && r <= 0x25FE:
+		return 2
+	// BMP Emoji_Presentation above 0x27BF
+	case r >= 0x2B1B && r <= 0x2B1C:
+		return 2
+	case r == 0x2B50:
+		return 2
+	case r == 0x2B55:
+		return 2
 	// Emoji (🏷, 🌺, 😎, 💪, etc.)
 	// Source: ink/stringWidth.ts — getEmojiWidth() returns 2 for most emoji
 	case r >= 0x1F000 && r <= 0x1FAFF:
@@ -969,6 +983,85 @@ func runeDisplayWidth(r rune) int {
 		return 2
 	}
 	return 1
+}
+
+// isEmojiPresentation returns true for emoji that render as colorful by default.
+// VS16 (U+FE0F) is redundant for these and causes visible artifacts on some
+// terminals, breaking table alignment.
+//
+// Coverage:
+//   - BMP: only codepoints with Unicode Emoji_Presentation=Yes
+//   - SMP (U+1F000+): all emoji characters (modern terminals render
+//     them colorful regardless of the Emoji_Presentation property)
+//
+// Source: unicode.org/Public/UCD/latest/ucd/emoji/emoji-data.txt
+func isEmojiPresentation(r rune) bool {
+	// SMP emoji (1F000+) — modern terminals render all as colorful
+	if r >= 0x1F000 && r <= 0x1FAFF {
+		return true
+	}
+	// BMP emoji with Emoji_Presentation=Yes
+	switch {
+	case
+		r >= 0x231A && r <= 0x231B,
+		r >= 0x23E9 && r <= 0x23EC,
+		r == 0x23F0,
+		r == 0x23F3,
+		r >= 0x25FD && r <= 0x25FE,
+		r >= 0x2614 && r <= 0x2615,
+		r >= 0x2648 && r <= 0x2653,
+		r == 0x267F,
+		r == 0x2693,
+		r == 0x26A1,
+		r >= 0x26AA && r <= 0x26AB,
+		r >= 0x26BD && r <= 0x26BE,
+		r >= 0x26C4 && r <= 0x26C5,
+		r == 0x26CE,
+		r == 0x26D4,
+		r == 0x26EA,
+		r >= 0x26F2 && r <= 0x26F3,
+		r == 0x26F5,
+		r == 0x26FA,
+		r == 0x26FD,
+		r == 0x2705,
+		r >= 0x270A && r <= 0x270B,
+		r == 0x2728,
+		r == 0x274C,
+		r == 0x274E,
+		r >= 0x2753 && r <= 0x2755,
+		r == 0x2757,
+		r >= 0x2795 && r <= 0x2797,
+		r == 0x27B0,
+		r == 0x27BF,
+		r >= 0x2B1B && r <= 0x2B1C,
+		r == 0x2B50,
+		r == 0x2B55:
+		return true
+	}
+	return false
+}
+
+// stripRedundantVS16 removes VS16 (U+FE0F) from emoji that already have
+// Emoji_Presentation=Yes (default colorful). These emoji don't need VS16,
+// and some terminals render the redundant VS16 as a visible glyph,
+// breaking table alignment and other layout.
+//
+// Emoji with Emoji_Presentation=No (default text presentation) keep VS16
+// because they need it to switch to colorful rendering.
+func stripRedundantVS16(s string) string {
+	// Fast path: no VS16 in string
+	if !strings.ContainsRune(s, '\uFE0F') {
+		return s
+	}
+	runes := []rune(s)
+	var out []rune
+	for i, r := range runes {
+		if r == '\uFE0F' && i > 0 && isEmojiPresentation(runes[i-1]) {
+			continue // skip redundant VS16
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 // ---------------------------------------------------------------------------
