@@ -26,6 +26,9 @@ type ReplState struct {
 	// Tracks partial input accumulation per tool ID for summary updates
 	pendingInput map[string]string
 
+	// Tracks when each tool call started streaming (for perceived elapsed)
+	pendingToolStart map[string]time.Time
+
 	// Channel for the final query result (nil when idle)
 	resultCh <-chan engine.QueryResult
 
@@ -37,8 +40,9 @@ type ReplState struct {
 func NewReplState() *ReplState {
 	return &ReplState{
 		messages:     []MessageView{},
-		pendingTool:  make(map[string]*ToolCallView),
-		pendingInput: make(map[string]string),
+		pendingTool:      make(map[string]*ToolCallView),
+		pendingInput:     make(map[string]string),
+		pendingToolStart: make(map[string]time.Time),
 	}
 }
 
@@ -99,6 +103,7 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string) {
 	}
 	tcv := &ToolCallView{ID: id, Name: name, Summary: summary, Input: input, Done: false}
 	s.pendingTool[id] = tcv
+	s.pendingToolStart[id] = time.Now()
 	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
 }
 
@@ -112,6 +117,11 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 	tcv.IsError = isError
 	tcv.Done = true
 	tcv.Elapsed = elapsed
+	if start, ok := s.pendingToolStart[id]; ok {
+		if perceived := time.Since(start); perceived > elapsed {
+			tcv.Elapsed = perceived
+		}
+	}
 
 	// Update the tool block in lastMsg
 	m := s.lastMsg()
@@ -212,6 +222,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case streamToolDeltaMsg:
 		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
+		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
 
 	case streamToolResultMsg:
@@ -238,6 +249,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Input tokens arrive all at once — snap immediately
 		a.displayedInputTokens = a.status.inputTokens
 		a.inputTokenTarget = a.status.inputTokens
+		a.outputTokenTarget = a.status.outTokens
 		return true, a.readEvents()
 
 	case streamThinkingStartMsg:
@@ -265,13 +277,19 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case spinnerTickMsg:
 		if a.repl.IsStreaming() {
 			a.spinner.Tick()
+			a.toolBlinkTick++
+			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
 			// Animate displayed tokens toward actual values
 			target := a.inputTokenTarget
 			if a.status.inputTokens > target {
 				target = a.status.inputTokens
 			}
 			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
-			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, a.responseCharCount/4)
+			outputTarget := a.outputTokenTarget
+			if a.responseCharCount/4 > outputTarget {
+				outputTarget = a.responseCharCount / 4
+			}
+			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
 			return true, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
 			})
@@ -396,7 +414,7 @@ func prettyJSON(raw json.RawMessage) string {
 
 // renderMessages renders the visible message list within the given bounds.
 // expandTools controls whether tool output is shown fully or collapsed.
-func renderMessages(messages []MessageView, width, maxHeight int, expandTools bool) string {
+func renderMessages(messages []MessageView, width, maxHeight int, expandTools bool, toolDot string) string {
 	if len(messages) == 0 {
 		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.") + "\n"
@@ -406,7 +424,7 @@ func renderMessages(messages []MessageView, width, maxHeight int, expandTools bo
 	usedLines := 0
 
 	for i := len(messages) - 1; i >= 0 && usedLines < maxHeight; i-- {
-		rendered := messages[i].View(width, expandTools)
+		rendered := messages[i].View(width, expandTools, toolDot)
 		msgLines := strings.Split(rendered, "\n")
 		for j := len(msgLines) - 1; j >= 0 && usedLines < maxHeight; j-- {
 			lines = append([]string{msgLines[j]}, lines...)

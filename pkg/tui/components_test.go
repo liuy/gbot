@@ -449,7 +449,7 @@ func TestMessageView_UserRole(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hello there"}},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "❯ hello there") {
 		t.Errorf("View() = %q, should contain ❯ prefix", v)
 	}
@@ -462,7 +462,7 @@ func TestMessageView_UserRole_MultiLine(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "this is a very long line that will wrap and continue on the next line"}},
 	}
-	v := m.View(30, false) // narrow width triggers wrapping
+	v := m.View(30, false, "") // narrow width triggers wrapping
 	// First line should have ❯ prefix
 	if !strings.Contains(v, "❯ this") {
 		t.Errorf("View() = %q, should start with ❯", v)
@@ -503,7 +503,7 @@ func TestMessageView_AssistantRole(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hi from gbot"}},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	// Role prefix is rendered by parent component (MessageList), not here
 	if !strings.Contains(v, "hi from gbot") {
 		t.Errorf("View() = %q, should contain content", v)
@@ -517,7 +517,7 @@ func TestMessageView_SystemRole(t *testing.T) {
 		Role:   "system",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "system msg"}},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "system msg") {
 		t.Errorf("View() = %q, should contain content", v)
 	}
@@ -533,10 +533,10 @@ func TestMessageView_WithToolCalls_Running(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Input: `{"file":"test.go"}`, Done: false}},
 		},
 	}
-	v := m.View(80, false)
-	// & suffix per TS convention for running state
-	if !strings.Contains(v, "&") {
-		t.Errorf("View() = %q, should contain '&' for running state", v)
+	v := m.View(80, false, "")
+	// "running..." suffix for running state
+	if !strings.Contains(v, "running...") {
+		t.Errorf("View() = %q, should contain 'running...' for running state", v)
 	}
 	if !strings.Contains(v, "Read") {
 		t.Errorf("View() = %q, should contain tool name 'Read'", v)
@@ -553,7 +553,7 @@ func TestMessageView_WithToolCalls_Done(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Grep", Output: "found match", Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "done") {
 		t.Errorf("View() = %q, should contain 'done'", v)
 	}
@@ -573,7 +573,7 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "exit code 1", Done: true, IsError: true}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	// Error shows tool name with red dot
 	if !strings.Contains(v, "Bash") {
 		t.Errorf("View() = %q, should contain 'Bash'", v)
@@ -594,7 +594,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockText, Text: "Here is the result"},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "\n\n") {
 		t.Errorf("completed tool followed by text should have blank line, got: %q", v)
 	}
@@ -607,7 +607,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockText, Text: "should be no blank line"},
 		},
 	}
-	v2 := m2.View(80, false)
+	v2 := m2.View(80, false, "")
 	if strings.Contains(v2, "\n\n") {
 		t.Errorf("running tool followed by text should NOT have blank line, got: %q", v2)
 	}
@@ -619,7 +619,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "done", Done: true}},
 		},
 	}
-	v3 := m3.View(80, false)
+	v3 := m3.View(80, false, "")
 	if strings.Contains(v3, "\n\n") {
 		t.Errorf("tool at end should not have blank line, got: %q", v3)
 	}
@@ -636,7 +636,7 @@ func TestMessageView_ToolCallLongOutput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Output: longOutput, Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	// Output longer than 200 chars should not be shown
 	if strings.Contains(v, strings.Repeat("x", 300)) {
 		t.Error("long output (>200 chars) should not appear in view")
@@ -657,7 +657,7 @@ func TestMessageView_ToolCallLongInput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Write", Input: longInput, Done: false}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	// Input longer than 200 chars should not be shown
 	if strings.Contains(v, strings.Repeat("y", 300)) {
 		t.Error("long input (>200 chars) should not appear in view")
@@ -672,7 +672,7 @@ func TestMessageView_WordWrap(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "This is a very long sentence that should be wrapped properly"}},
 	}
-	v := m.View(20, false)
+	v := m.View(20, false, "")
 	lines := strings.Split(v, "\n")
 	// Each line should be reasonably short (no line longer than width + some ANSI margin)
 	for _, line := range lines {
@@ -690,7 +690,7 @@ func TestMessageView_WordWrap_Chinese(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "这是一段很长的中文文本需要被自动换行处理才能正确显示在终端中否则会超出屏幕宽度"}},
 	}
-	v := m.View(20, false)
+	v := m.View(20, false, "")
 	if !strings.Contains(v, "这") {
 		t.Error("should contain content")
 	}
@@ -711,7 +711,7 @@ func TestMessageView_ToolCallEmptyOutput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "", Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "result") {
 		t.Errorf("View() should contain text content")
 	}
@@ -724,7 +724,7 @@ func TestMessageView_EmptyBlocks(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if v != "" {
 		t.Errorf("Empty Blocks should return empty string, got %q", v)
 	}
@@ -741,7 +741,7 @@ func TestRenderMessages_NoExtraTrailingNewline(t *testing.T) {
 	msgs := []MessageView{
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 	}
-	v := renderMessages(msgs, 80, 10, false)
+	v := renderMessages(msgs, 80, 10, false, "")
 	// Count trailing newlines
 	trailing := 0
 	for i := len(v) - 1; i >= 0; i-- {
@@ -759,7 +759,7 @@ func TestRenderMessages_NoExtraTrailingNewline(t *testing.T) {
 func TestRenderMessages_Empty(t *testing.T) {
 	t.Parallel()
 
-	v := renderMessages([]MessageView{}, 80, 10, false)
+	v := renderMessages([]MessageView{}, 80, 10, false, "")
 	if !strings.Contains(v, "Welcome to gbot") {
 		t.Errorf("renderMessages(nil) = %q, should contain welcome", v)
 	}
@@ -768,7 +768,7 @@ func TestRenderMessages_Empty(t *testing.T) {
 func TestRenderMessages_EmptySlice(t *testing.T) {
 	t.Parallel()
 
-	v := renderMessages([]MessageView{}, 80, 10, false)
+	v := renderMessages([]MessageView{}, 80, 10, false, "")
 	if !strings.Contains(v, "Welcome to gbot") {
 		t.Errorf("renderMessages([]) should contain welcome")
 	}
@@ -781,7 +781,7 @@ func TestRenderMessages_WithMessages(t *testing.T) {
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hi"}}},
 	}
-	v := renderMessages(msgs, 80, 10, false)
+	v := renderMessages(msgs, 80, 10, false, "")
 	if !strings.Contains(v, "hello") {
 		t.Error("should contain user message")
 	}
@@ -798,7 +798,7 @@ func TestRenderMessages_HeightLimit(t *testing.T) {
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line2"}}},
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line3"}}},
 	}
-	v := renderMessages(msgs, 80, 2, false)
+	v := renderMessages(msgs, 80, 2, false, "")
 	// Should only show 2 lines max
 	lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
 	if len(lines) > 2 {
@@ -2021,7 +2021,7 @@ func TestMessageView_View_MinWidth(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}},
 	}
-	v := m.View(5, false) // below minimum of 10
+	v := m.View(5, false, "") // below minimum of 10
 	if !strings.Contains(v, "hello") {
 		t.Errorf("View with small width should still render content, got: %q", v)
 	}
@@ -2034,7 +2034,7 @@ func TestMessageView_View_MinWidth(t *testing.T) {
 func TestRenderToolCall_NonToolBlock(t *testing.T) {
 	var sb strings.Builder
 	blk := ContentBlock{Type: BlockText, Text: "hello"}
-	blk.renderToolCall(&sb, 80, false)
+	blk.renderToolCall(&sb, 80, false, "")
 	if sb.Len() != 0 {
 		t.Error("renderToolCall on text block should produce nothing")
 	}
@@ -2056,7 +2056,7 @@ func TestMessageView_WithTool_DoneWithSummaryAndElapsed(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "Bash") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -2080,7 +2080,7 @@ func TestMessageView_WithTool_ErrorWithSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "Read") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -2101,7 +2101,7 @@ func TestMessageView_WithTool_DoneNoSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false)
+	v := m.View(80, false, "")
 	if !strings.Contains(v, "Glob") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -2238,7 +2238,7 @@ func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(30, false)
+	v := m.View(30, false, "")
 	// Header should be wrapped — output should contain newlines
 	if !strings.Contains(v, "\n") {
 		t.Errorf("long tool header should wrap at width 30, got: %q", v)

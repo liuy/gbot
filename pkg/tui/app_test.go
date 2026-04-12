@@ -781,6 +781,20 @@ func TestApp_Update_StreamToolDelta(t *testing.T) {
 	}
 }
 
+func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Write", "", `{}`)
+
+	delta := `{"content":"package main\nfunc main() {}"}`
+	app.Update(streamToolDeltaMsg{ID: "t1", Delta: delta, Summary: "main.go"})
+
+	if app.responseCharCount != len(delta) {
+		t.Errorf("responseCharCount = %d, want %d (tool delta chars not counted)", app.responseCharCount, len(delta))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // updateRepl — spinnerTickMsg not streaming
 // ---------------------------------------------------------------------------
@@ -1801,8 +1815,8 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	v := app.View()
 	// Running state shows dim tool name + & suffix (no summary)
-	if !strings.Contains(v, "Bash&") {
-		t.Errorf("View should show 'Bash&' for running state, got: %s", v)
+	if !strings.Contains(v, "Bash") || !strings.Contains(v, "running...") {
+		t.Errorf("View should show 'Bash ... running...' for running state, got: %s", v)
 	}
 }
 

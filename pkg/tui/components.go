@@ -585,7 +585,7 @@ type ToolCallView struct {
 
 // View renders the message with word wrapping at the given width.
 // When expand is true, tool output is shown fully instead of collapsed.
-func (m MessageView) View(width int, expand bool) string {
+func (m MessageView) View(width int, expand bool, toolDot string) string {
 	if width < 10 {
 		width = 10
 	}
@@ -611,7 +611,7 @@ func (m MessageView) View(width int, expand bool) string {
 					sb.WriteString("\n")
 				}
 			case BlockTool:
-				blk.renderToolCall(&sb, availWidth, expand)
+				blk.renderToolCall(&sb, availWidth, expand, toolDot)
 				sb.WriteString("\n")
 				// Blank line between completed tool and following text block
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
@@ -650,7 +650,7 @@ func prefixLine(i int, text string) string {
 //	⎿  output line 1
 //	⎿  output line 2
 //	⎿  … +N lines (ctrl+o to expand)
-func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool) {
+func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string) {
 	if blk.Type != BlockTool {
 		return
 	}
@@ -674,8 +674,18 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	toolName := styleNameBold.Render(tc.Name)
 
 	if !tc.Done {
-		// Running state: dim name, & suffix, no summary
-		header := fmt.Sprintf("%s %s&", dotStr, styleDim.Render(tc.Name))
+		// Running state: spinner dot + bold name + summary + "running..."
+		var runningDot string
+		if toolDot != "" {
+			runningDot = toolDot
+		} else {
+			runningDot = styleDotDim.Render(dot)
+		}
+		header := runningDot + " " + styleNameBold.Render(tc.Name)
+		if tc.Summary != "" {
+			header += fmt.Sprintf("(%s)", tc.Summary)
+		}
+		header += " " + styleDim.Render("running...")
 		sb.WriteString(wordWrap(header, availWidth))
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
@@ -64,9 +65,14 @@ type App struct {
 	// Dynamic token estimation (source: TS uses responseLength / 4)
 	responseCharCount int
 
+	// Tool execution blink state
+	toolBlink     bool
+	toolBlinkTick int
+
 	// Smoothly animated token counters for spinner display
 	displayedInputTokens  int
 	displayedOutputTokens int
+	outputTokenTarget    int
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
 }
 
@@ -149,7 +155,11 @@ func (a *App) View() string {
 		availHeight = 3
 	}
 
-	rendered := renderMessages(a.repl.Messages(), a.width, availHeight, a.allToolsExpanded)
+	var toolDot string
+		if a.repl.IsStreaming() && a.toolBlink {
+			toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+		}
+		rendered := renderMessages(a.repl.Messages(), a.width, availHeight, a.allToolsExpanded, toolDot)
 	sb.WriteString(rendered)
 
 	// Progress line: spinner + elapsed + tokens + thinking when streaming

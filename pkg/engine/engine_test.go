@@ -1703,3 +1703,85 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 		t.Errorf("msg[0] text = %v, want 'My name is Xiaoming'", texts)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Token usage: no double-counting across LLM calls
+// ---------------------------------------------------------------------------
+
+func TestQuery_UsageNoDoubleCount(t *testing.T) {
+	t.Parallel()
+
+	// Single LLM call: message_start has input=2500, message_delta has output=100.
+	// The engine must not emit input tokens again in message_delta,
+	// so that TUI += accumulation stays correct.
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{
+			Type: "message_start",
+			Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 2500}},
+		},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hi"}},
+		{Type: "content_block_stop", Index: 0},
+		{
+			Type: "message_delta",
+			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
+			Usage:    &llm.UsageDelta{OutputTokens: 100},
+		},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var usageEvents []types.UsageEvent
+	for evt := range eventCh {
+		if evt.Type == types.EventUsage && evt.Usage != nil {
+			usageEvents = append(usageEvents, *evt.Usage)
+		}
+	}
+	<-resultCh
+
+	// Should have exactly 2 usage events: message_start (input) + message_delta (output)
+	if len(usageEvents) != 2 {
+		t.Fatalf("expected 2 usage events, got %d: %+v", len(usageEvents), usageEvents)
+	}
+
+	// First event (message_start): input tokens set, output=0
+	if usageEvents[0].InputTokens != 2500 {
+		t.Errorf("first usage InputTokens = %d, want 2500", usageEvents[0].InputTokens)
+	}
+	if usageEvents[0].OutputTokens != 0 {
+		t.Errorf("first usage OutputTokens = %d, want 0 (not yet known)", usageEvents[0].OutputTokens)
+	}
+
+	// Second event (message_delta): output tokens set, input=0 (no double-count)
+	if usageEvents[1].OutputTokens != 100 {
+		t.Errorf("second usage OutputTokens = %d, want 100", usageEvents[1].OutputTokens)
+	}
+	if usageEvents[1].InputTokens != 0 {
+		t.Errorf("second usage InputTokens = %d, want 0 (avoid double-count with +=)", usageEvents[1].InputTokens)
+	}
+
+	// Verify TUI-style accumulation: total = 2500 input + 100 output
+	totalIn, totalOut := 0, 0
+	for _, u := range usageEvents {
+		totalIn += u.InputTokens
+		totalOut += u.OutputTokens
+	}
+	if totalIn != 2500 {
+		t.Errorf("accumulated input tokens = %d, want 2500", totalIn)
+	}
+	if totalOut != 100 {
+		t.Errorf("accumulated output tokens = %d, want 100", totalOut)
+	}
+}

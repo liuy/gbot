@@ -395,7 +395,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
-						InputTokens:  usage.InputTokens,
+						InputTokens:  0, // omitted — already emitted in message_start
 						OutputTokens: usage.OutputTokens,
 					},
 				})
