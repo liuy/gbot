@@ -108,8 +108,8 @@ func TestApp_Init(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	cmd := app.Init()
-	if cmd == nil {
-		t.Error("Init() should return a command")
+	if cmd != nil {
+		t.Error("Init() should return nil (no alt screen)")
 	}
 }
 
@@ -1288,13 +1288,15 @@ func TestApp_HandleKey_HomeEndWhileStreaming(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.streaming = true
 	app.input.SetValue("abc")
-	app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	// Home/End now move input cursor (Ctrl+A/Ctrl+E)
+	// Use Ctrl+A/Ctrl+E for input cursor movement
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	if app.input.cursor != 0 {
-		t.Errorf("Home cursor = %d, want 0", app.input.cursor)
+		t.Errorf("Ctrl+A cursor = %d, want 0", app.input.cursor)
 	}
-	app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	if app.input.cursor != 3 {
-		t.Errorf("End cursor = %d, want 3", app.input.cursor)
+		t.Errorf("Ctrl+E cursor = %d, want 3", app.input.cursor)
 	}
 }
 
@@ -2583,5 +2585,110 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 		// ok
 	default:
 		t.Errorf("expected streamCompleteMsg or streamChunkMsg, got %T", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// View — toolDot when streaming + toolBlink
+// ---------------------------------------------------------------------------
+
+func TestApp_View_StreamingToolBlink(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("thinking...")
+	app.toolBlink = true
+	v := app.View()
+	// toolDot should be rendered (bright white bold dot)
+	if !strings.Contains(v, "thinking...") {
+		t.Errorf("should contain content, got: %s", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+P/N with wrapped input lines (CursorUp/Down returns true)
+// ---------------------------------------------------------------------------
+
+func TestApp_HandleKey_CtrlP_WrappedInput(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 30
+	app.input.SetWidth(26)
+	app.input.SetValue("abcdefghijklmnopqrstuvwxyz") // wraps in 26-wide input
+	// Cursor at end (position 26), on second wrapped line
+	// Ctrl+P should call CursorUp which returns true (on second line)
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a := model.(*App)
+	_ = a
+	if cmd != nil {
+		t.Error("Ctrl+P with wrapped lines should produce no command (cursor moves up)")
+	}
+}
+
+func TestApp_HandleKey_CtrlN_WrappedInput(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 30
+	app.input.SetWidth(26)
+	app.input.SetValue("abcdefghijklmnopqrstuvwxyz") // wraps in 26-wide input
+	app.input.Home() // cursor at 0, first line
+	// Ctrl+N should call CursorDown which returns true (on first line, can go down)
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	a := model.(*App)
+	_ = a
+	if cmd != nil {
+		t.Error("Ctrl+N with wrapped lines should produce no command (cursor moves down)")
+	}
+}
+
+func TestApp_HandleKey_KeyUp_WrappedInput(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 30
+	app.input.SetWidth(26)
+	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	_ = model
+	if cmd != nil {
+		t.Error("KeyUp with wrapped input should move cursor up, no command")
+	}
+}
+
+func TestApp_HandleKey_KeyDown_WrappedInput(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 30
+	app.input.SetWidth(26)
+	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
+	app.input.Home()
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_ = model
+	if cmd != nil {
+		t.Error("KeyDown with wrapped input should move cursor down, no command")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prettyJSON — remaining paths
+// ---------------------------------------------------------------------------
+
+func TestPrettyJSON_Empty(t *testing.T) {
+	t.Parallel()
+	v := prettyJSON(nil)
+	if v != "" {
+		t.Errorf("prettyJSON(nil) = %q, want empty", v)
+	}
+}
+
+func TestPrettyJSON_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	v := prettyJSON(json.RawMessage(`not json`))
+	if v != "not json" {
+		t.Errorf("prettyJSON(invalid) = %q, want raw string", v)
 	}
 }

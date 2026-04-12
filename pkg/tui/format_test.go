@@ -48,3 +48,31 @@ func TestFormatElapsed_Milliseconds(t *testing.T) {
 		t.Errorf("formatElapsed(100ms ago) = %q, want s suffix", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// formatTokenCount
+// ---------------------------------------------------------------------------
+
+func TestFormatTokenCount_Under1000(t *testing.T) {
+	t.Parallel()
+	v := formatTokenCount(42)
+	if v != "42" {
+		t.Errorf("formatTokenCount(42) = %q, want %q", v, "42")
+	}
+}
+
+func TestFormatTokenCount_Over1000(t *testing.T) {
+	t.Parallel()
+	v := formatTokenCount(1500)
+	if v != "1.5k" {
+		t.Errorf("formatTokenCount(1500) = %q, want %q", v, "1.5k")
+	}
+}
+
+func TestFormatTokenCount_Exactly1000(t *testing.T) {
+	t.Parallel()
+	v := formatTokenCount(1000)
+	if v != "1.0k" {
+		t.Errorf("formatTokenCount(1000) = %q, want %q", v, "1.0k")
+	}
+}

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -163,5 +164,65 @@ func TestConvertEventToMsg_ToolUseDelta_NilPartialInput(t *testing.T) {
 	})
 	if msg != nil {
 		t.Errorf("expected nil for nil PartialInput, got %T", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventThinkingStart / EventThinkingEnd
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_ThinkingStart(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventThinkingStart})
+	if msg == nil {
+		t.Fatal("EventThinkingStart should not return nil")
+	}
+	_, ok := msg.(streamThinkingStartMsg)
+	if !ok {
+		t.Errorf("expected streamThinkingStartMsg, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_ThinkingEnd_WithThinking(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventThinkingEnd,
+		Thinking: &types.ThinkingEvent{Duration: 5 * time.Second},
+	})
+	if msg == nil {
+		t.Fatal("EventThinkingEnd with Thinking should not return nil")
+	}
+	tem, ok := msg.(streamThinkingEndMsg)
+	if !ok {
+		t.Fatalf("expected streamThinkingEndMsg, got %T", msg)
+	}
+	if tem.Duration != 5*time.Second {
+		t.Errorf("Duration = %v, want 5s", tem.Duration)
+	}
+}
+
+func TestConvertEventToMsg_ThinkingEnd_NilThinking(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:     types.EventThinkingEnd,
+		Thinking: nil,
+	})
+	if msg != nil {
+		t.Errorf("expected nil for nil Thinking, got %T", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventUsage with nil Usage
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventUsage,
+		Usage: nil,
+	})
+	if msg != nil {
+		t.Errorf("expected nil for nil Usage, got %T", msg)
 	}
 }

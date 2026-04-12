@@ -205,27 +205,33 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	switch m := msg.(type) {
 
 	case streamChunkMsg:
+		a.markViewportDirty()
 		a.repl.AppendChunk(m.Text)
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 
 	case streamStartMsg:
+		a.markViewportDirty()
 		a.repl.AppendTextItem()
 		return true, a.readEvents()
 
 	case streamMessageMsg:
+		a.markViewportDirty()
 		return true, a.readEvents()
 
 	case streamToolUseMsg:
+		a.markViewportDirty()
 		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
 		return true, a.readEvents()
 
 	case streamToolDeltaMsg:
+		a.markViewportDirty()
 		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
 		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
 
 	case streamToolResultMsg:
+		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
 		return true, a.readEvents()
 
@@ -412,25 +418,22 @@ func prettyJSON(raw json.RawMessage) string {
 	return string(pretty)
 }
 
-// renderMessages renders the visible message list within the given bounds.
-// expandTools controls whether tool output is shown fully or collapsed.
-func renderMessages(messages []MessageView, width, maxHeight int, expandTools bool, toolDot string) string {
+// renderMessagesFull renders the complete message history without height truncation.
+// Terminal native scrollback handles scrolling — matching TS behavior.
+func renderMessagesFull(messages []MessageView, width int, expandTools bool, toolDot string) string {
 	if len(messages) == 0 {
 		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
-		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.") + "\n"
+		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
 	}
 
-	var lines []string
-	usedLines := 0
-
-	for i := len(messages) - 1; i >= 0 && usedLines < maxHeight; i-- {
-		rendered := messages[i].View(width, expandTools, toolDot)
-		msgLines := strings.Split(rendered, "\n")
-		for j := len(msgLines) - 1; j >= 0 && usedLines < maxHeight; j-- {
-			lines = append([]string{msgLines[j]}, lines...)
-			usedLines++
-		}
+	var sb strings.Builder
+	for _, msg := range messages {
+		sb.WriteString(msg.View(width, expandTools, toolDot))
 	}
+	return strings.TrimRight(sb.String(), "\n")
+}
 
-	return strings.Join(lines, "\n")
+// markViewportDirty marks the content cache as needing rebuild.
+func (a *App) markViewportDirty() {
+	a.contentDirty = true
 }

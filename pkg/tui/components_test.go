@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -732,54 +734,35 @@ func TestMessageView_EmptyBlocks(t *testing.T) {
 // renderMessages
 // ---------------------------------------------------------------------------
 
-func TestRenderMessages_NoExtraTrailingNewline(t *testing.T) {
+func TestRenderMessagesFull_NoTrailingNewline(t *testing.T) {
 	t.Parallel()
 
-	// 单条消息，末尾不应有多余换行
 	msgs := []MessageView{
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 	}
-	v := renderMessages(msgs, 80, 10, false, "")
-	// Count trailing newlines
-	trailing := 0
-	for i := len(v) - 1; i >= 0; i-- {
-		if v[i] == '\n' {
-			trailing++
-		} else {
-			break
-		}
-	}
-	if trailing > 1 {
-		t.Errorf("expected at most 1 trailing newline, got %d: %q", trailing, v)
+	v := renderMessagesFull(msgs, 80, false, "")
+	if strings.HasSuffix(v, "\n") {
+		t.Errorf("renderMessagesFull should have no trailing newline, got %q", v)
 	}
 }
 
-func TestRenderMessages_Empty(t *testing.T) {
+func TestRenderMessagesFull_Empty(t *testing.T) {
 	t.Parallel()
 
-	v := renderMessages([]MessageView{}, 80, 10, false, "")
+	v := renderMessagesFull([]MessageView{}, 80, false, "")
 	if !strings.Contains(v, "Welcome to gbot") {
-		t.Errorf("renderMessages(nil) = %q, should contain welcome", v)
+		t.Errorf("renderMessagesFull(nil) = %q, should contain welcome", v)
 	}
 }
 
-func TestRenderMessages_EmptySlice(t *testing.T) {
-	t.Parallel()
-
-	v := renderMessages([]MessageView{}, 80, 10, false, "")
-	if !strings.Contains(v, "Welcome to gbot") {
-		t.Errorf("renderMessages([]) should contain welcome")
-	}
-}
-
-func TestRenderMessages_WithMessages(t *testing.T) {
+func TestRenderMessagesFull_WithMessages(t *testing.T) {
 	t.Parallel()
 
 	msgs := []MessageView{
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hi"}}},
 	}
-	v := renderMessages(msgs, 80, 10, false, "")
+	v := renderMessagesFull(msgs, 80, false, "")
 	if !strings.Contains(v, "hello") {
 		t.Error("should contain user message")
 	}
@@ -788,7 +771,7 @@ func TestRenderMessages_WithMessages(t *testing.T) {
 	}
 }
 
-func TestRenderMessages_HeightLimit(t *testing.T) {
+func TestRenderMessagesFull_AllMessagesIncluded(t *testing.T) {
 	t.Parallel()
 
 	msgs := []MessageView{
@@ -796,11 +779,16 @@ func TestRenderMessages_HeightLimit(t *testing.T) {
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line2"}}},
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line3"}}},
 	}
-	v := renderMessages(msgs, 80, 2, false, "")
-	// Should only show 2 lines max
-	lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
-	if len(lines) > 2 {
-		t.Errorf("expected at most 2 lines, got %d", len(lines))
+	v := renderMessagesFull(msgs, 80, false, "")
+	// renderMessagesFull includes ALL messages (terminal handles scrolling)
+	if !strings.Contains(v, "line1") {
+		t.Error("should contain line1")
+	}
+	if !strings.Contains(v, "line2") {
+		t.Error("should contain line2")
+	}
+	if !strings.Contains(v, "line3") {
+		t.Error("should contain line3")
 	}
 }
 
@@ -1360,5 +1348,537 @@ func TestStripRedundantVS16_TableEmojiAlignment(t *testing.T) {
 	w := stringWidth(got)
 	if w != 6 {
 		t.Errorf("after stripRedundantVS16, stringWidth = %d, want 6 (got: %q)", w, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Spinner — Tick when inactive
+// ---------------------------------------------------------------------------
+
+func TestSpinner_Tick_Inactive(t *testing.T) {
+	t.Parallel()
+	s := NewSpinner()
+	// Tick on inactive spinner should be no-op
+	s.Tick()
+	if s.idx != 0 {
+		t.Errorf("inactive spinner idx should stay 0, got %d", s.idx)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderLineSingle — edge cases
+// ---------------------------------------------------------------------------
+
+func TestInput_RenderLineSingle_Empty(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	v := i.View()
+	// Empty input should show cursor block
+	if v == "" {
+		t.Error("empty input view should not be empty string")
+	}
+}
+
+func TestInput_RenderLineSingle_Unfocused(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(80)
+	i.SetValue("hello")
+	i.Blur()
+	v := i.View()
+	if !strings.Contains(v, "hello") {
+		t.Errorf("unfocused view should show value, got: %q", v)
+	}
+}
+
+func TestInput_RenderLineSingle_CursorInMiddle(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(80)
+	i.SetValue("abcdef")
+	// Move cursor to middle
+	i.Home()
+	i.CursorRight()
+	i.CursorRight()
+	v := i.View()
+	if !strings.Contains(v, "ab") {
+		t.Errorf("cursor in middle should show text before cursor, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// InsertChar — cursor > len(value) clamp
+// ---------------------------------------------------------------------------
+
+func TestInput_InsertChar_CursorBeyondLength(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("abc")
+	// Artificially set cursor beyond value length
+	i.cursor = 10
+	i.InsertChar('x')
+	// Should have clamped cursor to len(value), then inserted
+	if i.Value() != "abcx" {
+		t.Errorf("InsertChar with cursor > len should clamp, got %q", i.Value())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PrevWord — with leading spaces
+// ---------------------------------------------------------------------------
+
+func TestInput_PrevWord_LeadingSpaces(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello   world")
+	i.End() // cursor at end
+	// First PrevWord: skip spaces, then find word start
+	i.PrevWord()
+	if i.cursor != 8 { // "hello   " → skip 3 spaces → land at 'w'
+		t.Errorf("PrevWord should skip spaces then find word, cursor = %d, want 8", i.cursor)
+	}
+}
+
+func TestInput_PrevWord_AtStart(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello")
+	i.Home()
+	prev := i.cursor
+	i.PrevWord()
+	if i.cursor != prev {
+		t.Errorf("PrevWord at start should be no-op, cursor = %d", i.cursor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// formatToolOutput — various branches
+// ---------------------------------------------------------------------------
+
+func TestFormatToolOutput_Empty(t *testing.T) {
+	t.Parallel()
+	v := formatToolOutput("", false, false, 80)
+	if v != "" {
+		t.Errorf("empty output should return empty, got %q", v)
+	}
+}
+
+func TestFormatToolOutput_FewLines(t *testing.T) {
+	t.Parallel()
+	v := formatToolOutput("line1\nline2", false, false, 80)
+	if !strings.Contains(v, "line1") || !strings.Contains(v, "line2") {
+		t.Errorf("few lines should show all, got: %q", v)
+	}
+}
+
+func TestFormatToolOutput_Collapsed(t *testing.T) {
+	t.Parallel()
+	lines := "line1\nline2\nline3\nline4\nline5" // 5 lines > 3+1=4
+	v := formatToolOutput(lines, false, false, 80)
+	if !strings.Contains(v, "ctrl+o to expand") {
+		t.Errorf("collapsed output should show expand hint, got: %q", v)
+	}
+}
+
+func TestFormatToolOutput_CollapsedError(t *testing.T) {
+	t.Parallel()
+	// Error: maxLines=10, so need > 11 lines to collapse
+	var longErr string
+	for i := 0; i < 12; i++ {
+		longErr += fmt.Sprintf("error line %d\n", i)
+	}
+	v := formatToolOutput(strings.TrimRight(longErr, "\n"), true, false, 80)
+	if !strings.Contains(v, "ctrl+o to see all") {
+		t.Errorf("collapsed error should show 'see all' hint, got: %q", v)
+	}
+}
+
+func TestFormatToolOutput_Expanded(t *testing.T) {
+	t.Parallel()
+	lines := "line1\nline2\nline3\nline4\nline5"
+	v := formatToolOutput(lines, false, true, 80)
+	if strings.Contains(v, "ctrl+o") {
+		t.Errorf("expanded output should not show collapse hint, got: %q", v)
+	}
+	if !strings.Contains(v, "line5") {
+		t.Errorf("expanded should show all lines, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// consumeAnsiEscape — various branches
+// ---------------------------------------------------------------------------
+
+func TestConsumeAnsiEscape_CSI(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("\x1b[31mhello")
+	if got != "\x1b[31m" {
+		t.Errorf("CSI escape = %q, want %q", got, "\x1b[31m")
+	}
+}
+
+func TestConsumeAnsiEscape_OSC_BEL(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("\x1b]0;title\x07rest")
+	if got != "\x1b]0;title\x07" {
+		t.Errorf("OSC BEL escape = %q, want %q", got, "\x1b]0;title\x07")
+	}
+}
+
+func TestConsumeAnsiEscape_OSC_ST(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("\x1b]0;title\x1b\\rest")
+	if got != "\x1b]0;title\x1b\\" {
+		t.Errorf("OSC ST escape = %q, want %q", got, "\x1b]0;title\x1b\\")
+	}
+}
+
+func TestConsumeAnsiEscape_TwoChar(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("\x1b(c")
+	if got != "\x1b(" {
+		t.Errorf("2-char escape = %q, want %q", got, "\x1b(")
+	}
+}
+
+func TestConsumeAnsiEscape_NotEscape(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("hello")
+	if got != "h" {
+		t.Errorf("non-escape = %q, want %q", got, "h")
+	}
+}
+
+func TestConsumeAnsiEscape_ShortString(t *testing.T) {
+	t.Parallel()
+	got := consumeAnsiEscape("\x1b")
+	if got != "\x1b" {
+		t.Errorf("short escape = %q, want %q", got, "\x1b")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stripAnsi
+// ---------------------------------------------------------------------------
+
+func TestStripAnsi_Basic(t *testing.T) {
+	t.Parallel()
+	got := stripAnsi("hello")
+	if got != "hello" {
+		t.Errorf("stripAnsi(hello) = %q, want %q", got, "hello")
+	}
+}
+
+func TestStripAnsi_WithEscape(t *testing.T) {
+	t.Parallel()
+	got := stripAnsi("\x1b[31mred\x1b[0m text")
+	if got != "red text" {
+		t.Errorf("stripAnsi with escape = %q, want %q", got, "red text")
+	}
+}
+
+func TestStripAnsi_PartialEscape(t *testing.T) {
+	t.Parallel()
+	got := stripAnsi("ab\x1b[") // unterminated escape
+	if got != "ab" {
+		t.Errorf("stripAnsi partial = %q, want %q", got, "ab")
+	}
+}
+
+func TestStripAnsi_Empty(t *testing.T) {
+	t.Parallel()
+	got := stripAnsi("")
+	if got != "" {
+		t.Errorf("stripAnsi('') = %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wrapLines — narrow width (availFirst < 1)
+// ---------------------------------------------------------------------------
+
+func TestInput_WrapLines_NarrowWidth(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(2) // width - promptWidth could go < 1
+	i.SetValue("hello world")
+	// Should not panic
+	v := i.View()
+	if v == "" {
+		t.Error("view should not be empty with narrow width")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CursorUp/CursorDown — edge cases
+// ---------------------------------------------------------------------------
+
+func TestInput_CursorUp_FirstLine(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	// Cursor at start (first line)
+	i.Home()
+	moved := i.CursorUp()
+	if moved {
+		t.Error("CursorUp on first wrapped line should return false")
+	}
+}
+
+func TestInput_CursorDown_LastLine(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	// Cursor at end (last line)
+	i.End()
+	moved := i.CursorDown()
+	if moved {
+		t.Error("CursorDown on last wrapped line should return false")
+	}
+}
+
+func TestInput_CursorUp_SingleLine(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("abc")
+	moved := i.CursorUp()
+	if moved {
+		t.Error("CursorUp on single line should return false")
+	}
+}
+
+func TestInput_CursorDown_SingleLine(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("abc")
+	moved := i.CursorDown()
+	if moved {
+		t.Error("CursorDown on single line should return false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteWordForward
+// ---------------------------------------------------------------------------
+
+func TestInput_DeleteWordForward(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello world")
+	i.Home()
+	deleted := i.DeleteWordForward()
+	if deleted != "hello " {
+		t.Errorf("DeleteWordForward = %q, want %q", deleted, "hello ")
+	}
+	if i.Value() != "world" {
+		t.Errorf("after DeleteWordForward = %q, want %q", i.Value(), "world")
+	}
+}
+
+func TestInput_DeleteWordForward_AtEnd(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("abc")
+	i.End()
+	deleted := i.DeleteWordForward()
+	if deleted != "" {
+		t.Errorf("DeleteWordForward at end = %q, want empty", deleted)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cursorLine — fallback (cursor beyond all lines)
+// ---------------------------------------------------------------------------
+
+func TestInput_CursorLine_Fallback(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	i.SetValue("hello world")
+	// Artificially set cursor beyond value length
+	i.cursor = 999
+	lines := i.wrapLines()
+	cl := i.cursorLine(lines)
+	if cl != len(lines)-1 {
+		t.Errorf("cursorLine with cursor beyond end = %d, want %d", cl, len(lines)-1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CursorDown — CJK chars for column calculation
+// ---------------------------------------------------------------------------
+
+func TestInput_CursorDown_CJK(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	// CJK chars are width 2, so fewer fit per line
+	i.SetValue("你好你好你好你好你好你好") // 12 CJK = 24 display cells
+	i.Home()
+	// Move to first line, then CursorDown
+	moved := i.CursorDown()
+	if !moved {
+		t.Error("CursorDown should move with CJK wrapped text")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PrevWord — with space loop (pos > 0 && space)
+// ---------------------------------------------------------------------------
+
+func TestInput_PrevWord_SpacesOnlyBeforeCursor(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("     ") // all spaces
+	i.End()
+	i.PrevWord()
+	// Should go to start since all are spaces
+	if i.cursor != 0 {
+		t.Errorf("PrevWord with all spaces = %d, want 0", i.cursor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderLineSingle — empty lines
+// ---------------------------------------------------------------------------
+
+func TestInput_RenderLineSingle_EmptyRunes(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(80)
+	// Empty value, focused — should render cursor block
+	v := i.View()
+	if !strings.Contains(v, "❯") {
+		t.Errorf("empty focused input should show prompt, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderToolCall — running state with dot
+// ---------------------------------------------------------------------------
+
+func TestRenderToolCall_RunningState(t *testing.T) {
+	t.Parallel()
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Bash",
+				Summary: "ls -la",
+				Done:    false,
+			}},
+		},
+	}
+	v := m.View(80, false, "")
+	if !strings.Contains(v, "running...") {
+		t.Errorf("running tool should show 'running...', got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderToolCall — running state with toolDot
+// ---------------------------------------------------------------------------
+
+func TestRenderToolCall_RunningWithToolDot(t *testing.T) {
+	t.Parallel()
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Bash",
+				Summary: "make test",
+				Done:    false,
+			}},
+		},
+	}
+	v := m.View(80, false, "●")
+	if !strings.Contains(v, "Bash") {
+		t.Errorf("should contain tool name, got: %q", v)
+	}
+	if !strings.Contains(v, "make test") {
+		t.Errorf("should contain summary, got: %q", v)
+	}
+	if !strings.Contains(v, "running...") {
+		t.Errorf("should show running, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// history — save error paths
+// ---------------------------------------------------------------------------
+
+func TestHistory_Save_ReadOnlyDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	readOnlyDir := dir + "/ro"
+	if err := os.MkdirAll(readOnlyDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(readOnlyDir + "/sub/history.jsonl")
+	h.Add("test")
+	// MkdirAll should fail on read-only parent
+	// Verify no panic, entry still in memory
+	if h.Len() != 1 {
+		t.Errorf("Len() = %d, want 1", h.Len())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CursorDown — cursor in middle of line with wrapping
+// ---------------------------------------------------------------------------
+
+func TestInput_CursorDown_MidLine(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(20)
+	// "hello world test" = 16 chars, fits in one line (20 - promptWidth)
+	// Make it longer so it wraps: "abcdefghijklmnopqrstuvwxyz"
+	i.SetValue("abcdefghijklmnopqrstuvwxyz")
+	// Move cursor to position 5 (middle of first wrapped line)
+	i.Home()
+	for j := 0; j < 5; j++ {
+		i.CursorRight()
+	}
+	if i.cursor != 5 {
+		t.Fatalf("cursor should be 5, got %d", i.cursor)
+	}
+	moved := i.CursorDown()
+	if !moved {
+		t.Error("CursorDown from mid-line should move to next wrapped line")
+	}
+	// Cursor should be on second line, roughly same column
+	if i.cursor < 10 {
+		t.Errorf("cursor should be on second wrapped line, got %d", i.cursor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Markdown — softbreak
+// ---------------------------------------------------------------------------
+
+func TestMarkdownRender_Softbreak(t *testing.T) {
+	t.Parallel()
+	// Softbreak: two spaces at end of line followed by newline
+	input := "line1  \nline2"
+	v := Render(input)
+	if !strings.Contains(v, "line1") || !strings.Contains(v, "line2") {
+		t.Errorf("softbreak should render both lines, got: %q", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Markdown — empty table
+// ---------------------------------------------------------------------------
+
+func TestMarkdownRender_EmptyTable(t *testing.T) {
+	t.Parallel()
+	// Table with header only (no rows)
+	input := "| A |\n| --- |"
+	v := Render(input)
+	if !strings.Contains(v, "A") {
+		t.Errorf("table with header should render, got: %q", v)
 	}
 }

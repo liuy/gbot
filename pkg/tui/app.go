@@ -69,6 +69,12 @@ type App struct {
 	toolBlink     bool
 	toolBlinkTick int
 
+	// Content cache — avoids rebuilding rendered messages every frame.
+	// TS writes content to terminal; terminal handles scrollback natively.
+	// We follow the same pattern: render all messages, let terminal scroll.
+	contentDirty bool
+	contentCache string
+
 	// Smoothly animated token counters for spinner display
 	displayedInputTokens  int
 	displayedOutputTokens int
@@ -109,8 +115,10 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 // ---------------------------------------------------------------------------
 
 // Init initializes the TUI.
+// No EnterAltScreen — terminal native scrollback handles scrolling,
+// matching TS behavior where Ink writes content and the terminal scrolls.
 func (a *App) Init() tea.Cmd {
-	return tea.EnterAltScreen
+	return nil
 }
 
 // Update handles bubbletea messages.
@@ -142,25 +150,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the entire TUI.
+// Renders all messages (no truncation) — terminal native scrollback handles scrolling.
 func (a *App) View() string {
 	if a.width == 0 {
 		return "Loading..."
 	}
 
-	var sb strings.Builder
-
-	// Render messages (scroll region)
-	availHeight := a.height - 5 // status bar + progress + input + borders
-	if availHeight < 3 {
-		availHeight = 3
-	}
-
-	var toolDot string
+	// Rebuild content cache only when dirty
+	if a.contentDirty || a.contentCache == "" {
+		var toolDot string
 		if a.repl.IsStreaming() && a.toolBlink {
 			toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
 		}
-		rendered := renderMessages(a.repl.Messages(), a.width, availHeight, a.allToolsExpanded, toolDot)
-	sb.WriteString(rendered)
+		a.contentCache = renderMessagesFull(a.repl.Messages(), a.width, a.allToolsExpanded, toolDot)
+		a.contentDirty = false
+	}
+
+	var sb strings.Builder
+
+	// Message content — terminal scrolls natively
+	sb.WriteString(a.contentCache)
+	sb.WriteString("\n")
 
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
@@ -202,6 +212,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyCtrlO:
 		a.allToolsExpanded = !a.allToolsExpanded
+		a.contentDirty = true
 		return a, nil
 
 	case tea.KeyCtrlB:
