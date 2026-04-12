@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // Test hooks — package-level vars that can be overridden in tests.
@@ -159,7 +161,7 @@ func drainPTY(reader *bufio.Reader, onOutput func(string)) {
 		}
 
 		// Strip ANSI from the chunk
-		stripped := StripANSI(string(line))
+		stripped := tool.StripANSI(string(line))
 		partialLine.WriteString(stripped)
 
 		if !isPrefix {
@@ -244,7 +246,7 @@ func openPTY() (master *os.File, slave *os.File, err error) {
 //
 // Source: ink.tsx:226 — process.on('SIGWINCH', handleResize)
 func watchSigwinch(ptyFd uintptr, stop <-chan struct{}) {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(SigwinchPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -256,6 +258,9 @@ func watchSigwinch(ptyFd uintptr, stop <-chan struct{}) {
 		}
 	}
 }
+
+// SigwinchPollInterval is the interval for checking terminal resize events.
+const SigwinchPollInterval = 500 * time.Millisecond
 
 // isPTYAvailable checks if PTY allocation is possible on this system.
 func isPTYAvailable() bool {

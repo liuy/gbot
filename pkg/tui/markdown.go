@@ -14,6 +14,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	ast "github.com/gomarkdown/markdown/ast"
 	"github.com/gomarkdown/markdown/parser"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // Render converts markdown text to ANSI-styled terminal output.
@@ -675,12 +676,8 @@ func linkifyIssueReferences(text string) string {
 
 // ---- ANSI utilities ----
 
-var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x1b\\`)
-
 // stripANSI removes ANSI escape sequences from a string.
-func stripANSI(s string) string {
-	return ansiEscapeRe.ReplaceAllString(s, "")
-}
+var stripANSI = tool.StripANSI
 
 // stringWidth returns the display width of a string (excluding ANSI sequences).
 // CJK characters count as 2 columns, matching TS stringWidth behavior.

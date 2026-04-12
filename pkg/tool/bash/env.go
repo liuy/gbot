@@ -34,6 +34,8 @@ func SaveSnapshot() (*EnvSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot file: %w", err)
 	}
+	// Restrict permissions — snapshot contains all env vars including potential secrets
+	_ = os.Chmod(f.Name(), 0600)
 
 	var buf strings.Builder
 	buf.WriteString("# gbot shell environment snapshot\n")
@@ -240,7 +242,7 @@ func ensureSocketInitialized() error {
 		// Another goroutine is initializing — wait via polling
 		// Source: tmuxSocket.ts:222-229 — wait for initPromise
 		// The mutex is unlocked here, re-locked in the loop.
-		// On break, mutex is held — the outer defer at line 212 handles unlock.
+		// On break, mutex is held — the outer defer handles unlock.
 		tmuxMu.Unlock()
 		for {
 			time.Sleep(10 * time.Millisecond)
@@ -335,6 +337,9 @@ func doInitialize() error {
 func killTmuxServer() error {
 	socket := getClaudeSocketName()
 	result := execTmux([]string{"-L", socket, "kill-server"})
+	if result.Code == 0 {
+		return nil
+	}
 	return fmt.Errorf("kill-server exit %d: %s", result.Code, result.Stderr)
 }
 

@@ -440,14 +440,6 @@ func TestPadAligned(t *testing.T) {
 	}
 }
 
-func TestStripANSI(t *testing.T) {
-	t.Parallel()
-	got := stripANSI("\x1b[31mred\x1b[0m text")
-	if got != "red text" {
-		t.Errorf("stripANSI = %q, want %q", got, "red text")
-	}
-}
-
 func TestStringWidth(t *testing.T) {
 	t.Parallel()
 	got := stringWidth("\x1b[31mhello\x1b[0m")

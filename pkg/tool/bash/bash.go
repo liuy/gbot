@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -205,14 +204,11 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 
 	// Execute in PTY
 	var outputBuf strings.Builder
-	var mu sync.Mutex
 
 	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
 		func(line string) {
-			mu.Lock()
 			outputBuf.WriteString(line)
 			outputBuf.WriteByte('\n')
-			mu.Unlock()
 		},
 		timeout,
 	)
