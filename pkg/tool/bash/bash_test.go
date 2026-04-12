@@ -3,6 +3,7 @@ package bash_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -251,8 +252,9 @@ func TestExecute_Stderr(t *testing.T) {
 	}
 
 	output := result.Data.(*bash.Output)
-	if !strings.Contains(output.Stderr, "error") {
-		t.Errorf("Stderr = %q, want to contain %q", output.Stderr, "error")
+	// PTY mode merges stdout/stderr into Stdout; non-PTY has separate Stderr
+	if !strings.Contains(output.Stderr, "error") && !strings.Contains(output.Stdout, "error") {
+		t.Errorf("Stdout=%q Stderr=%q, want either to contain %q", output.Stdout, output.Stderr, "error")
 	}
 }
 
@@ -342,8 +344,10 @@ func TestExecute_Timeout(t *testing.T) {
 	if !output.TimedOut {
 		t.Error("TimedOut = false, want true")
 	}
-	if output.ExitCode != -1 {
-		t.Errorf("ExitCode = %d, want -1", output.ExitCode)
+	// PTY mode returns signal-based exit codes (128+signal), non-PTY returns -1
+	// Both are acceptable — the important invariant is TimedOut=true
+	if output.ExitCode != -1 && output.ExitCode < 128 {
+		t.Errorf("ExitCode = %d, want -1 or signal-based code (>=128)", output.ExitCode)
 	}
 }
 
@@ -740,5 +744,21 @@ func TestRenderResult_StderrAndTimedOut(t *testing.T) {
 	want := "error\nCommand timed out"
 	if result != want {
 		t.Errorf("RenderResult(stderr+timedout) = %q, want %q", result, want)
+	}
+}
+
+func TestExecute_WithToolContextCWD(t *testing.T) {
+	t.Parallel()
+
+	dir := os.TempDir()
+	input := json.RawMessage(`{"command":"pwd"}`)
+	tctx := &types.ToolUseContext{WorkingDir: dir}
+	result, err := bash.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	output := result.Data.(*bash.Output)
+	if !strings.Contains(output.Stdout, dir) {
+		t.Errorf("Stdout = %q, want to contain %q", output.Stdout, dir)
 	}
 }

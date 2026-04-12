@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -145,6 +147,8 @@ func New() tool.Tool {
 
 // Execute runs a bash command.
 // Source: BashTool.ts:call() — 1:1 port.
+// Uses PTY when available (Linux with /dev/ptmx), falls back to non-PTY mode.
+// Source: Shell.ts:181-442 — exec() dispatches to provider which builds command.
 func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -175,6 +179,69 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 		}
 	}
 
+	// Try PTY mode first, fallback to non-PTY
+	// Source: Plan Step 1.9 — graceful degradation
+	if isPTYAvailable() {
+		return executePTY(ctx, in, cwd, timeout)
+	}
+	return executeNonPTY(ctx, in, cwd, timeout)
+}
+
+// executePTY runs a command in PTY mode.
+// Source: Shell.ts:181-442 — exec() with provider.buildExecCommand + wrapSpawn.
+func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration) (*tool.ToolResult, error) {
+	// Build the wrapped command
+	// Source: bashProvider.ts:77-198 — buildExecCommand
+	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
+	cwdFile := buildCwdFilePath(id)
+	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
+
+	// Build environment with TMUX isolation
+	// Source: bashProvider.ts:208-253 — getEnvironmentOverrides
+	baseEnv := os.Environ()
+	if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
+		baseEnv = applyEnvOverrides(baseEnv, overrides)
+	}
+
+	// Execute in PTY
+	var outputBuf strings.Builder
+	var mu sync.Mutex
+
+	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
+		func(line string) {
+			mu.Lock()
+			outputBuf.WriteString(line)
+			outputBuf.WriteByte('\n')
+			mu.Unlock()
+		},
+		timeout,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Track CWD after command completes
+	// Source: Shell.ts:396-420 — read cwdFilePath, update engine cwd
+	newCwd := trackCwd(cwdFile, cwd)
+
+	// Clean up cwd temp file
+	// Source: Shell.ts:416-420 — unlinkSync(nativeCwdFilePath)
+	_ = os.Remove(cwdFile)
+
+	output := &Output{
+		Stdout:   truncateOutput(outputBuf.String(), MaxOutputSize),
+		ExitCode: exitCode,
+		TimedOut: interrupted,
+		CWD:      newCwd,
+	}
+
+	return &tool.ToolResult{Data: output}, nil
+}
+
+// executeNonPTY runs a command without PTY (fallback mode).
+// This is the original implementation, used when PTY is not available.
+func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration) (*tool.ToolResult, error) {
 	// Create context with timeout
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -195,14 +262,12 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	startTime := time.Now()
 	err := cmd.Run()
-	_ = time.Since(startTime)
 
 	output := &Output{
-		Stdout:   truncateOutput(stdout.String(), MaxOutputSize),
-		Stderr:   truncateOutput(stderr.String(), MaxOutputSize),
-		CWD:      cwd,
+		Stdout: truncateOutput(stdout.String(), MaxOutputSize),
+		Stderr: truncateOutput(stderr.String(), MaxOutputSize),
+		CWD:    cwd,
 	}
 
 	// Determine exit code
@@ -220,6 +285,70 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	}
 
 	return &tool.ToolResult{Data: output}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Command wrapper + CWD tracking
+// Source: bashProvider.ts:77-198 — buildExecCommand
+// ---------------------------------------------------------------------------
+
+// buildCommand wraps the user command with snapshot sourcing, session env,
+// alias expansion, and CWD tracking.
+//
+// Source: bashProvider.ts:77-198 — buildExecCommand().
+// The wrapper: source snapshot → sessionEnv → disable extglob → eval cmd → pwd tracking
+func buildCommand(cmd string, snapshot *EnvSnapshot, cwdFile string) string {
+	var parts []string
+
+	// 1. Source snapshot (bashProvider.ts:161-167)
+	if snapshot != nil {
+		parts = append(parts, fmt.Sprintf("source %s 2>/dev/null || true", snapshot.Path))
+	}
+
+	// 2. Source session environment variables (bashProvider.ts:169-173)
+	if sessionScript := SessionEnvScript(); sessionScript != "" {
+		parts = append(parts, sessionScript)
+	}
+
+	// 3. Disable extended glob for security (bashProvider.ts:176-179)
+	parts = append(parts, "shopt -u extglob 2>/dev/null || true")
+
+	// 4. Execute user command via eval for alias expansion (bashProvider.ts:184)
+	parts = append(parts, fmt.Sprintf("eval %q", cmd))
+
+	// 5. Track cwd after command (bashProvider.ts:186)
+	parts = append(parts, fmt.Sprintf("pwd -P >| %s", cwdFile))
+
+	return strings.Join(parts, " && ")
+}
+
+// buildCwdFilePath generates a temp file path for CWD tracking.
+// Source: bashProvider.ts:118-121 — cwdFilePath = join(tmpdir, "claude-{id}-cwd")
+func buildCwdFilePath(id string) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("gbot-%s-cwd", id))
+}
+
+// trackCwd reads the CWD temp file and validates the directory exists.
+// Falls back to originalCwd if file is missing or directory was deleted.
+//
+// Source: Shell.ts:396-420 — reads cwdFilePath, calls setCwd() if changed.
+// Shell.ts:221-238 — CWD recovery when directory no longer exists.
+func trackCwd(cwdFile string, originalCwd string) string {
+	data, err := os.ReadFile(cwdFile)
+	if err != nil {
+		return originalCwd
+	}
+	newCwd := strings.TrimSpace(string(data))
+	if newCwd != "" && dirExists(newCwd) {
+		return newCwd
+	}
+	return originalCwd // recover: Shell.ts:221-238
+}
+
+// dirExists checks if a directory exists.
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // isReadOnlyCommand classifies a command as read-only.
