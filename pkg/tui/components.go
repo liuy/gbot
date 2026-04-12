@@ -882,10 +882,17 @@ func runeDisplayWidth(r rune) int {
 		return 0
 	}
 
-	// Variation selectors
-	if (r >= 0xFE00 && r <= 0xFE0F) || // VS1-VS16
+	// Variation selectors VS1-VS15 (width 0)
+	// VS16 (U+FE0F) is handled separately below — it "upgrades"
+	// text-presentation emoji to width 2 (EP=No base=1 + VS16=1 = 2).
+	// EP=Yes emoji+VS16 never reach here because stripRedundantVS16 removes it first.
+	if (r >= 0xFE00 && r <= 0xFE0E) || // VS1-VS15
 		(r >= 0xE0100 && r <= 0xE01EF) { // Supplemental variation selectors
 		return 0
+	}
+	// VS16 (U+FE0F): width 1 — upgrades text-presentation emoji to width 2
+	if r == 0xFE0F {
+		return 1
 	}
 
 	// Combining diacritical marks
@@ -955,18 +962,72 @@ func runeDisplayWidth(r rune) int {
 		return 2
 	case r >= 0xFFE0 && r <= 0xFFE6:
 		return 2
-	// Miscellaneous symbols and dingbats (❤, ⚠, ✓, etc.)
-	// Source: ink/stringWidth.ts — needsSegmentation() checks 0x2600..0x27BF
-	case r >= 0x2600 && r <= 0x27BF:
-		return 2
-	// BMP Emoji_Presentation below 0x2600
+	// BMP Emoji_Presentation=Yes — EP=No defaults to text (width 1)
+	// EP=No emoji become width 2 when followed by VS16 (width 1 each, total 2)
 	case r >= 0x231A && r <= 0x231B:
 		return 2
-	case r >= 0x23E9 && r <= 0x23F3:
+	case r >= 0x23E9 && r <= 0x23EC:
+		return 2
+	case r == 0x23F0:
+		return 2
+	case r == 0x23F3:
+		return 2
+	case r >= 0x23F8 && r <= 0x23FA:
 		return 2
 	case r >= 0x25FD && r <= 0x25FE:
 		return 2
-	// BMP Emoji_Presentation above 0x27BF
+	// 0x2600..0x27BF: only EP=Yes sub-ranges (no broad range)
+	case r >= 0x2614 && r <= 0x2615:
+		return 2
+	case r >= 0x2648 && r <= 0x2653:
+		return 2
+	case r == 0x267F:
+		return 2
+	case r == 0x2693:
+		return 2
+	case r == 0x26A1:
+		return 2
+	case r >= 0x26AA && r <= 0x26AB:
+		return 2
+	case r >= 0x26BD && r <= 0x26BE:
+		return 2
+	case r >= 0x26C4 && r <= 0x26C5:
+		return 2
+	case r == 0x26CE:
+		return 2
+	case r == 0x26D4:
+		return 2
+	case r == 0x26EA:
+		return 2
+	case r >= 0x26F2 && r <= 0x26F3:
+		return 2
+	case r == 0x26F5:
+		return 2
+	case r == 0x26FA:
+		return 2
+	case r == 0x26FD:
+		return 2
+	case r == 0x2705:
+		return 2
+	case r >= 0x270A && r <= 0x270B:
+		return 2
+	case r == 0x2728:
+		return 2
+	case r == 0x274C:
+		return 2
+	case r == 0x274E:
+		return 2
+	case r >= 0x2753 && r <= 0x2755:
+		return 2
+	case r == 0x2757:
+		return 2
+	case r >= 0x2795 && r <= 0x2797:
+		return 2
+	case r == 0x27B0:
+		return 2
+	case r == 0x27BF:
+		return 2
+	// BMP Emoji_Presentation=Yes above 0x27BF
 	case r >= 0x2B1B && r <= 0x2B1C:
 		return 2
 	case r == 0x2B50:
@@ -1007,6 +1068,7 @@ func isEmojiPresentation(r rune) bool {
 		r >= 0x23E9 && r <= 0x23EC,
 		r == 0x23F0,
 		r == 0x23F3,
+		r >= 0x23F8 && r <= 0x23FA,
 		r >= 0x25FD && r <= 0x25FE,
 		r >= 0x2614 && r <= 0x2615,
 		r >= 0x2648 && r <= 0x2653,

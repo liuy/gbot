@@ -1549,13 +1549,13 @@ func TestRuneDisplayWidth_OtherNonASCII(t *testing.T) {
 
 func TestRuneDisplayWidth_ZeroWidth_VariationSelectors(t *testing.T) {
 	t.Parallel()
-	//
+	// VS1-VS15 are zero-width; VS16 (U+FE0F) is width 1 (see separate test)
 	tests := []struct {
 		r    rune
 		name string
 	}{
 		{0xFE00, "VS1 U+FE00"},
-		{0xFE0F, "VS16 U+FE0F"},
+		{0xFE0E, "VS15 U+FE0E"},
 		{0xFE05, "VS6 U+FE05"},
 	}
 	for _, tt := range tests {
@@ -1564,6 +1564,14 @@ func TestRuneDisplayWidth_ZeroWidth_VariationSelectors(t *testing.T) {
 				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
 			}
 		})
+	}
+}
+
+func TestRuneDisplayWidth_VS16_Width1(t *testing.T) {
+	t.Parallel()
+	// VS16 (U+FE0F) is width 1 — it "upgrades" text-presentation emoji to width 2
+	if w := runeDisplayWidth(0xFE0F); w != 1 {
+		t.Errorf("runeDisplayWidth(VS16) = %d, want 1", w)
 	}
 }
 
@@ -1737,16 +1745,36 @@ func TestRuneDisplayWidth_ZeroWidth_TagCharacters(t *testing.T) {
 }
 
 // Emoji + variation selector sequence width test
+// VS16 is width 1 (it "upgrades" EP=No emoji from width 1 to 2).
+// EP=Yes emoji + VS16 should be stripped first via stripRedundantVS16.
 func TestStringWidth_EmojiWithVariationSelector(t *testing.T) {
 	t.Parallel()
-	// 🏷️ = U+1F3F7 (emoji, width 2) + U+FE0F (VS16, width 0) = total 2
+	// EP=Yes: stripRedundantVS16 removes VS16 → base width 2
 	emoji := "🏷️"
-	width := 0
-	for _, r := range emoji {
-		width += runeDisplayWidth(r)
-	}
+	stripped := stripRedundantVS16(emoji)
+	width := stringWidth(stripped)
 	if width != 2 {
-		t.Errorf("🏷️ total width = %d, want 2", width)
+		t.Errorf("🏷️ after strip = %d, want 2", width)
+	}
+}
+
+func TestStringWidth_TextEmojiWithVS16(t *testing.T) {
+	t.Parallel()
+	// EP=No emoji + VS16: base=1, VS16=1, total=2
+	tests := []struct {
+		input    string
+		wantWidth int
+	}{
+		{"⏭️", 2},  // EP=No outside 0x2600..0x27BF
+		{"⚠️", 2},  // EP=No inside 0x2600..0x27BF
+		{"↔️", 2},  // EP=No arrow
+	}
+	for _, tt := range tests {
+		stripped := stripRedundantVS16(tt.input)
+		w := stringWidth(stripped)
+		if w != tt.wantWidth {
+			t.Errorf("stringWidth(stripRedundantVS16(%q)) = %d, want %d", tt.input, w, tt.wantWidth)
+		}
 	}
 }
 
@@ -1888,17 +1916,17 @@ func TestRuneDisplayWidth_Emoji(t *testing.T) {
 		{'💪', "bicep U+1F4AA"},
 		{'😎', "sunglasses U+1F60E"},
 		{'😀', "grinning U+1F600"},
-		{'❤', "heart U+2764"},           // miscellaneous symbols
-		{'⚠', "warning U+26A0"},         // miscellaneous symbols
-		{'✓', "check U+2713"},           // dingbats
-		{'⌚', "watch U+231A"},           // BMP emoji below 0x2600
-		{'⏩', "fast-forward U+23E9"},   // BMP emoji below 0x2600
-		{'⏰', "alarm U+23F0"},          // BMP emoji below 0x2600
-		{'⏳', "hourglass U+23F3"},      // BMP emoji below 0x2600
-		{'◾', "black small square U+25FE"}, // BMP emoji below 0x2600
-		{'⭐', "star U+2B50"},           // BMP Emoji_Presentation above 0x27BF
-		{'⭕', "circle U+2B55"},         // BMP Emoji_Presentation above 0x27BF
-		{'⬛', "black square U+2B1B"},   // BMP Emoji_Presentation above 0x27BF
+		{'⌚', "watch U+231A"},           // EP=Yes
+		{'⏩', "fast-forward U+23E9"},   // EP=Yes
+		{'⏰', "alarm U+23F0"},          // EP=Yes
+		{'⏳', "hourglass U+23F3"},      // EP=Yes
+		{'◾', "black small square U+25FE"}, // EP=Yes
+		{'⭐', "star U+2B50"},           // EP=Yes
+		{'⭕', "circle U+2B55"},         // EP=Yes
+		{'⏸', "pause U+23F8"},          // EP=Yes 0x23F8..0x23FA
+		{'⏹', "stop U+23F9"},           // EP=Yes 0x23F8..0x23FA
+		{'⏺', "record U+23FA"},         // EP=Yes 0x23F8..0x23FA
+		{'⬛', "black square U+2B1B"},   // EP=Yes
 		{0x1F000, "mahjong U+1F000"},    // start of emoji block
 		{0x1FAFF, "end of emoji block"},
 	}
@@ -1918,11 +1946,27 @@ func TestRuneDisplayWidth_TextPresentationEmoji(t *testing.T) {
 		r    rune
 		name string
 	}{
+		{'#', "hash U+0023"},
+		{'*', "asterisk U+002A"},
+		{'0', "digit zero U+0030"},
+		{'©', "copyright U+00A9"},
+		{'®', "registered U+00AE"},
+		{'™', "trademark U+2122"},
+		// EP=No emoji (Emoji=Yes but default text presentation, width 1)
+		{'❤', "heart U+2764"},       // was in broad 0x2600..0x27BF range
+		{'⚠', "warning U+26A0"},     // was in broad 0x2600..0x27BF range
+		{'✓', "check U+2713"},       // was in broad 0x2600..0x27BF range
+		{'↔', "left-right arrow U+2194"},
+		{'↖', "up-left arrow U+2196"},
+		{'↪', "right return U+21AA"},
+		{'⌨', "keyboard U+2328"},
+		{'Ⓜ', "circled M U+24C2"},
+		{'▶', "play U+25B6"},
+		{'◀', "reverse U+25C0"},
 		{'⬅', "left arrow U+2B05"},
-		{'⬆', "up arrow U+2B06"},
-		{'⬇', "down arrow U+2B07"},
 		{'⤴', "arrow curving up U+2934"},
-		{'⤵', "arrow curving down U+2935"},
+		{'⏭', "next track U+23ED"},
+		{'⏱', "stopwatch U+23F1"},
 	}
 	for _, tc := range textEmoji {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2286,11 +2330,8 @@ func TestIsEmojiPresentation_TextPresentation(t *testing.T) {
 		{'©', "copyright"},
 		{'®', "registered"},
 		{'™', "trademark"},
-		{'↔', "left-right arrow"},
 		{'⏏', "eject"},
 		{'⏭', "next track"},
-		{'▶', "play"},
-		{'◀', "reverse"},
 		{'☀', "sun"},
 		{'☁', "cloud"},
 		{'☂', "umbrella"},
