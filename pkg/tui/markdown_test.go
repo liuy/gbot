@@ -1174,3 +1174,22 @@ func TestRender_Table_InlineCodeStructure(t *testing.T) {
 		}
 	}
 }
+
+func TestRender_Table_EmojiAlignment(t *testing.T) {
+	t.Parallel()
+	// Emoji with variation selector (🏞️ = U+1F3DE + U+FE0F) in table cells
+	input := "| Name | Value |\n|------|-------|\n| 🏞️ test | hello |\n| normal | world |"
+	result := Render(input)
+	lines := strings.Split(result, "\n")
+	clean := lines
+	for len(clean) > 0 && clean[len(clean)-1] == "" {
+		clean = clean[:len(clean)-1]
+	}
+	borderW := displayWidth(clean[0])
+	for i, line := range clean {
+		w := displayWidth(line)
+		if w != borderW {
+			t.Errorf("line %d width=%d != border width=%d (%q)", i, w, borderW, line)
+		}
+	}
+}

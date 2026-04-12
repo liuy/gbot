@@ -1442,11 +1442,11 @@ func TestConsumeAnsiEscape_NotEscape(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRuneDisplayWidth_Latin1(t *testing.T) {
-	// Latin-1 supplement: 0x80+ falls through to default → 1
-	// (our simplified function doesn't distinguish C1 controls)
-	if w := runeDisplayWidth(0x80); w != 1 {
-		t.Errorf("0x80 = %d, want 1", w)
+	// C1 controls 0x80-0x9F → width 0 (TS: isZeroWidth)
+	if w := runeDisplayWidth(0x80); w != 0 {
+		t.Errorf("0x80 = %d, want 0", w)
 	}
+	// NBSP 0xA0 → width 1 (not a control char)
 	if w := runeDisplayWidth(0xA0); w != 1 {
 		t.Errorf("NBSP 0xA0 = %d, want 1", w)
 	}
@@ -1540,6 +1540,366 @@ func TestRuneDisplayWidth_OtherNonASCII(t *testing.T) {
 	// Non-ASCII, non-wide → width 1 (default)
 	if w := runeDisplayWidth('é'); w != 1 {
 		t.Errorf("é = %d, want 1", w)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runeDisplayWidth — zero-width characters (TS: ink/stringWidth.ts isZeroWidth)
+// ---------------------------------------------------------------------------
+
+func TestRuneDisplayWidth_ZeroWidth_VariationSelectors(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0xFE00, "VS1 U+FE00"},
+		{0xFE0F, "VS16 U+FE0F"},
+		{0xFE05, "VS6 U+FE05"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_CombiningDiacritical(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x0300, "combining grave accent U+0300"},
+		{0x0301, "combining acute accent U+0301"},
+		{0x036F, "combining latin small letter U+036F"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_ZeroWidthSpace(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x200B, "zero-width space U+200B"},
+		{0x200C, "zero-width non-joiner U+200C"},
+		{0x200D, "zero-width joiner U+200D"},
+		{0xFEFF, "BOM U+FEFF"},
+		{0x2060, "word joiner U+2060"},
+		{0x2064, "invisible plus U+2064"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_C1Controls(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x7F, "DEL U+007F"},
+		{0x9F, "C1 control U+009F"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_SoftHyphen(t *testing.T) {
+	t.Parallel()
+	//
+	if w := runeDisplayWidth(0x00AD); w != 0 {
+		t.Errorf("soft hyphen U+00AD = %d, want 0", w)
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_CombiningHalfMarks(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0xFE20, "combining left half mark U+FE20"},
+		{0xFE2F, "combining cyrillic U+FE2F"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_CombiningExtended(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x1AB0, "combining extended U+1AB0"},
+		{0x1AFF, "combining extended U+1AFF"},
+		{0x1DC0, "combining diacritical supplement U+1DC0"},
+		{0x1DFF, "combining diacritical supplement U+1DFF"},
+		{0x20D0, "combining diacritical for symbols U+20D0"},
+		{0x20FF, "combining diacritical for symbols U+20FF"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_Surrogates(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0xD800, "high surrogate U+D800"},
+		{0xDFFF, "low surrogate U+DFFF"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_SupplementalVariationSelectors(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0xE0100, "SVS U+E0100"},
+		{0xE01EF, "SVS U+E01EF"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_TagCharacters(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0xE0000, "tag space U+E0000"},
+		{0xE007F, "cancel tag U+E007F"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+// Emoji + variation selector sequence width test
+func TestStringWidth_EmojiWithVariationSelector(t *testing.T) {
+	t.Parallel()
+	// 🏷️ = U+1F3F7 (emoji, width 2) + U+FE0F (VS16, width 0) = total 2
+	emoji := "🏷️"
+	width := 0
+	for _, r := range emoji {
+		width += runeDisplayWidth(r)
+	}
+	if width != 2 {
+		t.Errorf("🏷️ total width = %d, want 2", width)
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_Indic(t *testing.T) {
+	t.Parallel()
+	//
+	// Range: 0x0900-0x0D4F, offset-based subranges within each 128-char block
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		// offset <= 0x03: signs at block start
+		{0x0900, "Devanagari SIGN INHALED U+0900"},
+		{0x0903, "Devanagari SIGN VISARGA U+0903"},
+		{0x0980, "Bengali SIGN INHALED U+0980"},
+		{0x0983, "Bengali SIGN VISARGA U+0983"},
+		// offset 0x3A-0x4F: vowel signs, virama
+		{0x093A, "Devanagari VOWEL SIGN OE U+093A"},
+		{0x094F, "Devanagari VOWEL SIGN AW U+094F"},
+		{0x0B3A, "Oriya VOWEL SIGN AI U+0B3A"},
+		// offset 0x51-0x57: stress signs
+		{0x0951, "Devanagari STRESS SIGN UDATTA U+0951"},
+		{0x0957, "Devanagari STRESS SIGN U+0957"},
+		// offset 0x62-0x63: vowel signs
+		{0x0962, "Devanagari VOWEL SIGN VOCALIC L U+0962"},
+		{0x0963, "Devanagari VOWEL SIGN VOCALIC LL U+0963"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_Width1_IndicBaseChars(t *testing.T) {
+	t.Parallel()
+	// Indic base consonants and spacing vowels → width 1, not zero-width
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x0904, "Devanagari SHORT A U+0904"},         // offset 0x04, not in any zero-width range
+		{0x0915, "Devanagari LETTER KA U+0915"},       // offset 0x15
+		{0x0939, "Devanagari LETTER HA U+0939"},       // offset 0x39 (just below 0x3A)
+		{0x0950, "Devanagari OM U+0950"},              // offset 0x50 (just below 0x51)
+		{0x0958, "Devanagari LETTER QA U+0958"},       // offset 0x58 (above 0x57)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 1 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 1", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_ThaiLao(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x0E31, "Thai MAI HAN-AKAT U+0E31"},
+		{0x0E34, "Thai VOWEL SIGN I U+0E34"},
+		{0x0E3A, "Thai VOWEL SIGN UU U+0E3A"},
+		{0x0E47, "Thai MAITAIKHU U+0E47"},
+		{0x0E4E, "Thai YAMAKKAN U+0E4E"},
+		{0x0EB1, "Lao MAI KAN U+0EB1"},
+		{0x0EB4, "Lao VOWEL SIGN I U+0EB4"},
+		{0x0EBC, "Lao VOWEL SIGN U U+0EBC"},
+		{0x0EC8, "Lao TONE MAI EK U+0EC8"},
+		{0x0ECD, "Lao TONE MAI CATAWA U+0ECD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_Width1_ThaiLaoSpacingVowels(t *testing.T) {
+	t.Parallel()
+	// Thai/Lao spacing vowels (width 1) — explicitly NOT zero-width per TS
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x0E32, "Thai SARA AA U+0E32"},
+		{0x0E33, "Thai SARA AM U+0E33"},
+		{0x0EB2, "Lao SARA AA U+0EB2"},
+		{0x0EB3, "Lao SARA AM U+0EB3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 1 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 1", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_ZeroWidth_Arabic(t *testing.T) {
+	t.Parallel()
+	//
+	tests := []struct {
+		r    rune
+		name string
+	}{
+		{0x0600, "Arabic number sign U+0600"},
+		{0x0605, "Arabic number mark above U+0605"},
+		{0x06DD, "Arabic end of ayah U+06DD"},
+		{0x070F, "Syriac abbreviation mark U+070F"},
+		{0x08E2, "Arabic disallowed end of ayah U+08E2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tt.r); w != 0 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 0", tt.name, w)
+			}
+		})
+	}
+}
+
+func TestRuneDisplayWidth_Emoji(t *testing.T) {
+	// Source: ink/stringWidth.ts — getEmojiWidth() returns 2 for most emoji
+	// Emoji are in SMP range U+1F000-U+1FFFF
+	emojiTests := []struct {
+		r    rune
+		name string
+	}{
+		{'🏷', "label U+1F3F7"},
+		{'🌺', "hibiscus U+1F33A"},
+		{'🌳', "tree U+1F333"},
+		{'💪', "bicep U+1F4AA"},
+		{'😎', "sunglasses U+1F60E"},
+		{'😀', "grinning U+1F600"},
+		{'❤', "heart U+2764"},           // miscellaneous symbols
+		{'⚠', "warning U+26A0"},         // miscellaneous symbols
+		{'✓', "check U+2713"},           // dingbats
+		{0x1F000, "mahjong U+1F000"},    // start of emoji block
+		{0x1FAFF, "end of emoji block"},
+	}
+	for _, tc := range emojiTests {
+		t.Run(tc.name, func(t *testing.T) {
+			if w := runeDisplayWidth(tc.r); w != 2 {
+				t.Errorf("runeDisplayWidth(%s) = %d, want 2", tc.name, w)
+			}
+		})
 	}
 }
 

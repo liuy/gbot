@@ -856,13 +856,88 @@ func consumeAnsiEscape(s string) string {
 }
 
 // runeDisplayWidth returns the display width of a rune.
+// Source: ink/stringWidth.ts — isZeroWidth() + getEmojiWidth() + eastAsianWidth()
 func runeDisplayWidth(r rune) int {
+	// Fast path: printable ASCII
 	if r >= 0x20 && r <= 0x7E {
 		return 1
 	}
-	if r < 0x80 {
+	// Control characters (< 0x20) and C1 controls (0x7F-0x9F) → width 0
+	if r <= 0x9F {
 		return 0
 	}
+	// Soft hyphen → width 0
+	if r == 0x00AD {
+		return 0
+	}
+
+	// ---- Zero-width characters (TS: isZeroWidth) ----
+	// Must be checked BEFORE wide-character ranges below,
+	// because some zero-width ranges (e.g., FE00-FE0F) overlap with FE30-FE6F.
+
+	// Zero-width space/joiner and invisible chars
+	if (r >= 0x200B && r <= 0x200D) || // ZW space/non-joiner/joiner
+		r == 0xFEFF || // BOM
+		(r >= 0x2060 && r <= 0x2064) { // Word joiner etc.
+		return 0
+	}
+
+	// Variation selectors
+	if (r >= 0xFE00 && r <= 0xFE0F) || // VS1-VS16
+		(r >= 0xE0100 && r <= 0xE01EF) { // Supplemental variation selectors
+		return 0
+	}
+
+	// Combining diacritical marks
+	if (r >= 0x0300 && r <= 0x036F) || // Combining diacritical marks
+		(r >= 0x1AB0 && r <= 0x1AFF) || // Combining diacritical marks extended
+		(r >= 0x1DC0 && r <= 0x1DFF) || // Combining diacritical marks supplement
+		(r >= 0x20D0 && r <= 0x20FF) || // Combining diacritical marks for symbols
+		(r >= 0xFE20 && r <= 0xFE2F) { // Combining half marks
+		return 0
+	}
+
+	// Indic script combining marks (Devanagari through Malayalam)
+	// Each script block is 128 chars; offset within block determines zero-width.
+	if r >= 0x0900 && r <= 0x0D4F {
+		offset := r & 0x7F
+		if offset <= 0x03 || // Signs at block start
+			(offset >= 0x3A && offset <= 0x4F) || // Vowel signs, virama
+			(offset >= 0x51 && offset <= 0x57) || // Stress signs
+			(offset >= 0x62 && offset <= 0x63) { // Vowel signs
+			return 0
+		}
+	}
+
+	// Thai/Lao combining marks
+	if r == 0x0E31 || // Thai MAI HAN-AKAT
+		(r >= 0x0E34 && r <= 0x0E3A) || // Thai vowel signs
+		(r >= 0x0E47 && r <= 0x0E4E) || // Thai vowel signs and marks
+		r == 0x0EB1 || // Lao MAI KAN
+		(r >= 0x0EB4 && r <= 0x0EBC) || // Lao vowel signs
+		(r >= 0x0EC8 && r <= 0x0ECD) { // Lao tone marks
+		return 0
+	}
+
+	// Arabic formatting
+	if (r >= 0x0600 && r <= 0x0605) ||
+		r == 0x06DD ||
+		r == 0x070F ||
+		r == 0x08E2 {
+		return 0
+	}
+
+	// Surrogates → width 0 (TS: isZeroWidth)
+	if r >= 0xD800 && r <= 0xDFFF {
+		return 0
+	}
+
+	// Tag characters → width 0 (TS: isZeroWidth)
+	if r >= 0xE0000 && r <= 0xE007F {
+		return 0
+	}
+
+	// ---- Wide characters (width 2) ----
 	switch {
 	case r >= 0x1100 && r <= 0x115F:
 		return 2
@@ -879,6 +954,14 @@ func runeDisplayWidth(r rune) int {
 	case r >= 0xFF01 && r <= 0xFF60:
 		return 2
 	case r >= 0xFFE0 && r <= 0xFFE6:
+		return 2
+	// Miscellaneous symbols and dingbats (❤, ⚠, ✓, etc.)
+	// Source: ink/stringWidth.ts — needsSegmentation() checks 0x2600..0x27BF
+	case r >= 0x2600 && r <= 0x27BF:
+		return 2
+	// Emoji (🏷, 🌺, 😎, 💪, etc.)
+	// Source: ink/stringWidth.ts — getEmojiWidth() returns 2 for most emoji
+	case r >= 0x1F000 && r <= 0x1FAFF:
 		return 2
 	case r >= 0x20000 && r <= 0x2FFFD:
 		return 2
