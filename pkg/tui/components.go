@@ -34,6 +34,7 @@ type ContentBlockType int
 const (
 	BlockText ContentBlockType = iota
 	BlockTool
+	BlockStats // TUI-only stats line embedded in assistant message
 )
 
 // ContentBlock represents a single block in an assistant message.
@@ -618,6 +619,9 @@ func (m MessageView) View(width int, expand bool, toolDot string) string {
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
 					sb.WriteString("\n")
 				}
+			case BlockStats:
+				sb.WriteString(blk.Text)
+				sb.WriteString("\n")
 			}
 		}
 		return sb.String()

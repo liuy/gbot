@@ -55,13 +55,6 @@ type App struct {
 	thinkingStart  time.Time
 	thinkingDuration time.Duration // set after thinking ends
 
-	// Completed query stats (shown after streaming ends)
-	lastInputTokens  int
-	lastOutputTokens int
-	lastElapsed      time.Duration
-	lastThinking     time.Duration
-	showStats        bool
-
 	// Dynamic token estimation (source: TS uses responseLength / 4)
 	responseCharCount int
 
@@ -163,6 +156,7 @@ func (a *App) View() string {
 			toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
 		}
 		a.contentCache = renderMessagesFull(a.repl.Messages(), a.width, a.allToolsExpanded, toolDot)
+
 		a.contentDirty = false
 	}
 
@@ -185,12 +179,6 @@ func (a *App) View() string {
 		}
 		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + thinkingStr + ")"
 		sb.WriteString(progressLine)
-		sb.WriteString("\n")
-	} else if a.showStats && !a.repl.IsStreaming() {
-		elapsedStr := fmt.Sprintf("%.1fs", a.lastElapsed.Seconds())
-		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.lastInputTokens), formatTokenCount(a.lastOutputTokens))
-		summaryLine := styleDim.Render(tokensStr + " · " + elapsedStr)
-		sb.WriteString(summaryLine)
 		sb.WriteString("\n")
 	}
 

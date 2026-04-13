@@ -1990,8 +1990,14 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	if app.repl.IsStreaming() {
 		t.Error("should not be streaming after complete")
 	}
-	if !app.showStats {
-		t.Error("showStats should be true after complete")
+	foundStats := false
+	for _, blk := range app.repl.lastMsg().Blocks {
+		if blk.Type == BlockStats {
+			foundStats = true
+		}
+	}
+	if !foundStats {
+		t.Error("last message should have BlockStats after complete")
 	}
 
 	// View should show completed stats line (no spinner)
@@ -2756,5 +2762,113 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	// Elapsed should use the perceived time (100ms) since it's greater than timing (50ms)
 	if tcv.Elapsed < 90*time.Millisecond {
 		t.Errorf("Elapsed = %v, want >= 90ms (perceived time)", tcv.Elapsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stats line scrolls with content (BlockStats approach)
+// ---------------------------------------------------------------------------
+
+// TestApp_StatsScrollsWithContent verifies that the completed query stats line
+// is embedded in the assistant message and persists when the next query starts.
+func TestApp_StatsScrollsWithContent(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// --- First query lifecycle ---
+
+	// Simulate: user submits first query
+	app.repl.AddUserMessage("first query")
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-2 * time.Second)
+
+	// Streaming: assistant response
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("first response")
+
+	// Usage arrives
+	app.status.inputTokens = 100
+	app.status.outTokens = 50
+
+	// Stream completes — should embed stats in the last message
+	app.Update(streamCompleteMsg{})
+
+	// Verify: stats line is visible in View
+	v1 := app.View()
+	if !strings.Contains(v1, "tokens") {
+		t.Fatalf("after first query completes, View should contain stats, got:\n%s", v1)
+	}
+
+	// --- Second query: first query's stats should persist ---
+
+	// User submits second query
+	app.repl.AddUserMessage("second query")
+	app.repl.StartQuery(nil)
+	app.markViewportDirty()
+
+	// Verify: first query's stats should STILL be visible
+	v2 := app.View()
+	if !strings.Contains(v2, "tokens") {
+		t.Fatalf("after second query submit, first query's stats should still be visible, got:\n%s", v2)
+	}
+
+	// Second query streaming
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("second response")
+
+	// Verify: stats should still be present and appear BEFORE second response
+	v3 := app.View()
+	if !strings.Contains(v3, "tokens") {
+		t.Fatalf("during second query streaming, first query's stats should still be visible, got:\n%s", v3)
+	}
+	statsIdx := strings.Index(v3, "tokens")
+	secondIdx := strings.Index(v3, "second response")
+	if secondIdx != -1 && statsIdx > secondIdx {
+		t.Errorf("stats (idx %d) should appear before second response (idx %d)", statsIdx, secondIdx)
+	}
+
+	// Stats should appear exactly once (not duplicated)
+	statsCount := strings.Count(v3, "tokens")
+	if statsCount != 1 {
+		t.Errorf("stats should appear exactly once, found %d times", statsCount)
+	}
+}
+
+// TestApp_StatsBlockInMessage verifies the stats block is a ContentBlock in the
+// assistant message, not a separate rendering section.
+func TestApp_StatsBlockInMessage(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	app.repl.AddUserMessage("hi")
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("hello back")
+	app.status.inputTokens = 50
+	app.status.outTokens = 20
+
+	app.Update(streamCompleteMsg{})
+
+	// Last message should have a stats block
+	lastMsg := app.repl.lastMsg()
+	if lastMsg == nil {
+		t.Fatal("expected at least one message")
+	}
+	foundStats := false
+	for _, blk := range lastMsg.Blocks {
+		if blk.Type == BlockStats {
+			foundStats = true
+			if !strings.Contains(blk.Text, "tokens") {
+				t.Errorf("stats block text = %q, should contain 'tokens'", blk.Text)
+			}
+		}
+	}
+	if !foundStats {
+		t.Error("last message should contain a BlockStats block")
 	}
 }

@@ -276,15 +276,19 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case streamCompleteMsg:
 		a.repl.FinishStream(m.Err)
 		if !a.progressStart.IsZero() {
-			a.lastInputTokens = a.status.inputTokens
-			a.lastOutputTokens = a.status.outTokens
-			a.lastElapsed = time.Since(a.progressStart)
-			a.lastThinking = a.thinkingDuration
-			a.showStats = true
+			elapsedStr := fmt.Sprintf("%.1fs", time.Since(a.progressStart).Seconds())
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
+			statsLine := styleDim.Render(tokensStr + " · " + elapsedStr)
+			// Embed stats as a block in the last assistant message.
+			// This is TUI-only — messages are not sent to the LLM.
+			if msg := a.repl.lastMsg(); msg != nil {
+				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
+			}
 		}
 		a.progressStart = time.Time{}
 		a.thinkingActive = false
 		a.thinkingDuration = 0
+		a.markViewportDirty()
 		return true, nil
 
 	case streamUsageMsg:
@@ -352,6 +356,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()
+	a.markViewportDirty()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a.repl.cancelFunc = cancel
@@ -364,7 +369,6 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.progressStart = time.Now()
 	a.thinkingActive = false
 	a.thinkingDuration = 0
-	a.showStats = false
 	a.status.SetUsage(0, 0)
 	a.responseCharCount = 0
 	a.displayedInputTokens = 0
