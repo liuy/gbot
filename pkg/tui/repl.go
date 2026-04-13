@@ -165,6 +165,39 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string) {
 	}
 }
 
+
+// PendingToolOutput updates a streaming tool's output lines in real time.
+func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
+	tcv, ok := s.pendingTool[id]
+	if !ok {
+		return
+	}
+
+	// Track elapsed time (use perceived time for responsiveness)
+	if start, ok := s.pendingToolStart[id]; ok {
+		if perceived := time.Since(start); perceived > timing {
+			tcv.Elapsed = perceived
+		}
+	}
+
+	// Accumulate output lines (each event carries all current lines)
+	tcv.Output = output
+
+	// Mark tool as done so output is rendered (no "running..." anymore)
+	tcv.Done = true
+
+	// Update the tool block in lastMsg
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
+			m.Blocks[i].ToolCall = *tcv
+			return
+		}
+	}
+}
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
 func (s *ReplState) FinishStream(err error) {
@@ -228,6 +261,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.markViewportDirty()
 		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
 		a.responseCharCount += len(m.Delta)
+		return true, a.readEvents()
+
+	case streamToolOutputMsg:
+		a.markViewportDirty()
+		a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
 		return true, a.readEvents()
 
 	case streamToolResultMsg:

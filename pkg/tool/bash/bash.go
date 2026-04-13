@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,7 +119,8 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 			Prompt_: "Use this tool to execute terminal commands. Commands run in a bash shell.",
-			RenderResult_: func(data any) string {
+			ExecuteStream_: ExecuteStream,
+		RenderResult_: func(data any) string {
 				out, ok := data.(*Output)
 				if !ok {
 					return fmt.Sprintf("%v", data)
@@ -184,6 +186,141 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 		return executePTY(ctx, in, cwd, timeout)
 	}
 	return executeNonPTY(ctx, in, cwd, timeout)
+}
+
+// ExecuteStream runs a bash command with streaming progress events.
+// Source: BashTool.tsx:826 — runShellCommand() yields progress events.
+func ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+	var in Input
+	if err := json.Unmarshal(input, &in); err != nil {
+		return nil, fmt.Errorf("parse input: %w", err)
+	}
+
+	if in.Command == "" {
+		return nil, fmt.Errorf("command is required")
+	}
+
+	// Determine timeout
+	timeout := DefaultTimeout
+	if in.Timeout > 0 {
+		timeout = time.Duration(in.Timeout) * time.Millisecond
+		if timeout > MaxTimeout {
+			timeout = MaxTimeout
+		}
+	}
+
+	// Determine working directory
+	cwd := in.CWD
+	if cwd == "" {
+		if tctx != nil {
+			cwd = tctx.WorkingDir
+		}
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
+	}
+
+	// Background execution: spawn command and return immediately with task ID
+	// Source: BashTool.tsx:988-1001 — run_in_background=true spawns immediately
+	if in.RunInBackground {
+		return spawnBackground(ctx, in, cwd, timeout)
+	}
+
+	// Create streaming output with progress callback
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		if onProgress != nil {
+			onProgress(tool.ProgressUpdate{
+				Lines:      u.Lines,
+				TotalLines: u.TotalLines,
+				TotalBytes: u.TotalBytes,
+			})
+		}
+	})
+
+	// Run the command, capturing output into StreamingOutput
+	if isPTYAvailable() {
+		return executePTYStreaming(ctx, in, cwd, timeout, s)
+	}
+	return executeNonPTYStreaming(ctx, in, cwd, timeout, s)
+}
+
+// executePTYStreaming runs a PTY command with streaming output capture.
+func executePTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
+	cwdFile := buildCwdFilePath(id)
+	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
+
+	baseEnv := os.Environ()
+	if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
+		baseEnv = applyEnvOverrides(baseEnv, overrides)
+	}
+
+	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
+		func(line string) {
+			_, _ = s.Write([]byte(line + "\n"))
+		},
+		timeout,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	s.FinalUpdate()
+
+	newCwd := trackCwd(cwdFile, cwd)
+	_ = os.Remove(cwdFile)
+
+	return &tool.ToolResult{
+		Data: &Output{
+			Stdout:   s.String(),
+			ExitCode: exitCode,
+			TimedOut: interrupted,
+			CWD:      newCwd,
+		},
+	}, nil
+}
+
+// executeNonPTYStreaming runs a non-PTY command with streaming output capture.
+func executeNonPTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", in.Command)
+	cmd.Dir = cwd
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var stderr bytes.Buffer
+	cmd.Stdout = s
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	s.FinalUpdate()
+
+	exitCode := 0
+	interrupted := false
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			interrupted = true
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, err
+		}
+	}
+
+	return &tool.ToolResult{
+		Data: &Output{
+			Stdout:   s.String(),
+			Stderr:   stderr.String(),
+			ExitCode: exitCode,
+			TimedOut: interrupted,
+			CWD:      cwd,
+		},
+	}, nil
 }
 
 // executePTY runs a command in PTY mode.
@@ -396,6 +533,131 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// spawnBackground starts a command in the background and returns immediately
+// with a task ID. The command runs asynchronously; its completion is tracked
+// in the BackgroundTaskRegistry.
+//
+// Source: BashTool.tsx:904-921 — spawnBackgroundTask()
+// Source: LocalShellTask.tsx:180-252 — spawnShellTask()
+func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Duration) (*tool.ToolResult, error) {
+	s := NewStreamingOutput(nil)
+	registry := DefaultRegistry()
+
+	// Generate task ID (matches TS taskOutput.taskId generation)
+	id := fmt.Sprintf("bg-%d", time.Now().UnixNano()%0x100000)
+
+	// Create a cancelable context for the background task
+	taskCtx, taskCancel := context.WithCancel(ctx)
+
+	// Register the task BEFORE starting the goroutine (PID=0 initially).
+	// Matches TS: spawnShellTask registers before shellCommand.background().
+	task := registry.Spawn(in.Command, 0, s)
+	task.CWD = cwd
+	task.Description = in.Description
+	task.ToolUseID = id
+
+	if isPTYAvailable() {
+		// PTY path: run in a goroutine with PTY
+		go func() {
+			defer taskCancel()
+			defer s.FinalUpdate()
+
+			idHex := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
+			cwdFile := buildCwdFilePath(idHex)
+			wrappedCmd := buildCommand(in.Command, nil, cwdFile)
+			baseEnv := os.Environ()
+			if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
+				baseEnv = applyEnvOverrides(baseEnv, overrides)
+			}
+
+			// Pipe PTY output to StreamingOutput
+			r, w := io.Pipe()
+			defer func() { _ = r.Close() }()
+			defer func() { _ = w.Close() }()
+
+			// Start PTY in a goroutine so we can get the PID
+			var ptyExitCode int
+			go func() {
+				ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
+					func(line string) {
+						_, _ = w.Write([]byte(line + "\n"))
+					},
+					timeout,
+				)
+			}()
+
+			// Pump PTY output to StreamingOutput
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, err := r.Read(buf)
+					if n > 0 {
+						_, _ = s.Write(buf[:n])
+					}
+					if err != nil {
+						break
+					}
+				}
+			}()
+
+			// Update task with PID (TTY process PID is the group leader)
+			// After a short wait, read the actual PID
+			task.mu.Lock()
+			task.PID = 0
+			task.mu.Unlock()
+
+			// Wait for command to complete
+			task.Complete(ptyExitCode)
+			_ = os.Remove(cwdFile)
+		}()
+	} else {
+		// Non-PTY path: use exec.Command
+		go func() {
+			defer taskCancel()
+			defer s.FinalUpdate()
+
+			cmd := exec.CommandContext(taskCtx, "bash", "-c", in.Command)
+			cmd.Dir = cwd
+			cmd.Env = os.Environ()
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmd.Stdout = s
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+
+			if err := cmd.Start(); err != nil {
+				task.Complete(-1)
+				return
+			}
+
+			// Update PID now that we have it
+			task.mu.Lock()
+			task.PID = cmd.Process.Pid
+			task.mu.Unlock()
+
+			err := cmd.Wait()
+			exitCode := 0
+			if err != nil {
+				if taskCtx.Err() == context.Canceled {
+					// interrupted
+				} else if exitErr, ok := err.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				}
+			}
+
+			task.Complete(exitCode)
+		}()
+	}
+
+	// Return immediately with task ID (matches TS: backgroundTaskId returned)
+	return &tool.ToolResult{
+		Data: &Output{
+			Stdout:   fmt.Sprintf("Background task started with ID: %s\nOutput is being captured. Use the background task registry to read output.", id),
+			ExitCode: 0,
+			CWD:      cwd,
+		},
+	}, nil
 }
 
 func truncateOutput(s string, maxSize int) string {

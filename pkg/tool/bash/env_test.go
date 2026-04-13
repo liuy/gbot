@@ -651,3 +651,22 @@ func TestDoInitialize_FallbackPaths(t *testing.T) {
 		})
 	}
 }
+
+
+func TestKillTmuxServer_Error(t *testing.T) {
+	resetSocketState()
+	// Mock execTmux to return non-zero code
+	orig := execTmuxOverride
+	execTmuxOverride = func(args []string) (tmuxResult, bool) {
+		return tmuxResult{Code: 1, Stderr: "mock error"}, true
+	}
+	defer func() { execTmuxOverride = orig }()
+
+	err := killTmuxServer()
+	if err == nil {
+		t.Error("expected error from killTmuxServer")
+	}
+	if !strings.Contains(err.Error(), "kill-server") {
+		t.Errorf("error = %v, want kill-server error", err)
+	}
+}

@@ -2692,3 +2692,69 @@ func TestPrettyJSON_InvalidJSON(t *testing.T) {
 		t.Errorf("prettyJSON(invalid) = %q, want raw string", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PendingToolOutput — streamToolOutputMsg handler in App.Update
+// Source: Phase 2 — streaming tool output display
+// ---------------------------------------------------------------------------
+
+func TestApp_Update_StreamToolOutput(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
+
+	model, _ := app.Update(streamToolOutputMsg{
+		ToolUseID:     "t1",
+		DisplayOutput: "stdout line\n",
+		Timing:        200 * time.Millisecond,
+	})
+	a := model.(*App)
+	tcv := a.repl.pendingTool["t1"]
+	if tcv == nil {
+		t.Fatal("pendingTool should have t1")
+	}
+	if !tcv.Done {
+		t.Error("Done should be true after streamToolOutputMsg")
+	}
+	if tcv.Output != "stdout line\n" {
+		t.Errorf("Output = %q, want %q", tcv.Output, "stdout line\n")
+	}
+}
+
+func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
+	t.Parallel()
+	// Sending output for a non-existent tool should not panic
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	model, _ := app.Update(streamToolOutputMsg{
+		ToolUseID:     "nonexistent",
+		DisplayOutput: "output",
+		Timing:        0,
+	})
+	if model == nil {
+		t.Error("Update should return non-nil model for unknown tool")
+	}
+}
+
+func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
+
+	// Set pendingToolStart BEFORE calling Update so it's available synchronously
+	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond)
+
+	model, _ := app.Update(streamToolOutputMsg{
+		ToolUseID:     "t1",
+		DisplayOutput: "output",
+		Timing:        50 * time.Millisecond,
+	})
+	a := model.(*App)
+	tcv := a.repl.pendingTool["t1"]
+	// Elapsed should use the perceived time (100ms) since it's greater than timing (50ms)
+	if tcv.Elapsed < 90*time.Millisecond {
+		t.Errorf("Elapsed = %v, want >= 90ms (perceived time)", tcv.Elapsed)
+	}
+}

@@ -82,3 +82,24 @@ func TestKillProcessTree_Setsid(t *testing.T) {
 	_ = killProcessTree(cmd.Process.Pid)
 	_ = cmd.Wait()
 }
+
+
+func TestKillProcessTree_ESRCHPath(t *testing.T) {
+	t.Parallel()
+	// Start a process that exits immediately
+	cmd := exec.Command("true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	_ = cmd.Start()
+	_ = cmd.Wait()
+
+	// Now killProcessTree: pgid may still be valid but Kill(-pgid, 0)
+	// returns ESRCH (process group doesn't exist). This covers the
+	// err != nil && err != syscall.ESRCH branch in killProcessTree.
+	_, _ = syscall.Getpgid(cmd.Process.Pid)
+	// Send SIGTERM to already-exited group — may get ESRCH
+	// The key is that the function handles both paths gracefully.
+	err := killProcessTree(cmd.Process.Pid)
+	if err != nil && err != syscall.ESRCH {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

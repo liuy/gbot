@@ -516,9 +516,9 @@ func TestIsPTYAvailable_NotLinux(t *testing.T) {
 }
 
 func TestIsPTYAvailable_NoPtmx(t *testing.T) {
-	orig := ptmxCheckPath
-	ptmxCheckPath = "/nonexistent/ptmx/gbot-test"
-	defer func() { ptmxCheckPath = orig }()
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test")
+	defer func() { SetPtmxCheckPath(orig) }()
 
 	if isPTYAvailable() {
 		t.Error("expected false without /dev/ptmx")

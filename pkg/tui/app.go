@@ -136,7 +136,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleKey(m)
 
 	// All REPL messages are handled by repl.go
-	case streamChunkMsg, streamToolUseMsg, streamToolDeltaMsg, streamToolResultMsg,
+	case streamChunkMsg, streamToolUseMsg, streamToolDeltaMsg, streamToolOutputMsg, streamToolResultMsg,
 		streamCompleteMsg, streamStartMsg, streamMessageMsg, streamUsageMsg,
 		streamThinkingStartMsg, streamThinkingEndMsg,
 		errMsg, submitMsg, spinnerTickMsg:

@@ -136,6 +136,29 @@ func ApplyContextModifier(result *ToolResult, tctx *types.ToolUseContext, isConc
 }
 
 // ---------------------------------------------------------------------------
+// ToolWithStreaming — optional interface for streaming tools
+// Source: BashTool.tsx:826 — runShellCommand() yields progress events.
+// ---------------------------------------------------------------------------
+
+// ProgressUpdate is sent during streaming tool execution.
+// Engine emits it as EventToolUseDelta for TUI display.
+type ProgressUpdate struct {
+	Lines      []string `json:"lines"`
+	TotalLines int      `json:"total_lines"`
+	TotalBytes int64    `json:"total_bytes"`
+}
+
+// ToolWithStreaming is an optional interface for tools that support streaming
+// progress events during execution. If a tool implements this interface, the
+// engine calls ExecuteStream instead of Call, providing a progress callback.
+//
+// Source: BashTool.tsx:826 — runShellCommand() yields progress events.
+type ToolWithStreaming interface {
+	Tool
+	ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
+}
+
+// ---------------------------------------------------------------------------
 // ToolDef — source: Tool.ts:707-792
 // ---------------------------------------------------------------------------
 
@@ -164,11 +187,23 @@ type ToolDef struct {
 	// Result rendering
 	RenderResult_ func(data any) string // default: json.Marshal
 
+	// Optional streaming support
+	// If set, BuildTool returns a tool that also implements ToolWithStreaming.
+	ExecuteStream_ func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
 }
 
 // builtTool wraps a ToolDef with defaults applied.
 type builtTool struct {
 	def ToolDef
+}
+
+// builtStreamingTool wraps a ToolDef and also implements ToolWithStreaming.
+type builtStreamingTool struct {
+	builtTool
+}
+
+func (t *builtStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+	return t.def.ExecuteStream_(ctx, input, tctx, onProgress)
 }
 
 // BuildTool fills defaults and returns a Tool interface.
@@ -200,6 +235,9 @@ func BuildTool(def ToolDef) Tool {
 			b, _ := json.Marshal(data)
 			return string(b)
 		}
+	}
+	if def.ExecuteStream_ != nil {
+		return &builtStreamingTool{builtTool{def: def}}
 	}
 	return &builtTool{def: def}
 }

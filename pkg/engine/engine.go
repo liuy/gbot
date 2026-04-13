@@ -441,6 +441,65 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 		}
 
 		start := time.Now()
+
+		// Try streaming execution first (ToolWithStreaming interface).
+		// Source: StreamingToolExecutor.ts — ExecuteStream with onProgress callbacks.
+		if streamer, ok := t.(tool.ToolWithStreaming); ok {
+			var lastDisplayOutput string
+			result, err := streamer.ExecuteStream(ctx, block.Input, nil, func(u tool.ProgressUpdate) {
+				// Emit streaming output to TUI as each progress update arrives.
+				// Source: StreamingToolExecutor.ts:onProgress callback → EventToolUseDelta.
+				if len(u.Lines) > 0 {
+					display := strings.Join(u.Lines, "\n")
+					lastDisplayOutput = display
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventToolUseDelta,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     block.ID,
+							DisplayOutput: display,
+							Timing:        time.Since(start),
+						},
+					})
+				}
+			})
+			elapsed := time.Since(start)
+
+			if err != nil {
+				errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+				evt := types.ToolResultEvent{
+					ToolUseID: block.ID,
+					Output:    errJSON,
+					IsError:   true,
+					Timing:    elapsed,
+				}
+				results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
+				evt.DisplayOutput = err.Error()
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt})
+				continue
+			}
+
+			rawJSON, _ := json.Marshal(result.Data)
+			outputJSON, _ := json.Marshal(string(rawJSON))
+			results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
+			displayOutput := t.RenderResult(result.Data)
+			// If the tool produced streaming output, include it in the final event too.
+			if displayOutput == "" && lastDisplayOutput != "" {
+				displayOutput = lastDisplayOutput
+			}
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type: types.EventToolResult,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     block.ID,
+					Output:        outputJSON,
+					DisplayOutput: displayOutput,
+					Timing:        elapsed,
+				},
+			})
+			continue
+		}
+
+		// Fallback: non-streaming Call().
+		// Source: StreamingToolExecutor.ts — fallback path for tools without ExecuteStream.
 		result, err := t.Call(ctx, block.Input, nil)
 		elapsed := time.Since(start)
 
@@ -459,19 +518,16 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 		}
 
 		rawJSON, _ := json.Marshal(result.Data)
-		// Wrap as a JSON string so the Anthropic API receives content as a
-		// string, not a raw JSON object.  The API expects tool_result.content
-		// to be string | ContentBlock[], not an arbitrary JSON object.
 		outputJSON, _ := json.Marshal(string(rawJSON))
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
 		displayOutput := t.RenderResult(result.Data)
-			e.emitEvent(eventCh, types.QueryEvent{
-				Type: types.EventToolResult,
-				ToolResult: &types.ToolResultEvent{
-					ToolUseID:     block.ID,
-					Output:        outputJSON,
-					DisplayOutput: displayOutput,
-					Timing:        elapsed,
+		e.emitEvent(eventCh, types.QueryEvent{
+			Type: types.EventToolResult,
+			ToolResult: &types.ToolResultEvent{
+				ToolUseID:     block.ID,
+				Output:        outputJSON,
+				DisplayOutput: displayOutput,
+				Timing:        elapsed,
 			},
 		})
 	}

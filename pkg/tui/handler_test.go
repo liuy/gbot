@@ -226,3 +226,62 @@ func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
 		t.Errorf("expected nil for nil Usage, got %T", msg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventToolUseDelta with ToolResult.DisplayOutput (streaming output)
+// Source: Phase 2 TS vs Go gap analysis — TUI event routing
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolUseDelta,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     "t1",
+			DisplayOutput: "line1\nline2",
+			Timing:        500 * time.Millisecond,
+		},
+	})
+	m, ok := msg.(streamToolOutputMsg)
+	if !ok {
+		t.Fatalf("expected streamToolOutputMsg, got %T", msg)
+	}
+	if m.ToolUseID != "t1" {
+		t.Errorf("ToolUseID = %q, want t1", m.ToolUseID)
+	}
+	if m.DisplayOutput != "line1\nline2" {
+		t.Errorf("DisplayOutput = %q, want %q", m.DisplayOutput, "line1\nline2")
+	}
+	if m.Timing != 500*time.Millisecond {
+		t.Errorf("Timing = %v, want 500ms", m.Timing)
+	}
+}
+
+func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
+	h := NewTUIHandler()
+	// DisplayOutput is empty string — should return nil (no output to show)
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolUseDelta,
+		ToolResult: &types.ToolResultEvent{
+			ToolUseID:     "t1",
+			DisplayOutput: "",
+			Timing:        0,
+		},
+	})
+	if msg != nil {
+		t.Errorf("expected nil for empty DisplayOutput, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
+	h := NewTUIHandler()
+	// ToolResult is nil — should return nil (no data to route)
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:       types.EventToolUseDelta,
+		ToolResult: nil,
+	})
+	if msg != nil {
+		t.Errorf("expected nil for nil ToolResult, got %T", msg)
+	}
+}
+

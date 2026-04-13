@@ -105,11 +105,21 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return streamCompleteMsg{}
 
 	case types.EventToolUseDelta:
+		// Route by which field is populated:
+		// - PartialInput: LLM streaming JSON input delta -> PendingToolDelta
+		// - ToolResult.DisplayOutput: tool streaming output lines -> PendingToolOutput
 		if evt.PartialInput != nil {
 			return streamToolDeltaMsg{
 				ID:      evt.PartialInput.ID,
 				Delta:   evt.PartialInput.Delta,
 				Summary: evt.PartialInput.Summary,
+			}
+		}
+		if evt.ToolResult != nil && evt.ToolResult.DisplayOutput != "" {
+			return streamToolOutputMsg{
+				ToolUseID:     evt.ToolResult.ToolUseID,
+				DisplayOutput: evt.ToolResult.DisplayOutput,
+				Timing:        evt.ToolResult.Timing,
 			}
 		}
 		return nil

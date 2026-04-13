@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,13 +22,34 @@ import (
 // Test hooks — package-level vars that can be overridden in tests.
 // Default values match production behavior.
 var (
-	shellCommand  = "bash"
-	ptmxPath      = "/dev/ptmx"
-	checkIsLinux  = isLinux
-	ptmxCheckPath = "/dev/ptmx"
+	shellCommand = "bash"
+	ptmxPath     = "/dev/ptmx"
+	checkIsLinux = isLinux
 
-	// openPTY hooks — allow mocking ioctl and slave open in tests
-	ioctlGetPtyNum = func(fd int) (int, error) {
+	ptmxMu         sync.Mutex
+	ptmxCheckValue atomic.Value // holds string, protected by ptmxMu
+)
+
+// init sets the default PTY check path.
+func init() {
+	ptmxCheckValue.Store("/dev/ptmx")
+}
+
+// PtmxCheckPath returns the current PTY check path (thread-safe).
+func PtmxCheckPath() string {
+	return ptmxCheckValue.Load().(string)
+}
+
+// SetPtmxCheckPath sets the PTY check path (thread-safe, for tests).
+func SetPtmxCheckPath(path string) {
+	ptmxMu.Lock()
+	defer ptmxMu.Unlock()
+	ptmxCheckValue.Store(path)
+}
+
+// openPTY hooks — allow mocking ioctl and slave open in tests
+var (
+	ioctlGetPtyNum  = func(fd int) (int, error) {
 		return unix.IoctlGetInt(fd, unix.TIOCGPTN)
 	}
 	ioctlUnlockPty = func(fd int) error {
@@ -267,7 +290,7 @@ func isPTYAvailable() bool {
 	if !checkIsLinux() {
 		return false
 	}
-	if _, err := os.Stat(ptmxCheckPath); err != nil {
+	if _, err := os.Stat(PtmxCheckPath()); err != nil {
 		return false
 	}
 	return true

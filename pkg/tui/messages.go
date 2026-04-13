@@ -43,6 +43,14 @@ type streamToolDeltaMsg struct {
 	Summary string // pre-computed summary from engine
 }
 
+// streamToolOutputMsg carries streaming output lines from a tool in progress.
+// Source: BashTool streaming via ExecuteStream onProgress callback.
+type streamToolOutputMsg struct {
+	ToolUseID     string        // tool use ID
+	DisplayOutput string        // accumulated output lines
+	Timing        time.Duration // elapsed time since tool start
+}
+
 // streamToolResultMsg delivers a tool execution result.
 // Source: useStreaming hook onToolResult callback.
 type streamToolResultMsg struct {
