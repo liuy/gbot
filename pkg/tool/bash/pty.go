@@ -69,7 +69,7 @@ var (
 // PTY allocation is the Go-native equivalent of TS's spawn() with file-mode stdio.
 // All TS algorithms (timeout escalation, process tree kill) are preserved 1:1.
 func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
-	onOutput func(line string), timeout time.Duration) (exitCode int, interrupted bool, err error) {
+	onOutput func(line string), timeout time.Duration, onStart ...func(pid int)) (exitCode int, interrupted bool, err error) {
 
 	// Open PTY master/slave pair
 	ptyMaster, ptySlave, err := openPTY()
@@ -112,6 +112,11 @@ func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
 	}
 	// Close slave in parent process — child has its own dup
 	_ = ptySlave.Close()
+
+	// Notify PID to caller (for background task Kill support)
+	if len(onStart) > 0 && onStart[0] != nil {
+		onStart[0](execCmd.Process.Pid)
+	}
 
 	// Setup timeout handling
 	// Source: ShellCommand.ts:275-279 — setTimeout(#handleTimeout, timeout)

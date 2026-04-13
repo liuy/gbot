@@ -932,3 +932,44 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 	}
 }
 
+
+// ---------------------------------------------------------------------------
+// spawnBackground — PID must be set for Kill to work
+// Bug: PTY path hardcodes task.PID = 0, making Kill a no-op
+// ---------------------------------------------------------------------------
+
+func TestSpawnBackground_PIDNotZero(t *testing.T) {
+	// Swap in a fresh registry so we don't pollute the global one
+	orig := defaultRegistry
+	freshRegistry := NewBackgroundTaskRegistry()
+	defaultRegistry = freshRegistry
+	defer func() { defaultRegistry = orig }()
+
+	ctx := context.Background()
+	result, err := ExecuteStream(ctx, json.RawMessage(`{"command":"sleep 60","run_in_background":true}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	tasks := freshRegistry.List()
+	if len(tasks) == 0 {
+		t.Fatal("no background tasks registered")
+	}
+	task := tasks[0]
+
+	// Wait for the command to start and PID to be set
+	time.Sleep(300 * time.Millisecond)
+
+	task.mu.Lock()
+	pid := task.PID
+	task.mu.Unlock()
+
+	// Cleanup: kill the task regardless of test result
+	_ = freshRegistry.Kill(task.ID)
+
+	_ = result
+
+	if pid == 0 {
+		t.Errorf("PID = 0, want non-zero — background task cannot be killed")
+	}
+}

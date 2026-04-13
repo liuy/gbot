@@ -585,6 +585,11 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 						_, _ = w.Write([]byte(line + "\n"))
 					},
 					timeout,
+					func(pid int) {
+						task.mu.Lock()
+						task.PID = pid
+						task.mu.Unlock()
+					},
 				)
 			}()
 
@@ -601,12 +606,6 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 					}
 				}
 			}()
-
-			// Update task with PID (TTY process PID is the group leader)
-			// After a short wait, read the actual PID
-			task.mu.Lock()
-			task.PID = 0
-			task.mu.Unlock()
 
 			// Wait for command to complete
 			task.Complete(ptyExitCode)
