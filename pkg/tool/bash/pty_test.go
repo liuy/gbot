@@ -276,8 +276,10 @@ func TestPtyCommand_ExitBySignal(t *testing.T) {
 	if !interrupted {
 		t.Error("interrupted = false, want true for timed-out command")
 	}
-	if exitCode != 143 {
-		t.Errorf("exitCode = %d, want 143 (SIGTERM)", exitCode)
+	// TS sends SIGKILL directly (no SIGTERM grace period)
+	// Source: ShellCommand.ts:340 — treeKill(pid, 'SIGKILL')
+	if exitCode != 137 {
+		t.Errorf("exitCode = %d, want 137 (SIGKILL)", exitCode)
 	}
 }
 
@@ -293,7 +295,7 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 		"",
 		os.Environ(),
 		func(line string) { lines = append(lines, line) },
-		5*time.Second,
+		500*time.Millisecond,
 	)
 }
 
@@ -336,7 +338,7 @@ func TestPtyCommand_ReadError(t *testing.T) {
 		"",
 		os.Environ(),
 		func(line string) { lines = append(lines, line) },
-		5*time.Second,
+		500*time.Millisecond,
 	)
 	_ = exitCode
 	_ = err
@@ -347,11 +349,11 @@ func TestPtyCommand_SigkillExit(t *testing.T) {
 		t.Skip("PTY not available")
 	}
 
-	// Process traps SIGTERM so killProcessTree escalates to SIGKILL
+	// killProcessTree sends SIGKILL directly (matching TS behavior)
 	var lines []string
 	exitCode, interrupted, err := ptyCommand(
 		context.Background(),
-		"trap '' TERM; while true; do sleep 0.1; done",
+		"sleep 10",
 		"",
 		os.Environ(),
 		func(line string) { lines = append(lines, line) },

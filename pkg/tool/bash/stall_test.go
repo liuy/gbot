@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -203,133 +204,141 @@ func TestLastNonEmptyLine(t *testing.T) {
 
 func TestWatchForStall_DetectsPrompt(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	// Create a temp output file with prompt content
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "output.txt")
+		// Create a temp output file with prompt content
+		dir := t.TempDir()
+		outputPath := filepath.Join(dir, "output.txt")
 
-	// Write initial content
-	if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\nContinue? (y/n)"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+		// Write initial content
+		if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\nContinue? (y/n)"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	detected := make(chan string, 1)
-	cancel := watchForStall(outputPath, func(summary, tail string) {
+		detected := make(chan string, 1)
+		cancel := watchForStall(outputPath, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
 		select {
-		case detected <- summary:
-		default:
+		case summary := <-detected:
+			cancel()
+			if summary != "appears to be waiting for interactive input" {
+				t.Errorf("summary = %q, want stall message", summary)
+			}
+		case <-time.After(60 * time.Second):
+			cancel()
+			t.Fatal("watchForStall did not detect prompt within timeout")
 		}
 	})
-
-	select {
-	case summary := <-detected:
-		cancel()
-		if summary != "appears to be waiting for interactive input" {
-			t.Errorf("summary = %q, want stall message", summary)
-		}
-	case <-time.After(60 * time.Second):
-		cancel()
-		t.Fatal("watchForStall did not detect prompt within timeout")
-	}
 }
 
 func TestWatchForStall_NoPrompt(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "output.txt")
+		dir := t.TempDir()
+		outputPath := filepath.Join(dir, "output.txt")
 
-	// Write non-prompt content
-	if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\nTests passed"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+		// Write non-prompt content
+		if err := os.WriteFile(outputPath, []byte("Building...\nCompiling...\nTests passed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	detected := make(chan string, 1)
-	cancel := watchForStall(outputPath, func(summary, tail string) {
+		detected := make(chan string, 1)
+		cancel := watchForStall(outputPath, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
+		// Should not detect stall for non-prompt output
 		select {
-		case detected <- summary:
-		default:
+		case <-detected:
+			cancel()
+			t.Error("should not detect stall for non-prompt output")
+		case <-time.After(55 * time.Second):
+			// Expected — no detection within one stall threshold cycle
+			cancel()
 		}
 	})
-
-	// Should not detect stall for non-prompt output
-	select {
-	case <-detected:
-		cancel()
-		t.Error("should not detect stall for non-prompt output")
-	case <-time.After(55 * time.Second):
-		// Expected — no detection within one stall threshold cycle
-		cancel()
-	}
 }
 
 func TestWatchForStall_CancelStops(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "output.txt")
-	if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+		dir := t.TempDir()
+		outputPath := filepath.Join(dir, "output.txt")
+		if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	called := false
-	cancel := watchForStall(outputPath, func(summary, tail string) {
-		called = true
+		called := false
+		cancel := watchForStall(outputPath, func(summary, tail string) {
+			called = true
+		})
+
+		// Cancel immediately
+		cancel()
+
+		// Wait a bit to ensure the goroutine has exited
+		time.Sleep(stallCheckInterval + 100*time.Millisecond)
+
+		if called {
+			t.Error("onStall should not be called after cancel")
+		}
 	})
-
-	// Cancel immediately
-	cancel()
-
-	// Wait a bit to ensure the goroutine has exited
-	time.Sleep(stallCheckInterval + 100*time.Millisecond)
-
-	if called {
-		t.Error("onStall should not be called after cancel")
-	}
 }
 
 func TestWatchForStall_OutputGrowth(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "output.txt")
-	if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+		dir := t.TempDir()
+		outputPath := filepath.Join(dir, "output.txt")
+		if err := os.WriteFile(outputPath, []byte("Continue? (y/n)"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	detected := make(chan string, 1)
+		detected := make(chan string, 1)
 
-	// Continuously grow the file to prevent stall detection
-	cancel := watchForStall(outputPath, func(summary, tail string) {
+		// Continuously grow the file to prevent stall detection
+		cancel := watchForStall(outputPath, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
+		// Keep growing the file
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; i < 15; i++ {
+				time.Sleep(3 * time.Second)
+				f, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0o644)
+				if err != nil {
+					return
+				}
+				_, _ = f.WriteString("more output\n")
+				_ = f.Close()
+			}
+		}()
+
 		select {
-		case detected <- summary:
-		default:
+		case <-detected:
+			cancel()
+			t.Error("should not detect stall while output is growing")
+		case <-done:
+			cancel()
+			// Expected — growth prevented stall detection
 		}
 	})
-
-	// Keep growing the file
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 15; i++ {
-			time.Sleep(3 * time.Second)
-			f, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0o644)
-			if err != nil {
-				return
-			}
-			_, _ = f.WriteString("more output\n")
-			_ = f.Close()
-		}
-	}()
-
-	select {
-	case <-detected:
-		cancel()
-		t.Error("should not detect stall while output is growing")
-	case <-done:
-		cancel()
-		// Expected — growth prevented stall detection
-	}
 }
 
 // ---------------------------------------------------------------------------
