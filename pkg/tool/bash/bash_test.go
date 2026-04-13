@@ -355,9 +355,8 @@ func TestExecute_MaxTimeoutCapped(t *testing.T) {
 	t.Parallel()
 
 	// Verify that a huge timeout gets capped (doesn't hang for 1 hour)
-	// Use a reasonable timeout that still triggers but is under MaxTimeout
-	input := json.RawMessage(`{"command":"sleep 1","timeout":999999999}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	input := json.RawMessage(`{"command":"sleep 0.1","timeout":999999999}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -369,7 +368,7 @@ func TestExecute_MaxTimeoutCapped(t *testing.T) {
 	select {
 	case <-done:
 		// Good, completed within the context deadline
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Execute() hung, timeout cap may not be working")
 	}
 }
@@ -445,8 +444,8 @@ func TestConstants(t *testing.T) {
 	if bash.MaxTimeout != 10*time.Minute {
 		t.Errorf("MaxTimeout = %v, want 10m", bash.MaxTimeout)
 	}
-	if bash.MaxOutputSize != 10*1024*1024 {
-		t.Errorf("MaxOutputSize = %d, want %d", bash.MaxOutputSize, 10*1024*1024)
+	if bash.MaxOutputSize != 30000 {
+		t.Errorf("MaxOutputSize = %d, want %d", bash.MaxOutputSize, 30000)
 	}
 }
 

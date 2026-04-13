@@ -8,37 +8,38 @@ import (
 
 // ---------------------------------------------------------------------------
 // Streaming output — progress events during command execution
-// Source: ShellCommand.ts streaming output, TaskOutput.ts
+// Source: TaskOutput.ts — memory cap + rolling window
 // ---------------------------------------------------------------------------
 
-// maxOutputBytes is the maximum output size before the size watchdog triggers.
-// Source: ShellCommand.ts:239-261, diskOutput.ts:30 — MAX_TASK_OUTPUT_BYTES = 5GB
-var maxOutputBytes int64 = 5 * 1024 * 1024 * 1024 // 5GB
-
 // streamingLastLines is the rolling window size for recent output lines.
+// Source: TaskOutput.ts — CircularBuffer(1000), getRecent(5) for progress
 const streamingLastLines = 20
 
 // StreamingUpdate is sent on the progress channel during command execution.
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
 type StreamingUpdate struct {
-	Lines        []string // last ~20 lines
-	TotalLines   int
-	TotalBytes   int64
-	IsIncomplete bool // true while command is running, false on completion
+	Lines        []string // last ~20 lines (rolling window for TUI)
+	TotalLines   int      // always tracks complete line count
+	TotalBytes   int64    // always tracks total bytes written
+	IsIncomplete bool     // true while command is running, false on completion
 }
 
 // StreamingOutput accumulates command output and reports progress.
 // Thread-safe for concurrent Write and Read operations.
 //
-// Source: ShellCommand.ts — streaming output accumulates lines and bytes,
-// TaskOutput.ts — tracks total output size for size watchdog.
+// Two separate tracking mechanisms:
+//   - lines: full output buffer, capped at MaxOutputSize (for LLM consumption)
+//   - lastLines: rolling window of last 20 lines, never capped (for TUI progress)
+//
+// Source: TaskOutput.ts — memory cap + rolling window, ShellCommand.ts — size watchdog
 type StreamingOutput struct {
 	mu          sync.Mutex
-	lines       []string
-	totalBytes  int64
-	lastLines   []string // rolling window of last 20
-	exceeded    bool     // true if totalBytes > maxOutputBytes
-	partialLine bool     // true if last element in lines is an unterminated fragment
+	lines       []string // full output, capped at MaxOutputSize bytes
+	totalBytes  int64    // always tracks total bytes
+	totalLines  int      // always tracks complete line count (newlines seen)
+	lastLines   []string // rolling window of last 20 lines, never capped
+	exceeded    bool     // true if lines buffer reached MaxOutputSize
+	partialLine bool     // tracks mid-line state across Write calls
 	onProgress  func(StreamingUpdate)
 }
 
@@ -50,22 +51,22 @@ func NewStreamingOutput(onProgress func(StreamingUpdate)) *StreamingOutput {
 }
 
 // Write appends output data, splits on newlines, and calls onProgress.
+// After lines buffer exceeds MaxOutputSize, lines stops growing but lastLines
+// continues updating so TUI progress never stalls.
 // Returns the number of bytes written (always len(p)) and any error.
 // Thread-safe.
 //
-// Source: ShellCommand.ts:239-261 — size watchdog checks per write.
-// Source: TaskOutput.ts — line accumulation with rolling window.
+// Source: TaskOutput.ts:176-200 (#writeBuffered) — memory cap logic
+// Source: outputLimits.ts — BASH_MAX_OUTPUT_DEFAULT = 30_000
 func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.totalBytes += int64(len(p))
 
-	// Size watchdog (Step 2.4)
-	// Source: ShellCommand.ts:239-261 — stat output file, kill if > MAX_TASK_OUTPUT_BYTES
-	if s.totalBytes > maxOutputBytes {
-		s.exceeded = true
-	}
+	// Count complete lines (newlines) in this chunk
+	// Source: TaskOutput.ts:216-236 — lineCount from lastIndexOf('\n')
+	s.totalLines += bytes.Count(p, []byte{'\n'})
 
 	// Split on newlines, accumulate lines
 	parts := bytes.Split(p, []byte{'\n'})
@@ -79,30 +80,41 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		if s.partialLine && len(s.lines) > 0 {
+		if s.partialLine {
 			// Append to existing partial line
-			s.lines[len(s.lines)-1] += text
+			if !s.exceeded && len(s.lines) > 0 {
+				s.lines[len(s.lines)-1] += text
+			}
 			if len(s.lastLines) > 0 {
 				s.lastLines[len(s.lastLines)-1] += text
 			}
 		} else {
 			// New line
-			s.lines = append(s.lines, text)
+			if !s.exceeded {
+				s.lines = append(s.lines, text)
+			}
 			s.lastLines = append(s.lastLines, text)
 		}
 
-		// If this is the last fragment (no trailing \n), mark as partial
 		s.partialLine = isLast
 
+		// Trim rolling window
 		if len(s.lastLines) > streamingLastLines {
 			s.lastLines = s.lastLines[len(s.lastLines)-streamingLastLines:]
 		}
 	}
 
+	// Check cap for lines buffer after processing
+	// Source: outputLimits.ts — BASH_MAX_OUTPUT_DEFAULT = 30_000
+	if !s.exceeded && s.totalBytes > int64(MaxOutputSize) {
+		s.exceeded = true
+	}
+
+	// Always send progress (TUI needs continuous updates)
 	if s.onProgress != nil {
 		s.onProgress(StreamingUpdate{
 			Lines:        slices.Clone(s.lastLines),
-			TotalLines:   len(s.lines),
+			TotalLines:   s.totalLines,
 			TotalBytes:   s.totalBytes,
 			IsIncomplete: true,
 		})
@@ -110,15 +122,14 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Exceeded returns true if the output exceeded maxOutputBytes.
-// Source: ShellCommand.ts:239-261 — size watchdog check.
+// Exceeded returns true if the output exceeded MaxOutputSize.
 func (s *StreamingOutput) Exceeded() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.exceeded
 }
 
-// Lines returns all accumulated lines.
+// Lines returns all accumulated lines (up to MaxOutputSize).
 func (s *StreamingOutput) Lines() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,7 +164,7 @@ func (s *StreamingOutput) FinalUpdate() {
 	if s.onProgress != nil {
 		s.onProgress(StreamingUpdate{
 			Lines:        slices.Clone(s.lastLines),
-			TotalLines:   len(s.lines),
+			TotalLines:   s.totalLines,
 			TotalBytes:   s.totalBytes,
 			IsIncomplete: false,
 		})

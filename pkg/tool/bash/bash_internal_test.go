@@ -50,7 +50,7 @@ func TestTruncateOutput(t *testing.T) {
 	}{
 		{"small output", "hello", 10, "hello"},
 		{"exact size", "hello", 5, "hello"},
-		{"needs truncation", "hello world", 5, "hello\n... [output truncated]"},
+		{"needs truncation", "hello world", 5, "hello\n\n... [1 lines truncated] ..."},
 		{"empty output", "", 5, ""},
 	}
 
@@ -480,7 +480,7 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 	}
 
 	// Wait for background task to complete
-	time.Sleep(2 * time.Second)
+	time.Sleep(50 * time.Millisecond)
 
 	// Verify the task was registered in the default registry
 	registry := DefaultRegistry()
@@ -527,7 +527,7 @@ func TestExecuteStream_RunInBackground_CompletesWithOutput(t *testing.T) {
 	}
 
 	// Wait for task to produce output
-	time.Sleep(3 * time.Second)
+	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -564,7 +564,7 @@ func TestExecuteStream_RunInBackground_ExitError(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -602,7 +602,7 @@ func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
 	}
 
 	// Wait for PTY background task to complete
-	time.Sleep(3 * time.Second)
+	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -876,7 +876,7 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 	}
 
 	// Wait for PTY background task to complete
-	time.Sleep(3 * time.Second)
+	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {

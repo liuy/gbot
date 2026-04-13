@@ -93,8 +93,6 @@ func TestStreamingOutput_SizeExceeded(t *testing.T) {
 		t.Error("Exceeded() = true, want false for small output")
 	}
 
-	// Can't easily test 5GB in a unit test, so test the logic by checking
-	// that totalBytes tracks correctly
 	if s.TotalBytes() != 5 {
 		t.Errorf("TotalBytes() = %d, want 5", s.TotalBytes())
 	}
@@ -350,25 +348,229 @@ func TestStreamingOutput_LinesClone(t *testing.T) {
 	}
 }
 
-func TestMaxOutputBytes(t *testing.T) {
-	t.Parallel()
+func TestStreamingOutput_Exceeded(t *testing.T) {
+	// Override MaxOutputSize for testing via a small write that exceeds it
+	// MaxOutputSize = 30000, so write 40000 bytes
+	s := NewStreamingOutput(nil)
 
-	if maxOutputBytes != 5*1024*1024*1024 {
-		t.Errorf("maxOutputBytes = %d, want 5GB", maxOutputBytes)
+	big := strings.Repeat("x", 40000)
+	_, _ = s.Write([]byte(big))
+
+	if !s.Exceeded() {
+		t.Error("Exceeded() should be true after writing past MaxOutputSize")
 	}
 }
 
-func TestStreamingOutput_Exceeded(t *testing.T) {
-	// Override maxOutputBytes for testing
-	orig := maxOutputBytes
-	maxOutputBytes = 10 // very small limit
-	defer func() { maxOutputBytes = orig }()
+// --- Cap behavior: lines stops, lastLines keeps going ---
+
+func TestStreamingOutput_Cap_LinesStopsGrowing(t *testing.T) {
+	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("hello world")) // 11 bytes > 10
+
+	// Fill to just under cap
+	under := strings.Repeat("a", MaxOutputSize-1)
+	_, _ = s.Write([]byte(under))
+
+	if s.Exceeded() {
+		t.Fatal("should not be exceeded yet")
+	}
+
+	// Write more to trigger cap
+	_, _ = s.Write([]byte("extra data here\n"))
 
 	if !s.Exceeded() {
-		t.Error("Exceeded() should be true after writing past limit")
+		t.Fatal("should be exceeded now")
+	}
+
+	linesLen := len(s.Lines())
+
+	// Write even more — lines should not grow
+	_, _ = s.Write([]byte("even more data\n"))
+	_, _ = s.Write([]byte("and more\n"))
+
+	if len(s.Lines()) != linesLen {
+		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesLen, len(s.Lines()))
+	}
+}
+
+func TestStreamingOutput_Cap_LastLinesKeepsUpdating(t *testing.T) {
+	t.Parallel()
+
+	var lastUpdate StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		lastUpdate = u
+	})
+
+	// Exceed cap
+	big := strings.Repeat("x", MaxOutputSize+1000)
+	_, _ = s.Write([]byte(big))
+	if !s.Exceeded() {
+		t.Fatal("should be exceeded")
+	}
+
+	// Write more — lastLines should still update
+	_, _ = s.Write([]byte("new-line-after-cap\n"))
+
+	found := false
+	for _, l := range lastUpdate.Lines {
+		if strings.Contains(l, "new-line-after-cap") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("lastLines should contain 'new-line-after-cap', got %v", lastUpdate.Lines)
+	}
+}
+
+func TestStreamingOutput_Cap_TotalBytesKeepsCounting(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Exceed cap
+	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	firstTotal := s.TotalBytes()
+
+	// Write more — totalBytes should keep growing
+	_, _ = s.Write([]byte("more data"))
+	secondTotal := s.TotalBytes()
+
+	if secondTotal <= firstTotal {
+		t.Errorf("totalBytes should keep counting: %d -> %d", firstTotal, secondTotal)
+	}
+}
+
+func TestStreamingOutput_Cap_TotalLinesKeepsCounting(t *testing.T) {
+	t.Parallel()
+
+	var lastUpdate StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		lastUpdate = u
+	})
+
+	// Exceed cap with no newlines
+	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+
+	// Write lines after cap
+	_, _ = s.Write([]byte("line1\nline2\nline3\n"))
+
+	if lastUpdate.TotalLines < 3 {
+		t.Errorf("TotalLines = %d, want at least 3 (lines after cap should still be counted)", lastUpdate.TotalLines)
+	}
+}
+
+func TestStreamingOutput_Cap_ProgressCallbackKeepsFiring(t *testing.T) {
+	t.Parallel()
+
+	var updateCount int
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		updateCount++
+	})
+
+	// Exceed cap
+	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	countAfterExceed := updateCount
+
+	// Write more — callback should still fire
+	_, _ = s.Write([]byte("data\n"))
+	_, _ = s.Write([]byte("more\n"))
+
+	if updateCount <= countAfterExceed {
+		t.Errorf("callback count didn't increase after cap: %d -> %d", countAfterExceed, updateCount)
+	}
+}
+
+func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
+	t.Parallel()
+
+	// When cap is triggered during a Write, the exceeded flag is set AFTER
+	// the Write completes. So lines may slightly exceed MaxOutputSize (up to one
+	// Write's worth). Subsequent Writes stop appending to lines.
+	// lastLines always grows regardless of cap.
+
+	s := NewStreamingOutput(nil)
+
+	// Fill to just under cap with a partial line (no newline)
+	_, _ = s.Write([]byte(strings.Repeat("a", MaxOutputSize-5)))
+
+	// This write triggers cap
+	_, _ = s.Write([]byte("hello\nworld\n"))
+
+	// exceeded is now true
+	if !s.Exceeded() {
+		t.Fatal("should be exceeded")
+	}
+
+	// lines slightly exceeds cap (contains "aaa...aaa", "hello", "world")
+	lines := s.Lines()
+	if len(lines) == 0 {
+		t.Fatal("lines should not be empty")
+	}
+	if lines[len(lines)-1] != "world" {
+		t.Errorf("lines last = %q, want 'world'", lines[len(lines)-1])
+	}
+
+	// Write more — lines should NOT grow further
+	linesBefore := len(lines)
+	_, _ = s.Write([]byte("extra\n"))
+	if len(s.Lines()) != linesBefore {
+		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesBefore, len(s.Lines()))
+	}
+
+	// lastLines always grows — verify with short writes that don't push "hello" out of the window
+	var lastUpdate StreamingUpdate
+	s2 := NewStreamingOutput(func(u StreamingUpdate) {
+		lastUpdate = u
+	})
+	// Write 19 lines, then cap is already exceeded (MaxOutputSize-5 bytes)
+	// But lastLines always grows — check that the last lines are present
+	_, _ = s2.Write([]byte("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\n")) // 19 lines
+
+	// Verify totalLines still counts correctly even after many lines
+	if lastUpdate.TotalLines < 19 {
+		t.Errorf("TotalLines = %d, want >= 19", lastUpdate.TotalLines)
+	}
+	// lastLines contains the rolling window — check last few are in there
+	lastLines := lastUpdate.Lines
+	if len(lastLines) == 0 {
+		t.Fatal("lastLines should not be empty")
+	}
+	// With 19 lines and window=20, all 19 should be in lastLines
+	if len(lastLines) != 19 {
+		t.Errorf("len(lastLines) = %d, want 19 (window not full)", len(lastLines))
+	}
+	if lastLines[len(lastLines)-1] != "s" {
+		t.Errorf("lastLines last = %q, want 's'", lastLines[len(lastLines)-1])
+	}
+}
+
+func TestStreamingOutput_Cap_PartialLineAfterCap(t *testing.T) {
+	t.Parallel()
+
+	var lastUpdate StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		lastUpdate = u
+	})
+
+	// Exceed cap with no newline
+	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+
+	// Write partial line after cap, then complete it
+	_, _ = s.Write([]byte("par"))
+	_, _ = s.Write([]byte("tial\n"))
+
+	// lastLines[0] = "xxxxx...xpar" (many x's + partial), last element ends with "tial"
+	found := false
+	for _, l := range lastUpdate.Lines {
+		if strings.HasSuffix(l, "tial") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("lastLines should end with a line containing 'tial', got %v", lastUpdate.Lines)
 	}
 }
 
@@ -453,5 +655,13 @@ func TestStreamingOutput_RollingWindowExact(t *testing.T) {
 	}
 	if len(lastUpdate.Lines[19]) != 20 {
 		t.Errorf("last line len = %d, want 20", len(lastUpdate.Lines[19]))
+	}
+}
+
+func TestMaxOutputSize(t *testing.T) {
+	t.Parallel()
+	// Source: outputLimits.ts — BASH_MAX_OUTPUT_DEFAULT = 30_000
+	if MaxOutputSize != 30000 {
+		t.Errorf("MaxOutputSize = %d, want 30000", MaxOutputSize)
 	}
 }

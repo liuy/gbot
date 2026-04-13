@@ -49,9 +49,9 @@ const DefaultTimeout = 2 * time.Minute
 // Source: BashTool.ts — MAX_TIMEOUT
 const MaxTimeout = 10 * time.Minute
 
-// MaxOutputSize is the maximum output size (10MB).
-// Source: BashTool.ts — MAX_OUTPUT_BYTES
-const MaxOutputSize = 10 * 1024 * 1024
+// MaxOutputSize is the maximum output size sent to the LLM.
+// Source: outputLimits.ts — BASH_MAX_OUTPUT_DEFAULT = 30_000
+const MaxOutputSize = 30000
 
 // New creates the Bash tool.
 // Source: tools/BashTool/BashTool.ts
@@ -660,9 +660,12 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	}, nil
 }
 
+// truncateOutput truncates output to maxSize and appends a line count notice.
+// Source: BashTool/utils.ts:133-165 (formatOutput) — keeps head + "... [N lines truncated] ..."
 func truncateOutput(s string, maxSize int) string {
 	if len(s) <= maxSize {
 		return s
 	}
-	return s[:maxSize] + "\n... [output truncated]"
+	remainingLines := strings.Count(s[maxSize:], "\n") + 1
+	return s[:maxSize] + fmt.Sprintf("\n\n... [%d lines truncated] ...", remainingLines)
 }
