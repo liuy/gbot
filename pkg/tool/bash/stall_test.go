@@ -509,16 +509,22 @@ func TestStallWatcher_Check_OutputGrows(t *testing.T) {
 func TestStallWatcher_Check_NoFile(t *testing.T) {
 	t.Parallel()
 
+	// TS: stat failure → empty catch () => {} — does NOT reset lastGrowth.
+	// If file never appears, stall should eventually trigger after threshold.
+	past := time.Now().Add(-60 * time.Second)
 	w := &stallWatcher{
 		outputPath: "/nonexistent/file",
-		lastGrowth: time.Now(),
+		lastGrowth: past,
 		onStall:    func(summary, tail string) {},
 	}
 
-	// File doesn't exist — should reset growth time and continue
 	stop := w.check()
 	if stop {
 		t.Error("should not stop when file doesn't exist")
+	}
+	// Key assertion: lastGrowth should NOT be reset on stat failure (TS alignment)
+	if w.lastGrowth != past {
+		t.Errorf("lastGrowth was reset on stat failure, want it preserved at %v", past)
 	}
 }
 

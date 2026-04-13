@@ -120,8 +120,8 @@ func (w *stallWatcher) check() (stop bool) {
 
 	info, err := os.Stat(w.outputPath)
 	if err != nil {
-		// File may not exist yet — reset growth time
-		w.lastGrowth = time.Now()
+		// File may not exist yet — do NOT reset lastGrowth (TS: empty catch).
+		// If file never appears, stall will trigger after threshold.
 		return false
 	}
 
@@ -158,7 +158,7 @@ func (w *stallWatcher) check() (stop bool) {
 }
 
 // readTail reads the last N bytes from a file.
-// Mirrors tailFile from utils/fsOperations.ts
+// Mirrors tailFile from utils/fsOperations.ts — uses loop read to handle short reads.
 func readTail(path string, maxBytes int) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -172,15 +172,28 @@ func readTail(path string, maxBytes int) string {
 	}
 
 	size := info.Size()
+	if size == 0 {
+		return ""
+	}
+
 	offset := size - int64(maxBytes)
 	if offset < 0 {
 		offset = 0
 	}
+	bytesToRead := int(size - offset)
 
-	buf := make([]byte, size-offset)
-	_, err = f.ReadAt(buf, offset)
-	if err != nil {
-		return ""
+	buf := make([]byte, bytesToRead)
+	// TS: while (totalRead < bytesToRead) { read(...); if (bytesRead === 0) break; }
+	totalRead := 0
+	for totalRead < bytesToRead {
+		n, err := f.ReadAt(buf[totalRead:], offset+int64(totalRead))
+		if n == 0 {
+			break
+		}
+		totalRead += n
+		if err != nil {
+			break
+		}
 	}
-	return string(buf)
+	return string(buf[:totalRead])
 }
