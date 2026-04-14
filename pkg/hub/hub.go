@@ -7,6 +7,9 @@
 package hub
 
 import (
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -55,6 +58,8 @@ func (h *Hub) Subscribe(handler EventHandler) func() {
 // Handlers are called in subscription order.
 // If a handler panics, Dispatch recovers and continues to remaining handlers.
 func (h *Hub) Dispatch(event Event) {
+	logEngineEvent(event)
+
 	h.mu.Lock()
 	handlers := make([]EventHandler, len(h.handlers))
 	copy(handlers, h.handlers)
@@ -75,4 +80,74 @@ func (h *Hub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.handlers = nil
+}
+
+// logEngineEvent logs structured info about every engine event to /tmp/gbot-debug.log.
+// This provides comprehensive observability for diagnosing token stats, event ordering,
+// and rendering issues without needing verbose mode.
+func logEngineEvent(event Event) {
+	switch event.Type {
+	case types.EventTextDelta:
+		preview := event.Text
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		slog.Info("engine:text_delta", "text", preview)
+
+	case types.EventToolUseStart:
+		if event.ToolUse != nil {
+			slog.Info("engine:tool_use_start", "id", event.ToolUse.ID, "name", event.ToolUse.Name, "summary", event.ToolUse.Summary)
+		}
+
+	case types.EventToolUseDelta:
+		if event.PartialInput != nil {
+			preview := event.PartialInput.Delta
+			if len(preview) > 80 {
+				preview = preview[:80] + "..."
+			}
+			slog.Info("engine:tool_delta", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
+		}
+		if event.ToolResult != nil {
+			lines := strings.Count(event.ToolResult.DisplayOutput, "\n") + 1
+			slog.Info("engine:tool_output", "id", event.ToolResult.ToolUseID, "lines", lines)
+		}
+
+	case types.EventToolResult:
+		if event.ToolResult != nil {
+			outputLen := len(event.ToolResult.DisplayOutput)
+			slog.Info("engine:tool_result", "id", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError, "outputLen", outputLen, "timing", event.ToolResult.Timing)
+		}
+
+	case types.EventUsage:
+		if event.Usage != nil {
+			slog.Info("engine:usage", "inputTokens", event.Usage.InputTokens, "outputTokens", event.Usage.OutputTokens)
+		}
+
+	case types.EventStreamStart:
+		slog.Info("engine:stream_start")
+
+	case types.EventComplete:
+		slog.Info("engine:complete")
+
+	case types.EventMessage:
+		if event.Message != nil {
+			blockCount := len(event.Message.Content)
+			slog.Info("engine:message", "role", string(event.Message.Role), "blocks", blockCount)
+		}
+
+	case types.EventThinkingStart:
+		slog.Info("engine:thinking_start")
+
+	case types.EventThinkingEnd:
+		if event.Thinking != nil {
+			slog.Info("engine:thinking_end", "duration", event.Thinking.Duration)
+		}
+
+	case types.EventError:
+		errMsg := fmt.Sprintf("%v", event.Error)
+		slog.Info("engine:error", "error", errMsg)
+
+	default:
+		slog.Info("engine:unknown", "type", event.Type)
+	}
 }

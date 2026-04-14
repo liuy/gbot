@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -255,6 +256,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case streamToolUseMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
+			slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
 		return true, a.readEvents()
 
 	case streamToolDeltaMsg:
@@ -271,6 +273,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case streamToolResultMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+			slog.Info("tui:tool_done", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
 		return true, a.readEvents()
 
 	case streamCompleteMsg:
@@ -283,6 +286,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
 				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
+				slog.Info("tui:stream_complete", "inputTokens", a.status.inputTokens, "outTokens", a.status.outTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 			}
 		}
 		a.progressStart = time.Time{}
@@ -310,6 +314,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.displayedInputTokens = a.status.inputTokens
 		a.inputTokenTarget = a.status.inputTokens
 		a.outputTokenTarget = a.status.outTokens
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.inputTokens, "total_out", a.status.outTokens)
 		return true, a.readEvents()
 
 	case streamThinkingStartMsg:
@@ -365,6 +370,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
+	slog.Info("tui:submit", "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 	if a.repl.IsStreaming() {
 		return nil
 	}

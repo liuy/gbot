@@ -32,6 +32,13 @@ import (
 )
 
 func main() {
+	// Debug logging: always write info-level events to /tmp/gbot.log
+	// This provides comprehensive observability for diagnosing token stats,
+	// event ordering, and rendering issues.
+	if f, err := os.OpenFile("/tmp/gbot.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
+
 	// 1. Load config from ~/.claude/settings.minimax.json or env vars
 	fmt.Fprintf(os.Stderr, "main() STARTING\n")
 	cfg, err := loadConfig()

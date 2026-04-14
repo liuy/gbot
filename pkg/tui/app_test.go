@@ -2879,3 +2879,218 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 		t.Error("last message should contain a BlockStats block")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// REGRESSION TESTS for commit-on-complete (f2779a9)
+// ---------------------------------------------------------------------------
+
+// TestStreamComplete_StatsLineContainsActualTokenValues verifies that the stats
+// line embedded in the assistant message shows the actual token counts, not ↑0.
+// Regression: commit f2779a9 caused ↑0 for input tokens.
+func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("hello")
+
+	// Simulate usage events arriving before complete (same order as production)
+	app.Update(streamUsageMsg{InputTokens: 100, OutputTokens: 0})
+	app.Update(streamUsageMsg{InputTokens: 0, OutputTokens: 50})
+
+	// Stream complete — should embed stats with actual token values
+	app.Update(streamCompleteMsg{})
+
+	lastMsg := app.repl.lastMsg()
+	if lastMsg == nil {
+		t.Fatal("expected last message")
+	}
+
+	foundStats := false
+	for _, blk := range lastMsg.Blocks {
+		if blk.Type == BlockStats {
+			foundStats = true
+			text := blk.Text
+			// The KEY assertion: should show actual input token count, NOT ↑0
+			if strings.Contains(text, "↑0") {
+				t.Errorf("stats should NOT show ↑0 when inputTokens=100, got: %s", text)
+			}
+			if !strings.Contains(text, "↑100") {
+				t.Errorf("stats should show ↑100 for inputTokens=100, got: %s", text)
+			}
+			if !strings.Contains(text, "↓50") {
+				t.Errorf("stats should show ↓50 for outTokens=50, got: %s", text)
+			}
+		}
+	}
+	if !foundStats {
+		t.Error("expected BlockStats after complete")
+	}
+}
+
+// TestView_ExpandedToolVisibleWithHeightLimit verifies that expanded tool calls
+// remain visible when content exceeds terminal height.
+// Regression: commit f2779a9 added height limiting that truncates from top,
+// cutting off the tool header when expanded output is long.
+func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 20 // small height to trigger truncation (maxLines = 17)
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Tool with long output
+	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`)
+	longOutput := strings.Repeat("output line\n", 50)
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("done")
+	app.markViewportDirty()
+
+	// Collapsed: tool name should be visible
+	v1 := app.View()
+	if !strings.Contains(v1, "Bash") {
+		t.Errorf("collapsed tool name 'Bash' should be visible, got:\n%s", v1)
+	}
+
+	// Expanded: tool name should STILL be visible even with long output
+	app.allToolsExpanded = true
+	app.contentDirty = true
+	v2 := app.View()
+	if !strings.Contains(v2, "Bash") {
+		t.Errorf("expanded tool name 'Bash' should be visible with height limit, got %d lines:\n%s",
+			len(strings.Split(v2, "\n")), v2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug 3: Tool collapse — tools with >4 lines should show collapse hint
+// Regression: tools no longer collapse after commit-on-complete changes
+// ---------------------------------------------------------------------------
+
+// TestApp_View_ToolOutputCollapsed verifies that a completed tool with >4 lines
+// of output shows the "ctrl+o to expand" collapse hint.
+func TestApp_View_ToolOutputCollapsed(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 40
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	// 10 lines of output — should collapse to 3 lines + hint
+	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+	app.markViewportDirty()
+
+	v := app.View()
+	if !strings.Contains(v, "ctrl+o to expand") {
+		t.Errorf("collapsed tool should show ctrl+o to expand hint, got:\n%s", v)
+	}
+	if !strings.Contains(v, "Bash") {
+		t.Errorf("should show tool name Bash, got:\n%s", v)
+	}
+	// Should show first 3 lines but NOT line10
+	if !strings.Contains(v, "line1") {
+		t.Errorf("should show line1, got:\n%s", v)
+	}
+	if strings.Contains(v, "line10") {
+		t.Errorf("collapsed tool should NOT show line10 (hidden behind collapse), got:\n%s", v)
+	}
+}
+
+// TestApp_View_ToolOutputExpanded verifies that expanded tools show all output.
+func TestApp_View_ToolOutputExpanded(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 40
+	app.allToolsExpanded = true
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+	app.markViewportDirty()
+
+	v := app.View()
+	if strings.Contains(v, "ctrl+o to expand") {
+		t.Errorf("expanded tool should NOT show collapse hint, got:\n%s", v)
+	}
+	if !strings.Contains(v, "line10") {
+		t.Errorf("expanded tool should show all lines including line10, got:\n%s", v)
+	}
+}
+
+// TestApp_View_ToolOutputCollapsedAfterCommit verifies that tools remain collapsed
+// after streamCompleteMsg commits messages via tea.Println.
+func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 40
+
+	// Simulate full query lifecycle
+	app.repl.AddUserMessage("test")
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("done")
+	app.progressStart = time.Now()
+	app.status.inputTokens = 10
+	app.status.outTokens = 5
+
+	// Before commit: View shows collapsed output
+	v := app.View()
+	if !strings.Contains(v, "ctrl+o to expand") {
+		t.Errorf("before commit: tool should be collapsed, got:\n%s", v)
+	}
+
+	// Stream complete — triggers commit via tea.Println
+	app.Update(streamCompleteMsg{})
+
+	// Verify committed output is collapsed
+	rendered := renderMessagesFull(app.repl.messages, app.width, false, "")
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Errorf("committed output should show collapsed tool hint, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "line10") {
+		t.Errorf("committed output should NOT show line10 (collapsed), got:\n%s", rendered)
+	}
+}
+
+// TestRenderMessagesFull_Collapsed verifies renderMessagesFull collapses tools.
+func TestRenderMessagesFull_Collapsed(t *testing.T) {
+	t.Parallel()
+	messages := []MessageView{
+		{
+			Role: "assistant",
+			Blocks: []ContentBlock{
+				{Type: BlockTool, ToolCall: ToolCallView{
+					ID: "t1", Name: "Bash", Summary: "ls",
+					Output: strings.Repeat("output line\n", 20),
+					Done:   true, Elapsed: time.Second,
+				}},
+			},
+		},
+	}
+
+	// Not expanded → should collapse
+	rendered := renderMessagesFull(messages, 80, false, "")
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Errorf("renderMessagesFull(expand=false) should collapse tool output, got:\n%s", rendered)
+	}
+
+	// Expanded → should show all
+	rendered = renderMessagesFull(messages, 80, true, "")
+	if strings.Contains(rendered, "ctrl+o to expand") {
+		t.Errorf("renderMessagesFull(expand=true) should NOT collapse, got:\n%s", rendered)
+	}
+}

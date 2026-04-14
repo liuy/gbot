@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"log/slog"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -192,7 +193,10 @@ func (a *App) View() string {
 		}
 		lines := strings.Split(contentStr, "\n")
 		if len(lines) > maxLines {
-			contentStr = strings.Join(lines[len(lines)-maxLines:], "\n")
+			truncated := len(lines) - maxLines
+			contentStr = strings.Join(lines[:maxLines], "\n") +
+			fmt.Sprintf("\n  ... %d lines truncated ...", truncated)
+			slog.Info("tui:view_truncate", "totalLines", len(lines), "maxLines", maxLines, "height", a.height)
 		}
 	}
 
