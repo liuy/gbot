@@ -30,7 +30,7 @@ func bashPrompt() string {
 		" - If your command will create new directories or files, first use this tool to run " + bt + "ls" + bt + " to verify the parent directory exists and is the correct location.\n" +
 		" - Always quote file paths that contain spaces with double quotes in your command (e.g., cd \"path with spaces/file.txt\")\n" +
 		" - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of " + bt + "cd" + bt + ". You may use " + bt + "cd" + bt + " if the User explicitly requests it.\n" +
-		" - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes).\n" +
+		" - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes). Do NOT use the system " + bt + "timeout" + bt + " command — set the \"timeout\" JSON parameter instead.\n" +
 		" - You can use the " + bt + "run_in_background" + bt + " parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.\n" +
 		" - When issuing multiple commands:\n" +
 		"   - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message. Example: if you need to run \"git status\" and \"git diff\", send a single message with two Bash tool calls in parallel.\n" +

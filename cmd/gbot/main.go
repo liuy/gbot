@@ -27,6 +27,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
 )
 
@@ -143,7 +144,7 @@ func applyEnvOverrides(cfg *config.Config) *config.Config {
 	return cfg
 }
 
-// createTools instantiates all 6 core tools and registers them.
+// createTools instantiates all core tools and registers them.
 func createTools() *tool.Registry {
 	reg := tool.NewRegistry()
 	reg.MustRegister(bash.New())
@@ -152,6 +153,12 @@ func createTools() *tool.Registry {
 	reg.MustRegister(filewrite.New())
 	reg.MustRegister(glob.New())
 	reg.MustRegister(grep.New())
+
+	// Background task management tools
+	taskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
+	reg.MustRegister(task.NewTaskOutput(taskReg))
+	reg.MustRegister(task.NewTaskStop(taskReg))
+
 	return reg
 }
 

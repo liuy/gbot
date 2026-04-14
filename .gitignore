@@ -1,16 +1,11 @@
 # Binaries
-gbot
+/gbot
 
 # Test/build artifacts
 *.out
 *.prof
 *.test
 coverage.out
-
-# Agent temp files
-/tmp/gbot-screen.raw
-/tmp/gbot-agent.pid
-/tmp/gbot-input
 
 # IDE
 .idea/
