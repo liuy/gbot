@@ -623,6 +623,9 @@ func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Durat
 func buildCommand(cmd string, snapshot *EnvSnapshot, cwdFile string) string {
 	var parts []string
 
+	// 0. Normalize: rewrite Windows >nul redirects (bashProvider.ts:127)
+	cmd = rewriteWindowsNullRedirect(cmd)
+
 	// 1. Source snapshot (bashProvider.ts:161-167)
 	if snapshot != nil {
 		parts = append(parts, fmt.Sprintf("source %s 2>/dev/null || true", snapshot.Path))
@@ -636,8 +639,12 @@ func buildCommand(cmd string, snapshot *EnvSnapshot, cwdFile string) string {
 	// 3. Disable extended glob for security (bashProvider.ts:176-179)
 	parts = append(parts, "shopt -u extglob 2>/dev/null || true")
 
-	// 4. Execute user command via eval for alias expansion (bashProvider.ts:184)
-	parts = append(parts, fmt.Sprintf("eval %q", cmd))
+	// 4. Execute user command via eval with proper quoting (bashProvider.ts:184)
+	// Source: bashProvider.ts:128-153 — quoteShellCommand + shouldAddStdinRedirect
+	// Single-quote wrapping preserves $VAR for eval and newlines for heredocs.
+	addStdinRedirect := shouldAddStdinRedirect(cmd)
+	quotedCmd := quoteShellCommand(cmd, addStdinRedirect)
+	parts = append(parts, "eval "+quotedCmd)
 
 	// 5. Track cwd after command (bashProvider.ts:186)
 	parts = append(parts, fmt.Sprintf("pwd -P >| %s", cwdFile))

@@ -80,14 +80,14 @@ func TestBuildCommand(t *testing.T) {
 			cmd:       "echo hello",
 			snapshot:  nil,
 			cwdFile:   "/tmp/cwd.txt",
-			wantParts: []string{"shopt -u extglob", `eval "echo hello"`, "pwd -P >| /tmp/cwd.txt"},
+			wantParts: []string{"shopt -u extglob", "eval 'echo hello'", "< /dev/null", "pwd -P >| /tmp/cwd.txt"},
 		},
 		{
 			name:      "command with snapshot",
 			cmd:       "echo hello",
 			snapshot:  &EnvSnapshot{Path: "/tmp/snap.sh"},
 			cwdFile:   "/tmp/cwd.txt",
-			wantParts: []string{"source /tmp/snap.sh 2>/dev/null || true", "shopt -u extglob", `eval "echo hello"`, "pwd -P >| /tmp/cwd.txt"},
+			wantParts: []string{"source /tmp/snap.sh 2>/dev/null || true", "shopt -u extglob", "eval 'echo hello'", "< /dev/null", "pwd -P >| /tmp/cwd.txt"},
 		},
 	}
 
