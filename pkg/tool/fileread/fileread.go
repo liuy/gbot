@@ -376,7 +376,7 @@ func New() tool.Tool {
 			return true // reading is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "Read file contents from the local filesystem. Supports line range via offset and limit parameters.",
+		Prompt_: fileReadPrompt(),
 		RenderResult_: renderResult,
 	})
 }

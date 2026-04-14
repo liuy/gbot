@@ -418,7 +418,7 @@ func New() tool.Tool {
 			return false
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "Write content to files. Creates parent directories if they do not exist. Overwrites existing files.",
+		Prompt_: fileWritePrompt(),
 		RenderResult_: renderWriteResult,
 	})
 }

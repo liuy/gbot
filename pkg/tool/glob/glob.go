@@ -76,7 +76,7 @@ func New() tool.Tool {
 			return true // glob is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "Find files matching glob patterns. Uses doublestar v4 for extended glob matching (e.g. '**/*.go').",
+		Prompt_: globPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*Output)
 			if !ok {

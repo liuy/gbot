@@ -126,7 +126,7 @@ func New() tool.Tool {
 		IsDestructive_:     func(json.RawMessage) bool { return false },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_:            "Performs exact string replacements in files.\n\nUsage:\n- You must read the file first before editing it.\n- When editing text from Read tool output, ensure you preserve the exact indentation.\n- The edit will FAIL if old_string is not unique in the file. Either provide more context or use replace_all.\n- Use replace_all for replacing and renaming strings across the file.",
+		Prompt_:            fileEditPrompt(),
 		RenderResult_:      renderEditResult,
 	})
 }

@@ -161,7 +161,7 @@ func New() tool.Tool {
 			return true
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "Search file contents using ripgrep (rg). Supports regex patterns, file type filtering, glob includes, and multiple output modes.",
+		Prompt_: grepPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*Output)
 			if !ok {
