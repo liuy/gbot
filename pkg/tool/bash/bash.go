@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -793,9 +792,6 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				baseEnv = applyEnvOverrides(baseEnv, overrides)
 			}
 
-			// Pipe PTY output to StreamingOutput
-			r, w := io.Pipe()
-
 			// Start PTY in a goroutine so we can get the PID.
 			// Use a channel to synchronize: must wait for ptyCommand to finish
 			// before calling task.Complete.
@@ -805,7 +801,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				defer close(ptyDone)
 				ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
 					func(line string) {
-						_, _ = w.Write([]byte(line + "\n"))
+					_, _ = s.Write([]byte(line + "\n"))
 					},
 					timeout,
 					func(pid int) {
@@ -816,24 +812,8 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				)
 			}()
 
-			// Pump PTY output to StreamingOutput
-			go func() {
-				buf := make([]byte, 4096)
-				for {
-					n, err := r.Read(buf)
-					if n > 0 {
-						_, _ = s.Write(buf[:n])
-					}
-					if err != nil {
-						break
-					}
-				}
-			}()
-
 			// Wait for ptyCommand to finish before completing the task
 			<-ptyDone
-			_ = w.Close()
-			_ = r.Close()
 			task.Complete(ptyExitCode, taskCtx.Err() == context.Canceled)
 			_ = os.Remove(cwdFile)
 		}()

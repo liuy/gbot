@@ -479,8 +479,6 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 		t.Errorf("Stdout = %q, want task ID", out.Stdout)
 	}
 
-	// Wait for background task to complete
-	time.Sleep(50 * time.Millisecond)
 
 	// Verify the task was registered in the default registry
 	registry := DefaultRegistry()
@@ -526,8 +524,6 @@ func TestExecuteStream_RunInBackground_CompletesWithOutput(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
-	// Wait for task to produce output
-	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -564,8 +560,6 @@ func TestExecuteStream_RunInBackground_ExitError(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
 		if strings.Contains(task.Command, "exit 7") {
@@ -601,8 +595,6 @@ func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
 		t.Errorf("Stdout = %q, want background task message", out.Stdout)
 	}
 
-	// Wait for PTY background task to complete
-	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -875,8 +867,6 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 
-	// Wait for PTY background task to complete
-	time.Sleep(50 * time.Millisecond)
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -957,12 +947,18 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	}
 	task := tasks[0]
 
-	// Wait for the command to start and PID to be set
-	time.Sleep(300 * time.Millisecond)
-
-	task.mu.Lock()
-	pid := task.PID
-	task.mu.Unlock()
+	// Poll for PID to be set by the goroutine
+	var pid int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		task.mu.Lock()
+		pid = task.PID
+		task.mu.Unlock()
+		if pid != 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// Cleanup: kill the task regardless of test result
 	_ = freshRegistry.Kill(task.ID)
@@ -1004,7 +1000,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	// Give the goroutine time to start the command.
 	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
 	// before the process even starts, so the task will be TaskCompleted here.
-	time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
@@ -1050,14 +1046,14 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	_ = result
 
 	// Wait for the command to actually start
-	time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 	// Cancel the parent context — simulates the query lifecycle ending.
 	// The background task should NOT be affected.
 	parentCancel()
 
 	// Give cancellation time to propagate (if it's going to)
-	time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
