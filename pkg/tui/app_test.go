@@ -328,10 +328,14 @@ func TestApp_Update_SpinnerTick(t *testing.T) {
 	app.repl.streaming = true
 	app.spinner.Start()
 
-	model, _ := app.Update(spinnerTickMsg{})
-	a := model.(*App)
-	if a.spinner.idx != 1 {
-		t.Errorf("spinner idx = %d, want 1", a.spinner.idx)
+	// Spinner only advances every 5th tick
+	var model tea.Model = app
+	for i := 0; i < 5; i++ {
+		model, _ = model.Update(spinnerTickMsg{})
+	}
+	app = model.(*App)
+	if app.spinner.idx != 1 {
+		t.Errorf("spinner idx = %d, want 1 after 5 ticks", app.spinner.idx)
 	}
 }
 

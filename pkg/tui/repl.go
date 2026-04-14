@@ -276,7 +276,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case streamCompleteMsg:
 		a.repl.FinishStream(m.Err)
 		if !a.progressStart.IsZero() {
-			elapsedStr := fmt.Sprintf("%.1fs", time.Since(a.progressStart).Seconds())
+			elapsedStr := formatElapsed(a.progressStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
 			statsLine := styleDim.Render(tokensStr + " · " + elapsedStr)
 			// Embed stats as a block in the last assistant message.
@@ -324,8 +324,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	// Periodic spinner tick while streaming
 	case spinnerTickMsg:
 		if a.repl.IsStreaming() {
-			a.spinner.Tick()
 			a.toolBlinkTick++
+			if a.toolBlinkTick%5 == 0 {
+				a.spinner.Tick()
+			}
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
 			// Animate displayed tokens toward actual values
 			target := a.inputTokenTarget

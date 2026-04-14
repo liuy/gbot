@@ -6,19 +6,63 @@ import (
 	"time"
 )
 
+// ---------------------------------------------------------------------------
+// formatDuration
+// ---------------------------------------------------------------------------
+
 func TestFormatDuration_Milliseconds(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(500 * time.Millisecond)
-	if v != "0.5s" {
-		t.Errorf("formatDuration(500ms) = %q, want %q", v, "0.5s")
+	v := formatDuration(300 * time.Millisecond)
+	if v != "0.3s" {
+		t.Errorf("formatDuration(300ms) = %q, want %q", v, "0.3s")
+	}
+}
+
+func TestFormatDuration_SubSecond(t *testing.T) {
+	t.Parallel()
+	v := formatDuration(50 * time.Millisecond)
+	if v != "0.1s" {
+		t.Errorf("formatDuration(50ms) = %q, want %q", v, "0.1s")
+	}
+}
+
+func TestFormatDuration_OneSecond(t *testing.T) {
+	t.Parallel()
+	v := formatDuration(1 * time.Second)
+	if v != "1s" {
+		t.Errorf("formatDuration(1s) = %q, want %q", v, "1s")
 	}
 }
 
 func TestFormatDuration_Seconds(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(2500 * time.Millisecond)
-	if v != "2.5s" {
-		t.Errorf("formatDuration(2.5s) = %q, want %q", v, "2.5s")
+	v := formatDuration(42 * time.Second)
+	if v != "42s" {
+		t.Errorf("formatDuration(42s) = %q, want %q", v, "42s")
+	}
+}
+
+func TestFormatDuration_Minutes(t *testing.T) {
+	t.Parallel()
+	v := formatDuration(90 * time.Second)
+	if v != "1m 30s" {
+		t.Errorf("formatDuration(90s) = %q, want %q", v, "1m 30s")
+	}
+}
+
+func TestFormatDuration_MinutesNoSeconds(t *testing.T) {
+	t.Parallel()
+	v := formatDuration(60 * time.Second)
+	if v != "1m 0s" {
+		t.Errorf("formatDuration(60s) = %q, want %q", v, "1m 0s")
+	}
+}
+
+func TestFormatDuration_Hours(t *testing.T) {
+	t.Parallel()
+	v := formatDuration(3723 * time.Second) // 1h 2m 3s
+	if v != "1h 2m 3s" {
+		t.Errorf("formatDuration(3723s) = %q, want %q", v, "1h 2m 3s")
 	}
 }
 
@@ -30,8 +74,11 @@ func TestFormatDuration_Zero(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// formatElapsed
+// ---------------------------------------------------------------------------
+
 func TestFormatElapsed(t *testing.T) {
-	// Not parallel — timing sensitive
 	start := time.Now().Add(-2 * time.Second)
 	v := formatElapsed(start)
 	if !strings.HasSuffix(v, "s") {
@@ -40,8 +87,6 @@ func TestFormatElapsed(t *testing.T) {
 }
 
 func TestFormatElapsed_Milliseconds(t *testing.T) {
-	// Not parallel — timing sensitive
-	// formatElapsed always shows seconds (0.1s minimum)
 	start := time.Now().Add(-100 * time.Millisecond)
 	v := formatElapsed(start)
 	if !strings.HasSuffix(v, "s") {

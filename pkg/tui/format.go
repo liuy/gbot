@@ -5,15 +5,30 @@ import (
 	"time"
 )
 
-// formatElapsed returns a formatted elapsed time string like "1.2s" or "45ms".
+// formatElapsed returns a human-readable elapsed time string.
+// <1s: "0.3s", 1-59s: "3s", 60s-59m: "1m 23s", ≥60m: "1h 23m".
 func formatElapsed(start time.Time) string {
-	elapsed := time.Since(start)
-	return fmt.Sprintf("%.1fs", elapsed.Seconds())
+	return formatDuration(time.Since(start))
 }
 
-// formatDuration returns a formatted duration string with 0.1s precision.
+// formatDuration returns a human-readable duration string.
 func formatDuration(d time.Duration) string {
-	return fmt.Sprintf("%.1fs", d.Seconds())
+	s := int(d.Seconds())
+	switch {
+	case s < 1:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case s < 60:
+		return fmt.Sprintf("%ds", s)
+	case s < 3600:
+		m := s / 60
+		sec := s % 60
+		return fmt.Sprintf("%dm %ds", m, sec)
+	default:
+		h := s / 3600
+		m := (s % 3600) / 60
+		sec := s % 60
+		return fmt.Sprintf("%dh %dm %ds", h, m, sec)
+	}
 }
 
 // formatTokenCount formats a token count: <1000 as-is, >=1000 as "1.2k".
