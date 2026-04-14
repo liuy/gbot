@@ -147,7 +147,7 @@ func applyEnvOverrides(cfg *config.Config) *config.Config {
 // createTools instantiates all core tools and registers them.
 func createTools() *tool.Registry {
 	reg := tool.NewRegistry()
-	reg.MustRegister(bash.New())
+	reg.MustRegister(bash.New(bash.DefaultRegistry()))
 	reg.MustRegister(fileread.New())
 	reg.MustRegister(fileedit.New())
 	reg.MustRegister(filewrite.New())

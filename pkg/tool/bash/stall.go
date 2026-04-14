@@ -236,8 +236,7 @@ func (w *streamStallWatcher) check() (stop bool) {
 	// Source: LocalShellTask.tsx:60-61 — tailFile(outputPath, STALL_TAIL_BYTES)
 	var tail string
 	if w.task.Output != nil {
-		lines := w.task.Output.Lines()
-		tail = strings.Join(lines, "\n")
+		tail = w.task.Output.LastLines()
 	}
 
 	if w.cancelled.Load() {

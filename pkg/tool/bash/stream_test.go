@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -655,6 +656,39 @@ func TestStreamingOutput_RollingWindowExact(t *testing.T) {
 	}
 	if len(lastUpdate.Lines[19]) != 20 {
 		t.Errorf("last line len = %d, want 20", len(lastUpdate.Lines[19]))
+	}
+}
+
+func TestStreamingOutput_LastLines(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write 30 lines — LastLines should return only last 20
+	for i := 0; i < 30; i++ {
+		_, _ = fmt.Fprintf(s, "line%d\n", i)
+	}
+
+	got := s.LastLines()
+	// Should contain "line10" through "line29" (last 20 lines)
+	if !strings.Contains(got, "line10") {
+		t.Error("LastLines() should contain line10")
+	}
+	if strings.Contains(got, "line9") {
+		t.Error("LastLines() should NOT contain line9 (outside rolling window)")
+	}
+	if !strings.Contains(got, "line29") {
+		t.Error("LastLines() should contain line29")
+	}
+}
+
+func TestStreamingOutput_LastLines_Empty(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+	got := s.LastLines()
+	if got != "" {
+		t.Errorf("LastLines() on empty = %q, want empty", got)
 	}
 }
 

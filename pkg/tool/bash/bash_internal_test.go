@@ -441,7 +441,7 @@ func TestBashExecuteStream_NilProgressCallback(t *testing.T) {
 func TestBashNew_ImplementsStreaming(t *testing.T) {
 	t.Parallel()
 
-	tl := New()
+	tl := New(nil)
 
 	_, ok := tl.(tool.ToolWithStreaming)
 	if !ok {
@@ -826,7 +826,7 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 	defer func() { shellCommand = orig }()
 
 	s := NewStreamingOutput(nil)
-	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false)
+	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry())
 	if err == nil {
 		t.Error("expected error with non-existent shell")
 	}
@@ -922,7 +922,7 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 	defer func() { SetPtmxCheckPath(orig) }()
 
 	// spawnBackground with a command that should start successfully
-	result, err := spawnBackground(context.Background(), Input{Command: "echo spawn"}, "", 10*time.Second)
+	result, err := spawnBackground(context.Background(), Input{Command: "echo spawn"}, "", 10*time.Second, DefaultRegistry())
 	if err != nil {
 		t.Fatalf("spawnBackground() error: %v", err)
 	}
@@ -995,7 +995,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	result, err := spawnBackground(parentCtx, Input{
 		Command:     "sleep 10",
 		Description: "test stay running",
-	}, t.TempDir(), 30*time.Second)
+	}, t.TempDir(), 30*time.Second, DefaultRegistry())
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	result, err := spawnBackground(parentCtx, Input{
 		Command:     "sleep 10",
 		Description: "test context independence",
-	}, t.TempDir(), 30*time.Second)
+	}, t.TempDir(), 30*time.Second, DefaultRegistry())
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}

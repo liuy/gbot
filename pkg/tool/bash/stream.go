@@ -3,6 +3,7 @@ package bash
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -127,6 +128,15 @@ func (s *StreamingOutput) Exceeded() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.exceeded
+}
+
+// LastLines returns the rolling window of recent lines joined with newlines.
+// Returns at most streamingLastLines (20) lines — much cheaper than Lines()
+// for cases that only need the tail (e.g., stall detection).
+func (s *StreamingOutput) LastLines() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.lastLines, "\n")
 }
 
 // Lines returns all accumulated lines (up to MaxOutputSize).

@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"sync"
@@ -1109,6 +1110,42 @@ func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 	}
 	if info.Status != "killed" {
 		t.Errorf("Adapter Status = %q, want killed", info.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TDD: stderr should not be dropped when auto-backgrounding
+// ---------------------------------------------------------------------------
+
+func TestAutoBackground_StderrNotDropped(t *testing.T) {
+	// When a non-PTY command auto-backgrounds, stderr must be captured in the
+	// task's StreamingOutput, not silently lost.
+	s := NewStreamingOutput(nil)
+	cmd := "echo stderr_capture_test >&2; sleep 10"
+	timeout := 100 * time.Millisecond
+
+	result, err := executeNonPTYStreamingAutoBg(context.Background(), Input{Command: cmd}, "", timeout, s, DefaultRegistry())
+	if err != nil {
+		t.Fatalf("executeNonPTYStreamingAutoBg() error: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.BackgroundTaskID == "" {
+		t.Fatal("expected BackgroundTaskID (command should have auto-backgrounded)")
+	}
+
+	// Wait for the task to complete via the global registry
+	reg := DefaultRegistry()
+	_, _ = reg.Wait(output.BackgroundTaskID)
+
+	// Check that stderr content appears in the task output
+	task, ok := reg.Get(output.BackgroundTaskID)
+	if !ok {
+		t.Fatal("task not found in registry")
+	}
+	taskOutput := task.Output.String()
+	if !strings.Contains(taskOutput, "stderr_capture_test") {
+		t.Errorf("stderr content missing from task output.\nTask output: %q", taskOutput)
 	}
 }
 

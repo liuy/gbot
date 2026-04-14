@@ -20,7 +20,7 @@ import (
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 
 	if tt.Name() != "Bash" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "Bash")
@@ -42,7 +42,7 @@ func TestNew(t *testing.T) {
 func TestNewAliases(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	aliases := tt.Aliases()
 	if len(aliases) != 3 {
 		t.Fatalf("Aliases() len = %d, want 3", len(aliases))
@@ -65,7 +65,7 @@ func TestNewAliases(t *testing.T) {
 func TestNewInputSchema(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	schema := tt.InputSchema()
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -79,7 +79,7 @@ func TestNewInputSchema(t *testing.T) {
 func TestDescription_WithDescription(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	input := json.RawMessage(`{"command":"ls","description":"List files in directory"}`)
 	desc, err := tt.Description(input)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestDescription_WithDescription(t *testing.T) {
 func TestDescription_WithCommand(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	input := json.RawMessage(`{"command":"echo hello"}`)
 	desc, err := tt.Description(input)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestDescription_WithCommand(t *testing.T) {
 func TestDescription_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	desc, err := tt.Description(json.RawMessage(`{invalid`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
@@ -125,7 +125,7 @@ func TestDescription_InvalidJSON(t *testing.T) {
 func TestIsReadOnly(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 
 	tests := []struct {
 		cmd  string
@@ -160,7 +160,7 @@ func TestIsReadOnly(t *testing.T) {
 func TestIsDestructive(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 
 	tests := []struct {
 		cmd  string
@@ -197,7 +197,7 @@ func TestIsDestructive(t *testing.T) {
 func TestIsDestructive_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	// Invalid JSON should assume destructive (safe default)
 	if !tt.IsDestructive(json.RawMessage(`{invalid`)) {
 		t.Error("IsDestructive(invalid json) = false, want true")
@@ -207,7 +207,7 @@ func TestIsDestructive_InvalidJSON(t *testing.T) {
 func TestIsReadOnly_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	// Invalid JSON should return false for read-only
 	if tt.IsReadOnly(json.RawMessage(`{invalid`)) {
 		t.Error("IsReadOnly(invalid json) = true, want false")
@@ -456,7 +456,7 @@ func TestConstants(t *testing.T) {
 func TestDescription_Truncation(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 
 	// Command longer than 80 chars should be truncated
 	longCmd := strings.Repeat("a", 100)
@@ -609,7 +609,7 @@ func TestExecute_CancelledContext(t *testing.T) {
 func TestDescription_EmptyCommand(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	input := json.RawMessage(`{"command":""}`)
 	desc, err := tt.Description(input)
 	if err != nil {
@@ -627,7 +627,7 @@ func TestDescription_EmptyCommand(t *testing.T) {
 func TestRenderResult_StdoutOnly(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stdout:   "hello world",
 		ExitCode: 0,
@@ -640,7 +640,7 @@ func TestRenderResult_StdoutOnly(t *testing.T) {
 func TestRenderResult_StderrOnly(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stderr:   "error msg",
 		ExitCode: 1,
@@ -653,7 +653,7 @@ func TestRenderResult_StderrOnly(t *testing.T) {
 func TestRenderResult_StdoutAndStderr(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stdout:   "output",
 		Stderr:   "error",
@@ -668,7 +668,7 @@ func TestRenderResult_StdoutAndStderr(t *testing.T) {
 func TestRenderResult_TimedOutOnly(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		TimedOut: true,
 		ExitCode: -1,
@@ -681,7 +681,7 @@ func TestRenderResult_TimedOutOnly(t *testing.T) {
 func TestRenderResult_StdoutAndTimedOut(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stdout:   "partial output",
 		TimedOut: true,
@@ -696,7 +696,7 @@ func TestRenderResult_StdoutAndTimedOut(t *testing.T) {
 func TestRenderResult_StdoutStderrAndTimedOut(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stdout:   "output",
 		Stderr:   "warning",
@@ -712,7 +712,7 @@ func TestRenderResult_StdoutStderrAndTimedOut(t *testing.T) {
 func TestRenderResult_NonOutputType(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult("some random string")
 	if !strings.Contains(result, "some random string") {
 		t.Errorf("RenderResult(non-Output) = %q, should contain the input", result)
@@ -722,7 +722,7 @@ func TestRenderResult_NonOutputType(t *testing.T) {
 func TestRenderResult_EmptyOutput(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		ExitCode: 0,
 	})
@@ -734,7 +734,7 @@ func TestRenderResult_EmptyOutput(t *testing.T) {
 func TestRenderResult_StderrAndTimedOut(t *testing.T) {
 	t.Parallel()
 
-	tt := bash.New()
+	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
 		Stderr:   "error",
 		TimedOut: true,
