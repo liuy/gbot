@@ -33,6 +33,11 @@ type App struct {
 	// REPL session state (delegated to repl.go)
 	repl *ReplState
 
+	// Commit-on-complete: messages[:committedCount] are committed to terminal
+	// scrollback via tea.Println and never re-rendered by Bubble Tea.
+	// Only messages[committedCount:] are managed by View().
+	committedCount int
+
 	// Engine
 	engine       *engine.Engine
 	systemPrompt json.RawMessage
@@ -142,29 +147,62 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// View renders the entire TUI.
-// Renders all messages (no truncation) — terminal native scrollback handles scrolling.
+// View renders the active (uncommitted) content + progress + input.
+// Committed messages are in terminal scrollback via tea.Println — never re-rendered.
+// Content is height-limited to prevent Bubble Tea's inline renderer from moving the
+// cursor into scrollback, which would corrupt it.
 func (a *App) View() string {
 	if a.width == 0 {
 		return "Loading..."
 	}
 
-	// Rebuild content cache only when dirty
-	if a.contentDirty || a.contentCache == "" {
-		var toolDot string
-		if a.repl.IsStreaming() && a.toolBlink {
-			toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
-		}
-		a.contentCache = renderMessagesFull(a.repl.Messages(), a.width, a.allToolsExpanded, toolDot)
+	uncommitted := a.repl.messages[a.committedCount:]
 
+	var contentStr string
+	if len(uncommitted) > 0 {
+		// Rebuild content cache only when dirty
+		if a.contentDirty || a.contentCache == "" {
+			var toolDot string
+			if a.repl.IsStreaming() && a.toolBlink {
+				toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+			}
+			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot)
+			a.contentDirty = false
+		}
+		contentStr = a.contentCache
+	} else {
+		a.contentCache = ""
 		a.contentDirty = false
+		if a.committedCount == 0 {
+			// Initial state — show welcome
+			welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
+			contentStr = welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
+		}
+	}
+
+	// Limit content height to prevent scrollback corruption.
+	// Bubble Tea's inline renderer moves cursor up by the previous frame's line count
+	// to rewrite the View area. If the View exceeds terminal height, cursor enters
+	// scrollback and overwrites it. Limiting content to height-3 keeps the cursor
+	// within the visible terminal area.
+	if a.height > 0 && contentStr != "" {
+		maxLines := a.height - 3 // reserve for progress + input + margin
+		if maxLines < 5 {
+			maxLines = 5
+		}
+		lines := strings.Split(contentStr, "\n")
+		if len(lines) > maxLines {
+			contentStr = strings.Join(lines[len(lines)-maxLines:], "\n")
+		}
 	}
 
 	var sb strings.Builder
 
-	// Message content — terminal scrolls natively
-	sb.WriteString(a.contentCache)
-	sb.WriteString("\n")
+	// Active (uncommitted) content
+	if contentStr != "" {
+		sb.WriteString(contentStr)
+		sb.WriteString("\n")
+	}
 
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
@@ -340,7 +378,17 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 			a.repl.cancelFunc = nil
 		}
 		a.repl.FinishStream(nil)
-		return a, nil
+		// Commit uncommitted messages to scrollback
+		var cmd tea.Cmd
+		uncommitted := a.repl.messages[a.committedCount:]
+		if len(uncommitted) > 0 {
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "")
+			a.committedCount = len(a.repl.messages)
+			cmd = tea.Println(rendered)
+		}
+		a.contentCache = ""
+		a.contentDirty = false
+		return a, cmd
 	}
 	if a.doublePress.Press("ctrl-c") {
 		return a, tea.Quit

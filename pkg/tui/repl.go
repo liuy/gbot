@@ -288,8 +288,20 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.progressStart = time.Time{}
 		a.thinkingActive = false
 		a.thinkingDuration = 0
-		a.markViewportDirty()
-		return true, nil
+
+		// Commit all uncommitted messages to scrollback via tea.Println.
+		// Once committed, they are never re-rendered by Bubble Tea — the
+		// terminal's native scrollback preserves them permanently.
+		var cmd tea.Cmd
+		uncommitted := a.repl.messages[a.committedCount:]
+		if len(uncommitted) > 0 {
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "")
+			a.committedCount = len(a.repl.messages)
+			cmd = tea.Println(rendered)
+		}
+		a.contentCache = ""
+		a.contentDirty = false
+		return true, cmd
 
 	case streamUsageMsg:
 		a.status.inputTokens += m.InputTokens
@@ -314,6 +326,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.status.SetError(m.Err.Error())
 		a.repl.CloseChannels()
 		*a.repl = *NewReplState()
+		a.committedCount = 0
 		a.spinner.Stop()
 		a.input.Focus()
 		return true, nil

@@ -276,8 +276,8 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 	app.repl.AppendChunk("response text")
 
 	model, cmd := app.Update(streamCompleteMsg{})
-	if cmd != nil {
-		t.Error("streamComplete should not produce a command")
+	if cmd == nil {
+		t.Error("streamComplete should produce a tea.Println command to commit content")
 	}
 	a := model.(*App)
 	if a.repl.streaming {
@@ -2005,10 +2005,9 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	}
 
 	// View should show completed stats line (no spinner)
+	// After commit-on-complete, stats are committed to scrollback via tea.Println,
+	// not rendered in View(). Verify stats exist in the message blocks instead.
 	v := app.View()
-	if !strings.Contains(v, "tokens") {
-		t.Errorf("completed view should show tokens, got: %s", v)
-	}
 	if strings.Contains(v, "thinking") {
 		t.Errorf("completed stats should not show thinking, got: %s", v)
 	}
@@ -2774,7 +2773,8 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestApp_StatsScrollsWithContent verifies that the completed query stats line
-// is embedded in the assistant message and persists when the next query starts.
+// is embedded in the assistant message and committed to scrollback via tea.Println.
+// After commit-on-complete, View() only shows uncommitted (active) content.
 func TestApp_StatsScrollsWithContent(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -2796,47 +2796,50 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	app.status.inputTokens = 100
 	app.status.outTokens = 50
 
-	// Stream completes — should embed stats in the last message
+	// Stream completes — should embed stats in the last message and commit
 	app.Update(streamCompleteMsg{})
 
-	// Verify: stats line is visible in View
-	v1 := app.View()
-	if !strings.Contains(v1, "tokens") {
-		t.Fatalf("after first query completes, View should contain stats, got:\n%s", v1)
+	// Verify: stats block exists in the message (committed to scrollback)
+	foundStats := false
+	for _, blk := range app.repl.messages[1].Blocks {
+		if blk.Type == BlockStats {
+			foundStats = true
+		}
+	}
+	if !foundStats {
+		t.Fatal("first query should have BlockStats after complete")
 	}
 
-	// --- Second query: first query's stats should persist ---
+	// Verify: View() is empty after commit (all content committed to scrollback)
+	v1 := app.View()
+	if strings.Contains(v1, "first response") {
+		t.Errorf("after commit, View should not contain committed content, got:\n%s", v1)
+	}
+
+	// Verify: committedCount matches messages count
+	if app.committedCount != len(app.repl.messages) {
+		t.Errorf("committedCount = %d, want %d", app.committedCount, len(app.repl.messages))
+	}
+
+	// --- Second query: only new content appears in View ---
 
 	// User submits second query
 	app.repl.AddUserMessage("second query")
 	app.repl.StartQuery(nil)
 	app.markViewportDirty()
 
-	// Verify: first query's stats should STILL be visible
-	v2 := app.View()
-	if !strings.Contains(v2, "tokens") {
-		t.Fatalf("after second query submit, first query's stats should still be visible, got:\n%s", v2)
-	}
-
 	// Second query streaming
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("second response")
 
-	// Verify: stats should still be present and appear BEFORE second response
-	v3 := app.View()
-	if !strings.Contains(v3, "tokens") {
-		t.Fatalf("during second query streaming, first query's stats should still be visible, got:\n%s", v3)
+	// Verify: View shows only second query's content
+	v2 := app.View()
+	if !strings.Contains(v2, "second response") {
+		t.Fatalf("during second query, View should contain second response, got:\n%s", v2)
 	}
-	statsIdx := strings.Index(v3, "tokens")
-	secondIdx := strings.Index(v3, "second response")
-	if secondIdx != -1 && statsIdx > secondIdx {
-		t.Errorf("stats (idx %d) should appear before second response (idx %d)", statsIdx, secondIdx)
-	}
-
-	// Stats should appear exactly once (not duplicated)
-	statsCount := strings.Count(v3, "tokens")
-	if statsCount != 1 {
-		t.Errorf("stats should appear exactly once, found %d times", statsCount)
+	// First query content is in scrollback, not in View
+	if strings.Contains(v2, "first response") {
+		t.Errorf("View should not contain first query content (it's in scrollback), got:\n%s", v2)
 	}
 }
 
