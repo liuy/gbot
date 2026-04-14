@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
@@ -70,6 +72,17 @@ func main() {
 		Logger:      logger,
 		Dispatcher:  h,
 	})
+
+	// Wire background task notifications into the engine's notification queue.
+	registry := bash.DefaultRegistry()
+	registry.OnNotify = func(n bash.TaskNotification) {
+		xml := n.FormatXML()
+		eng.EnqueueNotification(types.Message{
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock(xml)},
+			Timestamp: time.Now(),
+		})
+	}
 
 	// 5. Build system prompt using context builder
 	workingDir, _ := os.Getwd()

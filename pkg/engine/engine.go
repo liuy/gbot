@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -40,9 +41,10 @@ type Engine struct {
 	maxTokens   int
 	logger      *slog.Logger
 	messages    []types.Message
-	tokenBudget int
-	turnCount   int
-	dispatcher  EventDispatcher
+	tokenBudget    int
+	turnCount      int
+	dispatcher     EventDispatcher
+	notifications  *notificationQueue
 }
 
 // Params holds the constructor arguments for Engine.
@@ -65,6 +67,28 @@ type QueryResult struct {
 	Error      error
 }
 
+// notificationQueue is a thread-safe FIFO of messages to be injected
+// into the conversation on the next queryLoop iteration.
+// Source: TS commandQueue with enqueuePendingNotification priority system.
+type notificationQueue struct {
+	mu       sync.Mutex
+	messages []types.Message
+}
+
+func (q *notificationQueue) Enqueue(msg types.Message) {
+	q.mu.Lock()
+	q.messages = append(q.messages, msg)
+	q.mu.Unlock()
+}
+
+func (q *notificationQueue) Drain() []types.Message {
+	q.mu.Lock()
+	pending := q.messages
+	q.messages = nil
+	q.mu.Unlock()
+	return pending
+}
+
 // New creates a new Engine.
 func New(p *Params) *Engine {
 	if p.MaxTokens == 0 {
@@ -85,15 +109,23 @@ func New(p *Params) *Engine {
 	}
 
 	return &Engine{
-		provider:    p.Provider,
-		tools:       toolMap,
-		toolOrder:   toolOrder,
-		model:       p.Model,
-		maxTokens:   p.MaxTokens,
-		logger:      p.Logger,
-		tokenBudget: p.TokenBudget,
-		dispatcher:  p.Dispatcher,
+		provider:      p.Provider,
+		tools:         toolMap,
+		toolOrder:     toolOrder,
+		model:         p.Model,
+		maxTokens:     p.MaxTokens,
+		logger:        p.Logger,
+		tokenBudget:   p.TokenBudget,
+		dispatcher:    p.Dispatcher,
+		notifications: &notificationQueue{},
 	}
+}
+
+// EnqueueNotification adds a message to the notification queue.
+// Thread-safe: may be called from any goroutine.
+// The message will be injected at the start of the next queryLoop iteration.
+func (e *Engine) EnqueueNotification(msg types.Message) {
+	e.notifications.Enqueue(msg)
 }
 
 // Query executes the agentic loop for a user message.
@@ -150,6 +182,15 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 				Error:    ctx.Err(),
 			}
 		default:
+		}
+
+		// Drain pending notifications (stall alerts, completion notifications
+		// from background tasks). Source: TS drains commandQueue at query start.
+		if pending := e.notifications.Drain(); len(pending) > 0 {
+			e.messages = append(e.messages, pending...)
+			for i := range pending {
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventMessage, Message: &pending[i]})
+			}
 		}
 
 		// Stage 14-15: API call streaming loop

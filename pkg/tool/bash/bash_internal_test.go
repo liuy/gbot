@@ -973,3 +973,111 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 		t.Errorf("PID = 0, want non-zero — background task cannot be killed")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// spawnBackground — two bugs:
+//   Bug 1 (PTY): task.Complete called before ptyCommand finishes → immediate
+//     completion with exit code 0, process never actually runs.
+//   Bug 2 (all paths): taskCtx derived from parent ctx → cancelling parent
+//     (query ending) kills the background task (exit code 137).
+// ---------------------------------------------------------------------------
+
+func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
+	// Use a fresh registry to avoid polluting global state
+	orig := defaultRegistry
+	freshRegistry := NewBackgroundTaskRegistry()
+	defaultRegistry = freshRegistry
+	defer func() { defaultRegistry = orig }()
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+
+	result, err := spawnBackground(parentCtx, Input{
+		Command:     "sleep 10",
+		Description: "test stay running",
+	}, t.TempDir(), 30*time.Second)
+	if err != nil {
+		t.Fatalf("spawnBackground error: %v", err)
+	}
+	_ = result
+
+	// Give the goroutine time to start the command.
+	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
+	// before the process even starts, so the task will be TaskCompleted here.
+	time.Sleep(500 * time.Millisecond)
+
+	tasks := freshRegistry.List()
+	if len(tasks) == 0 {
+		t.Fatal("no background tasks registered")
+	}
+	task := tasks[0]
+
+	task.mu.Lock()
+	status := task.Status
+	exitCode := task.ExitCode
+	task.mu.Unlock()
+
+	// Cleanup: kill the task regardless of test result
+	if !IsTerminalTaskStatus(status) {
+		_ = freshRegistry.Kill(task.ID)
+	}
+
+	if status != TaskRunning {
+		t.Errorf("BUG: task status = %q (exit code %d), want TaskRunning — "+
+			"background task should not complete immediately (PTY sync bug) or "+
+			"be killed by parent context (context lifecycle bug)",
+			status, exitCode)
+	}
+}
+
+func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
+	// Background task should keep running even after the spawning context is cancelled.
+	// Bug 2: taskCtx is derived from parent ctx, so cancelling parent kills the task.
+	orig := defaultRegistry
+	freshRegistry := NewBackgroundTaskRegistry()
+	defaultRegistry = freshRegistry
+	defer func() { defaultRegistry = orig }()
+
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+
+	result, err := spawnBackground(parentCtx, Input{
+		Command:     "sleep 10",
+		Description: "test context independence",
+	}, t.TempDir(), 30*time.Second)
+	if err != nil {
+		t.Fatalf("spawnBackground error: %v", err)
+	}
+	_ = result
+
+	// Wait for the command to actually start
+	time.Sleep(500 * time.Millisecond)
+
+	// Cancel the parent context — simulates the query lifecycle ending.
+	// The background task should NOT be affected.
+	parentCancel()
+
+	// Give cancellation time to propagate (if it's going to)
+	time.Sleep(500 * time.Millisecond)
+
+	tasks := freshRegistry.List()
+	if len(tasks) == 0 {
+		t.Fatal("no background tasks registered")
+	}
+	task := tasks[0]
+
+	task.mu.Lock()
+	status := task.Status
+	exitCode := task.ExitCode
+	task.mu.Unlock()
+
+	// Cleanup
+	if !IsTerminalTaskStatus(status) {
+		_ = freshRegistry.Kill(task.ID)
+	}
+
+	if status != TaskRunning {
+		t.Errorf("BUG: task status = %q (exit code %d) after parent context cancelled, want TaskRunning — "+
+			"background task context should be independent of parent context",
+			status, exitCode)
+	}
+}

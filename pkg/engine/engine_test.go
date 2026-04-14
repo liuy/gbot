@@ -1708,6 +1708,133 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 // Token usage: no double-counting across LLM calls
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Notification queue
+// ---------------------------------------------------------------------------
+
+func TestEngine_EnqueueNotification(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Enqueue a notification from another goroutine (simulates background task callback)
+	eng.EnqueueNotification(types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("<task-notification><task-id>bg-1</task-id></task-notification>"),
+		},
+		Timestamp: time.Now(),
+	})
+
+	msgs := eng.Messages()
+	// Notification should NOT appear in messages yet — it's queued, not appended
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages (notification is queued, not appended), got %d", len(msgs))
+	}
+}
+
+func TestQuery_NotificationsDrained(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// First call returns tool_use → loop continues
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "my_tool", `{}`), nil)
+	// Second call returns text → loop ends
+	mp.addResponse(textStreamEvents("test-model", "Notification seen!"), nil)
+
+	mt := &mockTool{name: "my_tool", enabled: true}
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Enqueue notification BEFORE starting query — it should be drained
+	// at the start of the first queryLoop iteration.
+	eng.EnqueueNotification(types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("<task-notification><task-id>bg-1</task-id></task-notification>"),
+		},
+		Timestamp: time.Now(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var notificationMsgSeen bool
+	for evt := range eventCh {
+		if evt.Type == types.EventMessage && evt.Message != nil {
+			for _, block := range evt.Message.Content {
+				if strings.HasPrefix(block.Text, "<task-notification>") {
+					notificationMsgSeen = true
+				}
+			}
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// The notification should have been injected as a message
+	if !notificationMsgSeen {
+		t.Error("expected notification message to be emitted as EventMessage")
+	}
+
+	// Verify the notification is in the final message history
+	msgs := result.Messages
+	found := false
+	for _, msg := range msgs {
+		if msg.Role == types.RoleUser {
+			for _, block := range msg.Content {
+				if strings.HasPrefix(block.Text, "<task-notification>") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("notification should be in the final message history")
+	}
+}
+
+func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			eng.EnqueueNotification(types.Message{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					types.NewTextBlock(fmt.Sprintf("notification-%d", n)),
+				},
+				Timestamp: time.Now(),
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	// No panic = thread-safe
+}
+
 func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	t.Parallel()
 

@@ -548,8 +548,11 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	// Generate task ID (matches TS taskOutput.taskId generation)
 	id := fmt.Sprintf("bg-%d", time.Now().UnixNano()%0x100000)
 
-	// Create a cancelable context for the background task
-	taskCtx, taskCancel := context.WithCancel(ctx)
+	// Create an independent context for the background task.
+	// Background tasks must outlive the query context — cancelling the parent
+	// (query ending) must NOT kill the background process.
+	// Source: TS shellCommand lifecycle is independent of query lifecycle.
+	taskCtx, taskCancel := context.WithCancel(context.Background())
 
 	// Register the task BEFORE starting the goroutine (PID=0 initially).
 	// Matches TS: spawnShellTask registers before shellCommand.background().
@@ -557,6 +560,9 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	task.CWD = cwd
 	task.Description = in.Description
 	task.ToolUseID = id
+
+	// Source: LocalShellTask.tsx:221 — startStallWatchdog after registration
+	task.startStallWatchdog()
 
 	if isPTYAvailable() {
 		// PTY path: run in a goroutine with PTY
@@ -574,12 +580,14 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 
 			// Pipe PTY output to StreamingOutput
 			r, w := io.Pipe()
-			defer func() { _ = r.Close() }()
-			defer func() { _ = w.Close() }()
 
-			// Start PTY in a goroutine so we can get the PID
+			// Start PTY in a goroutine so we can get the PID.
+			// Use a channel to synchronize: must wait for ptyCommand to finish
+			// before calling task.Complete.
+			ptyDone := make(chan struct{})
 			var ptyExitCode int
 			go func() {
+				defer close(ptyDone)
 				ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
 					func(line string) {
 						_, _ = w.Write([]byte(line + "\n"))
@@ -607,7 +615,10 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				}
 			}()
 
-			// Wait for command to complete
+			// Wait for ptyCommand to finish before completing the task
+			<-ptyDone
+			_ = w.Close()
+			_ = r.Close()
 			task.Complete(ptyExitCode, taskCtx.Err() == context.Canceled)
 			_ = os.Remove(cwdFile)
 		}()
