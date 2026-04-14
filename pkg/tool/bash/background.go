@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -427,6 +428,7 @@ func (r *BackgroundTaskRegistry) Kill(id string) error {
 
 	task.Status = TaskKilled
 	task.EndTime = time.Now()
+	task.ExitCode = 128 + int(syscall.SIGKILL)
 	task.Interrupted = true
 
 	// Send killed notification
@@ -509,8 +511,7 @@ func (t *BackgroundTask) buildNotificationLocked(status string) *TaskNotificatio
 	var summary string
 	switch status {
 	case "killed":
-		// Source: LocalShellTask.tsx:154 — "was stopped", no exit code
-		summary = fmt.Sprintf("%s\"%s\" was stopped", BackgroundBashSummaryPrefix, desc)
+		summary = fmt.Sprintf("%s\"%s\" was stopped (exit code %d)", BackgroundBashSummaryPrefix, desc, t.ExitCode)
 	case "completed":
 		// Source: LocalShellTask.tsx:148 — always show exit code
 		summary = fmt.Sprintf("%s\"%s\" completed (exit code %d)", BackgroundBashSummaryPrefix, desc, t.ExitCode)

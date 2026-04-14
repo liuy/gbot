@@ -800,12 +800,11 @@ func TestBuildNotificationLocked_KilledWithExitCode(t *testing.T) {
 		ExitCode: 137,
 	}
 	n := task.buildNotificationLocked("killed")
-	// Source: LocalShellTask.tsx:154 — killed always says "was stopped", never shows exit code
 	if !contains(n.Summary, "was stopped") {
 		t.Errorf("Summary should say 'was stopped' for killed, got %q", n.Summary)
 	}
-	if contains(n.Summary, "exit code") {
-		t.Errorf("Killed summary should NOT include exit code, got %q", n.Summary)
+	if !contains(n.Summary, "137") {
+		t.Errorf("Killed summary should include exit code 137, got %q", n.Summary)
 	}
 }
 
@@ -1026,6 +1025,90 @@ func TestIsTerminalTaskStatus(t *testing.T) {
 		if got := IsTerminalTaskStatus(tt.status); got != tt.want {
 			t.Errorf("IsTerminalTaskStatus(%q) = %v, want %v", tt.status, got, tt.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: Kill() must set ExitCode to 137 (SIGKILL = 128+9)
+// ---------------------------------------------------------------------------
+
+func TestBackgroundTaskRegistry_Kill_SetsExitCode137(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundTaskRegistry()
+
+	task := r.Spawn("sleep 60", 12345, nil)
+
+	err := r.Kill(task.ID)
+	if err != nil {
+		t.Fatalf("Kill() error: %v", err)
+	}
+
+	if task.ExitCode != 137 {
+		t.Errorf("ExitCode = %d, want 137 (SIGKILL)", task.ExitCode)
+	}
+	if task.Status != TaskKilled {
+		t.Errorf("Status = %q, want %q", task.Status, TaskKilled)
+	}
+	if !task.Interrupted {
+		t.Error("Interrupted = false, want true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: notification for killed task should include exit code
+// ---------------------------------------------------------------------------
+
+func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundTaskRegistry()
+
+	var gotNotify TaskNotification
+	r.OnNotify = func(n TaskNotification) {
+		gotNotify = n
+	}
+
+	task := r.Spawn("sleep 60", 12345, nil)
+	task.Description = "my long task"
+
+	err := r.Kill(task.ID)
+	if err != nil {
+		t.Fatalf("Kill() error: %v", err)
+	}
+
+	// Verify notification was sent
+	if gotNotify.TaskID != task.ID {
+		t.Errorf("Notification TaskID = %q, want %q", gotNotify.TaskID, task.ID)
+	}
+	if gotNotify.Status != "killed" {
+		t.Errorf("Notification Status = %q, want killed", gotNotify.Status)
+	}
+	// Notification summary should mention exit code 137
+	if !contains(gotNotify.Summary, "137") {
+		t.Errorf("Notification Summary = %q, want mention of exit code 137", gotNotify.Summary)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bug fix: adapter exposes correct exit code for killed task
+// ---------------------------------------------------------------------------
+
+func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+
+	task := r.Spawn("sleep 60", 12345, nil)
+	_ = r.Kill(task.ID)
+
+	adapter := NewTaskInfoAdapter(r)
+	info, ok := adapter.Get(task.ID)
+	if !ok {
+		t.Fatalf("Get(%q) not found", task.ID)
+	}
+
+	if info.ExitCode != 137 {
+		t.Errorf("Adapter ExitCode = %d, want 137", info.ExitCode)
+	}
+	if info.Status != "killed" {
+		t.Errorf("Adapter Status = %q, want killed", info.Status)
 	}
 }
 
