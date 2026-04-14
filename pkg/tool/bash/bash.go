@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,11 +35,12 @@ type Input struct {
 // Output is the bash tool output.
 // Source: BashTool.ts — tool result data.
 type Output struct {
-	Stdout   string `json:"output"`
-	Stderr   string `json:"stderr,omitempty"`
-	ExitCode int    `json:"exitCode"`
-	TimedOut bool   `json:"timed_out,omitempty"`
-	CWD      string `json:"cwd,omitempty"`
+	Stdout           string `json:"output"`
+	Stderr           string `json:"stderr,omitempty"`
+	ExitCode         int    `json:"exitCode"`
+	TimedOut         bool   `json:"timed_out,omitempty"`
+	BackgroundTaskID string `json:"backgroundTaskId,omitempty"`
+	CWD              string `json:"cwd,omitempty"`
 }
 
 // DefaultTimeout is the default command timeout (2 minutes).
@@ -118,7 +120,7 @@ func New() tool.Tool {
 			return false // Bash commands are never concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-			Prompt_: "Use this tool to execute terminal commands. Commands run in a bash shell.",
+			Prompt_: bashPrompt(),
 			ExecuteStream_: ExecuteStream,
 		RenderResult_: func(data any) string {
 				out, ok := data.(*Output)
@@ -140,6 +142,12 @@ func New() tool.Tool {
 						sb.WriteByte('\n')
 					}
 					sb.WriteString("Command timed out")
+				}
+				if out.BackgroundTaskID != "" {
+					if sb.Len() > 0 {
+						sb.WriteByte('\n')
+					}
+					fmt.Fprintf(&sb, "Command timed out and was moved to background (task ID: %s)", out.BackgroundTaskID)
 				}
 				return sb.String()
 			},
@@ -237,15 +245,27 @@ func ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolU
 		}
 	})
 
+	// Determine if auto-backgrounding is allowed on timeout.
+	// Source: BashTool.tsx:880 — shouldAutoBackground
+	shouldAutoBg := isAutobackgroundingAllowed(in.Command)
+
 	// Run the command, capturing output into StreamingOutput
 	if isPTYAvailable() {
-		return executePTYStreaming(ctx, in, cwd, timeout, s)
+		return executePTYStreaming(ctx, in, cwd, timeout, s, shouldAutoBg)
 	}
-	return executeNonPTYStreaming(ctx, in, cwd, timeout, s)
+	return executeNonPTYStreaming(ctx, in, cwd, timeout, s, shouldAutoBg)
 }
 
 // executePTYStreaming runs a PTY command with streaming output capture.
-func executePTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+func executePTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool) (*tool.ToolResult, error) {
+	if shouldAutoBg {
+		return executePTYStreamingAutoBg(ctx, in, cwd, timeout, s)
+	}
+	return executePTYStreamingSync(ctx, in, cwd, timeout, s)
+}
+
+// executePTYStreamingSync runs a PTY command synchronously (original behavior).
+func executePTYStreamingSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
 	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
 	cwdFile := buildCwdFilePath(id)
 	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
@@ -281,8 +301,102 @@ func executePTYStreaming(ctx context.Context, in Input, cwd string, timeout time
 	}, nil
 }
 
+// executePTYStreamingAutoBg runs a PTY command with auto-background on timeout.
+// Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
+//
+// Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
+// the actual timeout via a timer. When timeout fires, transitions to background.
+func executePTYStreamingAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
+	cwdFile := buildCwdFilePath(id)
+	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
+
+	baseEnv := os.Environ()
+	if overrides := getEnvironmentOverrides(in.Command); overrides != nil {
+		baseEnv = applyEnvOverrides(baseEnv, overrides)
+	}
+
+	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
+	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
+	ptyDone := make(chan struct{})
+	var ptyExitCode int
+	var ptyInterrupted bool
+	var ptyPID atomic.Int64
+
+	go func() {
+		defer close(ptyDone)
+		ptyExitCode, ptyInterrupted, _ = ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
+			func(line string) {
+				_, _ = s.Write([]byte(line + "\n"))
+			},
+			MaxTimeout, // long timeout — we manage the real timeout externally
+			func(pid int) {
+				ptyPID.Store(int64(pid))
+			},
+		)
+	}()
+
+	// Race: ptyCommand completion vs timeout timer
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-ptyDone:
+		// Process completed before timeout — normal path
+		s.FinalUpdate()
+		newCwd := trackCwd(cwdFile, cwd)
+		_ = os.Remove(cwdFile)
+		return &tool.ToolResult{
+			Data: &Output{
+				Stdout:   s.String(),
+				ExitCode: ptyExitCode,
+				TimedOut: ptyInterrupted,
+				CWD:      newCwd,
+			},
+		}, nil
+
+	case <-timer.C:
+		// Timeout fired — transition to background task
+		// Source: BashTool.tsx:924-963 — startBackgrounding
+		registry := DefaultRegistry()
+		task := registry.Spawn(in.Command, int(ptyPID.Load()), s)
+		task.CWD = cwd
+		task.Description = in.Description
+		task.startStallWatchdog()
+
+		// Stop foreground progress updates
+		s.mu.Lock()
+		s.onProgress = nil
+		s.mu.Unlock()
+
+		// Goroutine waits for ptyCommand to finish, then completes the task
+		go func() {
+			<-ptyDone
+			s.FinalUpdate()
+			task.Complete(ptyExitCode, ptyInterrupted)
+			_ = os.Remove(cwdFile)
+		}()
+
+		return &tool.ToolResult{
+			Data: &Output{
+				BackgroundTaskID: task.ID,
+				CWD:              cwd,
+			},
+		}, nil
+	}
+}
+
 // executeNonPTYStreaming runs a non-PTY command with streaming output capture.
-func executeNonPTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+func executeNonPTYStreaming(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool) (*tool.ToolResult, error) {
+	if shouldAutoBg {
+		return executeNonPTYStreamingAutoBg(ctx, in, cwd, timeout, s)
+	}
+	return executeNonPTYStreamingSync(ctx, in, cwd, timeout, s)
+}
+
+// executeNonPTYStreamingSync runs a non-PTY command synchronously (original behavior).
+// When timeout fires, the process is killed and TimedOut=true is returned.
+func executeNonPTYStreamingSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -321,6 +435,100 @@ func executeNonPTYStreaming(ctx context.Context, in Input, cwd string, timeout t
 			CWD:      cwd,
 		},
 	}, nil
+}
+
+// executeNonPTYStreamingAutoBg runs a non-PTY command with auto-background on timeout.
+// Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
+//
+// When timeout fires, the process transitions to a background task instead of
+// being killed. The foreground result returns immediately with BackgroundTaskID set.
+// The process continues running; when it exits, task.Complete is called.
+func executeNonPTYStreamingAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
+	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+
+	cmd := exec.CommandContext(taskCtx, "bash", "-c", in.Command)
+	cmd.Dir = cwd
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var stderr bytes.Buffer
+	cmd.Stdout = s
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		taskCancel()
+		return nil, err
+	}
+
+	// Race: command completion vs timeout timer
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		defer close(done)
+		waitErr = cmd.Wait()
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		// Process completed before timeout — normal path
+		taskCancel()
+		s.FinalUpdate()
+
+		exitCode := 0
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+		}
+		return &tool.ToolResult{
+			Data: &Output{
+				Stdout:   s.String(),
+				Stderr:   stderr.String(),
+				ExitCode: exitCode,
+				CWD:      cwd,
+			},
+		}, nil
+
+	case <-timer.C:
+		// Timeout fired — transition to background task
+		// Source: BashTool.tsx:924-963 — startBackgrounding
+		registry := DefaultRegistry()
+		task := registry.Spawn(in.Command, cmd.Process.Pid, s)
+		task.CWD = cwd
+		task.Description = in.Description
+		task.startStallWatchdog()
+
+		// Stop foreground progress updates
+		s.mu.Lock()
+		s.onProgress = nil
+		s.mu.Unlock()
+
+		// Goroutine waits for process to exit, then calls task.Complete
+		go func() {
+			defer taskCancel()
+			<-done
+			exitCode := 0
+			if waitErr != nil {
+				if exitErr, ok := waitErr.(*exec.ExitError); ok {
+					exitCode = exitErr.ExitCode()
+				}
+			}
+			s.FinalUpdate()
+			task.Complete(exitCode, false)
+		}()
+
+		return &tool.ToolResult{
+			Data: &Output{
+				BackgroundTaskID: task.ID,
+				CWD:              cwd,
+			},
+		}, nil
+	}
 }
 
 // executePTY runs a command in PTY mode.
@@ -526,6 +734,31 @@ func isDestructiveCommand(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// disallowedAutoBackgroundCommands lists commands that should NOT be auto-backgrounded.
+// Source: BashTool.tsx:219-221 — DISALLOWED_AUTO_BACKGROUND_COMMANDS
+var disallowedAutoBackgroundCommands = []string{"sleep"}
+
+// isAutobackgroundingAllowed checks if a command can be automatically backgrounded on timeout.
+// Source: BashTool.tsx:307-315 — isAutobackgroundingAllowed
+func isAutobackgroundingAllowed(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return true
+	}
+	// Get first word
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return true
+	}
+	baseCommand := parts[0]
+	for _, disallowed := range disallowedAutoBackgroundCommands {
+		if baseCommand == disallowed {
+			return false
+		}
+	}
+	return true
 }
 
 func truncate(s string, maxLen int) string {

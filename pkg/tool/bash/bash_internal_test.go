@@ -826,7 +826,7 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 	defer func() { shellCommand = orig }()
 
 	s := NewStreamingOutput(nil)
-	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s)
+	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false)
 	if err == nil {
 		t.Error("expected error with non-existent shell")
 	}
@@ -1079,5 +1079,177 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 		t.Errorf("BUG: task status = %q (exit code %d) after parent context cancelled, want TaskRunning — "+
 			"background task context should be independent of parent context",
 			status, exitCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isAutobackgroundingAllowed — unit tests
+// Source: BashTool.tsx:307-315 — isAutobackgroundingAllowed
+// ---------------------------------------------------------------------------
+
+func TestIsAutobackgroundingAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"empty", "", true},
+		{"whitespace", "  ", true},
+		{"sleep disallowed", "sleep 5", false},
+		{"echo allowed", "echo hello", true},
+		{"make allowed", "make build", true},
+		{"git allowed", "git status", true},
+		{"npm allowed", "npm install", true},
+		{"sleep in pipeline allowed", "echo hi | sleep 1", true}, // first word is "echo"
+		{"compound with sleep allowed", "echo start; sleep 10", true}, // first word is "echo"
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isAutobackgroundingAllowed(tc.cmd)
+			if got != tc.want {
+				t.Errorf("isAutobackgroundingAllowed(%q) = %v, want %v", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auto-background on timeout — TDD tests
+// Source: BashTool.tsx:967-971 — shellCommand.onTimeout + startBackgrounding
+// ---------------------------------------------------------------------------
+
+// TestAutoBackground_NonPTYTimeoutTransitionsToBackground verifies that when
+// shouldAutoBackground=true and the command times out, it transitions to a
+// background task instead of being killed.
+//
+// RED LIGHT: This should fail because auto-background is not yet implemented.
+// The command will be killed (TimedOut=true) instead of being backgrounded.
+func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
+	// Force non-PTY mode
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/autobg-nonpty")
+	defer func() { SetPtmxCheckPath(orig) }()
+
+	// Fresh registry for isolation
+	origReg := defaultRegistry
+	freshReg := NewBackgroundTaskRegistry()
+	defaultRegistry = freshReg
+	defer func() { defaultRegistry = origReg }()
+
+	// Command: "echo start; sleep 10" — first word is "echo", so auto-bg is allowed.
+	// Timeout: 100ms — the command will still be running when timeout fires.
+	result, err := ExecuteStream(context.Background(),
+		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+
+	// The command should have been auto-backgrounded, NOT killed.
+	if out.BackgroundTaskID == "" {
+		t.Fatalf("BackgroundTaskID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
+			"Got: TimedOut=%v ExitCode=%d Stdout=%q", out.TimedOut, out.ExitCode, out.Stdout)
+	}
+
+	if out.TimedOut {
+		t.Error("TimedOut should be false — command was auto-backgrounded, not killed")
+	}
+
+	// Verify task is registered in the background task registry
+	task, found := freshReg.Get(out.BackgroundTaskID)
+	if !found {
+		t.Fatalf("background task %q not found in registry", out.BackgroundTaskID)
+	}
+
+	task.mu.Lock()
+	pid := task.PID
+	task.mu.Unlock()
+
+	// Cleanup: kill the background task
+	_ = freshReg.Kill(task.ID)
+
+	if pid == 0 {
+		t.Errorf("PID = 0, want non-zero — background task should have a real PID")
+	}
+}
+
+// TestAutoBackground_PTYTimeoutTransitionsToBackground verifies the PTY path
+// auto-backgrounds on timeout.
+//
+// RED LIGHT: This should fail because auto-background is not yet implemented.
+func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
+	// Fresh registry for isolation
+	origReg := defaultRegistry
+	freshReg := NewBackgroundTaskRegistry()
+	defaultRegistry = freshReg
+	defer func() { defaultRegistry = origReg }()
+
+	// Command: "echo start; sleep 10" — first word is "echo", so auto-bg is allowed.
+	// Timeout: 100ms — the command will still be running when timeout fires.
+	result, err := ExecuteStream(context.Background(),
+		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+
+	if out.BackgroundTaskID == "" {
+		t.Fatalf("BackgroundTaskID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
+			"Got: TimedOut=%v ExitCode=%d Stdout=%q", out.TimedOut, out.ExitCode, out.Stdout)
+	}
+
+	// Cleanup: kill the background task
+	if task, found := freshReg.Get(out.BackgroundTaskID); found {
+		_ = freshReg.Kill(task.ID)
+	}
+}
+
+// TestAutoBackground_FastCommandNotBackgrounded verifies that a fast command
+// (completes before timeout) is NOT auto-backgrounded.
+func TestAutoBackground_FastCommandNotBackgrounded(t *testing.T) {
+	t.Parallel()
+
+	result, err := ExecuteStream(context.Background(),
+		json.RawMessage(`{"command":"echo hello","timeout":5000}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.BackgroundTaskID != "" {
+		t.Errorf("BackgroundTaskID = %q, want empty — fast command should not be auto-backgrounded", out.BackgroundTaskID)
+	}
+	if out.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
+	}
+}
+
+// TestAutoBackground_SleepNotAutoBackgrounded verifies that "sleep" commands
+// are NOT auto-backgrounded — they timeout and die normally.
+// Source: BashTool.tsx:219-221 — DISALLOWED_AUTO_BACKGROUND_COMMANDS
+func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
+	// Force non-PTY for deterministic behavior
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/autobg-sleep")
+	defer func() { SetPtmxCheckPath(orig) }()
+
+	result, err := ExecuteStream(context.Background(),
+		json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+
+	out := result.Data.(*Output)
+	if out.BackgroundTaskID != "" {
+		t.Errorf("BackgroundTaskID = %q, want empty — sleep should NOT be auto-backgrounded", out.BackgroundTaskID)
+	}
+	if !out.TimedOut {
+		t.Error("TimedOut should be true — sleep should be killed on timeout, not backgrounded")
 	}
 }
