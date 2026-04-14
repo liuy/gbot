@@ -474,8 +474,8 @@ func TestStallConstants(t *testing.T) {
 
 func TestPromptPatternsCount(t *testing.T) {
 	t.Parallel()
-	if len(promptPatterns) != 10 {
-		t.Errorf("len(promptPatterns) = %d, want 10", len(promptPatterns))
+	if len(promptPatterns) != 8 {
+		t.Errorf("len(promptPatterns) = %d, want 8", len(promptPatterns))
 	}
 }
 
@@ -675,41 +675,6 @@ func TestLooksLikePrompt_Password(t *testing.T) {
 	}
 }
 
-func TestLooksLikePrompt_DONE(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"DONE", true},
-		{"done", false},
-		{"  DONE  ", true},
-		{"UNDONE", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestLooksLikePrompt_More(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"-- More --", true},
-		{"-- More -- 75% --", true},
-		{"more output", false},
-	}
-	for _, tt := range tests {
-		if got := looksLikePrompt(tt.input); got != tt.want {
-			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestReadTail_ReadAtError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -724,4 +689,440 @@ func TestReadTail_ReadAtError(t *testing.T) {
 	if got != "" {
 		t.Errorf("readTail() on unreadable = %q, want empty", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// streamStallWatcher.check — unit tests (no real timers needed)
+// ---------------------------------------------------------------------------
+
+func TestStreamStallWatcher_Check_OutputGrows(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("hello"))
+	task := &BackgroundTask{Output: output}
+
+	w := &streamStallWatcher{
+		task:       task,
+		lastGrowth: time.Now(),
+		onStall:    func(summary, tail string) {},
+	}
+
+	stop := w.check()
+	if stop {
+		t.Error("should not stop on first check")
+	}
+	if w.lastSize != 5 {
+		t.Errorf("lastSize = %d, want 5", w.lastSize)
+	}
+}
+
+func TestStreamStallWatcher_Check_NilOutput(t *testing.T) {
+	t.Parallel()
+	past := time.Now().Add(-60 * time.Second)
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: nil},
+		lastGrowth: past,
+		onStall:    func(summary, tail string) {},
+	}
+
+	// Nil output → size=0, no growth, past threshold, but tail="" which is not a prompt
+	stop := w.check()
+	if stop {
+		t.Error("should not stop when tail is empty (not a prompt)")
+	}
+}
+
+func TestStreamStallWatcher_Check_Cancelled(t *testing.T) {
+	t.Parallel()
+	w := &streamStallWatcher{
+		task:    &BackgroundTask{},
+		onStall: func(summary, tail string) {},
+	}
+	w.cancelled.Store(true)
+
+	stop := w.check()
+	if !stop {
+		t.Error("should stop when cancelled")
+	}
+}
+
+func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("Continue? (y/n)"))
+
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: output},
+		lastGrowth: time.Now(), // just now — under threshold
+		onStall:    func(summary, tail string) { t.Error("should not stall") },
+	}
+
+	stop := w.check()
+	if stop {
+		t.Error("should not stop under threshold")
+	}
+}
+
+func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("building...\ncompiling..."))
+
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: output},
+		lastSize:   100, // force no growth
+		lastGrowth: time.Now().Add(-60 * time.Second),
+		onStall:    func(summary, tail string) { t.Error("should not stall for non-prompt") },
+	}
+
+	stop := w.check()
+	if stop {
+		t.Error("should not stop for non-prompt stall")
+	}
+	if time.Since(w.lastGrowth) > time.Second {
+		t.Error("should have reset lastGrowth")
+	}
+}
+
+func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("Continue? (y/n)"))
+
+	stalled := false
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: output},
+		lastSize:   100, // force no growth
+		lastGrowth: time.Now().Add(-60 * time.Second),
+		onStall: func(summary, tail string) {
+			stalled = true
+		},
+	}
+
+	stop := w.check()
+	if !stop {
+		t.Error("should stop for stalled prompt")
+	}
+	if !stalled {
+		t.Error("onStall should have been called")
+	}
+}
+
+func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("Continue? (y/n)"))
+
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: output},
+		lastSize:   100,
+		lastGrowth: time.Now().Add(-60 * time.Second),
+		onStall:    nil,
+	}
+
+	stop := w.check()
+	if !stop {
+		t.Error("should stop even with nil callback")
+	}
+}
+
+func TestStreamStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
+	t.Parallel()
+	output := NewStreamingOutput(nil)
+	_, _ = output.Write([]byte("Continue? (y/n)"))
+
+	w := &streamStallWatcher{
+		task:       &BackgroundTask{Output: output},
+		lastSize:   100,
+		lastGrowth: time.Now().Add(-60 * time.Second),
+		onStall:    nil,
+	}
+	w.cancelled.Store(true)
+
+	stop := w.check()
+	if !stop {
+		t.Error("should stop when cancelled after readTail")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// watchForStallStream — synctest integration tests
+// ---------------------------------------------------------------------------
+
+func TestWatchForStallStream_DetectsPrompt(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Building...\nContinue? (y/n)"))
+
+		task := &BackgroundTask{
+			Output: output,
+			Kind:   "bash",
+		}
+
+		detected := make(chan string, 1)
+		cancel := watchForStallStream(task, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
+		select {
+		case summary := <-detected:
+			cancel()
+			if summary != "appears to be waiting for interactive input" {
+				t.Errorf("summary = %q, want stall message", summary)
+			}
+		case <-time.After(60 * time.Second):
+			cancel()
+			t.Fatal("watchForStallStream did not detect prompt within timeout")
+		}
+	})
+}
+
+func TestWatchForStallStream_CancelStops(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		task := &BackgroundTask{
+			Output: output,
+			Kind:   "bash",
+		}
+
+		calledCh := make(chan struct{}, 1)
+		cancel := watchForStallStream(task, func(summary, tail string) {
+			select {
+			case calledCh <- struct{}{}:
+			default:
+			}
+		})
+
+		cancel()
+
+		time.Sleep(stallCheckInterval + 100*time.Millisecond)
+
+		select {
+		case <-calledCh:
+			t.Error("onStall should not be called after cancel")
+		default:
+		}
+	})
+}
+
+func TestWatchForStallStream_NoPrompt(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Building...\nCompiling...\nTests passed"))
+
+		task := &BackgroundTask{
+			Output: output,
+			Kind:   "bash",
+		}
+
+		detected := make(chan string, 1)
+		cancel := watchForStallStream(task, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
+		select {
+		case <-detected:
+			cancel()
+			t.Error("should not detect stall for non-prompt output")
+		case <-time.After(55 * time.Second):
+			cancel()
+		}
+	})
+}
+
+func TestWatchForStallStream_OutputGrowth(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		task := &BackgroundTask{
+			Output: output,
+			Kind:   "bash",
+		}
+
+		detected := make(chan string, 1)
+		cancel := watchForStallStream(task, func(summary, tail string) {
+			select {
+			case detected <- summary:
+			default:
+			}
+		})
+
+		// Keep growing the output to prevent stall detection
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; i < 15; i++ {
+				time.Sleep(3 * time.Second)
+				_, _ = output.Write([]byte("more output\n"))
+			}
+		}()
+
+		select {
+		case <-detected:
+			cancel()
+			t.Error("should not detect stall while output is growing")
+		case <-done:
+			cancel()
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// startStallWatchdog — integration via synctest
+// ---------------------------------------------------------------------------
+
+func TestStartStallWatchdog_FiresNotification(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		receivedCh := make(chan TaskNotification, 1)
+		task := &BackgroundTask{
+			Output:      output,
+			Kind:        "bash",
+			ID:          "bg-test",
+			Command:     "test-cmd",
+			Description: "test desc",
+			onNotify: func(n TaskNotification) {
+				select {
+				case receivedCh <- n:
+				default:
+				}
+			},
+		}
+
+		task.startStallWatchdog()
+		if task.cancelStall == nil {
+			t.Fatal("cancelStall should be set")
+		}
+
+		// Wait for stall to fire
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+
+		select {
+		case received := <-receivedCh:
+			if received.TaskID != "bg-test" {
+				t.Errorf("TaskID = %q, want bg-test", received.TaskID)
+			}
+			if !received.IsStall {
+				t.Error("notification should be stall")
+			}
+			if !contains(received.Summary, "test desc") {
+				t.Errorf("Summary should contain description, got %q", received.Summary)
+			}
+		default:
+			t.Fatal("no notification received")
+		}
+
+		task.cancelStall()
+	})
+}
+
+func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		calledCh := make(chan struct{}, 1)
+		task := &BackgroundTask{
+			Output:   output,
+			Kind:     "bash",
+			ID:       "bg-test",
+			Notified: true, // already notified — stall callback should bail
+			onNotify: func(n TaskNotification) {
+				select {
+				case calledCh <- struct{}{}:
+				default:
+				}
+			},
+		}
+
+		task.startStallWatchdog()
+
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+
+		select {
+		case <-calledCh:
+			t.Error("should not send notification when already notified")
+		default:
+			// Expected
+		}
+
+		task.cancelStall()
+	})
+}
+
+func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		receivedCh := make(chan TaskNotification, 1)
+		task := &BackgroundTask{
+			Output:   output,
+			Kind:     "bash",
+			ID:       "bg-test",
+			Command:  "my-command",
+			onNotify: func(n TaskNotification) {
+				select {
+				case receivedCh <- n:
+				default:
+				}
+			},
+		}
+
+		task.startStallWatchdog()
+
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+
+		select {
+		case received := <-receivedCh:
+			if !contains(received.Summary, "my-command") {
+				t.Errorf("Summary should use command when no description, got %q", received.Summary)
+			}
+		default:
+			t.Fatal("no notification received")
+		}
+
+		task.cancelStall()
+	})
+}
+
+func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		output := NewStreamingOutput(nil)
+		_, _ = output.Write([]byte("Continue? (y/n)"))
+
+		task := &BackgroundTask{
+			Output:   output,
+			Kind:     "bash",
+			ID:       "bg-test",
+			Command:  "cmd",
+			onNotify: nil,
+		}
+
+		task.startStallWatchdog()
+
+		// Should not panic
+		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
+
+		task.cancelStall()
+	})
 }

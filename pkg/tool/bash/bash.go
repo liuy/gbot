@@ -608,7 +608,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			}()
 
 			// Wait for command to complete
-			task.Complete(ptyExitCode)
+			task.Complete(ptyExitCode, taskCtx.Err() == context.Canceled)
 			_ = os.Remove(cwdFile)
 		}()
 	} else {
@@ -626,7 +626,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			cmd.Stderr = &stderr
 
 			if err := cmd.Start(); err != nil {
-				task.Complete(-1)
+				task.Complete(-1, false)
 				return
 			}
 
@@ -645,7 +645,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				}
 			}
 
-			task.Complete(exitCode)
+			task.Complete(exitCode, taskCtx.Err() == context.Canceled)
 		}()
 	}
 

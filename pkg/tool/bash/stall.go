@@ -33,8 +33,6 @@ var promptPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Continue\?`),
 	regexp.MustCompile(`(?i)Overwrite\?`),
 	regexp.MustCompile(`(?i)Password:`),
-	regexp.MustCompile(`\bDONE\b`),
-	regexp.MustCompile(`-- More --`),
 }
 
 // looksLikePrompt checks whether the tail of the output looks like an
@@ -144,6 +142,110 @@ func (w *stallWatcher) check() (stop bool) {
 	if !looksLikePrompt(tail) {
 		// Not a prompt — keep watching. Reset so the next check is
 		// stallThreshold out instead of re-reading the tail on every tick.
+		// Source: LocalShellTask.tsx:65-68
+		w.lastGrowth = time.Now()
+		return false
+	}
+
+	// Stall detected with prompt — invoke callback and stop
+	w.cancelled.Store(true)
+	if w.onStall != nil {
+		w.onStall("appears to be waiting for interactive input", tail)
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
+// Streaming stall detection — monitors StreamingOutput for stall conditions
+// Same algorithm as watchForStall but uses StreamingOutput instead of file.
+// Source: LocalShellTask.tsx:46-104 — startStallWatchdog
+// ---------------------------------------------------------------------------
+
+// streamStallWatcher tracks StreamingOutput growth to detect stalled commands.
+type streamStallWatcher struct {
+	task       *BackgroundTask
+	lastSize   int64
+	lastGrowth time.Time
+	cancelled  atomic.Bool
+	onStall    func(summary, tail string)
+}
+
+// watchForStallStream monitors a StreamingOutput for stall conditions.
+// If output stops growing for stallThreshold and the tail looks like a prompt,
+// onStall is called. Returns a CancelFunc that stops the watchdog.
+//
+// Source: LocalShellTask.tsx:46-104 — startStallWatchdog (same algorithm, streaming data source)
+func watchForStallStream(task *BackgroundTask, onStall func(summary, tail string)) func() {
+	w := &streamStallWatcher{
+		task:       task,
+		lastGrowth: time.Now(),
+		onStall:    onStall,
+	}
+
+	done := make(chan struct{})
+	cancel := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(stallCheckInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-cancel:
+				return
+			case <-ticker.C:
+				if w.check() {
+					return // stall detected, stop watching
+				}
+			}
+		}
+	}()
+
+	return func() {
+		w.cancelled.Store(true)
+		close(cancel)
+		<-done
+	}
+}
+
+// check performs one stall check cycle using StreamingOutput.
+// Source: LocalShellTask.tsx:52-98 — same algorithm as stallWatcher.check
+func (w *streamStallWatcher) check() (stop bool) {
+	if w.cancelled.Load() {
+		return true
+	}
+
+	// Source: LocalShellTask.tsx:53 — stat(outputPath).then(s => s.size)
+	var size int64
+	if w.task.Output != nil {
+		size = w.task.Output.TotalBytes()
+	}
+
+	if size > w.lastSize {
+		w.lastSize = size
+		w.lastGrowth = time.Now()
+		return false
+	}
+
+	if time.Since(w.lastGrowth) < stallThreshold {
+		return false
+	}
+
+	// Output stalled — check if tail looks like a prompt
+	// Source: LocalShellTask.tsx:60-61 — tailFile(outputPath, STALL_TAIL_BYTES)
+	var tail string
+	if w.task.Output != nil {
+		lines := w.task.Output.Lines()
+		tail = strings.Join(lines, "\n")
+	}
+
+	if w.cancelled.Load() {
+		return true
+	}
+
+	if !looksLikePrompt(tail) {
+		// Not a prompt — keep watching. Reset so next check is stallThreshold out.
 		// Source: LocalShellTask.tsx:65-68
 		w.lastGrowth = time.Now()
 		return false
