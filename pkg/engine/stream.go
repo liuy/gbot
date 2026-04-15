@@ -71,7 +71,7 @@ func (a *StreamAccumulator) ProcessEvent(event llm.StreamEvent) (emitEvent *type
 			case types.ContentTypeToolUse:
 				a.currentToolInput.Reset()
 				emitEvent = &types.QueryEvent{
-					Type: types.EventToolUseStart,
+					Type: types.EventToolStart,
 					ToolUse: &types.ToolUseEvent{
 						ID:    cb.ID,
 						Name:  cb.Name,

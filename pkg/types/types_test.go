@@ -412,14 +412,17 @@ func TestQueryEventTypeConstants(t *testing.T) {
 		et   types.QueryEventType
 		want string
 	}{
+		{"query_start", types.EventQueryStart, "query_start"},
+		{"query_end", types.EventQueryEnd, "query_end"},
 		{"stream_start", types.EventStreamStart, "stream_start"},
+		{"stream_end", types.EventStreamEnd, "stream_end"},
 		{"text_delta", types.EventTextDelta, "text_delta"},
-		{"tool_use_start", types.EventToolUseStart, "tool_use_start"},
-		{"tool_use_delta", types.EventToolUseDelta, "tool_use_delta"},
-		{"tool_result", types.EventToolResult, "tool_result"},
-		{"message", types.EventMessage, "message"},
+		{"tool_start", types.EventToolStart, "tool_start"},
+		{"tool_input", types.EventToolInput, "tool_input"},
+		{"tool_delta", types.EventToolDelta, "tool_delta"},
+		{"tool_end", types.EventToolEnd, "tool_end"},
+		{"usage", types.EventUsage, "usage"},
 		{"error", types.EventError, "error"},
-		{"complete", types.EventComplete, "complete"},
 	}
 
 	for _, tc := range tests {

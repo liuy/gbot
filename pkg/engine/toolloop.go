@@ -63,7 +63,7 @@ func SequentialToolLoop(
 		case <-ctx.Done():
 			results = append(results, CreateSyntheticErrorBlock(block.ID, "user_interrupted"))
 			emitEvent(types.QueryEvent{
-				Type: types.EventToolResult,
+				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID: block.ID,
 					Output:    json.RawMessage(`{"error":"cancelled"}`),
@@ -80,7 +80,7 @@ func SequentialToolLoop(
 			errBlock := CreateToolErrorBlock(block.ID, fmt.Sprintf("No such tool available: %s", block.Name))
 			results = append(results, errBlock)
 			emitEvent(types.QueryEvent{
-				Type: types.EventToolResult,
+				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID: block.ID,
 					Output:    errBlock.Content,
@@ -101,7 +101,7 @@ func SequentialToolLoop(
 			errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
 			results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
 			emitEvent(types.QueryEvent{
-				Type: types.EventToolResult,
+				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID: block.ID,
 					Output:    errJSON,
@@ -121,7 +121,7 @@ func SequentialToolLoop(
 		outputJSON, _ := json.Marshal(result.Data)
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
 		emitEvent(types.QueryEvent{
-			Type: types.EventToolResult,
+			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID: block.ID,
 				Output:    outputJSON,

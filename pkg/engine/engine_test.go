@@ -271,7 +271,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 
 	var toolResultSeen, textDeltaSeen bool
 	for evt := range eventCh {
-		if evt.Type == types.EventToolResult {
+		if evt.Type == types.EventToolEnd {
 			toolResultSeen = true
 		}
 		if evt.Type == types.EventTextDelta {
@@ -501,7 +501,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 	// The unknown tool creates a tool_result block in messages but does NOT
-	// emit an EventToolResult event (only known tools emit events).
+	// emit an EventToolEnd event (only known tools emit events).
 	// Verify the conversation continued and completed successfully.
 	if result.Terminal != types.TerminalCompleted {
 		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
@@ -538,7 +538,7 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 
 	var gotErrorResult bool
 	for evt := range eventCh {
-		if evt.Type == types.EventToolResult && evt.ToolResult != nil && evt.ToolResult.IsError {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
 			gotErrorResult = true
 		}
 	}
@@ -874,7 +874,7 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 
 	var toolResults int
 	for evt := range eventCh {
-		if evt.Type == types.EventToolResult {
+		if evt.Type == types.EventToolEnd {
 			toolResults++
 		}
 	}
@@ -916,7 +916,7 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 
 	var toolUseStartSeen bool
 	for evt := range eventCh {
-		if evt.Type == types.EventToolUseStart && evt.ToolUse != nil {
+		if evt.Type == types.EventToolStart && evt.ToolUse != nil {
 			toolUseStartSeen = true
 			if evt.ToolUse.ID != "tu_1" {
 				t.Errorf("expected tool use ID tu_1, got %s", evt.ToolUse.ID)
@@ -932,7 +932,7 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 	if !toolUseStartSeen {
-		t.Error("expected EventToolUseStart event")
+		t.Error("expected EventToolStart event")
 	}
 }
 
@@ -1003,7 +1003,7 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 		switch evt.Type {
 		case types.EventStreamStart:
 			streamStarts++
-		case types.EventComplete:
+		case types.EventQueryEnd:
 			completes++
 		}
 	}
@@ -1175,7 +1175,7 @@ func TestQuery_DescriptionError(t *testing.T) {
 
 	var toolResultSeen bool
 	for evt := range eventCh {
-		if evt.Type == types.EventToolResult {
+		if evt.Type == types.EventToolEnd {
 			toolResultSeen = true
 			if evt.ToolResult == nil {
 				t.Fatal("ToolResult is nil")
@@ -1401,7 +1401,7 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 
 	var toolUseStartSeen bool
 	for evt := range eventCh {
-		if evt.Type == types.EventToolUseStart && evt.ToolUse != nil {
+		if evt.Type == types.EventToolStart && evt.ToolUse != nil {
 			toolUseStartSeen = true
 			// Verify description fell back to tool name
 			if evt.ToolUse.Name != "desc_err_tool" {
@@ -1415,7 +1415,7 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 	if !toolUseStartSeen {
-		t.Error("expected EventToolUseStart event")
+		t.Error("expected EventToolStart event")
 	}
 }
 
@@ -1616,13 +1616,13 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 		switch evt.Type {
 		case types.EventStreamStart:
 			gotStreamStart = true
-		case types.EventToolUseStart:
+		case types.EventToolStart:
 			gotToolUseStart = true
-		case types.EventToolResult:
+		case types.EventToolEnd:
 			gotToolResult = true
 		case types.EventTextDelta:
 			gotTextDelta = true
-		case types.EventComplete:
+		case types.EventQueryEnd:
 			gotComplete = true
 		}
 	}
@@ -1631,27 +1631,27 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 		t.Error("Hub handler did not receive EventStreamStart")
 	}
 	if !gotToolUseStart {
-		t.Error("Hub handler did not receive EventToolUseStart")
+		t.Error("Hub handler did not receive EventToolStart")
 	}
 	if !gotToolResult {
-		t.Error("Hub handler did not receive EventToolResult")
+		t.Error("Hub handler did not receive EventToolEnd")
 	}
 	if !gotTextDelta {
 		t.Error("Hub handler did not receive EventTextDelta")
 	}
 	if !gotComplete {
-		t.Error("Hub handler did not receive EventComplete")
+		t.Error("Hub handler did not receive EventQueryEnd")
 	}
 
-	// Verify ordering: first event should be EventMessage, last should be EventComplete
+	// Verify ordering: first event should be EventQueryStart, last should be EventQueryEnd
 	if len(hubEvents) == 0 {
 		t.Fatal("expected at least one hub event")
 	}
-	if hubEvents[0].Type != types.EventMessage {
-		t.Errorf("expected first event to be EventMessage, got %s", hubEvents[0].Type)
+	if hubEvents[0].Type != types.EventQueryStart {
+		t.Errorf("expected first event to be EventQueryStart, got %s", hubEvents[0].Type)
 	}
-	if hubEvents[len(hubEvents)-1].Type != types.EventComplete {
-		t.Errorf("expected last event to be EventComplete, got %s", hubEvents[len(hubEvents)-1].Type)
+	if hubEvents[len(hubEvents)-1].Type != types.EventQueryEnd {
+		t.Errorf("expected last event to be EventQueryEnd, got %s", hubEvents[len(hubEvents)-1].Type)
 	}
 }
 
@@ -1714,7 +1714,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 			gotStreamStart = true
 		case types.EventTextDelta:
 			gotTextDelta = true
-		case types.EventComplete:
+		case types.EventQueryEnd:
 			gotComplete = true
 		}
 	}
@@ -1725,7 +1725,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 		t.Error("dispatcher did not receive EventTextDelta")
 	}
 	if !gotComplete {
-		t.Error("dispatcher did not receive EventComplete")
+		t.Error("dispatcher did not receive EventQueryEnd")
 	}
 }
 
@@ -1890,7 +1890,7 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 
 	var notificationMsgSeen bool
 	for evt := range eventCh {
-		if evt.Type == types.EventMessage && evt.Message != nil {
+		if evt.Type == types.EventQueryStart && evt.Message != nil {
 			for _, block := range evt.Message.Content {
 				if strings.HasPrefix(block.Text, "<task-notification>") {
 					notificationMsgSeen = true
@@ -1906,7 +1906,7 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 
 	// The notification should have been injected as a message
 	if !notificationMsgSeen {
-		t.Error("expected notification message to be emitted as EventMessage")
+		t.Error("expected notification message to be emitted as EventQueryStart")
 	}
 
 	// Verify the notification is in the final message history

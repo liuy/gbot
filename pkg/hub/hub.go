@@ -94,28 +94,30 @@ func logEngineEvent(event Event) {
 		}
 		slog.Info("engine:text_delta", "text", preview)
 
-	case types.EventToolUseStart:
+	case types.EventToolStart:
 		if event.ToolUse != nil {
-			slog.Info("engine:tool_use_start", "id", event.ToolUse.ID, "name", event.ToolUse.Name, "summary", event.ToolUse.Summary)
+			slog.Info("engine:tool_start", "id", event.ToolUse.ID, "name", event.ToolUse.Name, "summary", event.ToolUse.Summary)
 		}
 
-	case types.EventToolUseDelta:
+	case types.EventToolInput:
 		if event.PartialInput != nil {
 			preview := event.PartialInput.Delta
 			if len(preview) > 80 {
 				preview = preview[:80] + "..."
 			}
-			slog.Info("engine:tool_delta", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
-		}
-		if event.ToolResult != nil {
-			lines := strings.Count(event.ToolResult.DisplayOutput, "\n") + 1
-			slog.Info("engine:tool_output", "id", event.ToolResult.ToolUseID, "lines", lines)
+			slog.Info("engine:tool_input", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
 		}
 
-	case types.EventToolResult:
+	case types.EventToolDelta:
+		if event.ToolResult != nil {
+			lines := strings.Count(event.ToolResult.DisplayOutput, "\n") + 1
+			slog.Info("engine:tool_delta", "id", event.ToolResult.ToolUseID, "lines", lines)
+		}
+
+	case types.EventToolEnd:
 		if event.ToolResult != nil {
 			outputLen := len(event.ToolResult.DisplayOutput)
-			slog.Info("engine:tool_result", "id", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError, "outputLen", outputLen, "timing", event.ToolResult.Timing)
+			slog.Info("engine:tool_end", "id", event.ToolResult.ToolUseID, "isError", event.ToolResult.IsError, "outputLen", outputLen, "timing", event.ToolResult.Timing)
 		}
 
 	case types.EventUsage:
@@ -126,13 +128,16 @@ func logEngineEvent(event Event) {
 	case types.EventStreamStart:
 		slog.Info("engine:stream_start")
 
-	case types.EventComplete:
-		slog.Info("engine:complete")
+	case types.EventStreamEnd:
+		slog.Info("engine:stream_end")
 
-	case types.EventMessage:
+	case types.EventQueryEnd:
+		slog.Info("engine:query_end")
+
+	case types.EventQueryStart:
 		if event.Message != nil {
 			blockCount := len(event.Message.Content)
-			slog.Info("engine:message", "role", string(event.Message.Role), "blocks", blockCount)
+			slog.Info("engine:query_start", "role", string(event.Message.Role), "blocks", blockCount)
 		}
 
 	case types.EventThinkingStart:

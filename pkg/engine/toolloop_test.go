@@ -77,8 +77,8 @@ func TestSequentialToolLoop_SingleTool(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Type != types.EventToolResult {
-		t.Errorf("expected EventToolResult, got %s", events[0].Type)
+	if events[0].Type != types.EventToolEnd {
+		t.Errorf("expected EventToolEnd, got %s", events[0].Type)
 	}
 	if events[0].ToolResult == nil {
 		t.Fatal("expected non-nil ToolResult in event")

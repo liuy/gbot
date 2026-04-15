@@ -168,7 +168,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		Timestamp: time.Now(),
 	}
 	e.messages = append(e.messages, userMsg)
-	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventMessage, Message: &userMsg})
+	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
 	var totalUsage types.Usage
 	maxTurns := 50
@@ -189,7 +189,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		if pending := e.notifications.Drain(); len(pending) > 0 {
 			e.messages = append(e.messages, pending...)
 			for i := range pending {
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventMessage, Message: &pending[i]})
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 			}
 		}
 
@@ -218,6 +218,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		// Add assistant message to history
 		e.messages = append(e.messages, *resp)
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
 
 		// Stage 20: No-tool-use terminal path
 		hasToolUse := false
@@ -230,7 +231,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		if !hasToolUse {
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventComplete})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -254,7 +255,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		if e.tokenBudget <= 0 {
 			e.logger.Warn("token budget exhausted")
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventComplete})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -359,7 +360,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					currentToolInput.Reset()
 					summary := e.computeSummary(cb.Name, cb.Input)
 					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolUseStart,
+						Type: types.EventToolStart,
 						ToolUse: &types.ToolUseEvent{
 							ID:      cb.ID,
 							Name:    cb.Name,
@@ -390,7 +391,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					accumulated := currentToolInput.String()
 					summary := e.computeSummary(currentToolName, json.RawMessage(accumulated))
 					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolUseDelta,
+						Type: types.EventToolInput,
 						PartialInput: &types.PartialInputEvent{
 							ID:      currentToolID,
 							Delta:   event.Delta.PartialJSON,
@@ -489,12 +490,12 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 			var lastDisplayOutput string
 			result, err := streamer.ExecuteStream(ctx, block.Input, nil, func(u tool.ProgressUpdate) {
 				// Emit streaming output to TUI as each progress update arrives.
-				// Source: StreamingToolExecutor.ts:onProgress callback → EventToolUseDelta.
+				// Source: StreamingToolExecutor.ts:onProgress callback → EventToolDelta.
 				if len(u.Lines) > 0 {
 					display := strings.Join(u.Lines, "\n")
 					lastDisplayOutput = display
 					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolUseDelta,
+						Type: types.EventToolDelta,
 						ToolResult: &types.ToolResultEvent{
 							ToolUseID:     block.ID,
 							DisplayOutput: display,
@@ -515,7 +516,7 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 				}
 				results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
 				evt.DisplayOutput = err.Error()
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt})
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolEnd, ToolResult: &evt})
 				continue
 			}
 
@@ -528,7 +529,7 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 				displayOutput = lastDisplayOutput
 			}
 			e.emitEvent(eventCh, types.QueryEvent{
-				Type: types.EventToolResult,
+				Type: types.EventToolEnd,
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     block.ID,
 					Output:        outputJSON,
@@ -554,7 +555,7 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 			}
 			results = append(results, types.NewToolResultBlock(block.ID, errJSON, true))
 			evt.DisplayOutput = err.Error()
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolResult, ToolResult: &evt})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventToolEnd, ToolResult: &evt})
 			continue
 		}
 
@@ -563,7 +564,7 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
 		displayOutput := t.RenderResult(result.Data)
 		e.emitEvent(eventCh, types.QueryEvent{
-			Type: types.EventToolResult,
+			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID:     block.ID,
 				Output:        outputJSON,

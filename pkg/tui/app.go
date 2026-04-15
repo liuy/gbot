@@ -144,9 +144,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleMouse(m)
 
 	// All REPL messages are handled by repl.go
-	case streamChunkMsg, streamToolUseMsg, streamToolDeltaMsg, streamToolOutputMsg, streamToolResultMsg,
-		streamCompleteMsg, streamStartMsg, streamMessageMsg, streamUsageMsg,
-		streamThinkingStartMsg, streamThinkingEndMsg,
+	case textDeltaMsg, toolStartMsg, toolInputMsg, toolDeltaMsg, toolEndMsg,
+		queryEndMsg, streamStartMsg, streamMessageMsg, usageMsg,
+		thinkingStartMsg, thinkingEndMsg,
 		errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {

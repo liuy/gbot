@@ -196,17 +196,28 @@ type ToolUseOptions struct {
 type QueryEventType string
 
 const (
+	// Query lifecycle
+	EventQueryStart    QueryEventType = "query_start"
+	EventQueryEnd      QueryEventType = "query_end"
+
+	// Per-round LLM stream
 	EventStreamStart   QueryEventType = "stream_start"
-	EventTextDelta     QueryEventType = "text_delta"
-	EventToolUseStart  QueryEventType = "tool_use_start"
-	EventToolUseDelta  QueryEventType = "tool_use_delta"
-	EventToolResult    QueryEventType = "tool_result"
-	EventMessage       QueryEventType = "message"
-	EventUsage         QueryEventType = "usage"
+	EventStreamEnd     QueryEventType = "stream_end"
+
+	// Thinking
 	EventThinkingStart QueryEventType = "thinking_start"
 	EventThinkingEnd   QueryEventType = "thinking_end"
+
+	// Tool call lifecycle: start → input → delta → end
+	EventToolStart     QueryEventType = "tool_start"
+	EventToolInput     QueryEventType = "tool_input"
+	EventToolDelta     QueryEventType = "tool_delta"
+	EventToolEnd       QueryEventType = "tool_end"
+
+	// Text and usage
+	EventTextDelta     QueryEventType = "text_delta"
+	EventUsage         QueryEventType = "usage"
 	EventError         QueryEventType = "error"
-	EventComplete      QueryEventType = "complete"
 )
 
 // QueryEvent represents an event emitted during the query loop.

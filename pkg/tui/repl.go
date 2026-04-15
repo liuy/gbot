@@ -238,7 +238,7 @@ func (s *ReplState) Messages() []MessageView { return s.messages }
 func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	switch m := msg.(type) {
 
-	case streamChunkMsg:
+	case textDeltaMsg:
 		a.markViewportDirty()
 		a.repl.AppendChunk(m.Text)
 		a.responseCharCount += len(m.Text)
@@ -253,30 +253,30 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.markViewportDirty()
 		return true, a.readEvents()
 
-	case streamToolUseMsg:
+	case toolStartMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
 			slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
 		return true, a.readEvents()
 
-	case streamToolDeltaMsg:
+	case toolInputMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
 		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
 
-	case streamToolOutputMsg:
+	case toolDeltaMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
 		return true, a.readEvents()
 
-	case streamToolResultMsg:
+	case toolEndMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
-			slog.Info("tui:tool_done", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
+			slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
 		return true, a.readEvents()
 
-	case streamCompleteMsg:
+	case queryEndMsg:
 		a.repl.FinishStream(m.Err)
 		if !a.progressStart.IsZero() {
 			elapsedStr := formatElapsed(a.progressStart)
@@ -286,7 +286,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
 				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
-				slog.Info("tui:stream_complete", "inputTokens", a.status.inputTokens, "outTokens", a.status.outTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+				slog.Info("tui:query_end", "inputTokens", a.status.inputTokens, "outTokens", a.status.outTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 			}
 		}
 		a.progressStart = time.Time{}
@@ -300,7 +300,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.contentDirty = false
 		return true, nil
 
-	case streamUsageMsg:
+	case usageMsg:
 		a.status.inputTokens += m.InputTokens
 		a.status.outTokens += m.OutputTokens
 		// Input tokens arrive all at once — snap immediately
@@ -310,12 +310,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.inputTokens, "total_out", a.status.outTokens)
 		return true, a.readEvents()
 
-	case streamThinkingStartMsg:
+	case thinkingStartMsg:
 		a.thinkingActive = true
 		a.thinkingStart = time.Now()
 		return true, a.readEvents()
 
-	case streamThinkingEndMsg:
+	case thinkingEndMsg:
 		a.thinkingActive = false
 		a.thinkingDuration = m.Duration
 		return true, a.readEvents()
@@ -373,7 +373,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
-	slog.Info("tui:submit", "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+	slog.Info("tui:query_start", "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 	if a.repl.IsStreaming() {
 		return nil
 	}
@@ -438,7 +438,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 func (a *App) readEvents() tea.Cmd {
 	return func() tea.Msg {
 		if a.tuiHandler == nil {
-			return streamCompleteMsg{}
+			return queryEndMsg{}
 		}
 
 		// Drain loop: prioritize appCh events over resultCh so that tool events
@@ -449,7 +449,7 @@ func (a *App) readEvents() tea.Cmd {
 			case msg, ok := <-a.tuiHandler.appCh:
 				if !ok {
 					a.repl.CloseChannels()
-					return streamCompleteMsg{}
+					return queryEndMsg{}
 				}
 				return msg
 			default:
@@ -459,23 +459,23 @@ func (a *App) readEvents() tea.Cmd {
 			// appCh is empty. Now block waiting for the next event from either
 			// channel. resultCh may be nil (already closed) or closed.
 			if a.repl.resultCh == nil {
-				return streamCompleteMsg{}
+				return queryEndMsg{}
 			}
 
 			select {
 			case msg, ok := <-a.tuiHandler.appCh:
 				if !ok {
 					a.repl.CloseChannels()
-					return streamCompleteMsg{}
+					return queryEndMsg{}
 				}
 				return msg
 
 			case result, ok := <-a.repl.resultCh:
 				if !ok {
-					return streamCompleteMsg{}
+					return queryEndMsg{}
 				}
 				a.repl.CloseChannels()
-				return streamCompleteMsg{Err: result.Error}
+				return queryEndMsg{Err: result.Error}
 			}
 		}
 	}

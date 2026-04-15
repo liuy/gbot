@@ -188,10 +188,10 @@ func TestAllEventTypes(t *testing.T) {
 	events := []Event{
 		{Type: types.EventStreamStart},
 		{Type: types.EventTextDelta, Text: "delta"},
-		{Type: types.EventToolUseStart, ToolUse: &types.ToolUseEvent{ID: "1", Name: "bash"}},
-		{Type: types.EventToolResult, ToolResult: &types.ToolResultEvent{ToolUseID: "1"}},
+		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "1", Name: "bash"}},
+		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1"}},
 		{Type: types.EventError, Error: errTest},
-		{Type: types.EventComplete},
+		{Type: types.EventQueryEnd},
 	}
 
 	for _, evt := range events {

@@ -200,7 +200,7 @@ func TestApp_Update_ErrorMsg(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — streamChunkMsg
+// Update — textDeltaMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamChunk(t *testing.T) {
@@ -209,7 +209,7 @@ func TestApp_Update_StreamChunk(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.repl.AppendTextItem()
 
-	model, _ := app.Update(streamChunkMsg{Text: "hello "})
+	model, _ := app.Update(textDeltaMsg{Text: "hello "})
 	a := model.(*App)
 	if len(a.repl.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(a.repl.messages))
@@ -220,7 +220,7 @@ func TestApp_Update_StreamChunk(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — streamToolUseMsg
+// Update — toolStartMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamToolUse(t *testing.T) {
@@ -228,7 +228,7 @@ func TestApp_Update_StreamToolUse(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
-	model, _ := app.Update(streamToolUseMsg{ID: "t1", Name: "Read", Input: `{"file":"test.go"}`})
+	model, _ := app.Update(toolStartMsg{ID: "t1", Name: "Read", Input: `{"file":"test.go"}`})
 	a := model.(*App)
 	tcv, ok := a.repl.pendingTool["t1"]
 	if !ok {
@@ -243,7 +243,7 @@ func TestApp_Update_StreamToolUse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — streamToolResultMsg
+// Update — toolEndMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamToolResult(t *testing.T) {
@@ -251,7 +251,7 @@ func TestApp_Update_StreamToolResult(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.pendingTool["t1"] = &ToolCallView{Name: "Read", Done: false}
 
-	model, _ := app.Update(streamToolResultMsg{
+	model, _ := app.Update(toolEndMsg{
 		ToolUseID: "t1",
 		Output:    "file contents",
 		IsError:   false,
@@ -267,7 +267,7 @@ func TestApp_Update_StreamToolResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — streamCompleteMsg
+// Update — queryEndMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamComplete(t *testing.T) {
@@ -278,7 +278,7 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("response text")
 
-	model, cmd := app.Update(streamCompleteMsg{})
+	model, cmd := app.Update(queryEndMsg{})
 	if cmd != nil {
 		t.Error("streamComplete should NOT produce a command (deferred commit)")
 	}
@@ -300,7 +300,7 @@ func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 	app.repl.streaming = true
 	app.spinner.Start()
 
-	model, _ := app.Update(streamCompleteMsg{Err: errors.New("stream failed")})
+	model, _ := app.Update(queryEndMsg{Err: errors.New("stream failed")})
 	a := model.(*App)
 	if a.repl.streaming {
 		t.Error("streaming should be false")
@@ -789,7 +789,7 @@ func TestApp_View_StreamingNoProgressStart(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — streamToolDeltaMsg
+// updateRepl — toolInputMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamToolDelta(t *testing.T) {
@@ -798,7 +798,7 @@ func TestApp_Update_StreamToolDelta(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 
-	model, _ := app.Update(streamToolDeltaMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
+	model, _ := app.Update(toolInputMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
 	a := model.(*App)
 	tcv := a.repl.pendingTool["t1"]
 	if tcv == nil {
@@ -816,7 +816,7 @@ func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Write", "", `{}`)
 
 	delta := `{"content":"package main\nfunc main() {}"}`
-	app.Update(streamToolDeltaMsg{ID: "t1", Delta: delta, Summary: "main.go"})
+	app.Update(toolInputMsg{ID: "t1", Delta: delta, Summary: "main.go"})
 
 	if app.responseCharCount != len(delta) {
 		t.Errorf("responseCharCount = %d, want %d (tool delta chars not counted)", app.responseCharCount, len(delta))
@@ -944,9 +944,9 @@ func TestApp_ReadEvents_AppChClosed(t *testing.T) {
 	close(h.appCh)
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg when appCh closed, got %T", msg)
+		t.Fatalf("expected queryEndMsg when appCh closed, got %T", msg)
 	}
 }
 
@@ -971,9 +971,9 @@ func TestApp_ReadEvents_ReceiveResult(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	cm, ok := msg.(streamCompleteMsg)
+	cm, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg, got %T", msg)
+		t.Fatalf("expected queryEndMsg, got %T", msg)
 	}
 	if cm.Err == nil || cm.Err.Error() != "test error" {
 		t.Errorf("expected error from result, got %v", cm.Err)
@@ -1001,14 +1001,14 @@ func TestApp_ReadEvents_ResultChClosed(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg when resultCh closed, got %T", msg)
+		t.Fatalf("expected queryEndMsg when resultCh closed, got %T", msg)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — streamStartMsg, streamMessageMsg, streamToolResultMsg
+// updateRepl — streamStartMsg, streamMessageMsg, toolEndMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_UpdateRepl_StreamStart(t *testing.T) {
@@ -1036,14 +1036,14 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
-	_, cmd := app.updateRepl(streamToolResultMsg{ToolUseID: "t1", Output: "ok"})
+	_, cmd := app.updateRepl(toolEndMsg{ToolUseID: "t1", Output: "ok"})
 	if cmd == nil {
-		t.Error("streamToolResultMsg should return a readEvents cmd")
+		t.Error("toolEndMsg should return a readEvents cmd")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — streamUsageMsg
+// updateRepl — usageMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
@@ -1051,12 +1051,12 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
-	handled, cmd := app.updateRepl(streamUsageMsg{InputTokens: 100, OutputTokens: 50})
+	handled, cmd := app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 50})
 	if !handled {
-		t.Error("streamUsageMsg should be handled")
+		t.Error("usageMsg should be handled")
 	}
 	if cmd == nil {
-		t.Error("streamUsageMsg should return a readEvents cmd")
+		t.Error("usageMsg should return a readEvents cmd")
 	}
 	if app.status.inputTokens != 100 {
 		t.Errorf("inputTokens = %d, want 100", app.status.inputTokens)
@@ -1075,7 +1075,7 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — streamThinkingStartMsg / streamThinkingEndMsg
+// updateRepl — thinkingStartMsg / thinkingEndMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
@@ -1083,12 +1083,12 @@ func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
-	handled, cmd := app.updateRepl(streamThinkingStartMsg{})
+	handled, cmd := app.updateRepl(thinkingStartMsg{})
 	if !handled {
-		t.Error("streamThinkingStartMsg should be handled")
+		t.Error("thinkingStartMsg should be handled")
 	}
 	if cmd == nil {
-		t.Error("streamThinkingStartMsg should return a readEvents cmd")
+		t.Error("thinkingStartMsg should return a readEvents cmd")
 	}
 	if !app.thinkingActive {
 		t.Error("thinkingActive should be true")
@@ -1101,12 +1101,12 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.thinkingActive = true
 
-	handled, cmd := app.updateRepl(streamThinkingEndMsg{Duration: 3 * time.Second})
+	handled, cmd := app.updateRepl(thinkingEndMsg{Duration: 3 * time.Second})
 	if !handled {
-		t.Error("streamThinkingEndMsg should be handled")
+		t.Error("thinkingEndMsg should be handled")
 	}
 	if cmd == nil {
-		t.Error("streamThinkingEndMsg should return a readEvents cmd")
+		t.Error("thinkingEndMsg should return a readEvents cmd")
 	}
 	if app.thinkingActive {
 		t.Error("thinkingActive should be false after end")
@@ -1583,9 +1583,9 @@ func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
 		Type: types.EventTextDelta,
 		Text: "hello",
 	})
-	cm, ok := msg.(streamChunkMsg)
+	cm, ok := msg.(textDeltaMsg)
 	if !ok {
-		t.Fatalf("expected streamChunkMsg, got %T", msg)
+		t.Fatalf("expected textDeltaMsg, got %T", msg)
 	}
 	if cm.Text != "hello" {
 		t.Errorf("Text = %q, want %q", cm.Text, "hello")
@@ -1594,16 +1594,16 @@ func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
 
 func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolUseStart,
+		Type: types.EventToolStart,
 		ToolUse: &types.ToolUseEvent{
 			ID:    "t1",
 			Name:  "Read",
 			Input: json.RawMessage(`{"file":"a.go"}`),
 		},
 	})
-	tum, ok := msg.(streamToolUseMsg)
+	tum, ok := msg.(toolStartMsg)
 	if !ok {
-		t.Fatalf("expected streamToolUseMsg, got %T", msg)
+		t.Fatalf("expected toolStartMsg, got %T", msg)
 	}
 	if tum.Name != "Read" {
 		t.Errorf("name = %q, want %q", tum.Name, "Read")
@@ -1612,7 +1612,7 @@ func TestApp_EngineEventToMsg_ToolUseStart(t *testing.T) {
 
 func TestApp_EngineEventToMsg_ToolUseStart_Nil(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type:    types.EventToolUseStart,
+		Type:    types.EventToolStart,
 		ToolUse: nil,
 	})
 	if msg != nil {
@@ -1622,16 +1622,16 @@ func TestApp_EngineEventToMsg_ToolUseStart_Nil(t *testing.T) {
 
 func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolResult,
+		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID: "t1",
 			Output:    json.RawMessage(`"ok"`),
 			IsError:   false,
 		},
 	})
-	trm, ok := msg.(streamToolResultMsg)
+	trm, ok := msg.(toolEndMsg)
 	if !ok {
-		t.Fatalf("expected streamToolResultMsg, got %T", msg)
+		t.Fatalf("expected toolEndMsg, got %T", msg)
 	}
 	if trm.ToolUseID != "t1" {
 		t.Errorf("ToolUseID = %q, want %q", trm.ToolUseID, "t1")
@@ -1640,7 +1640,7 @@ func TestApp_EngineEventToMsg_ToolResult(t *testing.T) {
 
 func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type:       types.EventToolResult,
+		Type:       types.EventToolEnd,
 		ToolResult: nil,
 	})
 	if msg != nil {
@@ -1652,7 +1652,7 @@ func TestApp_EngineEventToMsg_ToolResult_Nil(t *testing.T) {
 // TUI should show empty string, NOT fall back to raw JSON.
 func TestApp_EngineEventToMsg_ToolResult_EmptyDisplayOutput(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolResult,
+		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "t1",
 			Output:        json.RawMessage(`"{\"output\":\"\",\"exitCode\":0}"`),
@@ -1660,9 +1660,9 @@ func TestApp_EngineEventToMsg_ToolResult_EmptyDisplayOutput(t *testing.T) {
 			IsError:       false,
 		},
 	})
-	trm, ok := msg.(streamToolResultMsg)
+	trm, ok := msg.(toolEndMsg)
 	if !ok {
-		t.Fatalf("expected streamToolResultMsg, got %T", msg)
+		t.Fatalf("expected toolEndMsg, got %T", msg)
 	}
 	// Should be empty, NOT the raw JSON
 	if strings.Contains(trm.Output, "exitCode") {
@@ -1686,17 +1686,17 @@ func TestApp_EngineEventToMsg_Error(t *testing.T) {
 
 func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventComplete,
+		Type: types.EventQueryEnd,
 	})
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Errorf("expected streamCompleteMsg, got %T", msg)
+		t.Errorf("expected queryEndMsg, got %T", msg)
 	}
 }
 
 func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolUseDelta,
+		Type: types.EventToolInput,
 	})
 	if msg != nil {
 		t.Errorf("expected nil for unknown event type, got %T", msg)
@@ -1719,9 +1719,9 @@ func TestApp_ReadEvents_NilHandler(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Errorf("expected streamCompleteMsg when tuiHandler nil, got %T", msg)
+		t.Errorf("expected queryEndMsg when tuiHandler nil, got %T", msg)
 	}
 }
 
@@ -1743,12 +1743,12 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	// Wait briefly for events to flow through Hub → TUIHandler → appCh
 	time.Sleep(100 * time.Millisecond)
 	msg := cmd()
-	// Should be either streamChunkMsg or streamCompleteMsg
+	// Should be either textDeltaMsg or queryEndMsg
 	switch msg.(type) {
-	case streamChunkMsg, streamCompleteMsg, streamStartMsg, streamMessageMsg:
+	case textDeltaMsg, queryEndMsg, streamStartMsg, streamMessageMsg:
 		// ok
 	default:
-		t.Errorf("expected streamChunkMsg or streamCompleteMsg, got %T", msg)
+		t.Errorf("expected textDeltaMsg or queryEndMsg, got %T", msg)
 	}
 }
 
@@ -1793,14 +1793,14 @@ func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 	app.repl.resultCh = nil // already closed
 
 	// Send a buffered event first
-	h.appCh <- streamChunkMsg{Text: "late event"}
+	h.appCh <- textDeltaMsg{Text: "late event"}
 
 	cmd := app.readEvents()
 	msg := cmd()
-	// Should return the buffered appCh event, not streamCompleteMsg
-	cm, ok := msg.(streamChunkMsg)
+	// Should return the buffered appCh event, not queryEndMsg
+	cm, ok := msg.(textDeltaMsg)
 	if !ok {
-		t.Fatalf("expected streamChunkMsg, got %T", msg)
+		t.Fatalf("expected textDeltaMsg, got %T", msg)
 	}
 	if cm.Text != "late event" {
 		t.Errorf("expected 'late event', got %q", cm.Text)
@@ -1821,9 +1821,9 @@ func TestApp_ReadEvents_ReturnsCompleteWhenBothChannelsClosed(t *testing.T) {
 	// Both channels closed — should return complete immediately
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg when both closed, got %T", msg)
+		t.Fatalf("expected queryEndMsg when both closed, got %T", msg)
 	}
 }
 
@@ -1840,9 +1840,9 @@ func TestApp_ReadEvents_NilHandlerReturnsComplete(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg with nil handler, got %T", msg)
+		t.Fatalf("expected queryEndMsg with nil handler, got %T", msg)
 	}
 }
 
@@ -1962,7 +1962,7 @@ func TestSpinnerE2E_InputEstimateToSnap(t *testing.T) {
 
 	// 4. API responds with actual input tokens — snap
 	actualInput := 500
-	app.Update(streamUsageMsg{InputTokens: actualInput, OutputTokens: 0})
+	app.Update(usageMsg{InputTokens: actualInput, OutputTokens: 0})
 	if app.displayedInputTokens != actualInput {
 		t.Errorf("displayedInputTokens = %d, want %d after snap", app.displayedInputTokens, actualInput)
 	}
@@ -1988,8 +1988,8 @@ func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
 	app.progressStart = time.Now()
 
 	// Receive text chunks
-	app.Update(streamChunkMsg{Text: "Hello "})
-	app.Update(streamChunkMsg{Text: "world, this is a long response with many tokens"})
+	app.Update(textDeltaMsg{Text: "Hello "})
+	app.Update(textDeltaMsg{Text: "world, this is a long response with many tokens"})
 	// responseCharCount = len("Hello ") + len("world, this is a long response with many tokens")
 	expectedEstimate := app.responseCharCount / 4
 
@@ -2008,7 +2008,7 @@ func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
 	}
 
 	// More chunks + ticks → keeps growing
-	app.Update(streamChunkMsg{Text: " and even more text to stream"})
+	app.Update(textDeltaMsg{Text: " and even more text to stream"})
 	app.Update(spinnerTickMsg{})
 	if app.displayedOutputTokens < 2 {
 		t.Errorf("displayedOutputTokens = %d, should keep growing", app.displayedOutputTokens)
@@ -2028,7 +2028,7 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	app.repl.AppendChunk("response text")
 
 	// Stream complete — saves stats
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 	if app.repl.IsStreaming() {
 		t.Error("should not be streaming after complete")
 	}
@@ -2062,7 +2062,7 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 	app.progressStart = time.Now()
 
 	// Thinking starts
-	app.Update(streamThinkingStartMsg{})
+	app.Update(thinkingStartMsg{})
 	if !app.thinkingActive {
 		t.Error("thinkingActive should be true")
 	}
@@ -2072,7 +2072,7 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 	}
 
 	// Thinking ends
-	app.Update(streamThinkingEndMsg{Duration: 3 * time.Second})
+	app.Update(thinkingEndMsg{Duration: 3 * time.Second})
 	if app.thinkingActive {
 		t.Error("thinkingActive should be false after end")
 	}
@@ -2303,15 +2303,15 @@ func TestApp_ReadEvents_BlockingAppCh(t *testing.T) {
 	sendReady := make(chan struct{})
 	go func() {
 		<-sendReady
-		h.appCh <- streamChunkMsg{Text: "delayed"}
+		h.appCh <- textDeltaMsg{Text: "delayed"}
 	}()
 
 	cmd := app.readEvents()
 	close(sendReady) // signal goroutine to send
 	msg := cmd()
-	cm, ok := msg.(streamChunkMsg)
+	cm, ok := msg.(textDeltaMsg)
 	if !ok {
-		t.Fatalf("expected streamChunkMsg from blocking select, got %T", msg)
+		t.Fatalf("expected textDeltaMsg from blocking select, got %T", msg)
 	}
 	if cm.Text != "delayed" {
 		t.Errorf("text = %q, want %q", cm.Text, "delayed")
@@ -2343,9 +2343,9 @@ func TestApp_ReadEvents_BlockingResultCh(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	cm, ok := msg.(streamCompleteMsg)
+	cm, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg, got %T", msg)
+		t.Fatalf("expected queryEndMsg, got %T", msg)
 	}
 	if cm.Err == nil || cm.Err.Error() != "async error" {
 		t.Errorf("expected async error, got %v", cm.Err)
@@ -2372,9 +2372,9 @@ func TestApp_ReadEvents_BlockingResultChClosed(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg when resultCh closed in blocking select, got %T", msg)
+		t.Fatalf("expected queryEndMsg when resultCh closed in blocking select, got %T", msg)
 	}
 }
 
@@ -2401,9 +2401,9 @@ func TestApp_ReadEvents_BlockingAppChClosed(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	_, ok := msg.(streamCompleteMsg)
+	_, ok := msg.(queryEndMsg)
 	if !ok {
-		t.Fatalf("expected streamCompleteMsg when appCh closed in blocking select, got %T", msg)
+		t.Fatalf("expected queryEndMsg when appCh closed in blocking select, got %T", msg)
 	}
 }
 
@@ -2626,12 +2626,12 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 
 	cmd := app.readEvents()
 	msg := cmd()
-	// Could be streamCompleteMsg or streamChunkMsg depending on timing
+	// Could be queryEndMsg or textDeltaMsg depending on timing
 	switch msg.(type) {
-	case streamCompleteMsg, streamChunkMsg, streamStartMsg, streamMessageMsg:
+	case queryEndMsg, textDeltaMsg, streamStartMsg, streamMessageMsg:
 		// ok
 	default:
-		t.Errorf("expected streamCompleteMsg or streamChunkMsg, got %T", msg)
+		t.Errorf("expected queryEndMsg or textDeltaMsg, got %T", msg)
 	}
 }
 
@@ -2751,7 +2751,7 @@ func TestPrettyJSON_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PendingToolOutput — streamToolOutputMsg handler in App.Update
+// PendingToolOutput — toolDeltaMsg handler in App.Update
 // Source: Phase 2 — streaming tool output display
 // ---------------------------------------------------------------------------
 
@@ -2761,7 +2761,7 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
 
-	model, _ := app.Update(streamToolOutputMsg{
+	model, _ := app.Update(toolDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "stdout line\n",
 		Timing:        200 * time.Millisecond,
@@ -2772,7 +2772,7 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 		t.Fatal("pendingTool should have t1")
 	}
 	if !tcv.Done {
-		t.Error("Done should be true after streamToolOutputMsg")
+		t.Error("Done should be true after toolDeltaMsg")
 	}
 	if tcv.Output != "stdout line\n" {
 		t.Errorf("Output = %q, want %q", tcv.Output, "stdout line\n")
@@ -2784,7 +2784,7 @@ func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
 	// Sending output for a non-existent tool should not panic
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
-	model, _ := app.Update(streamToolOutputMsg{
+	model, _ := app.Update(toolDeltaMsg{
 		ToolUseID:     "nonexistent",
 		DisplayOutput: "output",
 		Timing:        0,
@@ -2803,7 +2803,7 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	// Set pendingToolStart BEFORE calling Update so it's available synchronously
 	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond)
 
-	model, _ := app.Update(streamToolOutputMsg{
+	model, _ := app.Update(toolDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "output",
 		Timing:        50 * time.Millisecond,
@@ -2846,7 +2846,7 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 
 	// Stream completes — should embed stats in the last message
 	// Commit is deferred until next submit, so content stays in BT view.
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 
 	// Verify: stats block exists in the message
 	foundStats := false
@@ -2907,7 +2907,7 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 	app.status.inputTokens = 50
 	app.status.outTokens = 20
 
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 
 	// Last message should have a stats block
 	lastMsg := app.repl.lastMsg()
@@ -2947,11 +2947,11 @@ func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
 	app.repl.AppendChunk("hello")
 
 	// Simulate usage events arriving before complete (same order as production)
-	app.Update(streamUsageMsg{InputTokens: 100, OutputTokens: 0})
-	app.Update(streamUsageMsg{InputTokens: 0, OutputTokens: 50})
+	app.Update(usageMsg{InputTokens: 100, OutputTokens: 0})
+	app.Update(usageMsg{InputTokens: 0, OutputTokens: 50})
 
 	// Stream complete — should embed stats with actual token values
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 
 	lastMsg := app.repl.lastMsg()
 	if lastMsg == nil {
@@ -3088,7 +3088,7 @@ func TestApp_View_ToolOutputExpanded(t *testing.T) {
 }
 
 // TestApp_View_ToolOutputCollapsedAfterCommit verifies that tools remain collapsed
-// after streamCompleteMsg commits messages via tea.Println.
+// after queryEndMsg commits messages via tea.Println.
 func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -3114,7 +3114,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	}
 
 	// Stream complete — triggers commit via tea.Println
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 
 	// Verify committed output is collapsed
 	rendered := renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
@@ -3246,7 +3246,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	app.status.outTokens = 5
 
 	// Stream complete
-	app.Update(streamCompleteMsg{})
+	app.Update(queryEndMsg{})
 
 	// Simulate commit (renderMessagesFull with noHint=true but NOT forced expand)
 	// The commit should use expand=false (user's state), not expand=true

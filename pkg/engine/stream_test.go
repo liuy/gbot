@@ -80,7 +80,7 @@ func TestStreamAccumulator_ToolUse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if emit != nil && emit.Type == types.EventToolUseStart {
+		if emit != nil && emit.Type == types.EventToolStart {
 			toolStartSeen = true
 			if emit.ToolUse.ID != "tu_1" {
 				t.Errorf("expected tool use ID tu_1, got %s", emit.ToolUse.ID)

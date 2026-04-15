@@ -54,17 +54,17 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return streamStartMsg{}
 
 	case types.EventTextDelta:
-		return streamChunkMsg{Text: evt.Text}
+		return textDeltaMsg{Text: evt.Text}
 
-	case types.EventMessage:
+	case types.EventQueryStart:
 		if evt.Message != nil {
 			return streamMessageMsg{Role: string(evt.Message.Role)}
 		}
 		return nil
 
-	case types.EventToolUseStart:
+	case types.EventToolStart:
 		if evt.ToolUse != nil {
-			return streamToolUseMsg{
+			return toolStartMsg{
 				ID:      evt.ToolUse.ID,
 				Name:    evt.ToolUse.Name,
 				Summary: evt.ToolUse.Summary,
@@ -72,9 +72,9 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			}
 		}
 
-		case types.EventToolResult:
+		case types.EventToolEnd:
 			if evt.ToolResult != nil {
-				return streamToolResultMsg{
+				return toolEndMsg{
 					ToolUseID: evt.ToolResult.ToolUseID,
 					Output:    evt.ToolResult.DisplayOutput,
 					IsError:   evt.ToolResult.IsError,
@@ -87,41 +87,47 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 
 	case types.EventUsage:
 		if evt.Usage != nil {
-			return streamUsageMsg{
+			return usageMsg{
 				InputTokens:  evt.Usage.InputTokens,
 				OutputTokens: evt.Usage.OutputTokens,
 			}
 		}
 
 	case types.EventThinkingStart:
-		return streamThinkingStartMsg{}
+		return thinkingStartMsg{}
 
 	case types.EventThinkingEnd:
 		if evt.Thinking != nil {
-			return streamThinkingEndMsg{Duration: evt.Thinking.Duration}
+			return thinkingEndMsg{Duration: evt.Thinking.Duration}
 		}
 
-	case types.EventComplete:
-		return streamCompleteMsg{}
+	case types.EventQueryEnd:
+		return queryEndMsg{}
 
-	case types.EventToolUseDelta:
-		// Route by which field is populated:
-		// - PartialInput: LLM streaming JSON input delta -> PendingToolDelta
-		// - ToolResult.DisplayOutput: tool streaming output lines -> PendingToolOutput
+	case types.EventToolInput:
+		// LLM streaming JSON input delta
 		if evt.PartialInput != nil {
-			return streamToolDeltaMsg{
+			return toolInputMsg{
 				ID:      evt.PartialInput.ID,
 				Delta:   evt.PartialInput.Delta,
 				Summary: evt.PartialInput.Summary,
 			}
 		}
+		return nil
+
+	case types.EventToolDelta:
+		// Tool streaming output lines during execution
 		if evt.ToolResult != nil && evt.ToolResult.DisplayOutput != "" {
-			return streamToolOutputMsg{
+			return toolDeltaMsg{
 				ToolUseID:     evt.ToolResult.ToolUseID,
 				DisplayOutput: evt.ToolResult.DisplayOutput,
 				Timing:        evt.ToolResult.Timing,
 			}
 		}
+		return nil
+
+	case types.EventStreamEnd:
+		// Per-round end; TUI doesn't need to act on this currently.
 		return nil
 	}
 
