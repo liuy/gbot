@@ -408,7 +408,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case spinnerTickMsg:
 		if a.repl.IsStreaming() {
 			a.toolBlinkTick++
-			if a.toolBlinkTick%5 == 0 {
+			if a.toolBlinkTick%3 == 0 {
 				a.spinner.Tick()
 			}
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
