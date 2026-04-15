@@ -144,6 +144,13 @@ func TestNew_Defaults(t *testing.T) {
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
+	// Check default values for MaxTokens, TokenBudget, and Model
+	if eng.MaxTokens() != 16000 {
+		t.Errorf("MaxTokens() = %d, want 16000", eng.MaxTokens())
+	}
+	if eng.TokenBudget() != 200000 {
+		t.Errorf("TokenBudget() = %d, want 200000", eng.TokenBudget())
+	}
 }
 
 func TestNew_DefaultMaxTokens(t *testing.T) {
@@ -159,6 +166,14 @@ func TestNew_DefaultMaxTokens(t *testing.T) {
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
+	// Verify MaxTokens defaults to 16000 when set to 0
+	if eng.MaxTokens() != 16000 {
+		t.Errorf("MaxTokens() = %d, want 16000 (default)", eng.MaxTokens())
+	}
+	// Verify TokenBudget defaults to 200000 when set to 0
+	if eng.TokenBudget() != 200000 {
+		t.Errorf("TokenBudget() = %d, want 200000 (default)", eng.TokenBudget())
+	}
 }
 
 func TestNew_WithTools(t *testing.T) {
@@ -172,6 +187,11 @@ func TestNew_WithTools(t *testing.T) {
 	})
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
+	}
+	// Verify eng.Tools() returns the registered tool by name
+	tools := eng.Tools()
+	if _, ok := tools["my_tool"]; !ok {
+		t.Error("Tools() does not contain 'my_tool'")
 	}
 }
 
@@ -382,15 +402,6 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 func TestQuery_ContextCancellation(t *testing.T) {
 	mp := &mockProvider{}
 
-	// The mock provider's Stream returns events on a channel. To test cancellation
-	// during streaming, we need the provider to block long enough for ctx to cancel.
-	// Instead, we use a provider that returns an error from Stream() but we cancel
-	// during the loop. The simplest approach: provide no responses so the provider
-	// returns an error, but cancel the context before the query even starts.
-	//
-	// Actually, the simplest way is to cancel context during the streaming event
-	// accumulation. We do this by having the stream channel block.
-
 	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Model:    "test-model",
@@ -399,7 +410,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Cancel before Query starts to trigger the context cancellation path
+	// Cancel BEFORE calling Query to deterministically trigger context cancellation
 	cancel()
 
 	eventCh, resultCh := eng.Query(ctx, "test query", nil)
@@ -409,9 +420,15 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	result := <-resultCh
 	// The context is already cancelled, so the select in queryLoop should catch it
 	// before calling callLLM, resulting in TerminalAbortedStreaming.
-	// However, timing is tricky. The goroutine may start and check ctx.Done() immediately.
-	if result.Terminal != types.TerminalAbortedStreaming && result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalAbortedStreaming or TerminalCompleted, got %s", result.Terminal)
+	if result.Terminal != types.TerminalAbortedStreaming {
+		t.Errorf("expected TerminalAbortedStreaming, got %s (error: %v)", result.Terminal, result.Error)
+	}
+	// Also verify the error is set and mentions context cancellation
+	if result.Error == nil {
+		t.Fatal("expected non-nil error from context cancellation")
+	}
+	if !errors.Is(result.Error, context.Canceled) && !strings.Contains(result.Error.Error(), "context") {
+		t.Errorf("expected context cancellation error, got: %v", result.Error)
 	}
 }
 
@@ -564,6 +581,9 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
+	if !strings.Contains(result.Error.Error(), "bad request") {
+		t.Errorf("error should contain 'bad request', got: %v", result.Error)
+	}
 	// The error is wrapped by callLLM as "stream request: <original>", so
 	// classifyTerminalError cannot unwrap it to see the APIError type.
 	// It falls through to TerminalModelError for wrapped errors.
@@ -614,7 +634,15 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	mt := &mockTool{name: "disabled_tool", enabled: false}
+	callCount := 0
+	mt := &mockTool{
+		name:    "disabled_tool",
+		enabled: false,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callCount++
+			return &tool.ToolResult{Data: "should not be called"}, nil
+		},
+	}
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
 	eng := engine.New(&engine.Params{
@@ -634,6 +662,10 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	// Verify the mock tool's Execute was NOT called
+	if callCount != 0 {
+		t.Errorf("disabled tool was called %d times, want 0", callCount)
 	}
 }
 
@@ -701,42 +733,40 @@ func TestMessages(t *testing.T) {
 	}
 }
 
+// TestClassifyTerminalError tests the classifyTerminalError helper function.
+// This test validates error classification by triggering actual engine errors
+// and checking the TerminalReason in the result.
 func TestClassifyTerminalError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		err      error
+		makeErr  func() *llm.APIError
 		expected types.TerminalReason
 	}{
 		{
 			name:     "context overflow",
-			err:      &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"},
+			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"} },
 			expected: types.TerminalPromptTooLong,
 		},
 		{
 			name:     "rate limit",
-			err:      &llm.APIError{Status: 429},
+			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 429} },
 			expected: types.TerminalBlockingLimit,
 		},
 		{
 			name:     "server error 500",
-			err:      &llm.APIError{Status: 500},
-			expected: types.TerminalModelError,
-		},
-		{
-			name:     "generic error",
-			err:      errors.New("something went wrong"),
+			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 500} },
 			expected: types.TerminalModelError,
 		},
 		{
 			name:     "overloaded 529",
-			err:      &llm.APIError{Status: 529},
+			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 529} },
 			expected: types.TerminalModelError,
 		},
 		{
 			name:     "API error 400 without prompt_too_long",
-			err:      &llm.APIError{Status: 400, ErrorCode: "other_error"},
+			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 400, ErrorCode: "other_error"} },
 			expected: types.TerminalModelError,
 		},
 	}
@@ -744,20 +774,30 @@ func TestClassifyTerminalError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_ = engine.New(&engine.Params{
-				Provider: &mockProvider{},
+			mp := &mockProvider{}
+			// Return an error from Stream to trigger classifyTerminalError
+			// The error is NOT wrapped when returned via event.Error
+			events := []llm.StreamEvent{
+				{Error: tt.makeErr()},
+			}
+			mp.addResponse(events, nil)
+
+			eng := engine.New(&engine.Params{
+				Provider: mp,
 				Model:    "test",
 				Logger:   slog.Default(),
 			})
-			switch tt.expected {
-			case types.TerminalPromptTooLong:
-				if !llm.IsContextOverflow(tt.err) {
-					t.Error("expected IsContextOverflow to be true")
-				}
-			case types.TerminalBlockingLimit:
-				if !llm.IsRateLimit(tt.err) {
-					t.Error("expected IsRateLimit to be true")
-				}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			eventCh, resultCh := eng.Query(ctx, "test", nil)
+			for range eventCh {
+			}
+
+			result := <-resultCh
+			if result.Terminal != tt.expected {
+				t.Errorf("classifyTerminalError() = %s, want %s", result.Terminal, tt.expected)
 			}
 		})
 	}
@@ -810,10 +850,13 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 	mp.addResponse(events, nil)
 	mp.addResponse(textStreamEvents("test-model", "Both tools executed."), nil)
 
+	var toolACalled, toolBCalled bool
 	toolA := &mockTool{name: "tool_a", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		toolACalled = true
 		return &tool.ToolResult{Data: "a_result"}, nil
 	}}
 	toolB := &mockTool{name: "tool_b", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		toolBCalled = true
 		return &tool.ToolResult{Data: "b_result"}, nil
 	}}
 
@@ -842,6 +885,12 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 	}
 	if toolResults != 2 {
 		t.Errorf("expected 2 tool results, got %d", toolResults)
+	}
+	if !toolACalled {
+		t.Error("tool_a was not called")
+	}
+	if !toolBCalled {
+		t.Error("tool_b was not called")
 	}
 }
 
@@ -1003,6 +1052,26 @@ func TestQuery_PingEvent(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+	// Verify assistant message contains text after the ping
+	if len(result.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
+	}
+	var foundPongText bool
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleAssistant {
+			for _, block := range msg.Content {
+				if block.Text == "pong" {
+					foundPongText = true
+				}
+			}
+		}
+	}
+	if !foundPongText {
+		t.Error("ping should not corrupt assistant text; expected 'pong' in messages")
+	}
 }
 
 func TestQuery_NilUsage(t *testing.T) {
@@ -1035,6 +1104,12 @@ func TestQuery_NilUsage(t *testing.T) {
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.TotalUsage.InputTokens != 0 {
+		t.Errorf("expected 0 input tokens for nil usage, got %d", result.TotalUsage.InputTokens)
+	}
+	if result.TotalUsage.OutputTokens != 0 {
+		t.Errorf("expected 0 output tokens for nil usage, got %d", result.TotalUsage.OutputTokens)
 	}
 }
 
@@ -1076,9 +1151,16 @@ func TestQuery_DescriptionError(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
+	// LLM requests a tool that has a broken Description() implementation
+	toolEvents := toolUseStreamEvents("test-model", "t1", "err_desc_tool", `{}`)
+	mp.addResponse(toolEvents, nil)
 	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
 
-	mt := &mockTool{name: "err_desc_tool", enabled: true}
+	mt := &mockTool{
+		name:    "err_desc_tool",
+		enabled: true,
+		descFn:  func(json.RawMessage) (string, error) { return "", errors.New("desc error") },
+	}
 	eng := engine.New(&engine.Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
@@ -1090,11 +1172,23 @@ func TestQuery_DescriptionError(t *testing.T) {
 	defer cancel()
 
 	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
+
+	var toolResultSeen bool
+	for evt := range eventCh {
+		if evt.Type == types.EventToolResult {
+			toolResultSeen = true
+			if evt.ToolResult == nil {
+				t.Fatal("ToolResult is nil")
+			}
+		}
 	}
+
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !toolResultSeen {
+		t.Error("expected tool result event to be emitted")
 	}
 }
 
@@ -1127,6 +1221,9 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	result := <-resultCh
 	if result.Error == nil {
 		t.Fatal("expected error from stream event error")
+	}
+	if !strings.Contains(result.Error.Error(), "stream interrupted") {
+		t.Errorf("error should contain 'stream interrupted', got: %v", result.Error)
 	}
 	if result.Terminal != types.TerminalModelError {
 		t.Errorf("expected TerminalModelError, got %s", result.Terminal)
@@ -1261,18 +1358,28 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 	}
 
 	result := <-resultCh
-	// The response completes normally (end_turn) — no error expected.
+	// Don't discard result - assert on it
+	// The response completes normally (end_turn) before cancellation, so no error expected.
 	// This test validates the ctx.Done() path exists; actual cancellation
-	// is tested by TestQuery_CancelledContext.
-	_ = result
+	// is tested by TestQuery_ContextCancellation.
+	if result.Error != nil {
+		t.Errorf("unexpected error: %v", result.Error)
+	}
+	// Verify we got a successful completion
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
 }
 
 // TestQuery_DescriptionErrorFallback tests callLLM's tool description error fallback
-// (line 224-226: desc = t.Name() when Description() returns error).
+// (line 287-289: desc = t.Name() when Description() returns error).
 func TestQuery_DescriptionErrorFallback(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
+	// LLM requests a tool with a broken Description() - should fall back to tool name
+	toolEvents := toolUseStreamEvents("test-model", "t1", "desc_err_tool", `{}`)
+	mp.addResponse(toolEvents, nil)
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
 	mt := &mockTool{
@@ -1291,12 +1398,24 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 	defer cancel()
 
 	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
+
+	var toolUseStartSeen bool
+	for evt := range eventCh {
+		if evt.Type == types.EventToolUseStart && evt.ToolUse != nil {
+			toolUseStartSeen = true
+			// Verify description fell back to tool name
+			if evt.ToolUse.Name != "desc_err_tool" {
+				t.Errorf("expected tool name 'desc_err_tool', got '%s'", evt.ToolUse.Name)
+			}
+		}
 	}
 
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !toolUseStartSeen {
+		t.Error("expected EventToolUseStart event")
 	}
 }
 
@@ -1810,14 +1929,18 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 	t.Parallel()
 
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
+
 	eng := engine.New(&engine.Params{
-		Provider: &mockProvider{},
+		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	notificationCount := 100
+	for i := 0; i < notificationCount; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -1832,7 +1955,35 @@ func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// No panic = thread-safe
+	// Count enqueued notifications by triggering a query and checking messages
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Count how many notification messages were injected
+	notificationMsgCount := 0
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleUser {
+			for _, block := range msg.Content {
+				if strings.HasPrefix(block.Text, "notification-") {
+					notificationMsgCount++
+				}
+			}
+		}
+	}
+
+	// All 100 notifications should have been enqueued and drained
+	if notificationMsgCount != notificationCount {
+		t.Errorf("expected %d notifications to be enqueued and drained, got %d", notificationCount, notificationMsgCount)
+	}
 }
 
 func TestQuery_UsageNoDoubleCount(t *testing.T) {

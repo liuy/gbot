@@ -160,10 +160,22 @@ func TestLoadFromSettingsFile_InvalidJSON(t *testing.T) {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
+	// Verify file exists before loading
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Fatalf("settings file doesn't exist: %v", err)
+	}
+
 	_, err := config.LoadFromSettingsFile(settingsPath)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+
+	// Verify this is a JSON parse error, not a "file missing" error
+	// by checking that the error message mentions parsing
+	if !strings.Contains(err.Error(), "parse") && !strings.Contains(err.Error(), "json") {
+		t.Errorf("error should mention parse/json, got: %v", err)
+	}
+
 }
 
 func TestLoadFromSettingsFile_InvalidTimeout(t *testing.T) {
@@ -177,8 +189,13 @@ func TestLoadFromSettingsFile_InvalidTimeout(t *testing.T) {
 			"API_TIMEOUT_MS": "not_a_number",
 		},
 	}
-	data, _ := json.Marshal(settings)
-	_ = os.WriteFile(settingsPath, data, 0644)
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
 
 	cfg, err := config.LoadFromSettingsFile(settingsPath)
 	if err != nil {
@@ -626,12 +643,13 @@ func TestLoad_MissingHomeDir(t *testing.T) {
 		_ = os.Unsetenv(k)
 	}
 
-	_, err := config.Load()
-	// Depending on the system, this may or may not succeed
-	// If it succeeds, project config was loaded (or no .gbot dir exists)
-	// If it fails, it's because project config file read failed
-	// Either way we've exercised the code path
-	_ = err
+	cfg, err := config.Load()
+	if err != nil {
+		// HOME unset may cause UserHomeDir to fail â acceptable
+		t.Logf("Load without HOME returned error: %v", err)
+	} else if cfg.Model == "" {
+		t.Error("expected non-empty model from defaults")
+	}
 
 	// Restore HOME
 	_ = os.Setenv("HOME", originalDir)
@@ -668,11 +686,14 @@ func TestConfigDir_HomeError(t *testing.T) {
 	// Also try to break passwd lookup by setting USERPROFILE (Windows) empty
 	_ = os.Unsetenv("USERPROFILE")
 
-	_, err := config.ConfigDir()
+	configDir, err := config.ConfigDir()
 	if err == nil {
-		// On some systems, passwd lookup may still succeed
-		// This is acceptable; we've exercised the code path
-		t.Log("ConfigDir succeeded even without HOME; system has passwd fallback")
+		// On some systems, passwd lookup succeeds even without HOME env
+		if configDir == "" {
+			t.Error("ConfigDir should return non-empty path even via fallback")
+		}
+	} else if !strings.Contains(err.Error(), "home") && !strings.Contains(err.Error(), "Home") && !strings.Contains(err.Error(), "HOME") && !strings.Contains(err.Error(), "directory") {
+		t.Errorf("expected home-related error, got: %v", err)
 	}
 }
 

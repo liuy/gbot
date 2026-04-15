@@ -141,18 +141,33 @@ func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SkipsDuplicates(t *testing.T) {
-	t.Parallel()
-	// When workingDir's memory is under homeDir, same file shouldn't appear twice
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot get home dir")
+	// NOT parallel: modifies HOME env var
+	// Create a home dir and a working dir under it so they overlap
+	homeDir := filepath.Join(t.TempDir(), "home")
+	workDir := filepath.Join(homeDir, "project")
+	memDir := filepath.Join(homeDir, ".gbot", "memory")
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
 	}
 
-	tmpDir := filepath.Join(homeDir, ".gbot", "memory")
-	// We don't want to write to real home, so test the dedup logic indirectly
-	// by verifying the function doesn't panic with overlapping dirs
-	// This is a smoke test — the real dedup is tested by the seen map
-	_ = tmpDir
+	content := "deduplicated content"
+	if err := os.WriteFile(filepath.Join(memDir, "shared.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set HOME so LoadMemoryFiles scans both home and working dir
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", homeDir)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	// workingDir is under homeDir, so the same file appears in both scans
+	files := context.LoadMemoryFiles(workDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (deduplicated), got %d", len(files))
+	}
+	if files[0].Content != content {
+		t.Errorf("expected %q, got %q", content, files[0].Content)
+	}
 }
 
 func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
@@ -214,12 +229,32 @@ func TestLoadMemoryFiles_DeduplicationAcrossDirs(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SeenDedup(t *testing.T) {
-	t.Parallel()
-	// The seen dedup path (memory.go:52-53) triggers when the same absolute
-	// file path appears in both scanned directories. This happens when
-	// workingDir/.gbot/memory and homeDir/.gbot/memory resolve to the same
-	// path. We skip this test to avoid writing to the real home directory.
-	// The dedup logic is covered by the seen map initialization above it.
+	// NOT parallel: modifies HOME env var
+	// When workingDir == homeDir, the same memory dir is scanned twice.
+	// The seen map should prevent duplicate entries.
+	tmpDir := t.TempDir()
+	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := "seen dedup content"
+	if err := os.WriteFile(filepath.Join(memDir, "unique.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set HOME to tmpDir so both scans hit the same memory dir
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (seen dedup), got %d", len(files))
+	}
+	if files[0].Content != content {
+		t.Errorf("expected %q, got %q", content, files[0].Content)
+	}
 }
 
 func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {

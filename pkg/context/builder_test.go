@@ -3,6 +3,7 @@ package context_test
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,6 +21,15 @@ func TestNewBuilder(t *testing.T) {
 	if b.WorkingDir != "/work" {
 		t.Errorf("WorkingDir = %q, want %q", b.WorkingDir, "/work")
 	}
+	if b.GitStatus != nil {
+		t.Error("GitStatus should be nil by default")
+	}
+	if len(b.ToolPrompts) != 0 {
+		t.Errorf("ToolPrompts should be empty, got %d items", len(b.ToolPrompts))
+	}
+	if b.GBOTMDContent != "" {
+		t.Errorf("GBOTMDContent should be empty by default, got %q", b.GBOTMDContent)
+	}
 }
 
 func TestBuild_Basic(t *testing.T) {
@@ -35,11 +45,15 @@ func TestBuild_Basic(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
+	// Check for unique, specific substrings from the system prompt
 	if !strings.Contains(promptStr, "You are gbot") {
-		t.Error("built prompt missing base system prompt")
+		t.Error("built prompt missing 'You are gbot'")
+	}
+	if !strings.Contains(promptStr, "Current date:") {
+		t.Error("built prompt missing 'Current date:'")
 	}
 	if !strings.Contains(promptStr, "/work") {
-		t.Error("built prompt missing working directory")
+		t.Error("built prompt missing working directory '/work'")
 	}
 }
 
@@ -93,7 +107,7 @@ func TestBuild_WithGBOTMDContent(t *testing.T) {
 func TestBuild_WithToolPrompts(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	b.ToolPrompts = []string{"Tool 1: Use wisely", "Tool 2: Be careful"}
+	b.ToolPrompts = []string{"Tool 1: Use wisely", "Tool 2: Be carefully"}
 
 	result, err := b.Build()
 	if err != nil {
@@ -105,11 +119,16 @@ func TestBuild_WithToolPrompts(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
+	// Check for specific tool names and unique content
 	if !strings.Contains(promptStr, "Tool 1: Use wisely") {
 		t.Error("built prompt missing tool prompt 1")
 	}
-	if !strings.Contains(promptStr, "Tool 2: Be careful") {
+	if !strings.Contains(promptStr, "Tool 2: Be carefully") {
 		t.Error("built prompt missing tool prompt 2")
+	}
+	// Also verify base prompt is still present
+	if !strings.Contains(promptStr, "You are gbot") {
+		t.Error("built prompt should still contain 'You are gbot'")
 	}
 }
 
@@ -149,6 +168,15 @@ func TestBuild_AllSections(t *testing.T) {
 		if !strings.Contains(promptStr, part) {
 			t.Errorf("built prompt missing expected part: %q", part)
 		}
+	}
+
+	// Verify order: system prompt should come before tool definitions
+	systemPromptIdx := strings.Index(promptStr, "You are gbot")
+	toolPromptIdx := strings.Index(promptStr, "Bash tool: Use for shell commands.")
+	if systemPromptIdx == -1 || toolPromptIdx == -1 {
+		t.Error("both system prompt and tool definitions should be present")
+	} else if systemPromptIdx > toolPromptIdx {
+		t.Error("system prompt should appear before tool definitions")
 	}
 }
 
@@ -238,6 +266,9 @@ func TestGitStatusSection_NonGit(t *testing.T) {
 	if !strings.Contains(section, "Not a git repository") {
 		t.Errorf("expected 'Not a git repository', got %q", section)
 	}
+	if strings.Contains(section, "Git branch:") {
+		t.Errorf("non-git section should not contain 'Git branch:', got %q", section)
+	}
 }
 
 func TestGitStatusSection_Clean(t *testing.T) {
@@ -249,8 +280,14 @@ func TestGitStatusSection_Clean(t *testing.T) {
 		IsDirty: false,
 	}
 	section := b.GitStatusSection()
+	if !strings.Contains(section, "Git branch: main") {
+		t.Errorf("expected 'Git branch: main', got %q", section)
+	}
 	if !strings.Contains(section, "clean") {
 		t.Errorf("expected 'clean', got %q", section)
+	}
+	if strings.Contains(section, "dirty") {
+		t.Errorf("clean status should not contain 'dirty', got %q", section)
 	}
 }
 
@@ -263,8 +300,14 @@ func TestGitStatusSection_Dirty(t *testing.T) {
 		IsDirty: true,
 	}
 	section := b.GitStatusSection()
+	if !strings.Contains(section, "Git branch: feature") {
+		t.Errorf("expected 'Git branch: feature', got %q", section)
+	}
 	if !strings.Contains(section, "dirty") {
 		t.Errorf("expected 'dirty', got %q", section)
+	}
+	if strings.Contains(section, "clean") {
+		t.Errorf("dirty status should not contain 'clean', got %q", section)
 	}
 }
 
@@ -311,13 +354,55 @@ func TestEscapeJSONString_ShortOutput(t *testing.T) {
 
 func TestLoadGitStatus(t *testing.T) {
 	t.Parallel()
-	// Test with a real git repo that has commits (the claude-code-source-code repo)
-	info := context.LoadGitStatus("/home/yliu/claude-code-source-code")
-	if !info.IsGit {
-		t.Fatal("claude-code-source-code should be a git repository")
+	tmpDir := t.TempDir()
+
+	// Initialize a git repo with a specific branch
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Skip("git not available")
 	}
-	if info.Branch == "" {
-		t.Error("branch should not be empty in a git repo with commits")
+	cmd = exec.Command("git", "config", "user.email", "test@test.com")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "config", "user.name", "Test")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "checkout", "-b", "test-branch")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Need at least one commit for rev-parse --abbrev-ref HEAD to return
+	// the branch name instead of "HEAD"
+	if err := os.WriteFile(filepath.Join(tmpDir, "initial.txt"), []byte("init"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "add", "initial.txt")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	info := context.LoadGitStatus(tmpDir)
+	if !info.IsGit {
+		t.Fatal("expected IsGit=true for git repo")
+	}
+	if info.Branch != "test-branch" {
+		t.Errorf("Branch = %q, want 'test-branch'", info.Branch)
+	}
+	if info.IsDirty {
+		t.Error("expected clean status for fresh repo")
 	}
 }
 
@@ -374,6 +459,34 @@ func TestBaseSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Current date:") {
 		t.Error("base prompt missing date")
+	}
+}
+
+func TestBuild_NoFiles(t *testing.T) {
+	t.Parallel()
+	b := context.NewBuilder("/work")
+	// No files, no git status, no GBOT.md - just base prompt
+	result, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	var promptStr string
+	if err := json.Unmarshal(result, &promptStr); err != nil {
+		t.Fatalf("Build() result is not a valid JSON string: %v", err)
+	}
+
+	// Should still contain the base system prompt
+	if !strings.Contains(promptStr, "You are gbot") {
+		t.Error("prompt should contain 'You are gbot' even without files")
+	}
+	// Should contain working directory
+	if !strings.Contains(promptStr, "/work") {
+		t.Error("prompt should contain working directory even without files")
+	}
+	// Should contain platform info (Platform: section)
+	if !strings.Contains(promptStr, "Platform:") {
+		t.Error("prompt should contain platform info even without files")
 	}
 }
 
