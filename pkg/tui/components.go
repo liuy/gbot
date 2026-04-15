@@ -587,7 +587,7 @@ type ToolCallView struct {
 
 // View renders the message with word wrapping at the given width.
 // When expand is true, tool output is shown fully instead of collapsed.
-func (m MessageView) View(width int, expand bool, toolDot string) string {
+func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, maxOutputLines int) string {
 	if width < 10 {
 		width = 10
 	}
@@ -613,7 +613,7 @@ func (m MessageView) View(width int, expand bool, toolDot string) string {
 					sb.WriteString("\n")
 				}
 			case BlockTool:
-				blk.renderToolCall(&sb, availWidth, expand, toolDot)
+				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines)
 				sb.WriteString("\n")
 				// Blank line between completed tool and following text block
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
@@ -655,7 +655,7 @@ func prefixLine(i int, text string) string {
 //	⎿  output line 1
 //	⎿  output line 2
 //	⎿  … +N lines (ctrl+o to expand)
-func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string) {
+func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, maxOutputLines int) {
 	if blk.Type != BlockTool {
 		return
 	}
@@ -710,14 +710,15 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 
 	if tc.Output != "" {
 		isErr := tc.IsError
-		sb.WriteString("\n" + formatToolOutput(tc.Output, isErr, expand, availWidth-2))
+		sb.WriteString("\n" + formatToolOutput(tc.Output, isErr, expand, availWidth-2, noHint, maxOutputLines))
 	}
 }
 
 // formatToolOutput formats tool output with ⎿ prefix and line collapse.
-// Normal: show first 3 lines, then "… +N lines (ctrl+o to expand)".
-// Error: show first 10 lines, red, "… +N lines (ctrl+o to see all)".
-func formatToolOutput(output string, isError bool, expand bool, availWidth int) string {
+// Collapsed: show first 3 lines + hint (or 10 for errors).
+// Expanded: show all lines, or last maxOutputLines if height-limited.
+// maxOutputLines=0 means unlimited.
+func formatToolOutput(output string, isError bool, expand bool, availWidth int, noHint bool, maxOutputLines int) string {
 	if output == "" {
 		return ""
 	}
@@ -729,21 +730,33 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int) 
 		maxLines = 10
 	}
 
-	// Show all lines if expanded or few enough lines
+	// Show all lines if expanded (with optional height limit) or few enough lines
 	if expand || len(lines) <= maxLines+1 {
+		if expand && maxOutputLines > 0 && len(lines) > maxOutputLines {
+			// Height-limited expanded: show last maxOutputLines + truncation notice
+			shown := lines[len(lines)-maxOutputLines:]
+			hidden := len(lines) - maxOutputLines
+			var sb strings.Builder
+			sb.WriteString(prefixLine(0, styleDim.Render(fmt.Sprintf("... %d lines truncated ...", hidden))) + "\n")
+			for i, line := range shown {
+				sb.WriteString(prefixLine(i+1, wordWrap(line, availWidth)) + "\n")
+			}
+			return strings.TrimRight(sb.String(), "\n")
+		}
 		var sb strings.Builder
 		for i, line := range lines {
 			sb.WriteString(prefixLine(i, wordWrap(line, availWidth)) + "\n")
 		}
 		return strings.TrimRight(sb.String(), "\n")
 	}
-
 	// Collapse: show first maxLines lines + hint
 	shown := lines[:maxLines]
 	hidden := len(lines) - maxLines
 
 	var hint string
-	if isError {
+	if noHint {
+		hint = styleDim.Render(fmt.Sprintf("… +%d lines", hidden))
+	} else if isError {
 		hint = styleDim.Render(fmt.Sprintf("… +%d lines (ctrl+o to see all)", hidden))
 	} else {
 		hint = styleDim.Render(fmt.Sprintf("… +%d lines (ctrl+o to expand)", hidden))

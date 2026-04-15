@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"log/slog"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -167,7 +166,11 @@ func (a *App) View() string {
 			if a.repl.IsStreaming() && a.toolBlink {
 				toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
 			}
-			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot)
+			maxOutputLines := 0
+			if a.height > 6 {
+				maxOutputLines = a.height - 6
+			}
+			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot, false, maxOutputLines)
 			a.contentDirty = false
 		}
 		contentStr = a.contentCache
@@ -181,24 +184,6 @@ func (a *App) View() string {
 		}
 	}
 
-	// Limit content height to prevent scrollback corruption.
-	// Bubble Tea's inline renderer moves cursor up by the previous frame's line count
-	// to rewrite the View area. If the View exceeds terminal height, cursor enters
-	// scrollback and overwrites it. Limiting content to height-3 keeps the cursor
-	// within the visible terminal area.
-	if a.height > 0 && contentStr != "" {
-		maxLines := a.height - 3 // reserve for progress + input + margin
-		if maxLines < 5 {
-			maxLines = 5
-		}
-		lines := strings.Split(contentStr, "\n")
-		if len(lines) > maxLines {
-			truncated := len(lines) - maxLines
-			contentStr = strings.Join(lines[:maxLines], "\n") +
-			fmt.Sprintf("\n  ... %d lines truncated ...", truncated)
-			slog.Info("tui:view_truncate", "totalLines", len(lines), "maxLines", maxLines, "height", a.height)
-		}
-	}
 
 	var sb strings.Builder
 
@@ -386,7 +371,7 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		uncommitted := a.repl.messages[a.committedCount:]
 		if len(uncommitted) > 0 {
-			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "")
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, 0)
 			a.committedCount = len(a.repl.messages)
 			cmd = tea.Println(rendered)
 		}

@@ -293,19 +293,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.thinkingActive = false
 		a.thinkingDuration = 0
 
-		// Commit all uncommitted messages to scrollback via tea.Println.
-		// Once committed, they are never re-rendered by Bubble Tea — the
-		// terminal's native scrollback preserves them permanently.
-		var cmd tea.Cmd
-		uncommitted := a.repl.messages[a.committedCount:]
-		if len(uncommitted) > 0 {
-			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "")
-			a.committedCount = len(a.repl.messages)
-			cmd = tea.Println(rendered)
-		}
+		// Don't commit yet — keep current turn in Bubble Tea view so
+		// Ctrl+O (expand/collapse tool output) remains interactive.
+		// Commit happens when the user submits the next query.
 		a.contentCache = ""
 		a.contentDirty = false
-		return true, cmd
+		return true, nil
 
 	case streamUsageMsg:
 		a.status.inputTokens += m.InputTokens
@@ -330,11 +323,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case errMsg:
 		a.status.SetError(m.Err.Error())
 		a.repl.CloseChannels()
+		// Commit uncommitted messages before resetting so error context
+		// is preserved in terminal scrollback.
+		var errCommitCmd tea.Cmd
+		uncommitted := a.repl.messages[a.committedCount:]
+		if len(uncommitted) > 0 {
+// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
+			// user's expand/collapse state.
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
+			errCommitCmd = tea.Println(rendered)
+		}
 		*a.repl = *NewReplState()
 		a.committedCount = 0
 		a.spinner.Stop()
 		a.input.Focus()
-		return true, nil
+		return true, errCommitCmd
 
 	case submitMsg:
 		return true, a.handleSubmitRepl(m.Text)
@@ -374,6 +377,19 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	if a.repl.IsStreaming() {
 		return nil
 	}
+
+	// Commit previous turn's messages to scrollback before starting new turn.
+	// This defers the commit so Ctrl+O stays interactive during the
+	// completed turn, and scrolls up when user submits next query.
+	var commitCmd tea.Cmd
+	uncommitted := a.repl.messages[a.committedCount:]
+	if len(uncommitted) > 0 {
+// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
+		// user's expand/collapse state.
+		rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
+		a.committedCount = len(a.repl.messages)
+		commitCmd = tea.Println(rendered)
+	}
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()
@@ -406,6 +422,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.inputTokenTarget = totalChars / 4
 
 	return tea.Batch(
+		commitCmd,
 		tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 			return spinnerTickMsg{}
 		}),
@@ -483,7 +500,7 @@ func prettyJSON(raw json.RawMessage) string {
 
 // renderMessagesFull renders the complete message history without height truncation.
 // Terminal native scrollback handles scrolling — matching TS behavior.
-func renderMessagesFull(messages []MessageView, width int, expandTools bool, toolDot string) string {
+func renderMessagesFull(messages []MessageView, width int, expandTools bool, toolDot string, noHint bool, maxOutputLines int) string {
 	if len(messages) == 0 {
 		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
@@ -491,7 +508,7 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 
 	var sb strings.Builder
 	for _, msg := range messages {
-		sb.WriteString(msg.View(width, expandTools, toolDot))
+		sb.WriteString(msg.View(width, expandTools, toolDot, noHint, maxOutputLines))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

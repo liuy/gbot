@@ -279,8 +279,8 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 	app.repl.AppendChunk("response text")
 
 	model, cmd := app.Update(streamCompleteMsg{})
-	if cmd == nil {
-		t.Error("streamComplete should produce a tea.Println command to commit content")
+	if cmd != nil {
+		t.Error("streamComplete should NOT produce a command (deferred commit)")
 	}
 	a := model.(*App)
 	if a.repl.streaming {
@@ -2844,10 +2844,11 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	app.status.inputTokens = 100
 	app.status.outTokens = 50
 
-	// Stream completes — should embed stats in the last message and commit
+	// Stream completes — should embed stats in the last message
+	// Commit is deferred until next submit, so content stays in BT view.
 	app.Update(streamCompleteMsg{})
 
-	// Verify: stats block exists in the message (committed to scrollback)
+	// Verify: stats block exists in the message
 	foundStats := false
 	for _, blk := range app.repl.messages[1].Blocks {
 		if blk.Type == BlockStats {
@@ -2858,22 +2859,21 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 		t.Fatal("first query should have BlockStats after complete")
 	}
 
-	// Verify: View() is empty after commit (all content committed to scrollback)
+	// Verify: View() still shows content (deferred commit — not committed yet)
 	v1 := app.View()
-	if strings.Contains(v1, "first response") {
-		t.Errorf("after commit, View should not contain committed content, got:\n%s", v1)
+	if !strings.Contains(v1, "first response") {
+		t.Errorf("after stream complete (before next submit), View should still show content, got:\n%s", v1)
 	}
 
-	// Verify: committedCount matches messages count
-	if app.committedCount != len(app.repl.messages) {
-		t.Errorf("committedCount = %d, want %d", app.committedCount, len(app.repl.messages))
+	// Verify: committedCount is still 0 (deferred)
+	if app.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (deferred commit)", app.committedCount)
 	}
 
-	// --- Second query: only new content appears in View ---
+	// --- Second query: submitting commits previous turn ---
 
-	// User submits second query
-	app.repl.AddUserMessage("second query")
-	app.repl.StartQuery(nil)
+	// User submits second query — this triggers commit of first turn
+	app.handleSubmitRepl("second query")
 	app.markViewportDirty()
 
 	// Second query streaming
@@ -3105,7 +3105,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.Update(streamCompleteMsg{})
 
 	// Verify committed output is collapsed
-	rendered := renderMessagesFull(app.repl.messages, app.width, false, "")
+	rendered := renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
 	if !strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("committed output should show collapsed tool hint, got:\n%s", rendered)
 	}
@@ -3131,14 +3131,125 @@ func TestRenderMessagesFull_Collapsed(t *testing.T) {
 	}
 
 	// Not expanded → should collapse
-	rendered := renderMessagesFull(messages, 80, false, "")
+	rendered := renderMessagesFull(messages, 80, false, "", false, 0)
 	if !strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("renderMessagesFull(expand=false) should collapse tool output, got:\n%s", rendered)
 	}
 
 	// Expanded → should show all
-	rendered = renderMessagesFull(messages, 80, true, "")
+	rendered = renderMessagesFull(messages, 80, true, "", false, 0)
 	if strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("renderMessagesFull(expand=true) should NOT collapse, got:\n%s", rendered)
+	}
+}
+
+// TestRenderMessagesFull_NoHintCommit verifies that renderMessagesFull with noHint=true
+// omits ctrl+o hint while preserving collapse state.
+func TestRenderMessagesFull_NoHintCommit(t *testing.T) {
+	t.Parallel()
+	messages := []MessageView{
+		{
+			Role: "assistant",
+			Blocks: []ContentBlock{
+				{Type: BlockTool, ToolCall: ToolCallView{
+					ID: "t1", Name: "Bash", Summary: "ls",
+					Output: strings.Repeat("output line\n", 20),
+					Done:   true, Elapsed: time.Second,
+				}},
+			},
+		},
+	}
+
+	// Collapsed + noHint=true: no ctrl+o but still collapsed
+	rendered := renderMessagesFull(messages, 80, false, "", true, 0)
+	if strings.Contains(rendered, "ctrl+o") {
+		t.Errorf("noHint=true should suppress ctrl+o, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "… +17 lines") {
+		t.Errorf("noHint=true should still show line count, got:\n%s", rendered)
+	}
+
+	// Expanded + noHint=true: shows all (same as expanded without noHint)
+	rendered = renderMessagesFull(messages, 80, true, "", true, 0)
+	if strings.Contains(rendered, "ctrl+o") {
+		t.Errorf("expanded should not have ctrl+o, got:\n%s", rendered)
+	}
+}
+
+// TestApp_View_TruncationPreservesAssistantText verifies that when expanded tool
+// output exceeds terminal height, the assistant's text response AFTER the tool
+// is still visible. Truncation should cut from the top (old content), not the
+// bottom (newest content).
+func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 15 // small height → maxLines = 12
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Tool with long output (takes many lines)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	longOutput := strings.Repeat("tool output line\n", 20)
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+
+	// Assistant text AFTER the tool — this must be visible
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("FINAL ANSWER: the result is 42")
+	app.markViewportDirty()
+
+	// Expand tools
+	app.allToolsExpanded = true
+	app.contentDirty = true
+
+	v := app.View()
+	if !strings.Contains(v, "FINAL ANSWER") {
+		t.Errorf("truncation should preserve assistant text after tool output, got:\n%s", v)
+	}
+}
+
+// TestApp_CommitPreservesCollapseState verifies that committing to scrollback
+// preserves the user's collapse/expand state — collapsed tools stay collapsed
+// in committed output (just without the ctrl+o hint).
+func TestApp_CommitPreservesCollapseState(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 40
+	// User has NOT expanded tools (default collapsed)
+	if app.allToolsExpanded {
+		t.Error("should start collapsed")
+	}
+
+	app.repl.AddUserMessage("test")
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("done")
+	app.progressStart = time.Now()
+	app.status.inputTokens = 10
+	app.status.outTokens = 5
+
+	// Stream complete
+	app.Update(streamCompleteMsg{})
+
+	// Simulate commit (renderMessagesFull with noHint=true but NOT forced expand)
+	// The commit should use expand=false (user's state), not expand=true
+	uncommitted := app.repl.messages[app.committedCount:]
+	rendered := renderMessagesFull(uncommitted, app.width, app.allToolsExpanded, "", true, 0)
+
+	// Should NOT show all lines — tools are collapsed
+	if strings.Contains(rendered, "line10") {
+		t.Errorf("collapsed tools should NOT show line10 in committed output, got:\n%s", rendered)
+	}
+	// Should show collapsed indicator without ctrl+o hint
+	if !strings.Contains(rendered, "… +7 lines") {
+		t.Errorf("should show collapsed line count (without ctrl+o), got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "ctrl+o") {
+		t.Errorf("committed output should not contain ctrl+o hint, got:\n%s", rendered)
 	}
 }
