@@ -196,7 +196,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		// Stage 14-15: API call streaming loop
 		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnStart})
 
-		resp, err := e.callLLM(ctx, systemPrompt, eventCh)
+		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt, eventCh)
 		if err != nil {
 			// Stage 16: Error handling
 			action := e.handleStreamError(err)
@@ -222,16 +222,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		e.messages = append(e.messages, *resp)
 
 		// Stage 20: No-tool-use terminal path
-		hasToolUse := false
-		var toolUseBlocks []types.ContentBlock
-		for _, block := range resp.Content {
-			if block.Type == types.ContentTypeToolUse {
-				hasToolUse = true
-				toolUseBlocks = append(toolUseBlocks, block)
-			}
-		}
-
-		if !hasToolUse {
+		if streamingExecutor == nil {
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
@@ -242,8 +233,9 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 			}
 		}
 
-		// Stage 21: Tool execution (sequential in Phase 1)
-		toolResultBlocks := e.executeTools(ctx, toolUseBlocks, eventCh)
+		// Stage 21: Wait for stream-started tools to complete, collect results.
+		// Source: query.ts:1381 — getRemainingResults().
+		toolResultBlocks := streamingExecutor.ExecuteAll(nil)
 
 		// Add tool results as user message
 		e.messages = append(e.messages, types.Message{
@@ -281,7 +273,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 // callLLM sends the messages to the LLM and collects the full response.
 // Source: query.ts — streaming API call accumulation.
-func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) (*types.Message, error) {
+func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) (*types.Message, *StreamingToolExecutor, error) {
 	// Build tool definitions for API
 	var toolDefs []llm.ToolDef
 	for _, name := range e.toolOrder {
@@ -316,7 +308,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	streamCh, err := e.provider.Stream(ctx, req)
 	if err != nil {
 		e.logger.Error("stream request failed", "error", err)
-		return nil, fmt.Errorf("stream request: %w", err)
+		return nil, nil, fmt.Errorf("stream request: %w", err)
 	}
 
 	// Accumulate streaming response
@@ -329,19 +321,24 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	var stopReason string
 	var usage types.Usage
 	var thinkingStart time.Time
+
+	// StreamingToolExecutor — lazily created on first tool_use block.
+	// Source: query.ts:562-568 — executor created before streaming.
+	// Source: query.ts:841-843 — addTool called as each tool_use completes.
+	var streamingExecutor *StreamingToolExecutor
 	hasContent := false
 	streamComplete := false
 
 	for event := range streamCh {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		default:
 		}
 
 		if event.Error != nil {
 			e.logger.Error("stream event error", "error", event.Error)
-			return nil, event.Error
+			return nil, nil, event.Error
 		}
 
 		switch event.Type {
@@ -429,6 +426,16 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case types.ContentTypeToolUse:
 					cb.Input = json.RawMessage(currentToolInput.String())
 					currentToolInput.Reset()
+					// Source: query.ts:841-843 — addTool as soon as input is complete.
+					// Tools begin executing during LLM streaming, not after.
+					if streamingExecutor == nil {
+						streamingExecutor = NewStreamingToolExecutor(
+							e.tools, nil,
+							func(evt types.QueryEvent) { e.emitEvent(eventCh, evt) },
+							ctx,
+						)
+					}
+					streamingExecutor.AddTool(*cb)
 				case types.ContentTypeThinking:
 					cb.Text = currentText.String()
 					currentText.Reset()
@@ -473,7 +480,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	// Detect interrupted stream: content was received but stream never completed.
 	if hasContent && !streamComplete {
 		e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
-		return nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
+		return nil, nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
 	}
 
 	return &types.Message{
@@ -483,7 +490,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 		StopReason: stopReason,
 		Usage:      &usage,
 		Timestamp:  time.Now(),
-	}, nil
+	}, streamingExecutor, nil
 }
 
 // executeTools runs tool calls sequentially.

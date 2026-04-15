@@ -210,7 +210,7 @@ func BenchmarkCallLLM_Accumulate(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = eng.callLLM(context.Background(), systemPrompt, eventCh)
+		_, _, _ = eng.callLLM(context.Background(), systemPrompt, eventCh)
 		// Drain events
 		for {
 			select {

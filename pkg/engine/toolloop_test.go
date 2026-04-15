@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,5 +338,632 @@ func TestSequentialToolLoop_ContextModifier_NilTctx(t *testing.T) {
 	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StreamingToolExecutor tests — source: StreamingToolExecutor.ts
+// ---------------------------------------------------------------------------
+
+// concurrentTool implements tool.Tool with configurable concurrency safety.
+type concurrentTool struct {
+	name   string
+	isSafe bool
+	callFn func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+}
+
+func (t *concurrentTool) Name() string                        { return t.name }
+func (t *concurrentTool) Aliases() []string                   { return nil }
+func (t *concurrentTool) Description(json.RawMessage) (string, error) {
+	return t.name + " desc", nil
+}
+func (t *concurrentTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
+func (t *concurrentTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	if t.callFn != nil {
+		return t.callFn(ctx, input, tctx)
+	}
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (t *concurrentTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *concurrentTool) IsReadOnly(json.RawMessage) bool           { return t.isSafe }
+func (t *concurrentTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *concurrentTool) IsConcurrencySafe(json.RawMessage) bool    { return t.isSafe }
+func (t *concurrentTool) IsEnabled() bool                           { return true }
+func (t *concurrentTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *concurrentTool) Prompt() string                            { return "" }
+func (t *concurrentTool) RenderResult(any) string                     { return "" }
+
+// streamingConcurrentTool implements both Tool and ToolWithStreaming.
+type streamingConcurrentTool struct {
+	concurrentTool
+	streamFn func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error)
+}
+
+func (t *streamingConcurrentTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+	if t.streamFn != nil {
+		return t.streamFn(ctx, input, tctx, onProgress)
+	}
+	return &tool.ToolResult{Data: "streamed"}, nil
+}
+
+func TestConcurrentToolLoop_SingleTool(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"echo": &concurrentTool{name: "echo", isSafe: true},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
+	}
+	var events []types.QueryEvent
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+		events = append(events, evt)
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("expected ToolUseID tu_1, got %s", results[0].ToolUseID)
+	}
+	if results[0].IsError {
+		t.Error("expected no error")
+	}
+	if results[0].Type != types.ContentTypeToolResult {
+		t.Errorf("expected ContentTypeToolResult, got %s", results[0].Type)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != types.EventToolEnd {
+		t.Errorf("expected EventToolEnd, got %s", events[0].Type)
+	}
+	if events[0].ToolResult == nil || events[0].ToolResult.ToolUseID != "tu_1" {
+		t.Error("expected event with ToolUseID tu_1")
+	}
+}
+
+func TestConcurrentToolLoop_UnknownTool(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "nonexistent", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected error for unknown tool")
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if !strings.Contains(parsed["error"], "No such tool available") {
+		t.Errorf("unexpected error: %q", parsed["error"])
+	}
+}
+
+func TestConcurrentToolLoop_ToolError(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"fail": &concurrentTool{
+			name:   "fail",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("tool crashed")
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "fail", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Fatal("expected error result")
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if parsed["error"] != "tool crashed" {
+		t.Errorf("expected 'tool crashed', got %q", parsed["error"])
+	}
+}
+
+func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
+	t.Parallel()
+	// Two safe tools that each sleep 50ms should complete in ~50ms (parallel),
+	// not ~100ms (serial). Source: StreamingToolExecutor.ts — safe tools execute concurrently.
+	var mu sync.Mutex
+	var startTimes []time.Time
+
+	tools := map[string]tool.Tool{
+		"safe_a": &concurrentTool{
+			name: "safe_a", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				startTimes = append(startTimes, time.Now())
+				mu.Unlock()
+				time.Sleep(50 * time.Millisecond)
+				return &tool.ToolResult{Data: "a"}, nil
+			},
+		},
+		"safe_b": &concurrentTool{
+			name: "safe_b", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				startTimes = append(startTimes, time.Now())
+				mu.Unlock()
+				time.Sleep(50 * time.Millisecond)
+				return &tool.ToolResult{Data: "b"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_a", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_b", Input: json.RawMessage(`{}`)},
+	}
+	start := time.Now()
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	elapsed := time.Since(start)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Both tools should start within 20ms of each other (parallel execution).
+	mu.Lock()
+	defer mu.Unlock()
+	if len(startTimes) != 2 {
+		t.Fatalf("expected 2 start times, got %d", len(startTimes))
+	}
+	startDiff := startTimes[1].Sub(startTimes[0])
+	if startDiff > 20*time.Millisecond {
+		t.Errorf("safe tools should start near-simultaneously, started %v apart", startDiff)
+	}
+	// Total time should be < 100ms (serial would be ~100ms)
+	if elapsed > 120*time.Millisecond {
+		t.Errorf("parallel execution should complete in ~50ms, took %v", elapsed)
+	}
+}
+
+func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:129-135 — unsafe tools require exclusive access.
+	var mu sync.Mutex
+	var timestamps []time.Time
+
+	tools := map[string]tool.Tool{
+		"unsafe_a": &concurrentTool{
+			name: "unsafe_a", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				timestamps = append(timestamps, time.Now())
+				mu.Unlock()
+				time.Sleep(50 * time.Millisecond)
+				return &tool.ToolResult{Data: "a"}, nil
+			},
+		},
+		"unsafe_b": &concurrentTool{
+			name: "unsafe_b", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				timestamps = append(timestamps, time.Now())
+				mu.Unlock()
+				time.Sleep(50 * time.Millisecond)
+				return &tool.ToolResult{Data: "b"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "unsafe_a", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_b", Input: json.RawMessage(`{}`)},
+	}
+	start := time.Now()
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	elapsed := time.Since(start)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// Serial: total should be ~100ms
+	if elapsed < 80*time.Millisecond {
+		t.Errorf("unsafe tools should execute serially, expected ~100ms, got %v", elapsed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(timestamps) != 2 {
+		t.Fatalf("expected 2 timestamps, got %d", len(timestamps))
+	}
+	gap := timestamps[1].Sub(timestamps[0])
+	if gap < 30*time.Millisecond {
+		t.Errorf("unsafe tools should be ~50ms apart, got %v", gap)
+	}
+}
+
+func TestConcurrentToolLoop_MixedSafeUnsafe(t *testing.T) {
+	t.Parallel()
+	// safe_a → unsafe_b → safe_c (serial due to ordering constraint).
+	// Source: StreamingToolExecutor.ts:140-151 — processQueue breaks on blocked non-safe.
+	var mu sync.Mutex
+	var order []string
+
+	makeTool := func(name string, isSafe bool) *concurrentTool {
+		return &concurrentTool{
+			name: name, isSafe: isSafe,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				order = append(order, name)
+				mu.Unlock()
+				time.Sleep(30 * time.Millisecond)
+				return &tool.ToolResult{Data: name}, nil
+			},
+		}
+	}
+
+	tools := map[string]tool.Tool{
+		"safe_a":   makeTool("safe_a", true),
+		"unsafe_b": makeTool("unsafe_b", false),
+		"safe_c":   makeTool("safe_c", true),
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_a", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_b", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_3", Name: "safe_c", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if order[0] != "safe_a" || order[1] != "unsafe_b" || order[2] != "safe_c" {
+		t.Errorf("expected [safe_a, unsafe_b, safe_c], got %v", order)
+	}
+	// Results in insertion order.
+	for i, expected := range []string{"tu_1", "tu_2", "tu_3"} {
+		if results[i].ToolUseID != expected {
+			t.Errorf("results[%d]: expected %s, got %s", i, expected, results[i].ToolUseID)
+		}
+	}
+}
+
+func TestConcurrentToolLoop_ResultsInOrder(t *testing.T) {
+	t.Parallel()
+	// "slow" completes last, "fast" completes first, but results must be in insertion order.
+	// Source: StreamingToolExecutor.ts:412-440 — getCompletedResults yields in order.
+	tools := map[string]tool.Tool{
+		"slow": &concurrentTool{
+			name: "slow", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				time.Sleep(50 * time.Millisecond)
+				return &tool.ToolResult{Data: "slow"}, nil
+			},
+		},
+		"fast": &concurrentTool{
+			name: "fast", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return &tool.ToolResult{Data: "fast"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "slow", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "fast", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("results[0]: expected tu_1 (slow), got %s", results[0].ToolUseID)
+	}
+	if results[1].ToolUseID != "tu_2" {
+		t.Errorf("results[1]: expected tu_2 (fast), got %s", results[1].ToolUseID)
+	}
+}
+
+func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:359 — Bash errors cancel sibling tools.
+	// Bash (safe/read-only) and another safe tool run in parallel.
+	// Bash errors → siblingCancel → other tool's context cancelled.
+	var safeCtxCancelled bool
+
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name: "Bash", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				time.Sleep(10 * time.Millisecond)
+				return nil, errors.New("command failed")
+			},
+		},
+		"safe_tool": &concurrentTool{
+			name: "safe_tool", isSafe: true,
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				select {
+				case <-time.After(5 * time.Second):
+					return &tool.ToolResult{Data: "ok"}, nil
+				case <-ctx.Done():
+					safeCtxCancelled = true
+					return nil, ctx.Err()
+				}
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"bad cmd"}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
+	}
+	start := time.Now()
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	elapsed := time.Since(start)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected Bash error")
+	}
+	if !results[1].IsError {
+		t.Error("expected safe_tool to be cancelled by sibling error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("sibling cancellation should be fast, took %v", elapsed)
+	}
+	if !safeCtxCancelled {
+		t.Error("safe_tool should have detected context cancellation from sibling abort")
+	}
+}
+
+func TestConcurrentToolLoop_NonBashErrorNoKill(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:354-364 — only Bash errors cancel siblings.
+	// Non-Bash tool errors → siblings should still succeed.
+	tools := map[string]tool.Tool{
+		"fail_tool": &concurrentTool{
+			name: "fail_tool", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("non-bash failure")
+			},
+		},
+		"safe_tool": &concurrentTool{
+			name: "safe_tool", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "fail_tool", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected fail_tool error")
+	}
+	if results[1].IsError {
+		t.Error("safe_tool should NOT be cancelled by non-Bash error")
+	}
+}
+
+func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tools := map[string]tool.Tool{
+		"echo": &concurrentTool{name: "echo", isSafe: true},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected error for cancelled context")
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if parsed["error"] != "User rejected tool use" {
+		t.Errorf("expected 'User rejected tool use', got %q", parsed["error"])
+	}
+}
+
+func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:388-395 — ContextModifier only for non-concurrent tools.
+	safeModified := false
+
+	tools := map[string]tool.Tool{
+		"safe_mod": &concurrentTool{
+			name: "safe_mod", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return &tool.ToolResult{
+					Data: "safe",
+					ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+						safeModified = true
+						tctx.WorkingDir = "/safe-dir"
+						return tctx
+					},
+				}, nil
+			},
+		},
+		"unsafe_mod": &concurrentTool{
+			name: "unsafe_mod", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return &tool.ToolResult{
+					Data: "unsafe",
+					ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+						tctx.WorkingDir = "/unsafe-dir"
+						return tctx
+					},
+				}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_mod", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_mod", Input: json.RawMessage(`{}`)},
+	}
+	tctx := &types.ToolUseContext{WorkingDir: "/original"}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, tctx, func(evt types.QueryEvent) {})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if safeModified {
+		t.Error("safe tool's ContextModifier should NOT be applied")
+	}
+	if tctx.WorkingDir != "/unsafe-dir" {
+		t.Errorf("expected WorkingDir '/unsafe-dir', got %q", tctx.WorkingDir)
+	}
+}
+
+func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:320-382 — ToolWithStreaming gets progress callbacks.
+	var progressCalls int
+
+	tools := map[string]tool.Tool{
+		"streamer": &streamingConcurrentTool{
+			concurrentTool: concurrentTool{name: "streamer", isSafe: true},
+			streamFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2"}})
+				progressCalls++
+				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2", "line 3"}})
+				progressCalls++
+				return &tool.ToolResult{Data: "streamed"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "streamer", Input: json.RawMessage(`{}`)},
+	}
+	var events []types.QueryEvent
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+		events = append(events, evt)
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].IsError {
+		t.Error("expected no error")
+	}
+	if progressCalls != 2 {
+		t.Errorf("expected 2 progress calls, got %d", progressCalls)
+	}
+	var outputDeltas, toolEnds int
+	for _, evt := range events {
+		switch evt.Type {
+		case types.EventToolOutputDelta:
+			outputDeltas++
+		case types.EventToolEnd:
+			toolEnds++
+		}
+	}
+	if outputDeltas != 2 {
+		t.Errorf("expected 2 EventToolOutputDelta, got %d", outputDeltas)
+	}
+	if toolEnds != 1 {
+		t.Errorf("expected 1 EventToolEnd, got %d", toolEnds)
+	}
+}
+
+func TestConcurrentToolLoop_EmptyBlocks(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, nil, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for nil blocks, got %d", len(results))
+	}
+
+	// Also test with non-tool blocks only.
+	blocks := []types.ContentBlock{types.NewTextBlock("not a tool")}
+	results = engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for text-only blocks, got %d", len(results))
+	}
+}
+
+func TestConcurrentToolLoop_SkipsNonToolBlocks(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"echo": &concurrentTool{name: "echo", isSafe: true},
+	}
+	blocks := []types.ContentBlock{
+		types.NewTextBlock("not a tool"),
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("expected tu_1, got %s", results[0].ToolUseID)
+	}
+}
+
+func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
+	t.Parallel()
+	// Bash (unsafe) runs first. When it errors, queued safe_tool gets sibling_error
+	// synthetic block (not context cancellation — tool function never called).
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name: "Bash", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("command failed")
+			},
+		},
+		"safe_tool": &concurrentTool{
+			name: "safe_tool", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return &tool.ToolResult{Data: "should not run"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"bad"}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected Bash error")
+	}
+	if !results[1].IsError {
+		t.Error("expected safe_tool to be cancelled (sibling error)")
+	}
+	// Verify safe_tool got sibling error message, not its own output.
+	var parsed map[string]string
+	if err := json.Unmarshal(results[1].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+	if !strings.Contains(parsed["error"], "Cancelled") {
+		t.Errorf("expected sibling error message, got %q", parsed["error"])
 	}
 }

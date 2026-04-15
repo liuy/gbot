@@ -306,7 +306,15 @@ func (a *App) View() string {
 		} else if a.thinkingDuration > 0 {
 			thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.thinkingDuration.Seconds())
 		}
-		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + thinkingStr + ")"
+		var toolsStr string
+		if tc := a.repl.toolCount; tc > 0 {
+			if tc == 1 {
+				toolsStr = " · 1 tool"
+			} else {
+				toolsStr = fmt.Sprintf(" · %d tools", tc)
+			}
+		}
+		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + toolsStr + thinkingStr + ")"
 		sb.WriteString(progressLine)
 		sb.WriteString("\n")
 	}

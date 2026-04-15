@@ -122,8 +122,13 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 			}
 			return isDestructiveCommand(in.Command)
 		},
-		IsConcurrencySafe_: func(json.RawMessage) bool {
-			return false // Bash commands are never concurrency-safe
+		IsConcurrencySafe_: func(input json.RawMessage) bool {
+			// Source: BashTool.tsx:434-435 — isConcurrencySafe delegates to isReadOnly.
+			var in Input
+			if err := json.Unmarshal(input, &in); err != nil {
+				return false
+			}
+			return isReadOnlyCommand(in.Command)
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 			Prompt_: bashPrompt(),

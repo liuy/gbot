@@ -30,6 +30,9 @@ type ReplState struct {
 	// Tracks when each tool call started streaming (for perceived elapsed)
 	pendingToolStart map[string]time.Time
 
+	// Total tool calls in the current query (for progress display)
+	toolCount int
+
 	// Channel for the final query result (nil when idle)
 	resultCh <-chan engine.QueryResult
 
@@ -67,6 +70,7 @@ func (s *ReplState) StartQuery(resultCh <-chan engine.QueryResult) {
 	s.streaming = true
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
+	s.toolCount = 0
 	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
 }
 
@@ -109,6 +113,7 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string) {
 	}
 	tcv := &ToolCallView{ID: id, Name: name, Summary: summary, Input: input, Done: false}
 	s.pendingTool[id] = tcv
+	s.toolCount++
 	s.pendingToolStart[id] = time.Now()
 	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockTool, ToolCall: *tcv})
 }
@@ -334,7 +339,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		if !a.progressStart.IsZero() {
 			elapsedStr := formatElapsed(a.progressStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
-			statsLine := styleDim.Render(tokensStr + " · " + elapsedStr)
+			var toolsPart string
+			if tc := a.repl.toolCount; tc > 0 {
+				if tc == 1 {
+					toolsPart = " · 1 tool"
+				} else {
+					toolsPart = fmt.Sprintf(" · %d tools", tc)
+				}
+			}
+			statsLine := styleDim.Render(tokensStr + toolsPart + " · " + elapsedStr)
 			// Embed stats as a block in the last assistant message.
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {

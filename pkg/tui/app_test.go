@@ -3854,3 +3854,108 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 		t.Errorf("should show scroll indicator at top of overflow, got:\n%s", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tool count in progress line
+// ---------------------------------------------------------------------------
+
+func TestApp_ProgressLine_NoTools(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	v := app.View()
+	if strings.Contains(v, "tool") && strings.Contains(v, "tokens") {
+		// "tokens" contains "tool" substring, so be more precise
+		t.Errorf("should not show tool count when no tools, got:\n%s", v)
+	}
+}
+
+func TestApp_ProgressLine_OneTool(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Simulate one tool started
+	app.repl.toolCount = 1
+
+	v := app.View()
+	if !strings.Contains(v, "1 tool") {
+		t.Errorf("should show '1 tool', got:\n%s", v)
+	}
+	if strings.Contains(v, "1 tools") {
+		t.Errorf("should use singular '1 tool', not '1 tools', got:\n%s", v)
+	}
+}
+
+func TestApp_ProgressLine_ThreeTools(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Simulate three tools started
+	app.repl.toolCount = 3
+
+	v := app.View()
+	if !strings.Contains(v, "3 tools") {
+		t.Errorf("should show '3 tools', got:\n%s", v)
+	}
+}
+
+func TestApp_ToolCount_ResetsOnNewQuery(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.toolCount = 5
+
+	// StartQuery resets toolCount
+	app.repl.StartQuery(nil)
+
+	if app.repl.toolCount != 0 {
+		t.Errorf("toolCount should be 0 after StartQuery, got %d", app.repl.toolCount)
+	}
+}
+
+func TestApp_ToolCount_IncrementOnToolStart(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("id1", "Read", "", "")
+	if app.repl.toolCount != 1 {
+		t.Errorf("toolCount should be 1 after one tool start, got %d", app.repl.toolCount)
+	}
+	app.repl.PendingToolStarted("id2", "Grep", "", "")
+	if app.repl.toolCount != 2 {
+		t.Errorf("toolCount should be 2 after two tool starts, got %d", app.repl.toolCount)
+	}
+	app.repl.PendingToolStarted("id3", "Bash", "", "")
+	if app.repl.toolCount != 3 {
+		t.Errorf("toolCount should be 3 after three tool starts, got %d", app.repl.toolCount)
+	}
+}
+
+func TestApp_ToolCount_NotShownWhenNotStreaming(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.toolCount = 5
+
+	v := app.View()
+	// Progress line only shows when streaming
+	if strings.Contains(v, "5 tools") {
+		t.Errorf("should not show tool count when not streaming, got:\n%s", v)
+	}
+}
