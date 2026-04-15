@@ -2981,14 +2981,14 @@ func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
 }
 
 // TestView_ExpandedToolVisibleWithHeightLimit verifies that expanded tool calls
-// remain visible when content exceeds terminal height.
-// Regression: commit f2779a9 added height limiting that truncates from top,
-// cutting off the tool header when expanded output is long.
+// produce full content in the cache and that the scroll window shows recent output.
+// With scroll buffer, very long expanded output scrolls the tool header off-screen;
+// the user can scroll up (PgUp/mouse wheel) to see it.
 func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
-	app.height = 20 // small height to trigger truncation (maxLines = 17)
+	app.height = 20 // small height to trigger scrolling (maxLines = 17)
 	app.repl.StartQuery(nil)
 	app.spinner.Start()
 	app.progressStart = time.Now()
@@ -3002,19 +3002,31 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	app.repl.AppendChunk("done")
 	app.markViewportDirty()
 
-	// Collapsed: tool name should be visible
+	// Collapsed: tool name should be visible (output is short when collapsed)
 	v1 := app.View()
 	if !strings.Contains(v1, "Bash") {
 		t.Errorf("collapsed tool name 'Bash' should be visible, got:\n%s", v1)
 	}
 
-	// Expanded: tool name should STILL be visible even with long output
+	// Expanded: content cache should contain the tool name
 	app.allToolsExpanded = true
 	app.contentDirty = true
 	v2 := app.View()
-	if !strings.Contains(v2, "Bash") {
-		t.Errorf("expanded tool name 'Bash' should be visible with height limit, got %d lines:\n%s",
-			len(strings.Split(v2, "\n")), v2)
+	// Full content should contain Bash (verifies it's in the rendered output)
+	if !strings.Contains(app.contentCache, "Bash") {
+		t.Errorf("expanded content cache should contain 'Bash', got:\n%s", app.contentCache)
+	}
+	// Scroll window should show recent content ("done" text)
+	if !strings.Contains(v2, "done") {
+		t.Errorf("scroll window should show recent text 'done', got:\n%s", v2)
+	}
+	// Scroll indicator should be present since content overflows
+	if !strings.Contains(v2, "PgUp/PgDown/Mouse") {
+		t.Errorf("scroll indicator should be present when content overflows, got:\n%s", v2)
+	}
+	// Scroll total should exceed viewport (height - 3 = 17 lines)
+	if app.scrollTotal <= 17 {
+		t.Errorf("scrollTotal = %d, expected > 17 (viewport size) for expanded output", app.scrollTotal)
 	}
 }
 
@@ -3251,5 +3263,316 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	}
 	if strings.Contains(rendered, "ctrl+o") {
 		t.Errorf("committed output should not contain ctrl+o hint, got:\n%s", rendered)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scroll buffer tests
+// ---------------------------------------------------------------------------
+
+// TestApp_Scroll_WindowLimitsContent verifies that View() limits visible content
+// to the terminal height when content exceeds it.
+func TestApp_Scroll_WindowLimitsContent(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10 // maxContentLines = 10 - 3 = 7
+
+	// Add 20 lines of plain text (not tool output, to avoid per-tool truncation)
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 20))
+	app.markViewportDirty()
+
+	v := app.View()
+	viewLines := strings.Split(v, "\n")
+
+	// View should have limited lines (scroll indicator + content + progress + input)
+	if len(viewLines) > app.height {
+		t.Errorf("View() produced %d lines, should fit within height %d:\n%s", len(viewLines), app.height, v)
+	}
+
+	// Scroll indicator should be present (format: "N/M PgUp/PgDown/Mouse")
+	hasScrollIndicator := strings.Contains(v, "PgUp/PgDown/Mouse")
+	if !hasScrollIndicator {
+		t.Errorf("scroll indicator should be present when content overflows, got:\n%s", v)
+	}
+
+	// scrollTotal should reflect full content (20 lines + possible empty trailing line)
+	if app.scrollTotal <= 7 {
+		t.Errorf("scrollTotal = %d, expected > 7 (viewport lines)", app.scrollTotal)
+	}
+}
+
+// TestApp_Scroll_AutoScrollToBottom verifies auto-scroll behavior.
+func TestApp_Scroll_AutoScrollToBottom(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10
+
+	// Add long content
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 20))
+	app.markViewportDirty()
+
+	v := app.View()
+
+	// userScrolled=false means auto-scroll to bottom → should show recent content
+	if !strings.Contains(v, "line") {
+		t.Errorf("auto-scroll should show content, got:\n%s", v)
+	}
+
+	// Should be at the bottom (scrollOffset near end)
+	if app.scrollOffset == 0 && app.scrollTotal > 7 {
+		t.Error("auto-scroll should set scrollOffset near bottom, got 0")
+	}
+}
+
+// TestApp_Scroll_PageUpPageDown verifies PgUp/PgDown key bindings.
+func TestApp_Scroll_PageUpPageDown(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10
+
+	// Add long content
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 30))
+	app.markViewportDirty()
+
+	// Force initial view to populate scrollTotal
+	_ = app.View()
+
+	// PgUp should scroll up
+	prevOffset := app.scrollOffset
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if app.scrollOffset >= prevOffset {
+		t.Errorf("PgUp should decrease scrollOffset, was %d now %d", prevOffset, app.scrollOffset)
+	}
+	if !app.userScrolled {
+		t.Error("PgUp should set userScrolled=true")
+	}
+
+	// PgDown should scroll down
+	prevOffset = app.scrollOffset
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if app.scrollOffset <= prevOffset {
+		t.Errorf("PgDown should increase scrollOffset, was %d now %d", prevOffset, app.scrollOffset)
+	}
+}
+
+// TestApp_Scroll_MouseWheel verifies mouse wheel scroll support.
+func TestApp_Scroll_MouseWheel(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10
+
+	// Add long content
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 30))
+	app.markViewportDirty()
+	_ = app.View()
+
+	// Mouse wheel up should scroll up
+	prevOffset := app.scrollOffset
+	_, _ = app.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if app.scrollOffset >= prevOffset {
+		t.Errorf("wheel up should decrease scrollOffset, was %d now %d", prevOffset, app.scrollOffset)
+	}
+
+	// Mouse wheel down should scroll down
+	prevOffset = app.scrollOffset
+	_, _ = app.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if app.scrollOffset <= prevOffset {
+		t.Errorf("wheel down should increase scrollOffset, was %d now %d", prevOffset, app.scrollOffset)
+	}
+}
+
+// TestApp_Scroll_ResetOnSubmit verifies scroll state resets on new query.
+func TestApp_Scroll_ResetOnSubmit(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10
+
+	// Add long content and scroll up
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 30))
+	app.markViewportDirty()
+	_ = app.View()
+	app.scrollUp(5)
+	if app.scrollOffset == 0 {
+		t.Fatal("scrollUp should change offset")
+	}
+
+	// Complete stream
+	app.repl.FinishStream(nil)
+	app.spinner.Stop()
+
+	// Submit new query
+	app.input.SetValue("new query")
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Scroll state should be reset
+	if app.scrollOffset != 0 {
+		t.Errorf("scrollOffset should be 0 after submit, got %d", app.scrollOffset)
+	}
+	if app.scrollTotal != 0 {
+		t.Errorf("scrollTotal should be 0 after submit, got %d", app.scrollTotal)
+	}
+	if app.userScrolled {
+		t.Error("userScrolled should be false after submit")
+	}
+
+	// Execute any batched commands
+	if cmd != nil {
+		_ = cmd()
+	}
+}
+
+// TestApp_Scroll_IndicatorPosition verifies scroll indicator shows correct position.
+func TestApp_Scroll_IndicatorPosition(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10
+
+	// Add long content
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 30))
+	app.markViewportDirty()
+
+	// Auto-scroll to bottom → should show ↑ arrow (content above)
+	v := app.View()
+	if !strings.Contains(v, "↑") {
+		t.Errorf("at bottom should show ↑ arrow, got:\n%s", v)
+	}
+
+	// Scroll to top → should show ↓ arrow (content below)
+	app.scrollOffset = 0
+	app.userScrolled = true
+	v = app.View()
+	if !strings.Contains(v, "↓") {
+		t.Errorf("at top should show ↓ arrow, got:\n%s", v)
+	}
+
+	// Scroll to middle → should show ↕ arrow (both directions)
+	app.scrollOffset = app.scrollTotal / 2
+	app.userScrolled = true
+	v = app.View()
+	if !strings.Contains(v, "↕") {
+		t.Errorf("in middle should show ↕ arrow, got:\n%s", v)
+	}
+}
+
+
+// TestApp_Scroll_PageNumberChanges verifies the page number actually changes
+// when scrolling. Previous bug: used scrollOffset/viewLines which stayed at 1
+// when maxOffset < viewLines (e.g. scrollTotal=73, viewLines=40, maxOff=33).
+func TestApp_Scroll_PageNumberChanges(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10 // maxContentLines=7, viewLines=6
+
+	// Create content where scrollTotal is just over maxContentLines.
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 10))
+	app.markViewportDirty()
+
+	// At bottom (auto-scroll): page should be 2/2
+	v := app.View()
+	if !strings.Contains(v, "2/2") {
+		t.Errorf("at bottom should show page 2/2, got:\n%s", v)
+	}
+
+	// PgUp to top: page should be 1/2
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	v = app.View()
+	if !strings.Contains(v, "1/2") {
+		t.Errorf("at top should show page 1/2, got:\n%s", v)
+	}
+}
+
+// TestApp_Scroll_ShortContentNoScrolling verifies no scroll when content fits.
+func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 40 // large height
+
+	// Add short content
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk("short response")
+	app.markViewportDirty()
+
+	v := app.View()
+
+	// No scroll indicator when content fits
+	if strings.Contains(v, "PgUp/PgDown/Mouse") {
+		t.Errorf("short content should not show scroll indicator, got:\n%s", v)
+	}
+	if app.scrollOffset != 0 {
+		t.Errorf("scrollOffset should be 0 for short content, got %d", app.scrollOffset)
+	}
+}
+
+// TestApp_Scroll_PgUpOvershootSetsUserScrolled reproduces the bug where PgUp
+// from the bottom overshoots past 0 (clamped), and userScrolled stays false
+// because `userScrolled = scrollOffset > 0` evaluates to false at offset 0.
+// This causes View() to auto-scroll back to bottom, making PgUp a no-op.
+func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10 // maxContentLines=7, viewLines=6
+
+	// Create content where scrollTotal is just slightly over maxContentLines.
+	// 10 lines of content: scrollTotal=10, maxOff=10-6=4.
+	// PgUp with n=7: 4-7=-3 → clamped to 0.
+	// Bug: userScrolled = 0>0 = false → View() auto-scrolls back.
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 10))
+	app.markViewportDirty()
+	_ = app.View() // populate scrollTotal
+
+	if app.scrollTotal <= 7 {
+		t.Fatalf("need scrollTotal > maxContentLines for overflow, got %d", app.scrollTotal)
+	}
+
+	// PgUp from auto-scrolled bottom
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+
+	if !app.userScrolled {
+		t.Error("PgUp must set userScrolled=true even when offset clamps to 0")
+	}
+
+	// Verify View() respects userScrolled and stays at top, not auto-scrolling back
+	v := app.View()
+	if app.scrollOffset != 0 {
+		t.Errorf("View() should keep offset at 0 when userScrolled=true, got %d", app.scrollOffset)
+	}
+	// Should show scroll indicator since we're at top of overflow content
+	if !strings.Contains(v, "PgUp/PgDown/Mouse") {
+		t.Errorf("should show scroll indicator at top of overflow, got:\n%s", v)
 	}
 }

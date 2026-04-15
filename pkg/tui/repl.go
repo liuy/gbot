@@ -393,6 +393,9 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()
+	a.scrollOffset = 0
+	a.scrollTotal = 0
+	a.userScrolled = false
 	a.markViewportDirty()
 
 	ctx, cancel := context.WithCancel(context.Background())

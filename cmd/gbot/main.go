@@ -101,7 +101,7 @@ func main() {
 
 
 	// 8. Run bubbletea program
-	p := tea.NewProgram(app)
+	p := tea.NewProgram(app, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 		os.Exit(1)

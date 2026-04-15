@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -73,6 +74,12 @@ type App struct {
 	contentDirty bool
 	contentCache string
 
+	// Internal scroll buffer for uncommitted content.
+	// When content exceeds terminal height, only a window is rendered.
+	scrollOffset int  // first visible line index (0 = top)
+	scrollTotal  int  // total lines in rendered content
+	userScrolled bool // true when user manually scrolled up; reset on new content
+
 	// Smoothly animated token counters for spinner display
 	displayedInputTokens  int
 	displayedOutputTokens int
@@ -133,6 +140,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return a.handleKey(m)
 
+	case tea.MouseMsg:
+		return a, a.handleMouse(m)
+
 	// All REPL messages are handled by repl.go
 	case streamChunkMsg, streamToolUseMsg, streamToolDeltaMsg, streamToolOutputMsg, streamToolResultMsg,
 		streamCompleteMsg, streamStartMsg, streamMessageMsg, streamUsageMsg,
@@ -149,8 +159,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the active (uncommitted) content + progress + input.
 // Committed messages are in terminal scrollback via tea.Println — never re-rendered.
-// Content is height-limited to prevent Bubble Tea's inline renderer from moving the
-// cursor into scrollback, which would corrupt it.
+// When uncommitted content exceeds terminal height, a scroll window is applied so
+// only the visible portion is rendered, preventing Bubble Tea's inline renderer from
+// corrupting terminal scrollback.
 func (a *App) View() string {
 	if a.width == 0 {
 		return "Loading..."
@@ -177,6 +188,9 @@ func (a *App) View() string {
 	} else {
 		a.contentCache = ""
 		a.contentDirty = false
+		a.scrollOffset = 0
+		a.scrollTotal = 0
+		a.userScrolled = false
 		if a.committedCount == 0 {
 			// Initial state — show welcome
 			welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
@@ -184,12 +198,97 @@ func (a *App) View() string {
 		}
 	}
 
+	// Apply scroll window: limit visible content to what fits in terminal.
+	// Reserve 3 lines for: progress (1) + input (1) + margin (1).
+	maxContentLines := a.height - 3
+	if maxContentLines < 1 {
+		maxContentLines = 1
+	}
+
+	var visibleContent string
+	var showScrollIndicator bool
+
+	if contentStr != "" {
+		lines := strings.Split(contentStr, "\n")
+		a.scrollTotal = len(lines)
+
+		if len(lines) <= maxContentLines {
+			// Content fits entirely — no scrolling needed
+			a.scrollOffset = 0
+			visibleContent = contentStr
+		} else {
+			showScrollIndicator = true
+			// Reserve 1 line for scroll indicator
+			viewLines := maxContentLines - 1
+			if viewLines < 1 {
+				viewLines = 1
+			}
+
+			// Auto-scroll to bottom unless user explicitly scrolled up
+			if !a.userScrolled {
+				a.scrollOffset = len(lines) - viewLines
+			}
+
+			// Clamp scrollOffset to valid range
+			maxOff := len(lines) - viewLines
+			if maxOff < 0 {
+				maxOff = 0
+			}
+			if a.scrollOffset > maxOff {
+				a.scrollOffset = maxOff
+			}
+			if a.scrollOffset < 0 {
+				a.scrollOffset = 0
+			}
+
+			end := a.scrollOffset + viewLines
+			if end > len(lines) {
+				end = len(lines)
+			}
+			visibleContent = strings.Join(lines[a.scrollOffset:end], "\n")
+		}
+	} else {
+		a.scrollTotal = 0
+		a.scrollOffset = 0
+	}
 
 	var sb strings.Builder
 
-	// Active (uncommitted) content
-	if contentStr != "" {
-		sb.WriteString(contentStr)
+	// Scroll indicator when content overflows viewport
+	if showScrollIndicator {
+		viewLines := maxContentLines - 1
+		if viewLines < 1 {
+			viewLines = 1
+		}
+		totalPages := (a.scrollTotal + viewLines - 1) / viewLines
+		if totalPages < 1 {
+			totalPages = 1
+		}
+		// Use middle of viewport for page calculation so it changes when scrolling
+		midLine := a.scrollOffset + viewLines/2
+		currentPage := midLine/viewLines + 1
+		if currentPage > totalPages {
+			currentPage = totalPages
+		}
+		// Directional arrow: ↑=content above, ↓=content below, ↕=both
+		var arrow string
+		atTop := a.scrollOffset == 0
+		atBottom := a.scrollOffset+viewLines >= a.scrollTotal
+		switch {
+		case atTop && !atBottom:
+			arrow = "↓"
+		case atBottom && !atTop:
+			arrow = "↑"
+		default:
+			arrow = "↕"
+		}
+		sb.WriteString(styleDim.Render(fmt.Sprintf("%s %d/%d · PgUp/PgDown/Mouse", arrow, currentPage, totalPages)))
+		sb.WriteString("\n")
+	}
+
+	// Active (uncommitted) content (scroll-windowed)
+	if visibleContent != "" {
+		sb.WriteString(visibleContent)
 		sb.WriteString("\n")
 	}
 
@@ -344,6 +443,14 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.resetNavAndAccum()
 		a.input.CursorRight()
 		return a, nil
+
+	case tea.KeyPgUp:
+		a.scrollUp(a.height - 3)
+		return a, nil
+
+	case tea.KeyPgDown:
+		a.scrollDown(a.height - 3)
+		return a, nil
 	}
 
 	return a, nil
@@ -449,4 +556,58 @@ func (a *App) handleKillWord() {
 	a.killRing.Push(word, "prepend")
 	a.input.value = append(a.input.value[:pos], a.input.value[a.input.cursor:]...)
 	a.input.cursor = pos
+}
+
+// ---------------------------------------------------------------------------
+// Scroll handling
+// ---------------------------------------------------------------------------
+
+// scrollUp moves the scroll viewport up by n lines.
+func (a *App) scrollUp(n int) {
+	if a.scrollTotal == 0 {
+		return
+	}
+	a.scrollOffset -= n
+	if a.scrollOffset < 0 {
+		a.scrollOffset = 0
+	}
+	a.userScrolled = true
+}
+// scrollDown moves the scroll viewport down by n lines.
+func (a *App) scrollDown(n int) {
+	if a.scrollTotal == 0 {
+		return
+	}
+	maxContentLines := a.height - 3
+	if maxContentLines < 1 {
+		maxContentLines = 1
+	}
+	viewLines := maxContentLines
+	if a.scrollTotal > maxContentLines {
+		viewLines = maxContentLines - 1 // reserve 1 for indicator
+	}
+	if viewLines < 1 {
+		viewLines = 1
+	}
+	maxOff := a.scrollTotal - viewLines
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	a.scrollOffset += n
+	if a.scrollOffset > maxOff {
+		a.scrollOffset = maxOff
+	}
+	// If scrolled to bottom, resume auto-scroll
+	a.userScrolled = a.scrollOffset < maxOff
+}
+
+// handleMouse handles mouse events for scroll wheel support.
+func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		a.scrollUp(3)
+	case tea.MouseButtonWheelDown:
+		a.scrollDown(3)
+	}
+	return nil
 }
