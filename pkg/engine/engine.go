@@ -218,7 +218,6 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		// Add assistant message to history
 		e.messages = append(e.messages, *resp)
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
 
 		// Stage 20: No-tool-use terminal path
 		hasToolUse := false
@@ -231,6 +230,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		if !hasToolUse {
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
@@ -249,12 +249,16 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 			Content: toolResultBlocks,
 		})
 
+		// End of this streaming round
+		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
+
 		// Stage 25-26: Turn counting and state transition
 		e.turnCount++
 		e.tokenBudget -= totalUsage.InputTokens + totalUsage.OutputTokens
 
 		if e.tokenBudget <= 0 {
 			e.logger.Warn("token budget exhausted")
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,

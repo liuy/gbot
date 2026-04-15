@@ -1655,6 +1655,64 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	}
 }
 
+
+// TestQuery_StreamEndAfterToolEnd verifies that stream_end comes AFTER tool_end
+// within each round. Previous bug: stream_end was emitted right after callLLM()
+// returned, before tool execution, making the ordering stream_end→tool_end.
+func TestQuery_StreamEndAfterToolEnd(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	toolID := "tu_order"
+	toolName := "order_tool"
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, toolName, `{"x":1}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: toolName, enabled: true}
+
+	h := hub.NewHub()
+	handler := &hubMockHandler{}
+	h.Subscribe(handler)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+		Dispatcher: h,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test ordering", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	events := handler.Events()
+
+	// Verify: no tool_end appears AFTER stream_end and BEFORE the next stream_start.
+	// Bug was: stream_end emitted before tool execution, producing stream_end→tool_end.
+	for i, evt := range events {
+		if evt.Type != types.EventStreamEnd {
+			continue
+		}
+		// Look forward until next stream_start or end of events.
+		for j := i + 1; j < len(events); j++ {
+			if events[j].Type == types.EventStreamStart || events[j].Type == types.EventQueryEnd {
+				break // reached next round boundary
+			}
+			if events[j].Type == types.EventToolEnd {
+				t.Errorf("stream_end at index %d should come AFTER tool_end at index %d, not before", i, j)
+			}
+		}
+	}
+}
 // mockDispatcher is a non-hub EventDispatcher for testing interface compliance.
 type mockDispatcher struct {
 	mu     sync.Mutex
