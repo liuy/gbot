@@ -737,6 +737,10 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	if output == "" {
 		return ""
 	}
+	// Expand tabs to spaces so wordWrap calculates correct visual width.
+	// Tabs (width 0 in runewidth) cause lines to exceed terminal width,
+	// creating extra visual lines that Bubble Tea cannot clear on re-render.
+	output = strings.ReplaceAll(output, "\t", "    ")
 	// Trim trailing newlines to avoid empty prefixed lines
 	output = strings.TrimRight(output, "\n")
 	lines := strings.Split(output, "\n")
@@ -856,10 +860,14 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 
 
 // wordWrap wraps text to the given width, breaking at word boundaries.
+// Tabs are expanded to 4 spaces so runewidth correctly accounts for their
+// display width (runewidth.RuneWidth('\t') returns 0, which would cause
+// under-wrapping and ghost content on re-render).
 func wordWrap(text string, width int) string {
 	if width <= 0 {
 		return text
 	}
+	text = strings.ReplaceAll(text, "\t", "    ")
 
 	var lines []string
 	var currentLine strings.Builder

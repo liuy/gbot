@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 func stripAnsiPrintable(s string) string {
@@ -2257,6 +2259,56 @@ func TestRenderThinkingBlock_DoneLongText_PrefixAlignment(t *testing.T) {
 		}
 		if started && line != "" && !strings.HasPrefix(line, "  ") {
 			t.Errorf("continuation line %d = %q, want 2-space prefix for alignment", i, line)
+		}
+	}
+}
+
+func TestFormatToolOutput_TabsExpanded(t *testing.T) {
+	t.Parallel()
+
+	// Tool output containing tab-indented Go code.
+	// Tabs must be expanded to spaces so wordWrap calculates the correct
+	// visual width. Otherwise tabs (width 0 in runewidth) cause lines to
+	// exceed the terminal width, creating extra visual lines that Bubble Tea
+	// cannot clear — leading to ghost content on Ctrl+O expand.
+	input := "\tfunc hello() {\n\t\treturn \"world\"\n\t}"
+	v := formatToolOutput(input, false, false, 80, false, 0)
+	clean := stripAnsi(v)
+
+	// No tab characters should remain in the output
+	if strings.Contains(clean, "\t") {
+		t.Errorf("output contains unexpanded tabs: %q", clean)
+	}
+
+	// The indented code should still be visible
+	if !strings.Contains(clean, "func hello()") {
+		t.Errorf("output should contain 'func hello()', got: %q", clean)
+	}
+	if !strings.Contains(clean, "return") {
+		t.Errorf("output should contain 'return', got: %q", clean)
+	}
+}
+
+func TestWordWrap_TabWidth(t *testing.T) {
+	t.Parallel()
+
+	// A line with a tab followed by text. With availWidth=20, wordWrap should
+	// produce output whose display width (with tabs expanded) does not exceed 20.
+	input := "\tSome text that is long enough to need wrapping at some point"
+	wrapped := wordWrap(input, 20)
+	clean := stripAnsi(wrapped)
+	for _, line := range strings.Split(clean, "\n") {
+		// Expand tabs for width check (tab stops at 8)
+		displayLen := 0
+		for _, r := range line {
+			if r == '\t' {
+				displayLen += 8 - (displayLen % 8)
+			} else {
+				displayLen += runewidth.RuneWidth(r)
+			}
+		}
+		if displayLen > 24 { // allow small slack for word boundaries
+			t.Errorf("wrapped line too wide (display width %d): %q", displayLen, line)
 		}
 	}
 }
