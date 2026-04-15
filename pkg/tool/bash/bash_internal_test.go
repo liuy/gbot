@@ -316,7 +316,10 @@ func TestExecutePTY_Error(t *testing.T) {
 	in := Input{Command: "echo hello", Timeout: 10000}
 	_, err := executePTY(context.Background(), in, "", 10*time.Second)
 	if err == nil {
-		t.Error("expected error with non-existent shell")
+		t.Fatal("expected error with non-existent shell")
+	}
+	if !strings.Contains(err.Error(), "start command") {
+		t.Errorf("error = %v, want 'start command'", err)
 	}
 }
 
@@ -418,7 +421,10 @@ func TestBashExecuteStream_EmptyCommand(t *testing.T) {
 	_, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":""}`), nil, nil)
 
 	if err == nil {
-		t.Error("expected error for empty command")
+		t.Fatal("expected error for empty command")
+	}
+	if !strings.Contains(err.Error(), "command is required") {
+		t.Errorf("error = %v, want 'command is required'", err)
 	}
 }
 
@@ -428,7 +434,10 @@ func TestBashExecuteStream_InvalidJSON(t *testing.T) {
 	_, err := ExecuteStream(context.Background(), json.RawMessage(`invalid`), nil, nil)
 
 	if err == nil {
-		t.Error("expected error for invalid JSON")
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %v, want 'parse input'", err)
 	}
 }
 
@@ -667,7 +676,10 @@ func TestExecuteStream_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	_, err := ExecuteStream(context.Background(), json.RawMessage(`{invalid json}`), nil, nil)
 	if err == nil {
-		t.Error("expected error for invalid JSON")
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %v, want 'parse input'", err)
 	}
 }
 
@@ -675,7 +687,10 @@ func TestExecuteStream_EmptyCommand(t *testing.T) {
 	t.Parallel()
 	_, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":""}`), nil, nil)
 	if err == nil {
-		t.Error("expected error for empty command")
+		t.Fatal("expected error for empty command")
+	}
+	if !strings.Contains(err.Error(), "command is required") {
+		t.Errorf("error = %v, want 'command is required'", err)
 	}
 }
 
@@ -834,7 +849,10 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 	s := NewStreamingOutput(nil)
 	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry())
 	if err == nil {
-		t.Error("expected error with non-existent shell")
+		t.Fatal("expected error with non-existent shell")
+	}
+	if !strings.Contains(err.Error(), "start command") {
+		t.Errorf("error = %v, want 'start command'", err)
 	}
 }
 

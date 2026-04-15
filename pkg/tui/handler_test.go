@@ -216,6 +216,46 @@ func TestConvertEventToMsg_ThinkingEnd_NilThinking(t *testing.T) {
 // convertEventToMsg — EventUsage with nil Usage
 // ---------------------------------------------------------------------------
 
+
+func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventThinkingDelta,
+		Thinking: &types.ThinkingEvent{Text: "reasoning..."},
+	})
+	if msg == nil {
+		t.Fatal("EventThinkingDelta with text should not return nil")
+	}
+	dm, ok := msg.(thinkingDeltaMsg)
+	if !ok {
+		t.Fatalf("expected thinkingDeltaMsg, got %T", msg)
+	}
+	if dm.Text != "reasoning..." {
+		t.Errorf("Text = %q, want %q", dm.Text, "reasoning...")
+	}
+}
+
+func TestConvertEventToMsg_ThinkingDelta_EmptyText(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventThinkingDelta,
+		Thinking: &types.ThinkingEvent{Text: ""},
+	})
+	if msg != nil {
+		t.Errorf("empty text should return nil, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_ThinkingDelta_NilThinking(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventThinkingDelta,
+	})
+	if msg != nil {
+		t.Errorf("nil Thinking should return nil, got %T", msg)
+	}
+}
+
 func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{

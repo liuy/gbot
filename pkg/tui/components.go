@@ -13,6 +13,9 @@ import (
 // dot is a bullet indicator rendered before tool calls.
 var dot = "●"
 
+// thinkingStar is the symbol for thinking blocks.
+var thinkingStar = "✦"
+
 // Pre-cached styles to avoid creating new lipgloss.Style on every render call.
 var (
 	styleDotError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
@@ -34,7 +37,8 @@ type ContentBlockType int
 const (
 	BlockText ContentBlockType = iota
 	BlockTool
-	BlockStats // TUI-only stats line embedded in assistant message
+	BlockThinking // thinking block with collapsible content
+	BlockStats    // TUI-only stats line embedded in assistant message
 )
 
 // ContentBlock represents a single block in an assistant message.
@@ -42,6 +46,7 @@ type ContentBlock struct {
 	Type     ContentBlockType
 	Text     string       // for BlockText
 	ToolCall ToolCallView // for BlockTool
+	Thinking ThinkingView // for BlockThinking
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +590,13 @@ type ToolCallView struct {
 	Elapsed time.Duration
 }
 
+// ThinkingView renders a thinking block within a message.
+type ThinkingView struct {
+	Text     string        // accumulated thinking text
+	Duration time.Duration // set on ThinkingEnd
+	Done     bool          // false during streaming, true after ThinkingEnd
+}
+
 // View renders the message with word wrapping at the given width.
 // When expand is true, tool output is shown fully instead of collapsed.
 func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, maxOutputLines int) string {
@@ -619,6 +631,9 @@ func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, m
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
 					sb.WriteString("\n")
 				}
+			case BlockThinking:
+				blk.renderThinkingBlock(&sb, availWidth, expand, toolDot, noHint)
+				sb.WriteString("\n")
 			case BlockStats:
 				sb.WriteString(blk.Text)
 				sb.WriteString("\n")
@@ -739,13 +754,19 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 			var sb strings.Builder
 			sb.WriteString(prefixLine(0, styleDim.Render(fmt.Sprintf("... %d lines truncated ...", hidden))) + "\n")
 			for i, line := range shown {
-				sb.WriteString(prefixLine(i+1, wordWrap(line, availWidth)) + "\n")
+				for j, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
+					sb.WriteString(prefixLine(i+j+1, wl) + "\n")
+				}
 			}
 			return strings.TrimRight(sb.String(), "\n")
 		}
 		var sb strings.Builder
-		for i, line := range lines {
-			sb.WriteString(prefixLine(i, wordWrap(line, availWidth)) + "\n")
+		lineIdx := 0
+		for _, line := range lines {
+			for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
+				sb.WriteString(prefixLine(lineIdx, wl) + "\n")
+				lineIdx++
+			}
 		}
 		return strings.TrimRight(sb.String(), "\n")
 	}
@@ -763,11 +784,74 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	}
 
 	var sb strings.Builder
-	for i, line := range shown {
-		sb.WriteString(prefixLine(i, wordWrap(line, availWidth)) + "\n")
+	lineIdx := 0
+	for _, line := range shown {
+		for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
+			sb.WriteString(prefixLine(lineIdx, wl) + "\n")
+			lineIdx++
+		}
 	}
 	sb.WriteString(prefixLine(len(shown), hint))
 	return sb.String()
+}
+
+
+// Pre-cached styles for thinking blocks.
+var (
+	styleThinkingStar = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	styleThinkingDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
+	styleThinkingDimGold = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
+)
+
+// renderThinkingBlock renders a thinking block using ✦ symbol.
+// During streaming (Done=false): animated star + "Thinking..." + real-time content.
+// After done (Done=true): static ✦ + duration + collapsed/expanded content.
+func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool) {
+	if blk.Type != BlockThinking {
+		return
+	}
+	tv := blk.Thinking
+
+	if !tv.Done {
+		// Streaming state: blink ✦ via toolDot mechanism (same as tool running dot)
+		var star string
+		if toolDot != "" {
+			// Visible blink frame: bright bold ✦
+			star = styleThinkingStar.Render(thinkingStar)
+		} else {
+			// Invisible blink frame: dim ✦
+			star = styleThinkingDimGold.Render(thinkingStar)
+		}
+		header := star + " " + styleThinkingDim.Render("Thinking...")
+		sb.WriteString(wordWrap(header, availWidth))
+
+		// Show streaming content (dim italic, indented by resultPrefix width)
+		if tv.Text != "" {
+			content := tv.Text
+			formatted := formatToolOutput(content, false, true, availWidth-2, noHint, 0)
+			sb.WriteString("\n" + formatted)
+		}
+		return
+	}
+
+	// Done state: static gold bold ✦ thought for X
+	star := styleThinkingStar.Render(thinkingStar)
+	var hdr strings.Builder
+	hdr.WriteString(star)
+	hdr.WriteByte(' ')
+	if tv.Duration > 0 {
+		hdr.WriteString(styleThinkingDim.Render("Thought for " + formatDuration(tv.Duration)))
+	} else {
+		hdr.WriteString(styleThinkingDim.Render("Thought"))
+	}
+	sb.WriteString(wordWrap(hdr.String(), availWidth))
+
+	// Show content with collapse/expand (same as tool blocks)
+	if tv.Text != "" {
+		content := tv.Text
+		formatted := formatToolOutput(content, false, expand, availWidth-2, noHint, 0)
+		sb.WriteString("\n" + formatted)
+	}
 }
 
 

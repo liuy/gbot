@@ -96,6 +96,11 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventThinkingStart:
 		return thinkingStartMsg{}
 
+	case types.EventThinkingDelta:
+		if evt.Thinking != nil && evt.Thinking.Text != "" {
+			return thinkingDeltaMsg{Text: evt.Thinking.Text}
+		}
+
 	case types.EventThinkingEnd:
 		if evt.Thinking != nil {
 			return thinkingEndMsg{Duration: evt.Thinking.Duration}

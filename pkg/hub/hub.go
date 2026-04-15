@@ -140,6 +140,12 @@ func logEngineEvent(event Event) {
 	case types.EventThinkingStart:
 		slog.Info("engine:thinking_start")
 
+	case types.EventThinkingDelta:
+		if event.Thinking != nil {
+			preview := truncateRunes(event.Thinking.Text, 60)
+			slog.Info("engine:thinking_delta", "text", preview)
+		}
+
 	case types.EventThinkingEnd:
 		if event.Thinking != nil {
 			slog.Info("engine:thinking_end", "duration", event.Thinking.Duration)

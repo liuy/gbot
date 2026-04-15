@@ -556,7 +556,7 @@ func TestExpandPath_TildeWithHome(t *testing.T) {
 }
 
 func TestExpandPath_TildeHomeEmpty(t *testing.T) {
-	t.Parallel()
+	// Not parallel — modifies global HOME env var, races with TestExpandPath_TildeWithHome
 	orig := os.Getenv("HOME")
 	defer func() { _ = os.Setenv("HOME", orig) }()
 	_ = os.Unsetenv("HOME")

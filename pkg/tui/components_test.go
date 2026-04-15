@@ -1938,3 +1938,275 @@ func TestFormatToolOutput_ExpandedWithMaxLines_ZeroMeansUnlimited(t *testing.T) 
 		t.Errorf("maxOutputLines=0 should show all lines without truncation, got truncated")
 	}
 }
+func TestFormatToolOutput_WordWrapPrefixAlignment(t *testing.T) {
+	t.Parallel()
+	// A single long line that wraps into multiple sub-lines.
+	// Each wrapped sub-line must have the proper prefix alignment:
+	// First sub-line: "| " prefix
+	// Continuation sub-lines: "  " (spaces matching | width)
+	longLine := strings.Repeat("hello ", 30) // ~180 chars, wraps at width=40
+	got := formatToolOutput(longLine, false, false, 40, false, 0)
+	gotLines := strings.Split(got, "\n")
+	if len(gotLines) < 2 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d: %q", len(gotLines), got)
+	}
+	// First line must start with "| "
+	if !strings.HasPrefix(gotLines[0], "| ") {
+		t.Errorf("first line = %q, want prefix '| '", gotLines[0])
+	}
+	// Continuation lines must start with spaces (matching | width = 2 spaces)
+	for i, line := range gotLines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("continuation line %d = %q, want 2-space prefix", i+1, line)
+		}
+	}
+}
+
+
+
+// ---------------------------------------------------------------------------
+// renderThinkingBlock / formatThinkingOutput
+// ---------------------------------------------------------------------------
+
+func TestRenderThinkingBlock_StreamingWithToolDot(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: "reasoning...", Done: false},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "bright-dot", false)
+	out := sb.String()
+	if !strings.Contains(out, "Thinking...") {
+		t.Errorf("streaming should show 'Thinking...', got %q", out)
+	}
+	if !strings.Contains(out, "reasoning...") {
+		t.Errorf("streaming should show content, got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_StreamingNoToolDot(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: "some thought", Done: false},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "", false)
+	out := sb.String()
+	if !strings.Contains(out, "Thinking...") {
+		t.Errorf("streaming should show 'Thinking...', got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_StreamingEmptyText(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: "", Done: false},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "dot", false)
+	out := sb.String()
+	if !strings.Contains(out, "Thinking...") {
+		t.Errorf("streaming with empty text should still show header, got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_DoneWithDuration(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: "thought content", Done: true, Duration: 2 * time.Second},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "", false)
+	out := sb.String()
+	if !strings.Contains(out, "Thought for") {
+		t.Errorf("done should show 'Thought for', got %q", out)
+	}
+	if !strings.Contains(out, "2s") {
+		t.Errorf("done should show duration, got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_DoneNoText(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: "", Done: true, Duration: 0},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "", false)
+	out := sb.String()
+	if !strings.Contains(out, "Thought") {
+		t.Errorf("done with no text should still show 'Thought', got %q", out)
+	}
+	if strings.Contains(out, "Thought for") {
+		t.Errorf("no duration should not show 'Thought for', got %q", out)
+	}
+	if strings.Contains(out, "| ") {
+		t.Errorf("done with no text should not show output prefix, got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_NonThinkingBlock(t *testing.T) {
+	t.Parallel()
+	var sb strings.Builder
+	blk := ContentBlock{Type: BlockText, Text: "hello"}
+	blk.renderThinkingBlock(&sb, 80, false, "", false)
+	if sb.String() != "" {
+		t.Errorf("non-thinking block should produce no output, got %q", sb.String())
+	}
+}
+
+func TestFormatThinkingOutput_Empty(t *testing.T) {
+	t.Parallel()
+	out := formatToolOutput("", false, false, 80, false, 0)
+	if out != "" {
+		t.Errorf("empty content should return empty, got %q", out)
+	}
+}
+
+func TestFormatThinkingOutput_FewLines(t *testing.T) {
+	t.Parallel()
+	content := "line1\nline2"
+	out := formatToolOutput(content, false, false, 80, false, 0)
+	if !strings.Contains(out, "line1") || !strings.Contains(out, "line2") {
+		t.Errorf("few lines should show all, got %q", out)
+	}
+}
+
+func TestFormatThinkingOutput_Collapsed(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("thought line %d", i)
+	}
+	content := strings.Join(lines, "\n")
+	out := formatToolOutput(content, false, false, 80, false, 0)
+	if !strings.Contains(out, "… +7 lines (ctrl+o to expand)") {
+		t.Errorf("collapsed should show hint, got %q", out)
+	}
+	if strings.Contains(out, "thought line 9") {
+		t.Errorf("collapsed should not show line 9, got output containing it")
+	}
+}
+
+func TestFormatThinkingOutput_Expanded(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("thought line %d", i)
+	}
+	content := strings.Join(lines, "\n")
+	out := formatToolOutput(content, false, true, 80, false, 0)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("expanded should not show collapse hint, got %q", out)
+	}
+	if !strings.Contains(out, "thought line 9") {
+		t.Errorf("expanded should show all lines including line 9, got %q", out)
+	}
+}
+
+func TestFormatThinkingOutput_StreamingShowsAll(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	content := strings.Join(lines, "\n")
+	out := formatToolOutput(content, false, true, 80, false, 0)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("streaming should not show collapse hint, got %q", out)
+	}
+	if !strings.Contains(out, "line 9") {
+		t.Errorf("streaming should show all lines, got %q", out)
+	}
+}
+
+func TestFormatThinkingOutput_NoHint(t *testing.T) {
+	t.Parallel()
+	lines := make([]string, 10)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	content := strings.Join(lines, "\n")
+	out := formatToolOutput(content, false, false, 80, true, 0)
+	if strings.Contains(out, "ctrl+o") {
+		t.Errorf("noHint=true should not mention ctrl+o, got %q", out)
+	}
+	if !strings.Contains(out, "… +7 lines") {
+		t.Errorf("noHint should still show line count, got %q", out)
+	}
+}
+
+func TestMessageView_WithThinkingBlock(t *testing.T) {
+	t.Parallel()
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockThinking, Thinking: ThinkingView{Text: "I need to think...", Done: true, Duration: time.Second}},
+			{Type: BlockText, Text: "Here is my answer."},
+		},
+	}
+	out := mv.View(80, false, "", false, 0)
+	if !strings.Contains(out, "Thought") {
+		t.Errorf("should contain 'Thought', got %q", out)
+	}
+	if !strings.Contains(out, "I need to think") {
+		t.Errorf("should contain thinking content, got %q", out)
+	}
+	if !strings.Contains(out, "Here is my answer") {
+		t.Errorf("should contain text content, got %q", out)
+	}
+}
+
+func TestRenderThinkingBlock_LongText_Wraps(t *testing.T) {
+	t.Parallel()
+	// Generate a long line that exceeds available width
+	longLine := strings.Repeat("word ", 40) // ~200 chars
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: longLine, Done: true, Duration: time.Second},
+	}
+	blk.renderThinkingBlock(&sb, 40, false, "", false)
+	out := sb.String()
+	// Output should have multiple lines (word-wrapped), not one giant line
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// First line is header "Thought for Xs", rest should be wrapped content
+	// At width 40 with prefix "| " (2 chars), content gets ~36 chars per line
+	// 200 chars should wrap to multiple lines
+	contentLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "| ") || strings.Contains(line, "word") {
+			contentLines++
+		}
+	}
+	if contentLines < 3 {
+		t.Errorf("long thinking text should wrap into multiple lines, got %d content lines:\n%s", contentLines, out)
+	}
+}
+
+func TestRenderThinkingBlock_StreamingLongText_Wraps(t *testing.T) {
+	t.Parallel()
+	longLine := strings.Repeat("word ", 40)
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{Text: longLine, Done: false},
+	}
+	blk.renderThinkingBlock(&sb, 40, false, "dot", false)
+	out := sb.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	contentLines := 0
+	for _, line := range lines {
+		if strings.Contains(line, "word") {
+			contentLines++
+		}
+	}
+	if contentLines < 3 {
+		t.Errorf("streaming long text should wrap into multiple lines, got %d content lines:\n%s", contentLines, out)
+	}
+}

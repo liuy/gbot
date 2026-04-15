@@ -80,6 +80,11 @@ type thinkingEndMsg struct {
 	Duration time.Duration
 }
 
+// thinkingDeltaMsg carries a chunk of thinking text from the engine.
+type thinkingDeltaMsg struct {
+	Text string
+}
+
 // submitMsg is sent when the user presses Enter to submit input.
 type submitMsg struct {
 	Text string

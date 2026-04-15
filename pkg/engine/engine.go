@@ -403,8 +403,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						},
 					})
 				case "thinking_delta":
-					// Accumulate thinking text but don't emit to TUI
 					currentText.WriteString(event.Delta.Thinking)
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventThinkingDelta,
+						Thinking: &types.ThinkingEvent{
+							Text: event.Delta.Thinking,
+						},
+					})
 				}
 			}
 

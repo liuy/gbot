@@ -35,6 +35,10 @@ type ReplState struct {
 
 	// Cancellation
 	cancelFunc context.CancelFunc
+
+	// Tracks the index of the current thinking block in lastMsg().Blocks
+	// so deltas can append to it. -1 when no thinking block is active.
+	activeThinkingIdx int
 }
 
 // NewReplState creates a fresh REPL state.
@@ -44,6 +48,7 @@ func NewReplState() *ReplState {
 		pendingTool:      make(map[string]*ToolCallView),
 		pendingInput:     make(map[string]string),
 		pendingToolStart: make(map[string]time.Time),
+		activeThinkingIdx: -1,
 	}
 }
 
@@ -199,6 +204,54 @@ func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 		}
 	}
 }
+
+// PendingThinkingStarted appends a new thinking block to the last message.
+func (s *ReplState) PendingThinkingStarted() {
+	s.activeThinkingIdx = -1
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	m.Blocks = append(m.Blocks, ContentBlock{
+		Type:     BlockThinking,
+		Thinking: ThinkingView{Done: false},
+	})
+	s.activeThinkingIdx = len(m.Blocks) - 1
+}
+
+// PendingThinkingDelta appends text to the active thinking block.
+func (s *ReplState) PendingThinkingDelta(text string) {
+	if s.activeThinkingIdx < 0 {
+		return
+	}
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	if s.activeThinkingIdx >= len(m.Blocks) {
+		return
+	}
+	m.Blocks[s.activeThinkingIdx].Thinking.Text += text
+}
+
+// PendingThinkingDone marks the active thinking block as done.
+func (s *ReplState) PendingThinkingDone(duration time.Duration) {
+	if s.activeThinkingIdx < 0 {
+		return
+	}
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	if s.activeThinkingIdx >= len(m.Blocks) {
+		return
+	}
+	blk := &m.Blocks[s.activeThinkingIdx].Thinking
+	blk.Done = true
+	blk.Duration = duration
+	s.activeThinkingIdx = -1
+}
+
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
 func (s *ReplState) FinishStream(err error) {
@@ -313,11 +366,20 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case thinkingStartMsg:
 		a.thinkingActive = true
 		a.thinkingStart = time.Now()
+		a.markViewportDirty()
+		a.repl.PendingThinkingStarted()
+		return true, a.readEvents()
+
+	case thinkingDeltaMsg:
+		a.markViewportDirty()
+		a.repl.PendingThinkingDelta(m.Text)
 		return true, a.readEvents()
 
 	case thinkingEndMsg:
 		a.thinkingActive = false
 		a.thinkingDuration = m.Duration
+		a.markViewportDirty()
+		a.repl.PendingThinkingDone(m.Duration)
 		return true, a.readEvents()
 
 	case errMsg:

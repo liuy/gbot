@@ -1116,6 +1116,187 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 	}
 }
 
+
+// ---------------------------------------------------------------------------
+// PendingThinking — ReplState methods
+// ---------------------------------------------------------------------------
+
+func TestReplState_PendingThinkingStarted(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery(nil)
+	s.PendingThinkingStarted()
+
+	m := s.lastMsg()
+	if m == nil {
+		t.Fatal("lastMsg should not be nil")
+	}
+	if len(m.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(m.Blocks))
+	}
+	blk := m.Blocks[0]
+	if blk.Type != BlockThinking {
+		t.Errorf("block type = %v, want BlockThinking", blk.Type)
+	}
+	if blk.Thinking.Done {
+		t.Error("thinking block should not be done on start")
+	}
+	if s.activeThinkingIdx != 0 {
+		t.Errorf("activeThinkingIdx = %d, want 0", s.activeThinkingIdx)
+	}
+}
+
+func TestReplState_PendingThinkingStarted_NilLastMsg(t *testing.T) {
+	s := NewReplState()
+	s.PendingThinkingStarted()
+	if s.activeThinkingIdx != -1 {
+		t.Errorf("activeThinkingIdx = %d, want -1 when no messages", s.activeThinkingIdx)
+	}
+}
+
+func TestReplState_PendingThinkingDelta(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery(nil)
+	s.PendingThinkingStarted()
+	s.PendingThinkingDelta("hello ")
+	s.PendingThinkingDelta("world")
+
+	m := s.lastMsg()
+	blk := m.Blocks[s.activeThinkingIdx]
+	if blk.Thinking.Text != "hello world" {
+		t.Errorf("thinking text = %q, want %q", blk.Thinking.Text, "hello world")
+	}
+}
+
+func TestReplState_PendingThinkingDelta_NoActiveBlock(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery(nil)
+	// No thinking block started — activeThinkingIdx is -1
+	s.PendingThinkingDelta("should be ignored")
+	m := s.lastMsg()
+	for _, blk := range m.Blocks {
+		if blk.Type == BlockThinking {
+			t.Error("should not have a thinking block")
+		}
+	}
+}
+
+func TestReplState_PendingThinkingDelta_NilLastMsg(t *testing.T) {
+	s := NewReplState()
+	// No messages at all
+	s.PendingThinkingDelta("ignored")
+	// Should not panic
+}
+
+func TestReplState_PendingThinkingDone(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery(nil)
+	s.PendingThinkingStarted()
+	s.PendingThinkingDelta("some thought")
+	s.PendingThinkingDone(2500 * time.Millisecond)
+
+	m := s.lastMsg()
+	blk := m.Blocks[0]
+	if !blk.Thinking.Done {
+		t.Error("thinking block should be done")
+	}
+	if blk.Thinking.Duration != 2500*time.Millisecond {
+		t.Errorf("duration = %v, want 2500ms", blk.Thinking.Duration)
+	}
+	if blk.Thinking.Text != "some thought" {
+		t.Errorf("text = %q, want %q", blk.Thinking.Text, "some thought")
+	}
+	if s.activeThinkingIdx != -1 {
+		t.Errorf("activeThinkingIdx = %d, want -1 after done", s.activeThinkingIdx)
+	}
+}
+
+func TestReplState_PendingThinkingDone_NoActiveBlock(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery(nil)
+	// No thinking block started
+	s.PendingThinkingDone(time.Second)
+	// Should not panic, activeThinkingIdx should stay -1
+}
+
+func TestReplState_PendingThinkingDone_NilLastMsg(t *testing.T) {
+	s := NewReplState()
+	s.PendingThinkingDone(time.Second)
+	// Should not panic
+}
+
+func TestApp_UpdateRepl_ThinkingDelta(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// Start thinking first
+	app.updateRepl(thinkingStartMsg{})
+
+	// Send delta
+	handled, cmd := app.updateRepl(thinkingDeltaMsg{Text: "reasoning about..."})
+	if !handled {
+		t.Error("thinkingDeltaMsg should be handled")
+	}
+	if cmd == nil {
+		t.Error("thinkingDeltaMsg should return a readEvents cmd")
+	}
+
+	// Verify text was accumulated
+	m := app.repl.lastMsg()
+	found := false
+	for _, blk := range m.Blocks {
+		if blk.Type == BlockThinking && blk.Thinking.Text == "reasoning about..." {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("thinking block should contain delta text")
+	}
+}
+
+func TestApp_UpdateRepl_ThinkingStartCreatesBlock(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	app.updateRepl(thinkingStartMsg{})
+
+	m := app.repl.lastMsg()
+	found := false
+	for _, blk := range m.Blocks {
+		if blk.Type == BlockThinking {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("thinkingStartMsg should create a BlockThinking")
+	}
+}
+
+func TestApp_UpdateRepl_ThinkingEndMarksDone(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	app.updateRepl(thinkingStartMsg{})
+	app.updateRepl(thinkingDeltaMsg{Text: "thinking text"})
+	app.updateRepl(thinkingEndMsg{Duration: 2 * time.Second})
+
+	m := app.repl.lastMsg()
+	for _, blk := range m.Blocks {
+		if blk.Type == BlockThinking {
+			if !blk.Thinking.Done {
+				t.Error("thinking block should be done after thinkingEndMsg")
+			}
+			if blk.Thinking.Duration != 2*time.Second {
+				t.Errorf("duration = %v, want 2s", blk.Thinking.Duration)
+			}
+			return
+		}
+	}
+	t.Error("no BlockThinking found")
+}
+
 // ---------------------------------------------------------------------------
 // updateRepl — errMsg resets state
 // ---------------------------------------------------------------------------

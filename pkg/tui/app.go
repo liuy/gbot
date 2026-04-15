@@ -146,7 +146,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// All REPL messages are handled by repl.go
 	case textDeltaMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
-		thinkingStartMsg, thinkingEndMsg,
+		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {

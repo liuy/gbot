@@ -198,10 +198,13 @@ func TestResetSocketState(t *testing.T) {
 func TestKillTmuxServer(t *testing.T) {
 	resetSocketState()
 	err := killTmuxServer()
-	// No error expected if tmux not running, or specific error if it fails
 	if err != nil {
-		t.Logf("killTmuxServer() error: %v (may be expected if tmux not running)", err)
+		// killTmuxServer returns an error only if kill-server fails
+		if !strings.Contains(err.Error(), "kill-server") {
+			t.Errorf("killTmuxServer() error = %v, want kill-server error", err)
+		}
 	}
+	// No error is also valid (tmux not running or kill succeeded)
 }
 
 func TestExecTmux(t *testing.T) {
@@ -559,10 +562,16 @@ func TestExecTmux_OverrideNotMatched(t *testing.T) {
 
 	result := execTmux([]string{"list-commands"})
 	// Override returned false, so real tmux is used.
-	// Verify result is a valid tmuxResult (not zero-valued junk).
-	if result.Code == 0 && result.Stdout == "" {
-		t.Log("execTmux with unmatched override: code 0, empty stdout (tmux may not be available)")
-	}}
+	// Verify we got a real result (not the zero-value from the override).
+	if result.Code == 0 {
+		if result.Stdout == "" {
+			t.Skip("tmux not available — override fallback exercised but no output to verify")
+		}
+		if !strings.Contains(result.Stdout, "list-commands") {
+			t.Errorf("stdout should mention list-commands, got: %q", result.Stdout)
+		}
+	}
+}
 
 
 // --- doInitialize fallback paths via execTmuxOverride ---

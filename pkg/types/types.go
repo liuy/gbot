@@ -207,6 +207,7 @@ const (
 	// Thinking
 	EventThinkingStart QueryEventType = "thinking_start"
 	EventThinkingEnd   QueryEventType = "thinking_end"
+	EventThinkingDelta QueryEventType = "thinking_delta"
 
 	// Tool call lifecycle: start → param_delta → output_delta → end
 	EventToolStart     QueryEventType = "tool_start"
@@ -243,6 +244,7 @@ type UsageEvent struct {
 // ThinkingEvent carries thinking state information.
 type ThinkingEvent struct {
 	Duration time.Duration `json:"duration,omitempty"` // time spent thinking (set on ThinkingEnd)
+	Text     string        `json:"text,omitempty"`     // thinking text delta (set on ThinkingDelta)
 }
 
 // PartialInputEvent carries incremental input for a pending tool call.
