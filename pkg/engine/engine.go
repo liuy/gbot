@@ -201,12 +201,14 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 			// Stage 16: Error handling
 			action := e.handleStreamError(err)
 			if !action.Continue {
+				e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
 				return QueryResult{
 					Messages: e.messages,
 					Terminal: e.classifyTerminalError(err),
 					Error:    err,
 				}
 			}
+			e.logger.Warn("callLLM error (retryable)", "error", err, "turn", e.turnCount)
 			continue
 		}
 
@@ -313,6 +315,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 	streamCh, err := e.provider.Stream(ctx, req)
 	if err != nil {
+		e.logger.Error("stream request failed", "error", err)
 		return nil, fmt.Errorf("stream request: %w", err)
 	}
 
@@ -327,6 +330,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	var usage types.Usage
 	var thinkingStart time.Time
 	hasContent := false
+	streamComplete := false
 
 	for event := range streamCh {
 		select {
@@ -336,6 +340,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 		}
 
 		if event.Error != nil {
+			e.logger.Error("stream event error", "error", event.Error)
 			return nil, event.Error
 		}
 
@@ -454,6 +459,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 		case "message_stop":
 			// Done
+			streamComplete = true
 
 		case "ping":
 			// Keepalive
@@ -462,6 +468,12 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 	if hasContent && len(contentBlocks) == 0 {
 		contentBlocks = append(contentBlocks, types.NewTextBlock(currentText.String()))
+	}
+
+	// Detect interrupted stream: content was received but stream never completed.
+	if hasContent && !streamComplete {
+		e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
+		return nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
 	}
 
 	return &types.Message{
