@@ -125,11 +125,11 @@ func logEngineEvent(event Event) {
 			slog.Info("engine:usage", "inputTokens", event.Usage.InputTokens, "outputTokens", event.Usage.OutputTokens)
 		}
 
-	case types.EventStreamStart:
-		slog.Info("engine:stream_start")
+	case types.EventTurnStart:
+		slog.Info("engine:turn_start")
 
-	case types.EventStreamEnd:
-		slog.Info("engine:stream_end")
+	case types.EventTurnEnd:
+		slog.Info("engine:turn_end")
 
 	case types.EventQueryEnd:
 		slog.Info("engine:query_end")

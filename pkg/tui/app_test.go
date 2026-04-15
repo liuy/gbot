@@ -1008,16 +1008,16 @@ func TestApp_ReadEvents_ResultChClosed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — streamStartMsg, streamMessageMsg, toolEndMsg
+// updateRepl — turnStartMsg, streamMessageMsg, toolEndMsg
 // ---------------------------------------------------------------------------
 
-func TestApp_UpdateRepl_StreamStart(t *testing.T) {
+func TestApp_UpdateRepl_TurnStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
-	_, cmd := app.updateRepl(streamStartMsg{})
+	_, cmd := app.updateRepl(turnStartMsg{})
 	if cmd == nil {
-		t.Error("streamStartMsg should return a readEvents cmd")
+		t.Error("turnStartMsg should return a readEvents cmd")
 	}
 }
 
@@ -1745,7 +1745,7 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	msg := cmd()
 	// Should be either textDeltaMsg or queryEndMsg
 	switch msg.(type) {
-	case textDeltaMsg, queryEndMsg, streamStartMsg, streamMessageMsg:
+	case textDeltaMsg, queryEndMsg, turnStartMsg, streamMessageMsg:
 		// ok
 	default:
 		t.Errorf("expected textDeltaMsg or queryEndMsg, got %T", msg)
@@ -2628,7 +2628,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	msg := cmd()
 	// Could be queryEndMsg or textDeltaMsg depending on timing
 	switch msg.(type) {
-	case queryEndMsg, textDeltaMsg, streamStartMsg, streamMessageMsg:
+	case queryEndMsg, textDeltaMsg, turnStartMsg, streamMessageMsg:
 		// ok
 	default:
 		t.Errorf("expected queryEndMsg or textDeltaMsg, got %T", msg)

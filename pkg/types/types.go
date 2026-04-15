@@ -200,9 +200,9 @@ const (
 	EventQueryStart    QueryEventType = "query_start"
 	EventQueryEnd      QueryEventType = "query_end"
 
-	// Per-round LLM stream
-	EventStreamStart   QueryEventType = "stream_start"
-	EventStreamEnd     QueryEventType = "stream_end"
+	// Per-round LLM turn
+	EventTurnStart     QueryEventType = "turn_start"
+	EventTurnEnd       QueryEventType = "turn_end"
 
 	// Thinking
 	EventThinkingStart QueryEventType = "thinking_start"

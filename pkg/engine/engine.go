@@ -194,7 +194,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		// Stage 14-15: API call streaming loop
-		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamStart})
+		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnStart})
 
 		resp, err := e.callLLM(ctx, systemPrompt, eventCh)
 		if err != nil {
@@ -230,7 +230,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		}
 
 		if !hasToolUse {
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
@@ -250,7 +250,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		})
 
 		// End of this streaming round
-		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
+		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 
 		// Stage 25-26: Turn counting and state transition
 		e.turnCount++
@@ -258,7 +258,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		if e.tokenBudget <= 0 {
 			e.logger.Warn("token budget exhausted")
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventStreamEnd})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,

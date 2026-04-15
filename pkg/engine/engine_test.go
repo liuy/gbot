@@ -998,11 +998,11 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 
 	eventCh, resultCh := eng.Query(ctx, "test", nil)
 
-	var streamStarts, completes int
+	var turnStarts, completes int
 	for evt := range eventCh {
 		switch evt.Type {
-		case types.EventStreamStart:
-			streamStarts++
+		case types.EventTurnStart:
+			turnStarts++
 		case types.EventQueryEnd:
 			completes++
 		}
@@ -1012,8 +1012,8 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if streamStarts != 1 {
-		t.Errorf("expected 1 stream start, got %d", streamStarts)
+	if turnStarts != 1 {
+		t.Errorf("expected 1 turn start, got %d", turnStarts)
 	}
 	if completes != 1 {
 		t.Errorf("expected 1 complete, got %d", completes)
@@ -1611,11 +1611,11 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	hubEvents := handler.Events()
 
 	// Verify we got the key event types
-	var gotStreamStart, gotToolUseStart, gotToolResult, gotTextDelta, gotComplete bool
+	var gotTurnStart, gotToolUseStart, gotToolResult, gotTextDelta, gotComplete bool
 	for _, evt := range hubEvents {
 		switch evt.Type {
-		case types.EventStreamStart:
-			gotStreamStart = true
+		case types.EventTurnStart:
+			gotTurnStart = true
 		case types.EventToolStart:
 			gotToolUseStart = true
 		case types.EventToolEnd:
@@ -1627,8 +1627,8 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 		}
 	}
 
-	if !gotStreamStart {
-		t.Error("Hub handler did not receive EventStreamStart")
+	if !gotTurnStart {
+		t.Error("Hub handler did not receive EventTurnStart")
 	}
 	if !gotToolUseStart {
 		t.Error("Hub handler did not receive EventToolStart")
@@ -1656,10 +1656,10 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 }
 
 
-// TestQuery_StreamEndAfterToolEnd verifies that stream_end comes AFTER tool_end
-// within each round. Previous bug: stream_end was emitted right after callLLM()
-// returned, before tool execution, making the ordering stream_end→tool_end.
-func TestQuery_StreamEndAfterToolEnd(t *testing.T) {
+// TestQuery_TurnEndAfterToolEnd verifies that turn_end comes AFTER tool_end
+// within each round. Previous bug: turn_end was emitted right after callLLM()
+// returned, before tool execution, making the ordering turn_end→tool_end.
+func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
@@ -1696,19 +1696,19 @@ func TestQuery_StreamEndAfterToolEnd(t *testing.T) {
 
 	events := handler.Events()
 
-	// Verify: no tool_end appears AFTER stream_end and BEFORE the next stream_start.
-	// Bug was: stream_end emitted before tool execution, producing stream_end→tool_end.
+	// Verify: no tool_end appears AFTER turn_end and BEFORE the next turn_start.
+	// Bug was: turn_end emitted before tool execution, producing turn_end→tool_end.
 	for i, evt := range events {
-		if evt.Type != types.EventStreamEnd {
+		if evt.Type != types.EventTurnEnd {
 			continue
 		}
-		// Look forward until next stream_start or end of events.
+		// Look forward until next turn_start or end of events.
 		for j := i + 1; j < len(events); j++ {
-			if events[j].Type == types.EventStreamStart || events[j].Type == types.EventQueryEnd {
+			if events[j].Type == types.EventTurnStart || events[j].Type == types.EventQueryEnd {
 				break // reached next round boundary
 			}
 			if events[j].Type == types.EventToolEnd {
-				t.Errorf("stream_end at index %d should come AFTER tool_end at index %d, not before", i, j)
+				t.Errorf("turn_end at index %d should come AFTER tool_end at index %d, not before", i, j)
 			}
 		}
 	}
@@ -1765,19 +1765,19 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 	}
 
 	// Verify key events received through the interface
-	var gotStreamStart, gotTextDelta, gotComplete bool
+	var gotTurnStart, gotTextDelta, gotComplete bool
 	for _, evt := range events {
 		switch evt.Type {
-		case types.EventStreamStart:
-			gotStreamStart = true
+		case types.EventTurnStart:
+			gotTurnStart = true
 		case types.EventTextDelta:
 			gotTextDelta = true
 		case types.EventQueryEnd:
 			gotComplete = true
 		}
 	}
-	if !gotStreamStart {
-		t.Error("dispatcher did not receive EventStreamStart")
+	if !gotTurnStart {
+		t.Error("dispatcher did not receive EventTurnStart")
 	}
 	if !gotTextDelta {
 		t.Error("dispatcher did not receive EventTextDelta")

@@ -244,7 +244,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 
-	case streamStartMsg:
+	case turnStartMsg:
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
 		return true, a.readEvents()

@@ -40,18 +40,18 @@ func TestTUIHandler_DroppedCounter_WhenBufferFull(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// P2-3: EventStreamStart and EventQueryStart handling in convertEventToMsg
+// P2-3: EventTurnStart and EventQueryStart handling in convertEventToMsg
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_StreamStart(t *testing.T) {
 	h := NewTUIHandler()
-	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventStreamStart})
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventTurnStart})
 	if msg == nil {
-		t.Fatal("EventStreamStart should not return nil")
+		t.Fatal("EventTurnStart should not return nil")
 	}
-	_, ok := msg.(streamStartMsg)
+	_, ok := msg.(turnStartMsg)
 	if !ok {
-		t.Errorf("expected streamStartMsg, got %T", msg)
+		t.Errorf("expected turnStartMsg, got %T", msg)
 	}
 }
 

@@ -186,7 +186,7 @@ func TestAllEventTypes(t *testing.T) {
 	h.Subscribe(m)
 
 	events := []Event{
-		{Type: types.EventStreamStart},
+		{Type: types.EventTurnStart},
 		{Type: types.EventTextDelta, Text: "delta"},
 		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "1", Name: "bash"}},
 		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1"}},

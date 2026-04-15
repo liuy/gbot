@@ -414,8 +414,8 @@ func TestQueryEventTypeConstants(t *testing.T) {
 	}{
 		{"query_start", types.EventQueryStart, "query_start"},
 		{"query_end", types.EventQueryEnd, "query_end"},
-		{"stream_start", types.EventStreamStart, "stream_start"},
-		{"stream_end", types.EventStreamEnd, "stream_end"},
+		{"turn_start", types.EventTurnStart, "turn_start"},
+		{"turn_end", types.EventTurnEnd, "turn_end"},
 		{"text_delta", types.EventTextDelta, "text_delta"},
 		{"tool_start", types.EventToolStart, "tool_start"},
 		{"tool_input", types.EventToolInput, "tool_input"},

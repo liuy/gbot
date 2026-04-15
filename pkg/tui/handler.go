@@ -50,8 +50,8 @@ func (h *TUIHandler) Dropped() int64 {
 // Returns nil for unhandled event types.
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	switch evt.Type {
-	case types.EventStreamStart:
-		return streamStartMsg{}
+	case types.EventTurnStart:
+		return turnStartMsg{}
 
 	case types.EventTextDelta:
 		return textDeltaMsg{Text: evt.Text}
@@ -126,7 +126,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		}
 		return nil
 
-	case types.EventStreamEnd:
+	case types.EventTurnEnd:
 		// Per-round end; TUI doesn't need to act on this currently.
 		return nil
 	}
