@@ -88,10 +88,7 @@ func (h *Hub) Close() {
 func logEngineEvent(event Event) {
 	switch event.Type {
 	case types.EventTextDelta:
-		preview := event.Text
-		if len(preview) > 80 {
-			preview = preview[:80] + "..."
-		}
+		preview := truncateRunes(event.Text, 60)
 		slog.Info("engine:text_delta", "text", preview)
 
 	case types.EventToolStart:
@@ -155,4 +152,13 @@ func logEngineEvent(event Event) {
 	default:
 		slog.Info("engine:unknown", "type", event.Type)
 	}
+}
+
+// truncateRunes truncates s to at most maxRunes runes, appending "..." if truncated.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
