@@ -104,10 +104,10 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventQueryEnd:
 		return queryEndMsg{}
 
-	case types.EventToolInput:
+	case types.EventToolParamDelta:
 		// LLM streaming JSON input delta
 		if evt.PartialInput != nil {
-			return toolInputMsg{
+			return toolParamDeltaMsg{
 				ID:      evt.PartialInput.ID,
 				Delta:   evt.PartialInput.Delta,
 				Summary: evt.PartialInput.Summary,
@@ -115,10 +115,10 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		}
 		return nil
 
-	case types.EventToolDelta:
+	case types.EventToolOutputDelta:
 		// Tool streaming output lines during execution
 		if evt.ToolResult != nil && evt.ToolResult.DisplayOutput != "" {
-			return toolDeltaMsg{
+			return toolOutputDeltaMsg{
 				ToolUseID:     evt.ToolResult.ToolUseID,
 				DisplayOutput: evt.ToolResult.DisplayOutput,
 				Timing:        evt.ToolResult.Timing,

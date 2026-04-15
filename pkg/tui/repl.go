@@ -259,13 +259,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
 		return true, a.readEvents()
 
-	case toolInputMsg:
+	case toolParamDeltaMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
 		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
 
-	case toolDeltaMsg:
+	case toolOutputDeltaMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
 		return true, a.readEvents()

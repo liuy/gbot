@@ -789,7 +789,7 @@ func TestApp_View_StreamingNoProgressStart(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — toolInputMsg
+// updateRepl — toolParamDeltaMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamToolDelta(t *testing.T) {
@@ -798,7 +798,7 @@ func TestApp_Update_StreamToolDelta(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 
-	model, _ := app.Update(toolInputMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
+	model, _ := app.Update(toolParamDeltaMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
 	a := model.(*App)
 	tcv := a.repl.pendingTool["t1"]
 	if tcv == nil {
@@ -816,7 +816,7 @@ func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Write", "", `{}`)
 
 	delta := `{"content":"package main\nfunc main() {}"}`
-	app.Update(toolInputMsg{ID: "t1", Delta: delta, Summary: "main.go"})
+	app.Update(toolParamDeltaMsg{ID: "t1", Delta: delta, Summary: "main.go"})
 
 	if app.responseCharCount != len(delta) {
 		t.Errorf("responseCharCount = %d, want %d (tool delta chars not counted)", app.responseCharCount, len(delta))
@@ -1696,7 +1696,7 @@ func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 
 func TestApp_EngineEventToMsg_Unknown(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolInput,
+		Type: types.EventToolParamDelta,
 	})
 	if msg != nil {
 		t.Errorf("expected nil for unknown event type, got %T", msg)
@@ -2751,7 +2751,7 @@ func TestPrettyJSON_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PendingToolOutput — toolDeltaMsg handler in App.Update
+// PendingToolOutput — toolOutputDeltaMsg handler in App.Update
 // Source: Phase 2 — streaming tool output display
 // ---------------------------------------------------------------------------
 
@@ -2761,7 +2761,7 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 	app.repl.StartQuery(nil)
 	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
 
-	model, _ := app.Update(toolDeltaMsg{
+	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "stdout line\n",
 		Timing:        200 * time.Millisecond,
@@ -2772,7 +2772,7 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 		t.Fatal("pendingTool should have t1")
 	}
 	if !tcv.Done {
-		t.Error("Done should be true after toolDeltaMsg")
+		t.Error("Done should be true after toolOutputDeltaMsg")
 	}
 	if tcv.Output != "stdout line\n" {
 		t.Errorf("Output = %q, want %q", tcv.Output, "stdout line\n")
@@ -2784,7 +2784,7 @@ func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
 	// Sending output for a non-existent tool should not panic
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
-	model, _ := app.Update(toolDeltaMsg{
+	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "nonexistent",
 		DisplayOutput: "output",
 		Timing:        0,
@@ -2803,7 +2803,7 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	// Set pendingToolStart BEFORE calling Update so it's available synchronously
 	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond)
 
-	model, _ := app.Update(toolDeltaMsg{
+	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
 		DisplayOutput: "output",
 		Timing:        50 * time.Millisecond,

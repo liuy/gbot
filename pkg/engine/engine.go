@@ -395,7 +395,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					accumulated := currentToolInput.String()
 					summary := e.computeSummary(currentToolName, json.RawMessage(accumulated))
 					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolInput,
+						Type: types.EventToolParamDelta,
 						PartialInput: &types.PartialInputEvent{
 							ID:      currentToolID,
 							Delta:   event.Delta.PartialJSON,
@@ -494,12 +494,12 @@ func (e *Engine) executeTools(ctx context.Context, toolUseBlocks []types.Content
 			var lastDisplayOutput string
 			result, err := streamer.ExecuteStream(ctx, block.Input, nil, func(u tool.ProgressUpdate) {
 				// Emit streaming output to TUI as each progress update arrives.
-				// Source: StreamingToolExecutor.ts:onProgress callback → EventToolDelta.
+				// Source: StreamingToolExecutor.ts:onProgress callback → EventToolOutputDelta.
 				if len(u.Lines) > 0 {
 					display := strings.Join(u.Lines, "\n")
 					lastDisplayOutput = display
 					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolDelta,
+						Type: types.EventToolOutputDelta,
 						ToolResult: &types.ToolResultEvent{
 							ToolUseID:     block.ID,
 							DisplayOutput: display,

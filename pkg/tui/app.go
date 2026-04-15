@@ -144,7 +144,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.handleMouse(m)
 
 	// All REPL messages are handled by repl.go
-	case textDeltaMsg, toolStartMsg, toolInputMsg, toolDeltaMsg, toolEndMsg,
+	case textDeltaMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingEndMsg,
 		errMsg, submitMsg, spinnerTickMsg:

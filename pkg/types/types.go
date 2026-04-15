@@ -208,10 +208,10 @@ const (
 	EventThinkingStart QueryEventType = "thinking_start"
 	EventThinkingEnd   QueryEventType = "thinking_end"
 
-	// Tool call lifecycle: start → input → delta → end
+	// Tool call lifecycle: start → param_delta → output_delta → end
 	EventToolStart     QueryEventType = "tool_start"
-	EventToolInput     QueryEventType = "tool_input"
-	EventToolDelta     QueryEventType = "tool_delta"
+	EventToolParamDelta     QueryEventType = "tool_param_delta"
+	EventToolOutputDelta     QueryEventType = "tool_output_delta"
 	EventToolEnd       QueryEventType = "tool_end"
 
 	// Text and usage

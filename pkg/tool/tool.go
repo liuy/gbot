@@ -141,7 +141,7 @@ func ApplyContextModifier(result *ToolResult, tctx *types.ToolUseContext, isConc
 // ---------------------------------------------------------------------------
 
 // ProgressUpdate is sent during streaming tool execution.
-// Engine emits it as EventToolInput for TUI display.
+// Engine emits it as EventToolParamDelta for TUI display.
 type ProgressUpdate struct {
 	Lines      []string `json:"lines"`
 	TotalLines int      `json:"total_lines"`

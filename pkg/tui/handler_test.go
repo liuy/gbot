@@ -96,8 +96,8 @@ func TestConvertEventToMsg_EventQueryStart_NilMessage(t *testing.T) {
 
 func TestTUIHandler_Handle_UnhandledEvent(t *testing.T) {
 	h := NewTUIHandler()
-	// EventToolInput with nil PartialInput returns nil → Handle does nothing
-	h.Handle(types.QueryEvent{Type: types.EventToolInput, PartialInput: nil})
+	// EventToolParamDelta with nil PartialInput returns nil → Handle does nothing
+	h.Handle(types.QueryEvent{Type: types.EventToolParamDelta, PartialInput: nil})
 	if h.Dropped() != 0 {
 		t.Error("nil msg should not be sent to channel")
 	}
@@ -131,22 +131,22 @@ func TestConvertEventToMsg_ToolUseStart_NilToolUse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// convertEventToMsg — EventToolInput with PartialInput
+// convertEventToMsg — EventToolParamDelta with PartialInput
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_ToolUseDelta_WithPartialInput(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolInput,
+		Type: types.EventToolParamDelta,
 		PartialInput: &types.PartialInputEvent{
 			ID:      "t1",
 			Delta:   `{"file":"a.go"}`,
 			Summary: "a.go",
 		},
 	})
-	tdm, ok := msg.(toolInputMsg)
+	tdm, ok := msg.(toolParamDeltaMsg)
 	if !ok {
-		t.Fatalf("expected toolInputMsg, got %T", msg)
+		t.Fatalf("expected toolParamDeltaMsg, got %T", msg)
 	}
 	if tdm.ID != "t1" {
 		t.Errorf("ID = %q, want %q", tdm.ID, "t1")
@@ -159,7 +159,7 @@ func TestConvertEventToMsg_ToolUseDelta_WithPartialInput(t *testing.T) {
 func TestConvertEventToMsg_ToolUseDelta_NilPartialInput(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:         types.EventToolInput,
+		Type:         types.EventToolParamDelta,
 		PartialInput: nil,
 	})
 	if msg != nil {
@@ -228,23 +228,23 @@ func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// convertEventToMsg — EventToolInput with ToolResult.DisplayOutput (streaming output)
+// convertEventToMsg — EventToolParamDelta with ToolResult.DisplayOutput (streaming output)
 // Source: Phase 2 TS vs Go gap analysis — TUI event routing
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolDelta,
+		Type: types.EventToolOutputDelta,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "t1",
 			DisplayOutput: "line1\nline2",
 			Timing:        500 * time.Millisecond,
 		},
 	})
-	m, ok := msg.(toolDeltaMsg)
+	m, ok := msg.(toolOutputDeltaMsg)
 	if !ok {
-		t.Fatalf("expected toolDeltaMsg, got %T", msg)
+		t.Fatalf("expected toolOutputDeltaMsg, got %T", msg)
 	}
 	if m.ToolUseID != "t1" {
 		t.Errorf("ToolUseID = %q, want t1", m.ToolUseID)
@@ -261,7 +261,7 @@ func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
 	h := NewTUIHandler()
 	// DisplayOutput is empty string — should return nil (no output to show)
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolDelta,
+		Type: types.EventToolOutputDelta,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     "t1",
 			DisplayOutput: "",
@@ -277,7 +277,7 @@ func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
 	h := NewTUIHandler()
 	// ToolResult is nil — should return nil (no data to route)
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:       types.EventToolInput,
+		Type:       types.EventToolParamDelta,
 		ToolResult: nil,
 	})
 	if msg != nil {

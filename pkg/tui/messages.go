@@ -35,17 +35,17 @@ type toolStartMsg struct {
 	Input   string // pretty-printed JSON
 }
 
-// toolInputMsg carries incremental input updates for a pending tool.
+// toolParamDeltaMsg carries incremental input updates for a pending tool.
 // The TUI uses this to update the display name once input is available.
-type toolInputMsg struct {
+type toolParamDeltaMsg struct {
 	ID      string // tool use ID
 	Delta   string // partial JSON delta
 	Summary string // pre-computed summary from engine
 }
 
-// toolDeltaMsg carries streaming output lines from a tool in progress.
+// toolOutputDeltaMsg carries streaming output lines from a tool in progress.
 // Source: BashTool streaming via ExecuteStream onProgress callback.
-type toolDeltaMsg struct {
+type toolOutputDeltaMsg struct {
 	ToolUseID     string        // tool use ID
 	DisplayOutput string        // accumulated output lines
 	Timing        time.Duration // elapsed time since tool start

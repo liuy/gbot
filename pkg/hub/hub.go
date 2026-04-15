@@ -99,19 +99,19 @@ func logEngineEvent(event Event) {
 			slog.Info("engine:tool_start", "id", event.ToolUse.ID, "name", event.ToolUse.Name, "summary", event.ToolUse.Summary)
 		}
 
-	case types.EventToolInput:
+	case types.EventToolParamDelta:
 		if event.PartialInput != nil {
 			preview := event.PartialInput.Delta
 			if len(preview) > 80 {
 				preview = preview[:80] + "..."
 			}
-			slog.Info("engine:tool_input", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
+			slog.Info("engine:tool_param_delta", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
 		}
 
-	case types.EventToolDelta:
+	case types.EventToolOutputDelta:
 		if event.ToolResult != nil {
 			lines := strings.Count(event.ToolResult.DisplayOutput, "\n") + 1
-			slog.Info("engine:tool_delta", "id", event.ToolResult.ToolUseID, "lines", lines)
+			slog.Info("engine:tool_output_delta", "id", event.ToolResult.ToolUseID, "lines", lines)
 		}
 
 	case types.EventToolEnd:
