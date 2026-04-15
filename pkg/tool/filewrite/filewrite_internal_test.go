@@ -27,7 +27,10 @@ func TestExecute_MkdirAllError(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"` + target + `","content":"test"}`)
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
-		t.Error("Execute() error = nil, want error when MkdirAll fails")
+		t.Fatal("Execute() error = nil, want error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "create directories") {
+		t.Errorf("Error = %q, want error containing 'create directories'", err.Error())
 	}
 }
 
@@ -68,7 +71,10 @@ func TestExecute_ReadExistingFileError(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"` + loopLink + `","content":"new"}`)
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
-		t.Error("Execute() error = nil, want error for symlink loop")
+		t.Fatal("Execute() error = nil, want error for symlink loop")
+	}
+	if !strings.Contains(err.Error(), "read existing file") {
+		t.Errorf("Error = %q, want error containing 'read existing file'", err.Error())
 	}
 }
 
@@ -595,7 +601,10 @@ func TestGenerateSyntheticDiff_ReadError(t *testing.T) {
 
 	_, err := generateSyntheticDiff("/tmp", "missing.txt", "/nonexistent/path/missing.txt")
 	if err == nil {
-		t.Error("want error for nonexistent file")
+		t.Fatal("want error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "not exist") && !strings.Contains(err.Error(), "no file") {
+		t.Errorf("Error = %q, want file-not-found error", err.Error())
 	}
 }
 
@@ -1193,12 +1202,25 @@ func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
 	result, err := fetchGitDiffForFile(fp)
 	// The file doesn't exist on disk, so generateSyntheticDiff should fail
 	if err == nil {
-		// If the file was already garbage collected, ls-files might not error
-		// and generateSyntheticDiff could succeed with empty content
-		_ = result
+		// ls-files may have succeeded before the file was removed; if so,
+		// generateSyntheticDiff got an empty read and returned a valid result.
+		// Verify the result is well-formed.
+		if result != nil {
+			if result.Filename != "will_disappear.txt" {
+				t.Errorf("Filename = %q, want 'will_disappear.txt'", result.Filename)
+			}
+			if result.Status != "added" {
+				t.Errorf("Status = %q, want 'added'", result.Status)
+			}
+			if result.Additions != 0 {
+				t.Errorf("Additions = %d, want 0 for empty/missing file", result.Additions)
+			}
+		}
 	} else {
-		// Expected: error from generateSyntheticDiff
-		t.Logf("Got expected error: %v", err)
+		// Expected: error from generateSyntheticDiff failing to read the file
+		if !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "not exist") && !strings.Contains(err.Error(), "no file") {
+			t.Errorf("Error = %q, want file-not-found error", err.Error())
+		}
 	}
 
 	// Restore git repo cache
@@ -1311,5 +1333,100 @@ func TestGetStructuredPatch_LargeFileDelete(t *testing.T) {
 	}
 	if removed != 1 {
 		t.Errorf("expected 1 removed line, got %d", removed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: empty string content
+// ---------------------------------------------------------------------------
+
+func TestExecute_EmptyContent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "empty.txt")
+
+	input := json.RawMessage(`{"file_path":"` + fp + `","content":""}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Type != WriteTypeCreate {
+		t.Errorf("Type = %q, want %q", output.Type, WriteTypeCreate)
+	}
+	if output.Content != "" {
+		t.Errorf("Content = %q, want empty string", output.Content)
+	}
+
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("File has %d bytes, want 0", len(data))
+	}
+
+	info, err := os.Stat(fp)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Errorf("File size = %d, want 0", info.Size())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: write through symlinked intermediate directory
+// ---------------------------------------------------------------------------
+
+func TestExecute_WriteThroughSymlinkDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	linkDir := filepath.Join(dir, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skip("symlink not supported")
+	}
+
+	// Write through the symlink path
+	fp := filepath.Join(linkDir, "file.txt")
+	input := json.RawMessage(`{"file_path":"` + fp + `","content":"via symlink"}`)
+	result, err := Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Type != WriteTypeCreate {
+		t.Errorf("Type = %q, want %q", output.Type, WriteTypeCreate)
+	}
+	if output.Content != "via symlink" {
+		t.Errorf("Content = %q, want 'via symlink'", output.Content)
+	}
+
+	// Verify the file exists in the real directory (resolved through symlink)
+	realPath := filepath.Join(realDir, "file.txt")
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatalf("ReadFile(real path): %v", err)
+	}
+	if string(data) != "via symlink" {
+		t.Errorf("Real path content = %q, want 'via symlink'", string(data))
+	}
+
+	// Verify the symlink path also reads the same content
+	linkData, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile(symlink path): %v", err)
+	}
+	if string(linkData) != "via symlink" {
+		t.Errorf("Symlink path content = %q, want 'via symlink'", string(linkData))
 	}
 }

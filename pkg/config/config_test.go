@@ -148,6 +148,9 @@ func TestLoadFromSettingsFile_FileNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
+	if !strings.Contains(err.Error(), "read settings") && !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("error should mention read settings or file, got: %v", err)
+	}
 }
 
 func TestLoadFromSettingsFile_InvalidJSON(t *testing.T) {
@@ -575,6 +578,9 @@ func TestLoadFromFile_PermissionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when settings file has no read permission")
 	}
+	if !strings.Contains(err.Error(), "user config") {
+		t.Errorf("error should mention user config, got: %v", err)
+	}
 }
 
 func TestLoadFromFile_FileNotFound(t *testing.T) {
@@ -743,5 +749,77 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 	}
 	if cfg.APITimeoutMS != defaults.APITimeoutMS {
 		t.Errorf("expected default APITimeoutMS, got %d", cfg.APITimeoutMS)
+	}
+}
+
+func TestLoad_NegativeTimeoutEnv(t *testing.T) {
+	// BUG: fmt.Sscanf with %d parses negative values like "-1" successfully.
+	// A negative timeout is nonsensical and should be rejected or clamped.
+	_ = os.Setenv("HOME", t.TempDir())
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	_ = os.Unsetenv("API_TIMEOUT_MS")
+	defer func() { _ = os.Unsetenv("API_TIMEOUT_MS") }()
+
+	_ = os.Setenv("API_TIMEOUT_MS", "-1")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Negative timeout should be rejected and default kept, but currently
+	// the code accepts it — this test documents the actual behavior.
+	if cfg.APITimeoutMS == -1 {
+		t.Errorf("BUG: negative timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
+	}
+}
+
+func TestLoad_ZeroTimeoutEnv(t *testing.T) {
+	// Zero timeout means "no timeout" in most HTTP clients, which is
+	// almost certainly a mistake. Should be rejected or clamped.
+	_ = os.Setenv("HOME", t.TempDir())
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	_ = os.Unsetenv("API_TIMEOUT_MS")
+	defer func() { _ = os.Unsetenv("API_TIMEOUT_MS") }()
+
+	_ = os.Setenv("API_TIMEOUT_MS", "0")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.APITimeoutMS == 0 {
+		t.Errorf("BUG: zero timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
+	}
+}
+
+func TestLoadFromSettingsFile_NegativeTimeout(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	settings := map[string]any{
+		"env": map[string]string{
+			"API_TIMEOUT_MS": "-5000",
+		},
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	cfg, err := config.LoadFromSettingsFile(settingsPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.APITimeoutMS == -5000 {
+		t.Errorf("BUG: negative timeout accepted from settings file, got APITimeoutMS=%d", cfg.APITimeoutMS)
 	}
 }

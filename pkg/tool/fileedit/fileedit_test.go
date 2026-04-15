@@ -222,7 +222,19 @@ func TestExecute_EmptyFileEdit(t *testing.T) {
 	if string(data) != "now has content" {
 		t.Errorf("File content = %q, want %q", string(data), "now has content")
 	}
-	_ = result
+	output, ok := result.Data.(*fileedit.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *fileedit.Output", result.Data)
+	}
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	if output.OldString != "" {
+		t.Errorf("OldString = %q, want empty string", output.OldString)
+	}
+	if output.NewString != "now has content" {
+		t.Errorf("NewString = %q, want %q", output.NewString, "now has content")
+	}
 }
 
 func TestExecute_EmptyDiff(t *testing.T) {
@@ -320,7 +332,19 @@ func TestExecute_CRLFNormalization(t *testing.T) {
 	if got != wantCRLF {
 		t.Errorf("File content = %q, want %q", got, wantCRLF)
 	}
-	_ = result
+	output, ok := result.Data.(*fileedit.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *fileedit.Output", result.Data)
+	}
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	if output.OldString != "line2" {
+		t.Errorf("OldString = %q, want %q", output.OldString, "line2")
+	}
+	if output.NewString != "replaced" {
+		t.Errorf("NewString = %q, want %q", output.NewString, "replaced")
+	}
 }
 
 func TestExecute_UTF16LEWithBOM(t *testing.T) {
@@ -367,7 +391,19 @@ func TestExecute_UTF16LEWithBOM(t *testing.T) {
 	if text != "g" {
 		t.Errorf("First decoded char = %q, want 'g' (from 'goodbye')", text)
 	}
-	_ = result
+	output, ok := result.Data.(*fileedit.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *fileedit.Output", result.Data)
+	}
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	if output.OldString != "hello" {
+		t.Errorf("OldString = %q, want %q", output.OldString, "hello")
+	}
+	if output.NewString != "goodbye" {
+		t.Errorf("NewString = %q, want %q", output.NewString, "goodbye")
+	}
 }
 
 func TestExecute_DeleteWithTrailingNewline(t *testing.T) {
@@ -396,7 +432,19 @@ func TestExecute_DeleteWithTrailingNewline(t *testing.T) {
 	if got != "line1\nline3\n" {
 		t.Errorf("File content = %q, want %q", got, "line1\nline3\n")
 	}
-	_ = result
+	output, ok := result.Data.(*fileedit.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *fileedit.Output", result.Data)
+	}
+	if output.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
+	}
+	if output.OldString != "line2" {
+		t.Errorf("OldString = %q, want %q", output.OldString, "line2")
+	}
+	if output.NewString != "" {
+		t.Errorf("NewString = %q, want empty string", output.NewString)
+	}
 }
 
 func TestExecute_InvalidJSON(t *testing.T) {
@@ -1108,3 +1156,45 @@ func TestExecute_LargeFileDelete(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 }
+
+func TestExecute_EmptyFileWithNonEmptyOldString(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(fp, []byte(""), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Non-empty old_string on empty file should fail with "not found"
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"nonexistent","new_string":"replacement"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should error when old_string not found in empty file")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestExecute_OldStringLongerThanFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "short.txt")
+	if err := os.WriteFile(fp, []byte("hi\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// old_string longer than entire file content
+	longOld := "this is a very long string that is definitely longer than the file content"
+	input := json.RawMessage(fmt.Sprintf(`{"file_path":"%s","old_string":%q,"new_string":"replacement"}`, fp, longOld))
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should error when old_string is longer than file content")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Error = %q, want 'not found'", err.Error())
+	}
+}
+

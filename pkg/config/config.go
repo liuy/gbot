@@ -83,7 +83,7 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("API_TIMEOUT_MS"); v != "" {
 		var ms int
-		if _, err := fmt.Sscanf(v, "%d", &ms); err == nil {
+		if _, err := fmt.Sscanf(v, "%d", &ms); err == nil && ms > 0 {
 			cfg.APITimeoutMS = ms
 		}
 	}
@@ -125,7 +125,7 @@ func LoadFromSettingsFile(path string) (*Config, error) {
 			}
 			if v, ok := env["API_TIMEOUT_MS"]; ok {
 				var ms int
-				if _, err := fmt.Sscanf(v, "%d", &ms); err == nil {
+				if _, err := fmt.Sscanf(v, "%d", &ms); err == nil && ms > 0 {
 					cfg.APITimeoutMS = ms
 				}
 			}
