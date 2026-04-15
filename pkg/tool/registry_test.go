@@ -245,18 +245,28 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 		<-done
 	}
 
-	// Concurrent reads
+	// Concurrent reads with assertions
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			name := fmt.Sprintf("tool-%03d", idx)
 			if _, ok := r.Lookup(name); !ok {
 				t.Errorf("tool-%03d not found", idx)
 			}
-			_ = r.List()
-			_ = r.Names()
-			_ = r.EnabledTools()
-			_ = r.ToolMap()
-			_ = r.Size()
+			if list := r.List(); len(list) != n {
+				t.Errorf("List() = %d tools, want %d", len(list), n)
+			}
+			if names := r.Names(); len(names) != n {
+				t.Errorf("Names() = %d, want %d", len(names), n)
+			}
+			if enabled := r.EnabledTools(); len(enabled) != n {
+				t.Errorf("EnabledTools() = %d, want %d", len(enabled), n)
+			}
+			if m := r.ToolMap(); len(m) != n {
+				t.Errorf("ToolMap() = %d, want %d", len(m), n)
+			}
+			if s := r.Size(); s != n {
+				t.Errorf("Size() = %d, want %d", s, n)
+			}
 			done <- struct{}{}
 		}(i)
 	}

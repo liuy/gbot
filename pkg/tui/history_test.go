@@ -75,7 +75,10 @@ func TestHistory_Down(t *testing.T) {
 	h.Add("first")
 	h.Add("second")
 
-	h.Up("current")
+	_, ok := h.Up("current")
+	if !ok {
+		t.Fatal("setup Up() failed")
+	}
 	cmd, ok := h.Down()
 	if !ok {
 		t.Fatal("Down() returned false")
@@ -93,7 +96,10 @@ func TestHistory_ResetNav(t *testing.T) {
 	h.Up("current")
 	h.ResetNav()
 	// After reset, Up should start fresh from end
-	cmd, _ := h.Up("current")
+	cmd, ok := h.Up("current")
+	if !ok {
+		t.Fatal("Up() should return true after ResetNav")
+	}
 	if cmd != "first" {
 		t.Errorf("after ResetNav, Up() = %q, want %q", cmd, "first")
 	}
@@ -250,7 +256,10 @@ func TestHistory_Up_ClampedAtStart(t *testing.T) {
 	h.Up("x")
 	h.Up("x")
 	// Should clamp at index 0
-	cmd, _ := h.Up("x")
+	cmd, ok := h.Up("x")
+	if !ok {
+		t.Fatal("Up() should return true at clamp boundary")
+	}
 	if cmd != "only" {
 		t.Errorf("clamped Up = %q, want %q", cmd, "only")
 	}
@@ -274,7 +283,10 @@ func TestHistory_Down_ClampedAtEnd(t *testing.T) {
 	h.Up("x")
 	// Down twice past end
 	h.Down()
-	cmd, _ := h.Down()
+	cmd, ok := h.Down()
+	if !ok {
+		t.Fatal("Down() should return true at clamp boundary")
+	}
 	if cmd != "b" {
 		t.Errorf("clamped Down = %q, want %q", cmd, "b")
 	}
@@ -285,7 +297,10 @@ func TestHistory_Up_CurrentMatchesLast(t *testing.T) {
 	h.Add("first")
 	h.Add("second")
 	// Up with current matching last item should skip to second-to-last
-	cmd, _ := h.Up("second")
+	cmd, ok := h.Up("second")
+	if !ok {
+		t.Fatal("Up() should return true when skipping matching last")
+	}
 	if cmd != "first" {
 		t.Errorf("Up with current=last should skip, got %q", cmd)
 	}

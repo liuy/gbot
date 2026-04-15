@@ -622,10 +622,28 @@ func TestComputePatch_LineDiffBranches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			result := ComputePatch(tt.old, tt.new)
-			// Just verify it doesn't panic and returns valid output
-			for _, h := range result {
+			if tt.name == "empty_mid" {
+				if result != nil {
+					t.Errorf("identical content should produce nil, got %v", result)
+				}
+				return
+			}
+			if len(result) == 0 {
+				t.Fatalf("case %q: expected at least one hunk", tt.name)
+			}
+			for i, h := range result {
 				if len(h.Lines) == 0 {
-					t.Errorf("empty hunk for case %q", tt.name)
+					t.Errorf("empty hunk %d for case %q", i, tt.name)
+				}
+				hasContent := false
+				for _, l := range h.Lines {
+					if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") || strings.HasPrefix(l, " ") {
+						hasContent = true
+						break
+					}
+				}
+				if !hasContent {
+					t.Errorf("hunk %d for case %q has no diff/context lines, got: %v", i, tt.name, h.Lines)
 				}
 			}
 		})
@@ -662,31 +680,79 @@ func TestComputePatch_LCSBranches(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_ = ComputePatch(tt.old, tt.new)
+			result := ComputePatch(tt.old, tt.new)
+			switch tt.name {
+			case "lcs_diagonal", "lcs_single":
+				if result != nil {
+					t.Errorf("identical inputs should produce nil, got %v", result)
+				}
+			case "lcs_empty":
+				if len(result) == 0 {
+					t.Fatal("expected at least one hunk for completely different inputs")
+				}
+				hasChanges := false
+				for _, h := range result {
+					for _, l := range h.Lines {
+						if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") {
+							hasChanges = true
+							break
+						}
+					}
+				}
+				if !hasChanges {
+					t.Error("expected additions/removals for completely different inputs")
+				}
+			default:
+				if len(result) == 0 {
+					t.Fatalf("case %q: expected at least one hunk with changes", tt.name)
+				}
+				hasChanges := false
+				for _, h := range result {
+					for _, l := range h.Lines {
+						if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") {
+							hasChanges = true
+							break
+						}
+					}
+				}
+				if !hasChanges {
+					t.Errorf("case %q: expected at least one change line in hunks", tt.name)
+				}
+			}
 		})
 	}
 }
 
 func TestComputePatch_AppendDiffComponentEdge(t *testing.T) {
 	t.Parallel()
-	// The count==0 guard in appendDiffComponent is technically unreachable
-	// in the current algorithm (all callers pass count > 0).
-	// But we verify the function works correctly for normal cases.
 	tests := []struct {
 		name string
 		old  string
 		new  string
 	}{
-		// Consecutive components of same type (merge case)
 		{"merge_same", "a\nb\nc\n", "x\na\nb\ny\nc\n"},
-		// Consecutive components of different type
 		{"merge_diff", "a\nb\nc\n", "x\nb\nc\n"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_ = ComputePatch(tt.old, tt.new)
+			result := ComputePatch(tt.old, tt.new)
+			if len(result) == 0 {
+				t.Fatalf("case %q: expected at least one hunk", tt.name)
+			}
+			hasChanges := false
+			for _, h := range result {
+				for _, l := range h.Lines {
+					if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") {
+						hasChanges = true
+						break
+					}
+				}
+			}
+			if !hasChanges {
+				t.Errorf("case %q: expected change lines in hunks, got %v", tt.name, result)
+			}
 		})
 	}
 }
@@ -703,6 +769,12 @@ func TestRenderDiff_EmptyLine(t *testing.T) {
 	got := RenderDiff(hunks)
 	if got == "" {
 		t.Error("expected non-empty output")
+	}
+	if !strings.Contains(got, "line1") {
+		t.Error("output should contain line1")
+	}
+	if !strings.Contains(got, "line3") {
+		t.Error("output should contain line3")
 	}
 }
 

@@ -43,6 +43,16 @@ func TestGoGrep_SingleFile(t *testing.T) {
 			t.Errorf("Match content = %q, should contain 'hello'", m.Content)
 		}
 	}
+	// Verify line numbers: "hello world" is line 1, "hello again" is line 3
+	if len(output.Matches) != 2 {
+		t.Fatalf("len(Matches) = %d, want 2", len(output.Matches))
+	}
+	if output.Matches[0].Line != 1 {
+		t.Errorf("Matches[0].Line = %d, want 1", output.Matches[0].Line)
+	}
+	if output.Matches[1].Line != 3 {
+		t.Errorf("Matches[1].Line = %d, want 3", output.Matches[1].Line)
+	}
 }
 
 func TestGoGrep_Directory(t *testing.T) {
@@ -97,9 +107,12 @@ func TestGoGrep_NonexistentPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("goGrep() should return error for nonexistent path")
 	}
+	if !strings.Contains(err.Error(), "path does not exist") {
+		t.Errorf("error = %q, want error containing 'path does not exist'", err.Error())
+	}
 }
 
-func TestGoGrep_DirectoryReadError(t *testing.T) {
+func TestGoGrep_DirectoryWithFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -204,6 +217,9 @@ func TestGrepFile_NonexistentFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("grepFile() should return error for nonexistent file")
 	}
+	if !strings.Contains(err.Error(), "nonexistent") && !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("error = %q, want error about nonexistent file", err.Error())
+	}
 }
 
 func TestGrepFile_EmptyFile(t *testing.T) {
@@ -245,8 +261,11 @@ func TestExecute_WorkingDirFromToolUseContext(t *testing.T) {
 	}
 
 	output := result.Data.(*Output)
-	if output.NumFiles < 1 {
-		t.Errorf("NumFiles = %d, want >= 1 (WorkingDir=%s)", output.NumFiles, dir)
+	if output.NumFiles != 1 {
+		t.Errorf("NumFiles = %d, want 1 (WorkingDir=%s)", output.NumFiles, dir)
+	}
+	if output.Mode != "files_with_matches" {
+		t.Errorf("Mode = %q, want files_with_matches", output.Mode)
 	}
 }
 
@@ -261,7 +280,10 @@ func TestExecute_NilToolUseContext_FallsBackToGetwd(t *testing.T) {
 
 	output := result.Data.(*Output)
 	if output == nil {
-		t.Error("Output is nil")
+		t.Fatal("Output is nil")
+	}
+	if output.Mode != "files_with_matches" {
+		t.Errorf("Mode = %q, want files_with_matches", output.Mode)
 	}
 }
 
@@ -277,7 +299,10 @@ func TestExecute_ToolUseContextEmptyWorkingDir(t *testing.T) {
 
 	output := result.Data.(*Output)
 	if output == nil {
-		t.Error("Output is nil")
+		t.Fatal("Output is nil")
+	}
+	if output.Mode != "files_with_matches" {
+		t.Errorf("Mode = %q, want files_with_matches", output.Mode)
 	}
 }
 
@@ -710,11 +735,9 @@ func TestApplyHeadLimit_UnlimitedNoOffset(t *testing.T) {
 
 func TestToRelativePath_EmptyPath(t *testing.T) {
 	t.Parallel()
-	// Empty string — filepath.Rel may fail or return "."
 	rel := toRelativePath("")
-	if rel != "" {
-		// Acceptable: empty returns empty or "."
-		t.Logf("toRelativePath('') = %q", rel)
+	if rel != "" && rel != "." {
+		t.Errorf("toRelativePath('') = %q, want '' or '.'", rel)
 	}
 }
 
@@ -729,10 +752,16 @@ func TestToRelativePath_RootPath(t *testing.T) {
 
 func TestToRelativePath_RelativePathInput(t *testing.T) {
 	t.Parallel()
-	// Passing a relative path — Getwd + Rel should still work or return input
+	// Passing a relative path — filepath.Rel may succeed or fail;
+	// on failure it returns the input as-is
 	rel := toRelativePath("some/relative/path")
 	if rel == "" {
 		t.Error("toRelativePath should return non-empty for relative input")
+	}
+	// Should either be the input itself or a recomputed relative path
+	// from cwd — either way it must contain "some"
+	if !strings.Contains(rel, "some") {
+		t.Errorf("toRelativePath('some/relative/path') = %q, should contain 'some'", rel)
 	}
 }
 

@@ -126,6 +126,9 @@ func TestTaskOutput_NotFound(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for nonexistent task")
 	}
+	if !strings.Contains(err.Error(), "no task found") {
+		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	}
 }
 
 func TestTaskOutput_BlockWait(t *testing.T) {
@@ -219,6 +222,9 @@ func TestTaskOutput_EmptyTaskID(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for empty task_id")
 	}
+	if !strings.Contains(err.Error(), "task_id is required") {
+		t.Errorf("error = %q, want error containing 'task_id is required'", err.Error())
+	}
 }
 
 func TestTaskOutput_InvalidJSON(t *testing.T) {
@@ -227,6 +233,9 @@ func TestTaskOutput_InvalidJSON(t *testing.T) {
 	_, err := tl.Call(context.Background(), json.RawMessage(`invalid`), nil)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %q, want error containing 'parse input'", err.Error())
 	}
 }
 
@@ -269,6 +278,9 @@ func TestTaskStop_NotFound(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for nonexistent task")
 	}
+	if !strings.Contains(err.Error(), "no task found") {
+		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	}
 }
 
 func TestTaskStop_NotRunning(t *testing.T) {
@@ -285,6 +297,9 @@ func TestTaskStop_NotRunning(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for non-running task")
 	}
+	if !strings.Contains(err.Error(), "not running") {
+		t.Errorf("error = %q, want error containing 'not running'", err.Error())
+	}
 }
 
 func TestTaskStop_EmptyTaskID(t *testing.T) {
@@ -294,6 +309,9 @@ func TestTaskStop_EmptyTaskID(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for empty task_id")
 	}
+	if !strings.Contains(err.Error(), "task_id") {
+		t.Errorf("error = %q, want error containing 'task_id'", err.Error())
+	}
 }
 
 func TestTaskStop_InvalidJSON(t *testing.T) {
@@ -302,6 +320,9 @@ func TestTaskStop_InvalidJSON(t *testing.T) {
 	_, err := tl.Call(context.Background(), json.RawMessage(`invalid`), nil)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %q, want error containing 'parse input'", err.Error())
 	}
 }
 
@@ -378,8 +399,14 @@ func TestTaskOutput_RenderResult(t *testing.T) {
 			Output: "hello world",
 		},
 	})
-	if result == "" {
-		t.Error("RenderResult should not be empty")
+	if !strings.Contains(result, "Status: success") {
+		t.Errorf("RenderResult = %q, should contain 'Status: success'", result)
+	}
+	if !strings.Contains(result, "bg-1") {
+		t.Errorf("RenderResult = %q, should contain task ID 'bg-1'", result)
+	}
+	if !strings.Contains(result, "hello world") {
+		t.Errorf("RenderResult = %q, should contain output 'hello world'", result)
 	}
 }
 
@@ -493,6 +520,9 @@ func TestTaskStop_KillError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing task")
 	}
+	if !strings.Contains(err.Error(), "no task found") {
+		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	}
 }
 
 // killErrorRegistry returns an error from Kill.
@@ -568,6 +598,9 @@ func TestTaskOutput_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Error("expected error from cancelled context")
 	}
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("error = %q, want error containing 'context'", err.Error())
+	}
 }
 
 func TestTaskOutput_InputSchema(t *testing.T) {
@@ -575,7 +608,18 @@ func TestTaskOutput_InputSchema(t *testing.T) {
 	tl := NewTaskOutput(reg)
 	schema := tl.InputSchema()
 	if len(schema) == 0 {
-		t.Error("InputSchema should not be empty")
+		t.Fatal("InputSchema should not be empty")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		t.Fatalf("InputSchema is not valid JSON: %v", err)
+	}
+	props, ok := obj["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("InputSchema missing 'properties' object")
+	}
+	if _, ok := props["task_id"]; !ok {
+		t.Error("InputSchema properties missing 'task_id'")
 	}
 }
 
@@ -584,7 +628,18 @@ func TestTaskStop_InputSchema(t *testing.T) {
 	tl := NewTaskStop(reg)
 	schema := tl.InputSchema()
 	if len(schema) == 0 {
-		t.Error("InputSchema should not be empty")
+		t.Fatal("InputSchema should not be empty")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		t.Fatalf("InputSchema is not valid JSON: %v", err)
+	}
+	props, ok := obj["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("InputSchema missing 'properties' object")
+	}
+	if _, ok := props["task_id"]; !ok {
+		t.Error("InputSchema properties missing 'task_id'")
 	}
 }
 

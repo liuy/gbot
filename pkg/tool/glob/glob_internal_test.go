@@ -3,6 +3,7 @@ package glob
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -22,7 +23,13 @@ func TestExecute_GetwdFallback(t *testing.T) {
 
 	output := result.Data.(*Output)
 	if output == nil {
-		t.Error("Output is nil")
+		t.Fatal("Output is nil")
+	}
+	if output.Count < 0 {
+		t.Errorf("Count = %d, want >= 0", output.Count)
+	}
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
 	}
 }
 
@@ -36,6 +43,9 @@ func TestExecute_InvalidGlobPattern(t *testing.T) {
 	input := json.RawMessage(`{"pattern":"[invalid"}`)
 	_, err := Execute(context.Background(), input, tctx)
 	if err == nil {
-		t.Error("Execute() error = nil, want error for invalid glob pattern")
+		t.Fatal("Execute() error = nil, want error for invalid glob pattern")
+	}
+	if !strings.Contains(err.Error(), "glob pattern error") {
+		t.Errorf("error = %q, want error containing 'glob pattern error'", err.Error())
 	}
 }

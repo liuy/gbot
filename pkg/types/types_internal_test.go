@@ -1,11 +1,6 @@
 package types
 
-import "testing"
-
-func TestPermissionResultMarkerMethods(t *testing.T) {
-	t.Parallel()
-
-	PermissionAllowDecision{}.permissionResultMarker()
-	PermissionAskDecision{}.permissionResultMarker()
-	PermissionDenyDecision{}.permissionResultMarker()
-}
+// Compile-time interface compliance checks.
+var _ PermissionResult = PermissionAllowDecision{}
+var _ PermissionResult = PermissionAskDecision{}
+var _ PermissionResult = PermissionDenyDecision{}

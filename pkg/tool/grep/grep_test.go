@@ -174,6 +174,9 @@ func TestGrepToolCall_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() should return error for invalid JSON")
 	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %q, want error containing 'parse input'", err.Error())
+	}
 }
 
 func TestGrepToolCall_EmptyPattern(t *testing.T) {
@@ -182,6 +185,9 @@ func TestGrepToolCall_EmptyPattern(t *testing.T) {
 	_, err := grep.Execute(context.Background(), json.RawMessage(`{"pattern":""}`), nil)
 	if err == nil {
 		t.Fatal("Execute() should return error for empty pattern")
+	}
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
 	}
 }
 
@@ -192,6 +198,9 @@ func TestGrepToolCall_NonexistentPath(t *testing.T) {
 	_, err := grep.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() should return error for nonexistent path")
+	}
+	if !strings.Contains(err.Error(), "path does not exist") && !strings.Contains(err.Error(), "ripgrep") {
+		t.Errorf("error = %q, want error about nonexistent path", err.Error())
 	}
 }
 
@@ -205,7 +214,7 @@ func TestNew_ReturnsValidTool(t *testing.T) {
 		t.Fatal("New() returned nil")
 	}
 	if g.Name() != "Search" {
-		t.Errorf("Name() = %q, want %q", g.Name(), "Grep")
+		t.Errorf("Name() = %q, want %q", g.Name(), "Search")
 	}
 	aliases := g.Aliases()
 	if len(aliases) != 1 || aliases[0] != "grep" {
@@ -277,8 +286,8 @@ func TestGrepToolCall_OutputModeContent(t *testing.T) {
 	if !strings.Contains(output.Content, "hello") {
 		t.Errorf("Content = %q, should contain 'hello'", output.Content)
 	}
-	if output.NumLines == 0 {
-		t.Error("NumLines should be > 0 for content mode")
+	if output.NumLines != 2 {
+		t.Errorf("NumLines = %d, want 2 (two lines contain 'hello')", output.NumLines)
 	}
 }
 
@@ -372,9 +381,8 @@ func TestGrepToolCall_OutputModeCount(t *testing.T) {
 	if output.Mode != "count" {
 		t.Errorf("Mode = %q, want count", output.Mode)
 	}
-	// 2 "hello" lines + 1 "hello world" line = 3 matches
-	if output.NumMatches < 1 {
-		t.Errorf("NumMatches = %d, want >= 1", output.NumMatches)
+	if output.NumMatches != 3 {
+		t.Errorf("NumMatches = %d, want 3 (hello x2 + hello world x1)", output.NumMatches)
 	}
 }
 
@@ -617,13 +625,16 @@ func TestGrepToolCall_Offset(t *testing.T) {
 }
 
 func TestGrepToolCall_EmptyPatternDashDash(t *testing.T) {
-	// Pattern "-e" is valid (starts with dash, uses -e flag)
-	// Pattern "" is invalid
+	// Pattern "" is invalid — this is a duplicate of TestGrepToolCall_EmptyPattern
+	// but verifies error content as well.
 	t.Parallel()
 
 	_, err := grep.Execute(context.Background(), json.RawMessage(`{"pattern":""}`), nil)
 	if err == nil {
 		t.Fatal("Execute() should return error for empty pattern")
+	}
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
 	}
 }
 
@@ -697,22 +708,6 @@ func TestGoGrep_GoGrepReturnsMatches(t *testing.T) {
 	if output.Count < 0 {
 		t.Errorf("Count = %d, want >= 0", output.Count)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Helper function tests
-// ---------------------------------------------------------------------------
-
-func TestSplitGlobPatterns_Simple(t *testing.T) {
-	t.Parallel()
-	// Can't call internal splitGlobPatterns from _test package
-	// Tested via integration: glob:"*.go" should work
-}
-
-func TestFilterEmpty(t *testing.T) {
-	t.Parallel()
-	// Can't call internal filterEmpty from _test package
-	// Tested via integration tests
 }
 
 // ---------------------------------------------------------------------------
@@ -845,8 +840,8 @@ func TestRenderResult_CountMode(t *testing.T) {
 		NumMatches: 10,
 	}
 	result := tt.RenderResult(output)
-	if !strings.Contains(result, "10") {
-		t.Errorf("RenderResult(count mode) = %q, should contain match count", result)
+	if result != "10 matches in 3 files" {
+		t.Errorf("RenderResult(count mode) = %q, want %q", result, "10 matches in 3 files")
 	}
 }
 
@@ -855,8 +850,9 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 	t.Parallel()
 	tt := grep.New()
 	result := tt.RenderResult("some plain string")
-	if result == "" {
-		t.Error("RenderResult(non-Output) should return non-empty string")
+	want := `"some plain string"`
+	if result != want {
+		t.Errorf("RenderResult(non-Output) = %q, want %q", result, want)
 	}
 }
 
@@ -865,8 +861,8 @@ func TestRenderResult_NilData(t *testing.T) {
 	t.Parallel()
 	tt := grep.New()
 	result := tt.RenderResult(nil)
-	if result == "" {
-		t.Error("RenderResult(nil) should return non-empty string")
+	if result != "null" {
+		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
 	}
 }
 
@@ -893,7 +889,7 @@ func TestRenderResult_UnknownMode(t *testing.T) {
 		Mode: "unknown_mode",
 	}
 	result := tt.RenderResult(output)
-	if result == "" {
-		t.Error("RenderResult(unknown mode) should return non-empty string")
+	if !strings.Contains(result, "unknown_mode") {
+		t.Errorf("RenderResult(unknown mode) = %q, should contain mode name", result)
 	}
 }

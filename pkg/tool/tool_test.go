@@ -327,8 +327,8 @@ func TestBuildToolImplementsToolInterface(t *testing.T) {
 	t.Parallel()
 
 	// This test verifies the interface is satisfied at compile time
-	// by assigning to a Tool variable.
-	var _ = tool.BuildTool(tool.ToolDef{
+	// by assigning to a tool.Tool variable.
+	var _ tool.Tool = tool.BuildTool(tool.ToolDef{ //nolint:staticcheck // explicit interface assertion for compile-time check
 		Name_:        "InterfaceCheck",
 		Call_:        func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return nil },
@@ -400,17 +400,17 @@ func TestBuildTool_DefaultRenderResult_StringData(t *testing.T) {
 func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
 	t.Parallel()
 
-	// When MaxResultSizeChars is 0, BuildTool sets it to 50000.
+	// MaxResultSizeChars is an internal field not exposed via the Tool
+	// interface. It is set to 50000 by default when 0 (verified in tool.go:230-232).
+	// This test confirms the tool builds without panic when the field is left zero.
 	def := tool.ToolDef{
-		Name_:  "SizeTest",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_:        "SizeTest",
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
 
 	tt := tool.BuildTool(def)
-	// We can't directly read MaxResultSizeChars from the interface,
-	// but we can verify the tool was built without panic.
 	if tt.Name() != "SizeTest" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "SizeTest")
 	}

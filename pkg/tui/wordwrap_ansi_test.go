@@ -15,6 +15,12 @@ func TestWordWrap_AnsiCodesNotSplit(t *testing.T) {
 	if !strings.Contains(result, "\x1b[22m") {
 		t.Errorf("bold end code should be intact, got: %q", result)
 	}
+	if !strings.Contains(result, "bold text") {
+		t.Errorf("text content 'bold text' should be preserved, got: %q", result)
+	}
+	if !strings.Contains(result, "rest") {
+		t.Errorf("text content 'rest' should be preserved, got: %q", result)
+	}
 }
 
 func TestWordWrap_AnsiCodes_PreservesColor(t *testing.T) {

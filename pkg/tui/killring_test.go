@@ -131,6 +131,9 @@ func TestKillRing_MaxSize(t *testing.T) {
 	if strings.Contains(k.Top(), "a") {
 		t.Error("oldest entries should have been evicted")
 	}
+	if k.Top() != "o" {
+		t.Errorf("Top() = %q, want %q (newest entry)", k.Top(), "o")
+	}
 }
 
 func TestKillRing_TopEmpty(t *testing.T) {

@@ -262,6 +262,9 @@ func TestExecute_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
 	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %q, want error containing 'parse input'", err.Error())
+	}
 }
 
 func TestExecute_EmptyPattern(t *testing.T) {
@@ -270,6 +273,9 @@ func TestExecute_EmptyPattern(t *testing.T) {
 	_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":""}`), nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
 	}
 }
 
@@ -280,6 +286,9 @@ func TestExecute_PathNotFound(t *testing.T) {
 	_, err := glob.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for nonexistent path")
+	}
+	if !strings.Contains(err.Error(), "path does not exist") {
+		t.Errorf("error = %q, want error containing 'path does not exist'", err.Error())
 	}
 }
 
@@ -296,6 +305,9 @@ func TestExecute_PathIsFile(t *testing.T) {
 	_, err := glob.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error when path is a file")
+	}
+	if !strings.Contains(err.Error(), "path is not a directory") {
+		t.Errorf("error = %q, want error containing 'path is not a directory'", err.Error())
 	}
 }
 
@@ -372,8 +384,10 @@ func TestRenderResult_Files(t *testing.T) {
 		Count: 3,
 	}
 	result := tt.RenderResult(output)
-	if !strings.Contains(result, "src/a.go") {
-		t.Errorf("RenderResult(files) = %q, should contain filenames", result)
+	for _, f := range output.Files {
+		if !strings.Contains(result, f) {
+			t.Errorf("RenderResult(files) = %q, should contain %q", result, f)
+		}
 	}
 	if strings.Contains(result, `"filenames"`) {
 		t.Errorf("RenderResult(files) = %q, should not contain raw JSON keys", result)
@@ -388,8 +402,8 @@ func TestRenderResult_NoMatches(t *testing.T) {
 		Count: 0,
 	}
 	result := tt.RenderResult(output)
-	if result == "" {
-		t.Error("RenderResult(no matches) should return non-empty string")
+	if result != "No files matched" {
+		t.Errorf("RenderResult(no matches) = %q, want %q", result, "No files matched")
 	}
 }
 
@@ -399,12 +413,10 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 	tt := glob.New()
 	// Pass a plain string instead of *glob.Output to trigger the !ok branch
 	result := tt.RenderResult("some random string")
-	if result == "" {
-		t.Error("RenderResult(non-Output) should return non-empty string")
-	}
 	// Should be the JSON-marshaled version of the string
-	if !strings.Contains(result, "some random string") {
-		t.Errorf("RenderResult(non-Output) = %q, should contain input string", result)
+	want := `"some random string"`
+	if result != want {
+		t.Errorf("RenderResult(non-Output) = %q, want %q", result, want)
 	}
 }
 
@@ -413,8 +425,8 @@ func TestRenderResult_NilData(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 	result := tt.RenderResult(nil)
-	if result == "" {
-		t.Error("RenderResult(nil) should return non-empty string")
+	if result != "null" {
+		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
 	}
 }
 
@@ -423,7 +435,7 @@ func TestRenderResult_MapData(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 	result := tt.RenderResult(map[string]int{"count": 42})
-	if result == "" {
-		t.Error("RenderResult(map) should return non-empty string")
+	if !strings.Contains(result, `"count"`) || !strings.Contains(result, "42") {
+		t.Errorf("RenderResult(map) = %q, should contain JSON with count:42", result)
 	}
 }

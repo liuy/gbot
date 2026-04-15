@@ -31,20 +31,82 @@ func TestNewAnthropicProvider_Defaults(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
+
+	// Verify defaults through behavior: Stream with a server that checks
+	// headers and URL proves apiKey/model/baseURL were wired correctly.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Errorf("expected x-api-key 'test-key', got %q", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("expected Authorization 'Bearer test-key', got %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"id":"x","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0},"content":[]}`)
+	}))
+	defer server.Close()
+
+	// Override to local server to verify fields are used
+	p2 := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		Model:   "claude-sonnet-4-20250514",
+		BaseURL: server.URL,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	resp, err := p2.Complete(ctx, &llm.Request{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 10,
+		Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("Model = %q, want %q", resp.Model, "claude-sonnet-4-20250514")
+	}
 }
 
 func TestNewAnthropicProvider_CustomBaseURL(t *testing.T) {
 	t.Parallel()
 
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify the custom API key is sent
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Errorf("expected x-api-key 'test-key', got %q", r.Header.Get("x-api-key"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"id":"x","type":"message","role":"assistant","model":"test-model","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0},"content":[]}`)
+	}))
+	defer server.Close()
+
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
 		APIKey:  "test-key",
-		BaseURL: "https://custom.api.com/",
+		BaseURL: server.URL,
 		Model:   "test-model",
 		Timeout: 10 * time.Second,
 	})
 
 	if p == nil {
 		t.Fatal("expected non-nil provider")
+	}
+
+	// Verify the custom BaseURL and Model are wired through by completing a request
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	resp, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 10,
+		Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.Model != "test-model" {
+		t.Errorf("Model = %q, want %q", resp.Model, "test-model")
 	}
 }
 
@@ -1830,7 +1892,9 @@ func TestSetHeaders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_BodyClosedOnError(t *testing.T) {
-	closed := make(chan struct{}, 1)
+	// Verifies that Stream returns an error for non-2xx responses.
+	// Body closure is handled by the HTTP client and cannot be directly
+	// observed from outside the package without wrapping http.Response.Body.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)
@@ -1855,13 +1919,6 @@ func TestStream_BodyClosedOnError(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error for 400 response")
-	}
-
-	select {
-	case <-closed:
-		// body was closed
-	case <-time.After(time.Second):
-		// not a hard failure — the server mock doesn't track close
 	}
 }
 
