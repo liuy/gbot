@@ -264,17 +264,20 @@ func (a *App) View() string {
 		if totalPages < 1 {
 			totalPages = 1
 		}
-		// Use middle of viewport for page calculation so it changes when scrolling
-		midLine := a.scrollOffset + viewLines/2
-		currentPage := midLine/viewLines + 1
-		if currentPage > totalPages {
-			currentPage = totalPages
-		}
-		// Directional arrow: ↑=content above, ↓=content below, ↕=both
-		var arrow string
-		atTop := a.scrollOffset == 0
-		atBottom := a.scrollOffset+viewLines >= a.scrollTotal
-		switch {
+			atTop := a.scrollOffset == 0
+			atBottom := a.scrollOffset+viewLines >= a.scrollTotal
+			// Page number: which page the viewport top falls on.
+			// At bottom, force last page to avoid off-by-one from integer division.
+			currentPage := a.scrollOffset/viewLines + 1
+			if atBottom {
+				currentPage = totalPages
+			}
+			if currentPage > totalPages {
+				currentPage = totalPages
+			}
+			// Directional arrow: ↑=content above, ↓=content below, ↕=both
+			var arrow string
+			switch {
 		case atTop && !atBottom:
 			arrow = "↓"
 		case atBottom && !atTop:

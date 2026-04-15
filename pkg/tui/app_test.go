@@ -3509,6 +3509,46 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	}
 }
 
+// TestApp_Scroll_LastPageNumberCorrect verifies that when scrolled to the bottom,
+// the page indicator shows totalPages (not one less).
+// Bug: midLine formula gave wrong page when scrollTotal wasn't an even multiple
+// of viewLines (e.g. scrollTotal=19, viewLines=6 → showed 3/4 instead of 4/4).
+func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10 // maxContentLines=7, viewLines=6
+
+	// 19 lines of content → totalPages=4, maxOff=13
+	// At bottom (offset=13): midLine=16, old formula 16/6+1=3 (wrong, should be 4)
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 19))
+	app.markViewportDirty()
+
+	// Auto-scroll to bottom
+	v := app.View()
+	if !strings.Contains(v, "4/4") {
+		t.Errorf("at bottom should show page 4/4, got:\n%s", v)
+	}
+
+	// Also test 13 lines → totalPages=3, maxOff=7
+	app2 := newTestApp(&tuiMockProvider{})
+	app2.width = 80
+	app2.height = 10
+	app2.repl.StartQuery(nil)
+	app2.spinner.Start()
+	app2.progressStart = time.Now()
+	app2.repl.AppendChunk(strings.Repeat("line\n", 13))
+	app2.markViewportDirty()
+
+	v2 := app2.View()
+	if !strings.Contains(v2, "3/3") {
+		t.Errorf("at bottom with 13 lines should show page 3/3, got:\n%s", v2)
+	}
+}
+
 // TestApp_Scroll_ShortContentNoScrolling verifies no scroll when content fits.
 func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
 	t.Parallel()
