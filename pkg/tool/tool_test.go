@@ -326,14 +326,16 @@ func TestToolResultJSON(t *testing.T) {
 func TestBuildToolImplementsToolInterface(t *testing.T) {
 	t.Parallel()
 
-	// This test verifies the interface is satisfied at compile time
-	// by assigning to a tool.Tool variable.
-	var _ tool.Tool = tool.BuildTool(tool.ToolDef{ //nolint:staticcheck // explicit interface assertion for compile-time check
+	built := tool.BuildTool(tool.ToolDef{
 		Name_:        "InterfaceCheck",
 		Call_:        func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return nil },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	})
+	// Calling interface methods proves BuildTool's return satisfies tool.Tool.
+	if built.Name() != "InterfaceCheck" {
+		t.Errorf("Name() = %q, want %q", built.Name(), "InterfaceCheck")
+	}
 }
 
 // ---------------------------------------------------------------------------
