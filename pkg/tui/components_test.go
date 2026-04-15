@@ -2210,3 +2210,53 @@ func TestRenderThinkingBlock_StreamingLongText_Wraps(t *testing.T) {
 		t.Errorf("streaming long text should wrap into multiple lines, got %d content lines:\n%s", contentLines, out)
 	}
 }
+
+func TestRenderThinkingBlock_StreamingLongText_PrefixAlignment(t *testing.T) {
+	t.Parallel()
+	longLine := strings.Repeat("hello ", 30) // ~180 chars, wraps at width=40
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type:     BlockThinking,
+		Thinking: ThinkingView{Text: longLine, Done: false},
+	}
+	blk.renderThinkingBlock(&sb, 40, false, "dot", false)
+	out := sb.String()
+	// Strip ANSI escape codes for prefix checking
+	clean := stripAnsi(out)
+	lines := strings.Split(clean, "\n")
+	// Find content lines (those starting with | or 2-space prefix)
+	started := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "| ") {
+			started = true
+			continue
+		}
+		if started && line != "" && !strings.HasPrefix(line, "  ") {
+			t.Errorf("continuation line %d = %q, want 2-space prefix for alignment", i, line)
+		}
+	}
+}
+
+func TestRenderThinkingBlock_DoneLongText_PrefixAlignment(t *testing.T) {
+	t.Parallel()
+	longLine := strings.Repeat("hello ", 30) // ~180 chars, wraps at width=40
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type:     BlockThinking,
+		Thinking: ThinkingView{Text: longLine, Done: true, Duration: time.Second},
+	}
+	blk.renderThinkingBlock(&sb, 40, false, "", false)
+	out := sb.String()
+	clean := stripAnsi(out)
+	lines := strings.Split(clean, "\n")
+	started := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "| ") {
+			started = true
+			continue
+		}
+		if started && line != "" && !strings.HasPrefix(line, "  ") {
+			t.Errorf("continuation line %d = %q, want 2-space prefix for alignment", i, line)
+		}
+	}
+}

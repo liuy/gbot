@@ -798,14 +798,16 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 
 // Pre-cached styles for thinking blocks.
 var (
-	styleThinkingStar = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	styleThinkingDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
-	styleThinkingDimGold = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
+	styleThinkingStar     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	styleThinkingDimGold  = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
+	styleThinkingContent  = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 )
 
 // renderThinkingBlock renders a thinking block using ✦ symbol.
 // During streaming (Done=false): animated star + "Thinking..." + real-time content.
 // After done (Done=true): static ✦ + duration + collapsed/expanded content.
+// Title line matches tool block style (bold name + dim details).
+// Content uses italic to distinguish from tool output.
 func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool) {
 	if blk.Type != BlockThinking {
 		return
@@ -822,35 +824,33 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 			// Invisible blink frame: dim ✦
 			star = styleThinkingDimGold.Render(thinkingStar)
 		}
-		header := star + " " + styleThinkingDim.Render("Thinking...")
+		header := star + " " + styleNameBold.Render("Thinking") + styleDim.Render("...")
 		sb.WriteString(wordWrap(header, availWidth))
 
-		// Show streaming content (dim italic, indented by resultPrefix width)
+		// Show streaming content (italic to distinguish from tool output)
 		if tv.Text != "" {
-			content := tv.Text
-			formatted := formatToolOutput(content, false, true, availWidth-2, noHint, 0)
-			sb.WriteString("\n" + formatted)
+			formatted := formatToolOutput(tv.Text, false, true, availWidth-2, noHint, 0)
+			sb.WriteString("\n" + styleThinkingContent.Render(formatted))
 		}
 		return
 	}
 
-	// Done state: static gold bold ✦ thought for X
+	// Done state: static gold bold ✦ Thought for X
 	star := styleThinkingStar.Render(thinkingStar)
 	var hdr strings.Builder
 	hdr.WriteString(star)
 	hdr.WriteByte(' ')
+	hdr.WriteString(styleNameBold.Render("Thought"))
 	if tv.Duration > 0 {
-		hdr.WriteString(styleThinkingDim.Render("Thought for " + formatDuration(tv.Duration)))
-	} else {
-		hdr.WriteString(styleThinkingDim.Render("Thought"))
+		hdr.WriteString(styleNameBold.Render(" for "))
+		hdr.WriteString(styleDim.Render(formatDuration(tv.Duration)))
 	}
 	sb.WriteString(wordWrap(hdr.String(), availWidth))
 
-	// Show content with collapse/expand (same as tool blocks)
+	// Show content with collapse/expand (italic to distinguish from tool output)
 	if tv.Text != "" {
-		content := tv.Text
-		formatted := formatToolOutput(content, false, expand, availWidth-2, noHint, 0)
-		sb.WriteString("\n" + formatted)
+		formatted := formatToolOutput(tv.Text, false, expand, availWidth-2, noHint, 0)
+		sb.WriteString("\n" + styleThinkingContent.Render(formatted))
 	}
 }
 
