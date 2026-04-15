@@ -87,8 +87,15 @@ func TestBudgetTracker_Usage(t *testing.T) {
 	bt.Consume(types.Usage{InputTokens: 200, OutputTokens: 50})
 
 	usage := bt.Usage()
+	// Consume sums InputTokens + OutputTokens into used; Usage() returns used as InputTokens.
 	if usage.InputTokens != 650 {
-		t.Errorf("expected 650 total input tokens, got %d", usage.InputTokens)
+		t.Errorf("expected 650 total used tokens, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 0 {
+		t.Errorf("expected OutputTokens to be 0, got %d", usage.OutputTokens)
+	}
+	if bt.Remaining() != 350 {
+		t.Errorf("expected 350 remaining, got %d", bt.Remaining())
 	}
 }
 
@@ -117,8 +124,15 @@ func TestTrimMessages_TrimToMax(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(result))
 	}
+	// Verify exact trimming: oldest 2 dropped, last 3 kept.
 	if result[0].Content[0].Text != "3" {
 		t.Errorf("expected first trimmed message to be '3', got %q", result[0].Content[0].Text)
+	}
+	if result[1].Content[0].Text != "4" {
+		t.Errorf("expected second trimmed message to be '4', got %q", result[1].Content[0].Text)
+	}
+	if result[2].Content[0].Text != "5" {
+		t.Errorf("expected third trimmed message to be '5', got %q", result[2].Content[0].Text)
 	}
 }
 
@@ -137,6 +151,16 @@ func TestTrimMessages_PreserveSystem(t *testing.T) {
 	}
 	if result[0].Role != types.RoleSystem {
 		t.Errorf("expected first message to be system, got %s", result[0].Role)
+	}
+	if result[0].Content[0].Text != "system" {
+		t.Errorf("expected system text 'system', got %q", result[0].Content[0].Text)
+	}
+	// After system, the 2 most recent messages (3, 4) should be kept.
+	if result[1].Content[0].Text != "3" {
+		t.Errorf("expected second message text '3', got %q", result[1].Content[0].Text)
+	}
+	if result[2].Content[0].Text != "4" {
+		t.Errorf("expected third message text '4', got %q", result[2].Content[0].Text)
 	}
 }
 

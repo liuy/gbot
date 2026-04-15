@@ -697,6 +697,16 @@ func (e *Engine) Tools() map[string]tool.Tool {
 	return e.tools
 }
 
+// MaxTokens returns the max tokens setting.
+func (e *Engine) MaxTokens() int {
+	return e.maxTokens
+}
+
+// TokenBudget returns the token budget setting.
+func (e *Engine) TokenBudget() int {
+	return e.tokenBudget
+}
+
 // Reset clears the conversation history.
 func (e *Engine) Reset() {
 	e.messages = nil

@@ -3,7 +3,6 @@ package bash_test
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -361,7 +360,14 @@ func TestExecute_MaxTimeoutCapped(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = bash.Execute(ctx, input, nil)
+		res, execErr := bash.Execute(ctx, input, nil)
+		if execErr != nil {
+			t.Logf("Execute() error (ok in timeout cap test): %v", execErr)
+		}
+		if res != nil {
+			out := res.Data.(*bash.Output)
+			t.Logf("Execute() completed: ExitCode=%d TimedOut=%v", out.ExitCode, out.TimedOut)
+		}
 		close(done)
 	}()
 
@@ -749,7 +755,7 @@ func TestRenderResult_StderrAndTimedOut(t *testing.T) {
 func TestExecute_WithToolContextCWD(t *testing.T) {
 	t.Parallel()
 
-	dir := os.TempDir()
+	dir := t.TempDir()
 	input := json.RawMessage(`{"command":"pwd"}`)
 	tctx := &types.ToolUseContext{WorkingDir: dir}
 	result, err := bash.Execute(context.Background(), input, tctx)

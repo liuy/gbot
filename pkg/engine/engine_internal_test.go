@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -419,6 +420,9 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 	if result.Error == nil {
 		t.Error("expected error from cancelled context during streaming")
 	}
+	if !strings.Contains(result.Error.Error(), "context") {
+		t.Errorf("expected error to mention context, got %q", result.Error.Error())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +450,17 @@ func TestExecuteTools_SkipsNonToolUseBlocks(t *testing.T) {
 	}
 	if !results[0].IsError {
 		t.Error("expected error result for unknown tool")
+	}
+	if results[0].ToolUseID != "t1" {
+		t.Errorf("expected ToolUseID 't1', got %q", results[0].ToolUseID)
+	}
+	// Verify the error message mentions the unknown tool name.
+	var parsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse error content: %v", err)
+	}
+	if !strings.Contains(parsed["error"], "unknown_tool") {
+		t.Errorf("expected error to contain 'unknown_tool', got %q", parsed["error"])
 	}
 }
 

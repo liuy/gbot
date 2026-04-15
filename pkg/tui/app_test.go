@@ -136,6 +136,9 @@ func TestApp_View_WithSize(t *testing.T) {
 	if v == "" {
 		t.Error("View() should not be empty with size set")
 	}
+	if !strings.Contains(v, "❯") {
+		t.Errorf("View should contain input prompt, got: %s", v)
+	}
 }
 
 func TestApp_View_Streaming(t *testing.T) {
@@ -347,7 +350,10 @@ func TestApp_Update_SpinnerTick_NotStreaming(t *testing.T) {
 	if cmd != nil {
 		t.Error("spinner tick while not streaming should produce no command")
 	}
-	_ = model
+	a := model.(*App)
+	if a.spinner.idx != 0 {
+		t.Errorf("spinner should not advance when not streaming, idx = %d", a.spinner.idx)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +416,10 @@ func TestApp_HandleKey_CtrlC_FirstPress(t *testing.T) {
 	if cmd != nil {
 		t.Error("first Ctrl+C should not produce quit command (double-press required)")
 	}
-	_ = model
+	a := model.(*App)
+	if a.repl.streaming {
+		t.Error("should not be streaming after first Ctrl+C")
+	}
 }
 
 func TestApp_HandleKey_CtrlC_CancelStream(t *testing.T) {
@@ -456,7 +465,10 @@ func TestApp_HandleKey_EnterEmpty(t *testing.T) {
 	if cmd != nil {
 		t.Error("Enter with empty input should produce no command")
 	}
-	_ = model
+	a := model.(*App)
+	if a.repl.streaming {
+		t.Error("should not start streaming with empty input")
+	}
 }
 
 func TestApp_HandleKey_Backspace(t *testing.T) {
@@ -495,7 +507,10 @@ func TestApp_HandleKey_CursorLeftRight(t *testing.T) {
 	app.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	app.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	app.Update(tea.KeyMsg{Type: tea.KeyRight})
-	// No assertion on exact cursor position — just no panic
+	// After SetValue("abc"), cursor=3. Left-left-right → cursor=2
+	if app.input.cursor != 2 {
+		t.Errorf("cursor = %d, want 2 after left-left-right", app.input.cursor)
+	}
 }
 
 func TestApp_HandleKey_HomeEnd(t *testing.T) {
@@ -503,7 +518,13 @@ func TestApp_HandleKey_HomeEnd(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.input.SetValue("abc")
 	app.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if app.input.cursor != 0 {
+		t.Errorf("after Home, cursor = %d, want 0", app.input.cursor)
+	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if app.input.cursor != 3 {
+		t.Errorf("after End, cursor = %d, want 3", app.input.cursor)
+	}
 }
 
 func TestApp_HandleKey_Space(t *testing.T) {
@@ -552,12 +573,15 @@ func TestApp_HandleKey_Unknown(t *testing.T) {
 	if cmd != nil {
 		t.Error("unknown key should produce no command")
 	}
-	_ = model
-}
+	a := model.(*App)
+	if a.input.Value() != "" {
+		t.Errorf("unknown key should not change input, got %q", a.input.Value())
+	}
 
 // ---------------------------------------------------------------------------
 // New key bindings
 // ---------------------------------------------------------------------------
+	}
 
 func TestApp_HandleKey_CtrlB(t *testing.T) {
 	t.Parallel()
@@ -893,16 +917,15 @@ func TestReplState_PendingToolDelta_NilLastMsg(t *testing.T) {
 // prettyJSON — marshal error
 // ---------------------------------------------------------------------------
 
-func TestPrettyJSON_MarshalError(t *testing.T) {
-	// Channel values can't be marshaled to JSON
+func TestPrettyJSON_ValidJSON(t *testing.T) {
 	v := prettyJSON(json.RawMessage(`{"a":1}`))
-	// This should work fine
-	if !strings.Contains(v, "a") {
-		t.Errorf("prettyJSON with valid JSON = %q", v)
+	if !strings.Contains(v, `"a": 1`) {
+		t.Errorf("prettyJSON with valid JSON should contain formatted key-value, got %q", v)
+	}
+	if !strings.HasPrefix(v, "{") || !strings.HasSuffix(v, "}") {
+		t.Errorf("prettyJSON result should be wrapped in braces, got %q", v)
 	}
 }
-
-// ---------------------------------------------------------------------------
 // readEvents — appCh closed
 // ---------------------------------------------------------------------------
 
@@ -1173,12 +1196,15 @@ func TestApp_HandleKey_EnterWhileStreaming(t *testing.T) {
 	if cmd != nil {
 		t.Error("Enter while streaming should produce no command")
 	}
-	_ = model
-}
+	a := model.(*App)
+	if !a.repl.streaming {
+		t.Error("should still be streaming after Enter during stream")
+	}
 
 // ---------------------------------------------------------------------------
 // handleKey — Ctrl+Y with empty kill ring
 // ---------------------------------------------------------------------------
+	}
 
 func TestApp_HandleKey_CtrlY_EmptyRing(t *testing.T) {
 	t.Parallel()
@@ -1356,12 +1382,15 @@ func TestApp_Update_UnknownMsg(t *testing.T) {
 	if cmd != nil {
 		t.Error("unknown msg should produce no command")
 	}
-	_ = model
-}
+	a := model.(*App)
+	if a.repl.streaming {
+		t.Error("unknown msg should not start streaming")
+	}
 
 // ---------------------------------------------------------------------------
 // finishStream
 // ---------------------------------------------------------------------------
+	}
 
 func TestApp_FinishStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
@@ -1554,9 +1583,12 @@ func TestApp_EngineEventToMsg_TextDelta(t *testing.T) {
 		Type: types.EventTextDelta,
 		Text: "hello",
 	})
-	_, ok := msg.(streamChunkMsg)
+	cm, ok := msg.(streamChunkMsg)
 	if !ok {
-		t.Errorf("expected streamChunkMsg, got %T", msg)
+		t.Fatalf("expected streamChunkMsg, got %T", msg)
+	}
+	if cm.Text != "hello" {
+		t.Errorf("Text = %q, want %q", cm.Text, "hello")
 	}
 }
 
@@ -1733,8 +1765,10 @@ func TestApp_HandleSubmit_AlreadyStreaming(t *testing.T) {
 	if cmd != nil {
 		t.Error("submit while streaming should produce no command")
 	}
-	_ = model
-}
+	a := model.(*App)
+	if a.input.Value() != "" {
+		t.Errorf("input should be unchanged, got %q", a.input.Value())
+	}
 
 // ---------------------------------------------------------------------------
 // Additional coverage — View edge cases
@@ -1743,6 +1777,7 @@ func TestApp_HandleSubmit_AlreadyStreaming(t *testing.T) {
 // ---------------------------------------------------------------------------
 // readEvents drain behavior — appCh drained before returning complete
 // ---------------------------------------------------------------------------
+	}
 
 func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 	t.Parallel()
@@ -1834,6 +1869,9 @@ func TestApp_View_SmallHeight(t *testing.T) {
 	v := app.View()
 	if v == "" {
 		t.Error("View should not be empty even with small height")
+	}
+	if !strings.Contains(v, "❯") {
+		t.Errorf("View with small height should still show prompt, got: %q", v)
 	}
 }
 
@@ -2633,9 +2671,11 @@ func TestApp_HandleKey_CtrlP_WrappedInput(t *testing.T) {
 	// Ctrl+P should call CursorUp which returns true (on second line)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	a := model.(*App)
-	_ = a
 	if cmd != nil {
 		t.Error("Ctrl+P with wrapped lines should produce no command (cursor moves up)")
+	}
+	if a.input.cursor > 26 {
+		t.Errorf("cursor should be within value range, got %d", a.input.cursor)
 	}
 }
 
@@ -2649,9 +2689,11 @@ func TestApp_HandleKey_CtrlN_WrappedInput(t *testing.T) {
 	// Ctrl+N should call CursorDown which returns true (on first line, can go down)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	a := model.(*App)
-	_ = a
 	if cmd != nil {
 		t.Error("Ctrl+N with wrapped lines should produce no command (cursor moves down)")
+	}
+	if a.input.cursor == 0 {
+		t.Error("cursor should have moved down from home position")
 	}
 }
 
@@ -2662,9 +2704,12 @@ func TestApp_HandleKey_KeyUp_WrappedInput(t *testing.T) {
 	app.input.SetWidth(26)
 	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyUp})
-	_ = model
+	a := model.(*App)
 	if cmd != nil {
 		t.Error("KeyUp with wrapped input should move cursor up, no command")
+	}
+	if a.input.cursor > 26 {
+		t.Errorf("cursor should be within value range, got %d", a.input.cursor)
 	}
 }
 
@@ -2676,9 +2721,12 @@ func TestApp_HandleKey_KeyDown_WrappedInput(t *testing.T) {
 	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
 	app.input.Home()
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
-	_ = model
+	a := model.(*App)
 	if cmd != nil {
 		t.Error("KeyDown with wrapped input should move cursor down, no command")
+	}
+	if a.input.cursor == 0 {
+		t.Error("cursor should have moved down from home position")
 	}
 }
 

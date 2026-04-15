@@ -126,8 +126,12 @@ func TestTrackCwd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = f.WriteString(tmpDir)
-		_ = f.Close()
+		if _, err := f.WriteString(tmpDir); err != nil {
+			t.Fatalf("WriteString() error: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
 		defer func() { _ = os.Remove(f.Name()) }()
 
 		got := trackCwd(f.Name(), "/original")
@@ -150,8 +154,12 @@ func TestTrackCwd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = f.WriteString("/nonexistent/directory/path")
-		_ = f.Close()
+		if _, err := f.WriteString("/nonexistent/directory/path"); err != nil {
+			t.Fatalf("WriteString() error: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
 		defer func() { _ = os.Remove(f.Name()) }()
 
 		got := trackCwd(f.Name(), "/original")
@@ -166,8 +174,12 @@ func TestTrackCwd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = f.WriteString("  ")
-		_ = f.Close()
+		if _, err := f.WriteString("  "); err != nil {
+			t.Fatalf("WriteString() error: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
 		defer func() { _ = os.Remove(f.Name()) }()
 
 		got := trackCwd(f.Name(), "/original")
@@ -200,7 +212,9 @@ func TestDirExists(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = f.Close()
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
 		defer func() { _ = os.Remove(f.Name()) }()
 
 		if dirExists(f.Name()) {
@@ -469,6 +483,7 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 		t.Fatalf("result.Data type = %T, want *Output", result.Data)
 	}
 
+	// Step 1: Verify immediate response
 	if out.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
 	}
@@ -479,8 +494,7 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 		t.Errorf("Stdout = %q, want task ID", out.Stdout)
 	}
 
-
-	// Verify the task was registered in the default registry
+	// Step 2: Verify the task was registered in the default registry
 	registry := DefaultRegistry()
 	tasks := registry.List()
 	found := false
@@ -503,7 +517,7 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 		t.Error("background task not found in registry")
 	}
 
-	// Clean up
+	// Step 3: Clean up
 	for _, task := range tasks {
 		registry.Remove(task.ID)
 	}
@@ -834,7 +848,7 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 // This test verifies the path but the error case (line 629) is unreachable
 // without invasive injection hooks. Kept for documentation.
 func TestExecuteNonPTYStreaming_StartError(t *testing.T) {
-	// Unreachable: bash is always found, cmd.Start() never fails
+	t.Skip("unreachable without injection hooks - bash is always found")
 }
 
 func TestExecuteStream_TimeoutCap(t *testing.T) {
@@ -963,7 +977,10 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	// Cleanup: kill the task regardless of test result
 	_ = freshRegistry.Kill(task.ID)
 
-	_ = result
+	// Verify ExecuteStream returned a valid result
+	if result.Data == nil {
+		t.Fatal("ExecuteStream returned nil Data")
+	}
 
 	if pid == 0 {
 		t.Errorf("PID = 0, want non-zero — background task cannot be killed")
@@ -995,7 +1012,9 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}
-	_ = result
+	if result.Data == nil {
+		t.Fatal("spawnBackground returned nil Data")
+	}
 
 	// Give the goroutine time to start the command.
 	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
@@ -1043,7 +1062,9 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawnBackground error: %v", err)
 	}
-	_ = result
+	if result.Data == nil {
+		t.Fatal("spawnBackground returned nil Data")
+	}
 
 	// Wait for the command to actually start
 		time.Sleep(100 * time.Millisecond)

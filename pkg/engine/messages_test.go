@@ -31,6 +31,12 @@ func TestCreateAssistantMessage(t *testing.T) {
 	if msg.Role != types.RoleAssistant {
 		t.Errorf("expected RoleAssistant, got %s", msg.Role)
 	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(msg.Content))
+	}
+	if msg.Content[0].Type != types.ContentTypeText {
+		t.Errorf("expected ContentTypeText, got %s", msg.Content[0].Type)
+	}
 	if msg.Content[0].Text != "response text" {
 		t.Errorf("expected 'response text', got %q", msg.Content[0].Text)
 	}
@@ -48,6 +54,19 @@ func TestCreateToolResultMessage(t *testing.T) {
 	}
 	if len(msg.Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(msg.Content))
+	}
+	// Verify the blocks were copied correctly — check ToolUseID and IsError.
+	if msg.Content[0].ToolUseID != "tu_1" {
+		t.Errorf("expected block 0 ToolUseID 'tu_1', got %q", msg.Content[0].ToolUseID)
+	}
+	if msg.Content[0].IsError {
+		t.Error("expected block 0 IsError false")
+	}
+	if msg.Content[1].ToolUseID != "tu_2" {
+		t.Errorf("expected block 1 ToolUseID 'tu_2', got %q", msg.Content[1].ToolUseID)
+	}
+	if msg.Content[1].IsError {
+		t.Error("expected block 1 IsError false")
 	}
 }
 

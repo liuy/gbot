@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+// mustWrite asserts that s.Write(data) succeeds and returns bytes written.
+func mustWrite(t *testing.T, s *StreamingOutput, data []byte) int {
+	t.Helper()
+	n, err := s.Write(data)
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	return n
+}
+
 func TestStreamingOutput_WriteBasic(t *testing.T) {
 	t.Parallel()
 
@@ -48,7 +58,13 @@ func TestStreamingOutput_WriteMultipleLines(t *testing.T) {
 		updates = append(updates, u)
 	})
 
-	_, _ = s.Write([]byte("line1\nline2\nline3\n"))
+	n, err := s.Write([]byte("line1\nline2\nline3\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 18 {
+		t.Errorf("Write() = %d, want 18", n)
+	}
 
 	if len(updates) != 1 {
 		t.Fatalf("updates = %d, want 1", len(updates))
@@ -68,7 +84,13 @@ func TestStreamingOutput_RollingWindow(t *testing.T) {
 
 	// Write 25 lines — should keep only last 20
 	for i := 0; i < 25; i++ {
-		_, _ = s.Write([]byte("line\n"))
+		n, err := s.Write([]byte("line\n"))
+		if err != nil {
+			t.Fatalf("Write() error: %v", err)
+		}
+		if n != 5 {
+			t.Errorf("Write() = %d, want 5", n)
+		}
 	}
 
 	if len(lastUpdate.Lines) != streamingLastLines {
@@ -89,7 +111,13 @@ func TestStreamingOutput_SizeExceeded(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Write a chunk that won't exceed the limit
-	_, _ = s.Write([]byte("small"))
+	n, err := s.Write([]byte("small"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("Write() = %d, want 5", n)
+	}
 	if s.Exceeded() {
 		t.Error("Exceeded() = true, want false for small output")
 	}
@@ -117,7 +145,13 @@ func TestStreamingOutput_Lines(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("a\nb\nc\n"))
+	n, err := s.Write([]byte("a\nb\nc\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("Write() = %d, want 6", n)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 3 {
@@ -132,7 +166,13 @@ func TestStreamingOutput_String(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("hello\nworld\n"))
+	n, err := s.Write([]byte("hello\nworld\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 12 {
+		t.Errorf("Write() = %d, want 12", n)
+	}
 
 	got := s.String()
 	want := "hello\nworld"
@@ -149,7 +189,13 @@ func TestStreamingOutput_EmptyWrite(t *testing.T) {
 		updates = append(updates, u)
 	})
 
-	_, _ = s.Write([]byte{})
+	n, err := s.Write([]byte{})
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Write() = %d, want 0", n)
+	}
 	if len(updates) != 1 {
 		t.Fatalf("updates = %d, want 1 (empty write still reports)", len(updates))
 	}
@@ -167,8 +213,20 @@ func TestStreamingOutput_PartialLineFragment(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Write partial line (no newline)
-	_, _ = s.Write([]byte("hel"))
-	_, _ = s.Write([]byte("lo\n"))
+	n, err := s.Write([]byte("hel"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("Write() = %d, want 3", n)
+	}
+	n, err = s.Write([]byte("lo\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("Write() = %d, want 3", n)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 1 {
@@ -185,8 +243,20 @@ func TestStreamingOutput_PartialLineAtStart(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Write partial line then newline
-	_, _ = s.Write([]byte("abc"))
-	_, _ = s.Write([]byte("\n"))
+	n, err := s.Write([]byte("abc"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("Write() = %d, want 3", n)
+	}
+	n, err = s.Write([]byte("\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("Write() = %d, want 1", n)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 1 {
@@ -205,7 +275,13 @@ func TestStreamingOutput_FinalUpdate(t *testing.T) {
 		updates = append(updates, u)
 	})
 
-	_, _ = s.Write([]byte("hello\n"))
+	n, err := s.Write([]byte("hello\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("Write() = %d, want 6", n)
+	}
 	s.FinalUpdate()
 
 	// Should have 2 updates: one from Write, one from FinalUpdate
@@ -245,7 +321,9 @@ func TestStreamingOutput_MultipleNewlinesInOneWrite(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("a\nb\nc"))
+	if _, err := s.Write([]byte("a\nb\nc")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 3 {
@@ -260,7 +338,9 @@ func TestStreamingOutput_TrailingNewlineOnly(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("\n"))
+	if _, err := s.Write([]byte("\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 1 {
@@ -275,8 +355,12 @@ func TestStreamingOutput_WriteThenNewline(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("first\n"))
-	_, _ = s.Write([]byte("second\n"))
+	if _, err := s.Write([]byte("first\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if _, err := s.Write([]byte("second\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 2 {
@@ -294,9 +378,15 @@ func TestStreamingOutput_PartialLineAppendToExisting(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("hello\n"))  // complete line
-	_, _ = s.Write([]byte("wor"))      // partial line (last fragment, no newline)
-	_, _ = s.Write([]byte("ld"))       // partial append to last fragment
+	if _, err := s.Write([]byte("hello\n")); err != nil { // complete line
+		t.Fatalf("Write() error: %v", err)
+	}
+	if _, err := s.Write([]byte("wor")); err != nil { // partial line (last fragment, no newline)
+		t.Fatalf("Write() error: %v", err)
+	}
+	if _, err := s.Write([]byte("ld")); err != nil { // partial append to last fragment
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	lines := s.Lines()
 	if len(lines) != 2 {
@@ -324,9 +414,15 @@ func TestStreamingOutput_TotalBytesAccumulated(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("abc"))
-	_, _ = s.Write([]byte("def"))
-	_, _ = s.Write([]byte("ghi"))
+	if _, err := s.Write([]byte("abc")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if _, err := s.Write([]byte("def")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if _, err := s.Write([]byte("ghi")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	if s.TotalBytes() != 9 {
 		t.Errorf("TotalBytes() = %d, want 9", s.TotalBytes())
@@ -337,7 +433,9 @@ func TestStreamingOutput_LinesClone(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("original\n"))
+	if _, err := s.Write([]byte("original\n")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	lines := s.Lines()
 	lines[0] = "modified"
@@ -355,7 +453,9 @@ func TestStreamingOutput_Exceeded(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	big := strings.Repeat("x", 40000)
-	_, _ = s.Write([]byte(big))
+	if _, err := s.Write([]byte(big)); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 
 	if !s.Exceeded() {
 		t.Error("Exceeded() should be true after writing past MaxOutputSize")
@@ -371,14 +471,14 @@ func TestStreamingOutput_Cap_LinesStopsGrowing(t *testing.T) {
 
 	// Fill to just under cap
 	under := strings.Repeat("a", MaxOutputSize-1)
-	_, _ = s.Write([]byte(under))
+	mustWrite(t, s,[]byte(under))
 
 	if s.Exceeded() {
 		t.Fatal("should not be exceeded yet")
 	}
 
 	// Write more to trigger cap
-	_, _ = s.Write([]byte("extra data here\n"))
+	mustWrite(t, s,[]byte("extra data here\n"))
 
 	if !s.Exceeded() {
 		t.Fatal("should be exceeded now")
@@ -387,8 +487,8 @@ func TestStreamingOutput_Cap_LinesStopsGrowing(t *testing.T) {
 	linesLen := len(s.Lines())
 
 	// Write even more — lines should not grow
-	_, _ = s.Write([]byte("even more data\n"))
-	_, _ = s.Write([]byte("and more\n"))
+	mustWrite(t, s,[]byte("even more data\n"))
+	mustWrite(t, s,[]byte("and more\n"))
 
 	if len(s.Lines()) != linesLen {
 		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesLen, len(s.Lines()))
@@ -405,13 +505,13 @@ func TestStreamingOutput_Cap_LastLinesKeepsUpdating(t *testing.T) {
 
 	// Exceed cap
 	big := strings.Repeat("x", MaxOutputSize+1000)
-	_, _ = s.Write([]byte(big))
+	mustWrite(t, s,[]byte(big))
 	if !s.Exceeded() {
 		t.Fatal("should be exceeded")
 	}
 
 	// Write more — lastLines should still update
-	_, _ = s.Write([]byte("new-line-after-cap\n"))
+	mustWrite(t, s,[]byte("new-line-after-cap\n"))
 
 	found := false
 	for _, l := range lastUpdate.Lines {
@@ -431,11 +531,11 @@ func TestStreamingOutput_Cap_TotalBytesKeepsCounting(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Exceed cap
-	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
 	firstTotal := s.TotalBytes()
 
 	// Write more — totalBytes should keep growing
-	_, _ = s.Write([]byte("more data"))
+	mustWrite(t, s,[]byte("more data"))
 	secondTotal := s.TotalBytes()
 
 	if secondTotal <= firstTotal {
@@ -452,10 +552,10 @@ func TestStreamingOutput_Cap_TotalLinesKeepsCounting(t *testing.T) {
 	})
 
 	// Exceed cap with no newlines
-	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
 
 	// Write lines after cap
-	_, _ = s.Write([]byte("line1\nline2\nline3\n"))
+	mustWrite(t, s,[]byte("line1\nline2\nline3\n"))
 
 	if lastUpdate.TotalLines < 3 {
 		t.Errorf("TotalLines = %d, want at least 3 (lines after cap should still be counted)", lastUpdate.TotalLines)
@@ -471,12 +571,12 @@ func TestStreamingOutput_Cap_ProgressCallbackKeepsFiring(t *testing.T) {
 	})
 
 	// Exceed cap
-	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
 	countAfterExceed := updateCount
 
 	// Write more — callback should still fire
-	_, _ = s.Write([]byte("data\n"))
-	_, _ = s.Write([]byte("more\n"))
+	mustWrite(t, s,[]byte("data\n"))
+	mustWrite(t, s,[]byte("more\n"))
 
 	if updateCount <= countAfterExceed {
 		t.Errorf("callback count didn't increase after cap: %d -> %d", countAfterExceed, updateCount)
@@ -494,10 +594,10 @@ func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Fill to just under cap with a partial line (no newline)
-	_, _ = s.Write([]byte(strings.Repeat("a", MaxOutputSize-5)))
+	mustWrite(t, s,[]byte(strings.Repeat("a", MaxOutputSize-5)))
 
 	// This write triggers cap
-	_, _ = s.Write([]byte("hello\nworld\n"))
+	mustWrite(t, s,[]byte("hello\nworld\n"))
 
 	// exceeded is now true
 	if !s.Exceeded() {
@@ -515,7 +615,7 @@ func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
 
 	// Write more — lines should NOT grow further
 	linesBefore := len(lines)
-	_, _ = s.Write([]byte("extra\n"))
+	mustWrite(t, s,[]byte("extra\n"))
 	if len(s.Lines()) != linesBefore {
 		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesBefore, len(s.Lines()))
 	}
@@ -527,7 +627,7 @@ func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
 	})
 	// Write 19 lines, then cap is already exceeded (MaxOutputSize-5 bytes)
 	// But lastLines always grows — check that the last lines are present
-	_, _ = s2.Write([]byte("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\n")) // 19 lines
+	mustWrite(t, s2, []byte("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\n")) // 19 lines
 
 	// Verify totalLines still counts correctly even after many lines
 	if lastUpdate.TotalLines < 19 {
@@ -556,11 +656,11 @@ func TestStreamingOutput_Cap_PartialLineAfterCap(t *testing.T) {
 	})
 
 	// Exceed cap with no newline
-	_, _ = s.Write([]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
 
 	// Write partial line after cap, then complete it
-	_, _ = s.Write([]byte("par"))
-	_, _ = s.Write([]byte("tial\n"))
+	mustWrite(t, s,[]byte("par"))
+	mustWrite(t, s,[]byte("tial\n"))
 
 	// lastLines[0] = "xxxxx...xpar" (many x's + partial), last element ends with "tial"
 	found := false
@@ -609,7 +709,7 @@ func TestStreamingOutput_WriteEmptyLastFragment(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// "a\n" → Split gives ["a", ""], last fragment "" is ignored
-	_, _ = s.Write([]byte("a\n"))
+	mustWrite(t, s,[]byte("a\n"))
 
 	lines := s.Lines()
 	if len(lines) != 1 {
@@ -624,7 +724,7 @@ func TestStreamingOutput_WriteOnlyNewlines(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	_, _ = s.Write([]byte("\n\n\n"))
+	mustWrite(t, s,[]byte("\n\n\n"))
 
 	lines := s.Lines()
 	// Split("\n\n\n") = ["", "", "", ""], last "" is empty fragment
@@ -644,7 +744,7 @@ func TestStreamingOutput_RollingWindowExact(t *testing.T) {
 
 	// Write exactly 20 lines — all should be kept
 	for i := 0; i < 20; i++ {
-		_, _ = s.Write([]byte(strings.Repeat("x", i+1) + "\n"))
+		mustWrite(t, s,[]byte(strings.Repeat("x", i+1) + "\n"))
 	}
 
 	if len(lastUpdate.Lines) != 20 {
@@ -666,7 +766,13 @@ func TestStreamingOutput_LastLines(t *testing.T) {
 
 	// Write 30 lines — LastLines should return only last 20
 	for i := 0; i < 30; i++ {
-		_, _ = fmt.Fprintf(s, "line%d\n", i)
+		n, err := fmt.Fprintf(s, "line%d\n", i)
+		if err != nil {
+			t.Fatalf("Fprintf() error: %v", err)
+		}
+		if n == 0 {
+			t.Errorf("Fprintf() wrote 0 bytes for line %d", i)
+		}
 	}
 
 	got := s.LastLines()

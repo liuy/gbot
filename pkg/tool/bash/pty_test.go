@@ -18,7 +18,10 @@ func TestExecuteNonPTY_Echo(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "echo hello", Timeout: 10000}
-	inputJSON, _ := json.Marshal(in)
+	inputJSON, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
 	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
@@ -33,7 +36,14 @@ func TestExecuteNonPTY_Echo(t *testing.T) {
 	if !strings.Contains(output.Stdout, "hello") {
 		t.Errorf("Stdout = %q, want to contain 'hello'", output.Stdout)
 	}
-	_ = inputJSON // suppress warning
+	// Verify inputJSON round-trips correctly
+	var roundTrip Input
+	if err := json.Unmarshal(inputJSON, &roundTrip); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	if roundTrip.Command != "echo hello" {
+		t.Errorf("roundTrip.Command = %q, want %q", roundTrip.Command, "echo hello")
+	}
 }
 
 func TestExecuteNonPTY_Stderr(t *testing.T) {
@@ -120,7 +130,7 @@ func TestExecuteNonPTY_GenericError(t *testing.T) {
 	}
 	output := result.Data.(*Output)
 	if output.ExitCode == 0 {
-		t.Log("exit code 0 — context cancellation may not have propagated")
+		t.Errorf("exit code 0 with cancelled context — expected non-zero or error")
 	}
 }
 
@@ -153,6 +163,11 @@ func TestOpenPTY_SlavePath(t *testing.T) {
 	}
 	defer func() { _ = master.Close() }()
 	defer func() { _ = slave.Close() }()
+
+	// Verify slave path is not empty
+	if slave.Name() == "" {
+		t.Error("slave.Name() returned empty string")
+	}
 }
 
 // --- PTY command tests ---
@@ -189,7 +204,7 @@ func TestPtyCommand_Environment(t *testing.T) {
 	}
 
 	var lines []string
-	_, _, _ = ptyCommand(
+	exitCode, interrupted, ptyErr := ptyCommand(
 		context.Background(),
 		"echo $GBOT_TEST_VAR",
 		"",
@@ -197,6 +212,15 @@ func TestPtyCommand_Environment(t *testing.T) {
 		func(line string) { lines = append(lines, line) },
 		10*time.Second,
 	)
+	if ptyErr != nil {
+		t.Fatalf("ptyCommand() error: %v", ptyErr)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+	if interrupted {
+		t.Error("interrupted = true, want false")
+	}
 
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "testvalue123") {
@@ -289,7 +313,7 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 	}
 
 	var lines []string
-	_, _, _ = ptyCommand(
+	exitCode, _, err := ptyCommand(
 		context.Background(),
 		"kill -ABRT $$",
 		"",
@@ -297,6 +321,10 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 		func(line string) { lines = append(lines, line) },
 		500*time.Millisecond,
 	)
+	// Command should terminate with signal (exit code != 0) or error
+	if exitCode == 0 && err == nil {
+		t.Errorf("expected non-zero exit code or error for ABRT signal, got exitCode=%d err=%v", exitCode, err)
+	}
 }
 
 func TestPtyCommand_LongLine(t *testing.T) {
@@ -340,8 +368,10 @@ func TestPtyCommand_ReadError(t *testing.T) {
 		func(line string) { lines = append(lines, line) },
 		500*time.Millisecond,
 	)
-	_ = exitCode
-	_ = err
+	// Command times out, should get interrupted (exit code 137) or error
+	if exitCode == 0 && err == nil {
+		t.Errorf("expected non-zero exit code or error for timeout, got exitCode=%d err=%v", exitCode, err)
+	}
 }
 
 func TestPtyCommand_SigkillExit(t *testing.T) {
@@ -377,10 +407,21 @@ func TestEnsureSocketInitialized_ConcurrentInit(t *testing.T) {
 	resetSocketState()
 
 	done := make(chan struct{})
+	var initErr error
 	go func() {
-		_ = ensureSocketInitialized()
+		initErr = ensureSocketInitialized()
 		close(done)
 	}()
+
+	select {
+	case <-done:
+		// OK — error is expected when tmux is not available
+		if initErr != nil {
+			t.Logf("ensureSocketInitialized() error (expected without tmux): %v", initErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ensureSocketInitializer hung")
+	}
 
 	select {
 	case <-done:
@@ -395,7 +436,7 @@ func TestEnsureSocketInitialized_ConcurrentInit(t *testing.T) {
 func TestMakeRaw_RestoreTerminal(t *testing.T) {
 	state, err := makeRaw(0)
 	if err != nil {
-		return
+		t.Skipf("makeRaw failed: %v (not a terminal?)", err)
 	}
 	if err := restoreTerminal(0, state); err != nil {
 		t.Errorf("restoreTerminal() error: %v", err)

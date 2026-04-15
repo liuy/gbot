@@ -194,6 +194,17 @@ func TestGetStructuredPatch_EmptyOld(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatal("getStructuredPatch returned empty, want hunk for new content")
 	}
+	added := 0
+	for _, hunk := range result {
+		for _, l := range hunk.Lines {
+			if strings.HasPrefix(l, "+") {
+				added++
+			}
+		}
+	}
+	if added == 0 {
+		t.Error("expected at least one addition for empty old content")
+	}
 }
 
 func TestGetStructuredPatch_EmptyNew(t *testing.T) {
@@ -202,6 +213,17 @@ func TestGetStructuredPatch_EmptyNew(t *testing.T) {
 	result := getStructuredPatch("old content", "")
 	if len(result) == 0 {
 		t.Fatal("getStructuredPatch returned empty, want hunk for deletion")
+	}
+	removed := 0
+	for _, hunk := range result {
+		for _, l := range hunk.Lines {
+			if strings.HasPrefix(l, "-") {
+				removed++
+			}
+		}
+	}
+	if removed == 0 {
+		t.Error("expected at least one deletion for empty new content")
 	}
 }
 
@@ -325,7 +347,10 @@ func TestExecute_NormalizesCRToLF(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	got := string(data)
 	want := "line1\nline2\nline3"
 	if got != want {
@@ -353,7 +378,10 @@ func TestExecute_UpdateWithCRLF(t *testing.T) {
 		t.Errorf("Content should be normalized (no CR), got %q", output.Content)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if strings.Contains(string(data), "\r") {
 		t.Errorf("Written file should have no CR, got %q", string(data))
 	}
@@ -374,12 +402,21 @@ func TestExecute_UpdatePreservesLF(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	want := "line1\nline2\nline3\n"
 	if string(data) != want {
 		t.Errorf("File content = %q, want %q", string(data), want)
 	}
-	_ = result
+	output := result.Data.(*Output)
+	if output.Type != WriteTypeUpdate {
+		t.Errorf("Type = %q, want %q", output.Type, WriteTypeUpdate)
+	}
+	if output.Content != "line1\nline2\nline3\n" {
+		t.Errorf("Content = %q, want %q", output.Content, "line1\nline2\nline3\n")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -580,8 +617,10 @@ func TestFindGitRoot_NotGitDir(t *testing.T) {
 
 	root := findGitRoot("/tmp")
 	// /tmp is usually not a git repo — may return "" or a parent git root
-	// Just verify no panic and returns a string
-	_ = root
+	// Verify it returns a valid path (either empty or an absolute path)
+	if root != "" && !filepath.IsAbs(root) {
+		t.Errorf("findGitRoot(/tmp) = %q, want empty or absolute path", root)
+	}
 }
 
 func TestIsInGitRepo(t *testing.T) {
@@ -605,8 +644,10 @@ func TestFetchGitDiffForFile_Untracked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Result may be nil since temp dir isn't in git
-	_ = result
+	// Result should be nil since temp dir isn't in a git repo
+	if result != nil {
+		t.Errorf("fetchGitDiffForFile in non-git dir = %+v, want nil", result)
+	}
 }
 
 func TestFetchGitDiffForFile_InRepo(t *testing.T) {
@@ -617,8 +658,12 @@ func TestFetchGitDiffForFile_InRepo(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// May be nil if no uncommitted changes, or non-nil if there are
-	// Just verify no crash
-	_ = result
+	// Verify it returns a valid type (GitDiffResult or nil)
+	if result != nil {
+		if result.Filename == "" {
+			t.Error("result.Filename is empty, want non-empty")
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +794,9 @@ func TestGetMtimeMs_Error(t *testing.T) {
 	if err == nil {
 		t.Error("getMtimeMs should return error for nonexistent file")
 	}
+	if !strings.Contains(err.Error(), "stat") && !strings.Contains(err.Error(), "no such") && !strings.Contains(err.Error(), "not exist") {
+		t.Errorf("Error = %q, want file stat error", err.Error())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -855,8 +903,14 @@ func TestGetRepository_InGitRepo(t *testing.T) {
 	}
 	result := getRepository(gitRoot)
 	// May be nil if no origin remote, or non-nil with "owner/repo"
-	// Just verify no crash
-	_ = result
+	if result != nil {
+		if *result == "" {
+			t.Error("getRepository returned non-nil but empty string")
+		}
+		if !strings.Contains(*result, "/") {
+			t.Errorf("getRepository = %q, want owner/repo format", *result)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +947,13 @@ func TestExecute_WithGitDiffEnabled(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 	output := result.Data.(*Output)
-	_ = output.GitDiff // may be nil since temp dir isn't in git
+	if output.Type != WriteTypeCreate {
+		t.Errorf("Type = %q, want create", output.Type)
+	}
+	if output.Content != "hello world" {
+		t.Errorf("Content = %q, want %q", output.Content, "hello world")
+	}
+	// GitDiff may be nil since temp dir isn't in git — that's ok
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,8 +1279,8 @@ func TestGetStructuredPatch_LargeFileInsert(t *testing.T) {
 			}
 		}
 	}
-	if added == 0 {
-		t.Error("expected at least one addition")
+	if added != 1 {
+		t.Errorf("expected exactly 1 addition, got %d", added)
 	}
 }
 
@@ -1240,5 +1300,16 @@ func TestGetStructuredPatch_LargeFileDelete(t *testing.T) {
 	result := getStructuredPatch(oldContent, newContent)
 	if len(result) == 0 {
 		t.Fatal("getStructuredPatch returned empty")
+	}
+	removed := 0
+	for _, hunk := range result {
+		for _, l := range hunk.Lines {
+			if len(l) > 0 && l[0] == '-' {
+				removed++
+			}
+		}
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 removed line, got %d", removed)
 	}
 }

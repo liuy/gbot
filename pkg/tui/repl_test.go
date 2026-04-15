@@ -78,6 +78,16 @@ func TestExtractSummaryFromPartial(t *testing.T) {
 				if got != "Bash" {
 					t.Errorf("Bash normalized to %q, want %q", got, "Bash")
 				}
+			case "UnknownTool":
+				if got != "UnknownTool" {
+					t.Errorf("UnknownTool normalized to %q, want %q", got, "UnknownTool")
+				}
+			}
+			// Verify the want field is consistent with normalization expectations
+			if tt.toolName == "FileRead" || tt.toolName == "Bash" {
+				if tt.want == "" && got != "Read" && got != "Bash" {
+						t.Errorf("known tool %q should normalize, got %q", tt.toolName, got)
+					}
 			}
 		})
 	}

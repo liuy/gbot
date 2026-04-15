@@ -1,7 +1,9 @@
 package bash
 
 import (
+	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 )
@@ -19,7 +21,7 @@ func TestKillProcessTree(t *testing.T) {
 	if err != nil {
 		t.Errorf("killProcessTree() error: %v", err)
 	}
-	_ = cmd.Wait()
+	_ = cmd.Wait() // process already killed, wait just reaps
 }
 
 func TestKillProcessTree_AlreadyExited(t *testing.T) {
@@ -27,7 +29,9 @@ func TestKillProcessTree_AlreadyExited(t *testing.T) {
 
 	cmd := exec.Command("true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	_ = cmd.Start()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
 	_ = cmd.Wait()
 
 	err := killProcessTree(cmd.Process.Pid)
@@ -44,9 +48,16 @@ func TestKillProcess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	pid := cmd.Process.Pid
 
-	killProcess(cmd.Process.Pid)
-	_ = cmd.Wait()
+	killProcess(pid)
+	_ = cmd.Wait() // process already killed, wait just reaps
+
+	// Verify process was killed by checking if it's still running
+	_, err := os.Stat("/proc/" + strconv.Itoa(pid))
+	if !os.IsNotExist(err) {
+		t.Errorf("process %d may still be running", pid)
+	}
 }
 
 func TestKillProcess_AlreadyExited(t *testing.T) {
@@ -54,10 +65,14 @@ func TestKillProcess_AlreadyExited(t *testing.T) {
 
 	cmd := exec.Command("true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	_ = cmd.Start()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
 	_ = cmd.Wait()
 
+	// Killing already-exited process should not error
 	killProcess(cmd.Process.Pid)
+	// If we get here without panic, test passes
 }
 
 func TestKillProcessTree_Setsid(t *testing.T) {
@@ -80,7 +95,7 @@ func TestKillProcessTree_Setsid(t *testing.T) {
 	}
 
 	_ = killProcessTree(cmd.Process.Pid)
-	_ = cmd.Wait()
+	_ = cmd.Wait() // process already killed, wait just reaps
 }
 
 func TestKillProcessTree_ESRCHPath(t *testing.T) {
@@ -88,7 +103,9 @@ func TestKillProcessTree_ESRCHPath(t *testing.T) {
 	// Start a process that exits immediately
 	cmd := exec.Command("true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	_ = cmd.Start()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
 	_ = cmd.Wait()
 
 	// Now killProcessTree: pgid may still be valid but Kill(-pgid, 0)

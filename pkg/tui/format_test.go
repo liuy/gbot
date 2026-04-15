@@ -81,8 +81,8 @@ func TestFormatDuration_Zero(t *testing.T) {
 func TestFormatElapsed(t *testing.T) {
 	start := time.Now().Add(-2 * time.Second)
 	v := formatElapsed(start)
-	if !strings.HasSuffix(v, "s") {
-		t.Errorf("formatElapsed(2s ago) = %q, want s suffix", v)
+	if !strings.HasPrefix(v, "2") || !strings.HasSuffix(v, "s") {
+		t.Errorf("formatElapsed(2s ago) = %q, want prefix '2' and suffix 's'", v)
 	}
 }
 
@@ -91,6 +91,9 @@ func TestFormatElapsed_Milliseconds(t *testing.T) {
 	v := formatElapsed(start)
 	if !strings.HasSuffix(v, "s") {
 		t.Errorf("formatElapsed(100ms ago) = %q, want s suffix", v)
+	}
+	if !strings.Contains(v, "0.") {
+		t.Errorf("formatElapsed(100ms ago) = %q, want sub-second format (0.Xs)", v)
 	}
 }
 

@@ -37,6 +37,12 @@ func TestNew(t *testing.T) {
 	if tt.Prompt() == "" {
 		t.Error("Prompt() is empty")
 	}
+	if !strings.Contains(tt.Prompt(), "exact string replacements") {
+		t.Errorf("Prompt() = %q, should contain tool description", tt.Prompt())
+	}
+	if !strings.Contains(tt.Prompt(), "old_string") {
+		t.Errorf("Prompt() = %q, should mention 'old_string'", tt.Prompt())
+	}
 }
 
 func TestNewInputSchema(t *testing.T) {
@@ -112,12 +118,12 @@ func TestExecute_SingleReplacement(t *testing.T) {
 	}
 
 	// Verify file was actually modified
-	data, _ := os.ReadFile(fp)
-	if !strings.Contains(string(data), "hello gbot") {
-		t.Errorf("File content = %q, should contain 'hello gbot'", string(data))
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
-	if strings.Contains(string(data), "hello world") {
-		t.Errorf("File content should NOT contain 'hello world'")
+	if string(data) != "hello gbot\nfoo bar\n" {
+		t.Errorf("File content = %q, want %q", string(data), "hello gbot\nfoo bar\n")
 	}
 }
 
@@ -142,7 +148,10 @@ func TestExecute_ReplaceAll(t *testing.T) {
 		t.Error("ReplaceAll = false, want true")
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if strings.Contains(string(data), "foo") {
 		t.Errorf("File still contains 'foo': %q", string(data))
 	}
@@ -171,7 +180,10 @@ func TestExecute_NewFileCreation(t *testing.T) {
 		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if string(data) != "hello new file\n" {
 		t.Errorf("File content = %q, want %q", string(data), "hello new file\n")
 	}
@@ -203,11 +215,42 @@ func TestExecute_EmptyFileEdit(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if string(data) != "now has content" {
 		t.Errorf("File content = %q, want %q", string(data), "now has content")
 	}
 	_ = result
+}
+
+func TestExecute_EmptyDiff(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "unchanged.txt")
+
+	content := "same content\n"
+	if err := os.WriteFile(fp, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Edit with same content - should produce empty diff
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"same content","new_string":"same content"}`)
+	_, err := fileedit.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() should error when old and new strings are identical")
+	}
+
+	// Verify no file modification occurred - file content should be unchanged
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("File content changed from %q to %q, should be unchanged", content, string(data))
+	}
 }
 
 func TestExecute_CurlyQuoteMatching(t *testing.T) {
@@ -238,10 +281,14 @@ func TestExecute_CurlyQuoteMatching(t *testing.T) {
 		t.Errorf("NewString = %q, want curly-quoted version", output.NewString)
 	}
 
-	data, _ := os.ReadFile(fp)
-	// File should have curly quotes
-	if !strings.Contains(string(data), "\u201CGoodbye World\u201D") {
-		t.Errorf("File content = %q, should have curly quotes", string(data))
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// Verify exact file content — curly quotes should be preserved
+	wantContent := "\u201CGoodbye World\u201D\n"
+	if string(data) != wantContent {
+		t.Errorf("File content = %q, want %q", string(data), wantContent)
 	}
 }
 
@@ -263,14 +310,15 @@ func TestExecute_CRLFNormalization(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
-	data, _ := os.ReadFile(fp)
-	got := string(data)
-	// CRLF should be preserved in output
-	if !strings.Contains(got, "line1\r\n") {
-		t.Errorf("CRLF should be preserved in output, got: %q", got)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(got, "replaced\r\n") {
-		t.Errorf("replaced line should have CRLF, got: %q", got)
+	got := string(data)
+	// CRLF should be preserved in output — verify exact content
+	wantCRLF := "line1\r\nreplaced\r\nline3\r\n"
+	if got != wantCRLF {
+		t.Errorf("File content = %q, want %q", got, wantCRLF)
 	}
 	_ = result
 }
@@ -303,7 +351,10 @@ func TestExecute_UTF16LEWithBOM(t *testing.T) {
 	}
 
 	// Read back and verify it's still UTF-16 LE with BOM
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xFE {
 		t.Fatal("File should start with UTF-16 LE BOM")
 	}
@@ -336,7 +387,10 @@ func TestExecute_DeleteWithTrailingNewline(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	got := string(data)
 	// Should be "line1\nline3\n" — the trailing newline after "line2" was stripped
 	if got != "line1\nline3\n" {
@@ -555,7 +609,10 @@ func TestExecute_MustReadFirst_RejectsPartialRead(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(fp)
+	info, err := os.Stat(fp)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
 	tctx := &types.ToolUseContext{
 		ReadFileState: map[string]types.FileState{
 			fp: {
@@ -566,7 +623,7 @@ func TestExecute_MustReadFirst_RejectsPartialRead(t *testing.T) {
 		},
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
-	_, err := fileedit.Execute(context.Background(), input, tctx)
+	_, err = fileedit.Execute(context.Background(), input, tctx)
 	if err == nil {
 		t.Fatal("Execute() should reject edit to partially-read file")
 	}
@@ -582,7 +639,10 @@ func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("old content\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(fp)
+	info, err := os.Stat(fp)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
 	oldMtime := info.ModTime().UnixMilli()
 	tctx := &types.ToolUseContext{
 		ReadFileState: map[string]types.FileState{
@@ -599,7 +659,7 @@ func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"old content","new_string":"new content"}`)
-	_, err := fileedit.Execute(context.Background(), input, tctx)
+	_, err = fileedit.Execute(context.Background(), input, tctx)
 	if err == nil {
 		t.Fatal("Execute() should reject edit to stale file")
 	}
@@ -634,7 +694,10 @@ func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(fp)
+	info, err := os.Stat(fp)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
 	tctx := &types.ToolUseContext{
 		ReadFileState: map[string]types.FileState{
 			fp: {
@@ -681,7 +744,10 @@ func TestExecute_DesanitizeMatchesFunctionResults(t *testing.T) {
 	if !strings.Contains(output.NewString, "<function_results>") {
 		t.Errorf("NewString = %q, should contain '<function_results>'", output.NewString)
 	}
-	data, _ := os.ReadFile(fp)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
 	if strings.Contains(string(data), "<fnr>") {
 		t.Errorf("File should not contain sanitized '<fnr>', got: %q", string(data))
 	}
@@ -728,7 +794,10 @@ func TestExecute_RelativePathWithWorkingDir(t *testing.T) {
 	}
 
 	// Use a relative path "rel.txt" with WorkingDir set to dir
-	info, _ := os.Stat(fp)
+	info, err := os.Stat(fp)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
 	tctx := &types.ToolUseContext{
 		WorkingDir: dir,
 		ReadFileState: map[string]types.FileState{
@@ -747,9 +816,12 @@ func TestExecute_RelativePathWithWorkingDir(t *testing.T) {
 	if output.FilePath != fp {
 		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
 	}
-	data, _ := os.ReadFile(fp)
-	if !strings.Contains(string(data), "goodbye") {
-		t.Errorf("File content = %q, should contain 'goodbye'", string(data))
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "goodbye world\n" {
+		t.Errorf("File content = %q, want %q", string(data), "goodbye world\n")
 	}
 }
 
@@ -782,9 +854,12 @@ func TestExecute_TildePathExpansion(t *testing.T) {
 	if output.FilePath != fp {
 		t.Errorf("FilePath = %q, want %q", output.FilePath, fp)
 	}
-	data, _ := os.ReadFile(fp)
-	if !strings.Contains(string(data), "expanded") {
-		t.Errorf("File content = %q, should contain 'expanded'", string(data))
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "expanded world\n" {
+		t.Errorf("File content = %q, want %q", string(data), "expanded world\n")
 	}
 }
 
@@ -956,7 +1031,10 @@ func TestExecute_LargeFileFallbackPath(t *testing.T) {
 
 	// Edit one line — triggers fallback path in getStructuredPatch
 	inp := fileedit.Input{FilePath: fp, OldString: strings.TrimSpace(oldLine), NewString: strings.TrimSpace(newLine)}
-	inputBytes, _ := json.Marshal(inp)
+	inputBytes, err := json.Marshal(inp)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
 	input := json.RawMessage(inputBytes)
 	result, err := fileedit.Execute(context.Background(), input, nil)
 	if err != nil {
@@ -1000,9 +1078,12 @@ func TestExecute_LargeFileInsert(t *testing.T) {
 	lastLine := fmt.Sprintf("%05d insert test line", 4999)
 	newLine := fmt.Sprintf("%05d insert test line\n%05d appended new line", 4999, 5000)
 	inp := fileedit.Input{FilePath: fp, OldString: lastLine, NewString: newLine}
-	inputBytes, _ := json.Marshal(inp)
+	inputBytes, err := json.Marshal(inp)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
 	input := json.RawMessage(inputBytes)
-	_, err := fileedit.Execute(context.Background(), input, nil)
+	_, err = fileedit.Execute(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}

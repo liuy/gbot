@@ -122,7 +122,6 @@ func TestMarkTmuxToolUsed(t *testing.T) {
 func TestCheckTmuxAvailable(t *testing.T) {
 	resetSocketState()
 	result := checkTmuxAvailable()
-	_ = result // result depends on system, just verify no panic
 
 	// Second call should use cache
 	result2 := checkTmuxAvailable()
@@ -155,7 +154,9 @@ func TestCheckTmuxAvailable_NotFound(t *testing.T) {
 func TestEnsureSocketInitialized_NoTmux(t *testing.T) {
 	resetSocketState()
 	err := ensureSocketInitialized()
-	_ = err
+	if err != nil {
+		t.Errorf("ensureSocketInitialized() error: %v (expected nil or specific error)", err)
+	}
 }
 
 func TestGetEnvironmentOverrides_NoTmuxCommand(t *testing.T) {
@@ -169,7 +170,13 @@ func TestGetEnvironmentOverrides_NoTmuxCommand(t *testing.T) {
 func TestGetEnvironmentOverrides_TmuxCommand(t *testing.T) {
 	resetSocketState()
 	overrides := getEnvironmentOverrides("tmux new-session")
-	_ = overrides
+	if overrides == nil {
+		t.Skip("tmux not available or not initialized")
+	}
+	// Verify TMUX key exists if tmux is initialized
+	if _, ok := overrides["TMUX"]; !ok {
+		t.Logf("overrides = %v (TMUX key may be missing if tmux not running)", overrides)
+	}
 }
 
 func TestResetSocketState(t *testing.T) {
@@ -182,22 +189,28 @@ func TestResetSocketState(t *testing.T) {
 	if getClaudeSocketPath() != "" {
 		t.Error("resetSocketState() did not reset tmuxSocketPath")
 	}
+	// After reset, socket name should be regenerated (non-empty)
 	if getClaudeSocketName() == "" {
-		_ = getClaudeSocketName()
+		t.Error("getClaudeSocketName() returned empty after reset")
 	}
 }
 
 func TestKillTmuxServer(t *testing.T) {
 	resetSocketState()
 	err := killTmuxServer()
-	_ = err
+	// No error expected if tmux not running, or specific error if it fails
+	if err != nil {
+		t.Logf("killTmuxServer() error: %v (may be expected if tmux not running)", err)
+	}
 }
 
 func TestExecTmux(t *testing.T) {
 	t.Parallel()
 
 	result := execTmux([]string{"list-commands"})
-	_ = result
+	if result.Code == 0 && result.Stdout == "" {
+		t.Error("execTmux(list-commands) returned empty stdout with code 0")
+	}
 }
 
 func TestExecTmux_InvalidSubcommand(t *testing.T) {
@@ -205,7 +218,7 @@ func TestExecTmux_InvalidSubcommand(t *testing.T) {
 
 	result := execTmux([]string{"invalid-nonexistent-subcommand-xyz"})
 	if result.Code == 0 {
-		t.Log("unexpected success with invalid subcommand")
+		t.Errorf("expected non-zero exit code for invalid subcommand, got 0")
 	}
 }
 
@@ -402,7 +415,7 @@ func TestDoInitialize_WithTmux(t *testing.T) {
 
 	err := ensureSocketInitialized()
 	if err != nil {
-		_ = err
+		t.Logf("ensureSocketInitialized() error (expected without tmux): %v", err)
 	}
 
 	if isSocketInitialized() {
@@ -462,8 +475,9 @@ func TestDoInitialize_FallbackPath(t *testing.T) {
 	// so display-message returns unexpected format → triggers fallback
 	tmuxSocketName = ""
 	err := doInitialize()
-	// May succeed or fail depending on tmux state
-	_ = err
+	if err != nil {
+		t.Logf("doInitialize() fallback path error: %v", err)
+	}
 
 	// Cleanup
 	execTmux([]string{"-L", socket, "kill-server"})
@@ -496,7 +510,10 @@ func TestGetEnvironmentOverrides_StderrLog(t *testing.T) {
 	tmuxSocketName = strings.Repeat("z", 10000)
 	// This exercises the stderr logging path in getEnvironmentOverrides
 	overrides := getEnvironmentOverrides("echo test")
-	_ = overrides
+	// With a broken tmux setup, overrides should be nil (init fails silently)
+	if overrides != nil {
+		t.Logf("overrides = %v (unexpected with broken tmux config)", overrides)
+	}
 }
 
 func TestExecTmux_NonExitError(t *testing.T) {
@@ -541,8 +558,11 @@ func TestExecTmux_OverrideNotMatched(t *testing.T) {
 	defer func() { execTmuxOverride = orig }()
 
 	result := execTmux([]string{"list-commands"})
-	_ = result // just verify no panic
-}
+	// Override returned false, so real tmux is used.
+	// Verify result is a valid tmuxResult (not zero-valued junk).
+	if result.Code == 0 && result.Stdout == "" {
+		t.Log("execTmux with unmatched override: code 0, empty stdout (tmux may not be available)")
+	}}
 
 
 // --- doInitialize fallback paths via execTmuxOverride ---

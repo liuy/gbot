@@ -1,6 +1,7 @@
 package bash
 
 import (
+	"runtime"
 	"syscall"
 	"testing"
 )
@@ -12,11 +13,11 @@ func TestGetTerminalSize(t *testing.T) {
 	if err != nil {
 		t.Errorf("GetTerminalSize() error: %v", err)
 	}
-	if rows != 24 && rows < 1 {
-		t.Errorf("GetTerminalSize() rows = %d, want 24 (fallback) or positive", rows)
+	if rows < 1 {
+		t.Errorf("GetTerminalSize() rows = %d, want positive", rows)
 	}
-	if cols != 80 && cols < 1 {
-		t.Errorf("GetTerminalSize() cols = %d, want 80 (fallback) or positive", cols)
+	if cols < 1 {
+		t.Errorf("GetTerminalSize() cols = %d, want positive", cols)
 	}
 }
 
@@ -37,21 +38,30 @@ func TestGetTerminalSize_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Errorf("GetTerminalSize() error: %v", err)
 	}
-	_ = rows
-	_ = cols
+	if rows < 1 {
+		t.Errorf("GetTerminalSize() rows = %d, want positive", rows)
+	}
+	if cols < 1 {
+		t.Errorf("GetTerminalSize() cols = %d, want positive", cols)
+	}
 }
 
 func TestIsLinux(t *testing.T) {
 	t.Parallel()
 
 	result := isLinux()
-	_ = result
+	if runtime.GOOS == "linux" && !result {
+		t.Error("isLinux() = false on linux, want true")
+	}
+	if runtime.GOOS != "linux" && result {
+		t.Errorf("isLinux() = true on %s, want false", runtime.GOOS)
+	}
 }
 
 func TestSetPTYWindowSize_InvalidFd(t *testing.T) {
 	err := setPTYWindowSize(uintptr(syscall.Stdin))
 	if err == nil {
-		_ = err
+		t.Error("expected error for invalid fd (stdin is not a PTY)")
 	}
 }
 
@@ -67,7 +77,12 @@ func TestSetPTYWindowSize_WithPTY(t *testing.T) {
 	defer func() { _ = master.Close() }()
 	defer func() { _ = slave.Close() }()
 
-	_ = setPTYWindowSize(master.Fd())
+	// setPTYWindowSize reads from fd 0 (stdin) which may not be a PTY
+	// So we use setPTYWindowSizeFd directly with slave as control
+	err = setPTYWindowSizeFd(int(slave.Fd()), master.Fd())
+	if err != nil {
+		t.Errorf("setPTYWindowSizeFd(slave, master) error: %v", err)
+	}
 }
 
 // --- fd-parametrized function tests ---
@@ -126,13 +141,17 @@ func TestGetTerminalSizeFd_WithPTY(t *testing.T) {
 	defer func() { _ = master.Close() }()
 	defer func() { _ = slave.Close() }()
 
-	// PTY slave is a terminal → term.GetSize should succeed
+	// First set a window size, then read it back
+	_ = setPTYWindowSizeFd(int(slave.Fd()), master.Fd())
 	rows, cols, err := getTerminalSizeFd(int(slave.Fd()))
 	if err != nil {
 		t.Errorf("getTerminalSizeFd() error: %v", err)
 	}
-	_ = rows
-	_ = cols
+	// After setting window size, should get positive values
+	// (Note: may still get 0,0 if the set didn't work, which is OK for this test)
+	if rows < 0 || cols < 0 {
+		t.Errorf("getTerminalSizeFd() rows = %d, cols = %d, want non-negative", rows, cols)
+	}
 }
 
 func TestSetPTYWindowSizeFd_WithPTY(t *testing.T) {
@@ -149,6 +168,7 @@ func TestSetPTYWindowSizeFd_WithPTY(t *testing.T) {
 
 	// Use master as both ctlFd and ptyFd — both are valid PTY fds
 	err = setPTYWindowSizeFd(int(master.Fd()), master.Fd())
-	// May or may not succeed depending on window state, just verify no panic
-	_ = err
+	if err != nil {
+		t.Errorf("setPTYWindowSizeFd(valid, valid) error: %v", err)
+	}
 }

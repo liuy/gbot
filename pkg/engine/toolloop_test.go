@@ -63,11 +63,28 @@ func TestSequentialToolLoop_SingleTool(t *testing.T) {
 	if results[0].IsError {
 		t.Error("expected no error")
 	}
+	if results[0].Type != types.ContentTypeToolResult {
+		t.Errorf("expected ContentTypeToolResult, got %s", results[0].Type)
+	}
+	// Verify the tool result content is the JSON-encoded tool output.
+	var parsed string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse result content: %v", err)
+	}
+	if parsed != "ok" {
+		t.Errorf("expected result content 'ok', got %q", parsed)
+	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 	if events[0].Type != types.EventToolResult {
 		t.Errorf("expected EventToolResult, got %s", events[0].Type)
+	}
+	if events[0].ToolResult == nil {
+		t.Fatal("expected non-nil ToolResult in event")
+	}
+	if events[0].ToolResult.ToolUseID != "tu_1" {
+		t.Errorf("expected event ToolUseID 'tu_1', got %q", events[0].ToolResult.ToolUseID)
 	}
 }
 
@@ -159,6 +176,16 @@ func TestSequentialToolLoop_MultipleTools(t *testing.T) {
 	if callCount["tool_a"] != 1 || callCount["tool_b"] != 1 {
 		t.Errorf("expected each tool called once, got %v", callCount)
 	}
+	// Verify result ordering matches block ordering.
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("expected results[0] ToolUseID 'tu_1', got %q", results[0].ToolUseID)
+	}
+	if results[1].ToolUseID != "tu_2" {
+		t.Errorf("expected results[1] ToolUseID 'tu_2', got %q", results[1].ToolUseID)
+	}
+	if results[0].IsError || results[1].IsError {
+		t.Error("expected no errors in results")
+	}
 }
 
 func TestSequentialToolLoop_CancelledContext(t *testing.T) {
@@ -182,6 +209,17 @@ func TestSequentialToolLoop_CancelledContext(t *testing.T) {
 	if !results[0].IsError {
 		t.Error("expected error for cancelled context")
 	}
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("expected ToolUseID 'tu_1', got %q", results[0].ToolUseID)
+	}
+	// Verify the error message is the synthetic "user_interrupted" message.
+	var parsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse error content: %v", err)
+	}
+	if parsed["error"] != "User rejected tool use" {
+		t.Errorf("expected 'User rejected tool use', got %q", parsed["error"])
+	}
 }
 
 func TestSequentialToolLoop_SkipsNonToolBlocks(t *testing.T) {
@@ -200,6 +238,12 @@ func TestSequentialToolLoop_SkipsNonToolBlocks(t *testing.T) {
 	// Only the tool_use block should produce a result
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ToolUseID != "tu_1" {
+		t.Errorf("expected ToolUseID 'tu_1', got %q", results[0].ToolUseID)
+	}
+	if results[0].IsError {
+		t.Error("expected non-error result for 'echo' tool")
 	}
 }
 
@@ -226,6 +270,9 @@ func TestSequentialToolLoop_Timing(t *testing.T) {
 	}
 	if events[0].ToolResult.Timing < 10*time.Millisecond {
 		t.Errorf("expected timing >= 10ms, got %v", events[0].ToolResult.Timing)
+	}
+	if events[0].ToolResult.ToolUseID != "tu_1" {
+		t.Errorf("expected ToolUseID 'tu_1', got %q", events[0].ToolResult.ToolUseID)
 	}
 }
 
@@ -255,6 +302,9 @@ func TestSequentialToolLoop_ContextModifier(t *testing.T) {
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].IsError {
+		t.Error("expected non-error result")
 	}
 	if tctx.WorkingDir != "/new-dir" {
 		t.Errorf("expected WorkingDir to be modified to /new-dir, got %q", tctx.WorkingDir)

@@ -233,6 +233,10 @@ func TestRender_Strikethrough_Disabled(t *testing.T) {
 	if !strings.Contains(result, "100") {
 		t.Errorf("expected text content, got: %q", result)
 	}
+	// Should NOT render as strikethrough ANSI
+	if strings.Contains(result, "\x1b[9m") {
+		t.Errorf("strikethrough ANSI should not appear, got: %q", result)
+	}
 }
 
 func TestRender_MixedFormatting(t *testing.T) {
@@ -701,8 +705,14 @@ func TestRender_MultipleCodeBlocks(t *testing.T) {
 func TestLinkifyIssueReferences_NoHyperlinkSupport(t *testing.T) {
 	t.Parallel()
 	orig := os.Getenv("TERM")
-	_ = os.Setenv("TERM", "dumb")
-	defer func() { _ = os.Setenv("TERM", orig) }()
+	if err := os.Setenv("TERM", "dumb"); err != nil {
+		t.Fatalf("setenv failed: %v", err)
+	}
+	defer func() {
+		if err := os.Setenv("TERM", orig); err != nil {
+			t.Errorf("restore TERM failed: %v", err)
+		}
+	}()
 
 	input := "see owner/repo#123"
 	got := linkifyIssueReferences(input)
@@ -714,8 +724,14 @@ func TestLinkifyIssueReferences_NoHyperlinkSupport(t *testing.T) {
 func TestRender_Link_NoHyperlinkSupport(t *testing.T) {
 	// Non-parallel: modifies TERM env
 	orig := os.Getenv("TERM")
-	_ = os.Setenv("TERM", "dumb")
-	defer func() { _ = os.Setenv("TERM", orig) }()
+	if err := os.Setenv("TERM", "dumb"); err != nil {
+		t.Fatalf("setenv failed: %v", err)
+	}
+	defer func() {
+		if err := os.Setenv("TERM", orig); err != nil {
+			t.Errorf("restore TERM failed: %v", err)
+		}
+	}()
 
 	result := Render("[click](https://example.com)")
 	if !strings.Contains(result, "click") {

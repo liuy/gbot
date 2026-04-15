@@ -277,3 +277,32 @@ func TestStreamAccumulator_ToolUseBlocksEmpty(t *testing.T) {
 		t.Errorf("expected nil, got %v", blocks)
 	}
 }
+
+func TestStreamAccumulator_ToolUseBlocksNotEmpty(t *testing.T) {
+	t.Parallel()
+	acc := engine.NewStreamAccumulator()
+
+	// Simulate processing tool events
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tool_123", Name: "test_tool"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"arg":"value"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_stop"},
+	}
+
+	for _, evt := range events {
+		_, err := acc.ProcessEvent(evt)
+		if err != nil {
+			t.Fatalf("ProcessEvent error: %v", err)
+		}
+	}
+
+	blocks := acc.ToolUseBlocks()
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 tool use block, got %d", len(blocks))
+	}
+	if blocks[0].Name != "test_tool" {
+		t.Errorf("expected tool name 'test_tool', got %s", blocks[0].Name)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +151,9 @@ func TestExecute_MaxFileSizeExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for oversized file")
 	}
+	if !strings.Contains(err.Error(), "too large") && !strings.Contains(err.Error(), "file size") {
+		t.Errorf("Error = %q, want error mentioning file size", err.Error())
+	}
 }
 
 func TestExecute_WriteErrorOnNewFile(t *testing.T) {
@@ -167,6 +171,9 @@ func TestExecute_WriteErrorOnNewFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want write error for new file in read-only dir")
 	}
+	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "write") {
+		t.Errorf("Error = %q, want error mentioning permission/write issue", err.Error())
+	}
 }
 
 func TestExecute_WriteErrorOnEmptyFile(t *testing.T) {
@@ -182,6 +189,9 @@ func TestExecute_WriteErrorOnEmptyFile(t *testing.T) {
 	_, err := Execute(context.TODO(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want write error on read-only empty file")
+	}
+	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "write") {
+		t.Errorf("Error = %q, want error mentioning permission/write issue", err.Error())
 	}
 }
 
@@ -209,6 +219,9 @@ func TestExecute_WriteErrorBOM(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want write error on read-only BOM file")
 	}
+	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "write") {
+		t.Errorf("Error = %q, want error mentioning permission/write issue", err.Error())
+	}
 }
 
 func TestExecute_WriteErrorNormal(t *testing.T) {
@@ -223,5 +236,8 @@ func TestExecute_WriteErrorNormal(t *testing.T) {
 	_, err := Execute(context.TODO(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want write error on read-only normal file")
+	}
+	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "write") {
+		t.Errorf("Error = %q, want error mentioning permission/write issue", err.Error())
 	}
 }

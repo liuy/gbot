@@ -364,7 +364,13 @@ func TestBackgroundTaskRegistry_Spawn_WithOutput(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 
 	output := NewStreamingOutput(nil)
-	_, _ = output.Write([]byte("hello\n"))
+	n, err := output.Write([]byte("hello\n"))
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != 6 {
+		t.Errorf("Write() = %d, want 6", n)
+	}
 
 	task := r.Spawn("echo hello", 1234, output)
 
@@ -913,7 +919,9 @@ func TestBackgroundTask_Complete_AlreadyTerminal(t *testing.T) {
 func TestBackgroundTask_Complete_WithOutput(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	_, _ = output.Write([]byte("hello"))
+	if _, err := output.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
 	task := &BackgroundTask{
 		Status: TaskRunning,
 		done:   make(chan struct{}),
@@ -1097,7 +1105,9 @@ func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 
 	task := r.Spawn("sleep 60", 12345, nil)
-	_ = r.Kill(task.ID)
+	if err := r.Kill(task.ID); err != nil {
+		t.Fatalf("Kill() error: %v", err)
+	}
 
 	adapter := NewTaskInfoAdapter(r)
 	info, ok := adapter.Get(task.ID)
@@ -1136,7 +1146,11 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 
 	// Wait for the task to complete via the global registry
 	reg := DefaultRegistry()
-	_, _ = reg.Wait(output.BackgroundTaskID)
+	waitCode, waitErr := reg.Wait(output.BackgroundTaskID)
+	if waitErr != nil {
+		t.Fatalf("Wait() error: %v", waitErr)
+	}
+	t.Logf("background task exited with code %d", waitCode)
 
 	// Check that stderr content appears in the task output
 	task, ok := reg.Get(output.BackgroundTaskID)

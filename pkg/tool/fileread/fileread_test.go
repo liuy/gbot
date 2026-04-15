@@ -42,6 +42,9 @@ func TestNew(t *testing.T) {
 	if tt.Prompt() == "" {
 		t.Error("Prompt() is empty")
 	}
+	if !strings.Contains(tt.Prompt(), "Reads a file") {
+		t.Errorf("Prompt() = %q, should contain 'Reads a file'", tt.Prompt())
+	}
 	if !tt.IsEnabled() {
 		t.Error("IsEnabled() = false, want true")
 	}
@@ -55,6 +58,20 @@ func TestNewInputSchema(t *testing.T) {
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
 		t.Fatalf("InputSchema() is not valid JSON: %v", err)
+	}
+	required, _ := obj["required"].([]any)
+	if len(required) == 0 || required[0] != "file_path" {
+		t.Errorf("InputSchema() required = %v, want [\"file_path\"]", required)
+	}
+	props, _ := obj["properties"].(map[string]any)
+	if _, ok := props["file_path"]; !ok {
+		t.Error("InputSchema() missing 'file_path' property")
+	}
+	if _, ok := props["offset"]; !ok {
+		t.Error("InputSchema() missing 'offset' property")
+	}
+	if _, ok := props["limit"]; !ok {
+		t.Error("InputSchema() missing 'limit' property")
 	}
 }
 
@@ -202,14 +219,14 @@ func TestExecute_ReadWithOffset(t *testing.T) {
 	if output.TotalLines != 5 {
 		t.Errorf("TotalLines = %d, want 5", output.TotalLines)
 	}
-	if !strings.Contains(output.Content, "line3") {
-		t.Errorf("Content = %q, should contain 'line3'", output.Content)
-	}
-	if !strings.Contains(output.Content, "line5") {
-		t.Errorf("Content = %q, should contain 'line5'", output.Content)
+	if output.Content != "line3\nline4\nline5" {
+		t.Errorf("Content = %q, want %q", output.Content, "line3\\nline4\\nline5")
 	}
 	if strings.Contains(output.Content, "line1") {
 		t.Errorf("Content = %q, should NOT contain 'line1'", output.Content)
+	}
+	if strings.Contains(output.Content, "line2") {
+		t.Errorf("Content = %q, should NOT contain 'line2'", output.Content)
 	}
 }
 
@@ -233,11 +250,8 @@ func TestExecute_ReadWithLimit(t *testing.T) {
 	if output.NumLines != 2 {
 		t.Errorf("NumLines = %d, want 2", output.NumLines)
 	}
-	if !strings.Contains(output.Content, "line2") {
-		t.Errorf("Content should contain 'line2'")
-	}
-	if !strings.Contains(output.Content, "line3") {
-		t.Errorf("Content should contain 'line3'")
+	if output.Content != "line2\nline3" {
+		t.Errorf("Content = %q, want %q", output.Content, "line2\\nline3")
 	}
 	if strings.Contains(output.Content, "line1") {
 		t.Errorf("Content should NOT contain 'line1'")
@@ -268,6 +282,12 @@ func TestExecute_ReadWithZeroOffset(t *testing.T) {
 	if output.NumLines != 2 {
 		t.Errorf("NumLines = %d, want 2", output.NumLines)
 	}
+	if output.StartLine != 1 {
+		t.Errorf("StartLine = %d, want 1 (zero offset normalised)", output.StartLine)
+	}
+	if output.Content != "line1\nline2" {
+		t.Errorf("Content = %q, want %q", output.Content, "line1\\nline2")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +300,9 @@ func TestExecute_InvalidJSON(t *testing.T) {
 	_, err := fileread.Execute(context.Background(), json.RawMessage(`{invalid`), nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("Error = %q, want 'parse input'", err.Error())
 	}
 }
 
@@ -303,8 +326,10 @@ func TestExecute_FileNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for missing file")
 	}
-	if !strings.Contains(err.Error(), "file does not exist") {
-		t.Errorf("Error = %q, want 'file does not exist'", err.Error())
+	// Check for specific error messages about file not existing
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "does not exist") && !strings.Contains(errMsg, "no such file") {
+		t.Errorf("Error = %q, want 'does not exist' or 'no such file'", errMsg)
 	}
 }
 
@@ -319,6 +344,9 @@ func TestExecute_Directory(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "directory") {
 		t.Errorf("Error = %q, want 'directory'", err.Error())
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("Error = %q, should contain path %q", err.Error(), dir)
 	}
 }
 
@@ -344,6 +372,9 @@ func TestExecute_StatPermissionDenied(t *testing.T) {
 	_, err := fileread.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("expected error for permission denied")
+	}
+	if !strings.Contains(err.Error(), target) {
+		t.Errorf("Error = %q, should contain path %q", err.Error(), target)
 	}
 }
 
@@ -414,8 +445,19 @@ func TestExecute_ReadPDF(t *testing.T) {
 	if pdfOut.Base64 == "" {
 		t.Error("Base64 is empty")
 	}
-	if pdfOut.OriginalSize == 0 {
-		t.Error("OriginalSize is 0")
+	// Verify base64 decodes back to original content
+	decoded, err := base64.StdEncoding.DecodeString(pdfOut.Base64)
+	if err != nil {
+		t.Fatalf("Base64 decode error: %v", err)
+	}
+	if len(decoded) != len(data) {
+		t.Errorf("Decoded length = %d, want %d", len(decoded), len(data))
+	}
+	if pdfOut.OriginalSize != int64(len(data)) {
+		t.Errorf("OriginalSize = %d, want %d", pdfOut.OriginalSize, len(data))
+	}
+	if pdfOut.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", pdfOut.FilePath, fp)
 	}
 }
 
@@ -446,13 +488,28 @@ func TestExecute_ReadPDFWithPages(t *testing.T) {
 		if pdfOut.Type != "pdf" {
 			t.Errorf("Type = %q, want %q", pdfOut.Type, "pdf")
 		}
+		if pdfOut.FilePath != fp {
+			t.Errorf("FilePath = %q, want %q", pdfOut.FilePath, fp)
+		}
+		if pdfOut.OriginalSize != int64(len(data)) {
+			t.Errorf("OriginalSize = %d, want %d", pdfOut.OriginalSize, len(data))
+		}
 		return
 	}
 	if partsOut.Type != "parts" {
 		t.Errorf("Type = %q, want %q", partsOut.Type, "parts")
 	}
-	if partsOut.Count < 1 {
-		t.Errorf("Count = %d, want >= 1", partsOut.Count)
+	if partsOut.Count != 1 {
+		t.Errorf("Count = %d, want 1 (pages='1')", partsOut.Count)
+	}
+	if partsOut.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", partsOut.FilePath, fp)
+	}
+	if partsOut.OutputDir == "" {
+		t.Error("OutputDir is empty")
+	}
+	if partsOut.OriginalSize != int64(len(data)) {
+		t.Errorf("OriginalSize = %d, want %d", partsOut.OriginalSize, len(data))
 	}
 }
 
@@ -480,9 +537,21 @@ func TestExecute_PDFTooManyPages(t *testing.T) {
 		if out.Type != "parts" {
 			t.Errorf("PartsOutput.Type = %q, want parts", out.Type)
 		}
+		if out.FilePath != fp {
+			t.Errorf("FilePath = %q, want %q", out.FilePath, fp)
+		}
+		if out.OriginalSize != int64(len(data)) {
+			t.Errorf("OriginalSize = %d, want %d", out.OriginalSize, len(data))
+		}
 	case fileread.PDFOutput:
 		if out.Type != "pdf" {
 			t.Errorf("PDFOutput.Type = %q, want pdf", out.Type)
+		}
+		if out.FilePath != fp {
+			t.Errorf("FilePath = %q, want %q", out.FilePath, fp)
+		}
+		if out.OriginalSize != int64(len(data)) {
+			t.Errorf("OriginalSize = %d, want %d", out.OriginalSize, len(data))
 		}
 	default:
 		t.Fatalf("Data type = %T, want PartsOutput or PDFOutput", result.Data)
@@ -559,8 +628,16 @@ func TestExecute_ReadPNG(t *testing.T) {
 	if imgOut.Base64 == "" {
 		t.Error("Base64 is empty")
 	}
-	if imgOut.OriginalWidth == 0 || imgOut.OriginalHeight == 0 {
-		t.Errorf("Dimensions = %dx%d, want non-zero", imgOut.OriginalWidth, imgOut.OriginalHeight)
+	// Verify base64 decodes to valid image data
+	_, err = base64.StdEncoding.DecodeString(imgOut.Base64)
+	if err != nil {
+		t.Fatalf("Base64 decode error: %v", err)
+	}
+	if imgOut.OriginalWidth != 1 || imgOut.OriginalHeight != 1 {
+		t.Errorf("Dimensions = %dx%d, want 1x1", imgOut.OriginalWidth, imgOut.OriginalHeight)
+	}
+	if imgOut.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", imgOut.FilePath, fp)
 	}
 }
 
@@ -576,6 +653,9 @@ func TestExecute_ImageEmpty(t *testing.T) {
 	_, err := fileread.Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("want error for empty image")
+	}
+	if !strings.Contains(err.Error(), "empty image file") {
+		t.Errorf("Error = %q, want 'empty image file'", err.Error())
 	}
 }
 
@@ -807,11 +887,9 @@ func TestRenderResult_TextOutput(t *testing.T) {
 		StartLine:  1,
 		TotalLines: 2,
 	})
-	if !strings.Contains(result, "package main") {
-		t.Errorf("RenderResult(TextOutput) = %q, should contain file content", result)
-	}
-	if strings.Contains(result, `"type"`) {
-		t.Errorf("RenderResult(TextOutput) = %q, should not contain raw JSON keys", result)
+	want := "package main\nfunc main() {}\n"
+	if result != want {
+		t.Errorf("RenderResult(TextOutput) = %q, want %q", result, want)
 	}
 }
 
@@ -824,8 +902,9 @@ func TestRenderResult_ImageOutput(t *testing.T) {
 		OriginalWidth:  800,
 		OriginalHeight: 600,
 	})
-	if !strings.Contains(result, "/tmp/img.png") {
-		t.Errorf("RenderResult(ImageOutput) = %q, should contain file path", result)
+	want := "Image: /tmp/img.png (800x600)"
+	if result != want {
+		t.Errorf("RenderResult(ImageOutput) = %q, want %q", result, want)
 	}
 }
 
@@ -836,7 +915,8 @@ func TestRenderResult_FileUnchanged(t *testing.T) {
 		Type:     "file_unchanged",
 		FilePath: "/tmp/test.go",
 	})
-	if !strings.Contains(result, "unchanged") {
-		t.Errorf("RenderResult(FileUnchangedOutput) = %q, should mention unchanged", result)
+	want := "File unchanged: /tmp/test.go"
+	if result != want {
+		t.Errorf("RenderResult(FileUnchangedOutput) = %q, want %q", result, want)
 	}
 }

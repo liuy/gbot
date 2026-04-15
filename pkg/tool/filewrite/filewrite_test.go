@@ -178,9 +178,18 @@ func TestExecute_CreateEmptyFile(t *testing.T) {
 		t.Errorf("OriginalFile = %v, want nil", *output.OriginalFile)
 	}
 
-	data, _ := os.ReadFile(fp)
+	// Verify file exists and is empty after write
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
 	if string(data) != "" {
 		t.Errorf("File content = %q, want empty", string(data))
+	}
+
+	// Verify file actually exists on disk
+	if _, err := os.Stat(fp); err != nil {
+		t.Errorf("File should exist after write, Stat error: %v", err)
 	}
 }
 
@@ -219,10 +228,16 @@ func TestExecute_UpdateExistingFile(t *testing.T) {
 		t.Errorf("OriginalFile = %q, want %q", *output.OriginalFile, "old content")
 	}
 
-	data, _ := os.ReadFile(fp)
-	if string(data) != "new content" {
-		t.Errorf("File content = %q, want %q", string(data), "new content")
+	// Verify old content is gone and new content is present
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
+	fileContent := string(data)
+	if fileContent != "new content" {
+		t.Errorf("File content = %q, want %q", fileContent, "new content")
+	}
+
 }
 
 func TestExecute_UpdateUnchanged(t *testing.T) {
@@ -262,6 +277,9 @@ func TestExecute_InvalidJSON(t *testing.T) {
 	_, err := filewrite.Execute(context.Background(), json.RawMessage(`{invalid`), nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "invalid") && !strings.Contains(err.Error(), "JSON") && !strings.Contains(err.Error(), "json") && !strings.Contains(err.Error(), "parse") {
+		t.Errorf("Error = %q, want JSON parse error", err.Error())
 	}
 }
 
@@ -509,8 +527,10 @@ func TestExecute_UpdatesReadFileState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
-	_ = result
-
+	output := result.Data.(*filewrite.Output)
+	if output.Type != filewrite.WriteTypeUpdate {
+		t.Errorf("Type = %q, want %q", output.Type, filewrite.WriteTypeUpdate)
+	}
 	// ReadFileState should be updated with new content and new mtime
 	state, ok := tctx.ReadFileState[expandPath(fp)]
 	if !ok {
@@ -557,7 +577,6 @@ func TestExecute_ExpandsTildePath(t *testing.T) {
 	// Use a unique subdir under /tmp to avoid HOME permission issues
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "file.txt")
-	defer func() { _ = os.RemoveAll(dir) }()
 
 	input := json.RawMessage(`{"file_path":"` + strings.Replace(fp, home, "~", 1) + `","content":"expanded"}`)
 	result, err := filewrite.Execute(context.Background(), input, nil)

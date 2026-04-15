@@ -193,6 +193,9 @@ func TestInput_CursorLeft(t *testing.T) {
 	if i.Value() != "abc" {
 		t.Errorf("Value() unchanged = %q", i.Value())
 	}
+	if i.cursor != 2 {
+		t.Errorf("cursor = %d, want 2 after CursorLeft", i.cursor)
+	}
 }
 
 func TestInput_CursorRight(t *testing.T) {
@@ -206,6 +209,9 @@ func TestInput_CursorRight(t *testing.T) {
 	if i.Value() != "abc" {
 		t.Errorf("Value() unchanged = %q", i.Value())
 	}
+	if i.cursor != 2 {
+		t.Errorf("cursor = %d, want 2 after left-left-right", i.cursor)
+	}
 }
 
 func TestInput_Home(t *testing.T) {
@@ -218,6 +224,9 @@ func TestInput_Home(t *testing.T) {
 	if i.Value() != "abc" {
 		t.Errorf("Value() unchanged = %q", i.Value())
 	}
+	if i.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 after Home", i.cursor)
+	}
 }
 
 func TestInput_End(t *testing.T) {
@@ -228,6 +237,9 @@ func TestInput_End(t *testing.T) {
 	i.End()
 	if i.Value() != "abc" {
 		t.Errorf("Value() unchanged = %q", i.Value())
+	}
+	if i.cursor != 3 {
+		t.Errorf("cursor = %d, want 3 after End", i.cursor)
 	}
 }
 

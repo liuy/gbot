@@ -40,6 +40,9 @@ func TestExecute_BlockedDevicePath_stdin(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/stdin")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_tty(t *testing.T) {
@@ -48,6 +51,9 @@ func TestExecute_BlockedDevicePath_tty(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/tty")
+	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
 	}
 }
 
@@ -58,6 +64,9 @@ func TestExecute_BlockedDevicePath_console(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/console")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_stdout(t *testing.T) {
@@ -66,6 +75,9 @@ func TestExecute_BlockedDevicePath_stdout(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/stdout")
+	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
 	}
 }
 
@@ -76,6 +88,9 @@ func TestExecute_BlockedDevicePath_stderr(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/stderr")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_fd0(t *testing.T) {
@@ -84,6 +99,9 @@ func TestExecute_BlockedDevicePath_fd0(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/fd/0")
+	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
 	}
 }
 
@@ -94,6 +112,9 @@ func TestExecute_BlockedDevicePath_fd1(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/fd/1")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_fd2(t *testing.T) {
@@ -102,6 +123,9 @@ func TestExecute_BlockedDevicePath_fd2(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /dev/fd/2")
+	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
 	}
 }
 
@@ -112,6 +136,9 @@ func TestExecute_BlockedDevicePath_procSelfFd0(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /proc/self/fd/0")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_procSelfFd1(t *testing.T) {
@@ -121,6 +148,9 @@ func TestExecute_BlockedDevicePath_procSelfFd1(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /proc/self/fd/1")
 	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
+	}
 }
 
 func TestExecute_BlockedDevicePath_procSelfFd2(t *testing.T) {
@@ -129,6 +159,9 @@ func TestExecute_BlockedDevicePath_procSelfFd2(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() error = nil, want error for /proc/self/fd/2")
+	}
+	if !strings.Contains(err.Error(), "cannot read device file") {
+		t.Errorf("Error = %q, want 'cannot read device file'", err.Error())
 	}
 }
 
@@ -260,7 +293,10 @@ func TestExecute_ReadFileError(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
-		t.Error("Execute() error = nil, want error for unreadable file")
+		t.Fatal("Execute() error = nil, want error for unreadable file")
+	}
+	if !strings.Contains(err.Error(), fp) {
+		t.Errorf("Error = %q, should contain path %q", err.Error(), fp)
 	}
 }
 
@@ -278,7 +314,10 @@ func TestExecute_OpenFileError(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"` + fp + `","offset":1,"limit":1}`)
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
-		t.Error("Execute() error = nil, want error for unreadable file")
+		t.Fatal("Execute() error = nil, want error for unreadable file")
+	}
+	if !strings.Contains(err.Error(), fp) {
+		t.Errorf("Error = %q, should contain path %q", err.Error(), fp)
 	}
 }
 
@@ -316,7 +355,7 @@ func TestCountTotalLines_NoTrailingNewline(t *testing.T) {
 		t.Fatalf("countTotalLines: %v", err)
 	}
 	if count != 2 {
-		t.Errorf("countTotalLines = %d, want 3", count)
+		t.Errorf("countTotalLines = %d, want 2", count)
 	}
 }
 
@@ -416,7 +455,7 @@ func TestIsPdftoppmAvailable(t *testing.T) {
 	t.Parallel()
 	// Just verify it returns a boolean without crashing
 	result := isPdftoppmAvailable()
-	_ = result
+	t.Logf("isPdftoppmAvailable() = %v", result)
 }
 
 func TestGetPDFPageCount(t *testing.T) {
@@ -433,6 +472,11 @@ func TestGetPDFPageCount(t *testing.T) {
 	count := getPDFPageCount(fp)
 	if count < 1 {
 		t.Errorf("getPDFPageCount = %d, want >= 1", count)
+	}
+	// Also verify that a non-existent file returns 0
+	count2 := getPDFPageCount(filepath.Join(dir, "nonexistent.pdf"))
+	if count2 != 0 {
+		t.Errorf("getPDFPageCount(nonexistent) = %d, want 0", count2)
 	}
 }
 
@@ -470,9 +514,9 @@ func TestExecute_PDFEmptyFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() should reject empty PDF file")
 	}
-	// Empty file should be caught by either "empty" or "not a valid PDF"
-	if !strings.Contains(err.Error(), "empty") && !strings.Contains(err.Error(), "not a valid PDF") {
-		t.Errorf("Error = %q, want empty/invalid PDF message", err.Error())
+	// Empty file should be caught by "PDF file is empty"
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("Error = %q, want 'empty' message", err.Error())
 	}
 }
 
@@ -518,9 +562,11 @@ func TestExpandPath_TildeHomeEmpty(t *testing.T) {
 	_ = os.Unsetenv("HOME")
 	// When HOME is empty, should fall through to filepath.Abs
 	got := expandPath("~/test.txt")
-	if filepath.IsAbs(got) {
-		// Should resolve relative to current dir, not crash
-		t.Logf("expandPath with empty HOME resolved to %q", got)
+	if !filepath.IsAbs(got) {
+		t.Errorf("expandPath(\"~/test.txt\") with empty HOME = %q, want absolute path", got)
+	}
+	if !strings.HasSuffix(got, "test.txt") {
+		t.Errorf("expandPath(\"~/test.txt\") = %q, should end with 'test.txt'", got)
 	}
 }
 
@@ -532,7 +578,10 @@ func TestGetMtimeMs_Error(t *testing.T) {
 	t.Parallel()
 	_, err := getMtimeMs("/nonexistent/file/path")
 	if err == nil {
-		t.Error("getMtimeMs should return error for nonexistent file")
+		t.Fatal("getMtimeMs should return error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "/nonexistent/file/path") {
+		t.Errorf("Error = %q, should contain path", err.Error())
 	}
 }
 
@@ -544,7 +593,10 @@ func TestCountTotalLines_Error(t *testing.T) {
 	t.Parallel()
 	_, err := countTotalLines("/nonexistent/file/path")
 	if err == nil {
-		t.Error("countTotalLines should return error for nonexistent file")
+		t.Fatal("countTotalLines should return error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "/nonexistent/file/path") {
+		t.Errorf("Error = %q, should contain path", err.Error())
 	}
 }
 
@@ -594,8 +646,8 @@ func TestExecute_PDFEncrypted(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() should reject encrypted PDF")
 	}
-	if !strings.Contains(err.Error(), "password") && !strings.Contains(err.Error(), "encrypted") {
-		t.Errorf("Error = %q, want 'password' or 'encrypted' message", err.Error())
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("Error = %q, want 'password' message", err.Error())
 	}
 }
 
@@ -725,6 +777,9 @@ func TestExtractPDFPages_InvalidPDF(t *testing.T) {
 	if err == nil {
 		t.Fatal("extractPDFPages should fail on invalid PDF")
 	}
+	if !strings.Contains(err.Error(), "pdftoppm failed") {
+		t.Errorf("Error = %q, want 'pdftoppm failed'", err.Error())
+	}
 }
 
 // TestExtractPDFPages_MkdirTempError tests the MkdirTemp error path (line 292-294).
@@ -763,11 +818,8 @@ func TestRenderResult_ImageOutputPointer(t *testing.T) {
 		OriginalWidth:  800,
 		OriginalHeight: 600,
 	})
-	if !strings.Contains(result, "/tmp/img.png") {
-		t.Errorf("renderResult(*ImageOutput) = %q, should contain file path", result)
-	}
-	if !strings.Contains(result, "800x600") {
-		t.Errorf("renderResult(*ImageOutput) = %q, should contain dimensions", result)
+	if result != "Image: /tmp/img.png (800x600)" {
+		t.Errorf("renderResult(*ImageOutput) = %q, want %q", result, "Image: /tmp/img.png (800x600)")
 	}
 }
 
@@ -777,11 +829,8 @@ func TestRenderResult_PDFOutputPointer(t *testing.T) {
 		FilePath:     "/tmp/doc.pdf",
 		OriginalSize: 12345,
 	})
-	if !strings.Contains(result, "/tmp/doc.pdf") {
-		t.Errorf("renderResult(*PDFOutput) = %q, should contain file path", result)
-	}
-	if !strings.Contains(result, "12345") {
-		t.Errorf("renderResult(*PDFOutput) = %q, should contain size", result)
+	if result != "PDF: /tmp/doc.pdf (12345 bytes)" {
+		t.Errorf("renderResult(*PDFOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (12345 bytes)")
 	}
 }
 
@@ -791,8 +840,8 @@ func TestRenderResult_PDFOutputValue(t *testing.T) {
 		FilePath:     "/tmp/doc.pdf",
 		OriginalSize: 9999,
 	})
-	if !strings.Contains(result, "/tmp/doc.pdf") {
-		t.Errorf("renderResult(PDFOutput) = %q, should contain file path", result)
+	if result != "PDF: /tmp/doc.pdf (9999 bytes)" {
+		t.Errorf("renderResult(PDFOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (9999 bytes)")
 	}
 }
 
@@ -802,8 +851,8 @@ func TestRenderResult_PartsOutputPointer(t *testing.T) {
 		FilePath: "/tmp/doc.pdf",
 		Count:    5,
 	})
-	if !strings.Contains(result, "5 pages extracted") {
-		t.Errorf("renderResult(*PartsOutput) = %q, should mention pages extracted", result)
+	if result != "PDF: /tmp/doc.pdf (5 pages extracted)" {
+		t.Errorf("renderResult(*PartsOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (5 pages extracted)")
 	}
 }
 
@@ -813,8 +862,8 @@ func TestRenderResult_PartsOutputValue(t *testing.T) {
 		FilePath: "/tmp/doc.pdf",
 		Count:    3,
 	})
-	if !strings.Contains(result, "3 pages extracted") {
-		t.Errorf("renderResult(PartsOutput) = %q, should mention pages extracted", result)
+	if result != "PDF: /tmp/doc.pdf (3 pages extracted)" {
+		t.Errorf("renderResult(PartsOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (3 pages extracted)")
 	}
 }
 
@@ -823,8 +872,8 @@ func TestRenderResult_FileUnchangedOutputPointer(t *testing.T) {
 	result := renderResult(&FileUnchangedOutput{
 		FilePath: "/tmp/test.go",
 	})
-	if !strings.Contains(result, "File unchanged: /tmp/test.go") {
-		t.Errorf("renderResult(*FileUnchangedOutput) = %q, want unchanged message", result)
+	if result != "File unchanged: /tmp/test.go" {
+		t.Errorf("renderResult(*FileUnchangedOutput) = %q, want %q", result, "File unchanged: /tmp/test.go")
 	}
 }
 
@@ -833,8 +882,8 @@ func TestRenderResult_FileUnchangedOutputValue(t *testing.T) {
 	result := renderResult(FileUnchangedOutput{
 		FilePath: "/tmp/test.go",
 	})
-	if !strings.Contains(result, "File unchanged") {
-		t.Errorf("renderResult(FileUnchangedOutput) = %q, want unchanged message", result)
+	if result != "File unchanged: /tmp/test.go" {
+		t.Errorf("renderResult(FileUnchangedOutput) = %q, want %q", result, "File unchanged: /tmp/test.go")
 	}
 }
 
@@ -916,6 +965,9 @@ func TestExecute_PDFReadFileFallbackError(t *testing.T) {
 	_, err := Execute(context.Background(), input, nil)
 	if err == nil {
 		t.Fatal("Execute() should fail for unreadable PDF")
+	}
+	if !strings.Contains(err.Error(), fp) {
+		t.Errorf("Error = %q, should contain path %q", err.Error(), fp)
 	}
 }
 
@@ -1053,8 +1105,8 @@ func TestRenderResult_ImageOutputValue(t *testing.T) {
 		OriginalWidth:  100,
 		OriginalHeight: 200,
 	})
-	if !strings.Contains(result, "100x200") {
-		t.Errorf("renderResult(ImageOutput) = %q, should contain 100x200", result)
+	if result != "Image: /tmp/img.png (100x200)" {
+		t.Errorf("renderResult(ImageOutput) = %q, want %q", result, "Image: /tmp/img.png (100x200)")
 	}
 }
 
@@ -1101,6 +1153,16 @@ func TestExecute_ImageResizedJpeg(t *testing.T) {
 	}
 	if imgOut.MimeType != "image/jpeg" {
 		t.Errorf("MimeType = %q, want image/jpeg", imgOut.MimeType)
+	}
+	if imgOut.FilePath != fp {
+		t.Errorf("FilePath = %q, want %q", imgOut.FilePath, fp)
+	}
+	if imgOut.OriginalSize == 0 {
+		t.Error("OriginalSize is 0, want non-zero")
+	}
+	// Aspect ratio should be maintained (square -> still square)
+	if imgOut.DisplayWidth != imgOut.DisplayHeight {
+		t.Errorf("Aspect ratio not maintained: %dx%d", imgOut.DisplayWidth, imgOut.DisplayHeight)
 	}
 }
 
@@ -1192,7 +1254,21 @@ func TestExtractPDFPages_ReadDirError(t *testing.T) {
 		t.Fatalf("extractPDFPages error: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
-	if count < 1 {
-		t.Errorf("count = %d, want >= 1", count)
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (extracted pages 1-1)", count)
+	}
+	// Verify output directory contains JPG files
+	entries, err2 := os.ReadDir(tmpDir)
+	if err2 != nil {
+		t.Fatalf("ReadDir error: %v", err2)
+	}
+	jpgCount := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jpg") {
+			jpgCount++
+		}
+	}
+	if jpgCount != 1 {
+		t.Errorf("JPG files in output dir = %d, want 1", jpgCount)
 	}
 }
