@@ -3549,6 +3549,63 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	}
 }
 
+// TestApp_Scroll_HalfPageScroll verifies PgUp/PgDown scrolls by half a page,
+// matching TS behavior (Math.floor(viewportHeight/2)). This ensures:
+// 1. No page skipping (each PgUp changes page number by at most 1)
+// 2. 50% overlap between consecutive views (context preserved)
+// Previous bug: full-page scroll with off-by-one caused page skipping.
+func TestApp_Scroll_HalfPageScroll(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 10 // maxContentLines=7, viewLines=6, halfPage=3
+
+	// 30 lines → 5 pages (viewLines=6)
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+	app.repl.AppendChunk(strings.Repeat("line\n", 30))
+	app.markViewportDirty()
+
+	// Auto-scroll to bottom → page 5/5
+	v := app.View()
+	if !strings.Contains(v, "5/5") {
+		t.Fatalf("should start at page 5/5, got:\n%s", v)
+	}
+
+	// PgUp → should go to page 4 (half-page=3, offset 24→21, page 21/6+1=4)
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	v = app.View()
+	if !strings.Contains(v, "4/5") {
+		t.Errorf("after 1 PgUp should show page 4/5, got:\n%s", v)
+	}
+
+	// PgUp again → page 4 still (offset 21→18, page 18/6+1=4, overlap)
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	v = app.View()
+	if !strings.Contains(v, "4/5") {
+		t.Errorf("after 2 PgUp should still show page 4/5 (overlap), got:\n%s", v)
+	}
+
+	// PgUp again → page 3 (offset 18→15, page 15/6+1=3)
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	v = app.View()
+	if !strings.Contains(v, "3/5") {
+		t.Errorf("after 3 PgUp should show page 3/5, got:\n%s", v)
+	}
+
+	// Verify the scroll amount is exactly viewLines/2 = 3
+	bottom := app.scrollTotal - 6 // maxOff
+	app.scrollOffset = bottom     // reset to bottom
+	_ = app.View()                // populate
+	prevOffset := app.scrollOffset
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	scrolled := prevOffset - app.scrollOffset
+	if scrolled != 3 {
+		t.Errorf("PgUp should scroll %d lines (half page), got %d", 3, scrolled)
+	}
+}
+
 // TestApp_Scroll_ShortContentNoScrolling verifies no scroll when content fits.
 func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
 	t.Parallel()
@@ -3584,14 +3641,14 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	app.width = 80
 	app.height = 10 // maxContentLines=7, viewLines=6
 
-	// Create content where scrollTotal is just slightly over maxContentLines.
-	// 10 lines of content: scrollTotal=10, maxOff=10-6=4.
-	// PgUp with n=7: 4-7=-3 → clamped to 0.
+	// Create content where half-page scroll exactly reaches offset 0.
+	// 9 lines: scrollTotal=9, maxOff=9-6=3, halfPage=3.
+	// PgUp from bottom: 3-3=0 → clamped to 0.
 	// Bug: userScrolled = 0>0 = false → View() auto-scrolls back.
 	app.repl.StartQuery(nil)
 	app.spinner.Start()
 	app.progressStart = time.Now()
-	app.repl.AppendChunk(strings.Repeat("line\n", 10))
+	app.repl.AppendChunk(strings.Repeat("line\n", 9))
 	app.markViewportDirty()
 	_ = app.View() // populate scrollTotal
 

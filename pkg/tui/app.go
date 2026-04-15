@@ -448,11 +448,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyPgUp:
-		a.scrollUp(a.height - 3)
+		vl := a.calcViewLines()
+		a.scrollUp(max(1, vl/2))
 		return a, nil
 
 	case tea.KeyPgDown:
-		a.scrollDown(a.height - 3)
+		vl := a.calcViewLines()
+		a.scrollDown(max(1, vl/2))
 		return a, nil
 	}
 
@@ -565,6 +567,19 @@ func (a *App) handleKillWord() {
 // Scroll handling
 // ---------------------------------------------------------------------------
 
+// calcViewLines returns the number of visible content lines when content overflows.
+// Matches View()'s viewLines calculation: maxContentLines-1 (reserve 1 for indicator).
+func (a *App) calcViewLines() int {
+	maxContentLines := a.height - 3
+	if maxContentLines < 1 {
+		maxContentLines = 1
+	}
+	if a.scrollTotal > maxContentLines {
+		return max(1, maxContentLines-1) // reserve 1 for scroll indicator
+	}
+	return maxContentLines
+}
+
 // scrollUp moves the scroll viewport up by n lines.
 func (a *App) scrollUp(n int) {
 	if a.scrollTotal == 0 {
@@ -581,17 +596,7 @@ func (a *App) scrollDown(n int) {
 	if a.scrollTotal == 0 {
 		return
 	}
-	maxContentLines := a.height - 3
-	if maxContentLines < 1 {
-		maxContentLines = 1
-	}
-	viewLines := maxContentLines
-	if a.scrollTotal > maxContentLines {
-		viewLines = maxContentLines - 1 // reserve 1 for indicator
-	}
-	if viewLines < 1 {
-		viewLines = 1
-	}
+	viewLines := a.calcViewLines()
 	maxOff := a.scrollTotal - viewLines
 	if maxOff < 0 {
 		maxOff = 0
