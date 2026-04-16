@@ -505,7 +505,7 @@ func (s StatusBar) View() string {
 
 	// Pad to fill width
 	content := left + right
-	avail := s.width - len(stripAnsi(content))
+	avail := s.width - len(stripANSI(content))
 	if avail > 0 {
 		content = left + strings.Repeat(" ", avail) + right
 	}
@@ -1164,29 +1164,3 @@ func stripRedundantVS16(s string) string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-// stripAnsi removes ANSI escape sequences from a string.
-func stripAnsi(s string) string {
-	var result strings.Builder
-	inEscape := false
-	for _, ch := range s {
-		if ch == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		result.WriteRune(ch)
-	}
-	return result.String()
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -556,7 +557,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
-	slog.Info("tui:query_start", "text", truncateRunes(text, 100), "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 	if a.repl.IsStreaming() {
 		return nil
 	}
@@ -707,11 +708,3 @@ func (a *App) markViewportDirty() {
 	a.contentDirty = true
 }
 
-// truncateRunes truncates s to at most maxRunes runes, appending "..." if truncated.
-func truncateRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "..."
-}

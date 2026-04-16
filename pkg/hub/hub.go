@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -88,7 +89,7 @@ func (h *Hub) Close() {
 func logEngineEvent(event Event) {
 	switch event.Type {
 	case types.EventTextDelta:
-		preview := truncateRunes(event.Text, 60)
+		preview := tool.TruncateRunes(event.Text, 60)
 		slog.Info("engine:text_delta", "text", preview)
 
 	case types.EventToolStart:
@@ -142,7 +143,7 @@ func logEngineEvent(event Event) {
 
 	case types.EventThinkingDelta:
 		if event.Thinking != nil {
-			preview := truncateRunes(event.Thinking.Text, 60)
+			preview := tool.TruncateRunes(event.Thinking.Text, 60)
 			slog.Info("engine:thinking_delta", "text", preview)
 		}
 
@@ -160,11 +161,3 @@ func logEngineEvent(event Event) {
 	}
 }
 
-// truncateRunes truncates s to at most maxRunes runes, appending "..." if truncated.
-func truncateRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "..."
-}

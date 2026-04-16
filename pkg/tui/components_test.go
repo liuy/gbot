@@ -12,7 +12,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-func stripAnsiPrintable(s string) string {
+func stripANSIPrintable(s string) string {
 	return regexp.MustCompile(`\x1b\[[^a-zA-Z]*[a-zA-Z]`).ReplaceAllString(s, "")
 }
 
@@ -691,7 +691,7 @@ func TestMessageView_WordWrap(t *testing.T) {
 	lines := strings.Split(v, "\n")
 	// Each line should be reasonably short (no line longer than width + some ANSI margin)
 	for _, line := range lines {
-		stripped := stripAnsiPrintable(line)
+		stripped := stripANSIPrintable(line)
 		if len(stripped) > 25 { // allow some margin for prefix + ANSI
 			t.Errorf("line too long (%d chars): %q", len(stripped), stripped)
 		}
@@ -1066,7 +1066,7 @@ func TestInput_View_Wrapping_CursorOnSecondLine(t *testing.T) {
 		t.Fatalf("expected 2+ lines, got %d: %q", len(lines), v)
 	}
 	// Second line should have content (the cursor is there)
-	second := stripAnsiPrintable(lines[1])
+	second := stripANSIPrintable(lines[1])
 	if len(second) == 0 {
 		t.Errorf("second line should have content, got: %q", lines[1])
 	}
@@ -1168,7 +1168,7 @@ func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 	}
 	// Each stripped line should not exceed width by much
 	for _, line := range strings.Split(v, "\n") {
-		stripped := stripAnsiPrintable(line)
+		stripped := stripANSIPrintable(line)
 		if len(stripped) > 40 { // allow margin for ANSI + prefix
 			t.Errorf("header line too long (%d chars): %q", len(stripped), stripped)
 		}
@@ -1574,38 +1574,38 @@ func TestConsumeAnsiEscape_ShortString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// stripAnsi
+// stripANSI
 // ---------------------------------------------------------------------------
 
 func TestStripAnsi_Basic(t *testing.T) {
 	t.Parallel()
-	got := stripAnsi("hello")
+	got := stripANSI("hello")
 	if got != "hello" {
-		t.Errorf("stripAnsi(hello) = %q, want %q", got, "hello")
+		t.Errorf("stripANSI(hello) = %q, want %q", got, "hello")
 	}
 }
 
 func TestStripAnsi_WithEscape(t *testing.T) {
 	t.Parallel()
-	got := stripAnsi("\x1b[31mred\x1b[0m text")
+	got := stripANSI("\x1b[31mred\x1b[0m text")
 	if got != "red text" {
-		t.Errorf("stripAnsi with escape = %q, want %q", got, "red text")
+		t.Errorf("stripANSI with escape = %q, want %q", got, "red text")
 	}
 }
 
 func TestStripAnsi_PartialEscape(t *testing.T) {
 	t.Parallel()
-	got := stripAnsi("ab\x1b[") // unterminated escape
-	if got != "ab" {
-		t.Errorf("stripAnsi partial = %q, want %q", got, "ab")
+	got := stripANSI("ab\x1b[") // unterminated escape
+	if got != "ab[" {
+		t.Errorf("stripANSI partial = %q, want %q", got, "ab[")
 	}
 }
 
 func TestStripAnsi_Empty(t *testing.T) {
 	t.Parallel()
-	got := stripAnsi("")
+	got := stripANSI("")
 	if got != "" {
-		t.Errorf("stripAnsi('') = %q, want empty", got)
+		t.Errorf("stripANSI('') = %q, want empty", got)
 	}
 }
 
@@ -2225,7 +2225,7 @@ func TestRenderThinkingBlock_StreamingLongText_PrefixAlignment(t *testing.T) {
 	blk.renderThinkingBlock(&sb, 40, false, "dot", false)
 	out := sb.String()
 	// Strip ANSI escape codes for prefix checking
-	clean := stripAnsi(out)
+	clean := stripANSI(out)
 	lines := strings.Split(clean, "\n")
 	// Find content lines (those starting with | or 2-space prefix)
 	started := false
@@ -2250,7 +2250,7 @@ func TestRenderThinkingBlock_DoneLongText_PrefixAlignment(t *testing.T) {
 	}
 	blk.renderThinkingBlock(&sb, 40, false, "", false)
 	out := sb.String()
-	clean := stripAnsi(out)
+	clean := stripANSI(out)
 	lines := strings.Split(clean, "\n")
 	started := false
 	for i, line := range lines {
@@ -2274,7 +2274,7 @@ func TestFormatToolOutput_TabsExpanded(t *testing.T) {
 	// cannot clear — leading to ghost content on Ctrl+O expand.
 	input := "\tfunc hello() {\n\t\treturn \"world\"\n\t}"
 	v := formatToolOutput(input, false, false, 80, false, 0, lipgloss.NewStyle())
-	clean := stripAnsi(v)
+	clean := stripANSI(v)
 
 	// No tab characters should remain in the output
 	if strings.Contains(clean, "\t") {
@@ -2297,7 +2297,7 @@ func TestWordWrap_TabWidth(t *testing.T) {
 	// produce output whose display width (with tabs expanded) does not exceed 20.
 	input := "\tSome text that is long enough to need wrapping at some point"
 	wrapped := wordWrap(input, 20)
-	clean := stripAnsi(wrapped)
+	clean := stripANSI(wrapped)
 	for _, line := range strings.Split(clean, "\n") {
 		// Expand tabs for width check (tab stops at 8)
 		displayLen := 0

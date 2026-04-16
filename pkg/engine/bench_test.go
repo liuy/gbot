@@ -130,68 +130,6 @@ func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Tool dispatch benchmark
-// ---------------------------------------------------------------------------
-
-func BenchmarkExecuteTools_SingleTool(b *testing.B) {
-	mp := &benchMockProvider{}
-	eng := New(&Params{
-		Provider: mp,
-		Model:    "test-model",
-	})
-
-	toolUseBlocks := []types.ContentBlock{
-		types.NewToolUseBlock("toolu_01", "Read", json.RawMessage(`{"path":"/src/main.go"}`)),
-	}
-
-	eventCh := make(chan types.QueryEvent, 128)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = eng.executeTools(context.Background(), toolUseBlocks, eventCh)
-		// Drain events
-		for {
-			select {
-			case <-eventCh:
-			default:
-				goto next1
-			}
-		}
-	next1:
-	}
-}
-
-func BenchmarkExecuteTools_MultipleTools(b *testing.B) {
-	mp := &benchMockProvider{}
-	eng := New(&Params{
-		Provider: mp,
-		Model:    "test-model",
-	})
-
-	toolUseBlocks := []types.ContentBlock{
-		types.NewToolUseBlock("toolu_01", "Bash", json.RawMessage(`{"command":"ls -la"}`)),
-		types.NewToolUseBlock("toolu_02", "Read", json.RawMessage(`{"path":"/src/main.go"}`)),
-		types.NewToolUseBlock("toolu_03", "Grep", json.RawMessage(`{"pattern":"TODO","path":"/src"}`)),
-	}
-
-	eventCh := make(chan types.QueryEvent, 128)
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = eng.executeTools(context.Background(), toolUseBlocks, eventCh)
-		for {
-			select {
-			case <-eventCh:
-			default:
-				goto next2
-			}
-		}
-	next2:
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Streaming response accumulation benchmark

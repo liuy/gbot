@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -278,22 +279,22 @@ func TestTruncateRunes(t *testing.T) {
 	t.Parallel()
 
 	// No truncation needed
-	if got := truncateRunes("hello", 10); got != "hello" {
+	if got := tool.TruncateRunes("hello", 10); got != "hello" {
 		t.Errorf("no truncation: got %q, want %q", got, "hello")
 	}
 
 	// Exact fit
-	if got := truncateRunes("hello", 5); got != "hello" {
+	if got := tool.TruncateRunes("hello", 5); got != "hello" {
 		t.Errorf("exact fit: got %q, want %q", got, "hello")
 	}
 
 	// Truncation
-	if got := truncateRunes("hello world", 5); got != "hello..." {
+	if got := tool.TruncateRunes("hello world", 5); got != "hello..." {
 		t.Errorf("truncation: got %q, want %q", got, "hello...")
 	}
 
 	// Unicode truncation
-	if got := truncateRunes("你好世界", 2); got != "你好..." {
+	if got := tool.TruncateRunes("你好世界", 2); got != "你好..." {
 		t.Errorf("unicode truncation: got %q, want %q", got, "你好...")
 	}
 }

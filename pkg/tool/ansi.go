@@ -32,3 +32,12 @@ func StripANSI(s string) string {
 	}
 	return ansiEscapeRe.ReplaceAllString(s, "")
 }
+
+// TruncateRunes truncates s to at most maxRunes runes, appending "..." if truncated.
+func TruncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
