@@ -118,13 +118,6 @@ func TestConvertEventToMsg_ToolUseStart_NilToolUse(t *testing.T) {
 		Type:    types.EventToolStart,
 		ToolUse: nil,
 	})
-	// Falls through to next case → nil
-	// Actually the switch matches EventToolStart but ToolUse is nil,
-	// so the if-check returns nothing and falls through.
-	// The result should be nil since there's no explicit return for nil ToolUse
-	// in EventToolStart case — let's check actual behavior.
-	// Looking at the code: case EventToolStart: if evt.ToolUse != nil { ... }
-	// No return for nil → falls through to end of function → returns nil.
 	if msg != nil {
 		t.Errorf("expected nil for nil ToolUse in ToolUseStart, got %T", msg)
 	}
@@ -213,9 +206,8 @@ func TestConvertEventToMsg_ThinkingEnd_NilThinking(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// convertEventToMsg — EventUsage with nil Usage
+// convertEventToMsg — EventThinkingDelta
 // ---------------------------------------------------------------------------
-
 
 func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
 	h := NewTUIHandler()
@@ -256,6 +248,10 @@ func TestConvertEventToMsg_ThinkingDelta_NilThinking(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventUsage with nil Usage
+// ---------------------------------------------------------------------------
+
 func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
@@ -268,8 +264,7 @@ func TestConvertEventToMsg_Usage_NilUsage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// convertEventToMsg — EventToolParamDelta with ToolResult.DisplayOutput (streaming output)
-// Source: Phase 2 TS vs Go gap analysis — TUI event routing
+// convertEventToMsg — EventToolOutputDelta with DisplayOutput
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T) {
@@ -299,7 +294,6 @@ func TestConvertEventToMsg_ToolUseDelta_WithToolResultDisplayOutput(t *testing.T
 
 func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
 	h := NewTUIHandler()
-	// DisplayOutput is empty string — should return nil (no output to show)
 	msg := h.convertEventToMsg(types.QueryEvent{
 		Type: types.EventToolOutputDelta,
 		ToolResult: &types.ToolResultEvent{
@@ -315,7 +309,6 @@ func TestConvertEventToMsg_ToolUseDelta_DisplayOutputEmpty(t *testing.T) {
 
 func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
 	h := NewTUIHandler()
-	// ToolResult is nil — should return nil (no data to route)
 	msg := h.convertEventToMsg(types.QueryEvent{
 		Type:       types.EventToolParamDelta,
 		ToolResult: nil,
@@ -325,3 +318,26 @@ func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventQueryEnd, EventTurnEnd
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_QueryEnd(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventQueryEnd})
+	if msg == nil {
+		t.Fatal("EventQueryEnd should not return nil")
+	}
+	_, ok := msg.(queryEndMsg)
+	if !ok {
+		t.Errorf("expected queryEndMsg, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_TurnEnd(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventTurnEnd})
+	if msg != nil {
+		t.Errorf("EventTurnEnd should return nil, got %T", msg)
+	}
+}

@@ -109,7 +109,7 @@ func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 		// Source: StreamingToolExecutor.ts:78-100 — unknown tool → error result.
 		errMsg := fmt.Sprintf("No such tool available: %s", block.Name)
 		errBlock := CreateToolErrorBlock(block.ID, errMsg)
-		e.emitEvent(types.QueryEvent{
+		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID:     block.ID,
@@ -168,6 +168,20 @@ func (e *StreamingToolExecutor) Discard() {
 	e.mu.Lock()
 	e.discarded = true
 	e.mu.Unlock()
+	e.siblingCancel(context.Canceled)
+}
+
+// doEmit emits an event only if the executor has not been discarded.
+// After Discard(), the underlying channel may be closed, so we must
+// skip emissions to avoid a "send on closed channel" panic.
+func (e *StreamingToolExecutor) doEmit(evt types.QueryEvent) {
+	e.mu.Lock()
+	fn := e.emitEvent
+	d := e.discarded
+	e.mu.Unlock()
+	if !d && fn != nil {
+		fn(evt)
+	}
 }
 
 // ExecuteAll adds all tool blocks, runs them with concurrency, and returns
@@ -346,7 +360,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	if reason != "" {
 		errBlock := CreateSyntheticErrorBlock(tt.ID, reason)
 		errMsg := extractErrMsg(errBlock.Content)
-		e.emitEvent(types.QueryEvent{
+		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID:     tt.ID,
@@ -365,7 +379,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		// Should not happen (checked in AddTool), but handle defensively.
 		errMsg := fmt.Sprintf("No such tool available: %s", tt.Name)
 		errBlock := CreateToolErrorBlock(tt.ID, errMsg)
-		e.emitEvent(types.QueryEvent{
+		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID:     tt.ID,
@@ -394,7 +408,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			if len(u.Lines) > 0 {
 				display := strings.Join(u.Lines, "\n")
 				lastDisplayOutput = display
-				e.emitEvent(types.QueryEvent{
+				e.doEmit(types.QueryEvent{
 					Type: types.EventToolOutputDelta,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     tt.ID,
@@ -418,7 +432,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		if displayOutput == "" && lastDisplayOutput != "" {
 			displayOutput = lastDisplayOutput
 		}
-		e.emitEvent(types.QueryEvent{
+		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
 				ToolUseID:     tt.ID,
@@ -446,7 +460,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	rawJSON, _ := json.Marshal(result.Data)
 	outputJSON, _ := json.Marshal(string(rawJSON))
 	displayOutput := t.RenderResult(result.Data)
-	e.emitEvent(types.QueryEvent{
+	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     tt.ID,
@@ -464,7 +478,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
 func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapsed time.Duration) {
 	errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
-	e.emitEvent(types.QueryEvent{
+	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     tt.ID,

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,47 @@ func TestCallWithMockFactory(t *testing.T) {
 	}
 	if len(capturedOpts.Tools) != 3 {
 		t.Errorf("factory received %d tools, want 3", len(capturedOpts.Tools))
+	}
+}
+
+func TestCallEmptySubagentTypeDefaults(t *testing.T) {
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{AgentType: "General", Content: "ok"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+
+	// Empty subagent_type → defaults to "General"
+	input := json.RawMessage(`{"description":"test","prompt":"do it"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if capturedOpts.AgentType != "General" {
+		t.Errorf("AgentType = %q, want %q", capturedOpts.AgentType, "General")
+	}
+}
+
+func TestCallFactoryError(t *testing.T) {
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		return nil, fmt.Errorf("engine crashed: out of memory")
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error when factory returns error")
+	}
+	if !strings.Contains(err.Error(), "sub-agent execution failed") {
+		t.Errorf("error should mention 'sub-agent execution failed', got: %v", err)
 	}
 }
 
@@ -217,6 +259,7 @@ func TestDescriptionFromInput(t *testing.T) {
 		{"with description", `{"description":"search code","prompt":"find"}`, "search code"},
 		{"no description, short prompt", `{"prompt":"find the bug"}`, "find the bug"},
 		{"empty input", `{}`, "Execute a sub-agent task"},
+		{"no description, long prompt truncation", `{"prompt":"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor xy"}`, "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor x..."},
 	}
 
 	for _, tt := range tests {
@@ -282,4 +325,179 @@ func TestCallPassesToolUseID(t *testing.T) {
 func TestInterfaceCompliance(t *testing.T) {
 	// Verify AgentTool satisfies tool.Tool interface
 	var _ tool.Tool = New()
+}
+
+func TestName(t *testing.T) {
+	at := New()
+	if got := at.Name(); got != "Agent" {
+		t.Errorf("Name() = %q, want %q", got, "Agent")
+	}
+}
+
+func TestAliases(t *testing.T) {
+	at := New()
+	if got := at.Aliases(); got != nil {
+		t.Errorf("Aliases() = %v, want nil", got)
+	}
+}
+
+func TestInputSchema(t *testing.T) {
+	at := New()
+	schema := at.InputSchema()
+	if len(schema) == 0 {
+		t.Fatal("InputSchema() returned empty")
+	}
+	// Verify it's valid JSON containing expected fields
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("InputSchema() is not valid JSON: %v", err)
+	}
+	props, ok := parsed["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("InputSchema() missing properties")
+	}
+	if _, ok := props["description"]; !ok {
+		t.Error("InputSchema() missing description property")
+	}
+	if _, ok := props["prompt"]; !ok {
+		t.Error("InputSchema() missing prompt property")
+	}
+}
+
+func TestPermissionMethods(t *testing.T) {
+	at := New()
+	input := json.RawMessage(`{}`)
+
+	if got := at.CheckPermissions(input, nil); got.Behavior() != types.BehaviorAllow {
+		t.Errorf("CheckPermissions() = %v, want allow", got)
+	}
+	if got := at.IsReadOnly(input); got != false {
+		t.Errorf("IsReadOnly() = %v, want false", got)
+	}
+	if got := at.IsDestructive(input); got != false {
+		t.Errorf("IsDestructive() = %v, want false", got)
+	}
+	if got := at.IsConcurrencySafe(input); got != false {
+		t.Errorf("IsConcurrencySafe() = %v, want false", got)
+	}
+	if got := at.IsEnabled(); got != true {
+		t.Errorf("IsEnabled() = %v, want true", got)
+	}
+	if got := at.InterruptBehavior(); got != tool.InterruptBlock {
+		t.Errorf("InterruptBehavior() = %v, want InterruptBlock", got)
+	}
+}
+
+func TestRenderResultNonSubQueryResult(t *testing.T) {
+	at := New()
+	// Pass a non-*SubQueryResult type — should fall through to json.Marshal
+	result := at.RenderResult(map[string]string{"key": "value"})
+	if !strings.Contains(result, "key") {
+		t.Errorf("RenderResult for non-SubQueryResult should contain JSON, got %q", result)
+	}
+}
+
+func TestPrompt(t *testing.T) {
+	at := New()
+	prompt := at.Prompt()
+	if prompt == "" {
+		t.Fatal("Prompt() returned empty string")
+	}
+	// Verify it contains agent type names
+	for _, name := range []string{"General", "Explore", "Plan"} {
+		if !strings.Contains(prompt, name) {
+			t.Errorf("Prompt() should contain %q", name)
+		}
+	}
+}
+
+func TestFormatAgentLine(t *testing.T) {
+	def := &types.AgentDefinition{
+		AgentType:       "Test",
+		WhenToUse:       "Test agent",
+		Tools:           []string{"Read", "Bash"},
+		DisallowedTools: nil,
+	}
+	line := formatAgentLine(def)
+	if !strings.Contains(line, "Test") {
+		t.Errorf("formatAgentLine should contain agent type, got %q", line)
+	}
+	if !strings.Contains(line, "Read, Bash") {
+		t.Errorf("formatAgentLine should contain tools, got %q", line)
+	}
+}
+
+func TestGetToolsDescription_AllowlistAndDenylist(t *testing.T) {
+	// Both allowlist and denylist — effective tools = allowlist minus denylist
+	def := &types.AgentDefinition{
+		Tools:           []string{"Read", "Bash", "Grep"},
+		DisallowedTools: []string{"Bash"},
+	}
+	got := getToolsDescription(def)
+	if got != "Read, Grep" {
+		t.Errorf("getToolsDescription(allow+deny) = %q, want %q", got, "Read, Grep")
+	}
+}
+
+func TestGetToolsDescription_AllowlistOnly(t *testing.T) {
+	def := &types.AgentDefinition{
+		Tools:           []string{"Read", "Bash"},
+		DisallowedTools: nil,
+	}
+	got := getToolsDescription(def)
+	if got != "Read, Bash" {
+		t.Errorf("getToolsDescription(allowlist only) = %q, want %q", got, "Read, Bash")
+	}
+}
+
+func TestGetToolsDescription_DenylistOnly(t *testing.T) {
+	def := &types.AgentDefinition{
+		Tools:           nil,
+		DisallowedTools: []string{"Edit", "Write"},
+	}
+	got := getToolsDescription(def)
+	if got != "All tools except Edit, Write" {
+		t.Errorf("getToolsDescription(denylist only) = %q, want %q", got, "All tools except Edit, Write")
+	}
+}
+
+func TestGetToolsDescription_Neither(t *testing.T) {
+	def := &types.AgentDefinition{
+		Tools:           nil,
+		DisallowedTools: nil,
+	}
+	got := getToolsDescription(def)
+	if got != "All tools" {
+		t.Errorf("getToolsDescription(neither) = %q, want %q", got, "All tools")
+	}
+}
+
+func TestGetToolsDescription_AllowlistEmptyAfterDenylist(t *testing.T) {
+	// All allowed tools are also disallowed → returns "None"
+	def := &types.AgentDefinition{
+		Tools:           []string{"Edit"},
+		DisallowedTools: []string{"Edit"},
+	}
+	got := getToolsDescription(def)
+	if got != "None" {
+		t.Errorf("getToolsDescription(empty after deny) = %q, want %q", got, "None")
+	}
+}
+
+func TestFilterToolsForAgent_GlobalDisallowed(t *testing.T) {
+	// Temporarily add a global disallowed tool
+	orig := AllAgentDisallowedTools
+	AllAgentDisallowedTools = map[string]bool{"Bash": true}
+	defer func() { AllAgentDisallowedTools = orig }()
+
+	allTools := makeTestTools("Read", "Bash", "Grep")
+	def := &types.AgentDefinition{}
+	filtered := FilterToolsForAgent(allTools, def)
+
+	if _, ok := filtered["Bash"]; ok {
+		t.Error("filtered should not contain globally disallowed tool Bash")
+	}
+	if _, ok := filtered["Read"]; !ok {
+		t.Error("filtered should still contain Read")
+	}
 }

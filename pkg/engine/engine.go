@@ -369,12 +369,18 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	for event := range streamCh {
 		select {
 		case <-ctx.Done():
+			if streamingExecutor != nil {
+				streamingExecutor.Discard()
+			}
 			return nil, nil, ctx.Err()
 		default:
 		}
 
 		if event.Error != nil {
 			e.logger.Error("stream event error", "error", event.Error)
+			if streamingExecutor != nil {
+				streamingExecutor.Discard()
+			}
 			return nil, nil, event.Error
 		}
 
@@ -517,6 +523,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 	// Detect interrupted stream: content was received but stream never completed.
 	if hasContent && !streamComplete {
+		if streamingExecutor != nil {
+			streamingExecutor.Discard()
+		}
 		e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
 		return nil, nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
 	}

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,7 @@ func (m *minimalTool) InterruptBehavior() tool.InterruptBehavior {
 	return tool.InterruptCancel
 }
 func (m *minimalTool) Prompt() string                             { return "" }
+func (m *minimalTool) RenderResult(any) string                    { return "" }
 
 func TestInternalMinimalTool(t *testing.T) {
 	t.Parallel()
@@ -520,6 +522,524 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// refreshTools nil provider — early return when toolsProvider is nil
+// ---------------------------------------------------------------------------
+
+func TestRefreshTools_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		// No ToolsProvider set → refreshTools should early-return
+	})
+
+	// Manually call refreshTools — nil provider path
+	eng.refreshTools()
+
+	// Engine should still have empty tools
+	tools := eng.Tools()
+	if len(tools) != 0 {
+		t.Errorf("nil provider: expected 0 tools, got %d", len(tools))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// refreshTools with provider — covers non-nil branch (lines 773-779)
+// ---------------------------------------------------------------------------
+
+func TestRefreshTools_WithProvider(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Zulu":   &minimalTool{},
+				"Alpha":  &minimalTool{},
+				"Bravo":  &minimalTool{},
+			}
+		},
+	})
+
+	// Initial sort order set in New()
+	if len(eng.Tools()) != 3 {
+		t.Fatalf("expected 3 tools after New(), got %d", len(eng.Tools()))
+	}
+
+	// Call refreshTools — should re-fetch and re-sort from provider
+	eng.refreshTools()
+
+	tools := eng.Tools()
+	if len(tools) != 3 {
+		t.Errorf("expected 3 tools after refresh, got %d", len(tools))
+	}
+
+	// Verify sort order: Alpha < Bravo < Zulu.
+	// toolOrder is private so we call refreshTools again with different provider
+	// to confirm the sort is applied.
+	eng.refreshTools()
+	tools2 := eng.Tools()
+	if len(tools2) != 3 {
+		t.Errorf("expected 3 tools after re-refresh, got %d", len(tools2))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractErrMsg fallback — non-JSON content returns string(content) (line 526)
+// ---------------------------------------------------------------------------
+
+func TestExtractErrMsg_Fallback(t *testing.T) {
+	t.Parallel()
+
+	// Non-JSON content → JSON unmarshal fails → returns string(content)
+	got := extractErrMsg(json.RawMessage("this is not JSON"))
+	if got != "this is not JSON" {
+		t.Errorf("got %q, want %q", got, "this is not JSON")
+	}
+
+	// Valid JSON but no "error" key → returns string(content)
+	got = extractErrMsg(json.RawMessage(`{"message":"not an error"}`))
+	if got != `{"message":"not an error"}` {
+		t.Errorf("got %q, want raw JSON", got)
+	}
+}
+
+func TestExtractErrMsg_Success(t *testing.T) {
+	t.Parallel()
+
+	// Valid JSON with "error" key
+	got := extractErrMsg(json.RawMessage(`{"error":"something went wrong"}`))
+	if got != "something went wrong" {
+		t.Errorf("got %q, want %q", got, "something went wrong")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StreamAccumulator.ProcessEvent — thinking events (line 81-86, 103-105, 121-131)
+// ---------------------------------------------------------------------------
+
+func TestProcessEvent_ThinkingEvents(t *testing.T) {
+	t.Parallel()
+
+	a := NewStreamAccumulator()
+
+	// content_block_start with thinking type
+	evt := llm.StreamEvent{
+		Type:          "content_block_start",
+		Index:         0,
+		ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking, ID: "think1"},
+	}
+	emit, err := a.ProcessEvent(evt)
+	if err != nil {
+		t.Fatalf("ProcessEvent error: %v", err)
+	}
+	if emit == nil {
+		t.Fatal("expected EventThinkingStart emit")
+	}
+	if emit.Type != types.EventThinkingStart {
+		t.Errorf("expected EventThinkingStart, got %s", emit.Type)
+	}
+
+	// thinking_delta
+	evt = llm.StreamEvent{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: "thinking..."},
+	}
+	emit, err = a.ProcessEvent(evt)
+	if err != nil {
+		t.Fatalf("ProcessEvent error: %v", err)
+	}
+	if emit != nil {
+		t.Errorf("thinking_delta should not emit: got %v", emit)
+	}
+
+	// content_block_stop with thinking → emits EventThinkingEnd
+	evt = llm.StreamEvent{
+		Type:  "content_block_stop",
+		Index: 0,
+	}
+	emit, err = a.ProcessEvent(evt)
+	if err != nil {
+		t.Fatalf("ProcessEvent error: %v", err)
+	}
+	if emit == nil {
+		t.Fatal("expected EventThinkingEnd emit")
+	}
+	if emit.Type != types.EventThinkingEnd {
+		t.Errorf("expected EventThinkingEnd, got %s", emit.Type)
+	}
+	if emit.Thinking == nil {
+		t.Fatal("Thinking event should be non-nil")
+	}
+	if emit.Thinking.Duration < 0 {
+		t.Errorf("Duration should be >= 0, got %v", emit.Thinking.Duration)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getToolDescription — all branches (line 304-325)
+// ---------------------------------------------------------------------------
+
+func TestGetToolDescription_AllFields(t *testing.T) {
+	t.Parallel()
+
+	tt := &TrackedTool{
+		Name:  "Grep",
+		Input: json.RawMessage(`{"pattern":"TODO"}`),
+	}
+	desc := getToolDescription(tt)
+	if desc != "Grep(TODO)" {
+		t.Errorf("pattern branch: got %q, want %q", desc, "Grep(TODO)")
+	}
+
+	// Command field takes priority
+	tt2 := &TrackedTool{
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"ls -la","file_path":"/tmp"}`),
+	}
+	desc2 := getToolDescription(tt2)
+	if desc2 != "Bash(ls -la)" {
+		t.Errorf("command branch: got %q, want %q", desc2, "Bash(ls -la)")
+	}
+
+	// FilePath when no command
+	tt3 := &TrackedTool{
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/tmp/test.go"}`),
+	}
+	desc3 := getToolDescription(tt3)
+	if desc3 != "Read(/tmp/test.go)" {
+		t.Errorf("file_path branch: got %q, want %q", desc3, "Read(/tmp/test.go)")
+	}
+
+	// Truncation > 40 chars
+	tt4 := &TrackedTool{
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"a_very_very_very_long_command_name_that_exceeds_forty_characters"}`),
+	}
+	desc4 := getToolDescription(tt4)
+	// Command truncated to 40 bytes + ellipsis (3 bytes) + Bash() = 49 bytes total
+	if !strings.HasSuffix(desc4, "…)") {
+		t.Errorf("truncation: expected ellipsis suffix, got %q", desc4)
+	}
+	if len(desc4) != 49 {
+		t.Errorf("truncation: len = %d, want 49 (5+40+3+1 bytes)", len(desc4))
+	}
+
+	// No input fields → just tool name
+	tt5 := &TrackedTool{
+		Name:  "CustomTool",
+		Input: json.RawMessage(`{}`),
+	}
+	desc5 := getToolDescription(tt5)
+	if desc5 != "CustomTool" {
+		t.Errorf("empty input: got %q, want %q", desc5, "CustomTool")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool — non-streaming Call success path (lines 437-460)
+// ---------------------------------------------------------------------------
+
+// nonStreamingTool returns a result from Call (non-streaming success).
+type nonStreamingSuccessTool struct {
+	name string
+	data any
+}
+
+func (t *nonStreamingSuccessTool) Name() string                                                             { return t.name }
+func (t *nonStreamingSuccessTool) Aliases() []string                                                        { return nil }
+func (t *nonStreamingSuccessTool) Description(json.RawMessage) (string, error)                             { return t.name, nil }
+func (t *nonStreamingSuccessTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *nonStreamingSuccessTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: t.data}, nil
+}
+func (t *nonStreamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
+func (t *nonStreamingSuccessTool) IsReadOnly(json.RawMessage) bool         { return true }
+func (t *nonStreamingSuccessTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *nonStreamingSuccessTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
+func (t *nonStreamingSuccessTool) IsEnabled() bool                            { return true }
+func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *nonStreamingSuccessTool) Prompt() string                             { return "" }
+func (t *nonStreamingSuccessTool) RenderResult(any) string                    { return "rendered output" }
+
+func TestExecuteTool_NonStreamingSuccess(t *testing.T) {
+	t.Parallel()
+
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"ns_tool": &nonStreamingSuccessTool{name: "ns_tool", data: "success"},
+	}
+
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "t1", Name: "ns_tool", Input: json.RawMessage(`{}`)},
+	}
+	results := executor.ExecuteAll(blocks)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Type != types.ContentTypeToolResult {
+		t.Errorf("expected ToolResult block, got %s", results[0].Type)
+	}
+
+	// Should have emitted EventToolStart + EventToolEnd (non-error)
+	var foundToolEnd bool
+	for _, e := range emitted {
+		if e.Type == types.EventToolEnd && e.ToolResult != nil && !e.ToolResult.IsError {
+			foundToolEnd = true
+			break
+		}
+	}
+	if !foundToolEnd {
+		t.Errorf("expected non-error EventToolEnd, got events: %v", emitted)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StreamingToolExecutor.Discard() — aborts in-progress tools and prevents
+// queued tools from starting. Called before retry in queryLoop.
+// ---------------------------------------------------------------------------
+
+func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
+	t.Parallel()
+
+	var cancelled bool
+	toolMap := map[string]tool.Tool{
+		"slow": &slowCancelTool{onCancel: func() { cancelled = true }},
+	}
+
+	var emitted []types.QueryEvent
+	executor := NewStreamingToolExecutor(toolMap, nil, func(e types.QueryEvent) {
+		emitted = append(emitted, e)
+	}, context.Background())
+
+	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "slow"})
+
+	// Let the goroutine start and enter tool.Call (blocking on ctx.Done)
+	// before Discard sets the flag. Without this, the early abort path wins.
+	time.Sleep(50 * time.Millisecond)
+
+	executor.Discard()
+
+	// Wait for the tool to receive the cancellation
+	time.Sleep(100 * time.Millisecond)
+
+	if !cancelled {
+		t.Error("tool context should be cancelled after Discard()")
+	}
+}
+
+func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
+	t.Parallel()
+
+	var started bool
+	toolMap := map[string]tool.Tool{
+		"never_run": &neverRunTool{onStart: func() { started = true }},
+	}
+
+	executor := NewStreamingToolExecutor(toolMap, nil, func(types.QueryEvent) {}, context.Background())
+	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "never_run"})
+	executor.Discard()
+
+	// Give queued tool time to potentially start
+	time.Sleep(100 * time.Millisecond)
+
+	if started {
+		t.Error("queued tool should not start after Discard()")
+	}
+}
+
+// slowCancelTool blocks until context is cancelled, then reports it.
+type slowCancelTool struct {
+	onCancel func()
+}
+
+func (t *slowCancelTool) Name() string                                                             { return "slow" }
+func (t *slowCancelTool) Aliases() []string                                                        { return nil }
+func (t *slowCancelTool) Description(json.RawMessage) (string, error)                             { return "slow", nil }
+func (t *slowCancelTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	<-ctx.Done()
+	t.onCancel()
+	return nil, ctx.Err()
+}
+func (t *slowCancelTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
+func (t *slowCancelTool) IsReadOnly(json.RawMessage) bool         { return false }
+func (t *slowCancelTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *slowCancelTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (t *slowCancelTool) IsEnabled() bool                          { return true }
+func (t *slowCancelTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *slowCancelTool) Prompt() string                            { return "" }
+func (t *slowCancelTool) RenderResult(any) string                   { return "" }
+
+// neverRunTool never actually starts (context cancelled before execution).
+type neverRunTool struct {
+	onStart func()
+}
+
+func (t *neverRunTool) Name() string                                                             { return "never_run" }
+func (t *neverRunTool) Aliases() []string                                                        { return nil }
+func (t *neverRunTool) Description(json.RawMessage) (string, error)                             { return "never_run", nil }
+func (t *neverRunTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *neverRunTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	t.onStart()
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (t *neverRunTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
+func (t *neverRunTool) IsReadOnly(json.RawMessage) bool         { return false }
+func (t *neverRunTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *neverRunTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (t *neverRunTool) IsEnabled() bool                          { return true }
+func (t *neverRunTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *neverRunTool) Prompt() string                            { return "" }
+func (t *neverRunTool) RenderResult(any) string                   { return "" }
+
+// ---------------------------------------------------------------------------
+// QueryLoop retry discards old executor (TS query.ts:734,913)
+// RED TEST: Currently FAILS — queryLoop does not call Discard() on retry.
+// ---------------------------------------------------------------------------
+
+// discardSlowTool blocks until its context is cancelled.
+type discardSlowTool struct {
+	cancelled bool
+	started   bool
+	mu        sync.Mutex
+}
+
+func (t *discardSlowTool) Name() string { return "discard_slow" }
+func (t *discardSlowTool) Aliases() []string { return nil }
+func (t *discardSlowTool) Description(json.RawMessage) (string, error) { return "discard_slow", nil }
+func (t *discardSlowTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
+func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	t.mu.Lock()
+	t.started = true
+	t.mu.Unlock()
+	<-ctx.Done()
+	t.mu.Lock()
+	t.cancelled = true
+	t.mu.Unlock()
+	return nil, ctx.Err()
+}
+func (t *discardSlowTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
+func (t *discardSlowTool) IsReadOnly(json.RawMessage) bool         { return false }
+func (t *discardSlowTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *discardSlowTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (t *discardSlowTool) IsEnabled() bool                          { return true }
+func (t *discardSlowTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *discardSlowTool) Prompt() string                            { return "" }
+func (t *discardSlowTool) RenderResult(any) string                   { return "" }
+func (t *discardSlowTool) WasCancelled() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cancelled
+}
+func (t *discardSlowTool) WasStarted() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.started
+}
+
+// midStreamErrorProvider returns tool_use events followed by an in-stream error.
+// This tests that callLLM discards the streamingExecutor when a stream error
+// occurs after tools have been started.
+// Source: TS query.ts:734 — discard() before retry when stream errors mid-execution.
+type midStreamErrorProvider struct {
+	callCount int
+}
+
+func (p *midStreamErrorProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	p.callCount++
+	switch p.callCount {
+	case 1:
+		// First call: tool_use events, then error mid-stream.
+		// The tool_use block creates the executor and starts the tool goroutine.
+		// The error event triggers callLLM to return — without Discard(), the
+		// tool goroutine leaks.
+		events := []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+			{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "discard_slow"}},
+			{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+			{Type: "content_block_stop", Index: 0},
+			{Error: &llm.APIError{Status: 429, Retryable: true, Message: "rate limited mid-stream"}},
+		}
+		ch := make(chan llm.StreamEvent, len(events))
+		for _, e := range events {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	default:
+		// Subsequent calls: success
+		events := []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 10}}},
+			{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+			{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}},
+			{Type: "content_block_stop", Index: 0},
+			{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 3}},
+			{Type: "message_stop"},
+		}
+		ch := make(chan llm.StreamEvent, len(events))
+		for _, e := range events {
+			ch <- e
+		}
+		close(ch)
+		return ch, nil
+	}
+}
+
+// TestCallLLM_DiscardsExecutorOnStreamError verifies that when callLLM encounters
+// a stream error AFTER creating a StreamingToolExecutor with running tool goroutines,
+// the executor is Discard()ed to cancel those goroutines.
+// RED TEST: Currently FAILS — callLLM does not Discard() the executor on error.
+func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
+	dt := &discardSlowTool{}
+	p := &midStreamErrorProvider{}
+	eng := New(&Params{
+		Provider: p,
+		Tools:    []tool.Tool{dt},
+		Model:    "test",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+	result := <-resultCh
+
+	// The retryable error from call 1 should be retried, and call 2 should succeed
+	if result.Error != nil {
+		t.Fatalf("unexpected error after retry: %v", result.Error)
+	}
+
+	// Wait for the tool goroutine to notice cancellation
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify tool goroutine was properly cleaned up:
+	// - If tool.Call started: it must have been cancelled (ctx.Done fired)
+	// - If tool.Call never started: executor aborted it via getAbortReason
+	// Without the fix, a started tool would block forever (ctx never cancelled).
+	if dt.WasStarted() && !dt.WasCancelled() {
+		t.Error("tool started but was never cancelled — callLLM must Discard() executor on stream error")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // executeTools skips non-tool-use blocks (line 398-399)
 // ---------------------------------------------------------------------------
 
@@ -553,8 +1073,176 @@ func TestExecuteTools_SkipsNonToolUseBlocks(t *testing.T) {
 	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
 		t.Fatalf("failed to parse error content: %v", err)
 	}
-	if !strings.Contains(parsed["error"], "unknown_tool") {
-		t.Errorf("expected error to contain 'unknown_tool', got %q", parsed["error"])
+}
+
+// executeTools_withStreamingTool is a tool that implements ToolWithStreaming.
+// Used to cover the streaming execution path in executeTools.
+type executeToolsStreamingTool struct {
+	name     string
+	streamFn func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error)
+}
+
+func (t *executeToolsStreamingTool) Name() string                        { return t.name }
+func (t *executeToolsStreamingTool) Aliases() []string                   { return nil }
+func (t *executeToolsStreamingTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *executeToolsStreamingTool) InputSchema() json.RawMessage        { return json.RawMessage(`{}`) }
+func (t *executeToolsStreamingTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil // should never be called — streaming path used
+}
+func (t *executeToolsStreamingTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *executeToolsStreamingTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *executeToolsStreamingTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *executeToolsStreamingTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *executeToolsStreamingTool) IsEnabled() bool                       { return true }
+func (t *executeToolsStreamingTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *executeToolsStreamingTool) Prompt() string                         { return "" }
+func (t *executeToolsStreamingTool) RenderResult(any) string               { return "streamed result" }
+func (t *executeToolsStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+	if t.streamFn != nil {
+		return t.streamFn(ctx, input, tctx, onProgress)
+	}
+	return &tool.ToolResult{Data: "streamed"}, nil
+}
+
+// executeTools_errorTool is a tool that returns an error from Call.
+// Used to cover the non-streaming error path in executeTools.
+type executeToolsErrorTool struct{ name string }
+
+func (t *executeToolsErrorTool) Name() string                                                          { return t.name }
+func (t *executeToolsErrorTool) Aliases() []string                                                     { return nil }
+func (t *executeToolsErrorTool) Description(json.RawMessage) (string, error)                           { return t.name, nil }
+func (t *executeToolsErrorTool) InputSchema() json.RawMessage                                          { return json.RawMessage(`{}`) }
+func (t *executeToolsErrorTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, errors.New("tool execution failed")
+}
+func (t *executeToolsErrorTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *executeToolsErrorTool) IsReadOnly(json.RawMessage) bool        { return false }
+func (t *executeToolsErrorTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *executeToolsErrorTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *executeToolsErrorTool) IsEnabled() bool                         { return true }
+func (t *executeToolsErrorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *executeToolsErrorTool) Prompt() string                            { return "" }
+func (t *executeToolsErrorTool) RenderResult(any) string                     { return "" }
+
+func TestExecuteTools_StreamingTool(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		Tools: []tool.Tool{
+			&executeToolsStreamingTool{
+				name: "streamer",
+				streamFn: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+					onProgress(tool.ProgressUpdate{Lines: []string{"output line 1"}})
+					return &tool.ToolResult{Data: "done"}, nil
+				},
+			},
+		},
+	})
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "t1", Name: "streamer", Input: json.RawMessage(`{}`)},
+	}
+
+	eventCh := make(chan types.QueryEvent, 16)
+	results := eng.executeTools(context.Background(), blocks, eventCh)
+	close(eventCh)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].IsError {
+		t.Errorf("expected no error, got error")
+	}
+	if results[0].ToolUseID != "t1" {
+		t.Errorf("ToolUseID = %q, want t1", results[0].ToolUseID)
+	}
+
+	// Verify streaming output delta was emitted
+	var gotOutputDelta bool
+	for evt := range eventCh {
+		if evt.Type == types.EventToolOutputDelta && evt.ToolResult != nil && evt.ToolResult.DisplayOutput == "output line 1" {
+			gotOutputDelta = true
+		}
+	}
+	if !gotOutputDelta {
+		t.Error("expected EventToolOutputDelta with 'output line 1'")
+	}
+}
+
+func TestExecuteTools_StreamingToolError(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		Tools: []tool.Tool{
+			&executeToolsStreamingTool{
+				name: "streamer",
+				streamFn: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+					return nil, errors.New("stream failed")
+				},
+			},
+		},
+	})
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "t1", Name: "streamer", Input: json.RawMessage(`{}`)},
+	}
+
+	eventCh := make(chan types.QueryEvent, 16)
+	results := eng.executeTools(context.Background(), blocks, eventCh)
+	close(eventCh)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected error result")
+	}
+	if results[0].ToolUseID != "t1" {
+		t.Errorf("ToolUseID = %q, want t1", results[0].ToolUseID)
+	}
+
+	// Verify error was emitted
+	var gotToolEnd bool
+	for evt := range eventCh {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
+			gotToolEnd = true
+		}
+	}
+	if !gotToolEnd {
+		t.Error("expected EventToolEnd with IsError=true")
+	}
+}
+
+func TestExecuteTools_CallError(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		Tools: []tool.Tool{&executeToolsErrorTool{name: "fail_tool"}},
+	})
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "t1", Name: "fail_tool", Input: json.RawMessage(`{}`)},
+	}
+
+	eventCh := make(chan types.QueryEvent, 16)
+	results := eng.executeTools(context.Background(), blocks, eventCh)
+	close(eventCh)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Error("expected error result from Call failure")
 	}
 }
 

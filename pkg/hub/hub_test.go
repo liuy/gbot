@@ -187,9 +187,17 @@ func TestAllEventTypes(t *testing.T) {
 
 	events := []Event{
 		{Type: types.EventTurnStart},
+		{Type: types.EventTurnEnd},
 		{Type: types.EventTextDelta, Text: "delta"},
-		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "1", Name: "bash"}},
-		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1"}},
+		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "1", Name: "bash", Summary: "test"}},
+		{Type: types.EventToolParamDelta, PartialInput: &types.PartialInputEvent{ID: "1", Name: "bash", Delta: "{\"cmd\":\"ls\"}", Summary: "ls"}},
+		{Type: types.EventToolOutputDelta, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "file1\nfile2"}},
+		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "1", DisplayOutput: "done"}},
+		{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}},
+		{Type: types.EventQueryStart, Message: &types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}},
+		{Type: types.EventThinkingStart},
+		{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "thinking..."}},
+		{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 2 * time.Second}},
 		{Type: types.EventError, Error: errTest},
 		{Type: types.EventQueryEnd},
 	}
@@ -264,4 +272,28 @@ func TestHub_RaceStress(t *testing.T) {
 	// Give goroutines time to finish their last iteration
 	time.Sleep(50 * time.Millisecond)
 	wg.Wait()
+}
+
+func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
+
+	// No truncation needed
+	if got := truncateRunes("hello", 10); got != "hello" {
+		t.Errorf("no truncation: got %q, want %q", got, "hello")
+	}
+
+	// Exact fit
+	if got := truncateRunes("hello", 5); got != "hello" {
+		t.Errorf("exact fit: got %q, want %q", got, "hello")
+	}
+
+	// Truncation
+	if got := truncateRunes("hello world", 5); got != "hello..." {
+		t.Errorf("truncation: got %q, want %q", got, "hello...")
+	}
+
+	// Unicode truncation
+	if got := truncateRunes("你好世界", 2); got != "你好..." {
+		t.Errorf("unicode truncation: got %q, want %q", got, "你好...")
+	}
 }

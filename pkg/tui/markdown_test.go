@@ -806,7 +806,8 @@ func TestRender_Heading1_HasANSI(t *testing.T) {
 }
 
 func TestRender_Link_HasANSI(t *testing.T) {
-	t.Parallel()
+	// supportsHyperlinks() requires TERM != "dumb"; set it so OSC 8 is used.
+	t.Setenv("TERM", "xterm")
 	result := Render("[click](https://example.com)")
 	// Links use OSC 8 hyperlinks (\x1b]8;;) not SGR
 	if !strings.Contains(result, "\x1b]8;;") {
