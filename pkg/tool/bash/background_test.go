@@ -1124,6 +1124,156 @@ func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TaskInfoAdapter — Kill, List, Wait, Get coverage
+// ---------------------------------------------------------------------------
+
+func TestTaskInfoAdapter_GetNotFound(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	info, ok := adapter.Get("nonexistent")
+	if ok {
+		t.Error("expected ok=false for nonexistent task")
+	}
+	if info != nil {
+		t.Error("expected nil info for nonexistent task")
+	}
+}
+
+func TestTaskInfoAdapter_List(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	t1 := r.Spawn("echo a", 100, NewStreamingOutput(nil))
+	t2 := r.Spawn("echo b", 101, NewStreamingOutput(nil))
+
+	adapter := NewTaskInfoAdapter(r)
+	list := adapter.List()
+	if len(list) != 2 {
+		t.Fatalf("List() returned %d tasks, want 2", len(list))
+	}
+
+	// Verify conversion — IDs should match
+	ids := map[string]bool{}
+	for _, info := range list {
+		if info.ID != t1.ID && info.ID != t2.ID {
+			t.Errorf("unexpected task ID %q", info.ID)
+		}
+		if info.Type != "local_bash" {
+			t.Errorf("Type = %q, want local_bash", info.Type)
+		}
+		ids[info.ID] = true
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 unique IDs, got %d", len(ids))
+	}
+}
+
+func TestTaskInfoAdapter_ListEmpty(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	list := adapter.List()
+	if len(list) != 0 {
+		t.Errorf("List() on empty registry = %d, want 0", len(list))
+	}
+}
+
+func TestTaskInfoAdapter_Wait(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	task := r.Spawn("echo done", 200, NewStreamingOutput(nil))
+
+	// Complete the task so Wait returns immediately
+	task.Complete(0, false)
+
+	adapter := NewTaskInfoAdapter(r)
+	exitCode, err := adapter.Wait(task.ID)
+	if err != nil {
+		t.Fatalf("Wait() error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Errorf("Wait() exitCode = %d, want 0", exitCode)
+	}
+}
+
+func TestTaskInfoAdapter_WaitNotFound(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	_, err := adapter.Wait("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+func TestTaskInfoAdapter_Kill(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	// PID=0 avoids killProcessTree hitting real processes; adapter test is delegation-only
+	task := r.Spawn("sleep 60", 0, NewStreamingOutput(nil))
+
+	adapter := NewTaskInfoAdapter(r)
+	if err := adapter.Kill(task.ID); err != nil {
+		t.Fatalf("Kill() error: %v", err)
+	}
+
+	info, ok := adapter.Get(task.ID)
+	if !ok {
+		t.Fatal("Get() after kill should find task")
+	}
+	if info.Status != "killed" {
+		t.Errorf("Status = %q, want killed", info.Status)
+	}
+}
+
+func TestTaskInfoAdapter_KillNotFound(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	err := adapter.Kill("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+func TestTaskInfoAdapter_KillNotRunning(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	task := r.Spawn("echo x", 400, NewStreamingOutput(nil))
+	task.Complete(0, false)
+
+	adapter := NewTaskInfoAdapter(r)
+	err := adapter.Kill(task.ID)
+	if err == nil {
+		t.Fatal("expected error when killing completed task")
+	}
+	if !strings.Contains(err.Error(), "not running") {
+		t.Errorf("error should mention 'not running', got: %v", err)
+	}
+}
+
+func TestTaskInfoAdapter_GetWithOutput(t *testing.T) {
+	r := NewBackgroundTaskRegistry()
+	s := NewStreamingOutput(nil)
+	if _, err := s.Write([]byte("hello output")); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	task := r.Spawn("echo hello", 500, s)
+	task.Complete(0, false)
+
+	adapter := NewTaskInfoAdapter(r)
+	info, ok := adapter.Get(task.ID)
+	if !ok {
+		t.Fatal("Get() should find task")
+	}
+	if !strings.Contains(info.Output, "hello output") {
+		t.Errorf("Output = %q, want to contain 'hello output'", info.Output)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TDD: stderr should not be dropped when auto-backgrounding
 // ---------------------------------------------------------------------------
 

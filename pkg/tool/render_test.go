@@ -778,6 +778,86 @@ func TestRenderDiff_EmptyLine(t *testing.T) {
 	}
 }
 
+func TestComputePatch_MinimalDiff(t *testing.T) {
+	t.Parallel()
+	// Changing 1 line should produce exactly 1 added + 1 removed, not delete-all + insert-all
+	old := "a\nb\nc\nd\n"
+	new_ := "a\nB\nc\nd\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected at least one hunk")
+	}
+	added, removed := 0, 0
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if strings.HasPrefix(l, "+") {
+				added++
+			}
+			if strings.HasPrefix(l, "-") {
+				removed++
+			}
+		}
+	}
+	if added != 1 {
+		t.Errorf("expected 1 added line, got %d", added)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 removed line, got %d", removed)
+	}
+}
+
+func TestComputePatch_MinimalDiffMiddle(t *testing.T) {
+	t.Parallel()
+	// Change line 5 out of 10 — only 1 added + 1 removed
+	old := "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n"
+	new_ := "a\nb\nc\nd\nX\nf\ng\nh\ni\nj\n"
+	hunks := ComputePatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected at least one hunk")
+	}
+	added, removed := 0, 0
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if strings.HasPrefix(l, "+") {
+				added++
+			}
+			if strings.HasPrefix(l, "-") {
+				removed++
+			}
+		}
+	}
+	if added != 1 {
+		t.Errorf("expected 1 added, got %d", added)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 removed, got %d", removed)
+	}
+	// Context lines should be present
+	hasCtx := false
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if strings.HasPrefix(l, " ") {
+				hasCtx = true
+				break
+			}
+		}
+	}
+	if !hasCtx {
+		t.Error("expected context lines around the change")
+	}
+}
+
+func TestComputePatch_TooLarge(t *testing.T) {
+	t.Parallel()
+	// len(old)*len(new) > maxDiffEntries → should return nil
+	oldLines := strings.Repeat("a\n", 4000)
+	newLines := strings.Repeat("b\n", 4000)
+	result := ComputePatch(oldLines, newLines)
+	if result != nil {
+		t.Errorf("expected nil for too-large input, got %d hunks", len(result))
+	}
+}
+
 func TestComputePatch_TrulyEmptyStrings(t *testing.T) {
 	t.Parallel()
 	// Whitespace-only strings

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -813,9 +814,9 @@ func TestExecuteTool_NonStreamingSuccess(t *testing.T) {
 func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
 	t.Parallel()
 
-	var cancelled bool
+	var cancelled atomic.Bool
 	toolMap := map[string]tool.Tool{
-		"slow": &slowCancelTool{onCancel: func() { cancelled = true }},
+		"slow": &slowCancelTool{onCancel: func() { cancelled.Store(true) }},
 	}
 
 	var emitted []types.QueryEvent
@@ -834,7 +835,7 @@ func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
 	// Wait for the tool to receive the cancellation
 	time.Sleep(100 * time.Millisecond)
 
-	if !cancelled {
+	if !cancelled.Load() {
 		t.Error("tool context should be cancelled after Discard()")
 	}
 }
@@ -842,9 +843,9 @@ func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
 func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 	t.Parallel()
 
-	var started bool
+	var started atomic.Bool
 	toolMap := map[string]tool.Tool{
-		"never_run": &neverRunTool{onStart: func() { started = true }},
+		"never_run": &neverRunTool{onStart: func() { started.Store(true) }},
 	}
 
 	executor := NewStreamingToolExecutor(toolMap, nil, func(types.QueryEvent) {}, context.Background())
@@ -854,7 +855,7 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 	// Give queued tool time to potentially start
 	time.Sleep(100 * time.Millisecond)
 
-	if started {
+	if started.Load() {
 		t.Error("queued tool should not start after Discard()")
 	}
 }

@@ -220,6 +220,24 @@ func TestRegistry_RegisterOnlyEmptyAliases(t *testing.T) {
 	}
 }
 
+func TestRegistry_ToolMapFn(t *testing.T) {
+	r := tool.NewRegistry()
+	r.Register(&mockTool{name: "bash", enabled: true})
+	r.Register(&mockTool{name: "disabled", enabled: false})
+
+	fn := r.ToolMapFn()
+	m := fn()
+	if len(m) != 1 {
+		t.Fatalf("expected 1 enabled tool, got %d", len(m))
+	}
+	if _, ok := m["bash"]; !ok {
+		t.Error("expected bash in map from ToolMapFn()")
+	}
+	if _, ok := m["disabled"]; ok {
+		t.Error("disabled tool should not appear in ToolMapFn() result")
+	}
+}
+
 func TestRegistry_NamesEmpty(t *testing.T) {
 	r := tool.NewRegistry()
 	names := r.Names()

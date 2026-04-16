@@ -258,6 +258,7 @@ func TestDescriptionFromInput(t *testing.T) {
 	}{
 		{"with description", `{"description":"search code","prompt":"find"}`, "search code"},
 		{"no description, short prompt", `{"prompt":"find the bug"}`, "find the bug"},
+		{"invalid json", `{broken`, "Execute a sub-agent task"},
 		{"empty input", `{}`, "Execute a sub-agent task"},
 		{"no description, long prompt truncation", `{"prompt":"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor xy"}`, "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor x..."},
 	}

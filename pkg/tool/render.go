@@ -80,15 +80,19 @@ func lcsDP(a, b []string) []lcsEntry {
 
 	// Direction: 0=diag, 1=up, 2=left
 	dir := make([]byte, (m+1)*(n+1))
+	dp := make([]int, (m+1)*(n+1))
 	idx := func(i, j int) int { return i*(n+1) + j }
 
 	for i := 1; i <= m; i++ {
 		for j := 1; j <= n; j++ {
 			if a[i-1] == b[j-1] {
+				dp[idx(i, j)] = dp[idx(i-1, j-1)] + 1
 				dir[idx(i, j)] = 0 // diagonal — match
-			} else if dir[idx(i-1, j)] >= dir[idx(i, j-1)] {
+			} else if dp[idx(i-1, j)] >= dp[idx(i, j-1)] {
+				dp[idx(i, j)] = dp[idx(i-1, j)]
 				dir[idx(i, j)] = 1 // up
 			} else {
+				dp[idx(i, j)] = dp[idx(i, j-1)]
 				dir[idx(i, j)] = 2 // left
 			}
 		}
@@ -208,6 +212,10 @@ func lineDiff(oldTokens, newTokens []string) []diffComponent {
 	if commonCount > 0 {
 		result = appendDiffComponent(result, false, false, commonCount)
 	}
+
+	// Note: the commonCount > 0 check below (line ~212) is provably unreachable.
+	// Suffix stripping guarantees oldMid[last] ≠ newMid[last], so LCS never ends
+	// at both ends, and the remaining deletion loop above always flushes commonCount.
 
 	// Suffix
 	if oldEnd < oldLen {
