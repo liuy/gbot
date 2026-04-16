@@ -120,6 +120,12 @@ func (r *Registry) ToolMap() map[string]Tool {
 	return result
 }
 
+// ToolMapFn returns a closure that calls ToolMap().
+// The closure is safe to store and call later — it captures the Registry pointer.
+func (r *Registry) ToolMapFn() func() map[string]Tool {
+	return r.ToolMap
+}
+
 // Names returns all registered tool names (primary names only).
 func (r *Registry) Names() []string {
 	r.mu.RLock()

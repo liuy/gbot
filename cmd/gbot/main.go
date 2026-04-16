@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -15,11 +16,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
-	"github.com/liuy/gbot/pkg/context"
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/tool/fileread"
@@ -72,13 +74,13 @@ func main() {
 	h := hub.NewHub()
 
 	eng := engine.New(&engine.Params{
-		Provider:    provider,
-		Tools:       reg.EnabledTools(),
-		Model:       cfg.Model,
-		MaxTokens:   16000,
-		TokenBudget: 200000,
-		Logger:      logger,
-		Dispatcher:  h,
+		Provider:      provider,
+		ToolsProvider: reg.ToolMapFn(),
+		Model:         cfg.Model,
+		MaxTokens:     16000,
+		TokenBudget:   200000,
+		Logger:        logger,
+		Dispatcher:    h,
 	})
 
 	// Wire background task notifications into the engine's notification queue.
@@ -91,6 +93,10 @@ func main() {
 			Timestamp: time.Now(),
 		})
 	}
+
+	// Register Agent tool (needs engine for sub-engine factory)
+	agentTool := createAgentTool(eng)
+	reg.MustRegister(agentTool)
 
 	// 5. Build system prompt using context builder
 	workingDir, _ := os.Getwd()
@@ -169,18 +175,43 @@ func createTools() *tool.Registry {
 	return reg
 }
 
+// createAgentTool creates the Agent tool and wires the sub-engine factory.
+// Called after engine construction to break the circular dependency:
+// tools → engine → tools (Agent needs engine to create sub-engines).
+func createAgentTool(eng *engine.Engine) tool.Tool {
+	at := agenttool.New()
+	at.SetFactory(
+		func(ctx context.Context, opts agenttool.SubEngineOpts) (*types.SubQueryResult, error) {
+			startTime := time.Now()
+			subEng := eng.NewSubEngine(engine.SubEngineOptions{
+				SystemPrompt: string(opts.SystemPrompt),
+				Tools:        opts.Tools,
+				MaxTurns:     opts.MaxTurns,
+				Model:        opts.Model,
+			})
+			result := subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+			if result.Error != nil {
+				return nil, result.Error
+			}
+			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
+		},
+		eng.Tools,
+	)
+	return at
+}
+
 // buildSystemPrompt builds the system prompt using the context builder.
 func buildSystemPrompt(workingDir string, reg *tool.Registry) json.RawMessage {
-	builder := context.NewBuilder(workingDir)
+	builder := ctxbuild.NewBuilder(workingDir)
 
 	// Load git status
-	builder.GitStatus = context.LoadGitStatus(workingDir)
+	builder.GitStatus = ctxbuild.LoadGitStatus(workingDir)
 
 	// Load GBOT.md instructions
-	builder.GBOTMDContent = context.LoadGBOTMD(workingDir)
+	builder.GBOTMDContent = ctxbuild.LoadGBOTMD(workingDir)
 
 	// Load memory files
-	builder.MemoryFiles = context.LoadMemoryFiles(workingDir)
+	builder.MemoryFiles = ctxbuild.LoadMemoryFiles(workingDir)
 
 	// Collect tool prompt contributions
 	for _, t := range reg.EnabledTools() {

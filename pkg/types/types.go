@@ -298,3 +298,40 @@ type LoopAction struct {
 	Reason   ContinueReason
 	Terminal TerminalReason
 }
+
+// ---------------------------------------------------------------------------
+// Agent types — source: tools/AgentTool/builtInAgents.ts, AgentTool.tsx
+// ---------------------------------------------------------------------------
+
+// AgentDefinition describes a built-in agent type.
+// Source: tools/AgentTool/builtInAgents.ts — BaseAgentDefinition
+type AgentDefinition struct {
+	AgentType       string
+	WhenToUse       string
+	SystemPrompt    func() string // lazily generated system prompt
+	Tools           []string      // nil or ["*"] = all tools
+	DisallowedTools []string      // blacklist
+	Model           string        // "inherit", "haiku", "sonnet", "opus"
+	OmitClaudeMd    bool
+	MaxTurns        int // 0 = no limit
+}
+
+// AgentInput is the input parameters for the Agent tool.
+// Source: AgentTool.tsx:82-138 — AgentToolInput
+type AgentInput struct {
+	Description  string `json:"description"`
+	Prompt       string `json:"prompt"`
+	SubagentType string `json:"subagent_type,omitempty"`
+	Model        string `json:"model,omitempty"`
+}
+
+// SubQueryResult is the result returned by a sub-agent after execution.
+// Source: agentToolUtils.ts:348-357 — AgentToolResult
+type SubQueryResult struct {
+	AgentID           string
+	AgentType         string
+	Content           string
+	TotalDurationMs   int64
+	TotalTokens       int
+	TotalToolUseCount int
+}

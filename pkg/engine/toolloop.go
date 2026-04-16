@@ -107,13 +107,15 @@ func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 	t, ok := e.toolMap[block.Name]
 	if !ok {
 		// Source: StreamingToolExecutor.ts:78-100 — unknown tool → error result.
-		errBlock := CreateToolErrorBlock(block.ID, fmt.Sprintf("No such tool available: %s", block.Name))
+		errMsg := fmt.Sprintf("No such tool available: %s", block.Name)
+		errBlock := CreateToolErrorBlock(block.ID, errMsg)
 		e.emitEvent(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
-				ToolUseID: block.ID,
-				Output:    errBlock.Content,
-				IsError:   true,
+				ToolUseID:     block.ID,
+				Output:        errBlock.Content,
+				DisplayOutput: errMsg,
+				IsError:       true,
 			},
 		})
 		tt := &TrackedTool{
@@ -343,12 +345,14 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	e.mu.Unlock()
 	if reason != "" {
 		errBlock := CreateSyntheticErrorBlock(tt.ID, reason)
+		errMsg := extractErrMsg(errBlock.Content)
 		e.emitEvent(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
-				ToolUseID: tt.ID,
-				Output:    errBlock.Content,
-				IsError:   true,
+				ToolUseID:     tt.ID,
+				Output:        errBlock.Content,
+				DisplayOutput: errMsg,
+				IsError:       true,
 			},
 		})
 		tt.resultBlocks = []types.ContentBlock{errBlock}
@@ -359,13 +363,15 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	t, ok := e.toolMap[tt.Name]
 	if !ok {
 		// Should not happen (checked in AddTool), but handle defensively.
-		errBlock := CreateToolErrorBlock(tt.ID, fmt.Sprintf("No such tool available: %s", tt.Name))
+		errMsg := fmt.Sprintf("No such tool available: %s", tt.Name)
+		errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 		e.emitEvent(types.QueryEvent{
 			Type: types.EventToolEnd,
 			ToolResult: &types.ToolResultEvent{
-				ToolUseID: tt.ID,
-				Output:    errBlock.Content,
-				IsError:   true,
+				ToolUseID:     tt.ID,
+				Output:        errBlock.Content,
+				DisplayOutput: errMsg,
+				IsError:       true,
 			},
 		})
 		tt.resultBlocks = []types.ContentBlock{errBlock}
@@ -488,6 +494,18 @@ func (e *StreamingToolExecutor) applyContextModifier(tt *TrackedTool, result *to
 		e.tctx = result.ContextModifier(e.tctx)
 		e.mu.Unlock()
 	}
+}
+
+// extractErrMsg extracts the human-readable error message from a tool result
+// block's JSON content (format: {"error":"message"}).
+func extractErrMsg(content json.RawMessage) string {
+	var m map[string]string
+	if json.Unmarshal(content, &m) == nil {
+		if msg, ok := m["error"]; ok {
+			return msg
+		}
+	}
+	return string(content)
 }
 
 // ---------------------------------------------------------------------------

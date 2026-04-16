@@ -967,3 +967,166 @@ func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
 		t.Errorf("expected sibling error message, got %q", parsed["error"])
 	}
 }
+
+// TestConcurrentToolLoop_UnknownToolDisplayOutput verifies that the unknown-tool
+// error path sets DisplayOutput on the event (not just Output).
+func TestConcurrentToolLoop_UnknownToolDisplayOutput(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "nonexistent", Input: json.RawMessage(`{}`)},
+	}
+
+	var events []types.QueryEvent
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+		events = append(events, evt)
+	})
+
+	// Result block must have error content
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Fatal("expected error result")
+	}
+
+	// Event must have non-empty DisplayOutput
+	var toolEndEvents []types.QueryEvent
+	for _, evt := range events {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.ToolUseID == "tu_1" {
+			toolEndEvents = append(toolEndEvents, evt)
+		}
+	}
+	if len(toolEndEvents) == 0 {
+		t.Fatal("no tool_end event found for tu_1")
+	}
+	evt := toolEndEvents[0]
+	if evt.ToolResult.DisplayOutput == "" {
+		t.Error("DisplayOutput must not be empty for unknown tool error")
+	}
+	if !strings.Contains(evt.ToolResult.DisplayOutput, "No such tool available") {
+		t.Errorf("DisplayOutput should mention 'No such tool available', got %q", evt.ToolResult.DisplayOutput)
+	}
+	if !evt.ToolResult.IsError {
+		t.Error("event IsError must be true")
+	}
+}
+
+// TestConcurrentToolLoop_ToolErrorDisplayOutput verifies that emitToolError
+// sets DisplayOutput when a tool's Call() returns an error.
+func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"fail": &concurrentTool{
+			name:   "fail",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("specific failure X")
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "fail", Input: json.RawMessage(`{}`)},
+	}
+
+	var events []types.QueryEvent
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+		events = append(events, evt)
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Fatal("expected error result")
+	}
+
+	// Verify DisplayOutput in event
+	var toolEndEvents []types.QueryEvent
+	for _, evt := range events {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.ToolUseID == "tu_1" {
+			toolEndEvents = append(toolEndEvents, evt)
+		}
+	}
+	if len(toolEndEvents) == 0 {
+		t.Fatal("no tool_end event found for tu_1")
+	}
+	evt := toolEndEvents[0]
+	if evt.ToolResult.DisplayOutput == "" {
+		t.Error("DisplayOutput must not be empty for tool error")
+	}
+	if !strings.Contains(evt.ToolResult.DisplayOutput, "specific failure X") {
+		t.Errorf("DisplayOutput should contain error message, got %q", evt.ToolResult.DisplayOutput)
+	}
+}
+
+// TestConcurrentToolLoop_AbortDisplayOutput verifies that the abort path
+// (sibling Bash error kills sibling tools) sets DisplayOutput on the synthetic error event.
+func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name: "Bash", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				return nil, errors.New("bash boom")
+			},
+		},
+		"slow": &concurrentTool{
+			name: "slow", isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+				close(started)
+				time.Sleep(5 * time.Second)
+				return &tool.ToolResult{Data: "should not reach"}, nil
+			},
+		},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_bash", Name: "Bash", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_slow", Name: "slow", Input: json.RawMessage(`{}`)},
+	}
+
+	var mu sync.Mutex
+	var events []types.QueryEvent
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+		mu.Lock()
+		events = append(events, evt)
+		mu.Unlock()
+	})
+
+	// slow tool should have synthetic error block
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	var slowResult *types.ContentBlock
+	for _, r := range results {
+		if r.IsError {
+			var m map[string]string
+			if err := json.Unmarshal(r.Content, &m); err != nil {
+				t.Fatalf("failed to parse error block: %v", err)
+			}
+			if strings.Contains(m["error"], "Cancelled") {
+				slowResult = &r
+			}
+		}
+	}
+	if slowResult == nil {
+		t.Fatal("expected a 'Cancelled' synthetic error for the slow tool")
+	}
+
+	// Verify the slow tool's event has non-empty DisplayOutput
+	mu.Lock()
+	defer mu.Unlock()
+	for _, evt := range events {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.ToolUseID == "tu_slow" {
+			if evt.ToolResult.DisplayOutput == "" {
+				t.Error("abort path must set non-empty DisplayOutput for synthetic error event")
+			}
+			if !strings.Contains(evt.ToolResult.DisplayOutput, "Cancelled") {
+				t.Errorf("DisplayOutput should mention 'Cancelled', got %q", evt.ToolResult.DisplayOutput)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool_end event found for tu_slow")
+}

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +36,9 @@ type EventDispatcher interface {
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
 	provider    llm.Provider
-	tools       map[string]tool.Tool
-	toolOrder   []string
+	tools         map[string]tool.Tool
+	toolOrder     []string
+	toolsProvider func() map[string]tool.Tool
 	model       string
 	maxTokens   int
 	logger      *slog.Logger
@@ -45,12 +47,23 @@ type Engine struct {
 	turnCount      int
 	dispatcher     EventDispatcher
 	notifications  *notificationQueue
+
+	// isSubagent is true for sub-agent engines created by AgentTool.
+	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
+	// where agentId presence disables budget tracking.
+	// Source: tokenBudget.ts:45-53 — checkTokenBudget skips when agentId is set.
+	isSubagent bool
+
+	// maxTurns is the maximum number of agentic turns before stopping.
+	// Default: 50. Sub-engines may override via SubEngineOptions.
+	maxTurns int
 }
 
 // Params holds the constructor arguments for Engine.
 type Params struct {
 	Provider    llm.Provider
-	Tools       []tool.Tool
+	Tools       []tool.Tool                    // static tool list (ignored if ToolsProvider is set)
+	ToolsProvider func() map[string]tool.Tool  // dynamic tool resolution — called each turn
 	Model       string
 	MaxTokens   int
 	TokenBudget int
@@ -101,23 +114,36 @@ func New(p *Params) *Engine {
 		p.Logger = slog.Default()
 	}
 
-	toolMap := make(map[string]tool.Tool)
-	var toolOrder []string
-	for _, t := range p.Tools {
-		toolMap[t.Name()] = t
-		toolOrder = append(toolOrder, t.Name())
+	// Resolve initial tools: prefer dynamic provider, fall back to static slice.
+	var toolMap map[string]tool.Tool
+	var toolsProvider func() map[string]tool.Tool
+	if p.ToolsProvider != nil {
+		toolsProvider = p.ToolsProvider
+		toolMap = p.ToolsProvider()
+	} else {
+		toolMap = make(map[string]tool.Tool)
+		for _, t := range p.Tools {
+			toolMap[t.Name()] = t
+		}
 	}
+	var toolOrder []string
+	for name := range toolMap {
+		toolOrder = append(toolOrder, name)
+	}
+	sort.Strings(toolOrder)
 
 	return &Engine{
 		provider:      p.Provider,
 		tools:         toolMap,
 		toolOrder:     toolOrder,
+		toolsProvider: toolsProvider,
 		model:         p.Model,
 		maxTokens:     p.MaxTokens,
 		logger:        p.Logger,
 		tokenBudget:   p.TokenBudget,
 		dispatcher:    p.Dispatcher,
 		notifications: &notificationQueue{},
+		maxTurns:      50,
 	}
 }
 
@@ -153,7 +179,10 @@ func (e *Engine) emitEvent(eventCh chan<- types.QueryEvent, event types.QueryEve
 		e.dispatcher.Dispatch(event)
 		return
 	}
-	eventCh <- event
+	if eventCh != nil {
+		eventCh <- event
+	}
+	// Both nil (sub-engine): silently discard — result returned via QueryResult
 }
 
 // queryLoop is the main agentic loop.
@@ -171,9 +200,8 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
 	var totalUsage types.Usage
-	maxTurns := 50
 
-	for e.turnCount < maxTurns {
+	for e.turnCount < e.maxTurns {
 		select {
 		case <-ctx.Done():
 			return QueryResult{
@@ -250,7 +278,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		e.turnCount++
 		e.tokenBudget -= totalUsage.InputTokens + totalUsage.OutputTokens
 
-		if e.tokenBudget <= 0 {
+		if e.tokenBudget <= 0 && !e.isSubagent {
 			e.logger.Warn("token budget exhausted")
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
@@ -274,6 +302,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // callLLM sends the messages to the LLM and collects the full response.
 // Source: query.ts — streaming API call accumulation.
 func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) (*types.Message, *StreamingToolExecutor, error) {
+	e.refreshTools()
 	// Build tool definitions for API
 	var toolDefs []llm.ToolDef
 	for _, name := range e.toolOrder {
@@ -292,6 +321,14 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			InputSchema: schema,
 		})
 	}
+
+	e.logger.Info("callLLM tools registered", "count", len(toolDefs), "names", func() string {
+		var names []string
+		for _, td := range toolDefs {
+			names = append(names, td.Name)
+		}
+		return strings.Join(names, ",")
+	}())
 
 	// Marshal messages for the API request
 	apiMessages := e.marshalMessages()
@@ -726,6 +763,20 @@ func (e *Engine) Tools() map[string]tool.Tool {
 	return e.tools
 }
 
+// refreshTools rebuilds the tool map and order from the provider if set.
+// Called at the start of each callLLM so late-registered tools are visible.
+func (e *Engine) refreshTools() {
+	if e.toolsProvider == nil {
+		return
+	}
+	e.tools = e.toolsProvider()
+	e.toolOrder = make([]string, 0, len(e.tools))
+	for name := range e.tools {
+		e.toolOrder = append(e.toolOrder, name)
+	}
+	sort.Strings(e.toolOrder)
+}
+
 // MaxTokens returns the max tokens setting.
 func (e *Engine) MaxTokens() int {
 	return e.maxTokens
@@ -740,4 +791,65 @@ func (e *Engine) TokenBudget() int {
 func (e *Engine) Reset() {
 	e.messages = nil
 	e.turnCount = 0
+}
+
+// ---------------------------------------------------------------------------
+// Sub-engine support — source: tools/AgentTool/runAgent.ts:330-500
+// ---------------------------------------------------------------------------
+
+// SubEngineOptions configures the creation of a sub-engine for agent execution.
+type SubEngineOptions struct {
+	SystemPrompt string               // sub-agent's system prompt
+	Tools        map[string]tool.Tool  // filtered tool set
+	MaxTurns     int                   // 0 = default 50
+	Model        string               // "" = inherit from parent
+}
+
+// NewSubEngine creates a new Engine that shares the Provider and Logger
+// with the parent but has fully independent state (messages, tools, budget).
+// Source: runAgent.ts:330-500 — runAgent setup phase
+func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
+	model := e.model
+	if opts.Model != "" {
+		model = opts.Model
+	}
+
+	// Build toolOrder from the filtered tool set
+	var toolOrder []string
+	for name := range opts.Tools {
+		toolOrder = append(toolOrder, name)
+	}
+	sort.Strings(toolOrder)
+
+	return &Engine{
+		provider:      e.provider,
+		tools:         opts.Tools,
+		toolOrder:     toolOrder,
+		model:         model,
+		maxTokens:     e.maxTokens,
+		logger:        e.logger,
+		messages:      []types.Message{},
+		tokenBudget:   0, // sub-agents bypass budget checks via isSubagent
+		turnCount:     0,
+		dispatcher:    nil, // no event routing to TUI
+		notifications: &notificationQueue{},
+		isSubagent:    true,
+		maxTurns:      subMaxTurns(opts.MaxTurns),
+	}
+}
+
+// QuerySync executes the agentic loop synchronously (no goroutine, no channels).
+// Used by sub-agents created via AgentTool. EventCh is nil — events are silently discarded.
+// Source: TS sync sub-agents execute runAgent() directly in the caller's context.
+func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
+	return e.queryLoop(ctx, userMessage, systemPrompt, nil)
+}
+
+// subMaxTurns returns the max turns for a sub-engine.
+// 0 or negative means use parent default (50).
+func subMaxTurns(n int) int {
+	if n <= 0 {
+		return 50
+	}
+	return n
 }

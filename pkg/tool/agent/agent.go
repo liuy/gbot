@@ -1,0 +1,236 @@
+// Package agent implements the Agent tool for spawning sub-agents.
+//
+// Source reference: tools/AgentTool/AgentTool.tsx:239-1261 (call method)
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
+)
+
+// ---------------------------------------------------------------------------
+// SubEngineFactory — avoids circular dependency on engine package
+// ---------------------------------------------------------------------------
+
+// SubEngineFactory creates a sub-engine and synchronously executes a query.
+// Injected by main.go after engine construction to avoid agent → engine import cycle.
+type SubEngineFactory func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error)
+
+// SubEngineOpts passes parameters to the sub-engine factory.
+// Uses only types from shared packages (no engine dependency).
+type SubEngineOpts struct {
+	Prompt       string               // actual user prompt for the sub-agent
+	SystemPrompt json.RawMessage      // sub-agent's system prompt
+	Tools        map[string]tool.Tool // filtered tool set
+	MaxTurns     int                  // 0 = default 50
+	Model        string              // "" = inherit from parent
+	AgentType    string              // resolved agent type (e.g. "general-purpose", "Explore")
+}
+
+// ---------------------------------------------------------------------------
+// AgentTool — source: tools/AgentTool/AgentTool.tsx:239-1261
+// ---------------------------------------------------------------------------
+
+// AgentTool is the tool that allows the LLM to spawn sub-agents.
+// Source: AgentTool.tsx:239-1261 — call() sync path
+type AgentTool struct {
+	factory     SubEngineFactory         // injected via SetFactory
+	parentTools func() map[string]tool.Tool // lazy accessor for parent engine tools
+}
+
+// New creates a new AgentTool with no dependencies.
+func New() *AgentTool {
+	return &AgentTool{}
+}
+
+// SetFactory injects the sub-engine factory and parent tools accessor.
+// Called after engine construction in main.go to break the circular dependency.
+func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[string]tool.Tool) {
+	t.factory = factory
+	t.parentTools = toolsFn
+}
+
+// Name returns the tool name.
+// Source: tools/AgentTool/constants.ts — AGENT_TOOL_NAME = "Agent"
+func (t *AgentTool) Name() string { return "Agent" }
+
+// Aliases returns no aliases.
+func (t *AgentTool) Aliases() []string { return nil }
+
+// Description returns the tool description for the given input.
+// Source: AgentTool.tsx — description pre-computed from input.
+func (t *AgentTool) Description(input json.RawMessage) (string, error) {
+	var parsed types.AgentInput
+	if err := json.Unmarshal(input, &parsed); err != nil {
+		return "Execute a sub-agent task", nil
+	}
+	if parsed.Description != "" {
+		return parsed.Description, nil
+	}
+	if parsed.Prompt != "" {
+		if len(parsed.Prompt) > 80 {
+			return parsed.Prompt[:80] + "...", nil
+		}
+		return parsed.Prompt, nil
+	}
+	return "Execute a sub-agent task", nil
+}
+
+// InputSchema returns the JSON schema for Agent tool input.
+// Source: AgentTool.tsx:82-138 — AgentToolInput
+func (t *AgentTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
+    "prompt": {"type": "string", "description": "The task for the agent to perform"},
+    "subagent_type": {"type": "string", "description": "Agent type to use", "enum": ["general-purpose","Explore","Plan"]},
+    "model": {"type": "string", "enum": ["sonnet","opus","haiku"]}
+  },
+  "required": ["description","prompt"]
+}`)
+}
+
+// Call executes the sub-agent synchronously.
+// Source: AgentTool.tsx:239-1261 — call() sync path
+func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	if t.factory == nil {
+		return nil, fmt.Errorf("agent tool not initialized: sub-engine factory not set")
+	}
+
+	// Step 1: Parse input
+	var agentInput types.AgentInput
+	if err := json.Unmarshal(input, &agentInput); err != nil {
+		return nil, fmt.Errorf("invalid Agent input: %w", err)
+	}
+
+	// Step 2: Resolve agent type (default: general-purpose)
+	agentType := agentInput.SubagentType
+	if agentType == "" {
+		agentType = "general-purpose"
+	}
+
+	// Step 3: Look up agent definition
+	agentDef, err := GetAgentDefinition(agentType)
+	if err != nil {
+		return nil, fmt.Errorf("unknown agent type %q: %w", agentType, err)
+	}
+
+	// Step 4: Filter tools for this agent
+	parentTools := t.parentTools()
+	filteredTools := ResolveAgentTools(parentTools, agentDef)
+
+	// Step 5: Build system prompt (JSON string, matching context.Builder.Build() format)
+	systemPromptStr := agentDef.SystemPrompt()
+	encoded, _ := json.Marshal(systemPromptStr)
+	systemPrompt := json.RawMessage(encoded)
+
+	// Step 6: Resolve model
+	model := agentInput.Model
+	if model == "" {
+		model = agentDef.Model
+	}
+
+	// Step 7: Call factory to create sub-engine and execute
+	opts := SubEngineOpts{
+		Prompt:       agentInput.Prompt,
+		SystemPrompt: systemPrompt,
+		Tools:        filteredTools,
+		MaxTurns:     agentDef.MaxTurns,
+		Model:        model,
+		AgentType:    agentType,
+	}
+
+	result, err := t.factory(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("sub-agent execution failed: %w", err)
+	}
+
+	// Step 8: Return result
+	return &tool.ToolResult{
+		Data: result,
+	}, nil
+}
+
+// CheckPermissions always allows — the engine handles permission checks
+// for the sub-agent's own tool calls.
+func (t *AgentTool) CheckPermissions(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+
+// IsReadOnly returns true — the Agent tool itself doesn't modify files.
+// Sub-agent tool calls have their own permission checks.
+func (t *AgentTool) IsReadOnly(input json.RawMessage) bool { return false }
+
+// IsDestructive returns false — the Agent tool itself isn't destructive.
+func (t *AgentTool) IsDestructive(input json.RawMessage) bool { return false }
+
+// IsConcurrencySafe returns false — sub-agents must run serially.
+func (t *AgentTool) IsConcurrencySafe(input json.RawMessage) bool { return false }
+
+// IsEnabled returns true.
+func (t *AgentTool) IsEnabled() bool { return true }
+
+// InterruptBehavior returns InterruptBlock — let the sub-agent finish.
+func (t *AgentTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
+
+// Prompt returns the system prompt contribution from the Agent tool.
+func (t *AgentTool) Prompt() string { return agentPrompt() }
+
+// RenderResult renders the sub-query result for TUI display.
+func (t *AgentTool) RenderResult(data any) string {
+	result, ok := data.(*types.SubQueryResult)
+	if !ok {
+		b, _ := json.Marshal(data)
+		return string(b)
+	}
+	return result.Content
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// FinalizeResult extracts the final text from a sub-agent's QueryResult.
+// Source: agentToolUtils.ts:276-357 — finalizeAgentTool
+func FinalizeResult(messages []types.Message, agentType string, startTime time.Time, totalUsage types.Usage, toolUseCount int) *types.SubQueryResult {
+	// Backward walk: find the last assistant message with text content.
+	// Source: agentToolUtils.ts:301-317
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		var textParts []string
+		for _, blk := range msg.Content {
+			if blk.Type == types.ContentTypeText {
+				textParts = append(textParts, blk.Text)
+			}
+		}
+		if len(textParts) > 0 {
+			content := strings.Join(textParts, "\n")
+			return &types.SubQueryResult{
+				AgentType:         agentType,
+				Content:           content,
+				TotalDurationMs:   time.Since(startTime).Milliseconds(),
+				TotalTokens:       totalUsage.InputTokens + totalUsage.OutputTokens,
+				TotalToolUseCount: toolUseCount,
+			}
+		}
+		// This assistant message has no text (pure tool_use) — continue backward
+	}
+
+	// Fallback: no text found in any assistant message
+	return &types.SubQueryResult{
+		AgentType:       agentType,
+		Content:         "(agent completed with no text output)",
+		TotalDurationMs: time.Since(startTime).Milliseconds(),
+		TotalTokens:     totalUsage.InputTokens + totalUsage.OutputTokens,
+	}
+}

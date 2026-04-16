@@ -264,7 +264,13 @@ func TestExecute_UpdateUnchanged(t *testing.T) {
 	if output.OriginalFile == nil {
 		t.Fatal("OriginalFile = nil, want original content")
 	}
-	// Structured patch should be nil/empty when unchanged
+	// Content is identical, so StructuredPatch must be empty
+	if len(output.StructuredPatch) != 0 {
+		t.Errorf("StructuredPatch = %v, want empty (content unchanged)", output.StructuredPatch)
+	}
+	if output.ContentChanged {
+		t.Error("ContentChanged = true, want false (content unchanged)")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -558,9 +564,13 @@ func TestExecute_GitDiff(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 	output := result.Data.(*filewrite.Output)
-	// GitDiff may be nil if not in git repo — that's ok
-	// But if we're in a git repo, it should be non-nil for new files
-	_ = output.GitDiff
+	// Temp dir is not a git repo, so GitDiff must be nil
+	if output.GitDiff != nil {
+		t.Errorf("GitDiff = %+v, want nil (not a git repo)", output.GitDiff)
+	}
+	if output.Type != filewrite.WriteTypeCreate {
+		t.Errorf("Type = %q, want %q", output.Type, filewrite.WriteTypeCreate)
+	}
 }
 
 // ---------------------------------------------------------------------------

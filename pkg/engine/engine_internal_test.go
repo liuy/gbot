@@ -333,6 +333,100 @@ func TestTools_ReturnsPopulatedMap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ToolsProvider — dynamic tool resolution
+// ---------------------------------------------------------------------------
+
+func TestToolsProvider_SeesLateRegisteredTool(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the main.go pattern: tools registered after engine construction
+	// are visible via the ToolsProvider closure.
+	baseTool := &testTool{name: "Bash"}
+	toolMap := map[string]tool.Tool{
+		"Bash": baseTool,
+	}
+
+	eng := New(&Params{
+		Provider:      &testProvider{},
+		ToolsProvider: func() map[string]tool.Tool { return toolMap },
+		Model:         "test",
+	})
+
+	// Before late-register: engine sees only Bash
+	tools := eng.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("before: expected 1 tool, got %d", len(tools))
+	}
+	if _, ok := tools["Bash"]; !ok {
+		t.Error("before: missing Bash")
+	}
+
+	// Late-register Agent tool (simulating main.go post-construction registration)
+	toolMap["Agent"] = &testTool{name: "Agent"}
+
+	// After late-register: engine MUST see Agent without any extra call
+	tools = eng.Tools()
+	if len(tools) != 2 {
+		t.Fatalf("after: expected 2 tools, got %d: %v", len(tools), mapKeys(tools))
+	}
+	if _, ok := tools["Agent"]; !ok {
+		t.Error("after: missing Agent")
+	}
+	if _, ok := tools["Bash"]; !ok {
+		t.Error("after: missing Bash (was overwritten)")
+	}
+}
+
+func TestToolsProvider_NilProviderGivesEmpty(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	tools := eng.Tools()
+	if len(tools) != 0 {
+		t.Errorf("nil provider: expected 0 tools, got %d", len(tools))
+	}
+}
+
+func TestToolsProvider_PreferOverToolsSlice(t *testing.T) {
+	t.Parallel()
+
+	// If both Tools and ToolsProvider are set, ToolsProvider wins
+	staticTool := &testTool{name: "static"}
+	dynamicTool := &testTool{name: "dynamic"}
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Tools:    []tool.Tool{staticTool},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{"dynamic": dynamicTool}
+		},
+		Model: "test",
+	})
+
+	tools := eng.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool (dynamic), got %d", len(tools))
+	}
+	if _, ok := tools["static"]; ok {
+		t.Error("static tool should not appear when ToolsProvider is set")
+	}
+	if _, ok := tools["dynamic"]; !ok {
+		t.Error("dynamic tool should appear")
+	}
+}
+
+func mapKeys(m map[string]tool.Tool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// ---------------------------------------------------------------------------
 // Max turns reached (line 226-231)
 // ---------------------------------------------------------------------------
 
@@ -548,4 +642,274 @@ func (t *testTool) IsEnabled() bool                           { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                            { return "" }
 func (t *testTool) RenderResult(any) string                     { return "" }
+
+// ---------------------------------------------------------------------------
+// Sub-engine tests — source: plan steady-dreaming-sunrise.md
+// ---------------------------------------------------------------------------
+
+// subTextEvents creates streaming events for a simple text response (internal helper).
+func subTextEvents(model, text string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: text}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+}
+
+func TestNewSubEngineFieldIndependence(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mt := &testTool{name: "test_tool"}
+	parent := New(&Params{
+		Provider:    mp,
+		Tools:       []tool.Tool{mt},
+		Model:       "parent-model",
+		TokenBudget: 100000,
+	})
+
+	// Add state to parent
+	parent.AddSystemMessage("parent only message")
+
+	// Create sub-engine
+	subTools := map[string]tool.Tool{"test_tool": mt}
+	sub := parent.NewSubEngine(SubEngineOptions{
+		Tools:    subTools,
+		MaxTurns: 10,
+	})
+
+	// Modify sub's state
+	sub.messages = append(sub.messages, types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("sub only message")},
+	})
+	sub.turnCount = 42
+	sub.tokenBudget = -999
+
+	// Verify parent unchanged
+	parentMsgs := parent.Messages()
+	if len(parentMsgs) != 1 {
+		t.Fatalf("parent should have 1 message, got %d", len(parentMsgs))
+	}
+	if parentMsgs[0].Content[0].Text != "parent only message" {
+		t.Errorf("parent message text = %q, want %q", parentMsgs[0].Content[0].Text, "parent only message")
+	}
+	if parent.turnCount != 0 {
+		t.Errorf("parent turnCount = %d, want 0", parent.turnCount)
+	}
+	if parent.tokenBudget != 100000 {
+		t.Errorf("parent tokenBudget = %d, want 100000", parent.tokenBudget)
+	}
+
+	// Verify sub has its own independent state
+	if len(sub.messages) != 1 {
+		t.Errorf("sub should have 1 message, got %d", len(sub.messages))
+	}
+	if sub.messages[0].Content[0].Text != "sub only message" {
+		t.Errorf("sub message text = %q, want %q", sub.messages[0].Content[0].Text, "sub only message")
+	}
+	if sub.turnCount != 42 {
+		t.Errorf("sub turnCount = %d, want 42", sub.turnCount)
+	}
+	if sub.tokenBudget != -999 {
+		t.Errorf("sub tokenBudget = %d, want -999", sub.tokenBudget)
+	}
+}
+
+func TestNewSubEngineSharesProvider(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	parent := New(&Params{Provider: mp, Model: "test"})
+	sub := parent.NewSubEngine(SubEngineOptions{})
+
+	// Both should point to the exact same provider instance (pointer equality)
+	if sub.provider != parent.provider {
+		t.Error("sub-engine should share the same provider instance as parent")
+	}
+}
+
+func TestNewSubEngineModelOverride(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	parent := New(&Params{Provider: mp, Model: "parent-model"})
+
+	// Case 1: no model override → inherits parent
+	sub1 := parent.NewSubEngine(SubEngineOptions{})
+	if sub1.model != "parent-model" {
+		t.Errorf("sub1.model = %q, want %q (inherit from parent)", sub1.model, "parent-model")
+	}
+
+	// Case 2: model override → uses override
+	sub2 := parent.NewSubEngine(SubEngineOptions{Model: "opus"})
+	if sub2.model != "opus" {
+		t.Errorf("sub2.model = %q, want %q (override)", sub2.model, "opus")
+	}
+}
+
+func TestNewSubEngineMaxTurns(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	parent := New(&Params{Provider: mp, Model: "test"})
+
+	// Case 1: MaxTurns=0 → default 50
+	sub1 := parent.NewSubEngine(SubEngineOptions{MaxTurns: 0})
+	if sub1.maxTurns != 50 {
+		t.Errorf("sub1.maxTurns = %d, want 50 (default)", sub1.maxTurns)
+	}
+
+	// Case 2: MaxTurns=5 → 5
+	sub2 := parent.NewSubEngine(SubEngineOptions{MaxTurns: 5})
+	if sub2.maxTurns != 5 {
+		t.Errorf("sub2.maxTurns = %d, want 5", sub2.maxTurns)
+	}
+}
+
+func TestQuerySync(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse(subTextEvents("test", "Hello from sub-agent"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+	})
+
+	ctx := context.Background()
+	result := eng.QuerySync(ctx, "test query", nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+	if len(result.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Role != types.RoleUser {
+		t.Errorf("expected first message to be user, got %s", result.Messages[0].Role)
+	}
+	if result.Messages[0].Content[0].Text != "test query" {
+		t.Errorf("user message text = %q, want %q", result.Messages[0].Content[0].Text, "test query")
+	}
+	if result.Messages[1].Role != types.RoleAssistant {
+		t.Errorf("expected second message to be assistant, got %s", result.Messages[1].Role)
+	}
+	if len(result.Messages[1].Content) == 0 {
+		t.Fatal("assistant message has no content blocks")
+	}
+	if result.Messages[1].Content[0].Text != "Hello from sub-agent" {
+		t.Errorf("assistant text = %q, want %q", result.Messages[1].Content[0].Text, "Hello from sub-agent")
+	}
+	if result.TotalUsage.InputTokens != 10 {
+		t.Errorf("TotalUsage.InputTokens = %d, want 10", result.TotalUsage.InputTokens)
+	}
+	if result.TotalUsage.OutputTokens != 5 {
+		t.Errorf("TotalUsage.OutputTokens = %d, want 5", result.TotalUsage.OutputTokens)
+	}
+}
+
+func TestQuerySyncCancellation(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	result := eng.QuerySync(ctx, "test query", nil)
+	if result.Terminal != types.TerminalAbortedStreaming {
+		t.Errorf("expected TerminalAbortedStreaming, got %s", result.Terminal)
+	}
+	if result.Error == nil {
+		t.Fatal("expected non-nil error from cancelled context")
+	}
+	if result.Error.Error() != "context canceled" {
+		t.Errorf("error = %q, want %q", result.Error.Error(), "context canceled")
+	}
+}
+
+func TestEmitEventNilSafe(t *testing.T) {
+	// Sub-engine has dispatcher=nil. With nil eventCh, emitEvent should silently discard.
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+
+	if eng.dispatcher != nil {
+		t.Fatal("expected nil dispatcher for default engine")
+	}
+	// This should NOT panic — that's the entire assertion
+	eng.emitEvent(nil, types.QueryEvent{Type: types.EventTurnStart})
+}
+
+func TestSubEngineBudgetBypass(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// Heavy token usage that would normally trigger TerminalPromptTooLong
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 99999}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "test_tool"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 99999}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+	mp.addResponse(subTextEvents("test", "Still running"), nil)
+
+	mt := &testTool{name: "test_tool"}
+
+	// Create parent with tiny budget
+	parent := New(&Params{
+		Provider:    mp,
+		Tools:       []tool.Tool{mt},
+		Model:       "test",
+		TokenBudget: 100,
+	})
+
+	// Create sub-engine via NewSubEngine (isSubagent=true, tokenBudget=0)
+	subTools := map[string]tool.Tool{"test_tool": mt}
+	sub := parent.NewSubEngine(SubEngineOptions{Tools: subTools})
+
+	// Verify sub-engine is marked as subagent
+	if !sub.isSubagent {
+		t.Error("sub-engine should have isSubagent=true")
+	}
+
+	ctx := context.Background()
+	result := sub.QuerySync(ctx, "test query", nil)
+
+	// Should complete normally despite heavy token usage (subagent bypasses budget check)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("sub-agent should bypass budget check and complete, got terminal=%s", result.Terminal)
+	}
+}
+
+func TestSubMaxTurns(t *testing.T) {
+	t.Parallel()
+	if subMaxTurns(0) != 50 {
+		t.Errorf("subMaxTurns(0) = %d, want 50", subMaxTurns(0))
+	}
+	if subMaxTurns(-1) != 50 {
+		t.Errorf("subMaxTurns(-1) = %d, want 50", subMaxTurns(-1))
+	}
+	if subMaxTurns(10) != 10 {
+		t.Errorf("subMaxTurns(10) = %d, want 10", subMaxTurns(10))
+	}
+	if subMaxTurns(100) != 100 {
+		t.Errorf("subMaxTurns(100) = %d, want 100", subMaxTurns(100))
+	}
+}
 
