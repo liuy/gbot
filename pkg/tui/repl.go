@@ -55,6 +55,22 @@ func NewReplState() *ReplState {
 	}
 }
 
+// updateToolBlock finds the tool block with the given ID in the last message
+// (searching in reverse) and replaces its ToolCallView. Returns false if not found.
+func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
+	m := s.lastMsg()
+	if m == nil {
+		return false
+	}
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
+			m.Blocks[i].ToolCall = *tcv
+			return true
+		}
+	}
+	return false
+}
+
 // AddUserMessage appends a user message to the session history.
 func (s *ReplState) AddUserMessage(text string) {
 	s.messages = append(s.messages, MessageView{
@@ -140,16 +156,7 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 	}
 
 	// Update the tool block in lastMsg
-	m := s.lastMsg()
-	if m == nil {
-		return
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
-			m.Blocks[i].ToolCall = *tcv
-			return
-		}
-	}
+	s.updateToolBlock(id, tcv)
 }
 
 // PendingToolDelta updates a pending tool's input and summary from engine.
@@ -169,16 +176,7 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string) {
 	tcv.Input = prettyJSON(json.RawMessage(inputStr))
 
 	// Update the tool block in lastMsg
-	m := s.lastMsg()
-	if m == nil {
-		return
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
-			m.Blocks[i].ToolCall = *tcv
-			return
-		}
-	}
+	s.updateToolBlock(id, tcv)
 }
 
 
@@ -203,16 +201,7 @@ func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 	tcv.Done = true
 
 	// Update the tool block in lastMsg
-	m := s.lastMsg()
-	if m == nil {
-		return
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
-			m.Blocks[i].ToolCall = *tcv
-			return
-		}
-	}
+	s.updateToolBlock(id, tcv)
 }
 
 // PendingThinkingStarted appends a new thinking block to the last message.
@@ -346,16 +335,7 @@ case "tool_param_delta":
 	}
 
 	// Update the block in lastMsg
-	m := s.lastMsg()
-	if m == nil {
-		return
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == msg.ParentToolUseID {
-			m.Blocks[i].ToolCall = *tcv
-			return
-		}
-	}
+	s.updateToolBlock(msg.ParentToolUseID, tcv)
 }
 
 // UpdateAgentUsage accumulates sub-agent token usage into both global and per-agent counters.
@@ -367,16 +347,7 @@ func (s *ReplState) UpdateAgentUsage(parentID string, inputTokens, outputTokens 
 	tcv.TokensIn += inputTokens
 	tcv.TokensOut += outputTokens
 
-	m := s.lastMsg()
-	if m == nil {
-		return
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == parentID {
-			m.Blocks[i].ToolCall = *tcv
-			return
-		}
-	}
+	s.updateToolBlock(parentID, tcv)
 }
 
 // FinishStream finalizes the streaming session.
