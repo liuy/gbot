@@ -20,7 +20,6 @@ var thinkingStar = "✦"
 var (
 	styleDotError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	styleDotSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	styleDotDim = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	styleNameBold   = lipgloss.NewStyle().Bold(true)
 	styleTimeDim = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
@@ -705,7 +704,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			dotStr = styleDotSuccess.Render(dot)
 		}
 	} else {
-		dotStr = styleDotDim.Render(dot)
+		dotStr = " "
 	}
 
 	if !tc.Done {
@@ -714,7 +713,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if toolDot != "" {
 			runningDot = toolDot
 		} else {
-			runningDot = styleDotDim.Render(dot)
+			runningDot = " "
 		}
 		// Show "Agent Explore(desc)" when agent type is known
 		agentName := tc.Name
@@ -915,7 +914,6 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 // Pre-cached styles for thinking blocks.
 var (
 	styleThinkingStar     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	styleThinkingDimGold  = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
 	styleThinkingContent  = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 )
 
@@ -937,8 +935,8 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 			// Visible blink frame: bright bold ✦
 			star = styleThinkingStar.Render(thinkingStar)
 		} else {
-			// Invisible blink frame: dim ✦
-			star = styleThinkingDimGold.Render(thinkingStar)
+			// Invisible blink frame: hide ✦ (space for alignment)
+			star = " "
 		}
 		header := star + " " + styleNameBold.Render("Thinking") + styleDim.Render("...")
 		sb.WriteString(wordWrap(header, availWidth))
