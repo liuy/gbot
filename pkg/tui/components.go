@@ -665,16 +665,20 @@ const resultPrefix = "| "
 
 // prefixLine returns the prefix for line index i: first line gets resultPrefix,
 // subsequent lines get spaces of equal width for alignment.
-func prefixLine(i int, text string) string {
+func prefixLine(i int, text string, contentStyle lipgloss.Style) string {
+	styledText := text
+	if contentStyle.String() != "" {
+		styledText = contentStyle.Render(text)
+	}
 	if i == 0 {
-		return resultPrefix + text
+		return resultPrefix + styledText
 	}
 	// Continuation lines: match the display width of resultPrefix using spaces
 	prefixWidth := 0
 	for _, r := range resultPrefix {
 		prefixWidth += runeDisplayWidth(r)
 	}
-	return strings.Repeat(" ", prefixWidth) + text
+	return strings.Repeat(" ", prefixWidth) + styledText
 }
 
 // renderToolCall renders a tool block using ● dot indicator.
@@ -762,9 +766,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			contentParts = append(contentParts, tc.Output)
 		}
 		content := strings.Join(contentParts, "\n")
-		sb.WriteString("\n" + formatToolOutput(content, tc.IsError, expand, availWidth-2, noHint, maxOutputLines))
+		sb.WriteString("\n" + formatToolOutput(content, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
 	} else if tc.Output != "" {
-		sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines))
+		sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
 	}
 }
 
@@ -818,7 +822,7 @@ func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return "\n" + formatToolOutput(content, false, true, availWidth-2, true, 0)
+	return "\n" + formatToolOutput(content, false, true, availWidth-2, true, 0, lipgloss.NewStyle())
 }
 
 // pluralS returns "s" if n != 1.
@@ -841,7 +845,7 @@ func truncateSummary(s string, maxLen int) string {
 // Collapsed: show first 3 lines + hint (or 10 for errors).
 // Expanded: show all lines, or last maxOutputLines if height-limited.
 // maxOutputLines=0 means unlimited.
-func formatToolOutput(output string, isError bool, expand bool, availWidth int, noHint bool, maxOutputLines int) string {
+func formatToolOutput(output string, isError bool, expand bool, availWidth int, noHint bool, maxOutputLines int, contentStyle lipgloss.Style) string {
 	if output == "" {
 		return ""
 	}
@@ -864,10 +868,10 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 			shown := lines[len(lines)-maxOutputLines:]
 			hidden := len(lines) - maxOutputLines
 			var sb strings.Builder
-			sb.WriteString(prefixLine(0, styleDim.Render(fmt.Sprintf("... %d lines truncated ...", hidden))) + "\n")
+			sb.WriteString(prefixLine(0, styleDim.Render(fmt.Sprintf("... %d lines truncated ...", hidden)), lipgloss.NewStyle()) + "\n")
 			for i, line := range shown {
 				for j, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
-					sb.WriteString(prefixLine(i+j+1, wl) + "\n")
+					sb.WriteString(prefixLine(i+j+1, wl, contentStyle) + "\n")
 				}
 			}
 			return strings.TrimRight(sb.String(), "\n")
@@ -876,7 +880,7 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 		lineIdx := 0
 		for _, line := range lines {
 			for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
-				sb.WriteString(prefixLine(lineIdx, wl) + "\n")
+				sb.WriteString(prefixLine(lineIdx, wl, contentStyle) + "\n")
 				lineIdx++
 			}
 		}
@@ -899,11 +903,11 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	lineIdx := 0
 	for _, line := range shown {
 		for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
-			sb.WriteString(prefixLine(lineIdx, wl) + "\n")
+			sb.WriteString(prefixLine(lineIdx, wl, contentStyle) + "\n")
 			lineIdx++
 		}
 	}
-	sb.WriteString(prefixLine(len(shown), hint))
+	sb.WriteString(prefixLine(len(shown), hint, lipgloss.NewStyle()))
 	return sb.String()
 }
 
@@ -941,7 +945,7 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 
 		// Show streaming content (italic to distinguish from tool output)
 		if tv.Text != "" {
-			formatted := formatToolOutput(tv.Text, false, true, availWidth-2, noHint, 0)
+			formatted := formatToolOutput(tv.Text, false, true, availWidth-2, noHint, 0, styleThinkingContent)
 			sb.WriteString("\n" + styleThinkingContent.Render(formatted))
 		}
 		return
@@ -961,7 +965,7 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 
 	// Show content with collapse/expand (italic to distinguish from tool output)
 	if tv.Text != "" {
-		formatted := formatToolOutput(tv.Text, false, expand, availWidth-2, noHint, 0)
+		formatted := formatToolOutput(tv.Text, false, expand, availWidth-2, noHint, 0, styleThinkingContent)
 		sb.WriteString("\n" + styleThinkingContent.Render(formatted))
 	}
 }

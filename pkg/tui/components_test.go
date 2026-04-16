@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -1472,7 +1473,7 @@ func TestInput_PrevWord_AtStart(t *testing.T) {
 
 func TestFormatToolOutput_Empty(t *testing.T) {
 	t.Parallel()
-	v := formatToolOutput("", false, false, 80, false, 0)
+	v := formatToolOutput("", false, false, 80, false, 0, lipgloss.NewStyle())
 	if v != "" {
 		t.Errorf("empty output should return empty, got %q", v)
 	}
@@ -1480,7 +1481,7 @@ func TestFormatToolOutput_Empty(t *testing.T) {
 
 func TestFormatToolOutput_FewLines(t *testing.T) {
 	t.Parallel()
-	v := formatToolOutput("line1\nline2", false, false, 80, false, 0)
+	v := formatToolOutput("line1\nline2", false, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(v, "line1") || !strings.Contains(v, "line2") {
 		t.Errorf("few lines should show all, got: %q", v)
 	}
@@ -1489,7 +1490,7 @@ func TestFormatToolOutput_FewLines(t *testing.T) {
 func TestFormatToolOutput_Collapsed(t *testing.T) {
 	t.Parallel()
 	lines := "line1\nline2\nline3\nline4\nline5" // 5 lines > 3+1=4
-	v := formatToolOutput(lines, false, false, 80, false, 0)
+	v := formatToolOutput(lines, false, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(v, "ctrl+o to expand") {
 		t.Errorf("collapsed output should show expand hint, got: %q", v)
 	}
@@ -1502,7 +1503,7 @@ func TestFormatToolOutput_CollapsedError(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		longErr += fmt.Sprintf("error line %d\n", i)
 	}
-	v := formatToolOutput(strings.TrimRight(longErr, "\n"), true, false, 80, false, 0)
+	v := formatToolOutput(strings.TrimRight(longErr, "\n"), true, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(v, "ctrl+o to see all") {
 		t.Errorf("collapsed error should show 'see all' hint, got: %q", v)
 	}
@@ -1511,7 +1512,7 @@ func TestFormatToolOutput_CollapsedError(t *testing.T) {
 func TestFormatToolOutput_Expanded(t *testing.T) {
 	t.Parallel()
 	lines := "line1\nline2\nline3\nline4\nline5"
-	v := formatToolOutput(lines, false, true, 80, false, 0)
+	v := formatToolOutput(lines, false, true, 80, false, 0, lipgloss.NewStyle())
 	if strings.Contains(v, "ctrl+o") {
 		t.Errorf("expanded output should not show collapse hint, got: %q", v)
 	}
@@ -1900,7 +1901,7 @@ func TestMarkdownRender_EmptyTable(t *testing.T) {
 func TestFormatToolOutput_NoHint(t *testing.T) {
 	t.Parallel()
 	lines := "line1\nline2\nline3\nline4\nline5" // 5 lines > 3+1=4
-	v := formatToolOutput(lines, false, false, 80, true, 0)
+	v := formatToolOutput(lines, false, false, 80, true, 0, lipgloss.NewStyle())
 	if strings.Contains(v, "ctrl+o") {
 		t.Errorf("noHint should suppress ctrl+o hint, got: %q", v)
 	}
@@ -1916,7 +1917,7 @@ func TestFormatToolOutput_ExpandedWithMaxLines(t *testing.T) {
 	t.Parallel()
 	// 10 lines, maxOutputLines=5 → show last 5 + truncation notice
 	lines := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10"
-	v := formatToolOutput(lines, false, true, 80, false, 5)
+	v := formatToolOutput(lines, false, true, 80, false, 5, lipgloss.NewStyle())
 	if strings.Contains(v, "ctrl+o") {
 		t.Errorf("expanded with maxOutputLines should not show ctrl+o, got: %q", v)
 	}
@@ -1935,7 +1936,7 @@ func TestFormatToolOutput_ExpandedWithMaxLines(t *testing.T) {
 func TestFormatToolOutput_ExpandedWithMaxLines_ZeroMeansUnlimited(t *testing.T) {
 	t.Parallel()
 	lines := strings.Repeat("line\n", 100)
-	v := formatToolOutput(strings.TrimRight(lines, "\n"), false, true, 80, false, 0)
+	v := formatToolOutput(strings.TrimRight(lines, "\n"), false, true, 80, false, 0, lipgloss.NewStyle())
 	if strings.Contains(v, "truncated") {
 		t.Errorf("maxOutputLines=0 should show all lines without truncation, got truncated")
 	}
@@ -1947,7 +1948,7 @@ func TestFormatToolOutput_WordWrapPrefixAlignment(t *testing.T) {
 	// First sub-line: "| " prefix
 	// Continuation sub-lines: "  " (spaces matching | width)
 	longLine := strings.Repeat("hello ", 30) // ~180 chars, wraps at width=40
-	got := formatToolOutput(longLine, false, false, 40, false, 0)
+	got := formatToolOutput(longLine, false, false, 40, false, 0, lipgloss.NewStyle())
 	gotLines := strings.Split(got, "\n")
 	if len(gotLines) < 2 {
 		t.Fatalf("expected wrapping to produce multiple lines, got %d: %q", len(gotLines), got)
@@ -2064,7 +2065,7 @@ func TestRenderThinkingBlock_NonThinkingBlock(t *testing.T) {
 
 func TestFormatThinkingOutput_Empty(t *testing.T) {
 	t.Parallel()
-	out := formatToolOutput("", false, false, 80, false, 0)
+	out := formatToolOutput("", false, false, 80, false, 0, lipgloss.NewStyle())
 	if out != "" {
 		t.Errorf("empty content should return empty, got %q", out)
 	}
@@ -2073,7 +2074,7 @@ func TestFormatThinkingOutput_Empty(t *testing.T) {
 func TestFormatThinkingOutput_FewLines(t *testing.T) {
 	t.Parallel()
 	content := "line1\nline2"
-	out := formatToolOutput(content, false, false, 80, false, 0)
+	out := formatToolOutput(content, false, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(out, "line1") || !strings.Contains(out, "line2") {
 		t.Errorf("few lines should show all, got %q", out)
 	}
@@ -2086,7 +2087,7 @@ func TestFormatThinkingOutput_Collapsed(t *testing.T) {
 		lines[i] = fmt.Sprintf("thought line %d", i)
 	}
 	content := strings.Join(lines, "\n")
-	out := formatToolOutput(content, false, false, 80, false, 0)
+	out := formatToolOutput(content, false, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(out, "… +7 lines (ctrl+o to expand)") {
 		t.Errorf("collapsed should show hint, got %q", out)
 	}
@@ -2102,7 +2103,7 @@ func TestFormatThinkingOutput_Expanded(t *testing.T) {
 		lines[i] = fmt.Sprintf("thought line %d", i)
 	}
 	content := strings.Join(lines, "\n")
-	out := formatToolOutput(content, false, true, 80, false, 0)
+	out := formatToolOutput(content, false, true, 80, false, 0, lipgloss.NewStyle())
 	if strings.Contains(out, "ctrl+o") {
 		t.Errorf("expanded should not show collapse hint, got %q", out)
 	}
@@ -2118,7 +2119,7 @@ func TestFormatThinkingOutput_StreamingShowsAll(t *testing.T) {
 		lines[i] = fmt.Sprintf("line %d", i)
 	}
 	content := strings.Join(lines, "\n")
-	out := formatToolOutput(content, false, true, 80, false, 0)
+	out := formatToolOutput(content, false, true, 80, false, 0, lipgloss.NewStyle())
 	if strings.Contains(out, "ctrl+o") {
 		t.Errorf("streaming should not show collapse hint, got %q", out)
 	}
@@ -2134,7 +2135,7 @@ func TestFormatThinkingOutput_NoHint(t *testing.T) {
 		lines[i] = fmt.Sprintf("line %d", i)
 	}
 	content := strings.Join(lines, "\n")
-	out := formatToolOutput(content, false, false, 80, true, 0)
+	out := formatToolOutput(content, false, false, 80, true, 0, lipgloss.NewStyle())
 	if strings.Contains(out, "ctrl+o") {
 		t.Errorf("noHint=true should not mention ctrl+o, got %q", out)
 	}
@@ -2272,7 +2273,7 @@ func TestFormatToolOutput_TabsExpanded(t *testing.T) {
 	// exceed the terminal width, creating extra visual lines that Bubble Tea
 	// cannot clear — leading to ghost content on Ctrl+O expand.
 	input := "\tfunc hello() {\n\t\treturn \"world\"\n\t}"
-	v := formatToolOutput(input, false, false, 80, false, 0)
+	v := formatToolOutput(input, false, false, 80, false, 0, lipgloss.NewStyle())
 	clean := stripAnsi(v)
 
 	// No tab characters should remain in the output
