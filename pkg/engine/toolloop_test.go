@@ -1130,3 +1130,58 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 	}
 	t.Fatal("no tool_end event found for tu_slow")
 }
+
+// TestConcurrentToolLoop_ToolUseIDInContext verifies that each tool receives
+// a ToolUseContext with the correct ToolUseID, even when the executor is
+// created with nil tctx. This is required for Agent tool to propagate
+// ParentToolUseID for sub-agent progress display.
+func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
+	t.Parallel()
+
+	var capturedIDs []string
+	var mu sync.Mutex
+	tools := map[string]tool.Tool{
+		"capture": &testTool{name: "capture", callFn: func(_ context.Context, _ json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			id := ""
+			if tctx != nil {
+				id = tctx.ToolUseID
+			}
+			capturedIDs = append(capturedIDs, id)
+			return &tool.ToolResult{Data: "captured:" + id}, nil
+		}},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_agent_42", Name: "capture", Input: json.RawMessage(`{}`)},
+		{Type: types.ContentTypeToolUse, ID: "tu_read_99", Name: "capture", Input: json.RawMessage(`{}`)},
+	}
+
+	results := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Verify each tool received the correct ToolUseID
+	mu.Lock()
+	defer mu.Unlock()
+	if len(capturedIDs) != 2 {
+		t.Fatalf("expected 2 captured IDs, got %d: %v", len(capturedIDs), capturedIDs)
+	}
+
+	want := map[string]bool{"tu_agent_42": false, "tu_read_99": false}
+	for _, id := range capturedIDs {
+		if id == "" {
+			t.Error("received empty ToolUseID — tools cannot identify their own tool call")
+		}
+		if _, ok := want[id]; ok {
+			want[id] = true
+		}
+	}
+	for id, found := range want {
+		if !found {
+			t.Errorf("ToolUseID %q was never received", id)
+		}
+	}
+}

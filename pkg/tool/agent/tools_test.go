@@ -9,13 +9,13 @@ import (
 
 func TestResolveToolsWildcard(t *testing.T) {
 	allTools := makeTestTools("Bash", "Read", "Edit", "Write", "Grep", "Agent")
-	def, _ := GetAgentDefinition("general-purpose")
+	def, _ := GetAgentDefinition("General")
 
 	result := ResolveAgentTools(allTools, def)
 
 	// Agent is allowed (gbot supports nested agents)
 	if _, ok := result["Agent"]; !ok {
-		t.Error("Agent should be kept for general-purpose agent")
+		t.Error("Agent should be kept for General agent")
 	}
 	if len(result) != 6 {
 		t.Errorf("expected 6 tools (all kept), got %d: %v", len(result), mapKeys(result))
@@ -91,7 +91,7 @@ func TestAllAgentDisallowedToolsStacks(t *testing.T) {
 
 func TestResolveToolsEmptyInput(t *testing.T) {
 	allTools := map[string]tool.Tool{}
-	def, _ := GetAgentDefinition("general-purpose")
+	def, _ := GetAgentDefinition("General")
 
 	result := ResolveAgentTools(allTools, def)
 

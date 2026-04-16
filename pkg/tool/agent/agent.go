@@ -25,12 +25,13 @@ type SubEngineFactory func(ctx context.Context, opts SubEngineOpts) (*types.SubQ
 // SubEngineOpts passes parameters to the sub-engine factory.
 // Uses only types from shared packages (no engine dependency).
 type SubEngineOpts struct {
-	Prompt       string               // actual user prompt for the sub-agent
-	SystemPrompt json.RawMessage      // sub-agent's system prompt
-	Tools        map[string]tool.Tool // filtered tool set
-	MaxTurns     int                  // 0 = default 50
-	Model        string              // "" = inherit from parent
-	AgentType    string              // resolved agent type (e.g. "general-purpose", "Explore")
+	Prompt          string               // actual user prompt for the sub-agent
+	SystemPrompt    json.RawMessage      // sub-agent's system prompt
+	Tools           map[string]tool.Tool // filtered tool set
+	MaxTurns        int                  // 0 = default 50
+	Model           string               // "" = inherit from parent
+	AgentType       string               // resolved agent type (e.g. "general-purpose", "Explore")
+	ParentToolUseID string               // parent Agent tool call ID for TUI progress display
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +91,7 @@ func (t *AgentTool) InputSchema() json.RawMessage {
   "properties": {
     "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
     "prompt": {"type": "string", "description": "The task for the agent to perform"},
-    "subagent_type": {"type": "string", "description": "Agent type to use", "enum": ["general-purpose","Explore","Plan"]},
+    "subagent_type": {"type": "string", "description": "Agent type to use", "enum": ["General","Explore","Plan"]},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]}
   },
   "required": ["description","prompt"]
@@ -113,7 +114,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	// Step 2: Resolve agent type (default: general-purpose)
 	agentType := agentInput.SubagentType
 	if agentType == "" {
-		agentType = "general-purpose"
+		agentType = "General"
 	}
 
 	// Step 3: Look up agent definition
@@ -138,13 +139,18 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	}
 
 	// Step 7: Call factory to create sub-engine and execute
+	var parentToolUseID string
+	if tctx != nil {
+		parentToolUseID = tctx.ToolUseID
+	}
 	opts := SubEngineOpts{
-		Prompt:       agentInput.Prompt,
-		SystemPrompt: systemPrompt,
-		Tools:        filteredTools,
-		MaxTurns:     agentDef.MaxTurns,
-		Model:        model,
-		AgentType:    agentType,
+		Prompt:          agentInput.Prompt,
+		SystemPrompt:    systemPrompt,
+		Tools:           filteredTools,
+		MaxTurns:        agentDef.MaxTurns,
+		Model:           model,
+		AgentType:       agentType,
+		ParentToolUseID: parentToolUseID,
 	}
 
 	result, err := t.factory(ctx, opts)

@@ -74,7 +74,7 @@ func TestCallWithMockFactory(t *testing.T) {
 	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{
-			AgentType: "general-purpose",
+			AgentType: "General",
 			Content:   "found 3 files",
 		}, nil
 	}
@@ -83,7 +83,7 @@ func TestCallWithMockFactory(t *testing.T) {
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
 
-	input := json.RawMessage(`{"description":"search","prompt":"find Query method","subagent_type":"general-purpose"}`)
+	input := json.RawMessage(`{"description":"search","prompt":"find Query method","subagent_type":"General"}`)
 	result, err := at.Call(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -113,13 +113,13 @@ func TestResultExtractionNormal(t *testing.T) {
 	}
 
 	startTime := time.Now().Add(-1 * time.Second)
-	result := FinalizeResult(messages, "general-purpose", startTime, types.Usage{InputTokens: 100, OutputTokens: 50}, 0)
+	result := FinalizeResult(messages, "General", startTime, types.Usage{InputTokens: 100, OutputTokens: 50}, 0)
 
 	if result.Content != "found it" {
 		t.Errorf("Content = %q, want %q", result.Content, "found it")
 	}
-	if result.AgentType != "general-purpose" {
-		t.Errorf("AgentType = %q, want %q", result.AgentType, "general-purpose")
+	if result.AgentType != "General" {
+		t.Errorf("AgentType = %q, want %q", result.AgentType, "General")
 	}
 	if result.TotalTokens != 150 {
 		t.Errorf("TotalTokens = %d, want 150", result.TotalTokens)
@@ -235,12 +235,47 @@ func TestDescriptionFromInput(t *testing.T) {
 func TestRenderResult(t *testing.T) {
 	at := New()
 	result := &types.SubQueryResult{
-		AgentType: "general-purpose",
+		AgentType: "General",
 		Content:   "found 3 files matching the query",
 	}
 	rendered := at.RenderResult(result)
 	if !strings.Contains(rendered, "found 3 files") {
 		t.Errorf("RenderResult should contain content, got %q", rendered)
+	}
+}
+
+// TestCallPassesToolUseID verifies that AgentTool.Call propagates the
+// ToolUseContext.ToolUseID to the SubEngineOpts.ParentToolUseID.
+// This is required for the TUI to display sub-agent tool progress.
+func TestCallPassesToolUseID(t *testing.T) {
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{
+			AgentType: "General",
+			Content:   "done",
+		}, nil
+	}
+
+	parentTools := makeTestTools("Bash", "Read")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it"}`)
+	tctx := &types.ToolUseContext{
+		ToolUseID: "call_abc123",
+	}
+	result, err := at.Call(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+
+	// The critical assertion: factory must receive ParentToolUseID
+	if capturedOpts.ParentToolUseID != "call_abc123" {
+		t.Errorf("ParentToolUseID = %q, want %q", capturedOpts.ParentToolUseID, "call_abc123")
 	}
 }
 

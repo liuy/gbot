@@ -495,7 +495,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
-						InputTokens:  0, // omitted — already emitted in message_start
+						InputTokens:  event.Usage.InputTokens,
 						OutputTokens: usage.OutputTokens,
 					},
 				})
@@ -794,15 +794,33 @@ func (e *Engine) Reset() {
 }
 
 // ---------------------------------------------------------------------------
+// TaggedDispatcher — wraps parent dispatcher to inject AgentMeta into sub-agent events
+// ---------------------------------------------------------------------------
+
+// taggedDispatcher wraps an EventDispatcher and injects AgentMeta into every event.
+// Used by sub-engines so their tool events reach the parent TUI with agent context.
+type taggedDispatcher struct {
+	parent EventDispatcher
+	meta   *types.AgentMeta
+}
+
+func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
+	event.Agent = d.meta
+	d.parent.Dispatch(event)
+}
+
+// ---------------------------------------------------------------------------
 // Sub-engine support — source: tools/AgentTool/runAgent.ts:330-500
 // ---------------------------------------------------------------------------
 
 // SubEngineOptions configures the creation of a sub-engine for agent execution.
 type SubEngineOptions struct {
-	SystemPrompt string               // sub-agent's system prompt
-	Tools        map[string]tool.Tool  // filtered tool set
-	MaxTurns     int                   // 0 = default 50
-	Model        string               // "" = inherit from parent
+	SystemPrompt    string               // sub-agent's system prompt
+	Tools           map[string]tool.Tool  // filtered tool set
+	MaxTurns        int                   // 0 = default 50
+	Model           string               // "" = inherit from parent
+	ParentToolUseID string               // parent Agent tool call ID for event tagging
+	AgentType       string               // "general-purpose", "Explore", "Plan"
 }
 
 // NewSubEngine creates a new Engine that shares the Provider and Logger
@@ -821,6 +839,20 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 	sort.Strings(toolOrder)
 
+	// If parent has a dispatcher, wrap it to tag sub-agent events.
+	var dispatcher EventDispatcher
+	if e.dispatcher != nil && opts.ParentToolUseID != "" {
+		parentDepth := 0 // TODO: track depth for nested agents
+		dispatcher = &taggedDispatcher{
+			parent: e.dispatcher,
+			meta: &types.AgentMeta{
+				ParentToolUseID: opts.ParentToolUseID,
+				AgentType:       opts.AgentType,
+				Depth:           parentDepth,
+			},
+		}
+	}
+
 	return &Engine{
 		provider:      e.provider,
 		tools:         opts.Tools,
@@ -831,7 +863,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		messages:      []types.Message{},
 		tokenBudget:   0, // sub-agents bypass budget checks via isSubagent
 		turnCount:     0,
-		dispatcher:    nil, // no event routing to TUI
+		dispatcher:    dispatcher,
 		notifications: &notificationQueue{},
 		isSubagent:    true,
 		maxTurns:      subMaxTurns(opts.MaxTurns),

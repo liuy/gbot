@@ -19,8 +19,8 @@ import (
 // builtInAgents is the registry of all built-in agent types.
 // Source: tools/AgentTool/builtInAgents.ts — getBuiltInAgents()
 var builtInAgents = map[string]*types.AgentDefinition{
-	"general-purpose": {
-		AgentType: "general-purpose",
+	"General": {
+		AgentType: "General",
 		WhenToUse: "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you.",
 		SystemPrompt: func() string {
 			return generalPurposeSystemPrompt
@@ -64,7 +64,7 @@ var builtInAgents = map[string]*types.AgentDefinition{
 // Source: tools/AgentTool/builtInAgents.ts — getBuiltInAgents() lookup
 func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 	if agentType == "" {
-		agentType = "general-purpose"
+		agentType = "General"
 	}
 	// Exact match first
 	if def, ok := builtInAgents[agentType]; ok {

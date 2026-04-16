@@ -221,6 +221,15 @@ const (
 	EventError         QueryEventType = "error"
 )
 
+// AgentMeta tags events originating from a sub-agent.
+// When non-nil on a QueryEvent, the event comes from a child engine
+// spawned by the Agent tool, not from the main engine.
+type AgentMeta struct {
+	ParentToolUseID string // parent Agent tool call ID (e.g. "call_abc123")
+	AgentType       string // "general-purpose", "Explore", "Plan"
+	Depth           int    // nesting depth: 0 = direct child, 1 = grandchild
+}
+
 // QueryEvent represents an event emitted during the query loop.
 // In TS this is yielded by an async generator; in Go sent on a channel.
 type QueryEvent struct {
@@ -231,6 +240,7 @@ type QueryEvent struct {
 	Message      *Message           `json:"message,omitempty"`
 	PartialInput *PartialInputEvent `json:"partial_input,omitempty"`
 	Usage        *UsageEvent        `json:"usage_event,omitempty"`
+	Agent        *AgentMeta         // non-nil = sub-agent event
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
 	Error        error              `json:"-"`
 }

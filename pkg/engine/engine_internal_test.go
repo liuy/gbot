@@ -913,3 +913,117 @@ func TestSubMaxTurns(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TaggedDispatcher
+// ---------------------------------------------------------------------------
+
+type mockDispatcher struct {
+	events []types.QueryEvent
+}
+
+func (m *mockDispatcher) Dispatch(event types.QueryEvent) {
+	m.events = append(m.events, event)
+}
+
+func TestTaggedDispatcher_InjectsMeta(t *testing.T) {
+	t.Parallel()
+
+	md := &mockDispatcher{}
+	meta := &types.AgentMeta{
+		ParentToolUseID: "call_test123",
+		AgentType:       "Explore",
+		Depth:           0,
+	}
+	td := &taggedDispatcher{parent: md, meta: meta}
+
+	evt := types.QueryEvent{
+		Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{
+			ID:      "sub_call_1",
+			Name:    "Read",
+			Summary: "Reading engine.go",
+		},
+	}
+
+	td.Dispatch(evt)
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(md.events))
+	}
+
+	got := md.events[0]
+	if got.Agent == nil {
+		t.Fatal("Agent meta should be injected")
+	}
+	if got.Agent.ParentToolUseID != "call_test123" {
+		t.Errorf("ParentToolUseID = %q, want %q", got.Agent.ParentToolUseID, "call_test123")
+	}
+	if got.Agent.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", got.Agent.AgentType, "Explore")
+	}
+	if got.Agent.Depth != 0 {
+		t.Errorf("Depth = %d, want 0", got.Agent.Depth)
+	}
+	// Original event fields preserved
+	if got.ToolUse.Name != "Read" {
+		t.Errorf("ToolUse.Name = %q, want %q", got.ToolUse.Name, "Read")
+	}
+}
+
+func TestNewSubEngine_TaggedDispatcher(t *testing.T) {
+	t.Parallel()
+
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &testProvider{},
+		Dispatcher: md,
+		Model:      "test",
+	})
+
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+	})
+
+	if subEng.dispatcher == nil {
+		t.Fatal("sub-engine dispatcher should not be nil when parent has dispatcher")
+	}
+
+	// Emit an event through the sub-engine and verify it reaches the mock dispatcher
+	subEng.emitEvent(nil, types.QueryEvent{
+		Type: types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "sub_1", Name: "Read"},
+	})
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 event via mock dispatcher, got %d", len(md.events))
+	}
+	if md.events[0].Agent == nil {
+		t.Fatal("event should have Agent meta")
+	}
+	if md.events[0].Agent.ParentToolUseID != "call_abc" {
+		t.Errorf("ParentToolUseID = %q, want %q", md.events[0].Agent.ParentToolUseID, "call_abc")
+	}
+}
+
+func TestNewSubEngine_NoDispatcher_NoTagged(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+		// No Dispatcher
+	})
+
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+	})
+
+	// No parent dispatcher → sub-engine dispatcher stays nil
+	if subEng.dispatcher != nil {
+		t.Error("sub-engine dispatcher should be nil when parent has no dispatcher")
+	}
+}

@@ -134,6 +134,11 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 		}
 	}
 
+	// Add sub-agent tool count to global stats
+	if tcv.ToolCount > 0 {
+		s.toolCount += tcv.ToolCount
+	}
+
 	// Update the tool block in lastMsg
 	m := s.lastMsg()
 	if m == nil {
@@ -257,6 +262,122 @@ func (s *ReplState) PendingThinkingDone(duration time.Duration) {
 	s.activeThinkingIdx = -1
 }
 
+// UpdateAgentProgress handles sub-agent events (thinking, tool_start, tool_end).
+func (s *ReplState) UpdateAgentProgress(msg agentToolMsg) {
+	tcv, ok := s.pendingTool[msg.ParentToolUseID]
+	if !ok {
+		slog.Info("tui:agent_progress:unknown_parent", "parentID", msg.ParentToolUseID, "agentType", msg.AgentType, "toolName", msg.ToolName)
+		return
+	}
+
+	switch msg.SubType {
+	case "thinking_start":
+		// Add a Thinking entry if none exists
+		for _, e := range tcv.AgentLogs {
+			if e.ToolName == "Thinking" && !e.Done {
+				return // already thinking
+			}
+		}
+		tcv.AgentLogs = append(tcv.AgentLogs, AgentLogEntry{
+			AgentType: msg.AgentType,
+			Depth:     msg.Depth,
+			ToolName:  "Thinking",
+			Done:      false,
+		})
+
+	case "thinking_end":
+		// Remove Thinking entry - only shown during active thinking phase
+		for i := range tcv.AgentLogs {
+			if tcv.AgentLogs[i].ToolName == "Thinking" && !tcv.AgentLogs[i].Done {
+				tcv.AgentLogs = append(tcv.AgentLogs[:i], tcv.AgentLogs[i+1:]...)
+				break
+			}
+		}
+
+	case "tool_start":
+		// Remove any Thinking entry - thinking done, tools starting
+		for i := range tcv.AgentLogs {
+			if tcv.AgentLogs[i].ToolName == "Thinking" {
+				tcv.AgentLogs = append(tcv.AgentLogs[:i], tcv.AgentLogs[i+1:]...)
+				break
+			}
+		}
+		// Mark previous entries at same depth as done
+		for i := range tcv.AgentLogs {
+			if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done {
+				tcv.AgentLogs[i].Done = true
+			}
+		}
+		tcv.AgentLogs = append(tcv.AgentLogs, AgentLogEntry{
+			AgentType: msg.AgentType,
+			Depth:     msg.Depth,
+			ToolName:  msg.ToolName,
+			Summary:   msg.Summary,
+			Done:      false,
+		})
+		tcv.ToolCount++
+
+	case "tool_param_delta":
+		// Update summary of last non-done tool entry (streaming input)
+		if msg.Summary != "" {
+			for i := len(tcv.AgentLogs) - 1; i >= 0; i-- {
+				if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done && tcv.AgentLogs[i].ToolName != "Thinking" {
+					tcv.AgentLogs[i].Summary = msg.Summary
+					break
+				}
+			}
+		}
+
+	case "tool_end":
+		// Mark the last non-done tool entry at this depth as done
+		for i := len(tcv.AgentLogs) - 1; i >= 0; i-- {
+			if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done && tcv.AgentLogs[i].ToolName != "Thinking" {
+				tcv.AgentLogs[i].Done = true
+				tcv.AgentLogs[i].IsError = msg.IsError
+				break
+			}
+		}
+	}
+
+	// Keep last 50 entries
+	if len(tcv.AgentLogs) > 50 {
+		tcv.AgentLogs = tcv.AgentLogs[len(tcv.AgentLogs)-50:]
+	}
+
+	// Update the block in lastMsg
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == msg.ParentToolUseID {
+			m.Blocks[i].ToolCall = *tcv
+			return
+		}
+	}
+}
+
+// UpdateAgentUsage accumulates sub-agent token usage into both global and per-agent counters.
+func (s *ReplState) UpdateAgentUsage(parentID string, inputTokens, outputTokens int) {
+	tcv, ok := s.pendingTool[parentID]
+	if !ok {
+		return
+	}
+	tcv.TokensIn += inputTokens
+	tcv.TokensOut += outputTokens
+
+	m := s.lastMsg()
+	if m == nil {
+		return
+	}
+	for i := len(m.Blocks) - 1; i >= 0; i-- {
+		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == parentID {
+			m.Blocks[i].ToolCall = *tcv
+			return
+		}
+	}
+}
+
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
 func (s *ReplState) FinishStream(err error) {
@@ -332,6 +453,20 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
 			slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
+		return true, a.readEvents()
+
+	case agentToolMsg:
+		a.markViewportDirty()
+		a.repl.UpdateAgentProgress(m)
+		return true, a.readEvents()
+
+	case agentUsageMsg:
+		a.status.inputTokens += m.InputTokens
+		a.status.outTokens += m.OutputTokens
+		a.inputTokenTarget = a.status.inputTokens
+		a.outputTokenTarget = a.status.outTokens
+		a.displayedInputTokens = a.status.inputTokens
+		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
 		return true, a.readEvents()
 
 	case queryEndMsg:
@@ -420,6 +555,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	// Periodic spinner tick while streaming
 	case spinnerTickMsg:
 		if a.repl.IsStreaming() {
+			a.markViewportDirty()
 			a.toolBlinkTick++
 			if a.toolBlinkTick%3 == 0 {
 				a.spinner.Tick()
@@ -526,6 +662,7 @@ func (a *App) readEvents() tea.Cmd {
 					a.repl.CloseChannels()
 					return queryEndMsg{}
 				}
+				slog.Info("tui:readEvents:return", "msgType", fmt.Sprintf("%T", msg))
 				return msg
 			default:
 				// appCh empty — fall through to blocking select below.
@@ -534,6 +671,7 @@ func (a *App) readEvents() tea.Cmd {
 			// appCh is empty. Now block waiting for the next event from either
 			// channel. resultCh may be nil (already closed) or closed.
 			if a.repl.resultCh == nil {
+				slog.Info("tui:readEvents:resultCh_nil")
 				return queryEndMsg{}
 			}
 
@@ -543,6 +681,7 @@ func (a *App) readEvents() tea.Cmd {
 					a.repl.CloseChannels()
 					return queryEndMsg{}
 				}
+				slog.Info("tui:readEvents:return:blocked", "msgType", fmt.Sprintf("%T", msg))
 				return msg
 
 			case result, ok := <-a.repl.resultCh:

@@ -85,6 +85,27 @@ type thinkingDeltaMsg struct {
 	Text string
 }
 
+// agentToolMsg carries a sub-agent tool event for the grouped_tool_use display.
+// When the engine emits events tagged with AgentMeta (from a sub-engine),
+// the TUI handler converts them to this message type instead of the regular
+// toolStartMsg/toolEndMsg so the parent Agent tool call can show live progress.
+type agentToolMsg struct {
+	ParentToolUseID string // parent Agent tool call ID
+	AgentType       string // "Explore", "general-purpose", "Plan"
+	Depth           int    // nesting depth (0 = direct child)
+	SubType         string // "tool_start" or "tool_end"
+	ToolName        string // sub-agent's tool name (e.g. "Read", "Grep")
+	Summary         string // tool summary
+	IsError         bool   // true on tool_end with error
+}
+
+// agentUsageMsg carries sub-agent token usage for both global and per-agent stats.
+type agentUsageMsg struct {
+	ParentToolUseID string
+	InputTokens     int
+	OutputTokens    int
+}
+
 // submitMsg is sent when the user presses Enter to submit input.
 type submitMsg struct {
 	Text string

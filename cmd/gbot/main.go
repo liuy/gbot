@@ -125,8 +125,10 @@ func loadConfig() (*config.Config, error) {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to load %s: %v\n", minimaxPath, err)
 			} else {
-				// Still allow env vars to override
-				return applyEnvOverrides(cfg), nil
+				// Settings file is authoritative — do NOT apply env overrides.
+				// Env vars (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL etc.) may belong
+				// to a different provider (e.g. GLM) and would corrupt minimax config.
+				return cfg, nil
 			}
 		}
 	}
@@ -139,23 +141,7 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// applyEnvOverrides lets environment variables override file config.
-// NOTE: Only ANTHROPIC_API_KEY overrides the API key — ANTHROPIC_AUTH_TOKEN
-// is NOT used to override because it may belong to a different provider
-// (e.g., the system Claude session's token).
-func applyEnvOverrides(cfg *config.Config) *config.Config {
-	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
-		cfg.APIKey = v
-	}
-	// Do NOT read ANTHROPIC_AUTH_TOKEN — it may be a different provider's key
-	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
-		cfg.BaseURL = v
-	}
-	if v := os.Getenv("ANTHROPIC_MODEL"); v != "" {
-		cfg.Model = v
-	}
-	return cfg
-}
+
 
 // createTools instantiates all core tools and registers them.
 func createTools() *tool.Registry {
@@ -184,10 +170,12 @@ func createAgentTool(eng *engine.Engine) tool.Tool {
 		func(ctx context.Context, opts agenttool.SubEngineOpts) (*types.SubQueryResult, error) {
 			startTime := time.Now()
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				SystemPrompt: string(opts.SystemPrompt),
-				Tools:        opts.Tools,
-				MaxTurns:     opts.MaxTurns,
-				Model:        opts.Model,
+				SystemPrompt:    string(opts.SystemPrompt),
+				Tools:           opts.Tools,
+				MaxTurns:        opts.MaxTurns,
+				Model:           opts.Model,
+				ParentToolUseID: opts.ParentToolUseID,
+				AgentType:       opts.AgentType,
 			})
 			result := subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
 			if result.Error != nil {

@@ -578,16 +578,30 @@ type MessageView struct {
 	ExpandTools bool   // when true, show full tool output instead of collapsed
 }
 
+// AgentLogEntry records one tool call from a sub-agent for live progress display.
+type AgentLogEntry struct {
+	AgentType string // "Explore", "general-purpose", "Plan"
+	Depth     int    // nesting depth
+	ToolName  string // "Read", "Grep", "Bash", etc.
+	Summary   string // tool summary text
+	IsError   bool   // true if tool_end reported error
+	Done      bool   // false = running, true = completed
+}
+
 // ToolCallView renders a tool invocation within a message.
 type ToolCallView struct {
-	ID      string
-	Name    string // raw tool name (e.g., "Bash", "Grep")
-	Summary string // context-aware display name (e.g., "Listing 1 directory", "Found 5 matches")
-	Input   string
-	Output  string
-	IsError bool
-	Done    bool
-	Elapsed time.Duration
+	ID        string
+	Name      string // raw tool name (e.g., "Bash", "Grep")
+	Summary   string // context-aware display name (e.g., "Listing 1 directory", "Found 5 matches")
+	Input     string
+	Output    string
+	IsError   bool
+	Done      bool
+	Elapsed   time.Duration
+	AgentLogs []AgentLogEntry // sub-agent tool call progress (nil for non-Agent tools)
+	ToolCount int             // total sub-agent tool calls (for summary line when done)
+	TokensIn  int             // sub-agent input tokens (for summary line when done)
+	TokensOut int             // sub-agent output tokens (for summary line when done)
 }
 
 // ThinkingView renders a thinking block within a message.
@@ -690,9 +704,6 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		dotStr = styleDotDim.Render(dot)
 	}
 
-	// Header: ● ToolName(summary) (elapsed)
-	toolName := styleNameBold.Render(tc.Name)
-
 	if !tc.Done {
 		// Running state: spinner dot + bold name + summary + "running..."
 		var runningDot string
@@ -701,20 +712,33 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		} else {
 			runningDot = styleDotDim.Render(dot)
 		}
-		header := runningDot + " " + styleNameBold.Render(tc.Name)
+		// Show "Agent Explore(desc)" when agent type is known
+		agentName := tc.Name
+		if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" {
+			agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
+		}
+		header := runningDot + " " + styleNameBold.Render(agentName)
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", tc.Summary)
 		}
-		header += " " + styleDim.Render("running...")
+	header += " " + styleDim.Render("running...")
 		sb.WriteString(wordWrap(header, availWidth))
+		if len(tc.AgentLogs) > 0 {
+			sb.WriteString(renderAgentLogs(&tc, availWidth))
+		}
 		return
 	}
 
 	// Done state — build header then wrap
 	var hdr strings.Builder
+	// Show "Agent Explore(desc)" when agent type is known
+	agentName := tc.Name
+	if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" {
+		agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
+	}
 	hdr.WriteString(dotStr)
 	hdr.WriteByte(' ')
-	hdr.WriteString(toolName)
+	hdr.WriteString(styleNameBold.Render(agentName))
 	if tc.Summary != "" {
 		fmt.Fprintf(&hdr, "(%s)", tc.Summary)
 	}
@@ -723,10 +747,94 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	}
 	sb.WriteString(wordWrap(hdr.String(), availWidth))
 
-	if tc.Output != "" {
-		isErr := tc.IsError
-		sb.WriteString("\n" + formatToolOutput(tc.Output, isErr, expand, availWidth-2, noHint, maxOutputLines))
+	// Done state for agent tools: show stats line + text output
+	if tc.ToolCount > 0 {
+		var contentParts []string
+		// Stats line: N tools + tokens
+		var statsParts []string
+		statsParts = append(statsParts, fmt.Sprintf("%d tool%s", tc.ToolCount, pluralS(tc.ToolCount)))
+		if tc.TokensIn > 0 || tc.TokensOut > 0 {
+			statsParts = append(statsParts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tc.TokensIn), formatTokenCount(tc.TokensOut)))
+		}
+		contentParts = append(contentParts, styleDim.Render(strings.Join(statsParts, " · ")))
+		// Agent text output
+		if tc.Output != "" {
+			contentParts = append(contentParts, tc.Output)
+		}
+		content := strings.Join(contentParts, "\n")
+		sb.WriteString("\n" + formatToolOutput(content, tc.IsError, expand, availWidth-2, noHint, maxOutputLines))
+	} else if tc.Output != "" {
+		sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines))
 	}
+}
+
+// renderAgentLogs renders sub-agent tool call progress using formatToolOutput.
+// Shows last 5 entries + overflow + stats, all with "| " prefix.
+func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
+	if len(tcv.AgentLogs) == 0 {
+		return ""
+	}
+
+	maxVisible := 5
+	entries := tcv.AgentLogs
+	overflow := 0
+	if len(entries) > maxVisible {
+		overflow = len(entries) - maxVisible
+		entries = entries[len(entries)-maxVisible:]
+	}
+
+	var lines []string
+	for _, e := range entries {
+		if e.ToolName == "Thinking" {
+			lines = append(lines, styleDim.Render("Thinking..."))
+		} else {
+			text := styleDim.Render(e.ToolName)
+			if e.Summary != "" {
+				text += styleDim.Render(fmt.Sprintf("(%s)", truncateSummary(e.Summary, 30)))
+			}
+			if !e.Done {
+				text += styleDim.Italic(true).Render("...")
+			}
+			lines = append(lines, text)
+		}
+	}
+
+	if overflow > 0 {
+		lines = append(lines, styleDim.Render(fmt.Sprintf("... +%d more", overflow)))
+	}
+
+	// Stats line: tool count + tokens
+	if tcv.ToolCount > 0 || tcv.TokensIn > 0 || tcv.TokensOut > 0 {
+		var parts []string
+		if tcv.ToolCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d tool%s", tcv.ToolCount, pluralS(tcv.ToolCount)))
+		}
+		if tcv.TokensIn > 0 || tcv.TokensOut > 0 {
+			parts = append(parts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tcv.TokensIn), formatTokenCount(tcv.TokensOut)))
+		}
+		if len(parts) > 0 {
+			lines = append(lines, styleDim.Render(strings.Join(parts, " · ")))
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return "\n" + formatToolOutput(content, false, true, availWidth-2, true, 0)
+}
+
+// pluralS returns "s" if n != 1.
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// truncateSummary truncates a tool summary to maxLen characters.
+func truncateSummary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // formatToolOutput formats tool output with ⎿ prefix and line collapse.

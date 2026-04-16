@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -147,11 +148,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case textDeltaMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
+			agentToolMsg, agentUsageMsg,
 		errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
 		}
+	default:
+		slog.Warn("tui:update:unhandled_msg", "msgType", fmt.Sprintf("%T", msg))
 	}
 
 	return a, nil

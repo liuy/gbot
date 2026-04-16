@@ -11,7 +11,7 @@ func TestGetAgentDefinition(t *testing.T) {
 		agentType string
 		wantType  string
 	}{
-		{"general-purpose", "general-purpose", "general-purpose"},
+		{"General", "General", "General"},
 		{"Explore", "Explore", "Explore"},
 		{"Plan", "Plan", "Plan"},
 	}
@@ -45,8 +45,8 @@ func TestGetAgentDefinition_CaseInsensitive(t *testing.T) {
 		{"EXPLORE", "Explore"},
 		{"plan", "Plan"},
 		{"PLAN", "Plan"},
-		{"General-Purpose", "general-purpose"},
-		{"GENERAL-PURPOSE", "general-purpose"},
+		{"general", "General"},
+		{"GENERAL", "General"},
 	}
 
 	for _, tt := range tests {
@@ -91,23 +91,23 @@ func TestListAgentDefinitions(t *testing.T) {
 func TestDefaultAgentType(t *testing.T) {
 	def, err := GetAgentDefinition("")
 	if err != nil {
-		t.Fatalf("empty string should default to general-purpose, got error: %v", err)
+		t.Fatalf("empty string should default to General, got error: %v", err)
 	}
-	if def.AgentType != "general-purpose" {
-		t.Errorf("empty string should return general-purpose, got %q", def.AgentType)
+	if def.AgentType != "General" {
+		t.Errorf("empty string should return General, got %q", def.AgentType)
 	}
 }
 
 func TestGeneralPurposeAgentTools(t *testing.T) {
-	def, _ := GetAgentDefinition("general-purpose")
+	def, _ := GetAgentDefinition("General")
 	if len(def.Tools) != 1 || def.Tools[0] != "*" {
-		t.Errorf("general-purpose should have wildcard tools, got %v", def.Tools)
+		t.Errorf("General should have wildcard tools, got %v", def.Tools)
 	}
 	if def.Model != "inherit" {
-		t.Errorf("general-purpose model should be 'inherit', got %q", def.Model)
+		t.Errorf("General model should be 'inherit', got %q", def.Model)
 	}
 	if def.OmitClaudeMd {
-		t.Error("general-purpose should not omit CLAUDE.md")
+		t.Error("General should not omit CLAUDE.md")
 	}
 }
 

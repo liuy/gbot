@@ -381,11 +381,16 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// Use siblingCtx so Bash errors can cancel siblings.
 	start := time.Now()
 
+	// Build per-tool ToolUseContext with the correct ToolUseID.
+	// The executor-level tctx may be nil (created inline during callLLM),
+	// so we always create a fresh copy with tt.ID set.
+	toolCtx := e.buildToolCtx(tt.ID)
+
 	// Try streaming execution first (ToolWithStreaming interface).
 	// Source: StreamingToolExecutor.ts:320-382 — runToolUse generator.
 	if streamer, ok := t.(tool.ToolWithStreaming); ok {
 		var lastDisplayOutput string
-		result, err := streamer.ExecuteStream(e.siblingCtx, tt.Input, e.tctx, func(u tool.ProgressUpdate) {
+		result, err := streamer.ExecuteStream(e.siblingCtx, tt.Input, toolCtx, func(u tool.ProgressUpdate) {
 			if len(u.Lines) > 0 {
 				display := strings.Join(u.Lines, "\n")
 				lastDisplayOutput = display
@@ -429,7 +434,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 
 	// Fallback: non-streaming Call().
-	result, err := t.Call(e.siblingCtx, tt.Input, e.tctx)
+	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
 	elapsed := time.Since(start)
 	tt.Duration = elapsed
 
@@ -481,6 +486,19 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 		e.mu.Unlock()
 		e.siblingCancel(fmt.Errorf("sibling_error"))
 	}
+}
+
+// buildToolCtx creates a per-tool ToolUseContext with the correct ToolUseID.
+// The executor-level tctx is shared and may be nil (created inline during callLLM).
+// Each tool needs its own context with its specific ID for identity-aware operations
+// (e.g., Agent tool needs ToolUseID to tag sub-agent events via ParentToolUseID).
+func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *types.ToolUseContext {
+	if e.tctx == nil {
+		return &types.ToolUseContext{ToolUseID: toolUseID}
+	}
+	cp := *e.tctx
+	cp.ToolUseID = toolUseID
+	return &cp
 }
 
 // applyContextModifier applies the tool's context modifier if it's not concurrency-safe.

@@ -237,6 +237,24 @@ func TestParseEvent_MessageDelta(t *testing.T) {
 	}
 }
 
+func TestParseEvent_MessageDelta_InputTokens(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":500,"output_tokens":42}}`
+	event := p.ParseEvent("message_delta", data)
+
+	if event.Usage == nil {
+		t.Fatal("expected non-nil Usage")
+	}
+	if event.Usage.InputTokens != 500 {
+		t.Errorf("expected 500 input tokens, got %d", event.Usage.InputTokens)
+	}
+	if event.Usage.OutputTokens != 42 {
+		t.Errorf("expected 42 output tokens, got %d", event.Usage.OutputTokens)
+	}
+}
+
 func TestParseEvent_MessageStop(t *testing.T) {
 	t.Parallel()
 

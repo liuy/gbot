@@ -49,6 +49,69 @@ func (h *TUIHandler) Dropped() int64 {
 // convertEventToMsg converts a types.QueryEvent to a bubbletea message.
 // Returns nil for unhandled event types.
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
+	// Sub-agent events: convert to agentToolMsg for grouped display
+	if evt.Agent != nil {
+	
+		switch evt.Type {
+		case types.EventToolStart:
+			if evt.ToolUse != nil {
+				return agentToolMsg{
+					ParentToolUseID: evt.Agent.ParentToolUseID,
+					AgentType:       evt.Agent.AgentType,
+					Depth:           evt.Agent.Depth,
+					SubType:         string(evt.Type),
+					ToolName:        evt.ToolUse.Name,
+					Summary:         evt.ToolUse.Summary,
+				}
+			}
+		case types.EventToolParamDelta:
+			if evt.PartialInput != nil {
+				return agentToolMsg{
+					ParentToolUseID: evt.Agent.ParentToolUseID,
+					AgentType:       evt.Agent.AgentType,
+					Depth:           evt.Agent.Depth,
+					SubType:         "tool_param_delta",
+					Summary:         evt.PartialInput.Summary,
+				}
+			}
+		case types.EventToolEnd:
+			if evt.ToolResult != nil {
+				return agentToolMsg{
+					ParentToolUseID: evt.Agent.ParentToolUseID,
+					AgentType:       evt.Agent.AgentType,
+					Depth:           evt.Agent.Depth,
+					SubType:         string(evt.Type),
+					ToolName:        "", // tool_end doesn't carry name
+					IsError:         evt.ToolResult.IsError,
+				}
+			}
+		case types.EventThinkingStart:
+			return agentToolMsg{
+				ParentToolUseID: evt.Agent.ParentToolUseID,
+				AgentType:       evt.Agent.AgentType,
+				Depth:           evt.Agent.Depth,
+				SubType:         "thinking_start",
+			}
+		case types.EventThinkingEnd:
+			return agentToolMsg{
+				ParentToolUseID: evt.Agent.ParentToolUseID,
+				AgentType:       evt.Agent.AgentType,
+				Depth:           evt.Agent.Depth,
+				SubType:         "thinking_end",
+			}
+		case types.EventUsage:
+			if evt.Usage != nil {
+				return agentUsageMsg{
+					ParentToolUseID: evt.Agent.ParentToolUseID,
+					InputTokens:     evt.Usage.InputTokens,
+					OutputTokens:    evt.Usage.OutputTokens,
+				}
+			}
+		}
+		slog.Info("tui:handler:agent_filtered", "type", evt.Type, "parentID", evt.Agent.ParentToolUseID)
+		return nil // drop remaining non-tool sub-agent events (text_delta, turn_*, etc.)
+	}
+
 	switch evt.Type {
 	case types.EventTurnStart:
 		return turnStartMsg{}

@@ -1043,8 +1043,188 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// updateRepl — agentToolMsg (regression: must be in App.Update type switch)
+// ---------------------------------------------------------------------------
+
+func TestApp_Update_RoutesAgentToolMsg(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search code", "{}")
+	_, cmd := app.Update(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_start",
+		ToolName:        "Grep",
+		Summary:         "search pattern",
+	})
+	if cmd == nil {
+		t.Error("agentToolMsg should be routed to updateRepl and return a readEvents cmd")
+	}
+}
+
+func TestApp_UpdateRepl_AgentToolMsg(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	_, cmd := app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_start",
+		ToolName:        "Grep",
+		Summary:         "pattern",
+	})
+	if cmd == nil {
+		t.Error("agentToolMsg should return a readEvents cmd")
+	}
+	tcv, ok := app.repl.pendingTool["call_abc"]
+	if !ok {
+		t.Fatal("pendingTool should have call_abc")
+	}
+	if len(tcv.AgentLogs) == 0 {
+		t.Error("AgentLogs should have at least one entry")
+	}
+	if tcv.AgentLogs[0].ToolName != "Grep" {
+		t.Errorf("AgentLogs[0].ToolName = %q, want Grep", tcv.AgentLogs[0].ToolName)
+	}
+	if tcv.AgentLogs[0].Done {
+		t.Error("tool_start entry should not be Done")
+	}
+}
+
+// TestApp_UpdateRepl_AgentToolParamDelta verifies that tool_param_delta events
+// update the summary of the last running tool entry.
+// TDD RED: tool_start with empty summary → tool_param_delta with summary → summary updated.
+func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	// Step 1: tool_start with empty summary (as happens at content_block_start)
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_start",
+		ToolName:        "Bash",
+		Summary:         "", // empty at content_block_start
+	})
+	tcv := app.repl.pendingTool["call_abc"]
+	if tcv.AgentLogs[0].Summary != "" {
+		t.Fatalf("initial summary should be empty, got %q", tcv.AgentLogs[0].Summary)
+	}
+
+	// Step 2: tool_param_delta arrives with summary from streaming input
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_param_delta",
+		Summary:         "count files",
+	})
+
+	// Verify summary updated
+	tcv = app.repl.pendingTool["call_abc"]
+	if len(tcv.AgentLogs) == 0 {
+		t.Fatal("AgentLogs should have entries")
+	}
+	if tcv.AgentLogs[0].Summary != "count files" {
+		t.Errorf("summary should be updated to %q, got %q", "count files", tcv.AgentLogs[0].Summary)
+	}
+}
+
+// TestApp_UpdateRepl_AgentThinkingRemoved verifies that Thinking entry is
+// removed when tools start, not just marked done.
+func TestApp_UpdateRepl_AgentThinkingRemoved(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	// thinking_start → adds Thinking entry
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "thinking_start",
+	})
+	tcv := app.repl.pendingTool["call_abc"]
+	if len(tcv.AgentLogs) != 1 || tcv.AgentLogs[0].ToolName != "Thinking" {
+		t.Fatalf("should have 1 Thinking entry, got %v", tcv.AgentLogs)
+	}
+
+	// tool_start → removes Thinking, adds tool
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_start",
+		ToolName:        "Read",
+		Summary:         "main.go",
+	})
+	tcv = app.repl.pendingTool["call_abc"]
+	for _, e := range tcv.AgentLogs {
+		if e.ToolName == "Thinking" {
+			t.Error("Thinking entry should be removed when tools start")
+		}
+	}
+	// Should have exactly 1 entry (Read)
+	if len(tcv.AgentLogs) != 1 {
+		t.Errorf("should have 1 entry (Read), got %d: %v", len(tcv.AgentLogs), tcv.AgentLogs)
+	}
+}
+
+// TestApp_SpinnerTick_MarksDirty verifies that spinnerTickMsg sets contentDirty
+// so tool dot blink animations render correctly.
+func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_1", "Bash", "test", "{}")
+	// Clear any existing dirty flag
+	app.contentDirty = false
+
+	handled, _ := app.updateRepl(spinnerTickMsg{})
+	if !handled {
+		t.Fatal("spinnerTickMsg should be handled during streaming")
+	}
+	if !app.contentDirty {
+		t.Error("spinnerTickMsg should mark contentDirty=true so tool dots blink")
+	}
+}
+
+
+// ---------------------------------------------------------------------------
 // updateRepl — usageMsg
 // ---------------------------------------------------------------------------
+
+// TestApp_AgentUsageMsg_UpdatesInputTokens verifies that agentUsageMsg snaps
+// displayedInputTokens to include sub-agent input tokens.
+func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	// Main model usage — snaps displayedInputTokens
+	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
+	if app.displayedInputTokens != 500 {
+		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 500", app.displayedInputTokens)
+	}
+
+	// Agent usage — should also snap displayedInputTokens
+	app.updateRepl(agentUsageMsg{
+		ParentToolUseID: "call_abc",
+		InputTokens:     300,
+		OutputTokens:    50,
+	})
+	if app.displayedInputTokens != 800 {
+		t.Errorf("after agentUsageMsg, displayedInputTokens = %d, want 800 (500+300)", app.displayedInputTokens)
+	}
+	if app.inputTokenTarget != 800 {
+		t.Errorf("inputTokenTarget = %d, want 800", app.inputTokenTarget)
+	}
+}
+
+
 
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	t.Parallel()
