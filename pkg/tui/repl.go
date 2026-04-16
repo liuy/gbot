@@ -317,11 +317,12 @@ func (s *ReplState) UpdateAgentProgress(msg agentToolMsg) {
 		})
 		tcv.ToolCount++
 
-	case "tool_param_delta":
-		// Update summary of last non-done tool entry (streaming input)
+case "tool_param_delta":
+		// Update summary of last tool entry at this depth (streaming input).
+		// Match by ToolName to avoid updating a different tool at same depth.
 		if msg.Summary != "" {
 			for i := len(tcv.AgentLogs) - 1; i >= 0; i-- {
-				if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done && tcv.AgentLogs[i].ToolName != "Thinking" {
+				if tcv.AgentLogs[i].Depth == msg.Depth && tcv.AgentLogs[i].ToolName == msg.ToolName && tcv.AgentLogs[i].ToolName != "Thinking" {
 					tcv.AgentLogs[i].Summary = msg.Summary
 					break
 				}

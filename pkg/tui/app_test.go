@@ -1120,6 +1120,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 		ParentToolUseID: "call_abc",
 		AgentType:       "Explore",
 		SubType:         "tool_param_delta",
+		ToolName:        "Bash",
 		Summary:         "count files",
 	})
 
@@ -1127,9 +1128,53 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	tcv = app.repl.pendingTool["call_abc"]
 	if len(tcv.AgentLogs) == 0 {
 		t.Fatal("AgentLogs should have entries")
-	}
+}
 	if tcv.AgentLogs[0].Summary != "count files" {
 		t.Errorf("summary should be updated to %q, got %q", "count files", tcv.AgentLogs[0].Summary)
+	}
+}
+
+// TestApp_UpdateRepl_AgentToolParamDelta_SameDepth verifies tool_param_delta
+// updates the existing entry even when depth matches (no duplicate entry).
+func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	// tool_start at depth=0 (sub-agent's depth)
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_start",
+		ToolName:        "Read",
+		Summary:         "",
+		Depth:           1,
+	})
+	tcv := app.repl.pendingTool["call_abc"]
+	if len(tcv.AgentLogs) != 1 {
+		t.Fatalf("expected 1 AgentLog entry, got %d", len(tcv.AgentLogs))
+	}
+	if tcv.AgentLogs[0].ToolName != "Read" {
+		t.Errorf("expected tool Read, got %s", tcv.AgentLogs[0].ToolName)
+	}
+
+	// tool_param_delta also at depth=1 — should update existing entry, not add new
+	app.updateRepl(agentToolMsg{
+		ParentToolUseID: "call_abc",
+		AgentType:       "Explore",
+		SubType:         "tool_param_delta",
+		ToolName:        "Read",
+		Summary:         "Makefile",
+		Depth:           1,
+	})
+
+	tcv = app.repl.pendingTool["call_abc"]
+	if len(tcv.AgentLogs) != 1 {
+		t.Errorf("expected 1 AgentLog entry (no duplicate), got %d: %+v", len(tcv.AgentLogs), tcv.AgentLogs)
+	}
+	if tcv.AgentLogs[0].Summary != "Makefile" {
+		t.Errorf("expected summary Makefile, got %q", tcv.AgentLogs[0].Summary)
 	}
 }
 

@@ -259,8 +259,9 @@ type ThinkingEvent struct {
 
 // PartialInputEvent carries incremental input for a pending tool call.
 type PartialInputEvent struct {
-	ID      string `json:"id"`              // tool use ID
-	Delta   string `json:"delta"`           // partial JSON string
+	ID      string `json:"id"`      // tool use ID
+	Name    string `json:"name"`    // tool name (e.g. "Read", "Bash")
+	Delta   string `json:"delta"`   // partial JSON string
 	Summary string `json:"summary,omitempty"` // pre-computed summary from engine
 }
 

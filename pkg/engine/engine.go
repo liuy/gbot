@@ -437,6 +437,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						Type: types.EventToolParamDelta,
 						PartialInput: &types.PartialInputEvent{
 							ID:      currentToolID,
+							Name:    currentToolName,
 							Delta:   event.Delta.PartialJSON,
 							Summary: summary,
 						},

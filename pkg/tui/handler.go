@@ -71,6 +71,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 					AgentType:       evt.Agent.AgentType,
 					Depth:           evt.Agent.Depth,
 					SubType:         "tool_param_delta",
+					ToolName:        evt.PartialInput.Name,
 					Summary:         evt.PartialInput.Summary,
 				}
 			}
