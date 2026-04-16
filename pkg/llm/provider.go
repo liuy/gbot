@@ -7,6 +7,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -163,7 +164,8 @@ func (e *APIError) Error() string {
 
 // IsRetryable returns whether the error can be retried.
 func IsRetryable(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Retryable
 	}
 	return false
@@ -171,7 +173,8 @@ func IsRetryable(err error) bool {
 
 // IsContextOverflow returns whether the error is a context window overflow.
 func IsContextOverflow(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Status == 400 && apiErr.ErrorCode == "prompt_too_long"
 	}
 	return false
@@ -179,7 +182,8 @@ func IsContextOverflow(err error) bool {
 
 // IsMaxOutputTokens returns whether the error is max_output_tokens withholding.
 func IsMaxOutputTokens(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Type == "max_output_tokens"
 	}
 	return false
@@ -187,7 +191,8 @@ func IsMaxOutputTokens(err error) bool {
 
 // IsRateLimit returns whether the error is a rate limit error.
 func IsRateLimit(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Status == 429
 	}
 	return false
@@ -195,7 +200,8 @@ func IsRateLimit(err error) bool {
 
 // IsOverloaded returns whether the error is a 529 overloaded error.
 func IsOverloaded(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Status == 529
 	}
 	return false
@@ -203,7 +209,8 @@ func IsOverloaded(err error) bool {
 
 // IsServerError returns whether the error is a 5xx server error.
 func IsServerError(err error) bool {
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		return apiErr.Status >= 500 && apiErr.Status < 600
 	}
 	return false

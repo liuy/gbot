@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/rand"
 	"net/http"
@@ -244,6 +245,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		}
 		if err := json.Unmarshal([]byte(data), &msg); err == nil {
 			event.Message = &msg.Message
+		} else {
+			slog.Warn("parse message_start failed", "error", err, "data", truncateForLog(data, 200))
 		}
 
 	case "content_block_start":
@@ -254,6 +257,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		if err := json.Unmarshal([]byte(data), &block); err == nil {
 			event.Index = block.Index
 			event.ContentBlock = &block.ContentBlock
+		} else {
+			slog.Warn("parse content_block_start failed", "error", err, "data", truncateForLog(data, 200))
 		}
 
 	case "content_block_delta":
@@ -264,6 +269,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		if err := json.Unmarshal([]byte(data), &delta); err == nil {
 			event.Index = delta.Index
 			event.Delta = &delta.Delta
+		} else {
+			slog.Warn("parse content_block_delta failed", "error", err, "data", truncateForLog(data, 200))
 		}
 
 	case "content_block_stop":
@@ -272,6 +279,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		}
 		if err := json.Unmarshal([]byte(data), &stop); err == nil {
 			event.Index = stop.Index
+		} else {
+			slog.Warn("parse content_block_stop failed", "error", err, "data", truncateForLog(data, 200))
 		}
 
 	case "message_delta":
@@ -282,6 +291,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		if err := json.Unmarshal([]byte(data), &delta); err == nil {
 			event.DeltaMsg = &delta.Delta
 			event.Usage = &delta.Usage
+		} else {
+			slog.Warn("parse message_delta failed", "error", err, "data", truncateForLog(data, 200))
 		}
 
 	case "message_stop":
@@ -296,6 +307,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		}
 		if err := json.Unmarshal([]byte(data), &errData); err == nil {
 			event.Error = &errData.Error
+		} else {
+			slog.Warn("parse error event failed", "error", err, "data", truncateForLog(data, 200))
 		}
 	}
 
@@ -334,6 +347,7 @@ func (p *AnthropicProvider) ParseAPIError(body []byte, statusCode int) *APIError
 			apiErr.Message = string(body)
 		}
 	} else {
+		slog.Warn("parse API error response failed", "error", err, "status", statusCode)
 		apiErr.Message = string(body)
 	}
 
@@ -371,4 +385,12 @@ func IsConnectionError(err error) bool {
 		strings.Contains(msg, "EOF") ||
 		strings.Contains(msg, "timeout") ||
 		strings.Contains(msg, "temporary")
+}
+
+// truncateForLog truncates a string for safe logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

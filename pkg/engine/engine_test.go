@@ -584,11 +584,10 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "bad request") {
 		t.Errorf("error should contain 'bad request', got: %v", result.Error)
 	}
-	// The error is wrapped by callLLM as "stream request: <original>", so
-	// classifyTerminalError cannot unwrap it to see the APIError type.
-	// It falls through to TerminalModelError for wrapped errors.
-	if result.Terminal != types.TerminalModelError {
-		t.Errorf("expected TerminalModelError, got %s", result.Terminal)
+	// The error is wrapped by callLLM as "stream request: <original>", but
+	// classifyTerminalError uses errors.As to unwrap and see the APIError type.
+	if result.Terminal != types.TerminalPromptTooLong {
+		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
 	}
 }
 
@@ -596,16 +595,15 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	// First call: retryable error (but the engine wraps it, so it becomes non-retryable)
+	// First call: retryable error (429) — now correctly detected via errors.As
 	mp.addResponse(nil, &llm.APIError{
 		Type:      "rate_limit_error",
 		Message:   "rate limited",
 		Status:    429,
 		Retryable: true,
 	})
-	// Since the error is wrapped, handleStreamError won't see it as retryable.
-	// The loop will stop. So we don't add a second response.
-	// This tests the actual behavior: wrapped errors are not seen as retryable.
+	// Second call: success after retry
+	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
 	eng := engine.New(&engine.Params{
 		Provider: mp,
@@ -621,12 +619,11 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	}
 
 	result := <-resultCh
-	if result.Error == nil {
-		t.Fatal("expected error")
+	if result.Error != nil {
+		t.Fatalf("expected no error after retry, got: %v", result.Error)
 	}
-	// The wrapped error causes TerminalModelError since type assertion fails
-	if result.Terminal != types.TerminalModelError {
-		t.Errorf("expected TerminalModelError, got %s", result.Terminal)
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted after retry, got %s", result.Terminal)
 	}
 }
 
