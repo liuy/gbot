@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestGetAgentDefinition(t *testing.T) {
@@ -184,5 +186,16 @@ func TestIsOneShotAgent(t *testing.T) {
 				t.Errorf("IsOneShotAgent(%q) = %v, want %v", tt.agentType, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuiltInAgentsHaveSourceField(t *testing.T) {
+	for _, def := range ListAgentDefinitions() {
+		if def.Source != types.AgentSourceBuiltIn {
+			t.Errorf("built-in agent %q Source = %v, want AgentSourceBuiltIn", def.AgentType, def.Source)
+		}
+		if def.BaseDir != "built-in" {
+			t.Errorf("built-in agent %q BaseDir = %q, want 'built-in'", def.AgentType, def.BaseDir)
+		}
 	}
 }

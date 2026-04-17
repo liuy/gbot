@@ -100,7 +100,11 @@ func main() {
 
 	// 5. Build system prompt using context builder
 	workingDir, _ := os.Getwd()
-	systemPrompt := buildSystemPrompt(workingDir, reg)
+
+		// Initialize agent loader (lazy — discovers ~/.gbot/agents/ and .gbot/agents/)
+		agenttool.InitLoader(workingDir)
+
+		systemPrompt := buildSystemPrompt(workingDir, reg)
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)

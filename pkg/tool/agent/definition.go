@@ -30,6 +30,8 @@ var builtInAgents = map[string]*types.AgentDefinition{
 		Model:           "inherit",
 		OmitClaudeMd:    false,
 		MaxTurns:        0,
+		Source:          types.AgentSourceBuiltIn,
+		BaseDir:         "built-in",
 	},
 	"Explore": {
 		AgentType: "Explore",
@@ -43,6 +45,8 @@ var builtInAgents = map[string]*types.AgentDefinition{
 		Model:           "inherit",
 		OmitClaudeMd:    true,
 		MaxTurns:        0,
+		Source:          types.AgentSourceBuiltIn,
+		BaseDir:         "built-in",
 	},
 	"Plan": {
 		AgentType: "Plan",
@@ -56,16 +60,30 @@ var builtInAgents = map[string]*types.AgentDefinition{
 		Model:           "inherit",
 		OmitClaudeMd:    true,
 		MaxTurns:        0,
+		Source:          types.AgentSourceBuiltIn,
+		BaseDir:         "built-in",
 	},
 }
 
 // GetAgentDefinition returns the agent definition for the given type.
+// If a global loader is initialized, uses it (includes custom agents).
+// Otherwise falls back to built-in agents only.
 // Returns an error if the type is not found.
 // Source: tools/AgentTool/builtInAgents.ts — getBuiltInAgents() lookup
 func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 	if agentType == "" {
 		agentType = "General"
 	}
+
+	// Use global loader if initialized (includes custom agents + override resolution)
+	if globalLoader != nil {
+		if def := globalLoader.Get(agentType); def != nil {
+			return def, nil
+		}
+		return nil, fmt.Errorf("unknown agent type %q", agentType)
+	}
+
+	// Fallback: built-in agents only
 	// Exact match first
 	if def, ok := builtInAgents[agentType]; ok {
 		return def, nil
@@ -80,8 +98,14 @@ func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 	return nil, fmt.Errorf("unknown agent type %q: not found in built-in agents", agentType)
 }
 
-// ListAgentDefinitions returns all built-in agent definitions sorted by name.
+// ListAgentDefinitions returns all active agent definitions sorted by name.
+// If a global loader is initialized, includes custom agents.
+// Otherwise returns built-in agents only.
 func ListAgentDefinitions() []*types.AgentDefinition {
+	if globalLoader != nil {
+		return globalLoader.ListAll()
+	}
+
 	defs := make([]*types.AgentDefinition, 0, len(builtInAgents))
 	for _, def := range builtInAgents {
 		defs = append(defs, def)

@@ -320,9 +320,23 @@ type LoopAction struct {
 // Agent types — source: tools/AgentTool/builtInAgents.ts, AgentTool.tsx
 // ---------------------------------------------------------------------------
 
-// AgentDefinition describes a built-in agent type.
-// Source: tools/AgentTool/builtInAgents.ts — BaseAgentDefinition
+// AgentSource identifies where an agent definition came from.
+// Source: tools/AgentTool/loadAgentsDir.ts:136-159 — source field on BuiltIn/Custom/Plugin types.
+type AgentSource string
+
+const (
+	AgentSourceBuiltIn         AgentSource = "built-in"
+	AgentSourceUserSettings    AgentSource = "userSettings"
+	AgentSourceProjectSettings AgentSource = "projectSettings"
+	AgentSourcePolicySettings  AgentSource = "policySettings"
+	AgentSourceFlagSettings    AgentSource = "flagSettings"
+	AgentSourcePlugin          AgentSource = "plugin"
+)
+
+// AgentDefinition describes a built-in or custom agent type.
+// Source: tools/AgentTool/loadAgentsDir.ts:106-133 — BaseAgentDefinition
 type AgentDefinition struct {
+	// Core fields
 	AgentType       string
 	WhenToUse       string
 	SystemPrompt    func() string // lazily generated system prompt
@@ -331,6 +345,23 @@ type AgentDefinition struct {
 	Model           string        // "inherit", "haiku", "sonnet", "opus"
 	OmitClaudeMd    bool
 	MaxTurns        int // 0 = no limit
+
+	// Source tracking
+	Source   AgentSource // where this definition came from
+	Filename string     // original filename without .md extension (Source: loadAgentsDir.ts:656)
+	BaseDir  string     // directory the .md was loaded from; "built-in" for built-ins
+
+	// Future-ready fields (stored by Class 1, used by later classes)
+	Skills                 []string       // skills — comma-separated from frontmatter
+	Color                  string         // color — agent color name for TUI
+	Effort                 string         // effort — "low","medium","high","max", or int as string
+	PermissionModeField    PermissionMode // permissionMode — validated against existing constants
+	Background             bool           // background — always run as background task
+	InitialPrompt          string         // initialPrompt — prepended to first user turn
+	Memory                 string         // memory — "user","project","local"
+	Isolation              string         // isolation — "worktree" (future)
+	CriticalSystemReminder string         // criticalSystemReminder_EXPERIMENTAL
+	RequiredMcpServers     []string       // requiredMcpServers
 }
 
 // AgentInput is the input parameters for the Agent tool.
