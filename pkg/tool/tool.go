@@ -162,6 +162,14 @@ type ToolWithStreaming interface {
 	ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
 }
 
+// ToolWithWireFormat is an optional interface for tools that need custom
+// wire formatting of the result sent back to the LLM as tool_result content.
+// Source: AgentTool.tsx:1340-1374 — one-shot agents omit agentId/usage trailer.
+type ToolWithWireFormat interface {
+	Tool
+	FormatWireResult(data any) string
+}
+
 // ---------------------------------------------------------------------------
 // ToolDef — source: Tool.ts:707-792
 // ---------------------------------------------------------------------------

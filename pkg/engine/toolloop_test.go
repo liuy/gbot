@@ -11,6 +11,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1239,5 +1240,260 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 		if !found {
 			t.Errorf("ToolUseID %q was never received", id)
 		}
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// ToolWithWireFormat tests
+// ---------------------------------------------------------------------------
+
+// wireFormatTool implements tool.Tool + tool.ToolWithWireFormat for testing.
+type wireFormatTool struct {
+	name       string
+	callFn     func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+	wireResult string
+}
+
+func (w *wireFormatTool) Name() string                                                { return w.name }
+func (w *wireFormatTool) Aliases() []string                                           { return nil }
+func (w *wireFormatTool) Description(json.RawMessage) (string, error)                 { return w.name + " desc", nil }
+func (w *wireFormatTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
+func (w *wireFormatTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	if w.callFn != nil {
+		return w.callFn(ctx, input, tctx)
+	}
+	return &tool.ToolResult{Data: "default"}, nil
+}
+func (w *wireFormatTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (w *wireFormatTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (w *wireFormatTool) IsDestructive(json.RawMessage) bool        { return false }
+func (w *wireFormatTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (w *wireFormatTool) IsEnabled() bool                           { return true }
+func (w *wireFormatTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
+func (w *wireFormatTool) Prompt() string                            { return "" }
+func (w *wireFormatTool) RenderResult(any) string                     { return "display" }
+func (w *wireFormatTool) MaxResultSize() int                          { return 50000 }
+func (w *wireFormatTool) FormatWireResult(data any) string            { return w.wireResult }
+
+func TestSequentialToolLoop_WireFormat(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"custom": &wireFormatTool{
+			name:       "custom",
+			wireResult: "custom wire output",
+		},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "custom", Input: json.RawMessage(`{}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// The output should be the custom wire format, not double-wrapped JSON
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+	if output != "custom wire output" {
+		t.Errorf("output = %q, want %q", output, "custom wire output")
+	}
+}
+
+func TestSequentialToolLoop_DefaultFormat(t *testing.T) {
+	t.Parallel()
+	// Verify that a tool WITHOUT ToolWithWireFormat still uses default single-wrap
+	tools := map[string]tool.Tool{
+		"normal": &blockTool{name: "normal"},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "normal", Input: json.RawMessage(`{}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// Default behavior: json.Marshal(result.Data) directly
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+	if output != "completed" {
+		t.Errorf("output = %q, want %q", output, "completed")
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Integration tests: AgentTool + ToolWithWireFormat through toolloop
+// These test the full path: AgentTool.Call → marshalToolOutput → FormatWireResult
+// ---------------------------------------------------------------------------
+
+// mockFactory returns a SubEngineFactory that produces a fixed SubQueryResult.
+func mockFactory(result *types.SubQueryResult) agent.SubEngineFactory {
+	return func(ctx context.Context, opts agent.SubEngineOpts) (*types.SubQueryResult, error) {
+		return result, nil
+	}
+}
+
+func newAgentTool(factoryResult *types.SubQueryResult) *agent.AgentTool {
+	at := agent.New()
+	at.SetFactory(
+		mockFactory(factoryResult),
+		func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Read":  &testTool{name: "Read"},
+				"Glob":  &testTool{name: "Glob"},
+				"Grep":  &testTool{name: "Grep"},
+			}
+		},
+	)
+	return at
+}
+
+func TestIntegration_ExploreAgent_NoUsageTrailer(t *testing.T) {
+	t.Parallel()
+	at := newAgentTool(&types.SubQueryResult{
+		AgentType:         "Explore",
+		Content:           "found 5 files matching the pattern",
+		TotalDurationMs:   1234,
+		TotalTokens:       8000,
+		TotalToolUseCount: 4,
+	})
+
+	tools := map[string]tool.Tool{"Agent": at}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Agent",
+			Input: json.RawMessage(`{"description":"search","prompt":"find test files","subagent_type":"Explore"}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+
+	// Explore is one-shot: wire output should be only content, no trailer
+	if output != "found 5 files matching the pattern" {
+		t.Errorf("expected pure content, got: %q", output)
+	}
+	if strings.Contains(output, "<usage>") {
+		t.Error("Explore agent should not have usage trailer")
+	}
+	if strings.Contains(output, "agentId:") {
+		t.Error("Explore agent should not have agentId hint")
+	}
+}
+
+func TestIntegration_PlanAgent_NoUsageTrailer(t *testing.T) {
+	t.Parallel()
+	at := newAgentTool(&types.SubQueryResult{
+		AgentType:         "Plan",
+		Content:           "plan: refactor auth module",
+		TotalDurationMs:   2000,
+		TotalTokens:       10000,
+		TotalToolUseCount: 6,
+	})
+
+	tools := map[string]tool.Tool{"Agent": at}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Agent",
+			Input: json.RawMessage(`{"description":"plan ref","prompt":"plan auth refactor","subagent_type":"Plan"}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+
+	if output != "plan: refactor auth module" {
+		t.Errorf("expected pure content, got: %q", output)
+	}
+}
+
+func TestIntegration_GeneralAgent_HasUsageTrailer(t *testing.T) {
+	t.Parallel()
+	at := newAgentTool(&types.SubQueryResult{
+		AgentType:         "General",
+		Content:           "task completed successfully",
+		TotalDurationMs:   3000,
+		TotalTokens:       15000,
+		TotalToolUseCount: 8,
+	})
+
+	tools := map[string]tool.Tool{"Agent": at}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Agent",
+			Input: json.RawMessage(`{"description":"work","prompt":"do the thing"}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+
+	// General agent should have usage trailer
+	if !strings.Contains(output, "task completed successfully") {
+		t.Errorf("should contain content, got: %q", output)
+	}
+	if !strings.Contains(output, "<usage>") {
+		t.Errorf("General agent should have usage trailer, got: %q", output)
+	}
+	if !strings.Contains(output, "total_tokens: 15000") {
+		t.Errorf("usage should include token count, got: %q", output)
+	}
+	if !strings.Contains(output, "duration_ms: 3000") {
+		t.Errorf("usage should include duration, got: %q", output)
+	}
+}
+
+func TestIntegration_GeneralAgent_NoAgentID(t *testing.T) {
+	t.Parallel()
+	at := newAgentTool(&types.SubQueryResult{
+		AgentType:         "General",
+		Content:           "done",
+		TotalDurationMs:   100,
+		TotalTokens:       500,
+		TotalToolUseCount: 1,
+	})
+
+	tools := map[string]tool.Tool{"Agent": at}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Agent",
+			Input: json.RawMessage(`{"description":"work","prompt":"quick task"}`)},
+	}
+
+	results := engine.SequentialToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	var output string
+	if err := json.Unmarshal(results[0].Content, &output); err != nil {
+		t.Fatalf("output should be a JSON string, got: %s", results[0].Content)
+	}
+
+	// General without AgentID should not have agentId hint
+	if strings.Contains(output, "agentId:") {
+		t.Errorf("General without AgentID should not have agentId hint, got: %q", output)
+	}
+	// But should still have usage
+	if !strings.Contains(output, "<usage>") {
+		t.Errorf("General agent should have usage trailer, got: %q", output)
 	}
 }

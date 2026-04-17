@@ -246,6 +246,34 @@ func (t *AgentTool) RenderResult(data any) string {
 	return result.Content
 }
 
+// FormatWireResult formats the tool result for the LLM wire format.
+// Source: AgentTool.tsx:1340-1374
+// Note: TS sends array-of-blocks, Go sends joined string. Valid per API.
+// TODO: When worktree support added, add !worktreeInfoText guard (TS line 1356).
+func (t *AgentTool) FormatWireResult(data any) string {
+	result, ok := data.(*types.SubQueryResult)
+	if !ok {
+		b, _ := json.Marshal(data)
+		return string(b)
+	}
+	// One-shot: skip trailer (TS: ONE_SHOT_BUILTIN_AGENT_TYPES + !worktreeInfoText)
+	// Also skip if async-launched (fork launch message already has agentId)
+	if IsOneShotAgent(result.AgentType) && result.AgentID == "" && !result.AsyncLaunched {
+		return result.Content
+	}
+	// Async-launched fork: just the launch message, no trailer
+	if result.AsyncLaunched {
+		return result.Content
+	}
+	var sb strings.Builder
+	sb.WriteString(result.Content)
+	if result.AgentID != "" {
+		fmt.Fprintf(&sb, "\n\nagentId: %s (use SendMessage with to: '%s' to continue this agent)", result.AgentID, result.AgentID)
+	}
+	fmt.Fprintf(&sb, "\n<usage>total_tokens: %d\ntool_uses: %d\nduration_ms: %d</usage>", result.TotalTokens, result.TotalToolUseCount, result.TotalDurationMs)
+	return sb.String()
+}
+
 // ---------------------------------------------------------------------------
 // Fork agent support
 // ---------------------------------------------------------------------------

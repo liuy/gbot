@@ -166,3 +166,23 @@ func TestPlanSystemPromptContainsCriticalFiles(t *testing.T) {
 		t.Error("Plan system prompt should mention 'Critical Files for Implementation'")
 	}
 }
+
+func TestIsOneShotAgent(t *testing.T) {
+	tests := []struct {
+		agentType string
+		want      bool
+	}{
+		{"Explore", true},
+		{"Plan", true},
+		{"General", false},
+		{"", false},
+		{"nonexistent", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.agentType, func(t *testing.T) {
+			if got := IsOneShotAgent(tt.agentType); got != tt.want {
+				t.Errorf("IsOneShotAgent(%q) = %v, want %v", tt.agentType, got, tt.want)
+			}
+		})
+	}
+}

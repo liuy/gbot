@@ -442,8 +442,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			return
 		}
 
-		rawJSON, _ := json.Marshal(result.Data)
-		outputJSON, _ := json.Marshal(string(rawJSON))
+		outputJSON := marshalToolOutput(t, result.Data, true)
 		outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
 		displayOutput := t.RenderResult(result.Data)
 		if displayOutput == "" && lastDisplayOutput != "" {
@@ -474,8 +473,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		return
 	}
 
-	rawJSON, _ := json.Marshal(result.Data)
-	outputJSON, _ := json.Marshal(string(rawJSON))
+	outputJSON := marshalToolOutput(t, result.Data, true)
 	outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
 	displayOutput := t.RenderResult(result.Data)
 	e.doEmit(types.QueryEvent{
@@ -500,6 +498,25 @@ func truncateToolOutput(output []byte, maxChars int) []byte {
 	}
 	truncated := output[:maxChars]
 	return append(truncated, []byte("\n\n[Output truncated]")...)
+}
+
+
+// marshalToolOutput serializes a tool result for sending to the LLM.
+// If the tool implements ToolWithWireFormat, its custom format is used.
+// Otherwise, doubleWrap=true wraps the result as a JSON string (streaming/concurrent),
+// and doubleWrap=false passes raw JSON (sequential).
+func marshalToolOutput(t tool.Tool, data any, doubleWrap bool) []byte {
+	if wf, ok := t.(tool.ToolWithWireFormat); ok {
+		b, _ := json.Marshal(wf.FormatWireResult(data))
+		return b
+	}
+	if doubleWrap {
+		raw, _ := json.Marshal(data)
+		wrapped, _ := json.Marshal(string(raw))
+		return wrapped
+	}
+	b, _ := json.Marshal(data)
+	return b
 }
 
 // emitToolError emits error events and result blocks for a failed tool.
@@ -681,7 +698,7 @@ func SequentialToolLoop(
 			tctx = result.ContextModifier(tctx)
 		}
 
-		outputJSON, _ := json.Marshal(result.Data)
+		outputJSON := marshalToolOutput(t, result.Data, false)
 		results = append(results, types.NewToolResultBlock(block.ID, outputJSON, false))
 		emitEvent(types.QueryEvent{
 			Type: types.EventToolEnd,

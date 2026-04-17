@@ -875,3 +875,120 @@ func TestCallFork_NoForkWithoutSetNotifyFn(t *testing.T) {
 		t.Errorf("Content = %q, want sync result", sqr.Content)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FormatWireResult tests
+// ---------------------------------------------------------------------------
+
+func TestFormatWireResult_OneShotExplore(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentType:         "Explore",
+		Content:           "found 3 files",
+		TotalDurationMs:   500,
+		TotalTokens:       1000,
+		TotalToolUseCount: 2,
+	}
+	got := at.FormatWireResult(result)
+	if got != "found 3 files" {
+		t.Errorf("one-shot Explore should return only content, got %q", got)
+	}
+}
+
+func TestFormatWireResult_OneShotPlan(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentType:         "Plan",
+		Content:           "implementation plan",
+		TotalDurationMs:   800,
+		TotalTokens:       2000,
+		TotalToolUseCount: 3,
+	}
+	got := at.FormatWireResult(result)
+	if got != "implementation plan" {
+		t.Errorf("one-shot Plan should return only content, got %q", got)
+	}
+}
+
+func TestFormatWireResult_GeneralAgent(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentType:         "General",
+		Content:           "task done",
+		TotalDurationMs:   1000,
+		TotalTokens:       5000,
+		TotalToolUseCount: 5,
+	}
+	got := at.FormatWireResult(result)
+	if !strings.Contains(got, "task done") {
+		t.Errorf("should contain content, got %q", got)
+	}
+	if !strings.Contains(got, "<usage>") {
+		t.Errorf("General agent should include usage trailer, got %q", got)
+	}
+	if strings.Contains(got, "agentId:") {
+		t.Errorf("General without AgentID should not have agentId hint, got %q", got)
+	}
+}
+
+func TestFormatWireResult_ForkWithAgentID(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentID:           "fork-1",
+		AgentType:         "General",
+		Content:           "completed",
+		TotalDurationMs:   2000,
+		TotalTokens:       3000,
+		TotalToolUseCount: 1,
+	}
+	got := at.FormatWireResult(result)
+	if !strings.Contains(got, `agentId: fork-1`) {
+		t.Errorf("should contain agentId hint, got %q", got)
+	}
+	if !strings.Contains(got, "<usage>") {
+		t.Errorf("should include usage trailer, got %q", got)
+	}
+}
+
+func TestFormatWireResult_AsyncLaunched(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentID:       "fork-2",
+		AgentType:     "fork",
+		Content:       `Fork agent "fork-2" launched in background`,
+		AsyncLaunched: true,
+	}
+	got := at.FormatWireResult(result)
+	if got != `Fork agent "fork-2" launched in background` {
+		t.Errorf("async-launched should return only content, got %q", got)
+	}
+}
+
+func TestFormatWireResult_OneShotWithAgentID(t *testing.T) {
+	at := New()
+	result := &types.SubQueryResult{
+		AgentID:           "fork-3",
+		AgentType:         "Explore",
+		Content:           "search results",
+		TotalDurationMs:   300,
+		TotalTokens:       500,
+		TotalToolUseCount: 1,
+	}
+	got := at.FormatWireResult(result)
+	// One-shot WITH AgentID should NOT skip trailer (has agentId hint + usage)
+	if !strings.Contains(got, `agentId: fork-3`) {
+		t.Errorf("one-shot with AgentID should have agentId hint, got %q", got)
+	}
+	if !strings.Contains(got, "<usage>") {
+		t.Errorf("one-shot with AgentID should have usage trailer, got %q", got)
+	}
+}
+
+func TestFormatWireResult_NonSubQueryResult(t *testing.T) {
+	at := New()
+	got := at.FormatWireResult("plain string")
+	// Should fallback to JSON marshaling
+	if !strings.Contains(got, "plain string") {
+		t.Errorf("non-SubQueryResult should be JSON-marshaled, got %q", got)
+	}
+}
