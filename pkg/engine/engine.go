@@ -304,6 +304,19 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 
 		// Stage 20: No-tool-use terminal path
 		if streamingExecutor == nil {
+			// Before exiting, check if notifications arrived during this
+			// turn. If so, inject them and continue the loop instead of
+			// returning. Source: TS queryLoop checks commandQueue at each
+			// iteration start; notifications arriving on the last turn are
+			// handled by draining here and continuing.
+			if pending := e.notifications.Drain(); len(pending) > 0 {
+				e.messages = append(e.messages, pending...)
+				for i := range pending {
+					e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+				}
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+				continue
+			}
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
@@ -344,7 +357,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		}
 	}
 
-	return QueryResult{
+		return QueryResult{
 		Messages:   e.messages,
 		TurnCount:  e.turnCount,
 		TotalUsage: totalUsage,

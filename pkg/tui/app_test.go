@@ -326,6 +326,59 @@ func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Update — notificationPendingMsg Path A (streaming) then Path B (idle)
+// ---------------------------------------------------------------------------
+
+// TestApp_NotificationPending_PathA_ThenPathB verifies the full flow:
+// 1. notificationPendingMsg arrives during streaming (Path A: ignored)
+// 2. queryEndMsg → TUI goes idle
+// 3. Engine re-dispatches EventNotificationPending (via dispatchPendingNotifications)
+// 4. notificationPendingMsg arrives in idle mode (Path B: triggers ProcessNotifications)
+// Regression: notification arriving during last turn was silently dropped because
+// runTurns only drains queue at turn start, and queryEndMsg did not check.
+func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
+	t.Parallel()
+
+	mp := &tuiMockProvider{
+		responses: []tuiMockResponse{
+			{events: textStreamEvents("test-model", "Notification processed.")},
+		},
+	}
+
+	app := newTestApp(mp)
+	app.repl.StartQuery(nil)
+	app.spinner.Start()
+	app.progressStart = time.Now()
+
+	// Step 1: notification arrives while streaming (Path A — ignored)
+	model, cmd := app.Update(notificationPendingMsg{})
+	if cmd == nil {
+		t.Error("notificationPendingMsg during streaming should return readEvents cmd")
+	}
+	a := model.(*App)
+	if !a.repl.streaming {
+		t.Error("should still be streaming after notificationPendingMsg during stream")
+	}
+
+	// Step 2: query ends → TUI goes idle
+	model, _ = a.Update(queryEndMsg{})
+	a = model.(*App)
+	if a.repl.streaming {
+		t.Error("should not be streaming after queryEndMsg")
+	}
+
+	// Step 3: Engine re-dispatches notificationPendingMsg (simulating dispatchPendingNotifications)
+	// Step 4: notificationPendingMsg arrives in idle mode (Path B)
+	model, _ = a.Update(notificationPendingMsg{})
+	a = model.(*App)
+
+	// ProcessNotifications should start — streaming must be true again
+	if !a.repl.streaming {
+		t.Error("notificationPendingMsg in idle should trigger ProcessNotifications (Path B)")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Update — spinnerTickMsg
 // ---------------------------------------------------------------------------
 

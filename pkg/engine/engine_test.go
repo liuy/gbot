@@ -2322,3 +2322,4 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 		t.Errorf("Terminal should not be completed on error, got %q", result.Terminal)
 	}
 }
+

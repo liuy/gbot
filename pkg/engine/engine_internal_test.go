@@ -1762,3 +1762,5 @@ func TestQueryWithExistingMessages(t *testing.T) {
 		t.Errorf("last message text = %q, want %q", lastMsg.Content[0].Text, "response from existing messages")
 	}
 }
+
+// TestRunTurns_DrainsNotificationsAtStage20 verifies that when runTurns hits the
