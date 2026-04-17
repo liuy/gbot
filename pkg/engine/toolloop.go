@@ -64,6 +64,7 @@ type StreamingToolExecutor struct {
 	toolMap   map[string]tool.Tool
 	emitEvent func(types.QueryEvent)
 	tctx      *types.ToolUseContext
+	messages  []types.Message // conversation history for tool context (set after assistant msg append)
 
 	// Three-tier abort (TS: abortController.ts, spec:3750-3810)
 	// rootCtx → siblingCtx via context.WithCancelCause.
@@ -95,6 +96,17 @@ func NewStreamingToolExecutor(
 		siblingCtx:    siblingCtx,
 		siblingCancel: siblingCancel,
 	}
+}
+
+// SetMessages sets the conversation history on the executor.
+// Called from engine.go after the assistant message is appended (so messages
+// include the triggering assistant turn) but before ExecuteAll runs.
+// This ensures tools like Agent can access the full parent conversation
+// for fork-agent message construction.
+func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.messages = messages
 }
 
 // ---------------------------------------------------------------------------
@@ -523,11 +535,18 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 // Each tool needs its own context with its specific ID for identity-aware operations
 // (e.g., Agent tool needs ToolUseID to tag sub-agent events via ParentToolUseID).
 func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *types.ToolUseContext {
+	e.mu.Lock()
+	msgs := e.messages
+	e.mu.Unlock()
+
 	if e.tctx == nil {
-		return &types.ToolUseContext{ToolUseID: toolUseID}
+		return &types.ToolUseContext{ToolUseID: toolUseID, Messages: msgs}
 	}
 	cp := *e.tctx
 	cp.ToolUseID = toolUseID
+	if len(msgs) > 0 {
+		cp.Messages = msgs
+	}
 	return &cp
 }
 

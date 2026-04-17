@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -487,6 +488,53 @@ func TestGetToolsDescription_AllowlistEmptyAfterDenylist(t *testing.T) {
 	}
 }
 
+func TestModelInheritResolvedToEmpty(t *testing.T) {
+	// All built-in agents have Model="inherit", which must be resolved to ""
+	// before passing to the factory. Otherwise NewSubEngine treats "inherit"
+	// as a literal model name and passes it to the API.
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+
+	// No model specified → agentDef.Model="inherit" → should resolve to ""
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if capturedOpts.Model != "" {
+		t.Errorf("Model = %q, want %q (inherit should resolve to empty for parent inheritance)", capturedOpts.Model, "")
+	}
+}
+
+func TestModelExplicitOverride(t *testing.T) {
+	// When user specifies an explicit model, it should pass through
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","model":"custom-model-v1"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	if capturedOpts.Model != "custom-model-v1" {
+		t.Errorf("Model = %q, want %q", capturedOpts.Model, "custom-model-v1")
+	}
+}
+
 func TestFilterToolsForAgent_GlobalDisallowed(t *testing.T) {
 	// Temporarily add a global disallowed tool
 	orig := AllAgentDisallowedTools
@@ -502,5 +550,177 @@ func TestFilterToolsForAgent_GlobalDisallowed(t *testing.T) {
 	}
 	if _, ok := filtered["Read"]; !ok {
 		t.Error("filtered should still contain Read")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fork agent tests
+// ---------------------------------------------------------------------------
+
+func TestCallFork_LaunchesInBackground(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		mu.Lock()
+		capturedOpts = opts
+		mu.Unlock()
+		return &types.SubQueryResult{Content: "fork done", AgentType: "fork"}, nil
+	}
+
+	parentTools := makeTestTools("Bash", "Read")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+
+	input := json.RawMessage(`{"description":"bg task","prompt":"search code","run_in_background":true}`)
+	result, err := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_fork_1"})
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sqr, ok := result.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("result.Data = %T, want *SubQueryResult", result.Data)
+	}
+	if !sqr.AsyncLaunched {
+		t.Error("AsyncLaunched should be true for fork agent")
+	}
+	if sqr.AgentType != "fork" {
+		t.Errorf("AgentType = %q, want %q", sqr.AgentType, "fork")
+	}
+	if sqr.AgentID == "" {
+		t.Error("AgentID should not be empty")
+	}
+
+	// Wait for fork agent to complete via registry
+	at.forkReg.Wait(sqr.AgentID)
+
+	// Verify factory received fork messages
+	mu.Lock()
+	opts := capturedOpts
+	mu.Unlock()
+
+	if len(opts.ForkMessages) == 0 {
+		t.Error("factory should receive non-empty ForkMessages")
+	}
+	if opts.AgentType != "fork" {
+		t.Errorf("AgentType = %q, want %q", opts.AgentType, "fork")
+	}
+	if opts.MaxTurns != 200 {
+		t.Errorf("MaxTurns = %d, want 200", opts.MaxTurns)
+	}
+}
+
+func TestCallFork_RecursiveGuard(t *testing.T) {
+	t.Parallel()
+	at := New()
+	at.SetFactory(
+		func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{}, nil
+		},
+		func() map[string]tool.Tool { return makeTestTools("Bash") },
+	)
+	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+
+	input := json.RawMessage(`{"description":"nested","prompt":"do it","run_in_background":true}`)
+
+	// Simulate being inside a fork child (messages contain fork-boilerplate)
+	tctx := &types.ToolUseContext{
+		ToolUseID: "call_nested",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("<fork-boilerplate>STOP</fork-boilerplate>")}},
+		},
+	}
+
+	_, err := at.Call(context.Background(), input, tctx)
+	if err == nil {
+		t.Fatal("expected error for recursive fork")
+	}
+	if !strings.Contains(err.Error(), "cannot spawn agents from within a fork agent") {
+		t.Errorf("error = %q, want mention of recursive fork", err.Error())
+	}
+}
+
+func TestCallFork_NotificationDelivered(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var notifications []string
+
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		return &types.SubQueryResult{
+			Content:         "search complete",
+			TotalDurationMs: 500,
+			TotalTokens:     1000,
+		}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(
+		func(xml string) {
+			mu.Lock()
+			defer mu.Unlock()
+			notifications = append(notifications, xml)
+		},
+		func() json.RawMessage { return json.RawMessage(`"system prompt"`) },
+	)
+
+	input := json.RawMessage(`{"description":"bg search","prompt":"find TODOs","run_in_background":true}`)
+	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_notif"})
+
+	// Wait for fork to complete via registry
+	sqr := result.Data.(*types.SubQueryResult)
+	at.forkReg.Wait(sqr.AgentID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(notifications))
+	}
+	if !strings.Contains(notifications[0], "<task-notification>") {
+		t.Errorf("notification should contain <task-notification>, got %q", notifications[0])
+	}
+	if !strings.Contains(notifications[0], "search complete") {
+		t.Errorf("notification should contain result content, got %q", notifications[0])
+	}
+}
+
+func TestSetNotifyFn_EnablesFork(t *testing.T) {
+	t.Parallel()
+	at := New()
+	if at.forkReg != nil {
+		t.Error("forkReg should be nil before SetNotifyFn")
+	}
+	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	if at.forkReg == nil {
+		t.Error("forkReg should be non-nil after SetNotifyFn")
+	}
+}
+
+func TestCallFork_NoForkWithoutSetNotifyFn(t *testing.T) {
+	t.Parallel()
+	at := New()
+	at.SetFactory(
+		func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+			return &types.SubQueryResult{Content: "sync done"}, nil
+		},
+		func() map[string]tool.Tool { return makeTestTools("Bash") },
+	)
+	// SetNotifyFn NOT called — fork not enabled
+
+	input := json.RawMessage(`{"description":"bg","prompt":"do it","run_in_background":true}`)
+	result, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+	sqr := result.Data.(*types.SubQueryResult)
+	// Without SetNotifyFn, run_in_background is ignored — runs synchronously
+	if sqr.AsyncLaunched {
+		t.Error("should not launch async without SetNotifyFn")
+	}
+	if sqr.Content != "sync done" {
+		t.Errorf("Content = %q, want sync result", sqr.Content)
 	}
 }

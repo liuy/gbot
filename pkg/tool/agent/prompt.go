@@ -64,7 +64,7 @@ func getToolsDescription(def *types.AgentDefinition) string {
 }
 
 // Source: prompt.ts:202-286 — getPrompt() non-coordinator path
-// Adapted for gbot: no fork, no background, no SendMessage, no worktree.
+// Adapted for gbot: no SendMessage, no worktree. Fork/background agent support included.
 const agentToolPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
 The Agent tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
@@ -87,6 +87,8 @@ Usage notes:
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first.
+- If you specify "run_in_background": true, the agent will be launched as a background agent that runs independently. Background agents inherit your full conversation context and tools. Results are delivered as a notification when the agent completes. Use for long-running tasks like verification, testing, or extensive codebase analysis.
+- You can optionally specify a model for the agent: "sonnet" (default), "opus" (complex analysis), or "haiku" (quick lookups). If omitted, the agent inherits your current model.
 
 Writing the prompt:
 Brief the agent like a smart colleague who just walked into the room — it hasn't seen this conversation, doesn't know what you've tried, doesn't understand why this task matters.

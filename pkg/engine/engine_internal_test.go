@@ -1538,3 +1538,227 @@ func TestNewSubEngine_NoDispatcher_NoTagged(t *testing.T) {
 		t.Error("sub-engine dispatcher should be nil when parent has no dispatcher")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// StreamingToolExecutor.SetMessages — conversation history propagation
+// ---------------------------------------------------------------------------
+
+// captureMessagesTool captures the ToolUseContext.Messages it receives.
+type captureMessagesTool struct {
+	captured []types.Message
+	mu       sync.Mutex
+}
+
+func (t *captureMessagesTool) Name() string                                                          { return "capture" }
+func (t *captureMessagesTool) Aliases() []string                                                     { return nil }
+func (t *captureMessagesTool) Description(json.RawMessage) (string, error)                           { return "capture", nil }
+func (t *captureMessagesTool) InputSchema() json.RawMessage                                          { return json.RawMessage(`{}`) }
+func (t *captureMessagesTool) Call(_ context.Context, _ json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	if tctx != nil {
+		t.mu.Lock()
+		t.captured = tctx.Messages
+		t.mu.Unlock()
+	}
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (t *captureMessagesTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *captureMessagesTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *captureMessagesTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *captureMessagesTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *captureMessagesTool) IsEnabled() bool                           { return true }
+func (t *captureMessagesTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *captureMessagesTool) Prompt() string                            { return "" }
+func (t *captureMessagesTool) RenderResult(any) string                     { return "" }
+
+func (t *captureMessagesTool) MaxResultSize() int { return 50000 }
+
+func (t *captureMessagesTool) Captured() []types.Message {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.captured
+}
+
+// TestStreamingToolExecutor_SetMessages_NilTctx verifies that tools receive
+// conversation history even when the executor is created with nil tctx (the
+// common case from engine.go's callLLM). Without SetMessages, the tool would
+// receive nil Messages. This is critical for fork agent message construction.
+func TestStreamingToolExecutor_SetMessages_NilTctx(t *testing.T) {
+	t.Parallel()
+
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("do something")}},
+	}
+
+	captureTool := &captureMessagesTool{}
+	toolMap := map[string]tool.Tool{"capture": captureTool}
+
+	executor := NewStreamingToolExecutor(toolMap, nil, func(types.QueryEvent) {}, context.Background())
+	executor.SetMessages(messages)
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "capture", Input: json.RawMessage(`{}`)},
+	}
+	results := executor.ExecuteAll(blocks)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].IsError {
+		t.Fatal("expected no error")
+	}
+
+	captured := captureTool.Captured()
+	if len(captured) != 3 {
+		t.Fatalf("expected 3 messages in tctx, got %d", len(captured))
+	}
+	if captured[0].Role != types.RoleUser {
+		t.Errorf("first message role = %q, want %q", captured[0].Role, types.RoleUser)
+	}
+	if captured[0].Content[0].Text != "hello" {
+		t.Errorf("first message text = %q, want %q", captured[0].Content[0].Text, "hello")
+	}
+	if captured[2].Content[0].Text != "do something" {
+		t.Errorf("third message text = %q, want %q", captured[2].Content[0].Text, "do something")
+	}
+}
+
+// TestStreamingToolExecutor_SetMessages_WithExistingTctx verifies that
+// SetMessages overrides even when a non-nil tctx exists. This ensures
+// the messages field takes priority over tctx.Messages.
+func TestStreamingToolExecutor_SetMessages_WithExistingTctx(t *testing.T) {
+	t.Parallel()
+
+	oldMessages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old")}},
+	}
+	newMessages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("new1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("new2")}},
+	}
+
+	captureTool := &captureMessagesTool{}
+	toolMap := map[string]tool.Tool{"capture": captureTool}
+
+	tctx := &types.ToolUseContext{
+		ToolUseID: "tu_parent",
+		Messages:  oldMessages,
+	}
+
+	executor := NewStreamingToolExecutor(toolMap, tctx, func(types.QueryEvent) {}, context.Background())
+	executor.SetMessages(newMessages)
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "capture", Input: json.RawMessage(`{}`)},
+	}
+	executor.ExecuteAll(blocks)
+
+	captured := captureTool.Captured()
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 messages (new), got %d", len(captured))
+	}
+	if captured[0].Content[0].Text != "new1" {
+		t.Errorf("first message text = %q, want %q", captured[0].Content[0].Text, "new1")
+	}
+}
+
+// TestStreamingToolExecutor_NoSetMessages_NilTctx verifies that without
+// SetMessages, tools receive nil Messages when tctx is nil. This documents
+// the baseline behavior that SetMessages fixes.
+func TestStreamingToolExecutor_NoSetMessages_NilTctx(t *testing.T) {
+	t.Parallel()
+
+	captureTool := &captureMessagesTool{}
+	toolMap := map[string]tool.Tool{"capture": captureTool}
+
+	executor := NewStreamingToolExecutor(toolMap, nil, func(types.QueryEvent) {}, context.Background())
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "capture", Input: json.RawMessage(`{}`)},
+	}
+	executor.ExecuteAll(blocks)
+
+	captured := captureTool.Captured()
+	if captured != nil {
+		t.Errorf("expected nil Messages without SetMessages, got %d messages", len(captured))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Engine accessors + QueryWithExistingMessages
+// ---------------------------------------------------------------------------
+
+func TestEngineModel_Accessor(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &testProvider{}, Model: "test-model"})
+	if got := eng.Model(); got != "test-model" {
+		t.Errorf("Model() = %q, want %q", got, "test-model")
+	}
+}
+
+func TestEngineSystemPrompt_Accessors(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+
+	// Initially nil
+	if sp := eng.SystemPrompt(); sp != nil {
+		t.Errorf("SystemPrompt() should be nil initially, got %q", string(sp))
+	}
+
+	// Set and read back
+	sp := json.RawMessage(`{"role":"system","content":"you are helpful"}`)
+	eng.SetSystemPrompt(sp)
+	if got := eng.SystemPrompt(); string(got) != string(sp) {
+		t.Errorf("SystemPrompt() = %q, want %q", string(got), string(sp))
+	}
+}
+
+func TestQueryWithExistingMessages(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse(subTextEvents("test", "response from existing messages"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+	})
+
+	// Pre-construct messages — simulating what fork agent builds
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("original user msg")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("original assistant msg")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("fork directive")}},
+	}
+
+	result := eng.QueryWithExistingMessages(context.Background(), messages, nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+
+	// Verify messages start with the pre-constructed ones (not an extra injected user msg)
+	if len(result.Messages) < 4 {
+		t.Fatalf("expected at least 4 messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Content[0].Text != "original user msg" {
+		t.Errorf("first message = %q, want %q", result.Messages[0].Content[0].Text, "original user msg")
+	}
+	if result.Messages[1].Content[0].Text != "original assistant msg" {
+		t.Errorf("second message = %q, want %q", result.Messages[1].Content[0].Text, "original assistant msg")
+	}
+	// The LLM's response should be appended after the pre-constructed messages
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleAssistant {
+		t.Errorf("last message role = %q, want assistant", lastMsg.Role)
+	}
+	if lastMsg.Content[0].Text != "response from existing messages" {
+		t.Errorf("last message text = %q, want %q", lastMsg.Content[0].Text, "response from existing messages")
+	}
+}

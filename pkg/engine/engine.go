@@ -35,18 +35,19 @@ type EventDispatcher interface {
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
-	provider    llm.Provider
-	tools         map[string]tool.Tool
-	toolOrder     []string
-	toolsProvider func() map[string]tool.Tool
-	model       string
-	maxTokens   int
-	logger      *slog.Logger
-	messages    []types.Message
+	provider       llm.Provider
+	tools          map[string]tool.Tool
+	toolOrder      []string
+	toolsProvider  func() map[string]tool.Tool
+	model          string
+	maxTokens      int
+	logger         *slog.Logger
+	messages       []types.Message
 	tokenBudget    int
 	turnCount      int
 	dispatcher     EventDispatcher
 	notifications  *notificationQueue
+	systemPrompt   json.RawMessage // stored system prompt for fork agent access
 
 	// isSubagent is true for sub-agent engines created by AgentTool.
 	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
@@ -199,6 +200,12 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 	e.messages = append(e.messages, userMsg)
 	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
+	return e.runTurns(ctx, systemPrompt, eventCh)
+}
+
+// runTurns executes the agentic turn loop. Shared by queryLoop (normal path)
+// and QueryWithExistingMessages (fork agent path).
+func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
 	var totalUsage types.Usage
 
 	for e.turnCount < e.maxTurns {
@@ -248,6 +255,12 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 		// Add assistant message to history
 		e.messages = append(e.messages, *resp)
+
+		// Populate conversation history on the executor so tools
+		// (e.g. Agent tool) can access the full parent conversation.
+		if streamingExecutor != nil {
+			streamingExecutor.SetMessages(e.messages)
+		}
 
 		// Stage 20: No-tool-use terminal path
 		if streamingExecutor == nil {
@@ -786,6 +799,23 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
 	return e.queryLoop(ctx, userMessage, systemPrompt, nil)
 }
+
+// QueryWithExistingMessages executes the agentic turn loop starting from
+// pre-constructed messages (no user message injection). Used by fork agents
+// that build their own conversation history.
+func (e *Engine) QueryWithExistingMessages(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
+	e.messages = messages
+	return e.runTurns(ctx, systemPrompt, nil)
+}
+
+// Model returns the engine's model name.
+func (e *Engine) Model() string { return e.model }
+
+// SystemPrompt returns the stored system prompt bytes.
+func (e *Engine) SystemPrompt() json.RawMessage { return e.systemPrompt }
+
+// SetSystemPrompt stores the system prompt for later access by fork agents.
+func (e *Engine) SetSystemPrompt(sp json.RawMessage) { e.systemPrompt = sp }
 
 // subMaxTurns returns the max turns for a sub-engine.
 // 0 or negative means use parent default (50).

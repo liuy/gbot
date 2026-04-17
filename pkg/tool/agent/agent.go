@@ -25,13 +25,15 @@ type SubEngineFactory func(ctx context.Context, opts SubEngineOpts) (*types.SubQ
 // SubEngineOpts passes parameters to the sub-engine factory.
 // Uses only types from shared packages (no engine dependency).
 type SubEngineOpts struct {
-	Prompt          string               // actual user prompt for the sub-agent
-	SystemPrompt    json.RawMessage      // sub-agent's system prompt
-	Tools           map[string]tool.Tool // filtered tool set
-	MaxTurns        int                  // 0 = default 50
-	Model           string               // "" = inherit from parent
-	AgentType       string               // resolved agent type (e.g. "general-purpose", "Explore")
-	ParentToolUseID string               // parent Agent tool call ID for TUI progress display
+	Prompt             string               // actual user prompt for the sub-agent
+	SystemPrompt       json.RawMessage      // sub-agent's system prompt
+	Tools              map[string]tool.Tool // filtered tool set
+	MaxTurns           int                  // 0 = default 50
+	Model              string               // "" = inherit from parent
+	AgentType          string               // resolved agent type (e.g. "general-purpose", "Explore")
+	ParentToolUseID    string               // parent Agent tool call ID for TUI progress display
+	ForkMessages       []types.Message      // non-nil: use pre-built fork messages instead of Prompt
+	ParentSystemPrompt json.RawMessage      // fork: parent engine's rendered system prompt bytes
 }
 
 // ---------------------------------------------------------------------------
@@ -41,8 +43,11 @@ type SubEngineOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	factory     SubEngineFactory         // injected via SetFactory
+	factory     SubEngineFactory            // injected via SetFactory
 	parentTools func() map[string]tool.Tool // lazy accessor for parent engine tools
+	forkReg     *ForkAgentRegistry          // nil = fork disabled
+	notifyFn    func(xml string)            // injects notification into parent conversation
+	sysPromptFn func() json.RawMessage      // returns parent engine's rendered system prompt
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -55,6 +60,14 @@ func New() *AgentTool {
 func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[string]tool.Tool) {
 	t.factory = factory
 	t.parentTools = toolsFn
+}
+
+// SetNotifyFn enables fork agent support. Injects the notification callback
+// and system prompt accessor for fork agent lifecycle management.
+func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() json.RawMessage) {
+	t.notifyFn = notifyFn
+	t.sysPromptFn = sysPromptFn
+	t.forkReg = NewForkAgentRegistry()
 }
 
 // Name returns the tool name.
@@ -92,13 +105,14 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
     "prompt": {"type": "string", "description": "The task for the agent to perform"},
     "subagent_type": {"type": "string", "description": "Agent type to use", "enum": ["General","Explore","Plan"]},
-    "model": {"type": "string", "enum": ["sonnet","opus","haiku"]}
+    "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
+    "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background"}
   },
   "required": ["description","prompt"]
 }`)
 }
 
-// Call executes the sub-agent synchronously.
+// Call executes the sub-agent synchronously (or spawns fork agent in background).
 // Source: AgentTool.tsx:239-1261 — call() sync path
 func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	if t.factory == nil {
@@ -109,6 +123,16 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	var agentInput types.AgentInput
 	if err := json.Unmarshal(input, &agentInput); err != nil {
 		return nil, fmt.Errorf("invalid Agent input: %w", err)
+	}
+
+	// Step 1.5: Recursive fork guard — applies to all paths
+	if tctx != nil && IsInForkChild(tctx.Messages) {
+		return nil, fmt.Errorf("cannot spawn agents from within a fork agent")
+	}
+
+	// Step 1.6: Fork routing — background agent path
+	if agentInput.RunInBackground && t.forkReg != nil {
+		return t.callFork(ctx, agentInput, tctx)
 	}
 
 	// Step 2: Resolve agent type (default: general-purpose)
@@ -133,9 +157,15 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	systemPrompt := json.RawMessage(encoded)
 
 	// Step 6: Resolve model
+	// Source: AgentTool.tsx:579-583 — model resolution
 	model := agentInput.Model
 	if model == "" {
 		model = agentDef.Model
+	}
+	// "inherit" means use the parent engine's model.
+	// Normalize to "" so NewSubEngine inherits via e.model (engine.go:740-743).
+	if model == "inherit" {
+		model = ""
 	}
 
 	// Step 7: Call factory to create sub-engine and execute
@@ -199,7 +229,100 @@ func (t *AgentTool) RenderResult(data any) string {
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
+	if result.AsyncLaunched {
+		return fmt.Sprintf("Fork agent %s running in background...", result.AgentID)
+	}
 	return result.Content
+}
+
+// ---------------------------------------------------------------------------
+// Fork agent support
+// ---------------------------------------------------------------------------
+
+// forkMaxTurns is the maximum turns for a fork agent.
+// Source: forkSubagent.ts — FORK_AGENT.maxTurns = 200
+const forkMaxTurns = 200
+
+// callFork spawns a background fork agent and returns immediately.
+// Source: AgentTool.tsx — fork path in call()
+func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	parentTools := t.parentTools()
+
+	// Split messages: find the triggering assistant message and context history
+	var triggerAssistant *types.Message
+	var contextHistory []types.Message
+	if tctx != nil && len(tctx.Messages) > 0 {
+		for i := len(tctx.Messages) - 1; i >= 0; i-- {
+			if tctx.Messages[i].Role == types.RoleAssistant {
+				msg := tctx.Messages[i]
+				triggerAssistant = &msg
+				contextHistory = tctx.Messages[:i]
+				break
+			}
+		}
+	}
+
+	// Build fork messages (contextHistory is filtered for incomplete tool calls)
+	forkMessages := BuildForkMessages(triggerAssistant, contextHistory, input.Prompt)
+
+	// Get parent system prompt (rendered bytes, not recomputed)
+	var systemPrompt json.RawMessage
+	if t.sysPromptFn != nil {
+		systemPrompt = t.sysPromptFn()
+	}
+
+	var parentToolUseID string
+	if tctx != nil {
+		parentToolUseID = tctx.ToolUseID
+	}
+
+	// Resolve model
+	model := input.Model
+	if model == "inherit" || model == "" {
+		model = ""
+	}
+
+	// Build the runFn closure
+	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
+		opts := SubEngineOpts{
+			ForkMessages:       forkMessages,
+			SystemPrompt:       systemPrompt,
+			Tools:              parentTools,
+			MaxTurns:           forkMaxTurns,
+			Model:              model,
+			AgentType:          "fork",
+			ParentToolUseID:    parentToolUseID,
+			ParentSystemPrompt: systemPrompt,
+		}
+		result, err := t.factory(runCtx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
+	// Build the notifyFn closure
+	forkNotifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
+		xml := buildForkNotificationXML(agentID, toolUseID, result, err, input.Description)
+		if t.notifyFn != nil {
+			t.notifyFn(xml)
+		}
+		t.forkReg.CleanupCompleted()
+	}
+
+	state, err := t.forkReg.Spawn(ctx, runFn, forkNotifyFn, input.Description, parentToolUseID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to spawn fork agent: %w", err)
+	}
+
+	return &tool.ToolResult{
+		Data: &types.SubQueryResult{
+			AgentID:       state.ID,
+			AgentType:     "fork",
+			Content:       fmt.Sprintf("Fork agent %q launched in background", state.ID),
+			AsyncLaunched: true,
+		},
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

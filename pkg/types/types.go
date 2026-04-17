@@ -335,10 +335,11 @@ type AgentDefinition struct {
 // AgentInput is the input parameters for the Agent tool.
 // Source: AgentTool.tsx:82-138 — AgentToolInput
 type AgentInput struct {
-	Description  string `json:"description"`
-	Prompt       string `json:"prompt"`
-	SubagentType string `json:"subagent_type,omitempty"`
-	Model        string `json:"model,omitempty"`
+	Description      string `json:"description"`
+	Prompt           string `json:"prompt"`
+	SubagentType     string `json:"subagent_type,omitempty"`
+	Model            string `json:"model,omitempty"`
+	RunInBackground  bool   `json:"run_in_background,omitempty"`
 }
 
 // SubQueryResult is the result returned by a sub-agent after execution.
@@ -350,4 +351,9 @@ type SubQueryResult struct {
 	TotalDurationMs   int64
 	TotalTokens       int
 	TotalToolUseCount int
+	AsyncLaunched     bool // true = fork agent launched in background
 }
+
+// ForkBoilerplateTag is the marker string used in fork agent directive messages
+// to detect recursive forking. Source: forkSubagent.ts — FORK_BOILERPLATE_TAG
+const ForkBoilerplateTag = "fork-boilerplate"

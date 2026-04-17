@@ -102,6 +102,22 @@ func main() {
 	workingDir, _ := os.Getwd()
 	systemPrompt := buildSystemPrompt(workingDir, reg)
 
+	// Store system prompt on engine for fork agent access
+	eng.SetSystemPrompt(systemPrompt)
+
+	// Wire fork agent notification callback — delivers fork results
+	// into the parent conversation as user messages (same pattern as bash background tasks).
+	agentTool.SetNotifyFn(
+		func(xml string) {
+			eng.EnqueueNotification(types.Message{
+				Role:      types.RoleUser,
+				Content:   []types.ContentBlock{types.NewTextBlock(xml)},
+				Timestamp: time.Now(),
+			})
+		},
+		func() json.RawMessage { return eng.SystemPrompt() },
+	)
+
 	// 6. Create TUI App
 	app := tui.NewApp(eng, systemPrompt, h)
 
@@ -164,7 +180,7 @@ func createTools() *tool.Registry {
 // createAgentTool creates the Agent tool and wires the sub-engine factory.
 // Called after engine construction to break the circular dependency:
 // tools → engine → tools (Agent needs engine to create sub-engines).
-func createAgentTool(eng *engine.Engine) tool.Tool {
+func createAgentTool(eng *engine.Engine) *agenttool.AgentTool {
 	at := agenttool.New()
 	at.SetFactory(
 		func(ctx context.Context, opts agenttool.SubEngineOpts) (*types.SubQueryResult, error) {
@@ -177,7 +193,13 @@ func createAgentTool(eng *engine.Engine) tool.Tool {
 				ParentToolUseID: opts.ParentToolUseID,
 				AgentType:       opts.AgentType,
 			})
-			result := subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+
+			var result engine.QueryResult
+			if len(opts.ForkMessages) > 0 {
+				result = subEng.QueryWithExistingMessages(ctx, opts.ForkMessages, opts.SystemPrompt)
+			} else {
+				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+			}
 			if result.Error != nil {
 				return nil, result.Error
 			}
