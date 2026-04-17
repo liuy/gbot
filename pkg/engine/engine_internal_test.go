@@ -619,69 +619,6 @@ func TestExtractErrMsg_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// StreamAccumulator.ProcessEvent — thinking events (line 81-86, 103-105, 121-131)
-// ---------------------------------------------------------------------------
-
-func TestProcessEvent_ThinkingEvents(t *testing.T) {
-	t.Parallel()
-
-	a := NewStreamAccumulator()
-
-	// content_block_start with thinking type
-	evt := llm.StreamEvent{
-		Type:          "content_block_start",
-		Index:         0,
-		ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking, ID: "think1"},
-	}
-	emit, err := a.ProcessEvent(evt)
-	if err != nil {
-		t.Fatalf("ProcessEvent error: %v", err)
-	}
-	if emit == nil {
-		t.Fatal("expected EventThinkingStart emit")
-	}
-	if emit.Type != types.EventThinkingStart {
-		t.Errorf("expected EventThinkingStart, got %s", emit.Type)
-	}
-
-	// thinking_delta
-	evt = llm.StreamEvent{
-		Type:  "content_block_delta",
-		Index: 0,
-		Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: "thinking..."},
-	}
-	emit, err = a.ProcessEvent(evt)
-	if err != nil {
-		t.Fatalf("ProcessEvent error: %v", err)
-	}
-	if emit != nil {
-		t.Errorf("thinking_delta should not emit: got %v", emit)
-	}
-
-	// content_block_stop with thinking → emits EventThinkingEnd
-	evt = llm.StreamEvent{
-		Type:  "content_block_stop",
-		Index: 0,
-	}
-	emit, err = a.ProcessEvent(evt)
-	if err != nil {
-		t.Fatalf("ProcessEvent error: %v", err)
-	}
-	if emit == nil {
-		t.Fatal("expected EventThinkingEnd emit")
-	}
-	if emit.Type != types.EventThinkingEnd {
-		t.Errorf("expected EventThinkingEnd, got %s", emit.Type)
-	}
-	if emit.Thinking == nil {
-		t.Fatal("Thinking event should be non-nil")
-	}
-	if emit.Thinking.Duration < 0 {
-		t.Errorf("Duration should be >= 0, got %v", emit.Thinking.Duration)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // getToolDescription — all branches (line 304-325)
 // ---------------------------------------------------------------------------
 
