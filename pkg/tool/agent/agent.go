@@ -114,7 +114,8 @@ func (t *AgentTool) InputSchema() json.RawMessage {
   "properties": {
     "description": {"type": "string", "description": "A short (3-5 word) description of the task"},
     "prompt": {"type": "string", "description": "The task for the agent to perform"},
-    "subagent_type": {"type": "string", "description": "Agent type to use", "enum": ["General","Explore","Plan"]},
+    "subagent_type": {"type": "string", "description": "Agent type to use"},
+    "name": {"type": "string", "description": "Name for the spawned agent. Makes it addressable via SendMessage while running."},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
     "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background"}
   },
@@ -300,9 +301,12 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 			Tools:              parentTools,
 			MaxTurns:           forkMaxTurns,
 			Model:              model,
-			AgentType:          "fork",
-			ParentToolUseID:    parentToolUseID,
+			AgentType: "fork",
+			ParentToolUseID:     parentToolUseID,
 			ParentSystemPrompt: systemPrompt,
+		}
+		if input.SubagentType != "" {
+			opts.AgentType = input.SubagentType
 		}
 		result, err := t.factory(runCtx, opts)
 		if err != nil {
@@ -313,7 +317,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Build the notifyFn closure
 	forkNotifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
-		xml := buildForkNotificationXML(agentID, toolUseID, result, err, input.Description)
+		xml := buildForkNotificationXML(agentID, toolUseID, result, err, input.Description, input.Name)
 		if t.notifyFn != nil {
 			t.notifyFn(xml)
 		}

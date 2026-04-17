@@ -249,7 +249,7 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 		TotalDurationMs: 1234,
 		TotalTokens:     5000,
 	}
-	xml := buildForkNotificationXML("fork-1", "call_abc", result, nil, "search code")
+	xml := buildForkNotificationXML("fork-1", "call_abc", result, nil, "search code", "ship-audit")
 
 	if !strings.Contains(xml, "<task-notification>") {
 		t.Error("should contain <task-notification>")
@@ -272,10 +272,16 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 	if !strings.Contains(xml, "<tokens>5000</tokens>") {
 		t.Error("should contain tokens")
 	}
+	if !strings.Contains(xml, "<agent-type>ship-audit</agent-type>") {
+		t.Error("should use agent name as agent-type")
+	}
+	if !strings.Contains(xml, "<summary>Fork agent search code completed</summary>") {
+		t.Error("summary should use description, got:", xml)
+	}
 }
 
 func TestBuildForkNotificationXML_Error(t *testing.T) {
-	xml := buildForkNotificationXML("fork-2", "call_err", nil, errors.New("timeout"), "test")
+	xml := buildForkNotificationXML("fork-2", "call_err", nil, errors.New("timeout"), "test", "")
 
 	if !strings.Contains(xml, "<status>failed</status>") {
 		t.Error("should contain failed status")
@@ -292,7 +298,7 @@ func TestBuildForkNotificationXML_EscapesSpecialChars(t *testing.T) {
 		TotalDurationMs: 100,
 		TotalTokens:     200,
 	}
-	xml := buildForkNotificationXML("fork-1", "call_xss", result, nil, `search "code" & <stuff>`)
+	xml := buildForkNotificationXML("fork-1", "call_xss", result, nil, `search "code" & <stuff>`, "")
 
 	// Raw <script> should NOT appear — must be escaped to &lt;script&gt;
 	if strings.Contains(xml, "<script>") {

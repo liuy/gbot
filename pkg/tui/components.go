@@ -716,8 +716,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			runningDot = " "
 		}
 		// Show "Agent Explore(desc)" when agent type is known
+		// Source: TS UI.tsx:760-775 userFacingName() — "fork"/"General" are internal, not displayed
 		agentName := tc.Name
-		if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" {
+		if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" && tc.AgentLogs[0].AgentType != "fork" {
 			agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
 		}
 		header := runningDot + " " + styleNameBold.Render(agentName)
@@ -735,8 +736,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	// Done state — build header then wrap
 	var hdr strings.Builder
 	// Show "Agent Explore(desc)" when agent type is known
+	// Source: TS UI.tsx:760-775 userFacingName() — "fork"/"General" are internal, not displayed
 	agentName := tc.Name
-	if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" {
+	if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" && tc.AgentLogs[0].AgentType != "fork" {
 		agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
 	}
 	hdr.WriteString(dotStr)

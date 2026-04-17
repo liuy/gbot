@@ -187,7 +187,7 @@ func (r *ForkAgentRegistry) CleanupCompleted() {
 
 // buildForkNotificationXML generates the task-notification XML for a fork
 // agent completion. Injected as a user message into the parent conversation.
-func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryResult, err error, description string) string {
+func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryResult, err error, description, agentName string) string {
 	status := "completed"
 	if err != nil {
 		status = "failed"
@@ -207,18 +207,22 @@ func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryR
 		tokens = result.TotalTokens
 	}
 
+	agentType := "fork"
+	if agentName != "" {
+		agentType = agentName
+	}
 	return fmt.Sprintf(`<task-notification>
 <task-id>%s</task-id>
 <tool-use-id>%s</tool-use-id>
 <status>%s</status>
-<agent-type>fork</agent-type>
+<agent-type>%s</agent-type>
 <duration-ms>%d</duration-ms>
 <tokens>%d</tokens>
 <summary>Fork agent %s %s</summary>
 <result>
 %s
 </result>
-</task-notification>`, xe(agentID), xe(toolUseID), status, durationMs, tokens, xe(description), status, xe(content))
+</task-notification>`, xe(agentID), xe(toolUseID), status, xe(agentType), durationMs, tokens, xe(description), status, xe(content))
 }
 
 // xe escapes a string for safe inclusion in XML element content.

@@ -703,6 +703,66 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	}
 }
 
+func TestCallFork_AgentTypeSubagentType(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		mu.Lock()
+		capturedOpts = opts
+		mu.Unlock()
+		return &types.SubQueryResult{Content: "ok"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+
+	// subagent_type="Explore" should override default "fork"
+	input := json.RawMessage(`{"description":"explore","prompt":"search","run_in_background":true,"subagent_type":"Explore"}`)
+	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_exp"})
+	sqr := result.Data.(*types.SubQueryResult)
+	at.forkReg.Wait(sqr.AgentID)
+
+	mu.Lock()
+	opts := capturedOpts
+	mu.Unlock()
+	if opts.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", opts.AgentType, "Explore")
+	}
+}
+
+func TestCallFork_AgentTypeName(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var capturedOpts SubEngineOpts
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		mu.Lock()
+		capturedOpts = opts
+		mu.Unlock()
+		return &types.SubQueryResult{Content: "ok"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+
+	// name does NOT override subagent_type — name is only for SendMessage addressing
+	input := json.RawMessage(`{"description":"audit","prompt":"check","run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
+	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_audit"})
+	sqr := result.Data.(*types.SubQueryResult)
+	at.forkReg.Wait(sqr.AgentID)
+
+	mu.Lock()
+	opts := capturedOpts
+	mu.Unlock()
+	if opts.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", opts.AgentType, "Explore")
+	}
+}
+
 func TestCallFork_RecursiveGuard(t *testing.T) {
 	t.Parallel()
 	at := New()

@@ -339,6 +339,7 @@ type AgentInput struct {
 	Description      string `json:"description"`
 	Prompt           string `json:"prompt"`
 	SubagentType     string `json:"subagent_type,omitempty"`
+	Name             string `json:"name,omitempty"`
 	Model            string `json:"model,omitempty"`
 	RunInBackground  bool   `json:"run_in_background,omitempty"`
 }
