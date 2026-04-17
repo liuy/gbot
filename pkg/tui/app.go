@@ -48,6 +48,10 @@ type App struct {
 	hub        *hub.Hub
 	tuiHandler *TUIHandler
 
+	// Idle listener stop channel — closed when user submits to abort
+	// an idle readEvents goroutine. Prevents goroutine leak.
+	idleStop chan struct{}
+
 	// Feature modules
 	history      *History
 	killRing    *KillRing
@@ -108,6 +112,7 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
 		allToolsExpanded: false,
+		idleStop:         make(chan struct{}),
 	}
 	if h != nil {
 		a.tuiHandler = NewTUIHandler()
@@ -149,6 +154,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 			agentToolMsg, agentUsageMsg,
+		notificationPendingMsg, idleAbortedMsg,
 		errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {

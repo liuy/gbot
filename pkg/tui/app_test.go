@@ -98,6 +98,9 @@ func TestNewApp(t *testing.T) {
 	if app.repl.streaming {
 		t.Error("should not be streaming initially")
 	}
+	if app.idleStop == nil {
+		t.Error("idleStop must be initialized — nil value causes goroutine leak on first idle readEvents")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -279,8 +282,9 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 	app.repl.AppendChunk("response text")
 
 	model, cmd := app.Update(queryEndMsg{})
-	if cmd != nil {
-		t.Error("streamComplete should NOT produce a command (deferred commit)")
+	// cmd is now readEvents() — keeps TUI listening for Hub events while idle
+	if cmd == nil {
+		t.Error("streamComplete should return readEvents cmd for idle listening")
 	}
 	a := model.(*App)
 	if a.repl.streaming {
@@ -2224,7 +2228,8 @@ func TestApp_ReadEvents_ReturnsCompleteWhenBothChannelsClosed(t *testing.T) {
 	app.tuiHandler = h
 	app.repl.resultCh = nil
 
-	// Both channels closed — should return complete immediately
+	// Close appCh so idle readEvents gets !ok and returns queryEndMsg
+	close(h.appCh)
 	cmd := app.readEvents()
 	msg := cmd()
 	_, ok := msg.(queryEndMsg)

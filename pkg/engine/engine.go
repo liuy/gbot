@@ -153,6 +153,14 @@ func New(p *Params) *Engine {
 // The message will be injected at the start of the next queryLoop iteration.
 func (e *Engine) EnqueueNotification(msg types.Message) {
 	e.notifications.Enqueue(msg)
+	// Signal TUI: notification available (Path B — between-turn re-query).
+	// Mid-turn: ignored by TUI (runTurns drains queue, Path A).
+	// Between-turn: triggers ProcessNotifications via notificationPendingMsg.
+	if e.dispatcher != nil {
+		e.dispatcher.Dispatch(types.QueryEvent{
+			Type: types.EventNotificationPending,
+		})
+	}
 }
 
 // Query executes the agentic loop for a user message.
@@ -166,6 +174,38 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt jso
 		defer close(eventCh)
 		defer close(resultCh)
 		result := e.queryLoop(ctx, userMessage, systemPrompt, eventCh)
+		resultCh <- result
+	}()
+
+	return eventCh, resultCh
+}
+
+// ProcessNotifications drains pending notifications and runs the turn loop.
+// This is Path B — equivalent to TS's between-turn new query() invocation.
+// Unlike Query(), no userMessage is injected; the notifications themselves
+// are the user-role messages fed into the conversation.
+// Returns the same channels as Query() so the TUI can reuse the streaming pipeline.
+func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.RawMessage) (<-chan types.QueryEvent, <-chan QueryResult) {
+	eventCh := make(chan types.QueryEvent, 128)
+	resultCh := make(chan QueryResult, 1)
+
+	go func() {
+		defer close(eventCh)
+		defer close(resultCh)
+
+		pending := e.notifications.Drain()
+		if len(pending) == 0 {
+			// Race guard: Hub event fired but queue already drained
+			resultCh <- QueryResult{Terminal: types.TerminalCompleted}
+			return
+		}
+
+		e.messages = append(e.messages, pending...)
+		for i := range pending {
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+		}
+
+		result := e.runTurns(ctx, systemPrompt, eventCh)
 		resultCh <- result
 	}()
 

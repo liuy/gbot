@@ -321,7 +321,14 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		// to avoid deleting agents before TaskOutput can query them.
 	}
 
-	state, err := t.forkReg.Spawn(ctx, runFn, forkNotifyFn, input.Description, parentToolUseID)
+	// Detached context — fork agents must survive parent query lifecycle.
+	// Source: TS forkSubagent.ts — fork agents have their own AbortController.
+	// The parent query's context is cancelled by ReplState.FinishStream on
+	// normal completion; if we derived from it, the fork agent would be killed.
+	// Explicit cancellation is handled via ForkAgentRegistry.Cancel().
+	detachedCtx := context.Background()
+
+	state, err := t.forkReg.Spawn(detachedCtx, runFn, forkNotifyFn, input.Description, parentToolUseID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to spawn fork agent: %w", err)
 	}

@@ -472,7 +472,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Commit happens when the user submits the next query.
 		a.contentCache = ""
 		a.contentDirty = false
-		return true, nil
+		// Keep listening for Hub events while idle (Path B: fork agent
+		// notifications). readEvents blocks on appCh only when resultCh is nil.
+		return true, a.readEvents()
 
 	case usageMsg:
 		a.status.inputTokens += m.InputTokens
@@ -502,6 +504,28 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.markViewportDirty()
 		a.repl.PendingThinkingDone(m.Duration)
 		return true, a.readEvents()
+
+	case notificationPendingMsg:
+		if a.repl.IsStreaming() {
+			// Path A handles it — runTurns drains queue each iteration
+			return true, a.readEvents()
+		}
+		// Path B: idle — trigger ProcessNotifications
+		ctx, cancel := context.WithCancel(context.Background())
+		a.repl.cancelFunc = cancel
+		_, resultCh := a.engine.ProcessNotifications(ctx, a.systemPrompt)
+		a.repl.StartQuery(resultCh)
+		a.status.SetStreaming(true)
+		a.spinner.Start()
+		a.progressStart = time.Now()
+		a.thinkingActive = false
+		a.thinkingDuration = 0
+		a.status.SetUsage(0, 0)
+		return true, a.readEvents()
+
+	case idleAbortedMsg:
+		// No-op: user submitted, new query already started
+		return true, nil
 
 	case errMsg:
 		a.status.SetError(m.Err.Error())
@@ -582,6 +606,12 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.userScrolled = false
 	a.markViewportDirty()
 
+	// Cancel any idle readEvents goroutine to prevent goroutine leak.
+	if a.idleStop != nil {
+		close(a.idleStop)
+	}
+	a.idleStop = make(chan struct{})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	a.repl.cancelFunc = cancel
 
@@ -644,8 +674,18 @@ func (a *App) readEvents() tea.Cmd {
 			// appCh is empty. Now block waiting for the next event from either
 			// channel. resultCh may be nil (already closed) or closed.
 			if a.repl.resultCh == nil {
-				slog.Info("tui:readEvents:resultCh_nil")
-				return queryEndMsg{}
+				// Idle mode: block on appCh with cancellation via idleStop.
+				// This is the "always listening" equivalent of TS's useQueueProcessor.
+				select {
+				case msg, ok := <-a.tuiHandler.appCh:
+					if !ok {
+						return queryEndMsg{}
+					}
+					slog.Info("tui:readEvents:idle", "msgType", fmt.Sprintf("%T", msg))
+					return msg
+				case <-a.idleStop:
+					return idleAbortedMsg{}
+				}
 			}
 
 			select {

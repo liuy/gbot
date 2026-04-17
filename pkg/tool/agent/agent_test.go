@@ -294,6 +294,97 @@ func TestRenderResult(t *testing.T) {
 // TestCallPassesToolUseID verifies that AgentTool.Call propagates the
 // ToolUseContext.ToolUseID to the SubEngineOpts.ParentToolUseID.
 // This is required for the TUI to display sub-agent tool progress.
+// TestCallFork_DetachedContext verifies that fork agents use a detached context
+// (context.Background), NOT the parent query's context. When the parent query's
+// context is cancelled (e.g., by ReplState.FinishStream on normal completion),
+// the fork agent must survive and complete its work.
+//
+// Regression: callFork previously passed the parent's siblingCtx to Spawn,
+// which derived childCtx from it. FinishStream cancelled the query context,
+// cascading to siblingCtx → childCtx → fork agent's API call → "context canceled".
+func TestCallFork_DetachedContext(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+
+	var factoryCtx context.Context
+	var factoryMu sync.Mutex
+	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		factoryMu.Lock()
+		factoryCtx = ctx
+		factoryMu.Unlock()
+
+		// Simulate work that outlives parent cancellation
+		time.Sleep(300 * time.Millisecond)
+
+		// The fork agent's context must NOT be cancelled
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("fork agent context cancelled: %w", ctx.Err())
+		}
+		return &types.SubQueryResult{Content: "survived", AgentType: "fork"}, nil
+	}
+
+	parentTools := makeTestTools("Bash", "Read", "Grep")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+
+	// Messages needed for fork agent (trigger assistant + context history)
+	assistantMsg := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("I'll search in background"),
+			types.NewToolUseBlock("call_fork_1", "Agent", json.RawMessage(`{}`)),
+		},
+	}
+	tctx := &types.ToolUseContext{
+		ToolUseID: "call_fork_1",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("search")}},
+			assistantMsg,
+		},
+	}
+
+	input := json.RawMessage(`{"description":"bg search","prompt":"find all test files","subagent_type":"Explore","run_in_background":true}`)
+	result, err := at.Call(parentCtx, input, tctx)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sqr, ok := result.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("result.Data should be *SubQueryResult, got %T", result.Data)
+	}
+	if !sqr.AsyncLaunched {
+		t.Fatal("result should have AsyncLaunched=true for fork agents")
+	}
+
+	// Cancel the parent context — simulates FinishStream on normal query completion.
+	// The fork agent is running in a goroutine; this MUST NOT kill it.
+	parentCancel()
+
+	// Wait for the fork agent to finish by checking the registry
+	final, found := at.forkReg.Wait(sqr.AgentID)
+	if !found {
+		t.Fatal("fork agent not found in registry")
+	}
+
+	if final.Status != ForkCompleted {
+		t.Errorf("fork agent Status = %q, want %q (parent cancel should NOT kill fork)", final.Status, ForkCompleted)
+	}
+	if final.Result == nil || final.Result.Content != "survived" {
+		t.Errorf("fork agent Result = %v, want Content=%q", final.Result, "survived")
+	}
+
+	// Double-check: the factory received a context that survived parent cancellation
+	factoryMu.Lock()
+	defer factoryMu.Unlock()
+	if factoryCtx == nil {
+		t.Fatal("factory was never called")
+	}
+	if factoryCtx.Err() != nil {
+		t.Errorf("factory context err = %v, want nil (detached from parent)", factoryCtx.Err())
+	}
+}
+
 func TestCallPassesToolUseID(t *testing.T) {
 	var capturedOpts SubEngineOpts
 	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {

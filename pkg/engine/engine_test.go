@@ -2120,3 +2120,205 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 		t.Errorf("accumulated output tokens = %d, want 100", totalOut)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// EnqueueNotification + ProcessNotifications tests
+// ---------------------------------------------------------------------------
+
+func TestEnqueueNotification_DispatchesHubEvent(t *testing.T) {
+	t.Parallel()
+
+	h := hub.NewHub()
+	handler := &hubMockHandler{}
+	h.Subscribe(handler)
+
+	eng := engine.New(&engine.Params{
+		Provider:   &mockProvider{},
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: h,
+	})
+
+	eng.EnqueueNotification(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("bg task done")},
+	})
+
+	events := handler.Events()
+	var found bool
+	for _, evt := range events {
+		if evt.Type == types.EventNotificationPending {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("EnqueueNotification should dispatch EventNotificationPending via Hub")
+	}
+}
+
+func TestEnqueueNotification_NoDispatcher_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Should not panic when dispatcher is nil
+	eng.EnqueueNotification(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("bg task done")},
+	})
+}
+
+func TestProcessNotifications_EmptyQueue(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
+
+	// Drain events
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("Terminal = %q, want completed (empty queue)", result.Terminal)
+	}
+}
+
+func TestProcessNotifications_DrainsAndRunsTurns(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// LLM sees the notification and responds with text (no tool_use)
+	mp.addResponse(textStreamEvents("test-model", "Background task completed."), nil)
+
+	// No Hub — events flow through eventCh
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Enqueue a notification (no Hub event since dispatcher is nil)
+	eng.EnqueueNotification(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("<notification>bg-1 completed</notification>")},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
+
+	// Collect events from eventCh (no Hub)
+	var eventTypes []types.QueryEventType
+	for evt := range eventCh {
+		eventTypes = append(eventTypes, evt.Type)
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("Terminal = %q, want completed", result.Terminal)
+	}
+
+	// Verify notification was injected: should have at least query_start + turn_start + text_delta + turn_end + query_end
+	var gotQueryStart, gotTurnStart, gotTextDelta, gotQueryEnd bool
+	for _, et := range eventTypes {
+		switch et {
+		case types.EventQueryStart:
+			gotQueryStart = true
+		case types.EventTurnStart:
+			gotTurnStart = true
+		case types.EventTextDelta:
+			gotTextDelta = true
+		case types.EventQueryEnd:
+			gotQueryEnd = true
+		}
+	}
+	if !gotQueryStart {
+		t.Error("expected EventQueryStart for notification message")
+	}
+	if !gotTurnStart {
+		t.Error("expected EventTurnStart")
+	}
+	if !gotTextDelta {
+		t.Error("expected EventTextDelta (LLM response)")
+	}
+	if !gotQueryEnd {
+		t.Error("expected EventQueryEnd")
+	}
+
+	// Verify notification is in message history
+	msgs := result.Messages
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages (notification + assistant), got %d", len(msgs))
+	}
+	// First message should be the notification
+	firstText := ""
+	for _, blk := range msgs[0].Content {
+		if blk.Type == types.ContentTypeText {
+			firstText = blk.Text
+			break
+		}
+	}
+	if !strings.Contains(firstText, "bg-1 completed") {
+		t.Errorf("first message should contain notification, got: %q", firstText)
+	}
+}
+
+func TestProcessNotifications_ContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// LLM never responds — we cancel the context
+	mp.addResponse(nil, context.Canceled)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	eng.EnqueueNotification(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("notification")},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately after a short delay to let the goroutine start
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error == nil {
+		t.Error("expected error from cancelled context")
+	}
+	// Context cancellation from provider error path classifies as model_error,
+	// not aborted_streaming (which only fires from engine's own <-ctx.Done() check)
+	if result.Terminal == types.TerminalCompleted {
+		t.Errorf("Terminal should not be completed on error, got %q", result.Terminal)
+	}
+}

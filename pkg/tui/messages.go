@@ -106,6 +106,14 @@ type agentUsageMsg struct {
 	OutputTokens    int
 }
 
+// notificationPendingMsg signals that a background notification is available
+// in the engine's queue. TUI auto-triggers ProcessNotifications (Path B).
+type notificationPendingMsg struct{}
+
+// idleAbortedMsg is returned when an idle readEvents is cancelled
+// because the user started a new query. No-op for Update.
+type idleAbortedMsg struct{}
+
 // submitMsg is sent when the user presses Enter to submit input.
 type submitMsg struct {
 	Text string

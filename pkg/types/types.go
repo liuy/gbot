@@ -223,7 +223,8 @@ const (
 	// Text and usage
 	EventTextDelta     QueryEventType = "text_delta"
 	EventUsage         QueryEventType = "usage"
-	EventError         QueryEventType = "error"
+	EventError                QueryEventType = "error"
+	EventNotificationPending  QueryEventType = "notification_pending"
 )
 
 // AgentMeta tags events originating from a sub-agent.

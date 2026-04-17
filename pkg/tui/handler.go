@@ -114,6 +114,9 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	}
 
 	switch evt.Type {
+	case types.EventNotificationPending:
+		return notificationPendingMsg{}
+
 	case types.EventTurnStart:
 		return turnStartMsg{}
 
