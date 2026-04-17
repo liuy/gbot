@@ -376,6 +376,7 @@ func New() tool.Tool {
 			return true // reading is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   -1, // -1 = no truncation (TS: Infinity)
 		Prompt_: fileReadPrompt(),
 		RenderResult_: renderResult,
 	})

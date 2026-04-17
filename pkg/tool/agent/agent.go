@@ -186,6 +186,9 @@ func (t *AgentTool) IsEnabled() bool { return true }
 // InterruptBehavior returns InterruptBlock — let the sub-agent finish.
 func (t *AgentTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
 
+// MaxResultSize returns the maximum result size for the agent tool.
+func (t *AgentTool) MaxResultSize() int { return 100000 }
+
 // Prompt returns the system prompt contribution from the Agent tool.
 func (t *AgentTool) Prompt() string { return agentPrompt() }
 

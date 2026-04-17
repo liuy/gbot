@@ -161,6 +161,7 @@ func New() tool.Tool {
 			return true
 		},
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   20000,
 		Prompt_: grepPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*Output)

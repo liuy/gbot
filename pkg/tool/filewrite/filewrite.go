@@ -417,6 +417,7 @@ func New() tool.Tool {
 		IsConcurrencySafe_: func(json.RawMessage) bool {
 			return false
 		},
+		MaxResultSizeChars:   100000,
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: fileWritePrompt(),
 		RenderResult_: renderWriteResult,

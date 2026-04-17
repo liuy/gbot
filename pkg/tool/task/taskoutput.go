@@ -66,6 +66,7 @@ func NewTaskOutput(reg Registry) tool.Tool {
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   100000,
 		Prompt_: taskOutputPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*OutputOutput)

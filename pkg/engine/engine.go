@@ -626,8 +626,19 @@ func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
 }
 
 // marshalMessages converts internal messages to API format.
+// Strips response-only fields (Timestamp, Model, StopReason, Usage) that
+// the Anthropic Messages API does not accept in request messages.
+// Source: TS normalizeMessagesForAPI — simplified for Phase 1 (no attachments,
+// tool references, or virtual messages).
 func (e *Engine) marshalMessages() []types.Message {
-	return e.messages
+	result := make([]types.Message, len(e.messages))
+	for i, msg := range e.messages {
+		result[i] = types.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+	return result
 }
 
 // EscapeJSONString escapes a string for JSON embedding.

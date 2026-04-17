@@ -85,6 +85,10 @@ type Tool interface {
 	// Interrupt behavior: source values are 'cancel' | 'block' (Tool.ts:416)
 	InterruptBehavior() InterruptBehavior
 
+		// Max result size in characters before truncation.
+		// Source: Tool.ts:707 — maxResultSizeChars
+		MaxResultSize() int
+
 	// ── Prompt (system prompt text contributed by this tool) ──
 	Prompt() string
 }
@@ -257,5 +261,7 @@ func (t *builtTool) IsDestructive(input json.RawMessage) bool   { return t.def.I
 func (t *builtTool) IsConcurrencySafe(input json.RawMessage) bool { return t.def.IsConcurrencySafe_(input) }
 func (t *builtTool) IsEnabled() bool                            { return t.def.IsEnabled_() }
 func (t *builtTool) InterruptBehavior() InterruptBehavior       { return t.def.InterruptBehavior_ }
+func (t *builtTool) MaxResultSize() int                              { return t.def.MaxResultSizeChars }
+
 func (t *builtTool) Prompt() string                             { return t.def.Prompt_ }
 func (t *builtTool) RenderResult(data any) string               { return t.def.RenderResult_(data) }

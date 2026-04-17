@@ -57,6 +57,7 @@ const (
 	ContentTypeToolUse    ContentType = "tool_use"
 	ContentTypeToolResult ContentType = "tool_result"
 	ContentTypeThinking   ContentType = "thinking"
+	ContentTypeRedacted     ContentType = "redacted_thinking"
 )
 
 // ContentBlock is a discriminated union for message content.
@@ -76,6 +77,10 @@ type ContentBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+
+	// Redacted thinking data (type == "redacted_thinking")
+	// Must be preserved verbatim and replayed to the API.
+	Data string `json:"data,omitempty"`
 }
 
 // NewTextBlock creates a text content block.

@@ -53,6 +53,7 @@ func NewTaskStop(reg Registry) tool.Tool {
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   100000,
 		Prompt_: taskStopPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*StopOutput)

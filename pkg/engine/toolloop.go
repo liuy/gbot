@@ -298,7 +298,8 @@ func (e *StreamingToolExecutor) processQueue() {
 // getAbortReason determines why a tool should be cancelled.
 // Source: StreamingToolExecutor.ts:210-231 — getAbortReason().
 // Must be called with e.mu held.
-func (e *StreamingToolExecutor) getAbortReason() string {
+// Tools with InterruptBlock are NOT cancelled on user interrupt.
+func (e *StreamingToolExecutor) getAbortReason(t tool.Tool) string {
 	if e.discarded {
 		return "streaming_fallback"
 	}
@@ -307,6 +308,9 @@ func (e *StreamingToolExecutor) getAbortReason() string {
 	}
 	select {
 	case <-e.rootCtx.Done():
+		if t.InterruptBehavior() == tool.InterruptBlock {
+			return ""
+		}
 		return "user_interrupted"
 	default:
 		return ""
@@ -352,10 +356,13 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		e.processQueue()
 	}()
 
+	// Look up tool definition first (needed for interrupt behavior check).
+	t, ok := e.toolMap[tt.Name]
+
 	// Check if already aborted before running.
 	// Source: StreamingToolExecutor.ts:276-292 — check abort before execution.
 	e.mu.Lock()
-	reason := e.getAbortReason()
+	reason := e.getAbortReason(t)
 	e.mu.Unlock()
 	if reason != "" {
 		errBlock := CreateSyntheticErrorBlock(tt.ID, reason)
@@ -372,9 +379,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		tt.resultBlocks = []types.ContentBlock{errBlock}
 		return
 	}
-
-	// Look up tool definition.
-	t, ok := e.toolMap[tt.Name]
 	if !ok {
 		// Should not happen (checked in AddTool), but handle defensively.
 		errMsg := fmt.Sprintf("No such tool available: %s", tt.Name)
@@ -428,6 +432,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 		rawJSON, _ := json.Marshal(result.Data)
 		outputJSON, _ := json.Marshal(string(rawJSON))
+		outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
 		displayOutput := t.RenderResult(result.Data)
 		if displayOutput == "" && lastDisplayOutput != "" {
 			displayOutput = lastDisplayOutput
@@ -459,6 +464,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 	rawJSON, _ := json.Marshal(result.Data)
 	outputJSON, _ := json.Marshal(string(rawJSON))
+	outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
 	displayOutput := t.RenderResult(result.Data)
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
@@ -472,6 +478,16 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	tt.Result = result
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
 	e.applyContextModifier(tt, result)
+}
+
+// truncateToolOutput truncates tool output if it exceeds maxChars.
+// Source: TS applyToolResultBudget.
+func truncateToolOutput(output []byte, maxChars int) []byte {
+	if maxChars <= 0 || len(output) <= maxChars {
+		return output
+	}
+	truncated := output[:maxChars]
+	return append(truncated, []byte("\n\n[Output truncated]")...)
 }
 
 // emitToolError emits error events and result blocks for a failed tool.

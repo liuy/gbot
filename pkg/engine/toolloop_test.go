@@ -41,6 +41,33 @@ func (t *testTool) InterruptBehavior() tool.InterruptBehavior  { return tool.Int
 func (t *testTool) Prompt() string                             { return "" }
 func (t *testTool) RenderResult(any) string                      { return "" }
 
+func (t *testTool) MaxResultSize() int { return 50000 }
+
+// blockTool is a test tool with InterruptBlock behavior (like Agent).
+type blockTool struct {
+	name string
+}
+
+func (b *blockTool) Name() string                                                { return b.name }
+func (b *blockTool) Aliases() []string                                           { return nil }
+func (b *blockTool) Description(json.RawMessage) (string, error)                 { return b.name, nil }
+func (b *blockTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
+func (b *blockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "completed"}, nil
+}
+func (b *blockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (b *blockTool) IsReadOnly(json.RawMessage) bool            { return true }
+func (b *blockTool) IsDestructive(json.RawMessage) bool         { return false }
+func (b *blockTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
+func (b *blockTool) IsEnabled() bool                            { return true }
+func (b *blockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptBlock }
+func (b *blockTool) Prompt() string                             { return "" }
+
+func (b *blockTool) MaxResultSize() int { return 50000 }
+func (b *blockTool) RenderResult(any) string                      { return "" }
+
 func TestSequentialToolLoop_SingleTool(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
@@ -374,6 +401,8 @@ func (t *concurrentTool) IsEnabled() bool                           { return tru
 func (t *concurrentTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *concurrentTool) Prompt() string                            { return "" }
 func (t *concurrentTool) RenderResult(any) string                     { return "" }
+
+func (t *concurrentTool) MaxResultSize() int { return 50000 }
 
 // streamingConcurrentTool implements both Tool and ToolWithStreaming.
 type streamingConcurrentTool struct {
@@ -785,6 +814,33 @@ func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
 	}
 	if parsed["error"] != "User rejected tool use" {
 		t.Errorf("expected 'User rejected tool use', got %q", parsed["error"])
+	}
+}
+
+func TestConcurrentToolLoop_InterruptBlockNotCancelled(t *testing.T) {
+	t.Parallel()
+	// Source: StreamingToolExecutor.ts:222-228 — block-behavior tools are NOT cancelled on user interrupt.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate user interrupt
+
+	tools := map[string]tool.Tool{
+		"agent": &blockTool{name: "agent"},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "agent", Input: json.RawMessage(`{}`)},
+	}
+	results := engine.ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// InterruptBlock tools should NOT be cancelled — they should complete normally
+	if results[0].IsError {
+		var parsed map[string]string
+		if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
+			t.Fatalf("tool error: %s", string(results[0].Content))
+		}
+		t.Errorf("InterruptBlock tool should not be cancelled, got error: %q", parsed["error"])
 	}
 }
 

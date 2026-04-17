@@ -104,6 +104,8 @@ func (t *mockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.Int
 func (t *mockTool) Prompt() string                             { return "" }
 func (t *mockTool) RenderResult(any) string                      { return "" }
 
+func (*mockTool) MaxResultSize() int { return 50000 }
+
 // ---------------------------------------------------------------------------
 // Helper: build streaming events
 // ---------------------------------------------------------------------------

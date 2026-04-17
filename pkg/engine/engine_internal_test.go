@@ -37,6 +37,8 @@ func (m *minimalTool) InterruptBehavior() tool.InterruptBehavior {
 func (m *minimalTool) Prompt() string                             { return "" }
 func (m *minimalTool) RenderResult(any) string                    { return "" }
 
+func (m *minimalTool) MaxResultSize() int { return 50000 }
+
 func TestInternalMinimalTool(t *testing.T) {
 	t.Parallel()
 	mt := &minimalTool{}
@@ -766,6 +768,8 @@ func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior { r
 func (t *nonStreamingSuccessTool) Prompt() string                             { return "" }
 func (t *nonStreamingSuccessTool) RenderResult(any) string                    { return "rendered output" }
 
+func (*nonStreamingSuccessTool) MaxResultSize() int { return 50000 }
+
 func TestExecuteTool_NonStreamingSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -882,6 +886,8 @@ func (t *slowCancelTool) InterruptBehavior() tool.InterruptBehavior { return too
 func (t *slowCancelTool) Prompt() string                            { return "" }
 func (t *slowCancelTool) RenderResult(any) string                   { return "" }
 
+func (*slowCancelTool) MaxResultSize() int { return 50000 }
+
 // neverRunTool never actually starts (context cancelled before execution).
 type neverRunTool struct {
 	onStart func()
@@ -903,6 +909,8 @@ func (t *neverRunTool) IsEnabled() bool                          { return true }
 func (t *neverRunTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *neverRunTool) Prompt() string                            { return "" }
 func (t *neverRunTool) RenderResult(any) string                   { return "" }
+
+func (*neverRunTool) MaxResultSize() int { return 50000 }
 
 // ---------------------------------------------------------------------------
 // QueryLoop retry discards old executor (TS query.ts:734,913)
@@ -938,6 +946,8 @@ func (t *discardSlowTool) IsEnabled() bool                          { return tru
 func (t *discardSlowTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *discardSlowTool) Prompt() string                            { return "" }
 func (t *discardSlowTool) RenderResult(any) string                   { return "" }
+
+func (*discardSlowTool) MaxResultSize() int { return 50000 }
 func (t *discardSlowTool) WasCancelled() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1040,6 +1050,87 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// marshalMessages / normalizeMessagesForAPI
+// ---------------------------------------------------------------------------
+
+func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	eng.messages = []types.Message{
+		{
+			Role:       types.RoleUser,
+			Content:    []types.ContentBlock{types.NewTextBlock("hello")},
+			Timestamp:  time.Now(),
+			Model:      "claude-3",
+			StopReason: "end_turn",
+			Usage:      &types.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentBlock{types.NewTextBlock("hi")},
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+
+	// Response-only fields must be zeroed
+	if !got[0].Timestamp.IsZero() {
+		t.Error("Timestamp should be zeroed")
+	}
+	if got[0].Model != "" {
+		t.Error("Model should be empty")
+	}
+	if got[0].StopReason != "" {
+		t.Error("StopReason should be empty")
+	}
+	if got[0].Usage != nil {
+		t.Error("Usage should be nil")
+	}
+
+	// Content must be preserved
+	if got[0].Content[0].Text != "hello" {
+		t.Errorf("content not preserved: %q", got[0].Content[0].Text)
+	}
+	if got[1].Content[0].Text != "hi" {
+		t.Errorf("content not preserved: %q", got[1].Content[0].Text)
+	}
+}
+
+func TestMarshalMessages_PreservesToolUseAndResult(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	eng.messages = []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("toolu_1", json.RawMessage(`"output"`), false),
+			},
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	if got[0].Content[0].Type != types.ContentTypeToolResult {
+		t.Error("tool_result block should be preserved")
+	}
+	if got[0].Content[0].ToolUseID != "toolu_1" {
+		t.Error("ToolUseID should be preserved")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers for internal tests
 // ---------------------------------------------------------------------------
 
@@ -1123,6 +1214,8 @@ func (t *testTool) IsEnabled() bool                           { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                            { return "" }
 func (t *testTool) RenderResult(any) string                     { return "" }
+
+func (t *testTool) MaxResultSize() int { return 50000 }
 
 // ---------------------------------------------------------------------------
 // Sub-engine tests — source: plan steady-dreaming-sunrise.md

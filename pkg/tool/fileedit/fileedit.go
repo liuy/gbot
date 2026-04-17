@@ -126,6 +126,7 @@ func New() tool.Tool {
 		IsDestructive_:     func(json.RawMessage) bool { return false },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   100000,
 		Prompt_:            fileEditPrompt(),
 		RenderResult_:      renderEditResult,
 	})

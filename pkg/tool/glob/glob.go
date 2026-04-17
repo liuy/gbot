@@ -76,6 +76,7 @@ func New() tool.Tool {
 			return true // glob is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   100000,
 		Prompt_: globPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*Output)

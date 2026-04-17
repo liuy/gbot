@@ -131,6 +131,7 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 			return isReadOnlyCommand(in.Command)
 		},
 		InterruptBehavior_: tool.InterruptCancel,
+		MaxResultSizeChars:   30000,
 			Prompt_: bashPrompt(),
 			ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 				return executeStream(ctx, input, tctx, onProgress, reg)

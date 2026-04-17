@@ -35,6 +35,8 @@ func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.Inte
 func (m *mockTool) Prompt() string                       { return "" }
 func (m *mockTool) RenderResult(any) string              { return "" }
 
+func (m *mockTool) MaxResultSize() int { return 50000 }
+
 func makeTestTools(names ...string) map[string]tool.Tool {
 	m := make(map[string]tool.Tool, len(names))
 	for _, n := range names {

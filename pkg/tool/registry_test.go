@@ -35,6 +35,8 @@ func (m *mockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.Int
 func (m *mockTool) Prompt() string                             { return "" }
 func (m *mockTool) RenderResult(any) string                      { return "" }
 
+func (*mockTool) MaxResultSize() int { return 50000 }
+
 func TestNewRegistry(t *testing.T) {
 	r := tool.NewRegistry()
 	if r == nil {
