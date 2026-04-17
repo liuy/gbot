@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -68,6 +69,15 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() js
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
 	t.forkReg = NewForkAgentRegistry()
+}
+
+// TaskAdapter returns a task.Registry wrapping the fork agent registry.
+// Returns nil if fork is not enabled (SetNotifyFn not called).
+func (t *AgentTool) TaskAdapter() task.Registry {
+	if t.forkReg == nil {
+		return nil
+	}
+	return NewForkAgentTaskAdapter(t.forkReg)
 }
 
 // Name returns the tool name.
@@ -307,7 +317,8 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		if t.notifyFn != nil {
 			t.notifyFn(xml)
 		}
-		t.forkReg.CleanupCompleted()
+		// CleanupCompleted is NOT called here — the adapter handles lazy cleanup
+		// to avoid deleting agents before TaskOutput can query them.
 	}
 
 	state, err := t.forkReg.Spawn(ctx, runFn, forkNotifyFn, input.Description, parentToolUseID)

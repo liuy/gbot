@@ -650,3 +650,61 @@ func TestTaskStop_IsConcurrencySafe(t *testing.T) {
 		t.Error("TaskStop should be concurrency-safe")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TaskInfo agent fields
+// ---------------------------------------------------------------------------
+
+func TestTaskInfo_AgentFields(t *testing.T) {
+	info := &TaskInfo{
+		ID:         "fork-1",
+		Type:       "local_agent",
+		Status:     "completed",
+		ExitCode:   0,
+		AgentType:  "fork",
+		Tokens:     5000,
+		DurationMs: 1234,
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// Verify agent fields are present
+	if !strings.Contains(string(data), `"agent_type":"fork"`) {
+		t.Errorf("JSON should contain agent_type, got: %s", data)
+	}
+	if !strings.Contains(string(data), `"tokens":5000`) {
+		t.Errorf("JSON should contain tokens, got: %s", data)
+	}
+	if !strings.Contains(string(data), `"duration_ms":1234`) {
+		t.Errorf("JSON should contain duration_ms, got: %s", data)
+	}
+
+	// Verify backward compat: old JSON without agent fields unmarshals fine
+	var parsed TaskInfo
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if parsed.AgentType != "fork" {
+		t.Errorf("AgentType = %q, want fork", parsed.AgentType)
+	}
+	if parsed.Tokens != 5000 {
+		t.Errorf("Tokens = %d, want 5000", parsed.Tokens)
+	}
+	if parsed.DurationMs != 1234 {
+		t.Errorf("DurationMs = %d, want 1234", parsed.DurationMs)
+	}
+
+	// Old JSON without agent fields should unmarshal with zero values
+	oldJSON := `{"task_id":"bg-1","task_type":"local_bash","status":"completed"}`
+	var old TaskInfo
+	if err := json.Unmarshal([]byte(oldJSON), &old); err != nil {
+		t.Fatalf("Unmarshal old JSON: %v", err)
+	}
+	if old.AgentType != "" {
+		t.Errorf("old AgentType = %q, want empty", old.AgentType)
+	}
+	if old.Tokens != 0 {
+		t.Errorf("old Tokens = %d, want 0", old.Tokens)
+	}
+}

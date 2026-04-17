@@ -3,6 +3,13 @@
 // Source reference: tools/TaskOutputTool/, tools/TaskStopTool/
 package task
 
+import "errors"
+
+// ErrNotFound is returned by Registry methods when a task ID does not exist
+// in any backing registry. Callers should use errors.Is(err, ErrNotFound)
+// to check for this condition rather than string matching.
+var ErrNotFound = errors.New("task not found")
+
 // TaskInfo is a snapshot of a background task's state.
 // Source: TaskOutputTool.tsx — TaskOutput type
 type TaskInfo struct {
@@ -13,6 +20,11 @@ type TaskInfo struct {
 	Description string `json:"description,omitempty"`
 	Output      string `json:"output,omitempty"`
 	ExitCode    int    `json:"exit_code,omitempty"`
+
+	// Agent-specific fields (populated by ForkAgentTaskAdapter).
+	AgentType  string `json:"agent_type,omitempty"`
+	Tokens     int    `json:"tokens,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
 }
 
 // Registry is the interface for querying and managing background tasks.

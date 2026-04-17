@@ -118,6 +118,13 @@ func main() {
 		func() json.RawMessage { return eng.SystemPrompt() },
 	)
 
+	// Register task management tools with unified registry (bash + fork agents).
+	bashTaskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
+	forkTaskReg := agentTool.TaskAdapter()
+	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
+	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
+	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
+
 	// 6. Create TUI App
 	app := tui.NewApp(eng, systemPrompt, h)
 
@@ -169,10 +176,9 @@ func createTools() *tool.Registry {
 	reg.MustRegister(glob.New())
 	reg.MustRegister(grep.New())
 
-	// Background task management tools
-	taskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
-	reg.MustRegister(task.NewTaskOutput(taskReg))
-	reg.MustRegister(task.NewTaskStop(taskReg))
+	// Background task management tools are registered in main() after
+	// the fork agent adapter is available (need MultiRegistry for both
+	// bash and fork agent tasks).
 
 	return reg
 }
