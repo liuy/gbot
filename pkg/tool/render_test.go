@@ -377,14 +377,8 @@ func stripDiffANSI(s string) string {
 func TestComputePatch_NoChange(t *testing.T) {
 	t.Parallel()
 	result := ComputePatch("hello world", "hello world")
-	if len(result) > 0 {
-		for _, h := range result {
-			for _, l := range h.Lines {
-				if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") {
-					t.Errorf("ComputePatch(same, same) contains change line %q, want only context", l)
-				}
-			}
-		}
+	if len(result) != 0 {
+		t.Fatalf("ComputePatch(same, same) should return empty, got %d hunks", len(result))
 	}
 }
 

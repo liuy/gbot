@@ -12,8 +12,8 @@ build:
 	go build -o $(BINARY) $(CMD)
 
 test:
-	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
-	go test $(PKG) -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./test/ -race -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) ./test/ -count=1 -timeout 120s -coverprofile=coverage.out
 	@echo ""
 	@echo "Coverage:"
 	@go tool cover -func=coverage.out

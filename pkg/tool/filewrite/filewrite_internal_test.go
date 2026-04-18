@@ -82,14 +82,8 @@ func TestGetStructuredPatch_NoChange(t *testing.T) {
 	t.Parallel()
 
 	result := getStructuredPatch("hello world", "hello world")
-	if len(result) > 0 {
-		for _, h := range result {
-			for _, l := range h.Lines {
-				if strings.HasPrefix(l, "-") || strings.HasPrefix(l, "+") {
-					t.Errorf("getStructuredPatch(same, same) contains change line %q, want only context", l)
-				}
-			}
-		}
+	if len(result) != 0 {
+		t.Fatalf("getStructuredPatch(same, same) should return empty, got %d hunks", len(result))
 	}
 }
 
