@@ -2290,6 +2290,291 @@ func TestFormatToolOutput_TabsExpanded(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// pluralS
+// ---------------------------------------------------------------------------
+
+func TestPluralS_One(t *testing.T) {
+	t.Parallel()
+	if got := pluralS(1); got != "" {
+		t.Errorf("pluralS(1) = %q, want empty string", got)
+	}
+}
+
+func TestPluralS_Zero(t *testing.T) {
+	t.Parallel()
+	if got := pluralS(0); got != "s" {
+		t.Errorf("pluralS(0) = %q, want %q", got, "s")
+	}
+}
+
+func TestPluralS_Two(t *testing.T) {
+	t.Parallel()
+	if got := pluralS(2); got != "s" {
+		t.Errorf("pluralS(2) = %q, want %q", got, "s")
+	}
+}
+
+func TestPluralS_Negative(t *testing.T) {
+	t.Parallel()
+	// Negative numbers are != 1, so should return "s"
+	if got := pluralS(-1); got != "s" {
+		t.Errorf("pluralS(-1) = %q, want %q", got, "s")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// truncateSummary
+// ---------------------------------------------------------------------------
+
+func TestTruncateSummary_ShortString(t *testing.T) {
+	t.Parallel()
+	input := "hello"
+	if got := truncateSummary(input, 30); got != "hello" {
+		t.Errorf("truncateSummary(%q, 30) = %q, want %q", input, got, input)
+	}
+}
+
+func TestTruncateSummary_ExactLength(t *testing.T) {
+	t.Parallel()
+	input := "1234567890" // 10 chars
+	if got := truncateSummary(input, 10); got != "1234567890" {
+		t.Errorf("truncateSummary(%q, 10) = %q, want %q", input, got, input)
+	}
+}
+
+func TestTruncateSummary_Overflows(t *testing.T) {
+	t.Parallel()
+	input := "abcdefghijklmnopqrstuvwxyz" // 26 chars
+	got := truncateSummary(input, 10)
+	if got != "abcdefg..." {
+		t.Errorf("truncateSummary(%q, 10) = %q, want %q", input, got, "abcdefg...")
+	}
+	if len(got) != 10 {
+		t.Errorf("len(truncateSummary result) = %d, want 10", len(got))
+	}
+}
+
+func TestTruncateSummary_EmptyString(t *testing.T) {
+	t.Parallel()
+	if got := truncateSummary("", 10); got != "" {
+		t.Errorf("truncateSummary(%q, 10) = %q, want empty", "", got)
+	}
+}
+
+func TestTruncateSummary_MaxLenEqualsEllipsisLength(t *testing.T) {
+	t.Parallel()
+	// maxLen=3: s[:3-3] = s[:0] = "", so result is just "..."
+	input := "abcde"
+	got := truncateSummary(input, 3)
+	if got != "..." {
+		t.Errorf("truncateSummary(%q, 3) = %q, want %q", input, got, "...")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderAgentLogs
+// ---------------------------------------------------------------------------
+
+func TestRenderAgentLogs_Empty(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{}
+	got := renderAgentLogs(tcv, 80)
+	if got != "" {
+		t.Errorf("renderAgentLogs with no AgentLogs = %q, want empty", got)
+	}
+}
+
+func TestRenderAgentLogs_SingleEntry(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Read", Summary: "test.go", Done: true},
+		},
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "Read") {
+		t.Errorf("should contain tool name 'Read', got: %q", clean)
+	}
+	if !strings.Contains(clean, "test.go") {
+		t.Errorf("should contain summary 'test.go', got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_ThinkingEntry(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Thinking"},
+		},
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "Thinking...") {
+		t.Errorf("Thinking entry should show 'Thinking...', got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_RunningEntryShowsEllipsis(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Bash", Summary: "make test", Done: false},
+		},
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "Bash") {
+		t.Errorf("should contain tool name 'Bash', got: %q", clean)
+	}
+	if !strings.Contains(clean, "make test") {
+		t.Errorf("should contain summary, got: %q", clean)
+	}
+	// Running entries (Done=false) get italic "..." appended
+	if !strings.Contains(clean, "...") {
+		t.Errorf("running entry should contain '...', got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_OverflowMoreThan5(t *testing.T) {
+	t.Parallel()
+	entries := make([]AgentLogEntry, 7)
+	for i := range entries {
+		entries[i] = AgentLogEntry{ToolName: "Grep", Summary: fmt.Sprintf("search-%d", i), Done: true}
+	}
+	tcv := &ToolCallView{
+		AgentLogs: entries,
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	// Should show overflow: 7 - 5 = 2 more
+	if !strings.Contains(clean, "+2 more") {
+		t.Errorf("should contain '+2 more' for overflow, got: %q", clean)
+	}
+	// Should NOT show the first 2 entries (search-0, search-1) since only last 5 shown
+	if strings.Contains(clean, "search-0") {
+		t.Errorf("should not contain first entry 'search-0', got: %q", clean)
+	}
+	if strings.Contains(clean, "search-1") {
+		t.Errorf("should not contain second entry 'search-1', got: %q", clean)
+	}
+	// Should show entries 2-6 (search-2 through search-6)
+	if !strings.Contains(clean, "search-6") {
+		t.Errorf("should contain last entry 'search-6', got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_Exactly5NoOverflow(t *testing.T) {
+	t.Parallel()
+	entries := make([]AgentLogEntry, 5)
+	for i := range entries {
+		entries[i] = AgentLogEntry{ToolName: "Read", Summary: fmt.Sprintf("file-%d", i), Done: true}
+	}
+	tcv := &ToolCallView{
+		AgentLogs: entries,
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if strings.Contains(clean, "more") {
+		t.Errorf("exactly 5 entries should not show overflow, got: %q", clean)
+	}
+	// All 5 entries should be visible
+	if !strings.Contains(clean, "file-0") || !strings.Contains(clean, "file-4") {
+		t.Errorf("all 5 entries should be visible, got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_StatsWithToolCount(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Read", Done: true},
+		},
+		ToolCount: 3,
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "3 tools") {
+		t.Errorf("should contain '3 tools', got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_StatsSingleTool(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Read", Done: true},
+		},
+		ToolCount: 1,
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "1 tool") {
+		t.Errorf("should contain '1 tool' (singular), got: %q", clean)
+	}
+	// Should NOT have "1 tools" (with s)
+	if strings.Contains(clean, "1 tools") {
+		t.Errorf("should not have '1 tools' (plural), got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_StatsWithTokens(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Read", Done: true},
+		},
+		TokensIn:  500,
+		TokensOut: 200,
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "500") {
+		t.Errorf("should show TokensIn value 500, got: %q", clean)
+	}
+	if !strings.Contains(clean, "200") {
+		t.Errorf("should show TokensOut value 200, got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_EntryWithoutSummary(t *testing.T) {
+	t.Parallel()
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Bash", Summary: "", Done: true},
+		},
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	if !strings.Contains(clean, "Bash") {
+		t.Errorf("should contain tool name 'Bash', got: %q", clean)
+	}
+	// No parentheses should appear when summary is empty
+	if strings.Contains(clean, "()") {
+		t.Errorf("should not have empty parentheses for empty summary, got: %q", clean)
+	}
+}
+
+func TestRenderAgentLogs_TruncatesLongSummary(t *testing.T) {
+	t.Parallel()
+	longSummary := strings.Repeat("x", 50)
+	tcv := &ToolCallView{
+		AgentLogs: []AgentLogEntry{
+			{ToolName: "Grep", Summary: longSummary, Done: true},
+		},
+	}
+	got := renderAgentLogs(tcv, 80)
+	clean := stripANSI(got)
+	// Summary is truncated to 30 chars via truncateSummary, so only 27 chars + "..."
+	if strings.Contains(clean, strings.Repeat("x", 50)) {
+		t.Errorf("long summary should be truncated, got: %q", clean)
+	}
+	if !strings.Contains(clean, strings.Repeat("x", 27)) {
+		t.Errorf("should contain first 27 chars of summary, got: %q", clean)
+	}
+}
+
 func TestWordWrap_TabWidth(t *testing.T) {
 	t.Parallel()
 

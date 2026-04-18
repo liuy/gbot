@@ -378,6 +378,49 @@ func TestPendingThinkingDone_WithoutStarted_Noop(t *testing.T) {
 	s.PendingThinkingDone(time.Second)
 }
 
+func TestPendingThinkingDelta_InvalidIdx_Noop(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	s.AppendChunk("assistant")
+	s.PendingThinkingStarted()
+	// Remove the thinking block so activeThinkingIdx is out of range
+	msgs := s.Messages()
+	msgs[0].Blocks = nil
+	s.PendingThinkingDelta("should not panic")
+}
+
+func TestPendingThinkingDone_InvalidIdx_Noop(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	s.AppendChunk("assistant")
+	s.PendingThinkingStarted()
+	// Remove the thinking block so activeThinkingIdx is out of range
+	msgs := s.Messages()
+	msgs[0].Blocks = nil
+	s.PendingThinkingDone(time.Second)
+}
+
+func TestPendingThinkingDelta_NilLastMsg_Noop(t *testing.T) {
+	t.Parallel()
+	s := NewReplState()
+	// Force activeThinkingIdx without any messages — lastMsg() returns nil
+	s.activeThinkingIdx = 0
+	s.PendingThinkingDelta("orphan delta")
+	if len(s.Messages()) != 0 {
+		t.Error("expected no messages")
+	}
+}
+
+func TestPendingThinkingDone_NilLastMsg_Noop(t *testing.T) {
+	t.Parallel()
+	s := NewReplState()
+	s.activeThinkingIdx = 0
+	s.PendingThinkingDone(time.Second)
+	if len(s.Messages()) != 0 {
+		t.Error("expected no messages")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UpdateAgentProgress
 // ---------------------------------------------------------------------------
