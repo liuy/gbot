@@ -152,6 +152,18 @@ var checkPatterns = []checkPattern{
 			return false
 		},
 	},
+		{
+			Name:  "hardcoded path in file I/O calls (/tmp, /home)",
+			Regex: regexp.MustCompile(`(?i)\b(os\.(Open|WriteFile|Create|Mkdir|Remove|Rename|Link)|ioutil\.(ReadFile|WriteFile|ReadDir|MkdirTemp)|os\.OpenFile)\s*\([^)]*"/(tmp|home)[^"]*"`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				if strings.HasPrefix(trimmed, "//") {
+					return true
+				}
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.
