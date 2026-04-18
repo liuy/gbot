@@ -187,11 +187,8 @@ func (a *App) View() string {
 			if a.repl.IsStreaming() && a.toolBlink {
 				toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
 			}
-			maxOutputLines := 0
-			if a.height > 6 {
-				maxOutputLines = a.height - 6
-			}
-			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot, false, maxOutputLines)
+			// maxOutputLines=0 means unlimited — terminal scroll handles overflow
+			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot, false, 0)
 			a.contentDirty = false
 		}
 		contentStr = a.contentCache

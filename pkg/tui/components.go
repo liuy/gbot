@@ -854,8 +854,8 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	// Tabs (width 0 in runewidth) cause lines to exceed terminal width,
 	// creating extra visual lines that Bubble Tea cannot clear on re-render.
 	output = strings.ReplaceAll(output, "\t", "    ")
-	// Trim trailing newlines to avoid empty prefixed lines
-	output = strings.TrimRight(output, "\n")
+	// Trim leading and trailing newlines to avoid empty prefixed lines
+	output = strings.Trim(output, "\n")
 	lines := strings.Split(output, "\n")
 	maxLines := 3
 	if isError {
