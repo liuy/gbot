@@ -164,6 +164,14 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+		{
+			Name:  "t.Skip without message",
+			Regex: regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.
