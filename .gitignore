@@ -28,4 +28,4 @@ Thumbs.db
 
 # Go
 vendor/
-.graphify-out/
+*graphify-out/
