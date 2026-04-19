@@ -467,6 +467,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.thinkingActive = false
 		a.thinkingDuration = 0
 
+		// Persist successful turn to short-term memory.
+		// Only when err==nil — Ctrl+C and error paths do NOT persist,
+		// ensuring no partial/interrupted state is stored.
+		if m.Err == nil {
+			a.persistTurn()
+		}
+
 		// Don't commit yet — keep current turn in Bubble Tea view so
 		// Ctrl+O (expand/collapse tool output) remains interactive.
 		// Commit happens when the user submits the next query.
@@ -525,6 +532,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case idleAbortedMsg:
 		// No-op: user submitted, new query already started
+		return true, nil
+
+	case infoMsg:
+		a.status.SetInfo(string(m))
 		return true, nil
 
 	case errMsg:
@@ -598,6 +609,12 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		a.committedCount = len(a.repl.messages)
 		commitCmd = tea.Println(rendered)
 	}
+		// Check for slash commands before adding user message to engine.
+		if cmd, ok := LookupSlashCommand(text); ok {
+			a.input.Reset()
+			return a.handleSlashCommand(cmd, commitCmd)
+		}
+
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()

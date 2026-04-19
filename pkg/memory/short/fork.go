@@ -57,6 +57,12 @@ func (s *Store) ForkSession(parentSessionID string, forkPointSeq int, agentType 
 // copyMessagesToFork copies messages from parent to child session starting at forkPointSeq.
 // Rebuilds the parent_uuid chain so the child has its own independent chain.
 func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkPointSeq int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// Load parent messages from fork point
 	query := `
 		SELECT seq, uuid, parent_uuid, logical_parent_uuid,
@@ -66,7 +72,7 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 		ORDER BY seq ASC
 	`
 
-	rows, err := s.db.Query(query, parentSessionID, forkPointSeq)
+	rows, err := tx.Query(query, parentSessionID, forkPointSeq)
 	if err != nil {
 		return fmt.Errorf("query parent messages: %w", err)
 	}
@@ -107,7 +113,7 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 		}
 
 		// Insert into child session
-		_, err := s.db.Exec(`
+		_, err := tx.Exec(`
 			INSERT INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
 			                     is_sidechain, type, subtype, content, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -121,7 +127,7 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 	}
 
 
-	return nil
+	return tx.Commit()
 }
 
 // GetForkChildren returns all child sessions forked from a parent session.

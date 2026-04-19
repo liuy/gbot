@@ -449,6 +449,7 @@ type StatusBar struct {
 	outTokens   int
 	width       int
 	err         string
+	info        string
 }
 
 // NewStatusBar creates a new status bar.
@@ -480,6 +481,11 @@ func (s *StatusBar) SetWidth(w int) {
 // SetError sets an error message.
 func (s *StatusBar) SetError(msg string) {
 	s.err = msg
+}
+
+// SetInfo sets an info message.
+func (s *StatusBar) SetInfo(msg string) {
+	s.info = msg
 }
 
 // View renders the status bar.

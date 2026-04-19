@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"slices"
 	"sync"
 	"time"
 
@@ -42,7 +43,9 @@ type Engine struct {
 	model          string
 	maxTokens      int
 	logger         *slog.Logger
+	mu             sync.RWMutex
 	messages       []types.Message
+	sessionID      string
 	tokenBudget    int
 	turnCount      int
 	dispatcher     EventDispatcher
@@ -200,7 +203,7 @@ func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.Raw
 			return
 		}
 
-		e.messages = append(e.messages, pending...)
+		e.appendMessages(pending)
 		for i := range pending {
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 		}
@@ -237,7 +240,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		},
 		Timestamp: time.Now(),
 	}
-	e.messages = append(e.messages, userMsg)
+	e.appendMessage(userMsg)
 	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
 	return e.runTurns(ctx, systemPrompt, eventCh)
@@ -262,7 +265,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Drain pending notifications (stall alerts, completion notifications
 		// from background tasks). Source: TS drains commandQueue at query start.
 		if pending := e.notifications.Drain(); len(pending) > 0 {
-			e.messages = append(e.messages, pending...)
+			e.appendMessages(pending)
 			for i := range pending {
 				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 			}
@@ -294,7 +297,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		}
 
 		// Add assistant message to history
-		e.messages = append(e.messages, *resp)
+		e.appendMessage(*resp)
 
 		// Populate conversation history on the executor so tools
 		// (e.g. Agent tool) can access the full parent conversation.
@@ -310,7 +313,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			// iteration start; notifications arriving on the last turn are
 			// handled by draining here and continuing.
 			if pending := e.notifications.Drain(); len(pending) > 0 {
-				e.messages = append(e.messages, pending...)
+				e.appendMessages(pending)
 				for i := range pending {
 					e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 				}
@@ -332,7 +335,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		toolResultBlocks := streamingExecutor.ExecuteAll(nil)
 
 		// Add tool results as user message
-		e.messages = append(e.messages, types.Message{
+		e.appendMessage(types.Message{
 			Role:    types.RoleUser,
 			Content: toolResultBlocks,
 		})
@@ -720,7 +723,7 @@ func EscapeJSONString(s string) string {
 
 // AddSystemMessage adds a system message to the conversation.
 func (e *Engine) AddSystemMessage(content string) {
-	e.messages = append(e.messages, types.Message{
+	e.appendMessage(types.Message{
 		Role: types.RoleSystem,
 		Content: []types.ContentBlock{
 			types.NewTextBlock(content),
@@ -729,9 +732,13 @@ func (e *Engine) AddSystemMessage(content string) {
 	})
 }
 
-// Messages returns the current message history.
+// Messages returns a copy of the current message history.
+// Thread-safe: acquires RLock and returns a clone so callers can read
+// without holding the lock (safe for concurrent access from TUI).
 func (e *Engine) Messages() []types.Message {
-	return e.messages
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return slices.Clone(e.messages)
 }
 
 // Tools returns the tool map used by the engine.
@@ -765,8 +772,50 @@ func (e *Engine) TokenBudget() int {
 
 // Reset clears the conversation history.
 func (e *Engine) Reset() {
+	e.mu.Lock()
 	e.messages = nil
 	e.turnCount = 0
+	e.mu.Unlock()
+}
+
+// appendMessage adds a message to the history under Lock.
+func (e *Engine) appendMessage(msg types.Message) {
+	e.mu.Lock()
+	e.messages = append(e.messages, msg)
+	e.mu.Unlock()
+}
+
+// appendMessages adds multiple messages to the history under Lock.
+func (e *Engine) appendMessages(msgs []types.Message) {
+	e.mu.Lock()
+	e.messages = append(e.messages, msgs...)
+	e.mu.Unlock()
+}
+
+// setMessages replaces the message history under Lock.
+func (e *Engine) setMessages(msgs []types.Message) {
+	e.mu.Lock()
+	e.messages = msgs
+	e.mu.Unlock()
+}
+
+// SetMessages replaces the engine's message history under Lock.
+func (e *Engine) SetMessages(msgs []types.Message) {
+	e.setMessages(msgs)
+}
+
+// SetSessionID sets the session ID for this engine.
+func (e *Engine) SetSessionID(id string) {
+	e.mu.Lock()
+	e.sessionID = id
+	e.mu.Unlock()
+}
+
+// SessionID returns the current session ID.
+func (e *Engine) SessionID() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sessionID
 }
 
 // ---------------------------------------------------------------------------
@@ -857,7 +906,7 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // pre-constructed messages (no user message injection). Used by fork agents
 // that build their own conversation history.
 func (e *Engine) QueryWithExistingMessages(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
-	e.messages = messages
+	e.setMessages(messages)
 	return e.runTurns(ctx, systemPrompt, nil)
 }
 

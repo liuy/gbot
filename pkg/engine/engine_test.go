@@ -732,6 +732,116 @@ func TestMessages(t *testing.T) {
 	}
 }
 
+func TestMessages_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	eng.AddSystemMessage("hello")
+	msgs := eng.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	// Mutating the returned slice must not affect the engine
+	msgs[0].Content = nil
+	msgs2 := eng.Messages()
+	if len(msgs2[0].Content) != 1 {
+		t.Fatalf("expected ContentBlock preserved after mutating returned slice, got %d blocks", len(msgs2[0].Content))
+	}
+}
+
+func TestMessages_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			eng.AddSystemMessage("writer")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = eng.Messages()
+		}()
+	}
+	wg.Wait()
+
+	msgs := eng.Messages()
+	if len(msgs) != 100 {
+		t.Fatalf("expected 100 messages, got %d", len(msgs))
+	}
+}
+
+func TestSetSessionID(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	if eng.SessionID() != "" {
+		t.Fatalf("expected empty session ID initially, got %q", eng.SessionID())
+	}
+
+	eng.SetSessionID("abc-123")
+	if eng.SessionID() != "abc-123" {
+		t.Fatalf("expected session ID %q, got %q", "abc-123", eng.SessionID())
+	}
+}
+
+func TestSetMessages(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+
+	eng.SetMessages(msgs)
+	got := eng.Messages()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[0].Role != types.RoleUser {
+		t.Errorf("msg[0].Role = %q, want user", got[0].Role)
+	}
+	if got[1].Role != types.RoleAssistant {
+		t.Errorf("msg[1].Role = %q, want assistant", got[1].Role)
+	}
+
+	// SetMessages replaces, not appends
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("system")}},
+	})
+	got = eng.Messages()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message after SetMessages, got %d", len(got))
+	}
+	if got[0].Role != types.RoleSystem {
+		t.Errorf("msg[0].Role = %q, want system", got[0].Role)
+	}
+}
+
 // TestClassifyTerminalError tests the classifyTerminalError helper function.
 // This test validates error classification by triggering actual engine errors
 // and checking the TerminalReason in the result.

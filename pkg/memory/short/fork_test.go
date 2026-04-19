@@ -318,6 +318,7 @@ func TestCopyMessagesToFork_ChainRebuild(t *testing.T) {
 	parentID := "parent-session"
 	childID := "child-session"
 	createTestSession(t, store, parentID)
+	createTestSession(t, store, childID)
 
 	// Create parent messages with proper chain
 	msgs := []*Message{
@@ -646,6 +647,7 @@ func TestCopyMessagesToFork_RowsErr(t *testing.T) {
 	parentID := "parent-session"
 	childID := "child-session"
 	createTestSession(t, store, parentID)
+	createTestSession(t, store, childID)
 
 	msg := testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`)
 	if err := store.AppendMessage(parentID, msg); err != nil {
@@ -1111,11 +1113,6 @@ func TestMergeForkBack_CountInheritedError_DroppedTable(t *testing.T) {
 	err = store.MergeForkBack(childID)
 	if err == nil {
 		t.Error("MergeForkBack should fail when messages table is dropped")
-	}
-	// The error could be from 'get parent last seq' or 'count inherited'
-	// depending on which query runs first. Both are valid error paths.
-	if err == nil {
-		t.Error("expected error")
 	}
 }
 

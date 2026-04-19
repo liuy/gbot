@@ -15,6 +15,7 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,16 @@ type App struct {
 	// Engine
 	engine       *engine.Engine
 	systemPrompt json.RawMessage
+
+	// Persistence (short-term memory store)
+	store            *short.Store
+	sessionID        string
+	lastPersistedIdx int // tracks how many engine messages have been persisted
+	projectDir        string // working directory for .gbot/meta.json
+
+	// Session picker overlay
+	pickerMode bool
+	picker     *SessionPicker
 
 	// Hub — callback-based event routing
 	hub        *hub.Hub
@@ -121,6 +132,15 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 	return a
 }
 
+// SetStore configures persistence on the App after creation.
+// Called from main.go after auto-resume logic determines the session state.
+func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPersistedIdx int) {
+	a.store = store
+	a.sessionID = sessionID
+	a.projectDir = projectDir
+	a.lastPersistedIdx = lastPersistedIdx
+}
+
 // ---------------------------------------------------------------------------
 // tea.Model interface
 // ---------------------------------------------------------------------------
@@ -134,6 +154,27 @@ func (a *App) Init() tea.Cmd {
 
 // Update handles bubbletea messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Route to picker overlay when active
+	if a.pickerMode {
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			a.width = msg.Width
+			a.height = msg.Height
+			return a, nil
+		case tea.KeyMsg:
+			model, cmd := a.picker.Update(msg)
+			if p, ok := model.(*SessionPicker); ok {
+				a.picker = p
+			}
+			// Check if picker is done
+			if a.picker.aborted || a.picker.selected != nil {
+				return a.handlePickerResult()
+			}
+			return a, cmd
+		}
+		return a, nil
+	}
+
 	switch m := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -155,7 +196,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 			agentToolMsg, agentUsageMsg,
 		notificationPendingMsg, idleAbortedMsg,
-		errMsg, submitMsg, spinnerTickMsg:
+		infoMsg, errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
@@ -175,6 +216,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) View() string {
 	if a.width == 0 {
 		return "Loading..."
+	}
+
+	// Picker overlay
+	if a.pickerMode && a.picker != nil {
+		return a.picker.View()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]

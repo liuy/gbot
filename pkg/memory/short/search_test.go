@@ -69,6 +69,7 @@ func TestSearchMessages_English(t *testing.T) {
 
 // TestSearchMessages_Chinese tests Chinese full-text search with gse segmentation.
 func TestSearchMessages_Chinese(t *testing.T) {
+	initGse() // block until gse dictionary is loaded
 	store, cleanup := testStore(t)
 	defer cleanup()
 

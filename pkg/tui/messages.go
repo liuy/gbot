@@ -125,4 +125,7 @@ type errMsg struct {
 }
 
 // spinnerTickMsg is an internal message to animate the spinner.
+// infoMsg displays a transient info message in the status bar.
+type infoMsg string
+
 type spinnerTickMsg struct{}

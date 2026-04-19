@@ -725,8 +725,15 @@ func CollectReadToolFilePaths(messages []*Message) []string {
 			if block.Type == "tool_result" {
 				// Check if this is a Read tool result
 				// (Simplified - full implementation would check tool_use_id name)
-				contentToCheck := block.Content
-				if contentToCheck == "" {
+				var contentToCheck string
+				if len(block.Content) > 0 {
+					var contentStr string
+					if json.Unmarshal(block.Content, &contentStr) == nil {
+						contentToCheck = contentStr
+					} else {
+						contentToCheck = string(block.Content)
+					}
+				} else {
 					contentToCheck = block.Text
 				}
 				if contentToCheck != "" {

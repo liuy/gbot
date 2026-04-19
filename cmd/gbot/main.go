@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
@@ -42,7 +43,6 @@ func main() {
 	}
 
 	// 1. Load config from ~/.claude/settings.minimax.json or env vars
-	fmt.Fprintf(os.Stderr, "main() STARTING\n")
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
@@ -129,11 +129,66 @@ func main() {
 	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
 	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
 
-	// 6. Create TUI App
+	// 6. Initialize short-term memory store
+	configDir, _ := config.ConfigDir()
+	var store *short.Store
+	if configDir != "" {
+		dbPath := filepath.Join(configDir, "memory", "short-term.db")
+		s, err := short.NewStore(dbPath)
+		if err != nil {
+			slog.Warn("main: failed to open short-term store, persistence disabled", "error", err)
+		} else {
+			store = s
+		}
+	}
+
+	// 7. Auto-resume: restore last session if workspace metadata exists
+	var sessionID string
+	var lastPersistedIdx int
+	if store != nil {
+		meta, _ := short.ReadWorkspaceMeta(workingDir)
+		if meta != nil && meta.CurrentSessionID != "" {
+			resumable, err := store.IsSessionResumable(meta.CurrentSessionID)
+			if err == nil && resumable {
+				_, msgs, err := store.ResumeSession(meta.CurrentSessionID)
+				if err == nil && len(msgs) > 0 {
+					storeMsgs := make([]short.Message, len(msgs))
+					for i, m := range msgs {
+						storeMsgs[i] = *m
+					}
+					engineMsgs, err := tui.StoreMessagesToEngine(storeMsgs)
+					if err == nil {
+						eng.SetMessages(engineMsgs)
+						sessionID = meta.CurrentSessionID
+						lastPersistedIdx = len(engineMsgs)
+						eng.SetSessionID(sessionID)
+						slog.Info("main: resumed session", "sessionID", sessionID, "messages", len(engineMsgs))
+					} else {
+						slog.Warn("main: failed to convert resumed messages", "error", err)
+					}
+				}
+			}
+		}
+		// No resumable session — create a new one
+		if sessionID == "" {
+			session, err := store.CreateSession(workingDir, cfg.Model)
+			if err != nil {
+				slog.Warn("main: failed to create session", "error", err)
+			} else {
+				sessionID = session.SessionID
+				if err := tui.WriteWorkspaceMeta(sessionID); err != nil {
+					slog.Warn("main: write workspace meta failed", "error", err)
+				}
+				slog.Info("main: created new session", "sessionID", sessionID)
+			}
+		}
+	}
+
+	// 8. Create TUI App
 	app := tui.NewApp(eng, systemPrompt, h)
+	app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
 
-
-	// 8. Run bubbletea program
+	// 9. Run bubbletea program
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)

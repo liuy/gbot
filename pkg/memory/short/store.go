@@ -3,10 +3,12 @@ package short
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 	"github.com/go-ego/gse"
@@ -19,27 +21,27 @@ func (s *Store) DB() *sql.DB { return s.db }
 // files (~2.75s). Sharing one instance across all Store objects avoids repeating
 // this cost on every NewStore call. Cut() is safe for concurrent use.
 var (
-	globalGse     gse.Segmenter
-	globalGseOnce sync.Once
-	globalGseErr  error
+	globalGse      gse.Segmenter
+	globalGseOnce  sync.Once
+	globalGseReady atomic.Bool
 )
 
-func initGse() error {
+func initGse() {
 	globalGseOnce.Do(func() {
 		var seg gse.Segmenter
-		globalGseErr = seg.LoadDict()
-		if globalGseErr == nil {
-			globalGse = seg
+		if err := seg.LoadDictEmbed("zh"); err != nil {
+			slog.Warn("gse: failed to load dictionary, FTS segmentation disabled", "error", err)
+			return
 		}
+		globalGse = seg
+		globalGseReady.Store(true)
 	})
-	return globalGseErr
 }
 
 // Store manages short-term memory persistence via SQLite.
 // Concurrency is handled by SQLite WAL mode + transactions — no Go-level mutex needed.
 type Store struct {
 	db     *sql.DB
-	gse    *gse.Segmenter
 	dbPath string
 }
 
@@ -64,9 +66,12 @@ func NewStore(dbPath string) (*Store, error) {
 		}
 	}
 
-	_ = initGse()
+	// Load gse dictionary in background — it takes ~2-3s and is not
+	// needed for session resume or message persistence. Segment() degrades
+	// gracefully to raw text while the dictionary loads.
+	go initGse()
 
-	s := &Store{db: db, gse: &globalGse, dbPath: dbPath}
+	s := &Store{db: db, dbPath: dbPath}
 	_ = s.initSchema()
 
 	return s, nil
@@ -83,12 +88,13 @@ func (s *Store) DBPath() string {
 }
 
 // Segment tokenizes text using gse for FTS5 indexing.
-// Returns space-separated tokens.
+// Returns space-separated tokens. Falls back to raw text if the
+// dictionary hasn't finished loading yet.
 func (s *Store) Segment(text string) string {
-	if s.gse == nil {
+	if !globalGseReady.Load() {
 		return text
 	}
-	segments := s.gse.Cut(text, true)
+	segments := globalGse.Cut(text, true)
 	return strings.Join(segments, " ")
 }
 

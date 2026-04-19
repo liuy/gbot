@@ -44,14 +44,15 @@ type Session struct {
 
 // ContentBlock represents a parsed block from a message's content JSON.
 type ContentBlock struct {
-	Type       string          `json:"type"`             // "text" | "tool_use" | "tool_result" | "thinking"
+	Type       string          `json:"type"`             // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 	Text       string          `json:"text,omitempty"`
 	ID         string          `json:"id,omitempty"`             // tool_use block id
 	Name       string          `json:"name,omitempty"`           // tool name for tool_use
 	Input      json.RawMessage `json:"input,omitempty"`          // tool_use input parameters
 	ToolUseID  string          `json:"tool_use_id,omitempty"`    // tool_result reference to tool_use.id
 	IsError    bool            `json:"is_error,omitempty"`       // tool_result error flag
-	Content    string          `json:"content,omitempty"`        // tool_result content (string or base64 for images)
+	Content    json.RawMessage `json:"content,omitempty"`        // tool_result content (string or base64 for images)
+	Data       string          `json:"data,omitempty"`           // redacted_thinking data (must be preserved verbatim)
 }
 
 // CompactResult holds the output of a compact operation.

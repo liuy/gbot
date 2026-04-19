@@ -621,8 +621,8 @@ func TestContentBlockToolResult(t *testing.T) {
 	if blocks[0].ToolUseID != "tu1" {
 		t.Errorf("block.ToolUseID = %q, want tu1", blocks[0].ToolUseID)
 	}
-	if blocks[0].Content != "output" {
-		t.Errorf("block.Content = %q, want output", blocks[0].Content)
+	if string(blocks[0].Content) != `"output"` {
+		t.Errorf("block.Content = %q, want %q", string(blocks[0].Content), `"output"`)
 	}
 	if blocks[0].IsError != false {
 		t.Errorf("block.IsError = %v, want false", blocks[0].IsError)
