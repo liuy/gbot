@@ -172,6 +172,34 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+		{
+			Name:  "strings.Contains with literal on struct field (use == for exact match)",
+			Regex: regexp.MustCompile(`strings\.Contains\(\w+\.\w+,\s*"[^"*%\\]+"\)`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				// Exempt: comments
+				if strings.HasPrefix(trimmed, "//") {
+					return true
+				}
+				// Exempt: err.Error() content checks (valid use of Contains)
+				if strings.Contains(match, "err.Error()") {
+					return true
+				}
+				// Exempt: negated Contains (!strings.Contains)
+				if strings.Contains(lines[lineIdx], "!strings.Contains") {
+					return true
+				}
+				// Exempt: fields that hold complex/multi-line content
+				// (Command strings, multi-line output, rendered content)
+				for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text"} {
+					if strings.Contains(match, field) {
+						return true
+					}
+				}
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.

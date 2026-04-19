@@ -33,6 +33,28 @@ type EventDispatcher interface {
 	Dispatch(event types.QueryEvent)
 }
 
+// Compactor is the interface for auto-compact operations.
+// The engine calls this when it detects token usage approaching limits
+// (proactive) or when the API returns a context overflow error (reactive).
+// TS align: autoCompact.ts + reactiveCompact.ts
+type Compactor interface {
+	Compact(ctx context.Context, messages []types.Message) ([]types.Message, error)
+}
+
+// AutoCompactConfig configures auto-compact behavior.
+// TS align: autoCompact.ts configuration
+type AutoCompactConfig struct {
+	// Threshold is the ratio (0.0-1.0) of estimated context usage that triggers
+	// proactive auto-compact. Default: 0.9 (90% of context window).
+	Threshold float64
+	// ContextWindow is the model's maximum context window in tokens.
+	// If 0, proactive auto-compact is disabled.
+	ContextWindow int
+	// MaxConsecutiveFailures is the number of consecutive compact failures before
+	// the circuit breaker trips and stops attempting proactive auto-compact. Default: 3.
+	MaxConsecutiveFailures int
+}
+
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
@@ -61,6 +83,11 @@ type Engine struct {
 	// maxTurns is the maximum number of agentic turns before stopping.
 	// Default: 50. Sub-engines may override via SubEngineOptions.
 	maxTurns int
+
+	// Auto-compact fields
+	compactor   Compactor
+	autoCompactConfig          AutoCompactConfig
+	consecutiveCompactFailures int
 }
 
 // Params holds the constructor arguments for Engine.
@@ -73,6 +100,8 @@ type Params struct {
 	TokenBudget int
 	Logger      *slog.Logger
 	Dispatcher  EventDispatcher
+	Compactor   Compactor
+	AutoCompact AutoCompactConfig
 }
 
 // QueryResult is the final result of a query.
@@ -137,17 +166,19 @@ func New(p *Params) *Engine {
 	sort.Strings(toolOrder)
 
 	return &Engine{
-		provider:      p.Provider,
-		tools:         toolMap,
-		toolOrder:     toolOrder,
-		toolsProvider: toolsProvider,
-		model:         p.Model,
-		maxTokens:     p.MaxTokens,
-		logger:        p.Logger,
-		tokenBudget:   p.TokenBudget,
-		dispatcher:    p.Dispatcher,
-		notifications: &notificationQueue{},
-		maxTurns:      50,
+		provider:         p.Provider,
+		tools:            toolMap,
+		toolOrder:        toolOrder,
+		toolsProvider:    toolsProvider,
+		model:            p.Model,
+		maxTokens:        p.MaxTokens,
+		logger:           p.Logger,
+		tokenBudget:      p.TokenBudget,
+		dispatcher:       p.Dispatcher,
+		notifications:    &notificationQueue{},
+		maxTurns:         50,
+		compactor:        p.Compactor,
+		autoCompactConfig: p.AutoCompact,
 	}
 }
 
@@ -250,6 +281,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // and QueryWithExistingMessages (fork agent path).
 func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
 	var totalUsage types.Usage
+	reactiveCompactDone := false
 
 	for e.turnCount < e.maxTurns {
 		select {
@@ -271,11 +303,46 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			}
 		}
 
+		// Proactive auto-compact: check before API call.
+		// TS align: query.ts:453-468 — deps.autocompact() before API.
+		if e.shouldAutoCompact() {
+			compacted, err := e.compactor.Compact(ctx, e.Messages())
+			if err != nil {
+				e.mu.Lock()
+				e.consecutiveCompactFailures++
+				failures := e.consecutiveCompactFailures
+				e.mu.Unlock()
+				e.logger.Warn("proactive auto-compact failed",
+					"error", err,
+					"consecutiveFailures", failures)
+			} else {
+				e.mu.Lock()
+				e.consecutiveCompactFailures = 0
+				e.mu.Unlock()
+				e.setMessages(compacted)
+				e.logger.Info("proactive auto-compact succeeded",
+					"messages", len(compacted))
+			}
+		}
+
 		// Stage 14-15: API call streaming loop
 		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnStart})
 
 		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt, eventCh)
 		if err != nil {
+			// Reactive compact: try compact + retry on context overflow.
+			// TS align: query.ts:1119-1175 — reactiveCompact.tryReactiveCompact()
+			if e.compactor != nil && llm.IsContextOverflow(err) && !reactiveCompactDone {
+				compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
+				if compactErr == nil {
+					e.setMessages(compacted)
+					reactiveCompactDone = true
+					e.logger.Info("reactive auto-compact succeeded, retrying")
+					continue
+				}
+				e.logger.Warn("reactive auto-compact failed", "error", compactErr)
+			}
+
 			// Stage 16: Error handling
 			action := e.handleStreamError(err)
 			if !action.Continue {
@@ -694,6 +761,56 @@ func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
 	return types.TerminalModelError
 }
 
+// estimateTokens returns a rough token count estimate for the current messages.
+// Uses the 4 chars/token heuristic, matching TS's roughTokenCount.
+func (e *Engine) estimateTokens() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	total := 0
+	for _, msg := range e.messages {
+		for _, block := range msg.Content {
+			total += len(block.Text)
+			total += len(block.Input)
+			total += len(block.Content)
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return total / 4
+}
+
+// shouldAutoCompact returns true if proactive auto-compact should be triggered.
+// TS align: autoCompact.ts:shouldAutoCompact()
+func (e *Engine) shouldAutoCompact() bool {
+	// Estimate tokens first (takes its own RLock) to avoid nested locking.
+	tokens := e.estimateTokens()
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if e.compactor == nil {
+		return false
+	}
+	cfg := e.autoCompactConfig
+	if cfg.ContextWindow <= 0 || cfg.Threshold <= 0 {
+		return false
+	}
+	if e.isSubagent {
+		return false
+	}
+	// Circuit breaker
+	maxFail := cfg.MaxConsecutiveFailures
+	if maxFail <= 0 {
+		maxFail = 3
+	}
+	if e.consecutiveCompactFailures >= maxFail {
+		return false
+	}
+	threshold := float64(cfg.ContextWindow) * cfg.Threshold
+	return float64(tokens) > threshold
+}
+
 // marshalMessages converts internal messages to API format.
 // Strips response-only fields (Timestamp, Model, StopReason, Usage) that
 // the Anthropic Messages API does not accept in request messages.
@@ -808,6 +925,15 @@ func (e *Engine) SetMessages(msgs []types.Message) {
 func (e *Engine) SetSessionID(id string) {
 	e.mu.Lock()
 	e.sessionID = id
+	e.mu.Unlock()
+}
+
+// SetCompactor configures the auto-compact compactor and threshold.
+// Call after engine construction when the store is available.
+func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {
+	e.mu.Lock()
+	e.compactor = c
+	e.autoCompactConfig = cfg
 	e.mu.Unlock()
 }
 

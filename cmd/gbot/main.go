@@ -184,9 +184,18 @@ func main() {
 		}
 	}
 
-	// 8. Create TUI App
-	app := tui.NewApp(eng, systemPrompt, h)
-	app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
+		// 7.5 Wire auto-compact
+		if store != nil && sessionID != "" {
+			compactor := engine.NewAutoCompactor(store, sessionID, cfg.Model, provider)
+			eng.SetCompactor(compactor, engine.AutoCompactConfig{
+				Threshold:              0.935,
+				ContextWindow:          200000,
+				MaxConsecutiveFailures: 3,
+			})
+		}
+		// 8. Create TUI App
+		app := tui.NewApp(eng, systemPrompt, h)
+		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
 
 	// 9. Run bubbletea program
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())

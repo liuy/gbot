@@ -655,7 +655,9 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	// Create a titled session first
 	store := a2.store
 	session, _ := store.CreateSession(a2.projectDir, "test-model")
-	store.UpdateSessionTitle(session.SessionID, "taken-title")
+		if err := store.UpdateSessionTitle(session.SessionID, "taken-title"); err != nil {
+			t.Fatalf("UpdateSessionTitle: %v", err)
+		}
 
 	// Now try to fork with same title
 	cmd = a2.handleSwitch("taken-title", nil)
