@@ -8,6 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -231,4 +234,61 @@ func DefaultRetryConfig() *RetryConfig {
 		BaseBackoff: 500 * time.Millisecond,
 		MaxBackoff:  32 * time.Second,
 	}
+}
+
+// BaseProvider holds fields shared by all providers.
+type BaseProvider struct {
+	httpClient  *http.Client
+	retryConfig *RetryConfig
+	idleTimeout time.Duration //nolint:unused // SSE idle timeout, used by OpenAI provider
+}
+
+// CalculateBackoff computes exponential backoff with jitter.
+// Source: services/api/withRetry.ts — 1:1 port.
+func CalculateBackoff(attempt int, cfg *RetryConfig) time.Duration {
+	base := float64(cfg.BaseBackoff)
+	exponential := base * math.Pow(2, float64(attempt))
+	withJitter := exponential * (0.5 + float64(fastrand())/float64(1<<32)) // ±50% jitter
+	capped := math.Min(withJitter, float64(cfg.MaxBackoff))
+	return time.Duration(capped)
+}
+
+// CalculateBackoffWithRetryAfter respects Retry-After header when present.
+func CalculateBackoffWithRetryAfter(attempt int, cfg *RetryConfig, retryAfter time.Duration) time.Duration {
+	base := CalculateBackoff(attempt, cfg)
+	if retryAfter > 0 && retryAfter > base {
+		return retryAfter
+	}
+	return base
+}
+
+// IsRetryableStatus returns true for retryable HTTP status codes.
+func IsRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case 429, 529, 500, 502, 503, 504:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsConnectionError returns true for connection-level errors.
+func IsConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "temporary")
+}
+
+// truncateForLog truncates a string for safe logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

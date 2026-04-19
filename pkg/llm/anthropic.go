@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
-	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -20,12 +18,10 @@ import (
 // AnthropicProvider implements Provider for the Anthropic Messages API.
 // Source: services/api/client.ts — 1:1 port of the SDK client.
 type AnthropicProvider struct {
-	apiKey      string
-	baseURL     string
-	model       string
-	maxRetries  int
-	httpClient  *http.Client
-	retryConfig *RetryConfig
+	BaseProvider
+	apiKey  string
+	baseURL string
+	model   string
 }
 
 // AnthropicConfig configures the Anthropic provider.
@@ -45,18 +41,15 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.anthropic.com"
 	}
-	maxRetries := 10
-	if cfg.RetryConfig != nil {
-		maxRetries = cfg.RetryConfig.MaxRetries
-	}
 
 	return &AnthropicProvider{
-		apiKey:      cfg.APIKey,
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		model:       cfg.Model,
-		maxRetries:  maxRetries,
-		httpClient:  &http.Client{Timeout: cfg.Timeout},
-		retryConfig: cfg.RetryConfig,
+		BaseProvider: BaseProvider{
+			httpClient:  &http.Client{Timeout: cfg.Timeout},
+			retryConfig: cfg.RetryConfig,
+		},
+		apiKey:  cfg.APIKey,
+		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
+		model:   cfg.Model,
 	}
 }
 
@@ -354,43 +347,3 @@ func (p *AnthropicProvider) ParseAPIError(body []byte, statusCode int) *APIError
 	return apiErr
 }
 
-// CalculateBackoff computes exponential backoff with jitter.
-// Source: services/api/withRetry.ts — 1:1 port.
-func CalculateBackoff(attempt int, cfg *RetryConfig) time.Duration {
-	base := float64(cfg.BaseBackoff)
-	exponential := base * math.Pow(2, float64(attempt))
-	withJitter := exponential * (0.5 + rand.Float64()) // ±50% jitter
-	capped := math.Min(withJitter, float64(cfg.MaxBackoff))
-	return time.Duration(capped)
-}
-
-// IsRetryableStatus returns true for retryable HTTP status codes.
-func IsRetryableStatus(statusCode int) bool {
-	switch statusCode {
-	case 429, 529, 500, 502, 503, 504:
-		return true
-	default:
-		return false
-	}
-}
-
-// IsConnectionError returns true for connection-level errors.
-func IsConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "EOF") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "temporary")
-}
-
-// truncateForLog truncates a string for safe logging.
-func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}

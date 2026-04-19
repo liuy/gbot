@@ -42,25 +42,20 @@ func main() {
 		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
 
-	// 1. Load config from ~/.claude/settings.minimax.json or env vars
+	// 1. Load config from ~/.gbot/settings.json, ~/.claude/settings.minimax.json, or env vars
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	if cfg.APIKey == "" {
-		fmt.Fprintln(os.Stderr, "Error: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN not set.")
-		fmt.Fprintln(os.Stderr, "Set it via environment variable or in ~/.claude/settings.minimax.json")
+	// 2. Create LLM provider from config
+	provider, model := createProvider(cfg)
+	if provider == nil {
+		fmt.Fprintln(os.Stderr, "Error: no API key configured.")
+		fmt.Fprintln(os.Stderr, "Set providers[].keys in ~/.gbot/settings.json or ANTHROPIC_API_KEY env var")
 		os.Exit(1)
 	}
-
-	// 2. Create LLM provider (Anthropic)
-	provider := llm.NewAnthropicProvider(&llm.AnthropicConfig{
-		APIKey:  cfg.APIKey,
-		BaseURL: cfg.BaseURL,
-		Model:   cfg.Model,
-	})
 
 	// 3. Create tools
 	reg := createTools()
@@ -76,7 +71,7 @@ func main() {
 	eng := engine.New(&engine.Params{
 		Provider:      provider,
 		ToolsProvider: reg.ToolMapFn(),
-		Model:         cfg.Model,
+		Model:         model,
 		MaxTokens:     16000,
 		TokenBudget:   200000,
 		Logger:        logger,
@@ -171,7 +166,7 @@ func main() {
 		}
 		// No resumable session — create a new one
 		if sessionID == "" {
-			session, err := store.CreateSession(workingDir, cfg.Model)
+			session, err := store.CreateSession(workingDir, model)
 			if err != nil {
 				slog.Warn("main: failed to create session", "error", err)
 			} else {
@@ -186,7 +181,7 @@ func main() {
 
 		// 7.5 Wire auto-compact
 		if store != nil && sessionID != "" {
-			compactor := engine.NewAutoCompactor(store, sessionID, cfg.Model, provider)
+			compactor := engine.NewAutoCompactor(store, sessionID, model, provider)
 			eng.SetCompactor(compactor, engine.AutoCompactConfig{
 				Threshold:              0.935,
 				ContextWindow:          200000,
@@ -203,6 +198,52 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// createProvider creates the LLM provider and resolves the model name from config.
+// Returns (provider, model). Provider is nil if no API key is configured.
+func createProvider(cfg *config.Config) (llm.Provider, string) {
+	// Multi-provider config takes priority
+	if len(cfg.Providers) > 0 {
+		p := cfg.Providers[0]
+		apiKey := p.ResolveKey()
+		if apiKey == "" {
+			return nil, ""
+		}
+		model := p.ModelFor(cfg.DefaultTier)
+		if model == "" {
+			model = cfg.Model
+		}
+
+		switch p.Name {
+		case "openai":
+			return llm.NewOpenAIProvider(&llm.OpenAIConfig{
+				APIKey:  apiKey,
+				BaseURL: p.URL,
+				Model:   model,
+			}), model
+		default: // "anthropic" or empty
+			url := p.URL
+			if url == "" {
+				url = "https://api.anthropic.com"
+			}
+			return llm.NewAnthropicProvider(&llm.AnthropicConfig{
+				APIKey:  apiKey,
+				BaseURL: url,
+				Model:   model,
+			}), model
+		}
+	}
+
+	// Legacy single-provider config
+	if cfg.APIKey == "" {
+		return nil, ""
+	}
+	return llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  cfg.APIKey,
+		BaseURL: cfg.BaseURL,
+		Model:   cfg.Model,
+	}), cfg.Model
 }
 
 // loadConfig reads configuration from the minimax settings file then env vars.

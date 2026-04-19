@@ -823,3 +823,241 @@ func TestLoadFromSettingsFile_NegativeTimeout(t *testing.T) {
 		t.Errorf("BUG: negative timeout accepted from settings file, got APITimeoutMS=%d", cfg.APITimeoutMS)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tier / Provider / Models tests
+// ---------------------------------------------------------------------------
+
+func TestTierConstants(t *testing.T) {
+	t.Parallel()
+
+	if config.TierLite != "lite" {
+		t.Errorf("TierLite = %q, want %q", config.TierLite, "lite")
+	}
+	if config.TierPro != "pro" {
+		t.Errorf("TierPro = %q, want %q", config.TierPro, "pro")
+	}
+	if config.TierMax != "max" {
+		t.Errorf("TierMax = %q, want %q", config.TierMax, "max")
+	}
+}
+
+func TestDefaultConfig_DefaultTier(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.DefaultConfig()
+	if cfg.DefaultTier != config.TierPro {
+		t.Errorf("DefaultTier = %q, want %q", cfg.DefaultTier, config.TierPro)
+	}
+}
+
+func TestProvider_ResolveKey_EnvVar(t *testing.T) {
+	t.Parallel()
+
+	_ = os.Setenv("TEST_GBOT_KEY_1", "resolved-key-123")
+	defer func() { _ = os.Unsetenv("TEST_GBOT_KEY_1") }()
+
+	p := config.Provider{
+		Name: "test",
+		Keys: []string{"$TEST_GBOT_KEY_1"},
+	}
+
+	key := p.ResolveKey()
+	if key != "resolved-key-123" {
+		t.Errorf("ResolveKey() = %q, want %q", key, "resolved-key-123")
+	}
+}
+
+func TestProvider_ResolveKey_LiteralKey(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Keys: []string{"sk-literal-key"},
+	}
+
+	key := p.ResolveKey()
+	if key != "sk-literal-key" {
+		t.Errorf("ResolveKey() = %q, want %q", key, "sk-literal-key")
+	}
+}
+
+func TestProvider_ResolveKey_MultipleEnvVars(t *testing.T) {
+	t.Parallel()
+
+	// First var unset, second set
+	_ = os.Unsetenv("TEST_GBOT_MISSING_KEY")
+	_ = os.Setenv("TEST_GBOT_FALLBACK_KEY", "fallback-456")
+	defer func() { _ = os.Unsetenv("TEST_GBOT_FALLBACK_KEY") }()
+
+	p := config.Provider{
+		Name: "test",
+		Keys: []string{"$TEST_GBOT_MISSING_KEY", "$TEST_GBOT_FALLBACK_KEY"},
+	}
+
+	key := p.ResolveKey()
+	if key != "fallback-456" {
+		t.Errorf("ResolveKey() = %q, want %q", key, "fallback-456")
+	}
+}
+
+func TestProvider_ResolveKey_EmptyKeys(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Keys: []string{},
+	}
+
+	key := p.ResolveKey()
+	if key != "" {
+		t.Errorf("ResolveKey() = %q, want empty string", key)
+	}
+}
+
+func TestProvider_ModelFor_SpecificTier(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[config.Tier]string{
+			config.TierLite: "model-lite",
+			config.TierPro:  "model-pro",
+			config.TierMax:  "model-max",
+		},
+	}
+
+	if m := p.ModelFor(config.TierLite); m != "model-lite" {
+		t.Errorf("ModelFor(lite) = %q, want %q", m, "model-lite")
+	}
+	if m := p.ModelFor(config.TierPro); m != "model-pro" {
+		t.Errorf("ModelFor(pro) = %q, want %q", m, "model-pro")
+	}
+	if m := p.ModelFor(config.TierMax); m != "model-max" {
+		t.Errorf("ModelFor(max) = %q, want %q", m, "model-max")
+	}
+}
+
+func TestProvider_ModelFor_FallbackToPro(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[config.Tier]string{
+			config.TierPro: "model-pro",
+		},
+	}
+
+	// Requesting lite but only pro defined → fallback to pro
+	if m := p.ModelFor(config.TierLite); m != "model-pro" {
+		t.Errorf("ModelFor(lite) = %q, want fallback %q", m, "model-pro")
+	}
+}
+
+func TestLoad_ProviderConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	// Set env vars for key resolution
+	_ = os.Setenv("TEST_GBOT_PROVIDER_KEY", "test-api-key-789")
+	defer func() { _ = os.Unsetenv("TEST_GBOT_PROVIDER_KEY") }()
+
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	// Clear env vars
+	for _, k := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+		"ANTHROPIC_SMALL_FAST_MODEL", "API_TIMEOUT_MS",
+	} {
+		_ = os.Unsetenv(k)
+		defer func(key string) { _ = os.Unsetenv(key) }(k)
+	}
+
+	// Create user config with provider structure
+	userGbotDir := filepath.Join(dir, ".gbot")
+	if err := os.MkdirAll(userGbotDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	settings := map[string]any{
+		"default": "pro",
+		"providers": []map[string]any{
+			{
+				"name": "openai",
+				"url":  "https://api.openai.com/v1",
+				"keys": []string{"$TEST_GBOT_PROVIDER_KEY"},
+				"models": map[string]string{
+					"lite": "gpt-4o-mini",
+					"pro":  "gpt-4o",
+					"max":  "gpt-4.1",
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userGbotDir, "settings.json"), data, 0644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	originalDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(originalDir) }()
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.DefaultTier != config.TierPro {
+		t.Errorf("DefaultTier = %q, want %q", cfg.DefaultTier, config.TierPro)
+	}
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("len(Providers) = %d, want 1", len(cfg.Providers))
+	}
+	p := cfg.Providers[0]
+	if p.Name != "openai" {
+		t.Errorf("Provider.Name = %q, want %q", p.Name, "openai")
+	}
+	if p.URL != "https://api.openai.com/v1" {
+		t.Errorf("Provider.URL = %q, want %q", p.URL, "https://api.openai.com/v1")
+	}
+	if key := p.ResolveKey(); key != "test-api-key-789" {
+		t.Errorf("ResolveKey() = %q, want %q", key, "test-api-key-789")
+	}
+	if m := p.ModelFor(config.TierPro); m != "gpt-4o" {
+		t.Errorf("ModelFor(pro) = %q, want %q", m, "gpt-4o")
+	}
+}
+
+func TestLoad_DefaultTierDefaultsToPro(t *testing.T) {
+	dir := t.TempDir()
+
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	for _, k := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+		"ANTHROPIC_SMALL_FAST_MODEL", "API_TIMEOUT_MS",
+	} {
+		_ = os.Unsetenv(k)
+		defer func(key string) { _ = os.Unsetenv(key) }(k)
+	}
+
+	originalDir, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(originalDir) }()
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.DefaultTier != config.TierPro {
+		t.Errorf("DefaultTier = %q, want %q when not set", cfg.DefaultTier, config.TierPro)
+	}
+}
