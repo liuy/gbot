@@ -52,7 +52,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 
 // createNewSession creates a new empty session and switches to it.
 func (a *App) createNewSession(title string, commitCmd tea.Cmd) tea.Cmd {
-	session, err := a.store.CreateSession("", a.engine.Model())
+	session, err := a.store.CreateSession(a.projectDir, a.engine.Model())
 	if err != nil {
 		slog.Error("switch: create session failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to create session: %v", err))
@@ -95,7 +95,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	// Duplicate title detection
-	sessions, err := a.store.ListSessions("", 1000)
+	sessions, err := a.store.ListSessions(a.projectDir, 1000)
 	if err != nil {
 		slog.Error("switch: list sessions failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to check titles: %v", err))

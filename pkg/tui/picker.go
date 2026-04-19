@@ -137,7 +137,7 @@ func relativeTime(t time.Time) string {
 
 // openPicker loads sessions and opens the session picker overlay.
 func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
-	sessions, err := a.store.ListSessions("", 100)
+	sessions, err := a.store.ListSessions(a.projectDir, 100)
 	if err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to list sessions: %v", err))
 	}
