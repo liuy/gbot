@@ -436,6 +436,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case agentUsageMsg:
 		a.status.inputTokens += m.InputTokens
 		a.status.outTokens += m.OutputTokens
+		a.cacheReadTokens += m.CacheReadInputTokens
+		a.cacheCreationTokens += m.CacheCreationInputTokens
 		a.inputTokenTarget = a.status.inputTokens
 		a.outputTokenTarget = a.status.outTokens
 		a.displayedInputTokens = a.status.inputTokens
@@ -486,11 +488,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case usageMsg:
 		a.status.inputTokens += m.InputTokens
 		a.status.outTokens += m.OutputTokens
+		a.cacheReadTokens += m.CacheReadInputTokens
+		a.cacheCreationTokens += m.CacheCreationInputTokens
 		// Input tokens arrive all at once — snap immediately
 		a.displayedInputTokens = a.status.inputTokens
 		a.inputTokenTarget = a.status.inputTokens
 		a.outputTokenTarget = a.status.outTokens
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.inputTokens, "total_out", a.status.outTokens)
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.inputTokens, "total_out", a.status.outTokens, "cache_read", a.cacheReadTokens, "cache_creation", a.cacheCreationTokens)
 		return true, a.readEvents()
 
 	case thinkingStartMsg:
@@ -644,6 +648,8 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.responseCharCount = 0
 	a.displayedInputTokens = 0
 	a.displayedOutputTokens = 0
+	a.cacheReadTokens = 0
+	a.cacheCreationTokens = 0
 	// Estimate input tokens from context + user message text
 	totalChars := len(a.systemPrompt) + len(text)
 	for _, msg := range a.repl.Messages() {

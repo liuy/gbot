@@ -103,9 +103,11 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		case types.EventUsage:
 			if evt.Usage != nil {
 				return agentUsageMsg{
-					ParentToolUseID: evt.Agent.ParentToolUseID,
-					InputTokens:     evt.Usage.InputTokens,
-					OutputTokens:    evt.Usage.OutputTokens,
+					ParentToolUseID:          evt.Agent.ParentToolUseID,
+					InputTokens:              evt.Usage.InputTokens,
+					OutputTokens:             evt.Usage.OutputTokens,
+					CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
+					CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
 				}
 			}
 		}
@@ -155,8 +157,10 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventUsage:
 		if evt.Usage != nil {
 			return usageMsg{
-				InputTokens:  evt.Usage.InputTokens,
-				OutputTokens: evt.Usage.OutputTokens,
+				InputTokens:              evt.Usage.InputTokens,
+				OutputTokens:             evt.Usage.OutputTokens,
+				CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
 			}
 		}
 

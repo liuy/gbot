@@ -68,8 +68,10 @@ type queryEndMsg struct {
 
 // usageMsg carries token usage from the LLM provider during streaming.
 type usageMsg struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 // thinkingStartMsg signals that the model has started extended thinking.
@@ -101,9 +103,11 @@ type agentToolMsg struct {
 
 // agentUsageMsg carries sub-agent token usage for both global and per-agent stats.
 type agentUsageMsg struct {
-	ParentToolUseID string
-	InputTokens     int
-	OutputTokens    int
+	ParentToolUseID          string
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 // notificationPendingMsg signals that a background notification is available

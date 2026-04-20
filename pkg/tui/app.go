@@ -101,6 +101,9 @@ type App struct {
 	displayedOutputTokens int
 	outputTokenTarget    int
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
+		// Cache token tracking for spinner display
+		cacheReadTokens     int
+		cacheCreationTokens int
 }
 
 // NewApp creates a new App model.
@@ -353,6 +356,14 @@ func (a *App) View() string {
 		spinnerFrame := a.spinner.View()
 		elapsedStr := formatElapsed(a.progressStart)
 		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.displayedInputTokens), formatTokenCount(a.displayedOutputTokens))
+		var cacheStr string
+		if a.cacheReadTokens > 0 {
+			total := a.cacheReadTokens + a.status.inputTokens
+			if total > 0 {
+				pct := a.cacheReadTokens * 100 / total
+				cacheStr = fmt.Sprintf(" · %d%% cached", pct)
+			}
+		}
 		var thinkingStr string
 		if a.thinkingActive {
 			thinkingStr = " · thinking"
@@ -367,7 +378,7 @@ func (a *App) View() string {
 				toolsStr = fmt.Sprintf(" · %d tools", tc)
 			}
 		}
-		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + toolsStr + thinkingStr + ")"
+		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + cacheStr + toolsStr + thinkingStr + ")"
 		sb.WriteString(progressLine)
 		sb.WriteString("\n")
 	}
