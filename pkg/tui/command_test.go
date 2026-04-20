@@ -4,8 +4,8 @@ import "testing"
 
 func TestLookupSlashCommand(t *testing.T) {
 	tests := []struct {
-		input   string
-		wantOK  bool
+		input    string
+		wantOK   bool
 		wantName string
 		wantArgs string
 	}{
@@ -14,6 +14,7 @@ func TestLookupSlashCommand(t *testing.T) {
 		{"/switch -n title", true, "switch", "-n title"},
 		{"/switch title", true, "switch", "title"},
 		{"/switch   extra   spaces", true, "switch", "extra   spaces"},
+		{"/clear", true, "clear", ""},
 		{"/unknown", false, "", ""},
 		{"hello", false, "", ""},
 		{"not a command", false, "", ""},

@@ -9,6 +9,7 @@ import (
 
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
@@ -35,7 +36,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 		return a.openPicker(commitCmd)
 		}
 	if args == "-n" {
-		return a.createNewSession("", commitCmd)
+		return a.createNewSession("", "Switched to", commitCmd)
 	}
 
 	if strings.HasPrefix(args, "-n ") {
@@ -43,7 +44,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 		if title == "" {
 			return a.showInfo("Title cannot be empty. Usage: /switch -n <title>")
 		}
-		return a.createNewSession(title, commitCmd)
+		return a.createNewSession(title, "Switched to", commitCmd)
 	}
 
 	// Otherwise, treat as title → fork current session
@@ -51,7 +52,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 }
 
 // createNewSession creates a new empty session and switches to it.
-func (a *App) createNewSession(title string, commitCmd tea.Cmd) tea.Cmd {
+func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	session, err := a.store.CreateSession(a.projectDir, a.engine.Model())
 	if err != nil {
 		slog.Error("switch: create session failed", "error", err)
@@ -74,6 +75,18 @@ func (a *App) createNewSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	*a.repl = *NewReplState()
 	a.committedCount = 0
 
+	// Reset prompt cache break detection (main thread only, preserve sub-agent state)
+	llm.ResetMainThreadCacheBreakDetection()
+
+	// Reset all display state (token counters, scroll, thinking, etc.)
+	a.resetDisplayState()
+
+	// Close old idleStop goroutine to prevent leak
+	if a.idleStop != nil {
+		close(a.idleStop)
+	}
+	a.idleStop = make(chan struct{})
+
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
 		slog.Warn("switch: write workspace meta failed", "error", err)
@@ -85,7 +98,7 @@ func (a *App) createNewSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	}
 	slog.Info("switch: created new session", "sessionID", session.SessionID, "title", title)
 
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to new session: %s", displayTitle)))
+	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
 }
 
 // forkCurrentSession forks the current session with the given title.

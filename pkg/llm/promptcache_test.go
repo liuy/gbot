@@ -792,6 +792,41 @@ func TestResetPromptCacheBreakDetection(t *testing.T) {
 	}
 }
 
+func TestResetMainThreadCacheBreakDetection_PreservesSubAgents(t *testing.T) {
+	resetGlobalState()
+
+	// Record state for main thread and a sub-agent
+	mainKey := PromptStateKey{QuerySource: "repl_main_thread"}
+	agentKey := PromptStateKey{QuerySource: "agent:builtin:Explore", AgentID: "Explore"}
+	RecordPromptState(makeSystemBlocks("main sys"), makeTools("Read"), mainKey, "sonnet", nil, "", false, false, false, false, "", 0)
+	RecordPromptState(makeSystemBlocks("agent sys"), makeTools("Read", "Bash"), agentKey, "sonnet", nil, "", false, false, false, false, "", 0)
+
+	// Verify both entries exist
+	muState.Lock()
+	if len(stateStore) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(stateStore))
+	}
+	muState.Unlock()
+
+	// Reset main thread only
+	ResetMainThreadCacheBreakDetection()
+
+	// Main thread should be gone
+	if _, ok := stateStore["repl_main_thread"]; ok {
+		t.Error("main thread state should be cleared")
+	}
+	// Sub-agent should still exist (tracking key is the agentID "Explore", not the QuerySource)
+	if _, ok := stateStore["Explore"]; !ok {
+		t.Error("sub-agent state should be preserved")
+	}
+	muState.Lock()
+	count := len(stateStore)
+	muState.Unlock()
+	if count != 1 {
+		t.Errorf("stateStore length should be 1 after reset, got %d", count)
+	}
+}
+
 // --- buildDiffableContent edge cases ---
 
 func TestBuildDiffableContent_NoTools(t *testing.T) {

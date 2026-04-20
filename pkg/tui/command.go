@@ -16,6 +16,7 @@ type SlashCommand struct {
 // commandDefs maps slash command names to their definitions.
 var commandDefs = map[string]struct{}{
 	"switch": {},
+	"clear":  {},
 }
 
 // LookupSlashCommand checks if the input text is a slash command.
@@ -53,8 +54,22 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 	switch cmd.Name {
 	case "switch":
 		return a.handleSwitch(cmd.Args, commitCmd)
+	case "clear":
+		return a.handleClear(commitCmd)
 	default:
 		slog.Warn("tui:unknown slash command", "name", cmd.Name)
 		return commitCmd
 	}
+}
+
+// handleClear implements the /clear command.
+// Source: TS src/commands/clear/clear.ts — clearConversation
+func (a *App) handleClear(commitCmd tea.Cmd) tea.Cmd {
+	if a.repl.IsStreaming() {
+		return a.showInfo("Cannot clear while streaming")
+	}
+	if a.store == nil {
+		return a.showInfo("Session storage not available")
+	}
+	return a.createNewSession("", "Cleared", commitCmd)
 }

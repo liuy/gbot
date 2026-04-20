@@ -70,6 +70,22 @@ func ResetPromptCacheBreakDetection() {
 	insertionOrder = nil
 }
 
+// ResetMainThreadCacheBreakDetection clears only the main thread tracking state,
+// preserving sub-agent state so concurrent agents aren't affected.
+func ResetMainThreadCacheBreakDetection() {
+	muState.Lock()
+	defer muState.Unlock()
+	delete(stateStore, "repl_main_thread")
+	// Remove from insertionOrder
+	filtered := insertionOrder[:0]
+	for _, k := range insertionOrder {
+		if k != "repl_main_thread" {
+			filtered = append(filtered, k)
+		}
+	}
+	insertionOrder = filtered
+}
+
 // djb2Hash computes a djb2 hash of the input string.
 // Source: utils/hash.ts:7-13 — exact port.
 func djb2Hash(s string) uint32 {

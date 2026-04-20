@@ -144,6 +144,31 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 	a.lastPersistedIdx = lastPersistedIdx
 }
 
+// resetDisplayState zeros all App-level display fields for a clean session.
+// Called by createNewSession so both /clear and /switch -n benefit.
+func (a *App) resetDisplayState() {
+	a.scrollOffset = 0
+	a.scrollTotal = 0
+	a.userScrolled = false
+	a.contentCache = ""
+	a.contentDirty = false
+	a.allToolsExpanded = false
+	a.thinkingActive = false
+	a.thinkingStart = time.Time{}
+	a.thinkingDuration = 0
+	a.progressStart = time.Time{}
+	a.responseCharCount = 0
+	a.displayedInputTokens = 0
+	a.displayedOutputTokens = 0
+	a.outputTokenTarget = 0
+	a.inputTokenTarget = 0
+	a.cacheReadTokens = 0
+	a.cacheCreationTokens = 0
+	a.toolBlink = false
+	a.toolBlinkTick = 0
+	a.status.SetUsage(0, 0)
+}
+
 // ---------------------------------------------------------------------------
 // tea.Model interface
 // ---------------------------------------------------------------------------
