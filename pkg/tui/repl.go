@@ -451,7 +451,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
 			var cachePart string
 			if a.cacheReadTokens > 0 {
-				total := a.cacheReadTokens + a.status.inputTokens
+				total := a.cacheReadTokens + a.cacheCreationTokens + a.status.inputTokens
 				if total > 0 {
 					pct := a.cacheReadTokens * 100 / total
 					cachePart = fmt.Sprintf(" · %d%% cached", pct)

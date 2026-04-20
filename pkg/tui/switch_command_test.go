@@ -19,7 +19,8 @@ func newSwitchTestApp(t *testing.T) (*App, *short.Store) {
 	}
 
 	eng := engine.New(&engine.Params{Logger: slog.Default()})
-	session, err := store.CreateSession("", "test-model")
+	projectDir := filepath.Join(dir, "project")
+	session, err := store.CreateSession(projectDir, "test-model")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -29,6 +30,7 @@ func newSwitchTestApp(t *testing.T) (*App, *short.Store) {
 		engine:           eng,
 		store:            store,
 		sessionID:        session.SessionID,
+		projectDir:       projectDir,
 		lastPersistedIdx: 0,
 		repl:             NewReplState(),
 	}
@@ -79,7 +81,7 @@ func TestHandleSwitch_NewSessionWithTitle(t *testing.T) {
 	_ = cmd
 
 	// Verify session was created with title
-	sessions, err := store.ListSessions("", 100)
+	sessions, err := store.ListSessions(a.projectDir, 100)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -99,7 +101,7 @@ func TestHandleSwitch_ForkWithDuplicateTitle(t *testing.T) {
 	a, store := newSwitchTestApp(t)
 
 	// Create a session with a known title
-	session, _ := store.CreateSession("", "test-model")
+	session, _ := store.CreateSession(a.projectDir, "test-model")
 	if err := store.UpdateSessionTitle(session.SessionID, "existing-title"); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestHandleSwitch_ForkSuccess(t *testing.T) {
 	}
 
 	// Verify title
-	sessions, _ := store.ListSessions("", 100)
+	sessions, _ := store.ListSessions(a.projectDir, 100)
 	for _, s := range sessions {
 		if s.SessionID == a.sessionID {
 			if s.Title != "fork-title" {
