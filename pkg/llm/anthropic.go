@@ -401,10 +401,6 @@ func applyCacheControlToSystem(req *Request) {
 	if req.CacheControl == nil {
 		return
 	}
-	// Apply default TTL when not explicitly set.
-	if req.CacheControl.TTL == "" {
-		req.CacheControl.TTL = defaultCacheTTL
-	}
 	if len(req.SystemBlocks) > 0 {
 		// Inject cache_control into the last system block.
 		// Anthropic recommends placing cache_control on the last block for maximum cache hit rate.

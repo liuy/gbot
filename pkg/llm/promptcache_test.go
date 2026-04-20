@@ -332,7 +332,7 @@ func TestGetCacheBreakDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getCacheBreakDir failed: %v", err)
 	}
-	if !strings.HasSuffix(dir, filepath.Join(".gbot", "cache-break")) {
+	if !strings.HasSuffix(dir, filepath.Join("gbot-cache-break")) {
 		t.Errorf("unexpected dir: %s", dir)
 	}
 	// Verify directory exists
@@ -354,7 +354,7 @@ func TestWriteCacheBreakDiff(t *testing.T) {
 	if diffPath == "" {
 		t.Fatal("writeCacheBreakDiff should return a path")
 	}
-	if !strings.HasPrefix(diffPath, filepath.Join(os.Getenv("HOME"), ".gbot", "cache-break")) {
+	if !strings.HasPrefix(diffPath, filepath.Join(os.TempDir(), "gbot-cache-break")) {
 		t.Errorf("diff path should be in cache-break dir, got %s", diffPath)
 	}
 	// Verify file exists

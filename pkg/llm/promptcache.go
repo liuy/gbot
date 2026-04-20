@@ -38,8 +38,6 @@ const (
 	// Source: promptCacheBreakDetection.ts:126
 	cacheTTL1HourMS = 60 * 60 * 1000
 
-	// defaultCacheTTL is the default TTL for cache_control markers.
-	defaultCacheTTL = "1h"
 )
 
 // trackedSourcePrefixes lists query sources that are tracked for break detection.
@@ -227,11 +225,7 @@ func buildDiffableContent(system []map[string]any, tools []map[string]any, model
 
 // getCacheBreakDir returns the directory for cache break diff files.
 func getCacheBreakDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".gbot", "cache-break")
+	dir := filepath.Join(os.TempDir(), "gbot-cache-break")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}

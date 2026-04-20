@@ -1764,3 +1764,42 @@ func TestQueryWithExistingMessages(t *testing.T) {
 }
 
 // TestRunTurns_DrainsNotificationsAtStage20 verifies that when runTurns hits the
+
+func TestIsBuiltInAgent(t *testing.T) {
+	tests := []struct {
+		agentType string
+		want      bool
+	}{
+		{"General", true},
+		{"Explore", true},
+		{"Plan", true},
+		{"general-purpose", false},
+		{"my-custom-agent", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isBuiltInAgent(tt.agentType); got != tt.want {
+			t.Errorf("isBuiltInAgent(%q) = %v, want %v", tt.agentType, got, tt.want)
+		}
+	}
+}
+
+func TestNewSubEngine_SetsAgentType(t *testing.T) {
+	parent := New(&Params{})
+
+	sub := parent.NewSubEngine(SubEngineOptions{
+		AgentType: "Explore",
+		Tools:    map[string]tool.Tool{},
+	})
+	if sub.agentType != "Explore" {
+		t.Errorf("sub.agentType = %q, want %q", sub.agentType, "Explore")
+	}
+	if !sub.isSubagent {
+		t.Error("sub.isSubagent should be true")
+	}
+
+	// Main engine should have empty agentType
+	if parent.agentType != "" {
+		t.Errorf("parent.agentType = %q, want empty", parent.agentType)
+	}
+}

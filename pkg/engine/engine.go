@@ -80,6 +80,10 @@ type Engine struct {
 	// Source: tokenBudget.ts:45-53 — checkTokenBudget skips when agentId is set.
 	isSubagent bool
 
+	// agentType is the sub-agent type (e.g. "General", "Explore", "Plan").
+	// Empty for the main engine. Set by NewSubEngine from SubEngineOptions.AgentType.
+	agentType string
+
 	// maxTurns is the maximum number of agentic turns before stopping.
 	// Default: 50. Sub-engines may override via SubEngineOptions.
 	maxTurns int
@@ -494,8 +498,22 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			systemBlocks = []llm.SystemBlockParam{
 				{Type: "text", Text: promptText},
 			}
-			cacheControl = &llm.CacheControlConfig{Type: "ephemeral"}
-			promptStateKey = &llm.PromptStateKey{QuerySource: "repl_main_thread"}
+			if e.isSubagent {
+				// Sub-agent: 5m TTL, agent-specific QuerySource
+				// Source: promptCategory.ts:16-28 — getQuerySourceForAgent
+				querySource := "agent:custom"
+				if isBuiltInAgent(e.agentType) {
+					querySource = "agent:builtin:" + e.agentType
+				}
+				cacheControl = &llm.CacheControlConfig{Type: "ephemeral", TTL: "5m"}
+				promptStateKey = &llm.PromptStateKey{
+					QuerySource: querySource,
+					AgentID:     e.agentType,
+				}
+			} else {
+				cacheControl = &llm.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
+				promptStateKey = &llm.PromptStateKey{QuerySource: "repl_main_thread"}
+			}
 		}
 	}
 
@@ -1054,8 +1072,19 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		dispatcher:    dispatcher,
 		notifications: &notificationQueue{},
 		isSubagent:    true,
+		agentType:     opts.AgentType,
 		maxTurns:      subMaxTurns(opts.MaxTurns),
 	}
+}
+
+// isBuiltInAgent returns true for the three built-in agent types.
+// Source: builtInAgents.ts — General, Explore, Plan
+func isBuiltInAgent(agentType string) bool {
+	switch agentType {
+	case "General", "Explore", "Plan":
+		return true
+	}
+	return false
 }
 
 // QuerySync executes the agentic loop synchronously (no goroutine, no channels).

@@ -8,6 +8,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -107,6 +108,9 @@ func TestCacheIntegration_RequestHasCacheControl(t *testing.T) {
 	}
 	if req.CacheControl.Type != "ephemeral" {
 		t.Errorf("CacheControl.Type = %q, want %q", req.CacheControl.Type, "ephemeral")
+	}
+	if req.CacheControl.TTL != "1h" {
+		t.Errorf("CacheControl.TTL = %q, want %q", req.CacheControl.TTL, "1h")
 	}
 
 	// SystemBlocks should contain the system prompt
@@ -251,5 +255,90 @@ func TestCacheIntegration_CacheHitRateCalculation(t *testing.T) {
 
 	if pct != 98 {
 		t.Errorf("cache hit rate = %d%%, want 98%% (8000/%d)", pct, total)
+	}
+}
+
+// TestCacheIntegration_SubAgentBuiltIn verifies built-in sub-agents get
+// agent-specific QuerySource and 5m TTL.
+func TestCacheIntegration_SubAgentBuiltIn(t *testing.T) {
+	cp := &captureProvider{
+		events: cacheStreamEvents(0, 5000),
+	}
+
+	parent := engine.New(&engine.Params{
+		Logger:   slog.Default(),
+		Provider: cp,
+	})
+
+	sub := parent.NewSubEngine(engine.SubEngineOptions{
+		AgentType: "Explore",
+		Tools:     map[string]tool.Tool{},
+	})
+
+	sysPrompt, _ := json.Marshal("You are an explorer.")
+	result := sub.QuerySync(context.Background(), "hi", sysPrompt)
+
+	if result.Error != nil {
+		t.Fatalf("QuerySync error: %v", result.Error)
+	}
+
+	req := cp.lastReq
+	if req == nil {
+		t.Fatal("expected request to be captured")
+	}
+
+	// TTL should be 5m for sub-agents
+	if req.CacheControl == nil {
+		t.Fatal("expected CacheControl to be set")
+	}
+	if req.CacheControl.TTL != "5m" {
+		t.Errorf("CacheControl.TTL = %q, want %q", req.CacheControl.TTL, "5m")
+	}
+
+	// QuerySource should be "agent:builtin:Explore"
+	if req.PromptStateKey == nil {
+		t.Fatal("expected PromptStateKey to be set")
+	}
+	if req.PromptStateKey.QuerySource != "agent:builtin:Explore" {
+		t.Errorf("QuerySource = %q, want %q", req.PromptStateKey.QuerySource, "agent:builtin:Explore")
+	}
+	if req.PromptStateKey.AgentID != "Explore" {
+		t.Errorf("AgentID = %q, want %q", req.PromptStateKey.AgentID, "Explore")
+	}
+}
+
+// TestCacheIntegration_SubAgentCustom verifies custom sub-agents get
+// "agent:custom" QuerySource and 5m TTL.
+func TestCacheIntegration_SubAgentCustom(t *testing.T) {
+	cp := &captureProvider{
+		events: cacheStreamEvents(0, 5000),
+	}
+
+	parent := engine.New(&engine.Params{
+		Logger:   slog.Default(),
+		Provider: cp,
+	})
+
+	sub := parent.NewSubEngine(engine.SubEngineOptions{
+		AgentType: "my-custom-agent",
+		Tools:     map[string]tool.Tool{},
+	})
+
+	sysPrompt, _ := json.Marshal("You are a custom agent.")
+	result := sub.QuerySync(context.Background(), "hi", sysPrompt)
+
+	if result.Error != nil {
+		t.Fatalf("QuerySync error: %v", result.Error)
+	}
+
+	req := cp.lastReq
+	if req.PromptStateKey == nil {
+		t.Fatal("expected PromptStateKey to be set")
+	}
+	if req.PromptStateKey.QuerySource != "agent:custom" {
+		t.Errorf("QuerySource = %q, want %q", req.PromptStateKey.QuerySource, "agent:custom")
+	}
+	if req.CacheControl.TTL != "5m" {
+		t.Errorf("CacheControl.TTL = %q, want %q", req.CacheControl.TTL, "5m")
 	}
 }
