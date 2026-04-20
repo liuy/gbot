@@ -288,12 +288,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	// Log usage analytics on every exit path.
 	defer func() {
 		if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
-			e.logger.Info("engine:usage",
-				"inputTokens", totalUsage.InputTokens,
-				"outputTokens", totalUsage.OutputTokens,
-				"cacheReadInputTokens", totalUsage.CacheReadInputTokens,
-				"cacheCreationInputTokens", totalUsage.CacheCreationInputTokens,
-			)
+			e.logger.Info("engine:usage", "total", totalUsage)
 		}
 	}()
 	reactiveCompactDone := false
@@ -688,13 +683,18 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			}
 			if event.Usage != nil {
 				usage.OutputTokens = event.Usage.OutputTokens
+				// Accumulate cache tokens from message_delta.
+				// Some providers (e.g. minimax) report cache tokens in
+				// message_delta rather than message_start.
+				usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
+				usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
-						InputTokens:  event.Usage.InputTokens,
+						InputTokens:              0,
 						OutputTokens:             usage.OutputTokens,
-						CacheReadInputTokens:     usage.CacheReadInputTokens,
-						CacheCreationInputTokens: usage.CacheCreationInputTokens,
+						CacheReadInputTokens:     event.Usage.CacheReadInputTokens,
+						CacheCreationInputTokens: event.Usage.CacheCreationInputTokens,
 					},
 				})
 			}
@@ -874,11 +874,26 @@ func (e *Engine) shouldAutoCompact() bool {
 func (e *Engine) marshalMessages() []types.Message {
 	result := make([]types.Message, len(e.messages))
 	for i, msg := range e.messages {
+		contentCopy := make([]types.ContentBlock, len(msg.Content))
+		copy(contentCopy, msg.Content)
 		result[i] = types.Message{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: contentCopy,
 		}
 	}
+
+	// Add cache_control to the last block of the last message for incremental caching.
+	// This mirrors TS Claude Code's addCacheBreakpoints() which marks only
+	// messages[messages.length - 1] with cache_control on its last block.
+	// Source: claude.ts:3089-3106 (addCacheBreakpoints)
+	if len(result) > 0 {
+		last := &result[len(result)-1]
+		if len(last.Content) > 0 {
+			lastBlock := &last.Content[len(last.Content)-1]
+			lastBlock.CacheControl = &types.CacheControlConfig{Type: "ephemeral"}
+		}
+	}
+
 	return result
 }
 

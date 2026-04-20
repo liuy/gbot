@@ -39,10 +39,16 @@ type Message struct {
 // Usage tracks token consumption.
 // Source: Anthropic API Usage type.
 type Usage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens"`              // new (non-cached) input tokens
+	OutputTokens             int `json:"output_tokens"`             // output tokens
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // new tokens added to cache
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // tokens read from cache
+}
+
+// TotalInputTokens returns the total billed input tokens (new + cache read + cache create).
+// Source: minimax cache docs — total = input + cache_read + cache_creation.
+func (u Usage) TotalInputTokens() int {
+	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +65,14 @@ const (
 	ContentTypeThinking   ContentType = "thinking"
 	ContentTypeRedacted     ContentType = "redacted_thinking"
 )
+
+// CacheControlConfig carries cache control settings for Anthropic API.
+// Source: claude.ts:358-374
+type CacheControlConfig struct {
+	Type  string `json:"type"`           // "ephemeral"
+	TTL   string `json:"ttl,omitempty"`  // "1h", "5m", etc.
+	Scope string `json:"scope,omitempty"` // "global" | "org" | "" (none)
+}
 
 // ContentBlock is a discriminated union for message content.
 // Source: Anthropic API content block types.
@@ -81,6 +95,11 @@ type ContentBlock struct {
 	// Redacted thinking data (type == "redacted_thinking")
 	// Must be preserved verbatim and replayed to the API.
 	Data string `json:"data,omitempty"`
+
+	// Cache control for incremental caching on the last block.
+	// Source: claude.ts:3089-3106 — addCacheBreakpoints adds cache_control
+	// only to the last block of the last message.
+	CacheControl *CacheControlConfig `json:"cache_control,omitempty"`
 }
 
 // NewTextBlock creates a text content block.

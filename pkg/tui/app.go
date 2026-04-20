@@ -16,6 +16,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ func (a *App) resetDisplayState() {
 	a.cacheCreationTokens = 0
 	a.toolBlink = false
 	a.toolBlinkTick = 0
-	a.status.SetUsage(0, 0)
+	a.status.SetUsage(types.Usage{})
 }
 
 // ---------------------------------------------------------------------------

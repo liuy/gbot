@@ -13,6 +13,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -434,13 +435,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case agentUsageMsg:
-		a.status.inputTokens += m.InputTokens
-		a.status.outTokens += m.OutputTokens
-		a.cacheReadTokens += m.CacheReadInputTokens
-		a.cacheCreationTokens += m.CacheCreationInputTokens
-		a.inputTokenTarget = a.status.inputTokens
-		a.outputTokenTarget = a.status.outTokens
-		a.displayedInputTokens = a.status.inputTokens
+		a.status.usage.InputTokens += m.InputTokens
+		a.status.usage.OutputTokens += m.OutputTokens
+		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
+		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
+		a.inputTokenTarget = a.status.usage.TotalInputTokens()
+		a.outputTokenTarget = a.status.usage.OutputTokens
+		a.displayedInputTokens = a.status.usage.TotalInputTokens()
 		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
 		return true, a.readEvents()
 
@@ -448,13 +449,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.repl.FinishStream(m.Err)
 		if !a.progressStart.IsZero() {
 			elapsedStr := formatElapsed(a.progressStart)
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.usage.TotalInputTokens()), formatTokenCount(a.status.usage.OutputTokens))
 			var cachePart string
-			if a.cacheReadTokens > 0 || a.cacheCreationTokens > 0 {
-				total := a.cacheReadTokens + a.cacheCreationTokens + a.status.inputTokens
+			if a.status.usage.CacheReadInputTokens > 0 || a.status.usage.CacheCreationInputTokens > 0 {
+				total := a.status.usage.CacheReadInputTokens + a.status.usage.CacheCreationInputTokens + a.status.usage.InputTokens
 				if total > 0 {
-					if a.cacheReadTokens > 0 {
-						pct := a.cacheReadTokens * 100 / total
+					if a.status.usage.CacheReadInputTokens > 0 {
+						pct := a.status.usage.CacheReadInputTokens * 100 / total
 						cachePart = fmt.Sprintf(" · %d%% cached", pct)
 					} else {
 						cachePart = " · cache warmed"
@@ -474,7 +475,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
 				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
-				slog.Info("tui:query_end", "inputTokens", a.status.inputTokens, "outTokens", a.status.outTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+				slog.Info("tui:query_end", "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 			}
 		}
 		a.progressStart = time.Time{}
@@ -498,15 +499,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
-		a.status.inputTokens += m.InputTokens
-		a.status.outTokens += m.OutputTokens
-		a.cacheReadTokens += m.CacheReadInputTokens
-		a.cacheCreationTokens += m.CacheCreationInputTokens
+		a.status.usage.InputTokens += m.InputTokens
+		a.status.usage.OutputTokens += m.OutputTokens
+		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
+		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
 		// Input tokens arrive all at once — snap immediately
-		a.displayedInputTokens = a.status.inputTokens
-		a.inputTokenTarget = a.status.inputTokens
-		a.outputTokenTarget = a.status.outTokens
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.inputTokens, "total_out", a.status.outTokens, "cache_read", a.cacheReadTokens, "cache_creation", a.cacheCreationTokens)
+		a.displayedInputTokens = a.status.usage.TotalInputTokens()
+		a.inputTokenTarget = a.status.usage.TotalInputTokens()
+		a.outputTokenTarget = a.status.usage.OutputTokens
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		return true, a.readEvents()
 
 	case thinkingStartMsg:
@@ -543,7 +544,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.progressStart = time.Now()
 		a.thinkingActive = false
 		a.thinkingDuration = 0
-		a.status.SetUsage(0, 0)
+		a.status.SetUsage(types.Usage{})
 		return true, a.readEvents()
 
 	case idleAbortedMsg:
@@ -587,8 +588,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
 			// Animate displayed tokens toward actual values
 			target := a.inputTokenTarget
-			if a.status.inputTokens > target {
-				target = a.status.inputTokens
+			if a.status.usage.TotalInputTokens() > target {
+				target = a.status.usage.TotalInputTokens()
 			}
 			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
 			outputTarget := a.outputTokenTarget
@@ -656,7 +657,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.progressStart = time.Now()
 	a.thinkingActive = false
 	a.thinkingDuration = 0
-	a.status.SetUsage(0, 0)
+	a.status.SetUsage(types.Usage{})
 	a.responseCharCount = 0
 	a.displayedInputTokens = 0
 	a.displayedOutputTokens = 0

@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // dot is a bullet indicator rendered before tool calls.
@@ -443,13 +444,12 @@ func (i *Input) renderLineSingle(lines []wrappedLine) string {
 
 // StatusBar shows model info, token usage, and streaming status.
 type StatusBar struct {
-	model       string
-	streaming   bool
-	inputTokens int
-	outTokens   int
-	width       int
-	err         string
-	info        string
+	model     string
+	streaming bool
+	usage     types.Usage
+	width     int
+	err       string
+	info      string
 }
 
 // NewStatusBar creates a new status bar.
@@ -468,9 +468,8 @@ func (s *StatusBar) SetStreaming(v bool) {
 }
 
 // SetUsage updates token counters.
-func (s *StatusBar) SetUsage(in, out int) {
-	s.inputTokens = in
-	s.outTokens = out
+func (s *StatusBar) SetUsage(u types.Usage) {
+	s.usage = u
 }
 
 // SetWidth sets the bar width.
@@ -507,7 +506,7 @@ func (s StatusBar) View() string {
 		left += errStyle.Render(fmt.Sprintf(" err: %s", s.err))
 	}
 
-	right := fmt.Sprintf("in:%d out:%d ", s.inputTokens, s.outTokens)
+	right := fmt.Sprintf("in:%d out:%d ", s.usage.InputTokens, s.usage.OutputTokens)
 
 	// Pad to fill width
 	content := left + right

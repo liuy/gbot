@@ -1340,11 +1340,11 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	if cmd == nil {
 		t.Error("usageMsg should return a readEvents cmd")
 	}
-	if app.status.inputTokens != 100 {
-		t.Errorf("inputTokens = %d, want 100", app.status.inputTokens)
+	if app.status.usage.InputTokens != 100 {
+		t.Errorf("inputTokens = %d, want 100", app.status.usage.InputTokens)
 	}
-	if app.status.outTokens != 50 {
-		t.Errorf("outTokens = %d, want 50", app.status.outTokens)
+	if app.status.usage.OutputTokens != 50 {
+		t.Errorf("outTokens = %d, want 50", app.status.usage.OutputTokens)
 	}
 	// Input tokens should snap immediately to actual value
 	if app.displayedInputTokens != 100 {
@@ -2558,8 +2558,8 @@ func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 	// Simulate first query state (without starting a real engine goroutine)
 	app.repl.AddUserMessage("first query")
 	app.repl.StartQuery(nil)
-	app.status.inputTokens = 100
-	app.status.outTokens = 50
+	app.status.usage.InputTokens = 100
+	app.status.usage.OutputTokens = 50
 	app.displayedInputTokens = 100
 	app.displayedOutputTokens = 50
 	app.responseCharCount = 200
@@ -3005,7 +3005,7 @@ func TestApp_Update_SpinnerTick_AnimatesTokens(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.streaming = true
 	app.spinner.Start()
-	app.status.inputTokens = 100
+	app.status.usage.InputTokens = 100
 	app.responseCharCount = 800 // estimate = 200 output tokens
 
 	app.Update(spinnerTickMsg{})
@@ -3305,8 +3305,8 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	app.repl.AppendChunk("first response")
 
 	// Usage arrives
-	app.status.inputTokens = 100
-	app.status.outTokens = 50
+	app.status.usage.InputTokens = 100
+	app.status.usage.OutputTokens = 50
 
 	// Stream completes — should embed stats in the last message
 	// Commit is deferred until next submit, so content stays in BT view.
@@ -3368,8 +3368,8 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 	app.progressStart = time.Now().Add(-1 * time.Second)
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello back")
-	app.status.inputTokens = 50
-	app.status.outTokens = 20
+	app.status.usage.InputTokens = 50
+	app.status.usage.OutputTokens = 20
 
 	app.Update(queryEndMsg{})
 
@@ -3568,8 +3568,8 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
 	app.progressStart = time.Now()
-	app.status.inputTokens = 10
-	app.status.outTokens = 5
+	app.status.usage.InputTokens = 10
+	app.status.usage.OutputTokens = 5
 
 	// Before commit: View shows collapsed output
 	v := app.View()
@@ -3706,8 +3706,8 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
 	app.progressStart = time.Now()
-	app.status.inputTokens = 10
-	app.status.outTokens = 5
+	app.status.usage.InputTokens = 10
+	app.status.usage.OutputTokens = 5
 
 	// Stream complete
 	app.Update(queryEndMsg{})

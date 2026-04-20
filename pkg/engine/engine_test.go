@@ -2232,6 +2232,180 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Cache token propagation from message_delta (minimax-style providers)
+// ---------------------------------------------------------------------------
+
+func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
+	t.Parallel()
+
+	// Simulate minimax-style provider: cache tokens appear in message_delta,
+	// not in message_start. This tests that engine.go reads cache tokens from
+	// event.Usage (the actual message_delta data), not from the stale local
+	// `usage` variable set by message_start.
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{
+			Type: "message_start",
+			Message: &llm.MessageStart{
+				Model: "test-model",
+				Usage: types.Usage{
+					InputTokens:              5000,
+					OutputTokens:             0,
+					CacheCreationInputTokens: 0,
+					CacheReadInputTokens:     0,
+				},
+			},
+		},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "cached response"}},
+		{Type: "content_block_stop", Index: 0},
+		{
+			Type:    "message_delta",
+			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
+			Usage: &llm.UsageDelta{
+				OutputTokens:             30,
+				CacheReadInputTokens:     5000,
+				CacheCreationInputTokens: 0,
+			},
+		},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var usageEvents []types.UsageEvent
+	for evt := range eventCh {
+		if evt.Type == types.EventUsage && evt.Usage != nil {
+			usageEvents = append(usageEvents, *evt.Usage)
+		}
+	}
+	result := <-resultCh
+
+	if len(usageEvents) != 2 {
+		t.Fatalf("expected 2 usage events, got %d: %+v", len(usageEvents), usageEvents)
+	}
+
+	// First event (message_start): cache tokens are 0
+	if usageEvents[0].CacheReadInputTokens != 0 {
+		t.Errorf("first usage CacheRead = %d, want 0", usageEvents[0].CacheReadInputTokens)
+	}
+
+	// Second event (message_delta): MUST carry the cache_read from event.Usage,
+	// not from the stale local `usage` variable (which was 0 from message_start).
+	if usageEvents[1].CacheReadInputTokens != 5000 {
+		t.Errorf("second usage CacheRead = %d, want 5000 (from message_delta)", usageEvents[1].CacheReadInputTokens)
+	}
+
+	// Verify TUI-style accumulation
+	totalCacheRead := 0
+	for _, u := range usageEvents {
+		totalCacheRead += u.CacheReadInputTokens
+	}
+	if totalCacheRead != 5000 {
+		t.Errorf("accumulated cache_read = %d, want 5000", totalCacheRead)
+	}
+
+	// Verify returned message has correct accumulated cache tokens
+	if result.Messages == nil {
+		t.Fatal("result.Messages is nil")
+	}
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Usage == nil {
+		t.Fatal("last message Usage is nil")
+	}
+	if lastMsg.Usage.CacheReadInputTokens != 5000 {
+		t.Errorf("returned message CacheRead = %d, want 5000", lastMsg.Usage.CacheReadInputTokens)
+	}
+}
+
+func TestQuery_CacheCreationInMessageStart(t *testing.T) {
+	t.Parallel()
+
+	// Simulate Anthropic-style: cache_creation in message_start.
+	// This should continue to work after the fix.
+	mp := &mockProvider{}
+	events := []llm.StreamEvent{
+		{
+			Type: "message_start",
+			Message: &llm.MessageStart{
+				Model: "test-model",
+				Usage: types.Usage{
+					InputTokens:              179,
+					OutputTokens:             0,
+					CacheCreationInputTokens: 5409,
+					CacheReadInputTokens:     0,
+				},
+			},
+		},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hello"}},
+		{Type: "content_block_stop", Index: 0},
+		{
+			Type:    "message_delta",
+			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
+			Usage: &llm.UsageDelta{
+				OutputTokens: 5,
+			},
+		},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var usageEvents []types.UsageEvent
+	for evt := range eventCh {
+		if evt.Type == types.EventUsage && evt.Usage != nil {
+			usageEvents = append(usageEvents, *evt.Usage)
+		}
+	}
+	result := <-resultCh
+
+	if len(usageEvents) != 2 {
+		t.Fatalf("expected 2 usage events, got %d", len(usageEvents))
+	}
+
+	// First event (message_start): cache_creation=5409
+	if usageEvents[0].CacheCreationInputTokens != 5409 {
+		t.Errorf("first usage CacheCreation = %d, want 5409", usageEvents[0].CacheCreationInputTokens)
+	}
+
+	// Accumulated total
+	totalCacheCreation := 0
+	for _, u := range usageEvents {
+		totalCacheCreation += u.CacheCreationInputTokens
+	}
+	if totalCacheCreation != 5409 {
+		t.Errorf("accumulated cache_creation = %d, want 5409", totalCacheCreation)
+	}
+
+	// Returned message
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Usage.CacheCreationInputTokens != 5409 {
+		t.Errorf("returned message CacheCreation = %d, want 5409", lastMsg.Usage.CacheCreationInputTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // EnqueueNotification + ProcessNotifications tests
 // ---------------------------------------------------------------------------
 

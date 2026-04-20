@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func stripANSIPrintable(s string) string {
@@ -326,7 +327,7 @@ func TestStatusBar_SetUsage(t *testing.T) {
 	t.Parallel()
 
 	s := NewStatusBar()
-	s.SetUsage(100, 50)
+	s.SetUsage(types.Usage{InputTokens: 100, OutputTokens: 50})
 	v := s.View()
 	if !strings.Contains(v, "in:100") {
 		t.Errorf("View() = %q, should contain input tokens", v)
