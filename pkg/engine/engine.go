@@ -482,13 +482,33 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	// Marshal messages for the API request
 	apiMessages := e.marshalMessages()
 
+	// Enable prompt caching: wrap system prompt into structured blocks
+	// so applyCacheControlToSystem can inject cache_control markers.
+	// Source: claude.ts:1374-1376 — always on by default.
+	var systemBlocks []llm.SystemBlockParam
+	var cacheControl *llm.CacheControlConfig
+	var promptStateKey *llm.PromptStateKey
+	if len(systemPrompt) > 0 {
+		var promptText string
+		if err := json.Unmarshal(systemPrompt, &promptText); err == nil && promptText != "" {
+			systemBlocks = []llm.SystemBlockParam{
+				{Type: "text", Text: promptText},
+			}
+			cacheControl = &llm.CacheControlConfig{Type: "ephemeral"}
+			promptStateKey = &llm.PromptStateKey{QuerySource: "repl_main_thread"}
+		}
+	}
+
 	req := &llm.Request{
-		Model:     e.model,
-		MaxTokens: e.maxTokens,
-		Messages:  apiMessages,
-		System:    systemPrompt,
-		Tools:     toolDefs,
-		Stream:    true,
+		Model:          e.model,
+		MaxTokens:      e.maxTokens,
+		Messages:       apiMessages,
+		System:         systemPrompt,
+		SystemBlocks:   systemBlocks,
+		Tools:          toolDefs,
+		Stream:         true,
+		CacheControl:   cacheControl,
+		PromptStateKey: promptStateKey,
 	}
 
 	streamCh, err := e.provider.Stream(ctx, req)

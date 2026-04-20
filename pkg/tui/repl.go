@@ -450,11 +450,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			elapsedStr := formatElapsed(a.progressStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
 			var cachePart string
-			if a.cacheReadTokens > 0 {
+			if a.cacheReadTokens > 0 || a.cacheCreationTokens > 0 {
 				total := a.cacheReadTokens + a.cacheCreationTokens + a.status.inputTokens
 				if total > 0 {
-					pct := a.cacheReadTokens * 100 / total
-					cachePart = fmt.Sprintf(" · %d%% cached", pct)
+					if a.cacheReadTokens > 0 {
+						pct := a.cacheReadTokens * 100 / total
+						cachePart = fmt.Sprintf(" · %d%% cached", pct)
+					} else {
+						cachePart = " · cache warmed"
+					}
 				}
 			}
 			var toolsPart string
