@@ -281,6 +281,17 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // and QueryWithExistingMessages (fork agent path).
 func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
 	var totalUsage types.Usage
+	// Log usage analytics on every exit path.
+	defer func() {
+		if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
+			e.logger.Info("engine:usage",
+				"inputTokens", totalUsage.InputTokens,
+				"outputTokens", totalUsage.OutputTokens,
+				"cacheReadInputTokens", totalUsage.CacheReadInputTokens,
+				"cacheCreationInputTokens", totalUsage.CacheCreationInputTokens,
+			)
+		}
+	}()
 	reactiveCompactDone := false
 
 	for e.turnCount < e.maxTurns {
@@ -361,6 +372,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		if resp.Usage != nil {
 			totalUsage.InputTokens += resp.Usage.InputTokens
 			totalUsage.OutputTokens += resp.Usage.OutputTokens
+			totalUsage.CacheReadInputTokens += resp.Usage.CacheReadInputTokens
+			totalUsage.CacheCreationInputTokens += resp.Usage.CacheCreationInputTokens
 		}
 
 		// Add assistant message to history
@@ -528,8 +541,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
-						InputTokens:  usage.InputTokens,
-						OutputTokens: usage.OutputTokens,
+						InputTokens:              usage.InputTokens,
+						OutputTokens:             usage.OutputTokens,
+						CacheReadInputTokens:     usage.CacheReadInputTokens,
+						CacheCreationInputTokens: usage.CacheCreationInputTokens,
 					},
 				})
 			}
@@ -639,7 +654,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
 						InputTokens:  event.Usage.InputTokens,
-						OutputTokens: usage.OutputTokens,
+						OutputTokens:             usage.OutputTokens,
+						CacheReadInputTokens:     usage.CacheReadInputTokens,
+						CacheCreationInputTokens: usage.CacheCreationInputTokens,
 					},
 				})
 			}

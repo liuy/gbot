@@ -48,6 +48,20 @@ type Request struct {
 
 	// Metadata
 	Metadata *RequestMetadata `json:"metadata,omitempty"`
+
+	// Cache control for Anthropic prompt caching.
+	// Source: claude.ts:358-374 — when non-nil, system blocks get cache_control markers.
+	CacheControl *CacheControlConfig `json:"-"`
+
+	// SystemBlocks stores structured system blocks for hash computation.
+	// When CacheControl is non-nil, Complete/Stream use these blocks and inject cache_control.
+	// Source: claude.ts system prompt assembly.
+	SystemBlocks []SystemBlockParam `json:"-"`
+
+	// PromptStateKey identifies the tracking key for cache break detection.
+	// When non-nil, RecordPromptState and CheckResponseForCacheBreak are called around the API call.
+	// Source: promptCacheBreakDetection.ts:149-158
+	PromptStateKey *PromptStateKey `json:"-"`
 }
 
 // RequestMetadata carries request-level metadata.
@@ -142,9 +156,12 @@ type MessageDelta struct {
 }
 
 // UsageDelta carries incremental usage info.
+// Source: Anthropic message_delta event — extended for cache token support.
 type UsageDelta struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens    int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // APIError represents an error from the LLM API.
@@ -291,4 +308,110 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// CacheControlConfig carries cache control settings for Anthropic API.
+// Source: claude.ts:358-374
+type CacheControlConfig struct {
+	Type  string `json:"type"`            // always "ephemeral"
+	TTL   string `json:"ttl,omitempty"`   // "1h" | "5m" | "" (default)
+	Scope string `json:"scope,omitempty"` // "global" | "org" | "" (none)
+}
+
+// SystemBlockParam represents a single system prompt block.
+// Source: Anthropic API system parameter (array variant).
+type SystemBlockParam struct {
+	Type         string              `json:"type"`                    // "text"
+	Text         string              `json:"text"`
+	CacheControl *CacheControlConfig `json:"cache_control,omitempty"`
+}
+
+// PromptStateKey identifies a tracked prompt state source.
+// Source: promptCacheBreakDetection.ts:149-158
+type PromptStateKey struct {
+	QuerySource string // e.g. "repl_main_thread", "agent:custom"
+	AgentID     string
+}
+
+func (k PromptStateKey) String() string {
+	if k.AgentID != "" {
+		return k.QuerySource + ":" + k.AgentID
+	}
+	return k.QuerySource
+}
+
+// promptStateInternal is the internal state stored for break detection.
+// Contains lazy diff-building closure. Not serializable.
+// Source: promptCacheBreakDetection.ts:28-69
+type promptStateInternal struct {
+	SystemHash           uint32
+	ToolsHash            uint32
+	CacheControlHash     uint32
+	ToolNames            []string
+	PerToolHashes        map[string]uint32
+	SystemCharCount      int
+	Model                string
+	FastMode             bool
+	GlobalCacheStrategy  string
+	Betas                []string
+	AutoModeActive       bool
+	IsUsingOverage       bool
+	CachedMCEnabled      bool
+	EffortValue          string
+	ExtraBodyHash        uint32
+	CallCount            int
+	PrevCacheRead        int
+	CacheDeletionsPending bool
+	BuildDiffableContent func() string // lazy eval (TS:206-222)
+	PendingChanges       *PendingChanges
+}
+
+// PromptStateSnapshot records pre-call state for break detection (public input).
+// Source: promptCacheBreakDetection.ts:227-241
+type PromptStateSnapshot struct {
+	SystemHash           uint32
+	ToolsHash            uint32
+	CacheControlHash     uint32
+	ToolNames            []string
+	PerToolHashes        map[string]uint32
+	SystemCharCount      int
+	Model                string
+	FastMode             bool
+	GlobalCacheStrategy  string
+	Betas                []string
+	CallCount            int
+	PrevCacheRead        int
+	CacheDeletionsPending bool
+}
+
+// PendingChanges records what changed between calls.
+// Source: promptCacheBreakDetection.ts:71-99
+type PendingChanges struct {
+	SystemPromptChanged         bool
+	ToolSchemasChanged          bool
+	ModelChanged                bool
+	FastModeChanged             bool
+	CacheControlChanged         bool
+	GlobalCacheStrategyChanged  bool
+	BetasChanged                bool
+	AutoModeActiveChanged       bool
+	OverageChanged              bool
+	CachedMCEnabledChanged      bool
+	EffortChanged               bool
+	ExtraBodyChanged            bool
+	AddedToolCount              int
+	RemovedToolCount            int
+	SystemCharDelta             int
+	AddedTools                  []string
+	RemovedTools                []string
+	ChangedToolSchemas          []string
+	PreviousModel               string
+	NewModel                    string
+	PrevGlobalCacheStrategy     string
+	NewGlobalCacheStrategy      string
+	PrevEffortValue             string
+	NewEffortValue              string
+	AddedBetas                  []string
+	RemovedBetas                []string
+	BuildPrevDiffableContent    func() string // lazy eval: diff written only on cache break
 }

@@ -2021,3 +2021,615 @@ func BenchmarkParseSSE(b *testing.B) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cache control and prompt cache break detection tests (US-003)
+// ---------------------------------------------------------------------------
+
+func TestAnthropicRequest_CacheControlHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify the prompt caching beta header is present
+		if got := r.Header.Get("anthropic-beta"); got != "prompt-caching-2024-10-22" {
+			t.Errorf("expected anthropic-beta 'prompt-caching-2024-10-22', got %q", got)
+		}
+		resp := llm.Response{
+			ID:         "msg_cache_hdr",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	resp, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		CacheControl: &llm.CacheControlConfig{
+			Type: "ephemeral",
+		},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.ID != "msg_cache_hdr" {
+		t.Errorf("expected ID msg_cache_hdr, got %s", resp.ID)
+	}
+}
+
+func TestAnthropicRequest_NoBetaHeaderWithoutCacheControl(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify the prompt caching beta header is NOT present when CacheControl is nil
+		if got := r.Header.Get("anthropic-beta"); got != "" {
+			t.Errorf("expected no anthropic-beta header, got %q", got)
+		}
+		resp := llm.Response{
+			ID:         "msg_no_beta",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	resp, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		// No CacheControl — beta header should NOT be sent
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+	if resp.ID != "msg_no_beta" {
+		t.Errorf("expected ID msg_no_beta, got %s", resp.ID)
+	}
+}
+
+func TestAnthropicRequest_SystemWithCacheControl(t *testing.T) {
+	t.Parallel()
+
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+
+		resp := llm.Response{
+			ID:         "msg_cc",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	_, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		CacheControl: &llm.CacheControlConfig{
+			Type: "ephemeral",
+			TTL:  "1h",
+		},
+		SystemBlocks: []llm.SystemBlockParam{
+			{Type: "text", Text: "You are a helpful assistant."},
+			{Type: "text", Text: "Additional context."},
+		},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	// Verify the system field was serialized as an array with cache_control on the last block
+	var req map[string]any
+	if err := json.Unmarshal(receivedBody, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+
+	systemArr, ok := req["system"].([]any)
+	if !ok {
+		t.Fatal("expected system to be an array")
+	}
+	if len(systemArr) != 2 {
+		t.Fatalf("expected 2 system blocks, got %d", len(systemArr))
+	}
+
+	// First block: no cache_control
+	first := systemArr[0].(map[string]any)
+	if _, hasCC := first["cache_control"]; hasCC {
+		t.Error("first block should NOT have cache_control")
+	}
+	if first["text"] != "You are a helpful assistant." {
+		t.Errorf("first block text = %q, want 'You are a helpful assistant.'", first["text"])
+	}
+
+	// Second block: has cache_control
+	second := systemArr[1].(map[string]any)
+	cc, hasCC := second["cache_control"]
+	if !hasCC {
+		t.Fatal("second block should have cache_control")
+	}
+	ccMap := cc.(map[string]any)
+	if ccMap["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %q, want 'ephemeral'", ccMap["type"])
+	}
+}
+
+func TestAnthropicComplete_CacheTokensParsed(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := llm.Response{
+			ID:         "msg_tokens",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Usage: types.Usage{
+				InputTokens:              100,
+				OutputTokens:             50,
+				CacheCreationInputTokens: 500,
+				CacheReadInputTokens:     10000,
+			},
+			Content: []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	resp, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	if resp.Usage.CacheReadInputTokens != 10000 {
+		t.Errorf("CacheReadInputTokens = %d, want 10000", resp.Usage.CacheReadInputTokens)
+	}
+	if resp.Usage.CacheCreationInputTokens != 500 {
+		t.Errorf("CacheCreationInputTokens = %d, want 500", resp.Usage.CacheCreationInputTokens)
+	}
+	if resp.Usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", resp.Usage.OutputTokens)
+	}
+}
+
+func TestAnthropicComplete_CacheBreakDetection(t *testing.T) {
+	t.Parallel()
+
+	// Reset break detection state
+	llm.ResetPromptCacheBreakDetection()
+
+	key := llm.PromptStateKey{
+		QuerySource: "repl_main_thread",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := llm.Response{
+			ID:         "msg_break",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-20250514",
+			StopReason: "end_turn",
+			Usage: types.Usage{
+				InputTokens:          100,
+				OutputTokens:         50,
+				CacheReadInputTokens: 10000,
+			},
+			Content: []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "claude-sonnet-4-20250514",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+
+	// First call — sets baseline
+	_, err := p.Complete(ctx, &llm.Request{
+		Model:          "claude-sonnet-4-20250514",
+		MaxTokens:      1024,
+		PromptStateKey: &key,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() first call error: %v", err)
+	}
+
+	// Second call — should not crash even with same tokens
+	_, err = p.Complete(ctx, &llm.Request{
+		Model:          "claude-sonnet-4-20250514",
+		MaxTokens:      1024,
+		PromptStateKey: &key,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() second call error: %v", err)
+	}
+
+	llm.ResetPromptCacheBreakDetection()
+}
+
+func TestAnthropicStream_CacheTokensAccumulated(t *testing.T) {
+	t.Parallel()
+
+	llm.ResetPromptCacheBreakDetection()
+
+	key := llm.PromptStateKey{
+		QuerySource: "repl_main_thread",
+	}
+
+	sseData := []string{
+		"event: message_start\n" + `data: {"message":{"id":"msg_s","type":"message","role":"assistant","model":"test","usage":{"input_tokens":10,"cache_read_input_tokens":8000,"cache_creation_input_tokens":200}}}` + "\n\n",
+		"event: content_block_start\n" + `data: {"index":0,"content_block":{"type":"text","text":""}}` + "\n\n",
+		"event: content_block_delta\n" + `data: {"index":0,"delta":{"type":"text_delta","text":"Hi"}}` + "\n\n",
+		"event: content_block_stop\n" + `data: {"index":0}` + "\n\n",
+		"event: message_delta\n" + `data: {"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"cache_read_input_tokens":2000}}` + "\n\n",
+		"event: message_stop\n" + `data: {}` + "\n\n",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for _, data := range sseData {
+			_, _ = fmt.Fprint(w, data)
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	eventCh, err := p.Stream(ctx, &llm.Request{
+		Model:          "test-model",
+		MaxTokens:      1024,
+		PromptStateKey: &key,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	// Drain all events
+	var events []llm.StreamEvent
+	for evt := range eventCh {
+		events = append(events, evt)
+	}
+
+	// Verify message_start has cache tokens
+	msgStart := events[0]
+	if msgStart.Message == nil {
+		t.Fatal("expected message_start event")
+	}
+	if msgStart.Message.Usage.CacheReadInputTokens != 8000 {
+		t.Errorf("message_start CacheReadInputTokens = %d, want 8000", msgStart.Message.Usage.CacheReadInputTokens)
+	}
+	if msgStart.Message.Usage.CacheCreationInputTokens != 200 {
+		t.Errorf("message_start CacheCreationInputTokens = %d, want 200", msgStart.Message.Usage.CacheCreationInputTokens)
+	}
+
+	// Verify message_delta has cache tokens
+	msgDelta := events[4]
+	if msgDelta.Usage == nil {
+		t.Fatal("expected usage in message_delta")
+	}
+	if msgDelta.Usage.CacheReadInputTokens != 2000 {
+		t.Errorf("message_delta CacheReadInputTokens = %d, want 2000", msgDelta.Usage.CacheReadInputTokens)
+	}
+
+	llm.ResetPromptCacheBreakDetection()
+}
+
+func TestAnthropicComplete_NoCacheControl_SystemUnchanged(t *testing.T) {
+	t.Parallel()
+
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		resp := llm.Response{
+			ID:         "msg_no_cc",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "test-model",
+			StopReason: "end_turn",
+			Content:    []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+	_, err := p.Complete(ctx, &llm.Request{
+		Model:     "test-model",
+		MaxTokens: 1024,
+		SystemBlocks: []llm.SystemBlockParam{
+			{Type: "text", Text: "You are a helpful assistant."},
+		},
+		// CacheControl is nil — system blocks should NOT be serialized as system field
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	// When CacheControl is nil, SystemBlocks should not override System
+	var req map[string]any
+	if err := json.Unmarshal(receivedBody, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if _, hasSystem := req["system"]; hasSystem {
+		t.Error("expected no system field when CacheControl is nil and System is empty")
+	}
+}
+
+func TestAnthropicComplete_CacheBreakWithSystemBlocks(t *testing.T) {
+	t.Parallel()
+
+	llm.ResetPromptCacheBreakDetection()
+
+	key := llm.PromptStateKey{
+		QuerySource: "repl_main_thread",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := llm.Response{
+			ID:         "msg_sb",
+			Type:       "message",
+			Role:       "assistant",
+			Model:      "claude-sonnet-4-20250514",
+			StopReason: "end_turn",
+			Usage: types.Usage{
+				InputTokens:          100,
+				OutputTokens:         50,
+				CacheReadInputTokens: 10000,
+			},
+			Content: []types.ContentBlock{types.NewTextBlock("ok")},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "claude-sonnet-4-20250514",
+		Timeout: 5 * time.Second,
+	})
+
+	ctx := context.Background()
+
+	// Call with SystemBlocks and CacheControl
+	_, err := p.Complete(ctx, &llm.Request{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 1024,
+		CacheControl: &llm.CacheControlConfig{
+			Type: "ephemeral",
+			TTL:  "1h",
+		},
+		SystemBlocks: []llm.SystemBlockParam{
+			{Type: "text", Text: "System prompt v1"},
+		},
+		PromptStateKey: &key,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error: %v", err)
+	}
+
+	// Second call with changed system — break detection should work
+	_, err = p.Complete(ctx, &llm.Request{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 1024,
+		CacheControl: &llm.CacheControlConfig{
+			Type: "ephemeral",
+			TTL:  "1h",
+		},
+		SystemBlocks: []llm.SystemBlockParam{
+			{Type: "text", Text: "System prompt v2 - changed"},
+		},
+		PromptStateKey: &key,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete() second call error: %v", err)
+	}
+
+	llm.ResetPromptCacheBreakDetection()
+}
+
+func TestRequestToSystemMaps_SystemBlocks(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		SystemBlocks: []llm.SystemBlockParam{
+			{Type: "text", Text: "Block 1"},
+			{Type: "text", Text: "Block 2", CacheControl: &llm.CacheControlConfig{Type: "ephemeral"}},
+		},
+	}
+
+	result := llm.RequestToSystemMaps(req)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(result))
+	}
+	if result[0]["text"] != "Block 1" {
+		t.Errorf("block 0 text = %q, want 'Block 1'", result[0]["text"])
+	}
+	if _, hasCC := result[0]["cache_control"]; hasCC {
+		t.Error("block 0 should not have cache_control")
+	}
+	if result[1]["text"] != "Block 2" {
+		t.Errorf("block 1 text = %q, want 'Block 2'", result[1]["text"])
+	}
+	cc := result[1]["cache_control"].(map[string]any)
+	if cc["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %q, want 'ephemeral'", cc["type"])
+	}
+}
+
+func TestRequestToSystemMaps_RawSystemString(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		System: json.RawMessage(`"raw system string"`),
+	}
+
+	result := llm.RequestToSystemMaps(req)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(result))
+	}
+	if result[0]["type"] != "text" {
+		t.Errorf("block type = %q, want 'text'", result[0]["type"])
+	}
+	if result[0]["text"] != "raw system string" {
+		t.Errorf("block text = %q, want 'raw system string'", result[0]["text"])
+	}
+}
+
+func TestRequestToSystemMaps_RawSystemArray(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		System: json.RawMessage(`[{"type":"text","text":"hello"}]`),
+	}
+
+	result := llm.RequestToSystemMaps(req)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(result))
+	}
+	if result[0]["text"] != "hello" {
+		t.Errorf("block text = %q, want 'hello'", result[0]["text"])
+	}
+}
+
+func TestRequestToSystemMaps_Empty(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{}
+	result := llm.RequestToSystemMaps(req)
+	if result != nil {
+		t.Errorf("expected nil for empty request, got %v", result)
+	}
+}
+
+func TestRequestToToolMaps(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		Tools: []llm.ToolDef{
+			{Name: "read_file", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "bash", Description: "Run command", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+
+	result := llm.RequestToToolMaps(req)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(result))
+	}
+	if result[0]["name"] != "read_file" {
+		t.Errorf("tool 0 name = %q, want 'read_file'", result[0]["name"])
+	}
+	if result[1]["name"] != "bash" {
+		t.Errorf("tool 1 name = %q, want 'bash'", result[1]["name"])
+	}
+}
+
+func TestRequestToToolMaps_Empty(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{}
+	result := llm.RequestToToolMaps(req)
+	if result != nil {
+		t.Errorf("expected nil for empty tools, got %v", result)
+	}
+}

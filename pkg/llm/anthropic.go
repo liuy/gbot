@@ -55,10 +55,22 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 
 // Complete sends a non-streaming request.
 func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
+	// Apply cache control to system blocks if configured.
+	// Source: claude.ts:358-374
+	applyCacheControlToSystem(req)
+
 	req.Stream = false
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	// Record prompt state for cache break detection (pre-call, Phase 1).
+	// Source: promptCacheBreakDetection.ts:247-430
+	if req.PromptStateKey != nil {
+		system := RequestToSystemMaps(req)
+		tools := RequestToToolMaps(req)
+		RecordPromptState(system, tools, *req.PromptStateKey, req.Model, nil, "", false, false, false, false, "", 0)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
@@ -66,6 +78,10 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	p.setHeaders(httpReq)
+	// Prompt caching beta header — only when cache control is configured.
+	if req.CacheControl != nil {
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-10-22")
+	}
 
 	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
@@ -86,16 +102,36 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
+
+	// Check for cache break (post-call, Phase 2).
+	// Source: promptCacheBreakDetection.ts:437-666
+	if req.PromptStateKey != nil {
+		CheckResponseForCacheBreak(*req.PromptStateKey,
+			resp.Usage.CacheReadInputTokens,
+			resp.Usage.CacheCreationInputTokens,
+			nil)
+	}
+
 	return &resp, nil
 }
 
 // Stream sends a streaming request and returns a channel of events.
 // Source: Anthropic SSE streaming — 1:1 port of TS SDK streaming.
 func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
+	// Apply cache control to system blocks if configured.
+	applyCacheControlToSystem(req)
+
 	req.Stream = true
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	// Record prompt state for cache break detection (pre-call, Phase 1).
+	if req.PromptStateKey != nil {
+		system := RequestToSystemMaps(req)
+		tools := RequestToToolMaps(req)
+		RecordPromptState(system, tools, *req.PromptStateKey, req.Model, nil, "", false, false, false, false, "", 0)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body))
@@ -103,6 +139,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	p.setHeaders(httpReq)
+	// Prompt caching beta header — only when cache control is configured.
+	if req.CacheControl != nil {
+		httpReq.Header.Set("anthropic-beta", "prompt-caching-2024-10-22")
+	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	// Apply retry with backoff
@@ -162,7 +202,43 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 	go func() {
 		defer close(eventCh)
 		defer func() { _ = httpResp.Body.Close() }()
-		p.ParseSSE(ctx, httpResp.Body, eventCh)
+
+		// Use a wrapper channel to intercept events for cache token tracking.
+		// After streaming completes, accumulated tokens feed into CheckResponseForCacheBreak.
+		sseCh := make(chan StreamEvent, 64)
+		done := make(chan struct{})
+		go func() {
+			defer close(sseCh)
+			p.ParseSSE(ctx, httpResp.Body, sseCh)
+			close(done)
+		}()
+
+		var cacheRead, cacheCreation int
+		for evt := range sseCh {
+			// Accumulate cache tokens from message_start and message_delta events.
+			if evt.Message != nil {
+				cacheRead += evt.Message.Usage.CacheReadInputTokens
+				cacheCreation += evt.Message.Usage.CacheCreationInputTokens
+			}
+			if evt.Usage != nil {
+				cacheRead += evt.Usage.CacheReadInputTokens
+				cacheCreation += evt.Usage.CacheCreationInputTokens
+			}
+			// Forward to caller
+			select {
+			case eventCh <- evt:
+			case <-ctx.Done():
+				// Wait for ParseSSE to finish before returning to avoid goroutine leak.
+				<-done
+				return
+			}
+		}
+
+		// Stream complete — check for cache break (Phase 2, post-call).
+		// Source: promptCacheBreakDetection.ts:437-666
+		if req.PromptStateKey != nil {
+			CheckResponseForCacheBreak(*req.PromptStateKey, cacheRead, cacheCreation, nil)
+		}
 	}()
 
 	return eventCh, nil
@@ -317,6 +393,30 @@ func (p *AnthropicProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+}
+
+// applyCacheControlToSystem injects cache_control markers into system blocks.
+// Source: claude.ts:358-374 — when CacheControl is non-nil, system blocks get cache_control markers.
+func applyCacheControlToSystem(req *Request) {
+	if req.CacheControl == nil {
+		return
+	}
+	// Apply default TTL when not explicitly set.
+	if req.CacheControl.TTL == "" {
+		req.CacheControl.TTL = defaultCacheTTL
+	}
+	if len(req.SystemBlocks) > 0 {
+		// Inject cache_control into the last system block.
+		// Anthropic recommends placing cache_control on the last block for maximum cache hit rate.
+		last := &req.SystemBlocks[len(req.SystemBlocks)-1]
+		if last.CacheControl == nil {
+			last.CacheControl = req.CacheControl
+		}
+		// Serialize SystemBlocks as the system field for the API call.
+		if b, err := json.Marshal(req.SystemBlocks); err == nil {
+			req.System = b
+		}
+	}
 }
 
 // ParseAPIError parses an error response body.
