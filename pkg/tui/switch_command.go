@@ -75,7 +75,7 @@ func (a *App) createNewSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	a.committedCount = 0
 
 	// Update workspace meta
-	if err := WriteWorkspaceMeta(a.sessionID); err != nil {
+	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
 		slog.Warn("switch: write workspace meta failed", "error", err)
 	}
 
@@ -137,7 +137,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	a.committedCount = 0
 
 	// Update workspace meta
-	if err := WriteWorkspaceMeta(a.sessionID); err != nil {
+	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
 		slog.Warn("switch: write workspace meta failed", "error", err)
 	}
 
@@ -154,10 +154,14 @@ func (a *App) showInfo(msg string) tea.Cmd {
 }
 
 // WriteWorkspaceMeta updates .gbot/meta.json with the current session ID.
-func WriteWorkspaceMeta(sessionID string) error {
+// If dir is empty, the write is skipped (e.g. in tests without a projectDir).
+func WriteWorkspaceMeta(dir, sessionID string) error {
+	if dir == "" {
+		return nil
+	}
 	meta := &short.WorkspaceMeta{
 		CurrentSessionID: sessionID,
 		LastActiveAt:     time.Now(),
 	}
-	return short.WriteWorkspaceMeta(".", meta)
+	return short.WriteWorkspaceMeta(dir, meta)
 }

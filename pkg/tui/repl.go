@@ -449,6 +449,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		if !a.progressStart.IsZero() {
 			elapsedStr := formatElapsed(a.progressStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.inputTokens), formatTokenCount(a.status.outTokens))
+			var cachePart string
+			if a.cacheReadTokens > 0 {
+				total := a.cacheReadTokens + a.status.inputTokens
+				if total > 0 {
+					pct := a.cacheReadTokens * 100 / total
+					cachePart = fmt.Sprintf(" · %d%% cached", pct)
+				}
+			}
 			var toolsPart string
 			if tc := a.repl.toolCount; tc > 0 {
 				if tc == 1 {
@@ -457,7 +465,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 					toolsPart = fmt.Sprintf(" · %d tools", tc)
 				}
 			}
-			statsLine := styleDim.Render(tokensStr + toolsPart + " · " + elapsedStr)
+			statsLine := styleDim.Render(tokensStr + cachePart + toolsPart + " · " + elapsedStr)
 			// Embed stats as a block in the last assistant message.
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {

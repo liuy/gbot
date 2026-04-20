@@ -171,7 +171,7 @@ func main() {
 				slog.Warn("main: failed to create session", "error", err)
 			} else {
 				sessionID = session.SessionID
-				if err := tui.WriteWorkspaceMeta(sessionID); err != nil {
+				if err := tui.WriteWorkspaceMeta(workingDir, sessionID); err != nil {
 					slog.Warn("main: write workspace meta failed", "error", err)
 				}
 				slog.Info("main: created new session", "sessionID", sessionID)
