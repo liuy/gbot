@@ -131,7 +131,12 @@ func logEngineEvent(event Event) {
 
 	case types.EventUsage:
 		if event.Usage != nil {
-			slog.Info("engine:usage", "total", event.Usage)
+		slog.Info("engine:usage",
+			"input", event.Usage.InputTokens,
+			"output", event.Usage.OutputTokens,
+			"cache_read", event.Usage.CacheReadInputTokens,
+			"cache_creation", event.Usage.CacheCreationInputTokens,
+		)
 		}
 
 	case types.EventTurnStart:

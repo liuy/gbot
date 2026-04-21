@@ -469,7 +469,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						pct := a.status.usage.CacheReadInputTokens * 100 / total
 						cachePart = fmt.Sprintf(" · %d%% cached", pct)
 					} else {
-						cachePart = " · cache warmed"
+						cachePart = fmt.Sprintf(" · %s warmed", formatTokenCount(a.status.usage.CacheCreationInputTokens))
 					}
 				}
 			}
@@ -713,7 +713,6 @@ func (a *App) readEvents() tea.Cmd {
 					a.repl.CloseChannels()
 					return queryEndMsg{}
 				}
-				slog.Info("tui:readEvents:return", "msgType", fmt.Sprintf("%T", msg))
 				return msg
 			default:
 				// appCh empty — fall through to blocking select below.
@@ -729,7 +728,7 @@ func (a *App) readEvents() tea.Cmd {
 					if !ok {
 						return queryEndMsg{}
 					}
-					slog.Info("tui:readEvents:idle", "msgType", fmt.Sprintf("%T", msg))
+					slog.Debug("tui:readEvents:idle", "msgType", fmt.Sprintf("%T", msg))
 					return msg
 				case <-a.idleStop:
 					return idleAbortedMsg{}
@@ -742,7 +741,7 @@ func (a *App) readEvents() tea.Cmd {
 					a.repl.CloseChannels()
 					return queryEndMsg{}
 				}
-				slog.Info("tui:readEvents:return:blocked", "msgType", fmt.Sprintf("%T", msg))
+				slog.Debug("tui:readEvents:return:blocked", "msgType", fmt.Sprintf("%T", msg))
 				return msg
 
 			case result, ok := <-a.repl.resultCh:

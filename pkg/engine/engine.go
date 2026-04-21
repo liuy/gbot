@@ -285,10 +285,25 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // and QueryWithExistingMessages (fork agent path).
 func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
 	var totalUsage types.Usage
-	// Log usage analytics on every exit path.
+	// Log query summary on every exit path.
 	defer func() {
 		if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
-			e.logger.Info("engine:usage", "total", totalUsage)
+			total := totalUsage.InputTokens + totalUsage.CacheReadInputTokens + totalUsage.CacheCreationInputTokens
+			cacheStatus := "miss"
+			if totalUsage.CacheReadInputTokens > 0 && total > 0 {
+				pct := totalUsage.CacheReadInputTokens * 100 / total
+				cacheStatus = fmt.Sprintf("hit %d%%", pct)
+			} else if totalUsage.CacheCreationInputTokens > 0 {
+				cacheStatus = "warm"
+			}
+			e.logger.Info("engine:query_summary",
+				"input", totalUsage.InputTokens,
+				"output", totalUsage.OutputTokens,
+				"cache_read", totalUsage.CacheReadInputTokens,
+				"cache_creation", totalUsage.CacheCreationInputTokens,
+				"turns", e.turnCount,
+				"cache", cacheStatus,
+			)
 		}
 	}()
 	reactiveCompactDone := false
@@ -470,7 +485,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 		})
 	}
 
-	e.logger.Info("callLLM tools registered", "count", len(toolDefs), "names", func() string {
+	e.logger.Info("callLLM:tools", "count", len(toolDefs), "names", func() string {
 		var names []string
 		for _, td := range toolDefs {
 			names = append(names, td.Name)
