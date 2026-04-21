@@ -74,6 +74,13 @@ func TestEstimateTokens(t *testing.T) {
 		{"abcd", 1},      // 4/4 = 1
 		{"abcdefgh", 2},  // 8/4 = 2
 		{"abcdefghij", 2}, // 10/4 = 2
+		// CJK: 1.5 tokens/char (3/2)
+		{"你好", 3},           // 2 CJK → 2*3/2 = 3
+		{"你好世界", 6},        // 4 CJK → 4*3/2 = 6
+		{"Hello 你好", 4},     // 6 nonCJK(1) + 2 CJK(3) = 4
+		{"こんにちは", 7},      // 5 Japanese Katakana → 5*3/2 = 7
+		{"안녕하세요", 7},      // 5 Korean Hangul → 5*3/2 = 7
+		{"abc你好def", 4},     // 6 nonCJK(1) + 2 CJK(3) = 4
 	}
 	for _, tt := range tests {
 		got := EstimateTokens(tt.input)

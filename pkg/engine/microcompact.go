@@ -138,11 +138,48 @@ func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 // EstimateTokens — source: tokenEstimation.ts
 // ---------------------------------------------------------------------------
 
-// EstimateTokens estimates token count from text using 4 chars/token.
-// Unified function used across engine, autocompact, and memory packages.
-// Source: microCompact.ts uses EstimateTokens throughout.
+// EstimateTokens estimates token count from text using character-type-aware heuristic.
+// CJK characters (Chinese/Japanese/Korean): ~1.5 tokens/char
+// Non-CJK (Latin, digits, symbols, etc.): ~0.25 tokens/char (1 token per 4 chars)
+//
+// This is a gbot improvement over TS: TS uses plain len/4 which severely
+// underestimates CJK content (~0.25 tokens/char instead of ~1.5).
+// Based on infinigence/tokenestimate linear regression model and Anthropic's
+// guidance that CJK is 2-3x more expensive per character.
 func EstimateTokens(text string) int {
-	return len(text) / 4
+	if text == "" {
+		return 0
+	}
+	cjk := 0
+	nonCJK := 0
+	for _, r := range text {
+		if isCJK(r) {
+			cjk++
+		} else {
+			nonCJK++
+		}
+	}
+	// CJK: 1.5 tokens/char (3/2)
+	// Non-CJK: 0.25 tokens/char (1/4, same as previous len/4 for ASCII)
+	return cjk*3/2 + nonCJK/4
+}
+
+// isCJK reports whether r is a CJK character (Chinese, Japanese, or Korean).
+// Unicode ranges sourced from infinigence/tokenestimate character classification.
+func isCJK(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
+		(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
+		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
+		(r >= 0x2A700 && r <= 0x2B73F) || // CJK Extension C
+		(r >= 0x2B740 && r <= 0x2B81F) || // CJK Extension D
+		(r >= 0x2B820 && r <= 0x2CEAF) || // CJK Extension E
+		(r >= 0x2CEB0 && r <= 0x2EBEF) || // CJK Extension F
+		(r >= 0x30000 && r <= 0x3134F) || // CJK Extension G
+		(r >= 0x3040 && r <= 0x309F) || // Hiragana
+		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
+		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul Syllables
+		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
+		(r >= 0x3130 && r <= 0x318F) // Hangul Compatibility Jamo
 }
 
 // ---------------------------------------------------------------------------

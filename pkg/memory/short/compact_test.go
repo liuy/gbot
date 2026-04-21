@@ -746,6 +746,20 @@ func TestRoughTokenCountForMessage(t *testing.T) {
 	if count != 2 { // 10 / 4 = 2.5 → 2
 		t.Errorf("roughTokenCountForMessage() = %d, want 2", count)
 	}
+
+	// CJK: 1.5 tokens/char (3/2)
+	cjkMsg := &Message{Content: "你好世界"} // 4 CJK chars
+	got := roughTokenCountForMessage(cjkMsg)
+	if got != 6 { // 4 * 3/2 = 6
+		t.Errorf("roughTokenCountForMessage(CJK) = %d, want 6", got)
+	}
+
+	// Mixed
+	mixedMsg := &Message{Content: "Hello 你好"} // 6 nonCJK + 2 CJK
+	got = roughTokenCountForMessage(mixedMsg)
+	if got != 4 { // 6/4 + 2*3/2 = 1 + 3 = 4
+		t.Errorf("roughTokenCountForMessage(mixed) = %d, want 4", got)
+	}
 }
 
 func TestLooksLikeFilePath(t *testing.T) {
@@ -1394,6 +1408,16 @@ func TestRoughTokenCount(t *testing.T) {
 
 	if count != 3 {
 		t.Errorf("roughTokenCount = %d, want 3", count)
+	}
+
+	// CJK messages
+	cjkMessages := []*Message{
+		{Content: "你好"}, // 2 CJK -> 3 tokens
+		{Content: "world"}, // 5 nonCJK -> 1 token
+	}
+	got := roughTokenCount(cjkMessages)
+	if got != 4 { // 3 + 1 = 4
+		t.Errorf("roughTokenCount(CJK) = %d, want 4", got)
 	}
 }
 

@@ -862,7 +862,7 @@ func (s *Store) indexMessageFTS(db dbExec, seq int64, content string) {
 }
 
 // roughTokenCount estimates token count for messages.
-// Same heuristic as engine.EstimateTokens: 4 chars/token.
+// Same heuristic as engine.EstimateTokens: CJK-aware character classification.
 // Kept local due to import cycle (engine → memory/short).
 func roughTokenCount(messages []*Message) int {
 	count := 0
@@ -873,10 +873,40 @@ func roughTokenCount(messages []*Message) int {
 }
 
 // roughTokenCountForMessage estimates token count for a single message.
-// Same heuristic as engine.EstimateTokens: 4 chars/token.
+// Same heuristic as engine.EstimateTokens: CJK ~1.5 tokens/char, non-CJK ~0.25.
 // Kept local due to import cycle (engine → memory/short).
 func roughTokenCountForMessage(msg *Message) int {
-	return len(msg.Content) / 4
+	if msg.Content == "" {
+		return 0
+	}
+	cjk := 0
+	nonCJK := 0
+	for _, r := range msg.Content {
+		if isCJK(r) {
+			cjk++
+		} else {
+			nonCJK++
+		}
+	}
+	return cjk*3/2 + nonCJK/4
+}
+
+// isCJK reports whether r is a CJK character.
+// Duplicate of engine.isCJK — kept local due to import cycle.
+func isCJK(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
+		(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
+		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
+		(r >= 0x2A700 && r <= 0x2B73F) || // CJK Extension C
+		(r >= 0x2B740 && r <= 0x2B81F) || // CJK Extension D
+		(r >= 0x2B820 && r <= 0x2CEAF) || // CJK Extension E
+		(r >= 0x2CEB0 && r <= 0x2EBEF) || // CJK Extension F
+		(r >= 0x30000 && r <= 0x3134F) || // CJK Extension G
+		(r >= 0x3040 && r <= 0x309F) || // Hiragana
+		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
+		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul Syllables
+		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
+		(r >= 0x3130 && r <= 0x318F) // Hangul Compatibility Jamo
 }
 
 // looksLikeFilePath checks if a string looks like a file path.
