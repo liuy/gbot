@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/context"
@@ -232,14 +233,14 @@ func BenchmarkEscapeJSONString_SpecialChars(b *testing.B) {
 }
 
 func BenchmarkEscapeJSONString_LongString(b *testing.B) {
-	input := ""
-	for i := 0; i < 1000; i++ {
-		input += "The quick brown fox jumps over the lazy dog. "
+	var input strings.Builder
+	for range 1000 {
+		input.WriteString("The quick brown fox jumps over the lazy dog. ")
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = context.EscapeJSONString(input)
+		_ = context.EscapeJSONString(input.String())
 	}
 }
 

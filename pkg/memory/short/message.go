@@ -71,7 +71,6 @@ func (s *Store) LoadMessages(sessionID string) ([]*Message, error) {
 		messages = append(messages, msg)
 	}
 
-
 	// Apply preserved segment relinks and snip removals after loading.
 	// TS align: loadTranscriptFile (sessionStorage.ts:3704-3705)
 	messages = applyPreservedSegmentRelinksOnLoad(messages)
@@ -418,7 +417,7 @@ func (s *Store) getLastChainUUID(tx *sql.Tx, sessionID string) string {
 }
 
 // queryOneMessage executes a query and returns a single message.
-func (s *Store) queryOneMessage(query string, args ...interface{}) (*Message, error) {
+func (s *Store) queryOneMessage(query string, args ...any) (*Message, error) {
 	row := s.db.QueryRow(query, args...)
 	return s.scanMessageFromRow(row)
 }

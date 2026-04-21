@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/mattn/go-runewidth"
 )
 
 func stripANSIPrintable(s string) string {
@@ -543,7 +543,7 @@ func TestMessageView_WithToolCalls_Running(t *testing.T) {
 	t.Parallel()
 
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "working on it"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Input: `{"file":"test.go"}`, Done: false}},
@@ -563,7 +563,7 @@ func TestMessageView_WithToolCalls_Done(t *testing.T) {
 	t.Parallel()
 
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "done"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Grep", Output: "found match", Done: true, IsError: false}},
@@ -583,7 +583,7 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 	t.Parallel()
 
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "failed"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "exit code 1", Done: true, IsError: true}},
@@ -646,7 +646,7 @@ func TestMessageView_ToolCallLongOutput(t *testing.T) {
 
 	longOutput := strings.Repeat("x", 300)
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "result"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Output: longOutput, Done: true, IsError: false}},
@@ -667,7 +667,7 @@ func TestMessageView_ToolCallLongInput(t *testing.T) {
 
 	longInput := strings.Repeat("y", 300)
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "working"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Write", Input: longInput, Done: false}},
@@ -689,9 +689,9 @@ func TestMessageView_WordWrap(t *testing.T) {
 		Blocks: []ContentBlock{{Type: BlockText, Text: "This is a very long sentence that should be wrapped properly"}},
 	}
 	v := m.View(20, false, "", false, 0)
-	lines := strings.Split(v, "\n")
+	lines := strings.SplitSeq(v, "\n")
 	// Each line should be reasonably short (no line longer than width + some ANSI margin)
-	for _, line := range lines {
+	for line := range lines {
 		stripped := stripANSIPrintable(line)
 		if len(stripped) > 25 { // allow some margin for prefix + ANSI
 			t.Errorf("line too long (%d chars): %q", len(stripped), stripped)
@@ -721,7 +721,7 @@ func TestMessageView_ToolCallEmptyOutput(t *testing.T) {
 	t.Parallel()
 
 	m := MessageView{
-		Role:   "assistant",
+		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockText, Text: "result"},
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "", Done: true, IsError: false}},
@@ -863,7 +863,6 @@ func TestWordWrap_NegativeWidth(t *testing.T) {
 // runeDisplayWidth
 // ---------------------------------------------------------------------------
 
-
 // runeDisplayWidth uses go-runewidth; basic sanity test only.
 // Comprehensive rune-level tests removed — behavior delegated to go-runewidth.
 func TestRuneDisplayWidth_Sanity(t *testing.T) {
@@ -877,7 +876,6 @@ func TestRuneDisplayWidth_Sanity(t *testing.T) {
 		t.Errorf("runeDisplayWidthCJK = %d, want 2", w)
 	}
 }
-
 
 func TestStringWidth_TextEmojiWithVS16(t *testing.T) {
 	t.Parallel()
@@ -1058,7 +1056,7 @@ func TestInput_View_Wrapping_CursorOnSecondLine(t *testing.T) {
 	i.SetValue("abcdefghijklmnopqrstuvwxyz")
 	i.Home()
 	// Move cursor to position 20 (should be on second wrapped line)
-	for j := 0; j < 20; j++ {
+	for range 20 {
 		i.CursorRight()
 	}
 	v := i.View()
@@ -1168,7 +1166,7 @@ func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 		t.Errorf("long tool header should wrap at width 30, got: %q", v)
 	}
 	// Each stripped line should not exceed width by much
-	for _, line := range strings.Split(v, "\n") {
+	for line := range strings.SplitSeq(v, "\n") {
 		stripped := stripANSIPrintable(line)
 		if len(stripped) > 40 { // allow margin for ANSI + prefix
 			t.Errorf("header line too long (%d chars): %q", len(stripped), stripped)
@@ -1500,11 +1498,11 @@ func TestFormatToolOutput_Collapsed(t *testing.T) {
 func TestFormatToolOutput_CollapsedError(t *testing.T) {
 	t.Parallel()
 	// Error: maxLines=10, so need > 11 lines to collapse
-	var longErr string
-	for i := 0; i < 12; i++ {
-		longErr += fmt.Sprintf("error line %d\n", i)
+	var longErr strings.Builder
+	for i := range 12 {
+		fmt.Fprintf(&longErr, "error line %d\n", i)
 	}
-	v := formatToolOutput(strings.TrimRight(longErr, "\n"), true, false, 80, false, 0, lipgloss.NewStyle())
+	v := formatToolOutput(strings.TrimRight(longErr.String(), "\n"), true, false, 80, false, 0, lipgloss.NewStyle())
 	if !strings.Contains(v, "ctrl+o to see all") {
 		t.Errorf("collapsed error should show 'see all' hint, got: %q", v)
 	}
@@ -1855,7 +1853,7 @@ func TestInput_CursorDown_MidLine(t *testing.T) {
 	i.SetValue("abcdefghijklmnopqrstuvwxyz")
 	// Move cursor to position 5 (middle of first wrapped line)
 	i.Home()
-	for j := 0; j < 5; j++ {
+	for range 5 {
 		i.CursorRight()
 	}
 	if i.cursor != 5 {
@@ -1966,8 +1964,6 @@ func TestFormatToolOutput_WordWrapPrefixAlignment(t *testing.T) {
 	}
 }
 
-
-
 // ---------------------------------------------------------------------------
 // renderThinkingBlock / formatThinkingOutput
 // ---------------------------------------------------------------------------
@@ -1976,7 +1972,7 @@ func TestRenderThinkingBlock_StreamingWithToolDot(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: "reasoning...", Done: false},
 	}
 	blk.renderThinkingBlock(&sb, 80, false, "bright-dot", false)
@@ -1993,7 +1989,7 @@ func TestRenderThinkingBlock_StreamingNoToolDot(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: "some thought", Done: false},
 	}
 	blk.renderThinkingBlock(&sb, 80, false, "", false)
@@ -2007,7 +2003,7 @@ func TestRenderThinkingBlock_StreamingEmptyText(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: "", Done: false},
 	}
 	blk.renderThinkingBlock(&sb, 80, false, "dot", false)
@@ -2021,7 +2017,7 @@ func TestRenderThinkingBlock_DoneWithDuration(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: "thought content", Done: true, Duration: 2 * time.Second},
 	}
 	blk.renderThinkingBlock(&sb, 80, false, "", false)
@@ -2038,7 +2034,7 @@ func TestRenderThinkingBlock_DoneNoText(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: "", Done: true, Duration: 0},
 	}
 	blk.renderThinkingBlock(&sb, 80, false, "", false)
@@ -2172,7 +2168,7 @@ func TestRenderThinkingBlock_LongText_Wraps(t *testing.T) {
 	longLine := strings.Repeat("word ", 40) // ~200 chars
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: longLine, Done: true, Duration: time.Second},
 	}
 	blk.renderThinkingBlock(&sb, 40, false, "", false)
@@ -2198,7 +2194,7 @@ func TestRenderThinkingBlock_StreamingLongText_Wraps(t *testing.T) {
 	longLine := strings.Repeat("word ", 40)
 	var sb strings.Builder
 	blk := ContentBlock{
-		Type: BlockThinking,
+		Type:     BlockThinking,
 		Thinking: ThinkingView{Text: longLine, Done: false},
 	}
 	blk.renderThinkingBlock(&sb, 40, false, "dot", false)
@@ -2584,7 +2580,7 @@ func TestWordWrap_TabWidth(t *testing.T) {
 	input := "\tSome text that is long enough to need wrapping at some point"
 	wrapped := wordWrap(input, 20)
 	clean := stripANSI(wrapped)
-	for _, line := range strings.Split(clean, "\n") {
+	for line := range strings.SplitSeq(clean, "\n") {
 		// Expand tabs for width check (tab stops at 8)
 		displayLen := 0
 		for _, r := range line {

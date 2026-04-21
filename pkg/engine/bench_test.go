@@ -53,9 +53,9 @@ func (m *benchMockProvider) Stream(ctx context.Context, req *llm.Request) (<-cha
 			Index: 0,
 		}
 		ch <- llm.StreamEvent{
-			Type: "message_delta",
+			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
-			Usage: &llm.UsageDelta{OutputTokens: 20},
+			Usage:    &llm.UsageDelta{OutputTokens: 20},
 		}
 		ch <- llm.StreamEvent{Type: "message_stop"}
 	}()
@@ -106,7 +106,7 @@ func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 	})
 
 	// Simulate 20-turn conversation
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		eng.messages = append(eng.messages, types.Message{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{
@@ -129,7 +129,6 @@ func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 		_ = eng.marshalMessages()
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Streaming response accumulation benchmark

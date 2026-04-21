@@ -21,7 +21,7 @@ func TestTUIHandler_DroppedCounter_Zero(t *testing.T) {
 func TestTUIHandler_DroppedCounter_WhenBufferFull(t *testing.T) {
 	h := NewTUIHandler()
 	// Fill the 256-buffer
-	for i := 0; i < 256; i++ {
+	for range 256 {
 		h.appCh <- textDeltaMsg{Text: "fill"}
 	}
 
@@ -179,7 +179,7 @@ func TestConvertEventToMsg_ThinkingStart(t *testing.T) {
 func TestConvertEventToMsg_ThinkingEnd_WithThinking(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventThinkingEnd,
+		Type:     types.EventThinkingEnd,
 		Thinking: &types.ThinkingEvent{Duration: 5 * time.Second},
 	})
 	if msg == nil {
@@ -212,7 +212,7 @@ func TestConvertEventToMsg_ThinkingEnd_NilThinking(t *testing.T) {
 func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventThinkingDelta,
+		Type:     types.EventThinkingDelta,
 		Thinking: &types.ThinkingEvent{Text: "reasoning..."},
 	})
 	if msg == nil {
@@ -230,7 +230,7 @@ func TestConvertEventToMsg_ThinkingDelta(t *testing.T) {
 func TestConvertEventToMsg_ThinkingDelta_EmptyText(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventThinkingDelta,
+		Type:     types.EventThinkingDelta,
 		Thinking: &types.ThinkingEvent{Text: ""},
 	})
 	if msg != nil {

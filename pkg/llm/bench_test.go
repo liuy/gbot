@@ -112,7 +112,7 @@ func buildSSEStream(numDeltas int) string {
 	buf.WriteString("\n\n")
 
 	// content_block_delta events
-	for i := 0; i < numDeltas; i++ {
+	for i := range numDeltas {
 		buf.WriteString("event: content_block_delta\n")
 		fmt.Fprintf(bp, `data: {"index":0,"delta":{"type":"text_delta","text":"word_%d "}}`, i)
 		buf.WriteString("\n\n")

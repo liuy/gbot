@@ -16,9 +16,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 // Source: FileWriteTool.ts — Zod schema for file write input.
@@ -118,8 +118,8 @@ func getDefaultBranch(gitRoot string) string {
 	if err == nil {
 		ref := strings.TrimSpace(string(output))
 		// Output is like "refs/remotes/origin/main"
-		if strings.HasPrefix(ref, "refs/remotes/origin/") {
-			branch := strings.TrimPrefix(ref, "refs/remotes/origin/")
+		if after, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
+			branch := after
 			if branch != "" {
 				return branch
 			}
@@ -327,8 +327,8 @@ type Output struct {
 	FilePath        string                `json:"filePath"`
 	Content         string                `json:"content"`
 	StructuredPatch []StructuredPatchHunk `json:"structuredPatch"`
-	OriginalFile    *string               `json:"originalFile"` // null for new files
-	ContentChanged  bool                  `json:"contentChanged"`  // true if file was modified since last read
+	OriginalFile    *string               `json:"originalFile"`   // null for new files
+	ContentChanged  bool                  `json:"contentChanged"` // true if file was modified since last read
 	GitDiff         *GitDiff              `json:"gitDiff,omitempty"`
 }
 
@@ -397,8 +397,8 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Write",
-		Aliases_: []string{"filewrite", "write"},
+		Name_:        "Write",
+		Aliases_:     []string{"filewrite", "write"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
@@ -417,10 +417,10 @@ func New() tool.Tool {
 		IsConcurrencySafe_: func(json.RawMessage) bool {
 			return false
 		},
-		MaxResultSizeChars:   100000,
+		MaxResultSizeChars: 100000,
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: fileWritePrompt(),
-		RenderResult_: renderWriteResult,
+		Prompt_:            fileWritePrompt(),
+		RenderResult_:      renderWriteResult,
 	})
 }
 
@@ -552,10 +552,7 @@ func getStructuredPatch(oldContent, newContent string) []StructuredPatchHunk {
 			NewLines: newCnt,
 			Lines:    linesCopy,
 		})
-		tc := trailingCtx()
-		if tc > ctxLines {
-			tc = ctxLines
-		}
+		tc := min(trailingCtx(), ctxLines)
 		if tc > 0 {
 			saved := make([]string, tc)
 			copy(saved, hunkLines[len(hunkLines)-tc:])

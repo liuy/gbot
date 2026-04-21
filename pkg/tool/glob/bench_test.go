@@ -34,7 +34,7 @@ func benchDir(b *testing.B) string {
 	dir := b.TempDir()
 
 	// Root-level .go files
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		name := filepath.Join(dir, "file"+pad2(i)+".go")
 		if err := os.WriteFile(name, []byte("package bench\n"), 0o644); err != nil {
 			b.Fatal(err)

@@ -14,9 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
-	"slices"
 	"sync"
 	"time"
 
@@ -58,21 +58,21 @@ type AutoCompactConfig struct {
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
-	provider       llm.Provider
-	tools          map[string]tool.Tool
-	toolOrder      []string
-	toolsProvider  func() map[string]tool.Tool
-	model          string
-	maxTokens      int
-	logger         *slog.Logger
-	mu             sync.RWMutex
-	messages       []types.Message
-	sessionID      string
-	tokenBudget    int
-	turnCount      int
-	dispatcher     EventDispatcher
-	notifications  *notificationQueue
-	systemPrompt   json.RawMessage // stored system prompt for fork agent access
+	provider      llm.Provider
+	tools         map[string]tool.Tool
+	toolOrder     []string
+	toolsProvider func() map[string]tool.Tool
+	model         string
+	maxTokens     int
+	logger        *slog.Logger
+	mu            sync.RWMutex
+	messages      []types.Message
+	sessionID     string
+	tokenBudget   int
+	turnCount     int
+	dispatcher    EventDispatcher
+	notifications *notificationQueue
+	systemPrompt  json.RawMessage // stored system prompt for fork agent access
 
 	// isSubagent is true for sub-agent engines created by AgentTool.
 	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
@@ -89,7 +89,7 @@ type Engine struct {
 	maxTurns int
 
 	// Auto-compact fields
-	compactor   Compactor
+	compactor                  Compactor
 	autoCompactConfig          AutoCompactConfig
 	consecutiveCompactFailures int
 
@@ -100,16 +100,16 @@ type Engine struct {
 
 // Params holds the constructor arguments for Engine.
 type Params struct {
-	Provider    llm.Provider
-	Tools       []tool.Tool                    // static tool list (ignored if ToolsProvider is set)
-	ToolsProvider func() map[string]tool.Tool  // dynamic tool resolution — called each turn
-	Model       string
-	MaxTokens   int
-	TokenBudget int
-	Logger      *slog.Logger
-	Dispatcher  EventDispatcher
-	Compactor   Compactor
-	AutoCompact AutoCompactConfig
+	Provider      llm.Provider
+	Tools         []tool.Tool                 // static tool list (ignored if ToolsProvider is set)
+	ToolsProvider func() map[string]tool.Tool // dynamic tool resolution — called each turn
+	Model         string
+	MaxTokens     int
+	TokenBudget   int
+	Logger        *slog.Logger
+	Dispatcher    EventDispatcher
+	Compactor     Compactor
+	AutoCompact   AutoCompactConfig
 }
 
 // QueryResult is the final result of a query.
@@ -174,18 +174,18 @@ func New(p *Params) *Engine {
 	sort.Strings(toolOrder)
 
 	return &Engine{
-		provider:         p.Provider,
-		tools:            toolMap,
-		toolOrder:        toolOrder,
-		toolsProvider:    toolsProvider,
-		model:            p.Model,
-		maxTokens:        p.MaxTokens,
-		logger:           p.Logger,
-		tokenBudget:      p.TokenBudget,
-		dispatcher:       p.Dispatcher,
-		notifications:    &notificationQueue{},
-		maxTurns:         50,
-		compactor:        p.Compactor,
+		provider:          p.Provider,
+		tools:             toolMap,
+		toolOrder:         toolOrder,
+		toolsProvider:     toolsProvider,
+		model:             p.Model,
+		maxTokens:         p.MaxTokens,
+		logger:            p.Logger,
+		tokenBudget:       p.TokenBudget,
+		dispatcher:        p.Dispatcher,
+		notifications:     &notificationQueue{},
+		maxTurns:          50,
+		compactor:         p.Compactor,
 		autoCompactConfig: p.AutoCompact,
 	}
 }
@@ -477,7 +477,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		}
 	}
 
-		return QueryResult{
+	return QueryResult{
 		Messages:   e.messages,
 		TurnCount:  e.turnCount,
 		TotalUsage: totalUsage,
@@ -790,7 +790,6 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	}, streamingExecutor, nil
 }
 
-
 // handleStreamError determines the action for a streaming error.
 func (e *Engine) handleStreamError(err error) types.LoopAction {
 	if llm.IsRetryable(err) {
@@ -833,11 +832,11 @@ func extractSummaryFromPartial(name, partial string) string {
 // extractJSONStringField extracts a string field value from potentially incomplete JSON.
 func extractJSONStringField(jsonStr, fieldName, prefix string, maxLen int) string {
 	key := `"` + fieldName + `"`
-	idx := strings.Index(jsonStr, key)
-	if idx < 0 {
+	_, after, ok := strings.Cut(jsonStr, key)
+	if !ok {
 		return ""
 	}
-	rest := jsonStr[idx+len(key):]
+	rest := after
 	colonIdx := strings.Index(rest, ":")
 	if colonIdx < 0 {
 		return ""
@@ -1102,8 +1101,8 @@ func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
 // SubEngineOptions configures the creation of a sub-engine for agent execution.
 type SubEngineOptions struct {
 	SystemPrompt    string               // sub-agent's system prompt
-	Tools           map[string]tool.Tool  // filtered tool set
-	MaxTurns        int                   // 0 = default 50
+	Tools           map[string]tool.Tool // filtered tool set
+	MaxTurns        int                  // 0 = default 50
 	Model           string               // "" = inherit from parent
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
 	AgentType       string               // "general-purpose", "Explore", "Plan"

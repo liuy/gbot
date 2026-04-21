@@ -86,17 +86,17 @@ type ansiRenderer struct {
 // Using targeted reset codes (22=boldOff, 23=italicOff, 24=underlineOff)
 // ensures nested styles compose correctly.
 const (
-	ansiBoldOn      = "\x1b[1m"
-	ansiBoldOff     = "\x1b[22m"
-	ansiItalicOn    = "\x1b[3m"
-	ansiItalicOff   = "\x1b[23m"
-	ansiULOn        = "\x1b[4m"
-	ansiULOff       = "\x1b[24m"
-	ansiReset       = "\x1b[0m"
-	ansiFgWhite     = "\x1b[38;5;15m"
-	ansiBgPurple    = "\x1b[48;5;62m"
-	ansiFgBlue      = "\x1b[38;5;12m"
-	ansiFgGray      = "\x1b[38;5;243m"
+	ansiBoldOn    = "\x1b[1m"
+	ansiBoldOff   = "\x1b[22m"
+	ansiItalicOn  = "\x1b[3m"
+	ansiItalicOff = "\x1b[23m"
+	ansiULOn      = "\x1b[4m"
+	ansiULOff     = "\x1b[24m"
+	ansiReset     = "\x1b[0m"
+	ansiFgWhite   = "\x1b[38;5;15m"
+	ansiBgPurple  = "\x1b[48;5;62m"
+	ansiFgBlue    = "\x1b[38;5;12m"
+	ansiFgGray    = "\x1b[38;5;243m"
 	ansiFgDimGray = "\x1b[38;5;246m"
 )
 
@@ -154,7 +154,7 @@ func (r *ansiRenderer) listDepth() int {
 // pushStyleBuffer saves the current writer and swaps to a new buffer.
 // Children content will be collected into the buffer. Call popStyleBuffer
 // to restore the original writer and apply the style to the buffered content.
-// This mirrors TS: chalk.bold(children.map(formatToken).join(''))
+// This mirrors TS: chalk.bold(children.map(formatToken).join(”))
 func (r *ansiRenderer) pushStyleBuffer() {
 	r.savedWriter = append(r.savedWriter, r.w)
 	var buf strings.Builder
@@ -246,10 +246,10 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 				}
 			}
 			r.write(out.String())
-				if needsBlockSeparator(node) {
-					r.write("\n")
-				}
+			if needsBlockSeparator(node) {
+				r.write("\n")
 			}
+		}
 
 	case *ast.List:
 		if entering {
@@ -380,8 +380,8 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 	case *ast.Link:
 		if entering {
 			// mailto: links show email as plain text
-			if strings.HasPrefix(string(n.Destination), "mailto:") {
-				email := strings.TrimPrefix(string(n.Destination), "mailto:")
+			if after, ok := strings.CutPrefix(string(n.Destination), "mailto:"); ok {
+				email := after
 				r.write(email)
 				return ast.SkipChildren
 			}
@@ -448,6 +448,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	return ast.GoToNext
 }
+
 // Source: utils/markdown.ts table token handler
 func (r *ansiRenderer) renderTable() {
 	t := r.table
@@ -486,7 +487,7 @@ func (r *ansiRenderer) renderTable() {
 
 	// Render top border: ┌ ... ┬ ... ┐
 	r.write("┌")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		r.write(strings.Repeat("─", colWidths[i]+2))
 		if i < numCols-1 {
 			r.write("┬")
@@ -511,7 +512,7 @@ func (r *ansiRenderer) renderTable() {
 
 		// Separator row: ├───┼───┤ (or ┬ if single column)
 		r.write("├")
-		for i := 0; i < numCols; i++ {
+		for i := range numCols {
 			r.write(strings.Repeat("─", colWidths[i]+2))
 			if i < numCols-1 {
 				r.write("┼")
@@ -538,7 +539,7 @@ func (r *ansiRenderer) renderTable() {
 
 	// Render bottom border: └ ... ┴ ... ┘
 	r.write("└")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		r.write(strings.Repeat("─", colWidths[i]+2))
 		if i < numCols-1 {
 			r.write("┴")
@@ -594,14 +595,14 @@ var romanValues = []struct {
 }
 
 func numberToRoman(n int) string {
-	result := ""
+	var result strings.Builder
 	for _, rv := range romanValues {
 		for n >= rv.value {
-			result += rv.numeral
+			result.WriteString(rv.numeral)
 			n -= rv.value
 		}
 	}
-	return result
+	return result.String()
 }
 
 // getListNumber returns the formatted list number based on depth.
@@ -622,10 +623,7 @@ func getListNumber(depth, num int) string {
 // padAligned pads content to targetWidth based on alignment.
 // Source: utils/markdown.ts padAligned
 func padAligned(content string, displayWidth, targetWidth int, align ast.CellAlignFlags) string {
-	padding := targetWidth - displayWidth
-	if padding < 0 {
-		padding = 0
-	}
+	padding := max(targetWidth-displayWidth, 0)
 	switch align {
 	case ast.TableAlignmentCenter:
 		leftPad := padding / 2

@@ -210,7 +210,7 @@ func TestExecute_Truncated(t *testing.T) {
 
 	dir := t.TempDir()
 	// Create more than 100 files to trigger truncation
-	for i := 0; i < 150; i++ {
+	for i := range 150 {
 		fp := filepath.Join(dir, fmt.Sprintf("file%03d.go", i))
 		if err := os.WriteFile(fp, []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)

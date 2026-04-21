@@ -78,15 +78,17 @@ type mockTool struct {
 	enabled bool
 }
 
-func (t *mockTool) Name() string                                                { return t.name }
-func (t *mockTool) Aliases() []string                                           { return nil }
+func (t *mockTool) Name() string      { return t.name }
+func (t *mockTool) Aliases() []string { return nil }
 func (t *mockTool) Description(input json.RawMessage) (string, error) {
 	if t.descFn != nil {
 		return t.descFn(input)
 	}
 	return t.name + " description", nil
 }
-func (t *mockTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{"type":"object","properties":{}}`) }
+func (t *mockTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
 func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
 		return t.callFn(ctx, input, tctx)
@@ -96,13 +98,13 @@ func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.
 func (t *mockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (t *mockTool) IsReadOnly(json.RawMessage) bool            { return true }
-func (t *mockTool) IsDestructive(json.RawMessage) bool         { return false }
-func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (t *mockTool) IsEnabled() bool                            { return t.enabled }
-func (t *mockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
-func (t *mockTool) Prompt() string                             { return "" }
-func (t *mockTool) RenderResult(any) string                      { return "" }
+func (t *mockTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *mockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *mockTool) IsEnabled() bool                           { return t.enabled }
+func (t *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *mockTool) Prompt() string                            { return "" }
+func (t *mockTool) RenderResult(any) string                   { return "" }
 
 func (*mockTool) MaxResultSize() int { return 50000 }
 
@@ -765,7 +767,7 @@ func TestMessages_ConcurrentAccess(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
@@ -1226,7 +1228,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		events := toolUseStreamEvents("test-model", fmt.Sprintf("t%d", i), "my_tool", `{}`)
 		mp.addResponse(events, nil)
 	}
@@ -1698,10 +1700,10 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	h.Subscribe(handler)
 
 	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 		Dispatcher: h,
 	})
 
@@ -1764,7 +1766,6 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	}
 }
 
-
 // TestQuery_TurnEndAfterToolEnd verifies that turn_end comes AFTER tool_end
 // within each round. Previous bug: turn_end was emitted right after callLLM()
 // returned, before tool execution, making the ordering turn_end→tool_end.
@@ -1784,10 +1785,10 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	h.Subscribe(handler)
 
 	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 		Dispatcher: h,
 	})
 
@@ -1822,6 +1823,7 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 		}
 	}
 }
+
 // mockDispatcher is a non-hub EventDispatcher for testing interface compliance.
 type mockDispatcher struct {
 	mu     sync.Mutex
@@ -1903,9 +1905,9 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
 	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		Provider:   mp,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 		Dispatcher: nil,
 	})
 
@@ -2107,7 +2109,7 @@ func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	notificationCount := 100
-	for i := 0; i < notificationCount; i++ {
+	for i := range notificationCount {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -2162,14 +2164,14 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	mp := &mockProvider{}
 	events := []llm.StreamEvent{
 		{
-			Type: "message_start",
+			Type:    "message_start",
 			Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 2500}},
 		},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hi"}},
 		{Type: "content_block_stop", Index: 0},
 		{
-			Type: "message_delta",
+			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
 			Usage:    &llm.UsageDelta{OutputTokens: 100},
 		},
@@ -2262,7 +2264,7 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "cached response"}},
 		{Type: "content_block_stop", Index: 0},
 		{
-			Type:    "message_delta",
+			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
 			Usage: &llm.UsageDelta{
 				OutputTokens:             30,
@@ -2311,7 +2313,7 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 	// Verify TUI-style accumulation
 	totalCacheRead := 0
 	for _, u := range usageEvents {
-			if u.CacheReadInputTokens > 0 {
+		if u.CacheReadInputTokens > 0 {
 			totalCacheRead = u.CacheReadInputTokens
 		}
 	}
@@ -2355,7 +2357,7 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hello"}},
 		{Type: "content_block_stop", Index: 0},
 		{
-			Type:    "message_delta",
+			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
 			Usage: &llm.UsageDelta{
 				OutputTokens: 5,
@@ -2613,7 +2615,6 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	}
 }
 
-
 func TestQuery_EventTextStartEmitted(t *testing.T) {
 	t.Parallel()
 
@@ -2845,7 +2846,6 @@ func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 
 	t.Logf("event order: %v", eventOrder)
 }
-
 
 // TestQuery_EventTextStartEnd_EmptyBlock verifies that text start/end events
 // are emitted even when the text block has zero deltas (empty text).

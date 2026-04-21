@@ -386,7 +386,6 @@ func TestGrepToolCall_OutputModeCount(t *testing.T) {
 	}
 }
 
-
 func TestGrepToolCall_OutputModeCountDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -545,7 +544,7 @@ func TestGrepToolCall_HeadLimitFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		fp := filepath.Join(dir, "f"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
 		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -574,7 +573,7 @@ func TestGrepToolCall_HeadLimitUnlimited(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		fp := filepath.Join(dir, "unlim"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
 		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -601,7 +600,7 @@ func TestGrepToolCall_Offset(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		fp := filepath.Join(dir, "off"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
 		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -719,7 +718,7 @@ func TestApplyHeadLimit_OffsetBeyondLength(t *testing.T) {
 
 	dir := t.TempDir()
 	// Create 2 files but offset past them
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		fp := filepath.Join(dir, "offbeyond"+strings.TrimLeft(fmt.Sprintf("%d", i), "0")+".txt")
 		if err := os.WriteFile(fp, []byte("match\n"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -745,7 +744,7 @@ func TestApplyHeadLimit_OffsetBeyondLength(t *testing.T) {
 func TestGrepToolCall_DefaultHeadLimit250(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		fp := filepath.Join(dir, fmt.Sprintf("def%03d.txt", i))
 		if err := os.WriteFile(fp, []byte("match\n"), 0644); err != nil {
 			t.Fatalf("WriteFile: %v", err)

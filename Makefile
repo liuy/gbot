@@ -25,7 +25,10 @@ test:
 lint:
 	golangci-lint run $(ALL)
 
-check: build test lint
+check: build test lint fix
+
+fix:
+	go fix ./...
 
 clean:
 	rm -f $(BINARY) coverage.out *.out *.prof *.test

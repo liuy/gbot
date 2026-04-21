@@ -286,7 +286,7 @@ func TestSearchMessages_Pagination(t *testing.T) {
 	sessionID := sess.SessionID
 
 	// Insert 5 messages all containing "test"
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		content := `[{"type":"text","text":"test message ` + string(rune('0'+i)) + `"}]`
 		uuid := "msg-" + string(rune('0'+i))
 		_, err := store.db.Exec(
@@ -1117,7 +1117,9 @@ func TestInsertFTS_ErrorPath(t *testing.T) {
 	store := openTestStore(t)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	err := store.insertFTS(store.db, 1, `[{"type":"text","text":"test"}]`)
 	if err == nil {
@@ -1130,7 +1132,9 @@ func TestDeleteFTS_ErrorPath(t *testing.T) {
 	store := openTestStore(t)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	err := store.deleteFTS(1)
 	if err == nil {
@@ -1506,4 +1510,3 @@ func TestExtractTextFromJSON_NonObjectBlock(t *testing.T) {
 		t.Errorf("should extract valid text, got: %q", result)
 	}
 }
-

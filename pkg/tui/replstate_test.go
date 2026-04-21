@@ -593,7 +593,7 @@ func TestUpdateAgentProgress_TrimsOver50Entries(t *testing.T) {
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
 	// Add 55 tool entries
-	for i := 0; i < 55; i++ {
+	for i := range 55 {
 		s.UpdateAgentProgress(agentToolMsg{
 			ParentToolUseID: "agent1",
 			SubType:         "tool_start",

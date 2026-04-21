@@ -19,7 +19,7 @@ func RestoreSkillStateFromMessages(messages []*Message) *SkillState {
 			continue
 		}
 
-		var attachment map[string]interface{}
+		var attachment map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &attachment); err != nil {
 			continue
 		}
@@ -28,9 +28,9 @@ func RestoreSkillStateFromMessages(messages []*Message) *SkillState {
 
 		// Extract invoked skills
 		if attachmentType == "invoked_skills" {
-			skills, _ := attachment["skills"].([]interface{})
+			skills, _ := attachment["skills"].([]any)
 			for _, s := range skills {
-				skill, ok := s.(map[string]interface{})
+				skill, ok := s.(map[string]any)
 				if !ok {
 					continue
 				}
@@ -74,7 +74,7 @@ func RestoreAgentFromSession(messages []*Message) *AgentState {
 			continue
 		}
 
-		var attachment map[string]interface{}
+		var attachment map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &attachment); err != nil {
 			continue
 		}
@@ -88,7 +88,7 @@ func RestoreAgentFromSession(messages []*Message) *AgentState {
 		model, _ := attachment["model"].(string)
 		settings := make(map[string]string)
 
-		if settingsMap, ok := attachment["settings"].(map[string]interface{}); ok {
+		if settingsMap, ok := attachment["settings"].(map[string]any); ok {
 			for k, v := range settingsMap {
 				if str, ok := v.(string); ok {
 					settings[k] = str
@@ -98,7 +98,7 @@ func RestoreAgentFromSession(messages []*Message) *AgentState {
 
 		// Extract tool_use_id -> agent_id mappings
 		toolUseIDs := make(map[string]string)
-		if mappings, ok := attachment["tool_use_ids"].(map[string]interface{}); ok {
+		if mappings, ok := attachment["tool_use_ids"].(map[string]any); ok {
 			for toolUseID, agentID := range mappings {
 				if agentStr, ok := agentID.(string); ok {
 					toolUseIDs[toolUseID] = agentStr
@@ -142,7 +142,7 @@ func ExtractTodosFromTranscript(messages []*Message) []*TodoItem {
 		}
 
 		// Parse the input to extract todos
-		var input map[string]interface{}
+		var input map[string]any
 		if err := json.Unmarshal(todoWriteBlock.Input, &input); err != nil {
 			continue
 		}
@@ -152,14 +152,14 @@ func ExtractTodosFromTranscript(messages []*Message) []*TodoItem {
 			continue
 		}
 
-		todosList, ok := todosRaw.([]interface{})
+		todosList, ok := todosRaw.([]any)
 		if !ok {
 			continue
 		}
 
 		var todos []*TodoItem
 		for _, t := range todosList {
-			todoMap, ok := t.(map[string]interface{})
+			todoMap, ok := t.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -191,7 +191,7 @@ func ComputeRestoredAttributionState(messages []*Message) *AttributionState {
 			continue
 		}
 
-		var snapshot map[string]interface{}
+		var snapshot map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &snapshot); err != nil {
 			continue
 		}
@@ -222,7 +222,7 @@ func ComputeStandaloneAgentContext(messages []*Message) *AgentContext {
 			continue
 		}
 
-		var attachment map[string]interface{}
+		var attachment map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &attachment); err != nil {
 			continue
 		}
@@ -322,7 +322,7 @@ func CheckResumeConsistency(chain []*Message) {
 		}
 
 		// Extract messageCount from the checkpoint
-		var checkpoint map[string]interface{}
+		var checkpoint map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &checkpoint); err != nil {
 			continue
 		}
@@ -407,7 +407,7 @@ func GroupMessagesByApiRound(messages []*Message) [][]*Message {
 // This is the API response identifier shared by streaming chunks from the same response.
 // Returns empty string if not found.
 func extractMessageID(content string) string {
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		return ""
 	}
@@ -417,7 +417,7 @@ func extractMessageID(content string) string {
 }
 
 // valueAsString is a helper to extract string values from interface{}
-func valueAsString(v interface{}) string {
+func valueAsString(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}

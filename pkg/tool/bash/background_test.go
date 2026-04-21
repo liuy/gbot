@@ -289,15 +289,13 @@ func TestBackgroundTaskRegistry_ConcurrentAccess(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			task := r.Spawn("cmd", 0, nil)
 			task.Complete(0, false)
 			r.List()
 			r.Get(task.ID)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -344,8 +342,8 @@ func TestBackgroundTask_Complete_StopsStallCancel(t *testing.T) {
 
 	called := false
 	task := &BackgroundTask{
-		Status:     TaskRunning,
-		done:       make(chan struct{}),
+		Status:      TaskRunning,
+		done:        make(chan struct{}),
 		cancelStall: func() { called = true },
 	}
 
@@ -466,11 +464,11 @@ func TestTaskNotification_FormatXML_Completion(t *testing.T) {
 func TestTaskNotification_FormatXML_Stall(t *testing.T) {
 	t.Parallel()
 	n := TaskNotification{
-		TaskID:    "bg-2",
-		Status:    "",
-		Summary:   `Background command "test" appears to be waiting for interactive input`,
-		IsStall:   true,
-		Tail:      "Continue? (y/n)",
+		TaskID:  "bg-2",
+		Status:  "",
+		Summary: `Background command "test" appears to be waiting for interactive input`,
+		IsStall: true,
+		Tail:    "Continue? (y/n)",
 	}
 	xml := n.FormatXML()
 	// Stall notifications have no <status> tag
@@ -751,11 +749,11 @@ func TestBackgroundTaskRegistry_UnregisterForeground_NotFound(t *testing.T) {
 func TestBuildNotificationLocked_Completed(t *testing.T) {
 	t.Parallel()
 	task := &BackgroundTask{
-		ID:          "bg-1",
-		Command:     "echo hello",
-		ToolUseID:   "tu-1",
-		OutputPath:  "/tmp/out",
-		ExitCode:    0,
+		ID:         "bg-1",
+		Command:    "echo hello",
+		ToolUseID:  "tu-1",
+		OutputPath: "/tmp/out",
+		ExitCode:   0,
 	}
 	n := task.buildNotificationLocked("completed")
 	if n.TaskID != "bg-1" {
@@ -906,8 +904,8 @@ func TestBackgroundTask_Complete_AlreadyNotified(t *testing.T) {
 func TestBackgroundTask_Complete_AlreadyTerminal(t *testing.T) {
 	t.Parallel()
 	task := &BackgroundTask{
-		Status:   TaskCompleted,
-		done:     make(chan struct{}),
+		Status: TaskCompleted,
+		done:   make(chan struct{}),
 	}
 	task.Complete(1, false)
 	// Should not change status or close done again

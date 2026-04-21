@@ -277,10 +277,7 @@ func readTail(path string, maxBytes int) string {
 		return ""
 	}
 
-	offset := size - int64(maxBytes)
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(size-int64(maxBytes), 0)
 	bytesToRead := int(size - offset)
 
 	buf := make([]byte, bytesToRead)

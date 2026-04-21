@@ -58,8 +58,8 @@ func (m *mockCompactor) CallCount() int {
 type compactMockProvider struct {
 	mu               sync.Mutex
 	compactCallCount int
-	compactInput    []string
-	compactErr      error
+	compactInput     []string
+	compactErr       error
 }
 
 func (m *compactMockProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
@@ -436,7 +436,7 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		mp.addResponse(textStreamEvents("test-model", "ok"), nil)
 	}
 

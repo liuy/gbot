@@ -85,10 +85,10 @@ type openaiChatRequest struct {
 }
 
 type openaiMessage struct {
-	Role       string            `json:"role"`
-	Content    any               `json:"content,omitempty"` // string, nil, or omitted
-	ToolCalls  []openaiToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string            `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    any              `json:"content,omitempty"` // string, nil, or omitted
+	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openaiToolCall struct {
@@ -104,7 +104,7 @@ type openaiFunction struct {
 }
 
 type openaiTool struct {
-	Type     string       `json:"type"` // "function"
+	Type     string        `json:"type"` // "function"
 	Function openaiFuncDef `json:"function"`
 }
 
@@ -116,10 +116,10 @@ type openaiFuncDef struct {
 
 // Streaming chunk (SSE data payload)
 type openaiStreamChunk struct {
-	ID      string          `json:"id"`
-	Model   string          `json:"model,omitempty"`
-	Choices []openaiChoice  `json:"choices"`
-	Usage   *openaiUsage    `json:"usage,omitempty"`
+	ID      string         `json:"id"`
+	Model   string         `json:"model,omitempty"`
+	Choices []openaiChoice `json:"choices"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
 }
 
 type openaiChoice struct {
@@ -412,8 +412,8 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					textContentIndex = nextContentIndex
 					nextContentIndex++
 					send(ctx, eventCh, StreamEvent{
-						Type: "content_block_start",
-						Index: textContentIndex,
+						Type:         "content_block_start",
+						Index:        textContentIndex,
 						ContentBlock: &types.ContentBlock{Type: types.ContentTypeText},
 					})
 					textBlockOpen = true
@@ -575,14 +575,14 @@ func translateMessages(messages []types.Message) []openaiMessage {
 
 	for _, msg := range messages {
 		var assistantToolCalls []openaiToolCall
-		var assistantText string
+		var assistantText strings.Builder
 		var toolResults []openaiMessage
 
 		for _, cb := range msg.Content {
 			switch cb.Type {
 			case types.ContentTypeText:
 				if msg.Role == types.RoleAssistant {
-					assistantText += cb.Text
+					assistantText.WriteString(cb.Text)
 				} else {
 					result = append(result, openaiMessage{
 						Role:    string(msg.Role),
@@ -614,10 +614,10 @@ func translateMessages(messages []types.Message) []openaiMessage {
 		}
 
 		// Build assistant message if it has content or tool_calls
-		if msg.Role == types.RoleAssistant && (assistantText != "" || len(assistantToolCalls) > 0) {
+		if msg.Role == types.RoleAssistant && (assistantText.String() != "" || len(assistantToolCalls) > 0) {
 			om := openaiMessage{Role: "assistant"}
-			if assistantText != "" {
-				om.Content = assistantText
+			if assistantText.String() != "" {
+				om.Content = assistantText.String()
 			} else {
 				om.Content = nil
 			}

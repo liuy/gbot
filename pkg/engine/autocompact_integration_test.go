@@ -109,8 +109,8 @@ func TestAutoCompact_Proactive_E2E(t *testing.T) {
 
 	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
 	eng := engine.New(&engine.Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
 			Threshold:     0.9,
@@ -189,8 +189,8 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 
 	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
 	eng := engine.New(&engine.Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
 			Threshold:     0.9,
@@ -261,8 +261,8 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 	originalCount := len(parentMsgs)
 
 	eng := engine.New(&engine.Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
 			Threshold:     0.5,
@@ -328,8 +328,8 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
 
 	eng := engine.New(&engine.Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
 			Threshold:     0.9,
@@ -423,14 +423,14 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	}
 	// Add enough stream responses for proactive compact + potential
 	// additional turns triggered by enqueued notifications.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		p.addStream(textStreamEvents("test-model", "Done."), nil)
 	}
 
 	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
 	eng := engine.New(&engine.Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
 			Threshold:     0.9,
@@ -442,7 +442,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 
 	// Concurrently enqueue notifications while query runs
 	go func() {
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			eng.EnqueueNotification(types.Message{
 				Role:      types.RoleUser,
 				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("notification %d", i))},

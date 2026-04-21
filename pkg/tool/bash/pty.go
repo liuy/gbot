@@ -49,7 +49,7 @@ func SetPtmxCheckPath(path string) {
 
 // openPTY hooks — allow mocking ioctl and slave open in tests
 var (
-	ioctlGetPtyNum  = func(fd int) (int, error) {
+	ioctlGetPtyNum = func(fd int) (int, error) {
 		return unix.IoctlGetInt(fd, unix.TIOCGPTN)
 	}
 	ioctlUnlockPty = func(fd int) error {
@@ -323,12 +323,12 @@ func applyEnvOverrides(env []string, overrides map[string]string) []string {
 	}
 	// Copy env vars that are NOT overridden
 	for _, e := range env {
-		idx := strings.Index(e, "=")
-		if idx < 0 {
+		before, _, ok := strings.Cut(e, "=")
+		if !ok {
 			result = append(result, e)
 			continue
 		}
-		key := e[:idx]
+		key := before
 		if !overrideKeys[key] {
 			result = append(result, e)
 		}

@@ -559,7 +559,7 @@ func TestRecordPromptState_NoChange(t *testing.T) {
 func TestRecordPromptState_MaxSourcesEviction(t *testing.T) {
 	resetGlobalState()
 
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		key := PromptStateKey{QuerySource: "repl_main_thread", AgentID: fmt.Sprintf("agent-%d", i)}
 		RecordPromptState(makeSystemBlocks("sys"), makeTools("Read"), key, "sonnet", nil, "", false, false, false, false, "", 0)
 	}
@@ -598,7 +598,7 @@ func TestRecordPromptState_PerToolHash(t *testing.T) {
 		{"name": "Write", "description": "write file"},
 	}
 	tools2 := []map[string]any{
-		{"name": "Read", "description": "read file"},          // same
+		{"name": "Read", "description": "read file"},           // same
 		{"name": "Write", "description": "write file CHANGED"}, // changed description
 	}
 
@@ -1172,7 +1172,7 @@ func TestRecordPromptState_EvictionOrder(t *testing.T) {
 	resetGlobalState()
 
 	// Fill up to max
-	for i := 0; i < maxTrackedSources; i++ {
+	for i := range maxTrackedSources {
 		key := PromptStateKey{QuerySource: "repl_main_thread", AgentID: fmt.Sprintf("agent-%02d", i)}
 		RecordPromptState(makeSystemBlocks("sys"), makeTools("Read"), key, "sonnet", nil, "", false, false, false, false, "", 0)
 	}

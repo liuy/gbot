@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +38,6 @@ const (
 	// cacheTTL1HourMS is the 1-hour TTL threshold in milliseconds.
 	// Source: promptCacheBreakDetection.ts:126
 	cacheTTL1HourMS = 60 * 60 * 1000
-
 )
 
 // trackedSourcePrefixes lists query sources that are tracked for break detection.
@@ -335,237 +335,232 @@ func extractCacheControlHash(system []map[string]any) uint32 {
 // Source: promptCacheBreakDetection.ts:247-430
 func RecordPromptState(system []map[string]any, tools []map[string]any, key PromptStateKey, model string, betas []string, globalCacheStrategy string, fastMode bool, autoModeActive bool, isUsingOverage bool, cachedMCEnabled bool, effortValue string, extraBodyHash uint32) {
 
-		trackKey := getTrackingKey(key.QuerySource, key.AgentID)
-		if trackKey == "" {
-			return
+	trackKey := getTrackingKey(key.QuerySource, key.AgentID)
+	if trackKey == "" {
+		return
+	}
+
+	strippedSystem := stripCacheControl(system)
+	strippedTools := stripCacheControl(tools)
+
+	systemHash := computeHash(strippedSystem)
+	toolsHash := computeHash(strippedTools)
+	cacheControlHash := extractCacheControlHash(system)
+
+	toolNames := make([]string, len(tools))
+	for i, t := range tools {
+		name, _ := t["name"].(string)
+		if name == "" {
+			name = "unknown"
 		}
+		toolNames[i] = name
+	}
 
-		strippedSystem := stripCacheControl(system)
-		strippedTools := stripCacheControl(tools)
+	systemCharCount := getSystemCharCount(system)
+	sortedBetas := sortCopy(betas)
 
-		systemHash := computeHash(strippedSystem)
-		toolsHash := computeHash(strippedTools)
-		cacheControlHash := extractCacheControlHash(system)
+	// Defensive copy: closure captures slices that caller may mutate.
+	systemCopy := make([]map[string]any, len(system))
+	for i, m := range system {
+		cp := make(map[string]any, len(m))
+		maps.Copy(cp, m)
+		systemCopy[i] = cp
+	}
+	toolsCopy := make([]map[string]any, len(tools))
+	for i, m := range tools {
+		cp := make(map[string]any, len(m))
+		maps.Copy(cp, m)
+		toolsCopy[i] = cp
+	}
+	lazyDiffableContent := func() string {
+		return buildDiffableContent(systemCopy, toolsCopy, model)
+	}
 
-		toolNames := make([]string, len(tools))
-		for i, t := range tools {
-			name, _ := t["name"].(string)
-			if name == "" {
-				name = "unknown"
+	// Compute per-tool hashes lazily
+	computeToolHashes := func() map[string]uint32 {
+		return computePerToolHashes(strippedTools, toolNames)
+	}
+
+	muState.Lock()
+	defer muState.Unlock()
+
+	prevVal, loaded := stateStore[trackKey]
+	if !loaded {
+		// Evict oldest entries if at capacity (before inserting new)
+		// Source: TS lines 298-303
+		for len(stateStore) >= maxTrackedSources {
+			if len(insertionOrder) > 0 {
+				oldest := insertionOrder[0]
+				insertionOrder = insertionOrder[1:]
+				delete(stateStore, oldest)
+
+			} else {
+				break
 			}
-			toolNames[i] = name
 		}
 
-		systemCharCount := getSystemCharCount(system)
-		sortedBetas := sortCopy(betas)
+		stateStore[trackKey] = &promptStateInternal{
+			SystemHash:           systemHash,
+			ToolsHash:            toolsHash,
+			CacheControlHash:     cacheControlHash,
+			ToolNames:            toolNames,
+			PerToolHashes:        computeToolHashes(),
+			SystemCharCount:      systemCharCount,
+			Model:                model,
+			GlobalCacheStrategy:  globalCacheStrategy,
+			Betas:                sortedBetas,
+			FastMode:             fastMode,
+			AutoModeActive:       autoModeActive,
+			IsUsingOverage:       isUsingOverage,
+			CachedMCEnabled:      cachedMCEnabled,
+			EffortValue:          effortValue,
+			ExtraBodyHash:        extraBodyHash,
+			CallCount:            1,
+			PrevCacheRead:        0, // 0 = null (first call)
+			BuildDiffableContent: lazyDiffableContent,
+		}
+		insertionOrder = append(insertionOrder, trackKey)
+		return
+	}
 
-		// Defensive copy: closure captures slices that caller may mutate.
-		systemCopy := make([]map[string]any, len(system))
-		for i, m := range system {
-			cp := make(map[string]any, len(m))
-			for k, v := range m {
-				cp[k] = v
+	prev := prevVal
+	prev.CallCount++
+
+	// Compute change flags
+	// Source: TS lines 332-346
+	systemPromptChanged := systemHash != prev.SystemHash
+	toolSchemasChanged := toolsHash != prev.ToolsHash
+	modelChanged := model != prev.Model
+	fastModeChanged := fastMode != prev.FastMode
+	cacheControlChanged := cacheControlHash != prev.CacheControlHash
+	globalCacheStrategyChanged := globalCacheStrategy != prev.GlobalCacheStrategy
+	betasChanged := !slicesEqual(sortedBetas, prev.Betas)
+	autoModeChanged := autoModeActive != prev.AutoModeActive
+	overageChanged := isUsingOverage != prev.IsUsingOverage
+	cachedMCChanged := cachedMCEnabled != prev.CachedMCEnabled
+	effortChanged := effortValue != prev.EffortValue
+	extraBodyChanged := extraBodyHash != prev.ExtraBodyHash
+
+	if systemPromptChanged || toolSchemasChanged || modelChanged ||
+		fastModeChanged || cacheControlChanged || globalCacheStrategyChanged ||
+		betasChanged || autoModeChanged || overageChanged ||
+		cachedMCChanged || effortChanged || extraBodyChanged {
+		// Set-based derivation for tools
+		// Source: TS lines 362-378
+		prevToolSet := make(map[string]bool, len(prev.ToolNames))
+		for _, n := range prev.ToolNames {
+			prevToolSet[n] = true
+		}
+		newToolSet := make(map[string]bool, len(toolNames))
+		for _, n := range toolNames {
+			newToolSet[n] = true
+		}
+
+		var addedTools []string
+		for _, n := range toolNames {
+			if !prevToolSet[n] {
+				addedTools = append(addedTools, n)
 			}
-			systemCopy[i] = cp
 		}
-		toolsCopy := make([]map[string]any, len(tools))
-		for i, m := range tools {
-			cp := make(map[string]any, len(m))
-			for k, v := range m {
-				cp[k] = v
+		var removedTools []string
+		for _, n := range prev.ToolNames {
+			if !newToolSet[n] {
+				removedTools = append(removedTools, n)
 			}
-			toolsCopy[i] = cp
-		}
-		lazyDiffableContent := func() string {
-			return buildDiffableContent(systemCopy, toolsCopy, model)
 		}
 
-		// Compute per-tool hashes lazily
-		computeToolHashes := func() map[string]uint32 {
-			return computePerToolHashes(strippedTools, toolNames)
-		}
-
-		muState.Lock()
-		defer muState.Unlock()
-
-		prevVal, loaded := stateStore[trackKey]
-		if !loaded {
-			// Evict oldest entries if at capacity (before inserting new)
-			// Source: TS lines 298-303
-			for len(stateStore) >= maxTrackedSources {
-				if len(insertionOrder) > 0 {
-					oldest := insertionOrder[0]
-					insertionOrder = insertionOrder[1:]
-					delete(stateStore, oldest)
-					
-				} else {
-					break
+		// Per-tool schema diff
+		var changedToolSchemas []string
+		if toolSchemasChanged {
+			newHashes := computeToolHashes()
+			for _, name := range toolNames {
+				if !prevToolSet[name] {
+					continue
+				}
+				if newHashes[name] != prev.PerToolHashes[name] {
+					changedToolSchemas = append(changedToolSchemas, name)
 				}
 			}
-
-			stateStore[trackKey] = &promptStateInternal{
-				SystemHash:           systemHash,
-				ToolsHash:            toolsHash,
-				CacheControlHash:     cacheControlHash,
-				ToolNames:            toolNames,
-				PerToolHashes:        computeToolHashes(),
-				SystemCharCount:      systemCharCount,
-				Model:                model,
-				GlobalCacheStrategy:  globalCacheStrategy,
-				Betas:                sortedBetas,
-				FastMode:             fastMode,
-				AutoModeActive:       autoModeActive,
-				IsUsingOverage:       isUsingOverage,
-				CachedMCEnabled:      cachedMCEnabled,
-				EffortValue:          effortValue,
-				ExtraBodyHash:        extraBodyHash,
-				CallCount:            1,
-				PrevCacheRead:        0, // 0 = null (first call)
-				BuildDiffableContent: lazyDiffableContent,
-			}
-			insertionOrder = append(insertionOrder, trackKey)
-			return
+			prev.PerToolHashes = newHashes
 		}
 
-		prev := prevVal
-		prev.CallCount++
+		// Set-based derivation for betas
+		// Source: TS lines 364-365, 402-403
+		prevBetaSet := make(map[string]bool, len(prev.Betas))
+		for _, b := range prev.Betas {
+			prevBetaSet[b] = true
+		}
+		newBetaSet := make(map[string]bool, len(sortedBetas))
+		for _, b := range sortedBetas {
+			newBetaSet[b] = true
+		}
+		var addedBetas []string
+		for _, b := range sortedBetas {
+			if !prevBetaSet[b] {
+				addedBetas = append(addedBetas, b)
+			}
+		}
+		var removedBetas []string
+		for _, b := range prev.Betas {
+			if !newBetaSet[b] {
+				removedBetas = append(removedBetas, b)
+			}
+		}
 
-		// Compute change flags
-		// Source: TS lines 332-346
-		systemPromptChanged := systemHash != prev.SystemHash
-		toolSchemasChanged := toolsHash != prev.ToolsHash
-		modelChanged := model != prev.Model
-		fastModeChanged := fastMode != prev.FastMode
-		cacheControlChanged := cacheControlHash != prev.CacheControlHash
-		globalCacheStrategyChanged := globalCacheStrategy != prev.GlobalCacheStrategy
-		betasChanged := !slicesEqual(sortedBetas, prev.Betas)
-		autoModeChanged := autoModeActive != prev.AutoModeActive
-		overageChanged := isUsingOverage != prev.IsUsingOverage
-		cachedMCChanged := cachedMCEnabled != prev.CachedMCEnabled
-		effortChanged := effortValue != prev.EffortValue
-		extraBodyChanged := extraBodyHash != prev.ExtraBodyHash
-
-		if systemPromptChanged || toolSchemasChanged || modelChanged ||
-			fastModeChanged || cacheControlChanged || globalCacheStrategyChanged ||
-			betasChanged || autoModeChanged || overageChanged ||
-			cachedMCChanged || effortChanged || extraBodyChanged {
-			// Set-based derivation for tools
-			// Source: TS lines 362-378
-			prevToolSet := make(map[string]bool, len(prev.ToolNames))
-			for _, n := range prev.ToolNames {
-				prevToolSet[n] = true
-			}
-			newToolSet := make(map[string]bool, len(toolNames))
-			for _, n := range toolNames {
-				newToolSet[n] = true
-			}
-
-			var addedTools []string
-			for _, n := range toolNames {
-				if !prevToolSet[n] {
-					addedTools = append(addedTools, n)
-				}
-			}
-			var removedTools []string
-			for _, n := range prev.ToolNames {
-				if !newToolSet[n] {
-					removedTools = append(removedTools, n)
-				}
-			}
-
-			// Per-tool schema diff
-			var changedToolSchemas []string
-			if toolSchemasChanged {
-				newHashes := computeToolHashes()
-				for _, name := range toolNames {
-					if !prevToolSet[name] {
-						continue
-					}
-					if newHashes[name] != prev.PerToolHashes[name] {
-						changedToolSchemas = append(changedToolSchemas, name)
-					}
-				}
-				prev.PerToolHashes = newHashes
-			}
-
-			// Set-based derivation for betas
-			// Source: TS lines 364-365, 402-403
-			prevBetaSet := make(map[string]bool, len(prev.Betas))
-			for _, b := range prev.Betas {
-				prevBetaSet[b] = true
-			}
-			newBetaSet := make(map[string]bool, len(sortedBetas))
-			for _, b := range sortedBetas {
-				newBetaSet[b] = true
-			}
-			var addedBetas []string
-			for _, b := range sortedBetas {
-				if !prevBetaSet[b] {
-					addedBetas = append(addedBetas, b)
-				}
-			}
-			var removedBetas []string
-			for _, b := range prev.Betas {
-				if !newBetaSet[b] {
-					removedBetas = append(removedBetas, b)
-				}
-			}
-
-				// Capture OLD diffable content before replacing with new (TS:412-426)
+		// Capture OLD diffable content before replacing with new (TS:412-426)
 		oldDiffableContent := prev.BuildDiffableContent
 		prev.BuildDiffableContent = lazyDiffableContent
-			prev.PendingChanges = &PendingChanges{
-				SystemPromptChanged:       systemPromptChanged,
-				ToolSchemasChanged:        toolSchemasChanged,
-				ModelChanged:              modelChanged,
-				CacheControlChanged:       cacheControlChanged,
-				GlobalCacheStrategyChanged: globalCacheStrategyChanged,
-				BetasChanged:                betasChanged,
-				AutoModeActiveChanged:       autoModeChanged,
-				OverageChanged:              overageChanged,
-				CachedMCEnabledChanged:      cachedMCChanged,
-				EffortChanged:               effortChanged,
-				ExtraBodyChanged:            extraBodyChanged,
-				FastModeChanged:             fastModeChanged,
-				AddedToolCount:            len(addedTools),
-				RemovedToolCount:          len(removedTools),
-				AddedTools:                addedTools,
-				RemovedTools:              removedTools,
-				ChangedToolSchemas:        changedToolSchemas,
-				SystemCharDelta:           systemCharCount - prev.SystemCharCount,
-				PreviousModel:             prev.Model,
-				NewModel:                  model,
-				PrevGlobalCacheStrategy:   prev.GlobalCacheStrategy,
-				NewGlobalCacheStrategy:    globalCacheStrategy,
-				PrevEffortValue:            prev.EffortValue,
-				NewEffortValue:             effortValue,
-				AddedBetas:                addedBetas,
-				RemovedBetas:              removedBetas,
-				BuildPrevDiffableContent:  oldDiffableContent,
-			}
-		} else {
-			prev.PendingChanges = nil
+		prev.PendingChanges = &PendingChanges{
+			SystemPromptChanged:        systemPromptChanged,
+			ToolSchemasChanged:         toolSchemasChanged,
+			ModelChanged:               modelChanged,
+			CacheControlChanged:        cacheControlChanged,
+			GlobalCacheStrategyChanged: globalCacheStrategyChanged,
+			BetasChanged:               betasChanged,
+			AutoModeActiveChanged:      autoModeChanged,
+			OverageChanged:             overageChanged,
+			CachedMCEnabledChanged:     cachedMCChanged,
+			EffortChanged:              effortChanged,
+			ExtraBodyChanged:           extraBodyChanged,
+			FastModeChanged:            fastModeChanged,
+			AddedToolCount:             len(addedTools),
+			RemovedToolCount:           len(removedTools),
+			AddedTools:                 addedTools,
+			RemovedTools:               removedTools,
+			ChangedToolSchemas:         changedToolSchemas,
+			SystemCharDelta:            systemCharCount - prev.SystemCharCount,
+			PreviousModel:              prev.Model,
+			NewModel:                   model,
+			PrevGlobalCacheStrategy:    prev.GlobalCacheStrategy,
+			NewGlobalCacheStrategy:     globalCacheStrategy,
+			PrevEffortValue:            prev.EffortValue,
+			NewEffortValue:             effortValue,
+			AddedBetas:                 addedBetas,
+			RemovedBetas:               removedBetas,
+			BuildPrevDiffableContent:   oldDiffableContent,
 		}
+	} else {
+		prev.PendingChanges = nil
+	}
 
-		// Update prev state
-		// Source: TS lines 412-426
-		prev.SystemHash = systemHash
-		prev.ToolsHash = toolsHash
-		prev.CacheControlHash = cacheControlHash
-		prev.ToolNames = toolNames
-		prev.SystemCharCount = systemCharCount
-		prev.Model = model
+	// Update prev state
+	// Source: TS lines 412-426
+	prev.SystemHash = systemHash
+	prev.ToolsHash = toolsHash
+	prev.CacheControlHash = cacheControlHash
+	prev.ToolNames = toolNames
+	prev.SystemCharCount = systemCharCount
+	prev.Model = model
 	prev.GlobalCacheStrategy = globalCacheStrategy
-		prev.Betas = sortedBetas
-		prev.FastMode = fastMode
-		prev.AutoModeActive = autoModeActive
-		prev.IsUsingOverage = isUsingOverage
-		prev.CachedMCEnabled = cachedMCEnabled
-		prev.EffortValue = effortValue
-		prev.ExtraBodyHash = extraBodyHash
-		prev.BuildDiffableContent = lazyDiffableContent
+	prev.Betas = sortedBetas
+	prev.FastMode = fastMode
+	prev.AutoModeActive = autoModeActive
+	prev.IsUsingOverage = isUsingOverage
+	prev.CachedMCEnabled = cachedMCEnabled
+	prev.EffortValue = effortValue
+	prev.ExtraBodyHash = extraBodyHash
+	prev.BuildDiffableContent = lazyDiffableContent
 }
-
 
 // CheckResponseForCacheBreak checks API response cache tokens for a break.
 // Phase 2 (post-call).
@@ -582,200 +577,200 @@ func RecordPromptState(system []map[string]any, tools []map[string]any, key Prom
 // mutation of the same prev struct is not expected.
 func CheckResponseForCacheBreak(key PromptStateKey, cacheReadTokens, cacheCreationTokens int, messages []messageWithTimestamp) {
 
-		trackKey := getTrackingKey(key.QuerySource, key.AgentID)
-		if trackKey == "" {
-			return
-		}
+	trackKey := getTrackingKey(key.QuerySource, key.AgentID)
+	if trackKey == "" {
+		return
+	}
 
-		muState.Lock()
-		prevVal, loaded := stateStore[trackKey]
-		if !loaded {
-			muState.Unlock()
-			return
-		}
-		prev := prevVal
-
-		// Skip excluded models
-		// Source: TS lines 452-453
-		if isExcludedModel(prev.Model) {
-			muState.Unlock()
-			return
-		}
-
-		prevCacheRead := prev.PrevCacheRead
-		prev.PrevCacheRead = cacheReadTokens
+	muState.Lock()
+	prevVal, loaded := stateStore[trackKey]
+	if !loaded {
 		muState.Unlock()
+		return
+	}
+	prev := prevVal
 
-		// Find last assistant message timestamp for TTL detection
-		// Source: TS lines 460-463
-		var timeSinceLastAssistantMsg int64 = -1
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].role == "assistant" {
-				timeSinceLastAssistantMsg = time.Since(messages[i].timestamp).Milliseconds()
-				break
-			}
-		}
-
-		// Skip first call — no previous value to compare against
-		// Source: TS line 466
-		if prevCacheRead == 0 {
-			return
-		}
-
-		changes := prev.PendingChanges
-
-		// Cache deletions via cached microcompact are expected
-		// Source: TS lines 473-481
-		muState.Lock()
-		if prev.CacheDeletionsPending {
-			prev.CacheDeletionsPending = false
-			prev.PendingChanges = nil
-			muState.Unlock()
-			slog.Info("prompt_cache:deletion_applied",
-				"cacheReadPrev", prevCacheRead,
-				"cacheReadCurr", cacheReadTokens,
-			)
-			return
-		}
+	// Skip excluded models
+	// Source: TS lines 452-453
+	if isExcludedModel(prev.Model) {
 		muState.Unlock()
+		return
+	}
 
-		// Detect cache break: cache read dropped >5% AND absolute drop exceeds minimum
-		// Source: TS lines 485-492
-		tokenDrop := prevCacheRead - cacheReadTokens
-		if cacheReadTokens >= int(float64(prevCacheRead)*0.95) || tokenDrop < minCacheMissTokens {
-			muState.Lock()
-			prev.PendingChanges = nil
-			muState.Unlock()
-			return
+	prevCacheRead := prev.PrevCacheRead
+	prev.PrevCacheRead = cacheReadTokens
+	muState.Unlock()
+
+	// Find last assistant message timestamp for TTL detection
+	// Source: TS lines 460-463
+	var timeSinceLastAssistantMsg int64 = -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].role == "assistant" {
+			timeSinceLastAssistantMsg = time.Since(messages[i].timestamp).Milliseconds()
+			break
 		}
+	}
 
-		// Build explanation from pending changes
-		// Source: TS lines 494-563
-		var parts []string
-		if changes != nil {
-			if changes.ModelChanged {
-				parts = append(parts, fmt.Sprintf("model changed (%s → %s)", changes.PreviousModel, changes.NewModel))
-			}
-			if changes.SystemPromptChanged {
-				charDelta := changes.SystemCharDelta
-				var charInfo string
-				if charDelta > 0 {
-					charInfo = fmt.Sprintf(" (+%d chars)", charDelta)
-				} else if charDelta < 0 {
-					charInfo = fmt.Sprintf(" (%d chars)", charDelta)
-				}
-				parts = append(parts, "system prompt changed"+charInfo)
-			}
-			if changes.ToolSchemasChanged {
-				var toolDiff string
-				if changes.AddedToolCount > 0 || changes.RemovedToolCount > 0 {
-					toolDiff = fmt.Sprintf(" (+%d/-%d tools)", changes.AddedToolCount, changes.RemovedToolCount)
-				} else {
-					toolDiff = " (tool prompt/schema changed, same tool set)"
-				}
-				parts = append(parts, "tools changed"+toolDiff)
-			}
-			if changes.CacheControlChanged && !changes.GlobalCacheStrategyChanged && !changes.SystemPromptChanged {
-				parts = append(parts, "cache_control changed (scope or TTL)")
-			}
-			if changes.BetasChanged {
-				var diffParts []string
-				if len(changes.AddedBetas) > 0 {
-					diffParts = append(diffParts, "+"+strings.Join(changes.AddedBetas, ","))
-				}
-				if len(changes.RemovedBetas) > 0 {
-					diffParts = append(diffParts, "-"+strings.Join(changes.RemovedBetas, ","))
-				}
-				diff := strings.Join(diffParts, " ")
-				suffix := ""
-				if diff != "" {
-					suffix = " (" + diff + ")"
-				}
-				parts = append(parts, "betas changed"+suffix)
-			}
-			if changes.GlobalCacheStrategyChanged {
-				parts = append(parts, fmt.Sprintf("global cache strategy changed (%s → %s)",
-					changes.PrevGlobalCacheStrategy, changes.NewGlobalCacheStrategy))
-			}
-			// Source: TS lines 519-562
-			if changes.FastModeChanged {
-				parts = append(parts, "fast mode toggled")
-			}
-			if changes.AutoModeActiveChanged {
-				parts = append(parts, "auto mode toggled")
-			}
-			if changes.OverageChanged {
-				parts = append(parts, "overage state changed (TTL latched, no flip)")
-			}
-			if changes.CachedMCEnabledChanged {
-				parts = append(parts, "cached microcompact toggled")
-			}
-			if changes.EffortChanged {
-				parts = append(parts, fmt.Sprintf("effort changed (%s → %s)",
-					changes.PrevEffortValue, changes.NewEffortValue))
-			}
-			if changes.ExtraBodyChanged {
-				parts = append(parts, "extra body params changed")
-			}
-		}
+	// Skip first call — no previous value to compare against
+	// Source: TS line 466
+	if prevCacheRead == 0 {
+		return
+	}
 
-		// Check TTL expiration
-		// Source: TS lines 565-588
-		lastOver5min := timeSinceLastAssistantMsg > cacheTTL5MinMS
-		lastOver1h := timeSinceLastAssistantMsg > cacheTTL1HourMS
+	changes := prev.PendingChanges
 
-		var reason string
-		if len(parts) > 0 {
-			reason = strings.Join(parts, ", ")
-		} else if lastOver1h {
-			reason = "possible 1h TTL expiry (prompt unchanged)"
-		} else if lastOver5min {
-			reason = "possible 5min TTL expiry (prompt unchanged)"
-		} else if timeSinceLastAssistantMsg >= 0 {
-			reason = "likely server-side (prompt unchanged, <5min gap)"
-		} else {
-			reason = "unknown cause"
-		}
-
-		// Write diff file
-		// Source: TS lines 649-655
-		var diffPath string
-		if changes != nil && changes.BuildPrevDiffableContent != nil {
-			prevContent := changes.BuildPrevDiffableContent()
-			muState.Lock()
-			currContent := prev.BuildDiffableContent()
-			muState.Unlock()
-			diffPath = writeCacheBreakDiff(prevContent, currContent)
-		}
-
-		// Structured slog log
-		// Source: TS lines 590-644 (analytics) + 658-660 (debug log)
-		slog.Warn("prompt_cache:break",
-			"source", key.String(),
-			"callCount", prev.CallCount,
-			"reason", reason,
+	// Cache deletions via cached microcompact are expected
+	// Source: TS lines 473-481
+	muState.Lock()
+	if prev.CacheDeletionsPending {
+		prev.CacheDeletionsPending = false
+		prev.PendingChanges = nil
+		muState.Unlock()
+		slog.Info("prompt_cache:deletion_applied",
 			"cacheReadPrev", prevCacheRead,
 			"cacheReadCurr", cacheReadTokens,
-			"tokenDrop", tokenDrop,
-			"cacheCreation", cacheCreationTokens,
-			"ttlExpiry", ttlExpiryLabel(timeSinceLastAssistantMsg),
-			"systemChanged", changes != nil && changes.SystemPromptChanged,
-			"toolsChanged", changes != nil && changes.ToolSchemasChanged,
-			"modelChanged", changes != nil && changes.ModelChanged,
-			"cacheControlChanged", changes != nil && changes.CacheControlChanged,
-			"betasChanged", changes != nil && changes.BetasChanged,
-			"fastModeChanged", changes != nil && changes.FastModeChanged,
-			"autoModeChanged", changes != nil && changes.AutoModeActiveChanged,
-			"overageChanged", changes != nil && changes.OverageChanged,
-			"cachedMCChanged", changes != nil && changes.CachedMCEnabledChanged,
-			"effortChanged", changes != nil && changes.EffortChanged,
-			"extraBodyChanged", changes != nil && changes.ExtraBodyChanged,
-			"diff", diffPath,
 		)
+		return
+	}
+	muState.Unlock()
 
+	// Detect cache break: cache read dropped >5% AND absolute drop exceeds minimum
+	// Source: TS lines 485-492
+	tokenDrop := prevCacheRead - cacheReadTokens
+	if cacheReadTokens >= int(float64(prevCacheRead)*0.95) || tokenDrop < minCacheMissTokens {
 		muState.Lock()
 		prev.PendingChanges = nil
 		muState.Unlock()
+		return
+	}
+
+	// Build explanation from pending changes
+	// Source: TS lines 494-563
+	var parts []string
+	if changes != nil {
+		if changes.ModelChanged {
+			parts = append(parts, fmt.Sprintf("model changed (%s → %s)", changes.PreviousModel, changes.NewModel))
+		}
+		if changes.SystemPromptChanged {
+			charDelta := changes.SystemCharDelta
+			var charInfo string
+			if charDelta > 0 {
+				charInfo = fmt.Sprintf(" (+%d chars)", charDelta)
+			} else if charDelta < 0 {
+				charInfo = fmt.Sprintf(" (%d chars)", charDelta)
+			}
+			parts = append(parts, "system prompt changed"+charInfo)
+		}
+		if changes.ToolSchemasChanged {
+			var toolDiff string
+			if changes.AddedToolCount > 0 || changes.RemovedToolCount > 0 {
+				toolDiff = fmt.Sprintf(" (+%d/-%d tools)", changes.AddedToolCount, changes.RemovedToolCount)
+			} else {
+				toolDiff = " (tool prompt/schema changed, same tool set)"
+			}
+			parts = append(parts, "tools changed"+toolDiff)
+		}
+		if changes.CacheControlChanged && !changes.GlobalCacheStrategyChanged && !changes.SystemPromptChanged {
+			parts = append(parts, "cache_control changed (scope or TTL)")
+		}
+		if changes.BetasChanged {
+			var diffParts []string
+			if len(changes.AddedBetas) > 0 {
+				diffParts = append(diffParts, "+"+strings.Join(changes.AddedBetas, ","))
+			}
+			if len(changes.RemovedBetas) > 0 {
+				diffParts = append(diffParts, "-"+strings.Join(changes.RemovedBetas, ","))
+			}
+			diff := strings.Join(diffParts, " ")
+			suffix := ""
+			if diff != "" {
+				suffix = " (" + diff + ")"
+			}
+			parts = append(parts, "betas changed"+suffix)
+		}
+		if changes.GlobalCacheStrategyChanged {
+			parts = append(parts, fmt.Sprintf("global cache strategy changed (%s → %s)",
+				changes.PrevGlobalCacheStrategy, changes.NewGlobalCacheStrategy))
+		}
+		// Source: TS lines 519-562
+		if changes.FastModeChanged {
+			parts = append(parts, "fast mode toggled")
+		}
+		if changes.AutoModeActiveChanged {
+			parts = append(parts, "auto mode toggled")
+		}
+		if changes.OverageChanged {
+			parts = append(parts, "overage state changed (TTL latched, no flip)")
+		}
+		if changes.CachedMCEnabledChanged {
+			parts = append(parts, "cached microcompact toggled")
+		}
+		if changes.EffortChanged {
+			parts = append(parts, fmt.Sprintf("effort changed (%s → %s)",
+				changes.PrevEffortValue, changes.NewEffortValue))
+		}
+		if changes.ExtraBodyChanged {
+			parts = append(parts, "extra body params changed")
+		}
+	}
+
+	// Check TTL expiration
+	// Source: TS lines 565-588
+	lastOver5min := timeSinceLastAssistantMsg > cacheTTL5MinMS
+	lastOver1h := timeSinceLastAssistantMsg > cacheTTL1HourMS
+
+	var reason string
+	if len(parts) > 0 {
+		reason = strings.Join(parts, ", ")
+	} else if lastOver1h {
+		reason = "possible 1h TTL expiry (prompt unchanged)"
+	} else if lastOver5min {
+		reason = "possible 5min TTL expiry (prompt unchanged)"
+	} else if timeSinceLastAssistantMsg >= 0 {
+		reason = "likely server-side (prompt unchanged, <5min gap)"
+	} else {
+		reason = "unknown cause"
+	}
+
+	// Write diff file
+	// Source: TS lines 649-655
+	var diffPath string
+	if changes != nil && changes.BuildPrevDiffableContent != nil {
+		prevContent := changes.BuildPrevDiffableContent()
+		muState.Lock()
+		currContent := prev.BuildDiffableContent()
+		muState.Unlock()
+		diffPath = writeCacheBreakDiff(prevContent, currContent)
+	}
+
+	// Structured slog log
+	// Source: TS lines 590-644 (analytics) + 658-660 (debug log)
+	slog.Warn("prompt_cache:break",
+		"source", key.String(),
+		"callCount", prev.CallCount,
+		"reason", reason,
+		"cacheReadPrev", prevCacheRead,
+		"cacheReadCurr", cacheReadTokens,
+		"tokenDrop", tokenDrop,
+		"cacheCreation", cacheCreationTokens,
+		"ttlExpiry", ttlExpiryLabel(timeSinceLastAssistantMsg),
+		"systemChanged", changes != nil && changes.SystemPromptChanged,
+		"toolsChanged", changes != nil && changes.ToolSchemasChanged,
+		"modelChanged", changes != nil && changes.ModelChanged,
+		"cacheControlChanged", changes != nil && changes.CacheControlChanged,
+		"betasChanged", changes != nil && changes.BetasChanged,
+		"fastModeChanged", changes != nil && changes.FastModeChanged,
+		"autoModeChanged", changes != nil && changes.AutoModeActiveChanged,
+		"overageChanged", changes != nil && changes.OverageChanged,
+		"cachedMCChanged", changes != nil && changes.CachedMCEnabledChanged,
+		"effortChanged", changes != nil && changes.EffortChanged,
+		"extraBodyChanged", changes != nil && changes.ExtraBodyChanged,
+		"diff", diffPath,
+	)
+
+	muState.Lock()
+	prev.PendingChanges = nil
+	muState.Unlock()
 }
 
 // messageWithTimestamp is a minimal message type for TTL detection.
@@ -836,7 +831,7 @@ func CleanupAgentTracking(agentID string) {
 	for i, k := range insertionOrder {
 		if k == agentID {
 			insertionOrder = append(insertionOrder[:i], insertionOrder[i+1:]...)
-			
+
 			break
 		}
 	}

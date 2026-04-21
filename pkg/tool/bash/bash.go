@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -24,11 +25,11 @@ import (
 // Input is the bash tool input schema.
 // Source: BashTool.ts — Zod schema for bash input.
 type Input struct {
-	Command string `json:"command" validate:"required"`
-	Timeout int    `json:"timeout,omitempty"`  // milliseconds, default 120000
-	CWD     string `json:"cwd,omitempty"`
-	Description string `json:"description,omitempty"`
-	RunInBackground bool `json:"run_in_background,omitempty"`
+	Command         string `json:"command" validate:"required"`
+	Timeout         int    `json:"timeout,omitempty"` // milliseconds, default 120000
+	CWD             string `json:"cwd,omitempty"`
+	Description     string `json:"description,omitempty"`
+	RunInBackground bool   `json:"run_in_background,omitempty"`
 }
 
 // Output is the bash tool output.
@@ -90,8 +91,8 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Bash",
-		Aliases_: []string{"bash", "shell", "sh"},
+		Name_:        "Bash",
+		Aliases_:     []string{"bash", "shell", "sh"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
@@ -131,40 +132,40 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 			return isReadOnlyCommand(in.Command)
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		MaxResultSizeChars:   30000,
-			Prompt_: bashPrompt(),
-			ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
-				return executeStream(ctx, input, tctx, onProgress, reg)
-			},
+		MaxResultSizeChars: 30000,
+		Prompt_:            bashPrompt(),
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+			return executeStream(ctx, input, tctx, onProgress, reg)
+		},
 		RenderResult_: func(data any) string {
-				out, ok := data.(*Output)
-				if !ok {
-					return fmt.Sprintf("%v", data)
+			out, ok := data.(*Output)
+			if !ok {
+				return fmt.Sprintf("%v", data)
+			}
+			var sb strings.Builder
+			if out.Stdout != "" {
+				sb.WriteString(out.Stdout)
+			}
+			if out.Stderr != "" {
+				if sb.Len() > 0 {
+					sb.WriteByte('\n')
 				}
-				var sb strings.Builder
-				if out.Stdout != "" {
-					sb.WriteString(out.Stdout)
+				sb.WriteString(out.Stderr)
+			}
+			if out.TimedOut {
+				if sb.Len() > 0 {
+					sb.WriteByte('\n')
 				}
-				if out.Stderr != "" {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
-					}
-					sb.WriteString(out.Stderr)
+				sb.WriteString("Command timed out")
+			}
+			if out.BackgroundTaskID != "" {
+				if sb.Len() > 0 {
+					sb.WriteByte('\n')
 				}
-				if out.TimedOut {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
-					}
-					sb.WriteString("Command timed out")
-				}
-				if out.BackgroundTaskID != "" {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
-					}
-					fmt.Fprintf(&sb, "Command timed out and was moved to background (task ID: %s)", out.BackgroundTaskID)
-				}
-				return sb.String()
-			},
+				fmt.Fprintf(&sb, "Command timed out and was moved to background (task ID: %s)", out.BackgroundTaskID)
+			}
+			return sb.String()
+		},
 	})
 }
 
@@ -187,10 +188,7 @@ func execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	// Determine timeout
 	timeout := DefaultTimeout
 	if in.Timeout > 0 {
-		timeout = time.Duration(in.Timeout) * time.Millisecond
-		if timeout > MaxTimeout {
-			timeout = MaxTimeout
-		}
+		timeout = min(time.Duration(in.Timeout)*time.Millisecond, MaxTimeout)
 	}
 
 	// Determine working directory
@@ -233,10 +231,7 @@ func executeStream(ctx context.Context, input json.RawMessage, tctx *types.ToolU
 	// Determine timeout
 	timeout := DefaultTimeout
 	if in.Timeout > 0 {
-		timeout = time.Duration(in.Timeout) * time.Millisecond
-		if timeout > MaxTimeout {
-			timeout = MaxTimeout
-		}
+		timeout = min(time.Duration(in.Timeout)*time.Millisecond, MaxTimeout)
 	}
 
 	// Determine working directory
@@ -748,12 +743,7 @@ func isAutobackgroundingAllowed(command string) bool {
 		return true
 	}
 	baseCommand := parts[0]
-	for _, disallowed := range disallowedAutoBackgroundCommands {
-		if baseCommand == disallowed {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(disallowedAutoBackgroundCommands, baseCommand)
 }
 
 func truncate(s string, maxLen int) string {
@@ -814,7 +804,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				defer close(ptyDone)
 				ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
 					func(line string) {
-					_, _ = s.Write([]byte(line + "\n"))
+						_, _ = s.Write([]byte(line + "\n"))
 					},
 					timeout,
 					func(pid int) {

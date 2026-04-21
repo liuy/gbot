@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
@@ -49,10 +49,10 @@ type ReplState struct {
 // NewReplState creates a fresh REPL state.
 func NewReplState() *ReplState {
 	return &ReplState{
-		messages:     []MessageView{},
-		pendingTool:      make(map[string]*ToolCallView),
-		pendingInput:     make(map[string]string),
-		pendingToolStart: make(map[string]time.Time),
+		messages:          []MessageView{},
+		pendingTool:       make(map[string]*ToolCallView),
+		pendingInput:      make(map[string]string),
+		pendingToolStart:  make(map[string]time.Time),
 		activeThinkingIdx: -1,
 	}
 }
@@ -181,7 +181,6 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string) {
 	s.updateToolBlock(id, tcv)
 }
 
-
 // PendingToolOutput updates a streaming tool's output lines in real time.
 func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 	tcv, ok := s.pendingTool[id]
@@ -308,7 +307,7 @@ func (s *ReplState) UpdateAgentProgress(msg agentToolMsg) {
 		})
 		tcv.ToolCount++
 
-case "tool_param_delta":
+	case "tool_param_delta":
 		// Update summary of last tool entry at this depth (streaming input).
 		// Match by ToolName to avoid updating a different tool at same depth.
 		if msg.Summary != "" {
@@ -420,7 +419,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case toolStartMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
-			slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
+		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
 		return true, a.readEvents()
 
 	case toolParamDeltaMsg:
@@ -437,7 +436,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case toolEndMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
-			slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
+		slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
 		return true, a.readEvents()
 
 	case agentToolMsg:
@@ -511,10 +510,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case usageMsg:
 		// Align with TS updateUsage: > 0 overwrite for input/cache, += for output.
-		if m.InputTokens > 0 { a.status.usage.InputTokens = m.InputTokens }
+		if m.InputTokens > 0 {
+			a.status.usage.InputTokens = m.InputTokens
+		}
 		a.status.usage.OutputTokens += m.OutputTokens
-		if m.CacheReadInputTokens > 0 { a.status.usage.CacheReadInputTokens = m.CacheReadInputTokens }
-		if m.CacheCreationInputTokens > 0 { a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens }
+		if m.CacheReadInputTokens > 0 {
+			a.status.usage.CacheReadInputTokens = m.CacheReadInputTokens
+		}
+		if m.CacheCreationInputTokens > 0 {
+			a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens
+		}
 		// Input tokens arrive all at once — snap immediately
 		a.displayedInputTokens = a.status.usage.TotalInputTokens()
 		a.inputTokenTarget = a.status.usage.TotalInputTokens()
@@ -575,7 +580,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		var errCommitCmd tea.Cmd
 		uncommitted := a.repl.messages[a.committedCount:]
 		if len(uncommitted) > 0 {
-// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
+			// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 			// user's expand/collapse state.
 			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
 			errCommitCmd = tea.Println(rendered)
@@ -599,15 +604,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
 			// Animate displayed tokens toward actual values
-			target := a.inputTokenTarget
-			if a.status.usage.TotalInputTokens() > target {
-				target = a.status.usage.TotalInputTokens()
-			}
+			target := max(a.status.usage.TotalInputTokens(), a.inputTokenTarget)
 			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
-			outputTarget := a.outputTokenTarget
-			if a.responseCharCount/4 > outputTarget {
-				outputTarget = a.responseCharCount / 4
-			}
+			outputTarget := max(a.responseCharCount/4, a.outputTokenTarget)
 			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
 			return true, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
@@ -632,17 +631,17 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	var commitCmd tea.Cmd
 	uncommitted := a.repl.messages[a.committedCount:]
 	if len(uncommitted) > 0 {
-// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
+		// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 		// user's expand/collapse state.
 		rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
 		a.committedCount = len(a.repl.messages)
 		commitCmd = tea.Println(rendered)
 	}
-		// Check for slash commands before adding user message to engine.
-		if cmd, ok := LookupSlashCommand(text); ok {
-			a.input.Reset()
-			return a.handleSlashCommand(cmd, commitCmd)
-		}
+	// Check for slash commands before adding user message to engine.
+	if cmd, ok := LookupSlashCommand(text); ok {
+		a.input.Reset()
+		return a.handleSlashCommand(cmd, commitCmd)
+	}
 
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
@@ -794,4 +793,3 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 func (a *App) markViewportDirty() {
 	a.contentDirty = true
 }
-

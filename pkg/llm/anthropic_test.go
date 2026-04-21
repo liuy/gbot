@@ -357,8 +357,8 @@ func TestIsRetryableStatus(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		code    int
-		retry   bool
+		code  int
+		retry bool
 	}{
 		{429, true},
 		{529, true},
@@ -392,9 +392,9 @@ func TestIsRetryable(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		err     error
-		retry   bool
+		name  string
+		err   error
+		retry bool
 	}{
 		{name: "retryable API error", err: &llm.APIError{Retryable: true}, retry: true},
 		{name: "non-retryable API error", err: &llm.APIError{Retryable: false}, retry: false},
@@ -417,8 +417,8 @@ func TestIsContextOverflow(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		err   error
+		name     string
+		err      error
 		overflow bool
 	}{
 		{name: "prompt too long", err: &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"}, overflow: true},
@@ -729,7 +729,7 @@ func TestStream_RetryOn5xx(t *testing.T) {
 
 		// Success on third attempt
 		w.Header().Set("Content-Type", "text/event-stream")
-_, _ = fmt.Fprintf(w, "event: message_start\ndata: {\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n")
+		_, _ = fmt.Fprintf(w, "event: message_start\ndata: {\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"usage\":{\"input_tokens\":5}}}\n\n")
 		_, _ = fmt.Fprintf(w, "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
 		_, _ = fmt.Fprintf(w, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
 		_, _ = fmt.Fprintf(w, "event: content_block_stop\ndata: {\"index\":0}\n\n")
@@ -1074,7 +1074,7 @@ func TestStream_ToolUseContentBlock(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, sseData)
+		_, _ = fmt.Fprint(w, sseData)
 	}))
 	defer server.Close()
 
@@ -1131,7 +1131,6 @@ func TestStream_ToolUseContentBlock(t *testing.T) {
 		t.Errorf("unexpected partial JSON: %s", events[deltaIdx].Delta.PartialJSON)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Complete — error path tests
@@ -1601,7 +1600,7 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 
 	// Create many SSE events
 	var buf strings.Builder
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		buf.WriteString("event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")
 	}
 	sseInput := buf.String()
@@ -1620,7 +1619,7 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 	}()
 
 	// Read a handful of events to let ParseSSE proceed
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		<-eventCh
 	}
 	// Now cancel while ParseSSE is blocked trying to send the next event
@@ -2004,7 +2003,7 @@ func BenchmarkParseSSE(b *testing.B) {
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 
 	var buf strings.Builder
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		fmt.Fprintf(&buf, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"word\"}}\n\n")
 	}
 	sseInput := buf.String()

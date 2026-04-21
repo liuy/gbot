@@ -26,11 +26,11 @@ func sanitizeFTSQuery(query string) string {
 	// Remove FTS5 keywords that could appear as standalone tokens
 	for _, kw := range []string{"AND", "OR", "NOT", "NEAR"} {
 		sanitized = strings.ReplaceAll(sanitized, " "+kw+" ", " ")
-		if strings.HasPrefix(sanitized, kw+" ") {
-			sanitized = strings.TrimPrefix(sanitized, kw+" ")
+		if after, ok := strings.CutPrefix(sanitized, kw+" "); ok {
+			sanitized = after
 		}
-		if strings.HasSuffix(sanitized, " "+kw) {
-			sanitized = strings.TrimSuffix(sanitized, " "+kw)
+		if before, ok := strings.CutSuffix(sanitized, " "+kw); ok {
+			sanitized = before
 		}
 	}
 	if len(sanitized) > 500 {
@@ -52,13 +52,12 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		opts.Offset = 0
 	}
 
-
 	// Segment query for Chinese + English mixed search
 	segmentedQuery := s.Segment(sanitizeFTSQuery(query))
 
 	// Build WHERE clause
 	var whereClauses []string
-	var args []interface{}
+	var args []any
 
 	// FTS5 MATCH must come first
 	whereClauses = append(whereClauses, "f.segmented_content MATCH ?")
@@ -149,7 +148,6 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		})
 	}
 
-
 	return results, nil
 }
 
@@ -161,11 +159,10 @@ func (s *Store) SearchSessions(query string, projectDir string, limit int) ([]*S
 		limit = 50
 	}
 
-
 	segmentedQuery := s.Segment(sanitizeFTSQuery(query))
 
 	var whereClause string
-	var args []interface{}
+	var args []any
 
 	// projectDir placeholder comes first in WHERE clause
 	if projectDir != "" {
@@ -246,7 +243,6 @@ func (s *Store) SearchSessions(query string, projectDir string, limit int) ([]*S
 		sessions = append(sessions, &sess)
 	}
 
-
 	return sessions, nil
 }
 
@@ -288,7 +284,7 @@ func (s *Store) insertFTS(db dbExec, seq int64, content string) error {
 
 // deleteFTS removes a message from the FTS5 index.
 // Called from message delete when a message is removed.
-// Note: For contentless FTS5 tables (content=''), we only delete from the map table.
+// Note: For contentless FTS5 tables (content=”), we only delete from the map table.
 // The FTS table entry is implicitly orphaned but consumes minimal space.
 func (s *Store) deleteFTS(seq int64) error {
 	// Delete from map table
@@ -314,7 +310,7 @@ func extractTextFromJSON(contentJSON string) string {
 	var blocks []json.RawMessage
 	if err := json.Unmarshal([]byte(contentJSON), &blocks); err != nil {
 		// Not an array, try as single block or plain text
-		var singleBlock map[string]interface{}
+		var singleBlock map[string]any
 		if err2 := json.Unmarshal([]byte(contentJSON), &singleBlock); err2 == nil {
 			blocks = []json.RawMessage{[]byte(contentJSON)}
 		} else {
@@ -325,7 +321,7 @@ func extractTextFromJSON(contentJSON string) string {
 
 	var parts []string
 	for _, block := range blocks {
-		var blockMap map[string]interface{}
+		var blockMap map[string]any
 		if err := json.Unmarshal(block, &blockMap); err != nil {
 			continue
 		}
@@ -339,7 +335,7 @@ func extractTextFromJSON(contentJSON string) string {
 			}
 		case "tool_use":
 			// Extract input fields for searchability
-			if input, ok := blockMap["input"].(map[string]interface{}); ok {
+			if input, ok := blockMap["input"].(map[string]any); ok {
 				parts = append(parts, extractToolUseInput(input)...)
 			}
 		case "tool_result":
@@ -351,7 +347,7 @@ func extractTextFromJSON(contentJSON string) string {
 				}
 			}
 			// Nested file content (Read tool)
-			if file, ok := blockMap["file"].(map[string]interface{}); ok {
+			if file, ok := blockMap["file"].(map[string]any); ok {
 				if content, ok := file["content"].(string); ok {
 					parts = append(parts, content)
 				}
@@ -372,7 +368,7 @@ func extractTextFromJSON(contentJSON string) string {
 
 // extractToolUseInput extracts searchable fields from tool_use input.
 // Mirrors TS transcriptSearch.ts toolUseSearchText().
-func extractToolUseInput(input map[string]interface{}) []string {
+func extractToolUseInput(input map[string]any) []string {
 	var parts []string
 
 	// Primary argument fields shown in UI
@@ -387,7 +383,7 @@ func extractToolUseInput(input map[string]interface{}) []string {
 
 	// Array fields like args[], files[]
 	for _, key := range []string{"args", "files"} {
-		if val, ok := input[key].([]interface{}); ok {
+		if val, ok := input[key].([]any); ok {
 			var strs []string
 			for _, v := range val {
 				if s, ok := v.(string); ok {

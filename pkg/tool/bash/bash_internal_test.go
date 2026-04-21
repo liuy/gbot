@@ -547,7 +547,6 @@ func TestExecuteStream_RunInBackground_CompletesWithOutput(t *testing.T) {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
-
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
 		if strings.Contains(task.Command, "echo bg-output-123") {
@@ -618,7 +617,6 @@ func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
 		t.Errorf("Stdout = %q, want background task message", out.Stdout)
 	}
 
-
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
 		if strings.Contains(task.Command, "echo pty-bg-test") {
@@ -666,7 +664,6 @@ func TestExecuteStream_NonPTY(t *testing.T) {
 		t.Error("expected at least one progress update")
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // ExecuteStream — uncovered branches
@@ -856,7 +853,6 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // executeNonPTYStreaming — generic error path (line 310-312)
 // cmd.Start() failure -> return nil, err
@@ -883,7 +879,6 @@ func TestExecuteStream_TimeoutCap(t *testing.T) {
 	}
 }
 
-
 func TestSpawnBackground_PTYPath(t *testing.T) {
 	result, err := ExecuteStream(context.Background(),
 		json.RawMessage(`{"command":"echo pty-bg-test","run_in_background":true}`),
@@ -898,7 +893,6 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 	if !strings.Contains(out.Stdout, "Background task started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
-
 
 	registry := DefaultRegistry()
 	for _, task := range registry.List() {
@@ -953,7 +947,6 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // spawnBackground — PID must be set for Kill to work
@@ -1020,8 +1013,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
-	parentCtx, parentCancel := context.WithCancel(context.Background())
-	defer parentCancel()
+	parentCtx := t.Context()
 
 	result, err := spawnBackground(parentCtx, Input{
 		Command:     "sleep 10",
@@ -1037,7 +1029,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	// Give the goroutine time to start the command.
 	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
 	// before the process even starts, so the task will be TaskCompleted here.
-		time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
@@ -1085,14 +1077,14 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	}
 
 	// Wait for the command to actually start
-		time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Cancel the parent context — simulates the query lifecycle ending.
 	// The background task should NOT be affected.
 	parentCancel()
 
 	// Give cancellation time to propagate (if it's going to)
-		time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
@@ -1137,7 +1129,7 @@ func TestIsAutobackgroundingAllowed(t *testing.T) {
 		{"make allowed", "make build", true},
 		{"git allowed", "git status", true},
 		{"npm allowed", "npm install", true},
-		{"sleep in pipeline allowed", "echo hi | sleep 1", true}, // first word is "echo"
+		{"sleep in pipeline allowed", "echo hi | sleep 1", true},      // first word is "echo"
 		{"compound with sleep allowed", "echo start; sleep 10", true}, // first word is "echo"
 	}
 

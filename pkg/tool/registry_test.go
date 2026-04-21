@@ -17,23 +17,23 @@ type mockTool struct {
 	enabled bool
 }
 
-func (m *mockTool) Name() string                                                { return m.name }
-func (m *mockTool) Aliases() []string                                           { return m.aliases }
-func (m *mockTool) Description(json.RawMessage) (string, error)                 { return "", nil }
-func (m *mockTool) InputSchema() json.RawMessage                                { return nil }
+func (m *mockTool) Name() string                                { return m.name }
+func (m *mockTool) Aliases() []string                           { return m.aliases }
+func (m *mockTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (m *mockTool) InputSchema() json.RawMessage                { return nil }
 func (m *mockTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
 func (m *mockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (m *mockTool) IsReadOnly(json.RawMessage) bool            { return false }
-func (m *mockTool) IsDestructive(json.RawMessage) bool         { return false }
-func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool     { return false }
-func (m *mockTool) IsEnabled() bool                            { return m.enabled }
-func (m *mockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
-func (m *mockTool) Prompt() string                             { return "" }
-func (m *mockTool) RenderResult(any) string                      { return "" }
+func (m *mockTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (m *mockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (m *mockTool) IsEnabled() bool                           { return m.enabled }
+func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (m *mockTool) Prompt() string                            { return "" }
+func (m *mockTool) RenderResult(any) string                   { return "" }
 
 func (*mockTool) MaxResultSize() int { return 50000 }
 
@@ -254,19 +254,19 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 	done := make(chan struct{}, n*2)
 
 	// Concurrent writes
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(idx int) {
 			r.Register(&mockTool{name: fmt.Sprintf("tool-%03d", idx), enabled: true})
 			done <- struct{}{}
 		}(i)
 	}
 	// Wait for all writes
-	for i := 0; i < n; i++ {
+	for range n {
 		<-done
 	}
 
 	// Concurrent reads with assertions
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(idx int) {
 			name := fmt.Sprintf("tool-%03d", idx)
 			if _, ok := r.Lookup(name); !ok {
@@ -290,7 +290,7 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 			done <- struct{}{}
 		}(i)
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		<-done
 	}
 

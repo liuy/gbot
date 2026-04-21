@@ -86,8 +86,8 @@ func TestLooksLikePrompt_DirectedQuestions(t *testing.T) {
 		{"Shall I continue?", true},
 		{"Are you sure about this?", true},
 		{"Ready to deploy?", true},
-		{"Do something", false},        // no question mark
-		{"This is fine", false},        // no pattern word
+		{"Do something", false}, // no question mark
+		{"This is fine", false}, // no pattern word
 	}
 	for _, tt := range tests {
 		if got := looksLikePrompt(tt.input); got != tt.want {
@@ -327,7 +327,7 @@ func TestWatchForStall_OutputGrowth(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			for i := 0; i < 15; i++ {
+			for range 15 {
 				time.Sleep(3 * time.Second)
 				f, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY, 0o644)
 				if err != nil {
@@ -567,7 +567,7 @@ func TestStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 
 	w := &stallWatcher{
 		outputPath: path,
-		lastSize:   int64(len(content)), // already know the file size
+		lastSize:   int64(len(content)),               // already know the file size
 		lastGrowth: time.Now().Add(-60 * time.Second), // past threshold
 		onStall:    func(summary, tail string) { t.Error("should not call onStall for non-prompt") },
 	}
@@ -595,7 +595,7 @@ func TestStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 	stalled := false
 	w := &stallWatcher{
 		outputPath: path,
-		lastSize:   int64(len(content)), // already know the file size
+		lastSize:   int64(len(content)),               // already know the file size
 		lastGrowth: time.Now().Add(-60 * time.Second), // past threshold
 		onStall: func(summary, tail string) {
 			stalled = true
@@ -725,7 +725,7 @@ func TestReadTail_ReadAtError(t *testing.T) {
 func TestStreamStallWatcher_Check_OutputGrows(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("hello"))
+	mustWriteStream(t, output, []byte("hello"))
 	task := &BackgroundTask{Output: output}
 
 	w := &streamStallWatcher{
@@ -776,7 +776,7 @@ func TestStreamStallWatcher_Check_Cancelled(t *testing.T) {
 func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
@@ -793,7 +793,7 @@ func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
 func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("building...\ncompiling..."))
+	mustWriteStream(t, output, []byte("building...\ncompiling..."))
 
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
@@ -814,7 +814,7 @@ func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	stalled := false
 	w := &streamStallWatcher{
@@ -838,7 +838,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
@@ -856,7 +856,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 func TestStreamStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
@@ -880,7 +880,7 @@ func TestWatchForStallStream_DetectsPrompt(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Building...\nContinue? (y/n)"))
+		mustWriteStream(t, output, []byte("Building...\nContinue? (y/n)"))
 
 		task := &BackgroundTask{
 			Output: output,
@@ -912,7 +912,7 @@ func TestWatchForStallStream_CancelStops(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		task := &BackgroundTask{
 			Output: output,
@@ -943,7 +943,7 @@ func TestWatchForStallStream_NoPrompt(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Building...\nCompiling...\nTests passed"))
+		mustWriteStream(t, output, []byte("Building...\nCompiling...\nTests passed"))
 
 		task := &BackgroundTask{
 			Output: output,
@@ -972,7 +972,7 @@ func TestWatchForStallStream_OutputGrowth(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		task := &BackgroundTask{
 			Output: output,
@@ -991,9 +991,9 @@ func TestWatchForStallStream_OutputGrowth(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			for i := 0; i < 15; i++ {
+			for range 15 {
 				time.Sleep(3 * time.Second)
-				mustWriteStream(t, output,[]byte("more output\n"))
+				mustWriteStream(t, output, []byte("more output\n"))
 			}
 		}()
 
@@ -1015,7 +1015,7 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		receivedCh := make(chan TaskNotification, 1)
 		task := &BackgroundTask{
@@ -1063,7 +1063,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		calledCh := make(chan struct{}, 1)
 		task := &BackgroundTask{
@@ -1098,14 +1098,14 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		receivedCh := make(chan TaskNotification, 1)
 		task := &BackgroundTask{
-			Output:   output,
-			Kind:     "bash",
-			ID:       "bg-test",
-			Command:  "my-command",
+			Output:  output,
+			Kind:    "bash",
+			ID:      "bg-test",
+			Command: "my-command",
 			onNotify: func(n TaskNotification) {
 				select {
 				case receivedCh <- n:
@@ -1135,7 +1135,7 @@ func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		output := NewStreamingOutput(nil)
-		mustWriteStream(t, output,[]byte("Continue? (y/n)"))
+		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		task := &BackgroundTask{
 			Output:   output,

@@ -305,10 +305,7 @@ func buildHunks(components []diffComponent, oldLines, newLines []string, ctxLine
 				oldRangeStart = e.oldN
 				newRangeStart = e.newN
 				// Add trailing context from previous equal lines
-				ctxStart := i - ctxLines
-				if ctxStart < 0 {
-					ctxStart = 0
-				}
+				ctxStart := max(i-ctxLines, 0)
 				for j := ctxStart; j < i; j++ {
 					if entries[j].op == 0 {
 						curRange = append(curRange, entries[j])
@@ -326,11 +323,8 @@ func buildHunks(components []diffComponent, oldLines, newLines []string, ctxLine
 					curRange = append(curRange, e)
 				} else {
 					// End the hunk: add entries[i] and up to ctxLines-1 more as trailing context
-					endCtx := ctxLines
-					if endCtx > len(entries)-i {
-						endCtx = len(entries) - i
-					}
-					for j := 0; j < endCtx; j++ {
+					endCtx := min(ctxLines, len(entries)-i)
+					for j := range endCtx {
 						curRange = append(curRange, entries[i+j])
 					}
 					hunks = append(hunks, makeHunk(curRange, oldRangeStart, newRangeStart))
@@ -395,11 +389,11 @@ const (
 	diffBoldOff = "\x1b[22m"
 	diffDim     = "\x1b[2m"
 	diffReset   = "\x1b[0m"
-	diffAddBg   = "\x1b[48;5;22m" // dark green bg for added lines (ansiIdx(22))
-	diffAddFg   = "\x1b[38;5;10m" // green decoration for added marker/line#
-	diffDelBg   = "\x1b[48;5;52m" // dark red bg for deleted lines
-	diffDelFg   = "\x1b[38;5;9m"  // red decoration for deleted marker/line#
-	diffDimFg = "\x1b[38;5;246m" // dim gray for context line numbers
+	diffAddBg   = "\x1b[48;5;22m"  // dark green bg for added lines (ansiIdx(22))
+	diffAddFg   = "\x1b[38;5;10m"  // green decoration for added marker/line#
+	diffDelBg   = "\x1b[48;5;52m"  // dark red bg for deleted lines
+	diffDelFg   = "\x1b[38;5;9m"   // red decoration for deleted marker/line#
+	diffDimFg   = "\x1b[38;5;246m" // dim gray for context line numbers
 )
 
 // CountLines counts lines in content.

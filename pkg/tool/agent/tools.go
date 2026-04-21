@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"slices"
+
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -62,12 +64,7 @@ func ResolveAgentTools(allTools map[string]tool.Tool, agentDef *types.AgentDefin
 
 // isDisallowed checks if a tool name is in the disallowed list.
 func isDisallowed(name string, disallowed []string) bool {
-	for _, d := range disallowed {
-		if d == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(disallowed, name)
 }
 
 // isWildcard checks if the tools list is ["*"].

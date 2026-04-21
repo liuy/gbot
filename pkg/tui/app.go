@@ -9,8 +9,8 @@ import (
 
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
@@ -49,8 +49,8 @@ type App struct {
 	// Persistence (short-term memory store)
 	store            *short.Store
 	sessionID        string
-	lastPersistedIdx int // tracks how many engine messages have been persisted
-	projectDir        string // working directory for .gbot/meta.json
+	lastPersistedIdx int    // tracks how many engine messages have been persisted
+	projectDir       string // working directory for .gbot/meta.json
 
 	// Session picker overlay
 	pickerMode bool
@@ -65,17 +65,17 @@ type App struct {
 	idleStop chan struct{}
 
 	// Feature modules
-	history      *History
+	history     *History
 	killRing    *KillRing
 	doublePress *DoublePress
 
 	// Spinner progress state
-	progressStart      time.Time
+	progressStart    time.Time
 	allToolsExpanded bool
 
 	// Thinking state
-	thinkingActive bool
-	thinkingStart  time.Time
+	thinkingActive   bool
+	thinkingStart    time.Time
 	thinkingDuration time.Duration // set after thinking ends
 
 	// Dynamic token estimation (source: TS uses responseLength / 4)
@@ -100,11 +100,11 @@ type App struct {
 	// Smoothly animated token counters for spinner display
 	displayedInputTokens  int
 	displayedOutputTokens int
-	outputTokenTarget    int
+	outputTokenTarget     int
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
-		// Cache token tracking for spinner display
-		cacheReadTokens     int
-		cacheCreationTokens int
+	// Cache token tracking for spinner display
+	cacheReadTokens     int
+	cacheCreationTokens int
 }
 
 // NewApp creates a new App model.
@@ -116,14 +116,14 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 	}
 
 	a := &App{
-		input:              NewInput(),
-		status:             NewStatusBar(),
-		spinner:           NewSpinner(),
-		repl:              NewReplState(),
-		engine:            eng,
-		systemPrompt:      systemPrompt,
-		hub:               h,
-		history:           NewHistory(historyPath),
+		input:            NewInput(),
+		status:           NewStatusBar(),
+		spinner:          NewSpinner(),
+		repl:             NewReplState(),
+		engine:           eng,
+		systemPrompt:     systemPrompt,
+		hub:              h,
+		history:          NewHistory(historyPath),
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
 		allToolsExpanded: false,
@@ -223,7 +223,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case textStartMsg, textDeltaMsg, textEndMsg, toolRunMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
-			agentToolMsg, agentUsageMsg,
+		agentToolMsg, agentUsageMsg,
 		notificationPendingMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg:
 		handled, cmd := a.updateRepl(msg)
@@ -282,10 +282,7 @@ func (a *App) View() string {
 
 	// Apply scroll window: limit visible content to what fits in terminal.
 	// Reserve 3 lines for: progress (1) + input (1) + margin (1).
-	maxContentLines := a.height - 3
-	if maxContentLines < 1 {
-		maxContentLines = 1
-	}
+	maxContentLines := max(a.height-3, 1)
 
 	var visibleContent string
 	var showScrollIndicator bool
@@ -301,10 +298,7 @@ func (a *App) View() string {
 		} else {
 			showScrollIndicator = true
 			// Reserve 1 line for scroll indicator
-			viewLines := maxContentLines - 1
-			if viewLines < 1 {
-				viewLines = 1
-			}
+			viewLines := max(maxContentLines-1, 1)
 
 			// Auto-scroll to bottom unless user explicitly scrolled up
 			if !a.userScrolled {
@@ -312,10 +306,7 @@ func (a *App) View() string {
 			}
 
 			// Clamp scrollOffset to valid range
-			maxOff := len(lines) - viewLines
-			if maxOff < 0 {
-				maxOff = 0
-			}
+			maxOff := max(len(lines)-viewLines, 0)
 			if a.scrollOffset > maxOff {
 				a.scrollOffset = maxOff
 			}
@@ -323,10 +314,7 @@ func (a *App) View() string {
 				a.scrollOffset = 0
 			}
 
-			end := a.scrollOffset + viewLines
-			if end > len(lines) {
-				end = len(lines)
-			}
+			end := min(a.scrollOffset+viewLines, len(lines))
 			visibleContent = strings.Join(lines[a.scrollOffset:end], "\n")
 		}
 	} else {
@@ -338,28 +326,22 @@ func (a *App) View() string {
 
 	// Scroll indicator when content overflows viewport
 	if showScrollIndicator {
-		viewLines := maxContentLines - 1
-		if viewLines < 1 {
-			viewLines = 1
+		viewLines := max(maxContentLines-1, 1)
+		totalPages := max((a.scrollTotal+viewLines-1)/viewLines, 1)
+		atTop := a.scrollOffset == 0
+		atBottom := a.scrollOffset+viewLines >= a.scrollTotal
+		// Page number: which page the viewport top falls on.
+		// At bottom, force last page to avoid off-by-one from integer division.
+		currentPage := a.scrollOffset/viewLines + 1
+		if atBottom {
+			currentPage = totalPages
 		}
-		totalPages := (a.scrollTotal + viewLines - 1) / viewLines
-		if totalPages < 1 {
-			totalPages = 1
+		if currentPage > totalPages {
+			currentPage = totalPages
 		}
-			atTop := a.scrollOffset == 0
-			atBottom := a.scrollOffset+viewLines >= a.scrollTotal
-			// Page number: which page the viewport top falls on.
-			// At bottom, force last page to avoid off-by-one from integer division.
-			currentPage := a.scrollOffset/viewLines + 1
-			if atBottom {
-				currentPage = totalPages
-			}
-			if currentPage > totalPages {
-				currentPage = totalPages
-			}
-			// Directional arrow: ↑=content above, ↓=content below, ↕=both
-			var arrow string
-			switch {
+		// Directional arrow: ↑=content above, ↓=content below, ↕=both
+		var arrow string
+		switch {
 		case atTop && !atBottom:
 			arrow = "↓"
 		case atBottom && !atTop:
@@ -660,10 +642,7 @@ func (a *App) handleKillWord() {
 // calcViewLines returns the number of visible content lines when content overflows.
 // Matches View()'s viewLines calculation: maxContentLines-1 (reserve 1 for indicator).
 func (a *App) calcViewLines() int {
-	maxContentLines := a.height - 3
-	if maxContentLines < 1 {
-		maxContentLines = 1
-	}
+	maxContentLines := max(a.height-3, 1)
 	if a.scrollTotal > maxContentLines {
 		return max(1, maxContentLines-1) // reserve 1 for scroll indicator
 	}
@@ -681,16 +660,14 @@ func (a *App) scrollUp(n int) {
 	}
 	a.userScrolled = true
 }
+
 // scrollDown moves the scroll viewport down by n lines.
 func (a *App) scrollDown(n int) {
 	if a.scrollTotal == 0 {
 		return
 	}
 	viewLines := a.calcViewLines()
-	maxOff := a.scrollTotal - viewLines
-	if maxOff < 0 {
-		maxOff = 0
-	}
+	maxOff := max(a.scrollTotal-viewLines, 0)
 	a.scrollOffset += n
 	if a.scrollOffset > maxOff {
 		a.scrollOffset = maxOff

@@ -667,8 +667,8 @@ func TestExecute_ImageResizedWhenOversized(t *testing.T) {
 	dir := t.TempDir()
 	// Create a 3000x3000 image (exceeds 2000x2000 max)
 	img := image.NewRGBA(image.Rect(0, 0, 3000, 3000))
-	for y := 0; y < 3000; y++ {
-		for x := 0; x < 3000; x++ {
+	for y := range 3000 {
+		for x := range 3000 {
 			img.SetRGBA(x, y, color.RGBA{255, 0, 0, 255})
 		}
 	}

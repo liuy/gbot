@@ -120,7 +120,7 @@ func TestKillRing_MaxSize(t *testing.T) {
 	t.Parallel()
 
 	k := NewKillRing()
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		k.ResetAccumulation()
 		k.Push(string(rune('a'+i)), "")
 	}

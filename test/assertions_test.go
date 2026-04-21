@@ -89,10 +89,10 @@ func findProjectRoot(t *testing.T) string {
 
 // checkPatterns defines the weak assertion patterns to detect.
 type checkPattern struct {
-	Name    string
-	Regex   *regexp.Regexp
-	Level   string // "P1" or "P3"
-	Exempt  func(match string, lines []string, lineIdx int) bool
+	Name   string
+	Regex  *regexp.Regexp
+	Level  string // "P1" or "P3"
+	Exempt func(match string, lines []string, lineIdx int) bool
 }
 
 var checkPatterns = []checkPattern{
@@ -152,110 +152,107 @@ var checkPatterns = []checkPattern{
 			return false
 		},
 	},
-		{
-			Name:  "hardcoded path in file I/O calls (/tmp, /home)",
-			Regex: regexp.MustCompile(`(?i)\b(os\.(Open|WriteFile|Create|Mkdir|Remove|Rename|Link)|ioutil\.(ReadFile|WriteFile|ReadDir|MkdirTemp)|os\.OpenFile)\s*\([^)]*"/(tmp|home)[^"]*"`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				if strings.HasPrefix(trimmed, "//") {
-					return true
-				}
-				return false
-			},
+	{
+		Name:  "hardcoded path in file I/O calls (/tmp, /home)",
+		Regex: regexp.MustCompile(`(?i)\b(os\.(Open|WriteFile|Create|Mkdir|Remove|Rename|Link)|ioutil\.(ReadFile|WriteFile|ReadDir|MkdirTemp)|os\.OpenFile)\s*\([^)]*"/(tmp|home)[^"]*"`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			return false
 		},
-		{
-			Name:  "t.Skip without message",
-			Regex: regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				return false
-			},
+	},
+	{
+		Name:  "t.Skip without message",
+		Regex: regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			return false
 		},
-		{
-			Name:  "strings.Contains with literal on struct field (use == for exact match)",
-			Regex: regexp.MustCompile(`strings\.Contains\(\w+\.\w+,\s*"[^"*%\\]+"\)`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				// Exempt: comments
-				if strings.HasPrefix(trimmed, "//") {
+	},
+	{
+		Name:  "strings.Contains with literal on struct field (use == for exact match)",
+		Regex: regexp.MustCompile(`strings\.Contains\(\w+\.\w+,\s*"[^"*%\\]+"\)`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			// Exempt: comments
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			// Exempt: err.Error() content checks (valid use of Contains)
+			if strings.Contains(match, "err.Error()") {
+				return true
+			}
+			// Exempt: negated Contains (!strings.Contains)
+			if strings.Contains(lines[lineIdx], "!strings.Contains") {
+				return true
+			}
+			// Exempt: fields that hold complex/multi-line content
+			// (Command strings, multi-line output, rendered content)
+			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text"} {
+				if strings.Contains(match, field) {
 					return true
 				}
-				// Exempt: err.Error() content checks (valid use of Contains)
-				if strings.Contains(match, "err.Error()") {
-					return true
-				}
-				// Exempt: negated Contains (!strings.Contains)
-				if strings.Contains(lines[lineIdx], "!strings.Contains") {
-					return true
-				}
-				// Exempt: fields that hold complex/multi-line content
-				// (Command strings, multi-line output, rendered content)
-				for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text"} {
-					if strings.Contains(match, field) {
-						return true
-					}
-				}
-				return false
-			},
+			}
+			return false
 		},
-		{
-			Name:  "test result compared only to 0 (use exact value)",
-			Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				// Exempt: comments
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				if strings.HasPrefix(trimmed, "//") {
+	},
+	{
+		Name:  "test result compared only to 0 (use exact value)",
+		Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			// Exempt: comments
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			// Exempt: if there's an exact value check for 'got' nearby in the
+			// same test function, this zero-check is a valid early guard.
+			// Scan up to 30 lines before and 10 lines after.
+			start := max(lineIdx-30, 0)
+			for i := start; i <= lineIdx+10 && i < len(lines); i++ {
+				if i == lineIdx {
+					continue
+				}
+				line := lines[i]
+				// Has exact comparison: got == want, got == <non-zero>
+				if (strings.Contains(line, "got ==") || strings.Contains(line, "got !=")) &&
+					!strings.Contains(line, "== 0") && !strings.Contains(line, "!= 0") {
 					return true
 				}
-				// Exempt: if there's an exact value check for 'got' nearby in the
-				// same test function, this zero-check is a valid early guard.
-				// Scan up to 30 lines before and 10 lines after.
-				start := lineIdx - 30
-				if start < 0 {
-					start = 0
+				// Has want calculation: want := ... or want = ...
+				if strings.Contains(line, "want :=") || strings.Contains(line, "want=") {
+					return true
 				}
-				for i := start; i <= lineIdx+10 && i < len(lines); i++ {
-					if i == lineIdx {
-						continue
-					}
-					line := lines[i]
-					// Has exact comparison: got == want, got == <non-zero>
-					if (strings.Contains(line, "got ==") || strings.Contains(line, "got !=")) &&
-						!strings.Contains(line, "== 0") && !strings.Contains(line, "!= 0") {
-						return true
-					}
-					// Has want calculation: want := ... or want = ...
-					if strings.Contains(line, "want :=") || strings.Contains(line, "want=") {
-						return true
-					}
-					// Has assertEqual/assertTokensEqual helper
-					if strings.Contains(line, "assertEqual") || strings.Contains(line, "assertTokensEqual") {
-						return true
-					}
+				// Has assertEqual/assertTokensEqual helper
+				if strings.Contains(line, "assertEqual") || strings.Contains(line, "assertTokensEqual") {
+					return true
 				}
-				return false
-			},
+			}
+			return false
 		},
-		{
-			Name:  "interface{} should be any (Go 1.18+)",
-			Regex: regexp.MustCompile(`interface\{\}`),
-			Level: "P3",
-			Exempt: func(match string, lines []string, lineIdx int) bool {
-				trimmed := strings.TrimSpace(lines[lineIdx])
-				// Exempt: comments
-				if strings.HasPrefix(trimmed, "//") {
-					return true
-				}
-				// Exempt: string literals (e.g. JSON tags, documentation)
-				if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
-					return true
-				}
-				return false
-			},
+	},
+	{
+		Name:  "interface{} should be any (Go 1.18+)",
+		Regex: regexp.MustCompile(`interface\{\}`),
+		Level: "P3",
+		Exempt: func(match string, lines []string, lineIdx int) bool {
+			trimmed := strings.TrimSpace(lines[lineIdx])
+			// Exempt: comments
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			// Exempt: string literals (e.g. JSON tags, documentation)
+			if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
+				return true
+			}
+			return false
 		},
+	},
 }
 
 // scanFile checks a single file for weak assertion patterns.

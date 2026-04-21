@@ -169,7 +169,7 @@ func TestBuildForkMessages_MultipleToolUse(t *testing.T) {
 	}
 	// Verify all tool_result blocks
 	ids := map[string]bool{}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		blk := result[1].Content[i]
 		if blk.Type != types.ContentTypeToolResult {
 			t.Errorf("block %d: expected tool_result, got %s", i, blk.Type)

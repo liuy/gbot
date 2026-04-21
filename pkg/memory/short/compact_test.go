@@ -18,20 +18,20 @@ func findByUUID(msgs []*Message, uuid string) *Message {
 
 func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 	tests := []struct {
-		name     string
-		trigger  string
+		name      string
+		trigger   string
 		preTokens int
 		lastUUID  string
 	}{
 		{
-			name:     "manual trigger",
-			trigger:  "manual",
+			name:      "manual trigger",
+			trigger:   "manual",
 			preTokens: 10000,
 			lastUUID:  "",
 		},
 		{
-			name:     "auto trigger",
-			trigger:  "auto",
+			name:      "auto trigger",
+			trigger:   "auto",
 			preTokens: 5000,
 			lastUUID:  "prev-boundary-uuid",
 		},
@@ -203,9 +203,9 @@ func TestApplyPreservedSegmentRelinks_ValidSegment(t *testing.T) {
 
 	// Create messages: pre-compact + boundary + summary + preserved segment
 	messages := []*Message{
-		{UUID: "old-1", ParentUUID: ""},            // pre-compact, should be pruned
-		{UUID: "old-2", ParentUUID: "old-1"},       // pre-compact, should be pruned
-		boundary,                                   // idx 2 = boundaryIdx
+		{UUID: "old-1", ParentUUID: ""},                // pre-compact, should be pruned
+		{UUID: "old-2", ParentUUID: "old-1"},           // pre-compact, should be pruned
+		boundary,                                       // idx 2 = boundaryIdx
 		{UUID: "summary-1", ParentUUID: boundary.UUID}, // after boundary, kept
 		{UUID: headUUID, ParentUUID: "summary-1"},
 		{UUID: "middle-1", ParentUUID: headUUID},
@@ -313,7 +313,7 @@ func TestLoadPostCompactMessages_NoBoundary(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add some messages without boundary
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		msg := testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 		if err := store.AppendMessage(sessionID, msg); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
@@ -376,7 +376,7 @@ func TestGetMessagesAfterCompactBoundary_SliceCorrect(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add messages
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg := testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 		if err := store.AppendMessage(sessionID, msg); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
@@ -390,7 +390,7 @@ func TestGetMessagesAfterCompactBoundary_SliceCorrect(t *testing.T) {
 	}
 
 	// Add more messages
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		msg := testMessage(0, "user", string(rune('x'+i)), "", `[{"type":"text","text":"after"}]`)
 		if err := store.AppendMessage(sessionID, msg); err != nil {
 			t.Fatalf("AppendMessage after: %v", err)
@@ -419,7 +419,7 @@ func TestPartialCompact_PreservesTail(t *testing.T) {
 
 	// Create 10 messages
 	messages := make([]*Message, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		messages[i] = testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 	}
 
@@ -442,7 +442,7 @@ func TestPartialCompact_PreservesTail(t *testing.T) {
 
 func TestStripImagesFromMessages_RemovesImage(t *testing.T) {
 	msgWithImage := &Message{
-		Type: "user",
+		Type:    "user",
 		Content: `[{"type":"text","text":"hello"},{"type":"image","source":{"type":"base64","data":"abc..."}}]`,
 	}
 
@@ -464,7 +464,7 @@ func TestStripImagesFromMessages_RemovesImage(t *testing.T) {
 
 func TestStripImagesFromMessages_KeepsText(t *testing.T) {
 	msgTextOnly := &Message{
-		Type: "user",
+		Type:    "user",
 		Content: `[{"type":"text","text":"hello world"}]`,
 	}
 
@@ -507,7 +507,7 @@ func TestStripReinjectedAttachments_RemovesSkillDiscovery(t *testing.T) {
 func TestCreatePostCompactFileAttachments_ExtractsFilePaths(t *testing.T) {
 	messages := []*Message{
 		{
-			Type: "user",
+			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"/path/to/file.txt","is_error":false}]`,
 		},
 	}
@@ -522,28 +522,28 @@ func TestCreatePostCompactFileAttachments_ExtractsFilePaths(t *testing.T) {
 
 func TestShouldExcludeFromPostCompactRestore_ExcludesProgress(t *testing.T) {
 	tests := []struct {
-		name     string
-		msg      *Message
+		name        string
+		msg         *Message
 		wantExclude bool
 	}{
 		{
-			name:     "progress message excluded",
-			msg:      &Message{Type: "progress"},
+			name:        "progress message excluded",
+			msg:         &Message{Type: "progress"},
 			wantExclude: true,
 		},
 		{
-			name:     "informational system excluded",
-			msg:      &Message{Type: "system", Subtype: "informational"},
+			name:        "informational system excluded",
+			msg:         &Message{Type: "system", Subtype: "informational"},
 			wantExclude: true,
 		},
 		{
-			name:     "user message kept",
-			msg:      &Message{Type: "user"},
+			name:        "user message kept",
+			msg:         &Message{Type: "user"},
 			wantExclude: false,
 		},
 		{
-			name:     "assistant message kept",
-			msg:      &Message{Type: "assistant"},
+			name:        "assistant message kept",
+			msg:         &Message{Type: "assistant"},
 			wantExclude: false,
 		},
 	}
@@ -561,10 +561,10 @@ func TestShouldExcludeFromPostCompactRestore_ExcludesProgress(t *testing.T) {
 func TestTruncateToTokens_Truncates(t *testing.T) {
 	// Create messages with estimated sizes
 	messages := make([]*Message, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		// Each message has ~40 chars content ~10 tokens
 		messages[i] = &Message{
-			UUID: string(rune('a' + i)),
+			UUID:    string(rune('a' + i)),
 			Content: `[{"type":"text","text":"` + strings.Repeat("x", 30) + `"}]`,
 		}
 	}
@@ -647,11 +647,11 @@ func TestAddErrorNotificationIfNeeded_WithError(t *testing.T) {
 func TestCollectReadToolFilePaths(t *testing.T) {
 	messages := []*Message{
 		{
-			Type: "user",
+			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"/path/to/file.txt"}]`,
 		},
 		{
-			Type: "assistant",
+			Type:    "assistant",
 			Content: `[{"type":"text","text":"response"}]`,
 		},
 	}
@@ -675,10 +675,10 @@ func TestCollectReadToolFilePaths(t *testing.T) {
 
 func TestTruncateHeadForPTLRetry(t *testing.T) {
 	messages := make([]*Message, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		messages[i] = &Message{
-			UUID:     string(rune('a' + i)),
-			Content:  `[{"type":"text","text":"message"}]`,
+			UUID:    string(rune('a' + i)),
+			Content: `[{"type":"text","text":"message"}]`,
 		}
 	}
 
@@ -847,7 +847,7 @@ func TestApplySnipRemovals_NoSnips(t *testing.T) {
 func TestApplySnipRemovals_WithRemovals(t *testing.T) {
 	// Create a boundary with snipMetadata
 	content := map[string]any{
-		"type": "system",
+		"type":            "system",
 		"compactMetadata": map[string]any{},
 		"snipMetadata": map[string]any{
 			"removedUuids": []any{"msg-to-delete"},
@@ -1041,10 +1041,10 @@ func TestZeroUsageInContent_WithUsage(t *testing.T) {
 			"role":    "assistant",
 			"content": "Hello",
 			"usage": map[string]any{
-				"input_tokens":                 1500,
-				"output_tokens":                500,
-				"cache_creation_input_tokens":  200,
-				"cache_read_input_tokens":      100,
+				"input_tokens":                1500,
+				"output_tokens":               500,
+				"cache_creation_input_tokens": 200,
+				"cache_read_input_tokens":     100,
 			},
 		},
 	}
@@ -1139,10 +1139,10 @@ func TestZeroUsageInContent_InvalidJSON(t *testing.T) {
 func TestTruncateHeadForPTLRetry_Truncates(t *testing.T) {
 	// Create messages where each is ~10 tokens
 	messages := make([]*Message, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		messages[i] = &Message{
-			UUID:     string(rune('a' + i)),
-			Content:  `[{"type":"text","text":"message"}]`, // ~40 chars ~10 tokens
+			UUID:    string(rune('a' + i)),
+			Content: `[{"type":"text","text":"message"}]`, // ~40 chars ~10 tokens
 		}
 	}
 
@@ -1279,7 +1279,7 @@ func TestInsertMessageTx_WithNilTx(t *testing.T) {
 
 func TestStripImagesFromMessages_Document(t *testing.T) {
 	msgWithDocument := &Message{
-		Type: "user",
+		Type:    "user",
 		Content: `[{"type":"text","text":"hello"},{"type":"document","source":{"type":"base64","data":"doc..."}}]`,
 	}
 
@@ -1349,10 +1349,10 @@ func TestTruncateToTokens_ZeroBudget(t *testing.T) {
 func TestTruncateToTokens_AllFit(t *testing.T) {
 	// Create small messages that all fit within budget
 	messages := make([]*Message, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		messages[i] = &Message{
-			UUID:     string(rune('a' + i)),
-			Content:  `[{"type":"text","text":"hi"}]`, // small
+			UUID:    string(rune('a' + i)),
+			Content: `[{"type":"text","text":"hi"}]`, // small
 		}
 	}
 
@@ -1487,7 +1487,7 @@ func TestPartialCompact_NoTail(t *testing.T) {
 func TestStripImagesFromMessages_ToolResultWithImages(t *testing.T) {
 	// Test tool_result block with nested image content
 	msg := &Message{
-		Type: "user",
+		Type:    "user",
 		Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"Some text"}]`,
 	}
 
@@ -1625,7 +1625,7 @@ func TestApplySnipRemovals_PathCompression(t *testing.T) {
 	// Test path compression: a->b->c where b and c are deleted
 	// a should link to c's parent (boundary)
 	content := map[string]any{
-		"type": "system",
+		"type":            "system",
 		"compactMetadata": map[string]any{},
 		"snipMetadata": map[string]any{
 			"removedUuids": []any{"msg-b", "msg-c"},
@@ -1664,11 +1664,11 @@ func TestCollectReadToolFilePaths_DuplicatePaths(t *testing.T) {
 	// Test that duplicate paths are deduplicated
 	messages := []*Message{
 		{
-			Type: "user",
+			Type:    "user",
 			Content: `[{"type":"tool_result","content":"/path/to/file.txt"}]`,
 		},
 		{
-			Type: "user",
+			Type:    "user",
 			Content: `[{"type":"tool_result","content":"/path/to/file.txt"}]`,
 		},
 	}
@@ -2729,8 +2729,8 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound_V2(t *testing.T) {
 	// The boundary has preserved_segment metadata pointing to an entry not in chain
 	preservedSeg := map[string]any{
 		"preserved_segment": map[string]any{
-			"headUUID":  "nonexistent-uuid", // not in chain
-			"tailUUID":  "orphan-1",
+			"headUUID":   "nonexistent-uuid", // not in chain
+			"tailUUID":   "orphan-1",
 			"anchorUUID": "boundary-1",
 		},
 	}
@@ -2789,4 +2789,3 @@ func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
 		t.Errorf("survivor parent = %q, want empty (deleted parent not resolvable)", result[1].ParentUUID)
 	}
 }
-

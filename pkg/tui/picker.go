@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,8 +87,8 @@ func (p *SessionPicker) View() string {
 		Bold(true).
 		MarginBottom(1)
 
-	var s string
-	s += title.Render("Switch Session") + "\n"
+	var s strings.Builder
+	s.WriteString(title.Render("Switch Session") + "\n")
 
 	for i, item := range p.items {
 		label := item.Label()
@@ -96,14 +97,14 @@ func (p *SessionPicker) View() string {
 		row := fmt.Sprintf("  %s  %s", label, timeStr)
 
 		if i == p.cursor {
-			s += highlight.Render(row) + "\n"
+			s.WriteString(highlight.Render(row) + "\n")
 		} else {
-			s += normal.Render(row) + "\n"
+			s.WriteString(normal.Render(row) + "\n")
 		}
 	}
 
-	s += "\n" + lipgloss.NewStyle().Faint(true).Render("↑/k up · ↓/j down · Enter select · Esc cancel")
-	return s
+	s.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("↑/k up · ↓/j down · Enter select · Esc cancel"))
+	return s.String()
 }
 
 // Label returns a display name for the session item.
@@ -133,7 +134,6 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
-
 
 // openPicker loads sessions and opens the session picker overlay.
 func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {

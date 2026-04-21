@@ -37,35 +37,35 @@ var vcsDirsToExclude = []string{
 // Input is the grep tool input schema.
 // Source: GrepTool.ts — Zod schema for grep input.
 type Input struct {
-	Pattern        string `json:"pattern" validate:"required"`
-	Path           string `json:"path,omitempty"`
-	Glob           string `json:"glob,omitempty"`            // file glob filter (e.g. "*.go") — maps to rg --glob
-	OutputMode     string `json:"output_mode,omitempty"`    // "content" | "files_with_matches" | "count"
-	ContextBefore  int    `json:"-B,omitempty"`             // lines before match (rg -B)
-	ContextAfter   int    `json:"-A,omitempty"`             // lines after match (rg -A)
-	Context        int    `json:"context,omitempty"`        // lines before and after (rg -C)
-	ContextC       int    `json:"-C,omitempty"`             // alias for context (TS compatibility)
-	LineNumbers    *bool  `json:"-n,omitempty"`             // show line numbers (default: true for content mode)
-	CaseInsensitive *bool `json:"-i,omitempty"`             // case insensitive search (rg -i)
-	Type           string `json:"type,omitempty"`           // file type filter (e.g. "go", "py")
-	HeadLimit      *int   `json:"head_limit,omitempty"`     // limit output to N results (nil → 250, explicit 0 → unlimited)
-	Offset         int    `json:"offset,omitempty"`         // skip first N results
-	Multiline      *bool  `json:"multiline,omitempty"`      // enable multiline mode (rg -U --multiline-dotall)
+	Pattern         string `json:"pattern" validate:"required"`
+	Path            string `json:"path,omitempty"`
+	Glob            string `json:"glob,omitempty"`        // file glob filter (e.g. "*.go") — maps to rg --glob
+	OutputMode      string `json:"output_mode,omitempty"` // "content" | "files_with_matches" | "count"
+	ContextBefore   int    `json:"-B,omitempty"`          // lines before match (rg -B)
+	ContextAfter    int    `json:"-A,omitempty"`          // lines after match (rg -A)
+	Context         int    `json:"context,omitempty"`     // lines before and after (rg -C)
+	ContextC        int    `json:"-C,omitempty"`          // alias for context (TS compatibility)
+	LineNumbers     *bool  `json:"-n,omitempty"`          // show line numbers (default: true for content mode)
+	CaseInsensitive *bool  `json:"-i,omitempty"`          // case insensitive search (rg -i)
+	Type            string `json:"type,omitempty"`        // file type filter (e.g. "go", "py")
+	HeadLimit       *int   `json:"head_limit,omitempty"`  // limit output to N results (nil → 250, explicit 0 → unlimited)
+	Offset          int    `json:"offset,omitempty"`      // skip first N results
+	Multiline       *bool  `json:"multiline,omitempty"`   // enable multiline mode (rg -U --multiline-dotall)
 }
 
 // Output is the grep tool output.
 // Source: GrepTool.ts — tool result data.
 type Output struct {
-	Mode         string   `json:"mode,omitempty"`           // "content" | "files_with_matches" | "count"
-	NumFiles     int      `json:"numFiles,omitempty"`        // number of matching files
-	Filenames    []string `json:"filenames,omitempty"`       // list of matching file paths (files_with_matches)
-	Content      string   `json:"content,omitempty"`         // matching content lines (content mode)
-	NumLines     int      `json:"numLines,omitempty"`        // number of content lines (content mode)
-	NumMatches   int      `json:"numMatches,omitempty"`     // total matches (count mode)
-	Matches      []Match `json:"matches"`                   // parsed match list
-	Count        int     `json:"count"`                     // total match count
-	AppliedLimit  *int    `json:"appliedLimit,omitempty"`    // the limit that was applied (if any)
-	AppliedOffset *int    `json:"appliedOffset,omitempty"`  // the offset that was applied
+	Mode          string   `json:"mode,omitempty"`          // "content" | "files_with_matches" | "count"
+	NumFiles      int      `json:"numFiles,omitempty"`      // number of matching files
+	Filenames     []string `json:"filenames,omitempty"`     // list of matching file paths (files_with_matches)
+	Content       string   `json:"content,omitempty"`       // matching content lines (content mode)
+	NumLines      int      `json:"numLines,omitempty"`      // number of content lines (content mode)
+	NumMatches    int      `json:"numMatches,omitempty"`    // total matches (count mode)
+	Matches       []Match  `json:"matches"`                 // parsed match list
+	Count         int      `json:"count"`                   // total match count
+	AppliedLimit  *int     `json:"appliedLimit,omitempty"`  // the limit that was applied (if any)
+	AppliedOffset *int     `json:"appliedOffset,omitempty"` // the offset that was applied
 }
 
 // Match represents a single grep match.
@@ -143,8 +143,8 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Search",
-		Aliases_: []string{"grep"},
+		Name_:        "Search",
+		Aliases_:     []string{"grep"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
@@ -161,8 +161,8 @@ func New() tool.Tool {
 			return true
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		MaxResultSizeChars:   20000,
-		Prompt_: grepPrompt(),
+		MaxResultSizeChars: 20000,
+		Prompt_:            grepPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*Output)
 			if !ok {
@@ -222,8 +222,8 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 
 	// Build rg command args
 	args := []string{
-		"--hidden",         // search hidden files
-		"--color=never",    // no ANSI colors
+		"--hidden",             // search hidden files
+		"--color=never",        // no ANSI colors
 		"--max-columns", "500", // prevent base64/minified content from cluttering output
 	}
 
@@ -321,12 +321,12 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 // splitGlobPatterns splits a glob string on commas/spaces while preserving brace patterns.
 func splitGlobPatterns(glob string) []string {
 	var result []string
-	rawPatterns := strings.Fields(glob)
-	for _, raw := range rawPatterns {
+	rawPatterns := strings.FieldsSeq(glob)
+	for raw := range rawPatterns {
 		if strings.Contains(raw, "{") && strings.Contains(raw, "}") {
 			result = append(result, raw)
 		} else {
-			for _, p := range strings.Split(raw, ",") {
+			for p := range strings.SplitSeq(raw, ",") {
 				if p != "" {
 					result = append(result, p)
 				}
@@ -452,10 +452,7 @@ func applyHeadLimit(items []string, limit, offset int) ([]string, *int) {
 		return items[offset:], nil
 	}
 	effectiveLimit := limit
-	end := offset + effectiveLimit
-	if end > len(items) {
-		end = len(items)
-	}
+	end := min(offset+effectiveLimit, len(items))
 	if offset >= len(items) {
 		return []string{}, nil
 	}

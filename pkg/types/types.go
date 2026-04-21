@@ -27,20 +27,20 @@ const (
 // Message represents a single message in the conversation.
 // Source: Anthropic API Message type + internal message extensions.
 type Message struct {
-	ID         string          `json:"id,omitempty"`
-	Role       Role            `json:"role"`
-	Content    []ContentBlock  `json:"content"`
-	Model      string          `json:"model,omitempty"`
-	StopReason string          `json:"stop_reason,omitempty"`
-	Usage      *Usage          `json:"usage,omitempty"`
-	Timestamp  time.Time       `json:"timestamp,omitempty"`
+	ID         string         `json:"id,omitempty"`
+	Role       Role           `json:"role"`
+	Content    []ContentBlock `json:"content"`
+	Model      string         `json:"model,omitempty"`
+	StopReason string         `json:"stop_reason,omitempty"`
+	Usage      *Usage         `json:"usage,omitempty"`
+	Timestamp  time.Time      `json:"timestamp"`
 }
 
 // Usage tracks token consumption.
 // Source: Anthropic API Usage type.
 type Usage struct {
-	InputTokens              int `json:"input_tokens"`              // new (non-cached) input tokens
-	OutputTokens             int `json:"output_tokens"`             // output tokens
+	InputTokens              int `json:"input_tokens"`                          // new (non-cached) input tokens
+	OutputTokens             int `json:"output_tokens"`                         // output tokens
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // new tokens added to cache
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // tokens read from cache
 }
@@ -63,14 +63,14 @@ const (
 	ContentTypeToolUse    ContentType = "tool_use"
 	ContentTypeToolResult ContentType = "tool_result"
 	ContentTypeThinking   ContentType = "thinking"
-	ContentTypeRedacted     ContentType = "redacted_thinking"
+	ContentTypeRedacted   ContentType = "redacted_thinking"
 )
 
 // CacheControlConfig carries cache control settings for Anthropic API.
 // Source: claude.ts:358-374
 type CacheControlConfig struct {
-	Type  string `json:"type"`           // "ephemeral"
-	TTL   string `json:"ttl,omitempty"`  // "1h", "5m", etc.
+	Type  string `json:"type"`            // "ephemeral"
+	TTL   string `json:"ttl,omitempty"`   // "1h", "5m", etc.
 	Scope string `json:"scope,omitempty"` // "global" | "org" | "" (none)
 }
 
@@ -159,7 +159,7 @@ type PermissionResult interface {
 // PermissionAllowDecision — source: types/permissions.ts:174-184
 type PermissionAllowDecision struct{}
 
-func (PermissionAllowDecision) permissionResultMarker() {}
+func (PermissionAllowDecision) permissionResultMarker()      {}
 func (PermissionAllowDecision) Behavior() PermissionBehavior { return BehaviorAllow }
 
 // PermissionAskDecision — source: types/permissions.ts:199-226
@@ -167,7 +167,7 @@ type PermissionAskDecision struct {
 	Message string `json:"message"`
 }
 
-func (PermissionAskDecision) permissionResultMarker() {}
+func (PermissionAskDecision) permissionResultMarker()      {}
 func (PermissionAskDecision) Behavior() PermissionBehavior { return BehaviorAsk }
 
 // PermissionDenyDecision — source: types/permissions.ts:231-236
@@ -175,7 +175,7 @@ type PermissionDenyDecision struct {
 	Message string `json:"message"`
 }
 
-func (PermissionDenyDecision) permissionResultMarker() {}
+func (PermissionDenyDecision) permissionResultMarker()      {}
 func (PermissionDenyDecision) Behavior() PermissionBehavior { return BehaviorDeny }
 
 // ---------------------------------------------------------------------------
@@ -221,12 +221,12 @@ type QueryEventType string
 
 const (
 	// Query lifecycle
-	EventQueryStart    QueryEventType = "query_start"
-	EventQueryEnd      QueryEventType = "query_end"
+	EventQueryStart QueryEventType = "query_start"
+	EventQueryEnd   QueryEventType = "query_end"
 
 	// Per-round LLM turn
-	EventTurnStart     QueryEventType = "turn_start"
-	EventTurnEnd       QueryEventType = "turn_end"
+	EventTurnStart QueryEventType = "turn_start"
+	EventTurnEnd   QueryEventType = "turn_end"
 
 	// Thinking
 	EventThinkingStart QueryEventType = "thinking_start"
@@ -234,22 +234,22 @@ const (
 	EventThinkingDelta QueryEventType = "thinking_delta"
 
 	// Tool call lifecycle: start → param_delta → output_delta → end
-	EventToolStart     QueryEventType = "tool_start"
-	EventToolParamDelta     QueryEventType = "tool_param_delta"
-	EventToolOutputDelta     QueryEventType = "tool_output_delta"
-	EventToolEnd       QueryEventType = "tool_end"
+	EventToolStart       QueryEventType = "tool_start"
+	EventToolParamDelta  QueryEventType = "tool_param_delta"
+	EventToolOutputDelta QueryEventType = "tool_output_delta"
+	EventToolEnd         QueryEventType = "tool_end"
 
 	// Text content lifecycle
-	EventTextStart    QueryEventType = "text_start"
-	EventTextDelta    QueryEventType = "text_delta"
-	EventTextEnd      QueryEventType = "text_end"
+	EventTextStart QueryEventType = "text_start"
+	EventTextDelta QueryEventType = "text_delta"
+	EventTextEnd   QueryEventType = "text_end"
 
 	// Tool execution: EventToolRun signals input fully accumulated, execution starting.
 	// Distinct from EventToolStart which signals the tool_use content block began streaming.
-	EventToolRun      QueryEventType = "tool_run"
-	EventUsage         QueryEventType = "usage"
-	EventError                QueryEventType = "error"
-	EventNotificationPending  QueryEventType = "notification_pending"
+	EventToolRun             QueryEventType = "tool_run"
+	EventUsage               QueryEventType = "usage"
+	EventError               QueryEventType = "error"
+	EventNotificationPending QueryEventType = "notification_pending"
 )
 
 // AgentMeta tags events originating from a sub-agent.
@@ -292,9 +292,9 @@ type ThinkingEvent struct {
 
 // PartialInputEvent carries incremental input for a pending tool call.
 type PartialInputEvent struct {
-	ID      string `json:"id"`      // tool use ID
-	Name    string `json:"name"`    // tool name (e.g. "Read", "Bash")
-	Delta   string `json:"delta"`   // partial JSON string
+	ID      string `json:"id"`                // tool use ID
+	Name    string `json:"name"`              // tool name (e.g. "Read", "Bash")
+	Delta   string `json:"delta"`             // partial JSON string
 	Summary string `json:"summary,omitempty"` // pre-computed summary from engine
 }
 
@@ -375,8 +375,8 @@ type AgentDefinition struct {
 
 	// Source tracking
 	Source   AgentSource // where this definition came from
-	Filename string     // original filename without .md extension (Source: loadAgentsDir.ts:656)
-	BaseDir  string     // directory the .md was loaded from; "built-in" for built-ins
+	Filename string      // original filename without .md extension (Source: loadAgentsDir.ts:656)
+	BaseDir  string      // directory the .md was loaded from; "built-in" for built-ins
 
 	// Future-ready fields (stored by Class 1, used by later classes)
 	Skills                 []string       // skills — comma-separated from frontmatter
@@ -394,12 +394,12 @@ type AgentDefinition struct {
 // AgentInput is the input parameters for the Agent tool.
 // Source: AgentTool.tsx:82-138 — AgentToolInput
 type AgentInput struct {
-	Description      string `json:"description"`
-	Prompt           string `json:"prompt"`
-	SubagentType     string `json:"subagent_type,omitempty"`
-	Name             string `json:"name,omitempty"`
-	Model            string `json:"model,omitempty"`
-	RunInBackground  bool   `json:"run_in_background,omitempty"`
+	Description     string `json:"description"`
+	Prompt          string `json:"prompt"`
+	SubagentType    string `json:"subagent_type,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Model           string `json:"model,omitempty"`
+	RunInBackground bool   `json:"run_in_background,omitempty"`
 }
 
 // SubQueryResult is the result returned by a sub-agent after execution.

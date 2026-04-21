@@ -331,7 +331,7 @@ func TestHistory_Load_CapAtMaxSize(t *testing.T) {
 	path := filepath.Join(tmpDir, "history.jsonl")
 	// Write 110 entries
 	var lines []string
-	for i := 0; i < 110; i++ {
+	for i := range 110 {
 		entry := fmt.Sprintf("{\"display\":\"entry%d\",\"timestamp\":%d}", i, i)
 		lines = append(lines, entry)
 	}

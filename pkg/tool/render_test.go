@@ -471,16 +471,16 @@ func TestComputePatch_TwoChangesMergedHunk(t *testing.T) {
 		t.Errorf("got %d hunks, expected at most 2 for close changes", len(result))
 	}
 	// Verify both changes are present
-	allLines := ""
+	var allLines strings.Builder
 	for _, h := range result {
 		for _, l := range h.Lines {
-			allLines += l + "\n"
+			allLines.WriteString(l + "\n")
 		}
 	}
-	if !strings.Contains(allLines, "-bbb") || !strings.Contains(allLines, "+BBB") {
+	if !strings.Contains(allLines.String(), "-bbb") || !strings.Contains(allLines.String(), "+BBB") {
 		t.Error("missing first change (bbb→BBB)")
 	}
-	if !strings.Contains(allLines, "-ggg") || !strings.Contains(allLines, "+GGG") {
+	if !strings.Contains(allLines.String(), "-ggg") || !strings.Contains(allLines.String(), "+GGG") {
 		t.Error("missing second change (ggg→GGG)")
 	}
 }
@@ -558,8 +558,6 @@ func TestComputePatch_LineNumberInContext(t *testing.T) {
 	}
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Extended ComputePatch coverage tests
 // ---------------------------------------------------------------------------
@@ -596,7 +594,7 @@ func TestComputePatch_LineDiffBranches(t *testing.T) {
 		{"single_insertion", "a\nb\n", "a\nx\nb\n"},
 		// Remaining deletions after LCS
 		{"remaining_del", "a\nb\nx\ny\nz\n", "a\nb\nc\n"},
-		// Remaining insertions after LCS  
+		// Remaining insertions after LCS
 		{"remaining_ins", "a\nb\nc\n", "a\nb\nx\ny\nz\n"},
 		// Deletion loop: deletions before first LCS entry
 		// oldMid=["x","y"], newMid=["x"] → LCS entry at (0,0), oldPos stays 0, no pre-entry del
@@ -611,7 +609,7 @@ func TestComputePatch_LineDiffBranches(t *testing.T) {
 		// Exact suffix strip (oldEnd==oldStart, newEnd==newStart)
 		{"exact_suffix", "a\nb\nc\n", "x\na\nb\nc\ny\n"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -657,7 +655,7 @@ func TestComputePatch_LCSBranches(t *testing.T) {
 		{"lcs_diagonal", "a\nb\nc\n", "a\nb\nc\n"},
 		// LCS backtrack: up branch (deletion)
 		{"lcs_up", "a\nb\nc\nd\n", "a\nx\nc\nd\n"},
-		// LCS backtrack: left branch (insertion)  
+		// LCS backtrack: left branch (insertion)
 		{"lcs_left", "a\nx\nc\nd\n", "a\nb\nc\nd\n"},
 		// Empty LCS result
 		{"lcs_empty", "x\ny\nz\n", "a\nb\nc\n"},
@@ -670,7 +668,7 @@ func TestComputePatch_LCSBranches(t *testing.T) {
 		// LCS=[(1,1),(2,2)] — consecutive matches trigger commonCount merge guard
 		{"lcs_consecutive", "a\nb\nc\nd\n", "a\nx\nb\nc\nd\n"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -869,4 +867,3 @@ func TestComputePatch_WhitespaceOnly(t *testing.T) {
 		t.Errorf("expected nil for identical whitespace, got %v", result)
 	}
 }
-

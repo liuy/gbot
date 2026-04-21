@@ -173,16 +173,16 @@ func TestGetStructuredPatch_TwoChangesMergedHunk(t *testing.T) {
 		t.Errorf("got %d hunks, expected at most 2 for close changes", len(result))
 	}
 	// Verify both changes are present across all hunks
-	allLines := ""
+	var allLines strings.Builder
 	for _, h := range result {
 		for _, l := range h.Lines {
-			allLines += l + "\n"
+			allLines.WriteString(l + "\n")
 		}
 	}
-	if !strings.Contains(allLines, "-bbb") || !strings.Contains(allLines, "+BBB") {
+	if !strings.Contains(allLines.String(), "-bbb") || !strings.Contains(allLines.String(), "+BBB") {
 		t.Error("missing first change (bbb→BBB)")
 	}
-	if !strings.Contains(allLines, "-ggg") || !strings.Contains(allLines, "+GGG") {
+	if !strings.Contains(allLines.String(), "-ggg") || !strings.Contains(allLines.String(), "+GGG") {
 		t.Error("missing second change (ggg→GGG)")
 	}
 }

@@ -139,8 +139,8 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 
 	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p)
 	eng := New(&Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: AutoCompactConfig{
 			Threshold:     0.5,
@@ -157,7 +157,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 
 	// 10 tool_use/result pairs with old timestamps → microcompact clears these
 	bigResult := strings.Repeat("x", 400) // ~100 tokens each
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		id := fmt.Sprintf("tool-%d", i)
 		messages = append(messages, types.Message{
 			Role:      types.RoleAssistant,
@@ -179,7 +179,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	// even after microcompact clears tool_results.
 	// 6 messages × 200 chars = ~1200 chars = ~300 tokens > 50% of 500
 	largeText := strings.Repeat("y", 200)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		role := types.RoleUser
 		if i%2 == 1 {
 			role = types.RoleAssistant
@@ -277,8 +277,8 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 
 	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p)
 	eng := New(&Params{
-		Provider: p,
-		Model:    "test-model",
+		Provider:  p,
+		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: AutoCompactConfig{
 			Threshold:     0.9,
@@ -291,7 +291,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 	oldTime := baseTime.Add(-61 * time.Minute)
 	smallResult := strings.Repeat("z", 40) // ~10 tokens
 	var messages []types.Message
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id := fmt.Sprintf("t-%d", i)
 		messages = append(messages, types.Message{
 			Role:      types.RoleAssistant,

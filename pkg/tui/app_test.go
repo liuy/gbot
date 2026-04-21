@@ -70,8 +70,8 @@ func textStreamEvents(model, text string) []llm.StreamEvent {
 func newTestApp(provider *tuiMockProvider) *App {
 	h := hub.NewHub()
 	eng := engine.New(&engine.Params{
-		Provider: provider,
-		Model:    "test-model",
+		Provider:   provider,
+		Model:      "test-model",
 		Dispatcher: h,
 	})
 	app := NewApp(eng, json.RawMessage(`"test system prompt"`), h)
@@ -390,7 +390,7 @@ func TestApp_Update_SpinnerTick(t *testing.T) {
 
 	// Spinner only advances every 5th tick
 	var model tea.Model = app
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		model, _ = model.Update(spinnerTickMsg{})
 	}
 	app = model.(*App)
@@ -635,10 +635,10 @@ func TestApp_HandleKey_Unknown(t *testing.T) {
 		t.Errorf("unknown key should not change input, got %q", a.input.Value())
 	}
 
-// ---------------------------------------------------------------------------
-// New key bindings
-// ---------------------------------------------------------------------------
-	}
+	// ---------------------------------------------------------------------------
+	// New key bindings
+	// ---------------------------------------------------------------------------
+}
 
 func TestApp_HandleKey_CtrlB(t *testing.T) {
 	t.Parallel()
@@ -983,6 +983,7 @@ func TestPrettyJSON_ValidJSON(t *testing.T) {
 		t.Errorf("prettyJSON result should be wrapped in braces, got %q", v)
 	}
 }
+
 // readEvents — appCh closed
 // ---------------------------------------------------------------------------
 
@@ -1185,7 +1186,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	tcv = app.repl.pendingTool["call_abc"]
 	if len(tcv.AgentLogs) == 0 {
 		t.Fatal("AgentLogs should have entries")
-}
+	}
 	if tcv.AgentLogs[0].Summary != "count files" {
 		t.Errorf("summary should be updated to %q, got %q", "count files", tcv.AgentLogs[0].Summary)
 	}
@@ -1293,7 +1294,6 @@ func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // updateRepl — usageMsg
 // ---------------------------------------------------------------------------
@@ -1325,8 +1325,6 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 		t.Errorf("inputTokenTarget = %d, want 800", app.inputTokenTarget)
 	}
 }
-
-
 
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	t.Parallel()
@@ -1397,7 +1395,6 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 		t.Errorf("thinkingDuration = %v, want 3s", app.thinkingDuration)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // PendingThinking — ReplState methods
@@ -1664,10 +1661,10 @@ func TestApp_HandleKey_EnterWhileStreaming(t *testing.T) {
 		t.Error("should still be streaming after Enter during stream")
 	}
 
-// ---------------------------------------------------------------------------
-// handleKey — Ctrl+Y with empty kill ring
-// ---------------------------------------------------------------------------
-	}
+	// ---------------------------------------------------------------------------
+	// handleKey — Ctrl+Y with empty kill ring
+	// ---------------------------------------------------------------------------
+}
 
 func TestApp_HandleKey_CtrlY_EmptyRing(t *testing.T) {
 	t.Parallel()
@@ -1850,10 +1847,10 @@ func TestApp_Update_UnknownMsg(t *testing.T) {
 		t.Error("unknown msg should not start streaming")
 	}
 
-// ---------------------------------------------------------------------------
-// finishStream
-// ---------------------------------------------------------------------------
-	}
+	// ---------------------------------------------------------------------------
+	// finishStream
+	// ---------------------------------------------------------------------------
+}
 
 func TestApp_FinishStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
@@ -2233,14 +2230,14 @@ func TestApp_HandleSubmit_AlreadyStreaming(t *testing.T) {
 		t.Errorf("input should be unchanged, got %q", a.input.Value())
 	}
 
-// ---------------------------------------------------------------------------
-// Additional coverage — View edge cases
-// ---------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------
+	// Additional coverage — View edge cases
+	// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// readEvents drain behavior — appCh drained before returning complete
-// ---------------------------------------------------------------------------
-	}
+	// ---------------------------------------------------------------------------
+	// readEvents drain behavior — appCh drained before returning complete
+	// ---------------------------------------------------------------------------
+}
 
 func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 	t.Parallel()
@@ -3017,7 +3014,7 @@ func TestApp_Update_SpinnerTick_AnimatesTokens(t *testing.T) {
 	}
 
 	// Tick several times — should keep incrementing
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		app.Update(spinnerTickMsg{})
 	}
 	if app.displayedInputTokens != 6 {
@@ -3071,8 +3068,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	app.width = 80
 	app.height = 24
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 	app.repl.resultCh = resultCh
 
@@ -3081,7 +3077,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		// Give engine goroutine time to process, then signal
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			runtime.Gosched()
 		}
 		close(done)
@@ -3149,7 +3145,7 @@ func TestApp_HandleKey_CtrlN_WrappedInput(t *testing.T) {
 	app.width = 30
 	app.input.SetWidth(26)
 	app.input.SetValue("abcdefghijklmnopqrstuvwxyz") // wraps in 26-wide input
-	app.input.Home() // cursor at 0, first line
+	app.input.Home()                                 // cursor at 0, first line
 	// Ctrl+N should call CursorDown which returns true (on first line, can go down)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 	a := model.(*App)
@@ -3941,7 +3937,6 @@ func TestApp_Scroll_IndicatorPosition(t *testing.T) {
 		t.Errorf("in middle should show ↕ arrow, got:\n%s", v)
 	}
 }
-
 
 // TestApp_Scroll_PageNumberChanges verifies the page number actually changes
 // when scrolling. Previous bug: used scrollOffset/viewLines which stayed at 1

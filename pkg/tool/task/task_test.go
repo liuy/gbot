@@ -57,7 +57,7 @@ func (m *mockRegistry) List() []*TaskInfo {
 
 func (m *mockRegistry) Wait(id string) (int, error) {
 	// Poll until terminal
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		m.mu.Lock()
 		t, ok := m.tasks[id]
 		if !ok {
@@ -134,10 +134,10 @@ func TestTaskOutput_NotFound(t *testing.T) {
 func TestTaskOutput_BlockWait(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&TaskInfo{
-		ID:       "bg-2",
-		Type:     "local_bash",
-		Status:   "running",
-		Command:  "sleep 1",
+		ID:      "bg-2",
+		Type:    "local_bash",
+		Status:  "running",
+		Command: "sleep 1",
 	})
 
 	// Complete the task after a short delay
@@ -246,9 +246,9 @@ func TestTaskOutput_InvalidJSON(t *testing.T) {
 func TestTaskStop_Success(t *testing.T) {
 	reg := newMockRegistry()
 	reg.add(&TaskInfo{
-		ID:     "bg-10",
-		Type:   "local_bash",
-		Status: "running",
+		ID:      "bg-10",
+		Type:    "local_bash",
+		Status:  "running",
 		Command: "sleep 60",
 	})
 

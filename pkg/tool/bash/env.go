@@ -45,12 +45,12 @@ func SaveSnapshot() (*EnvSnapshot, error) {
 	// Source: ShellSnapshot.ts — exports PATH, aliases, functions
 	for _, envVar := range os.Environ() {
 		// Split on first '=' only
-		idx := strings.Index(envVar, "=")
-		if idx < 0 {
+		before, after, ok := strings.Cut(envVar, "=")
+		if !ok {
 			continue
 		}
-		key := envVar[:idx]
-		value := envVar[idx+1:]
+		key := before
+		value := after
 
 		// Quote the value for safe shell sourcing
 		fmt.Fprintf(&buf, "export %s=%q\n", key, value)

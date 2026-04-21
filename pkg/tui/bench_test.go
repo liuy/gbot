@@ -86,7 +86,7 @@ func BenchmarkMarkdownRender_CodeBlock(b *testing.B) {
 
 func BenchmarkMarkdownRender_List(b *testing.B) {
 	var sb strings.Builder
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		fmt.Fprintf(&sb, "- Item %d with some description text\n", i)
 	}
 	text := sb.String()
@@ -102,15 +102,15 @@ func BenchmarkMarkdownRender_Mixed(b *testing.B) {
 	sb.WriteString("# Heading\n\n")
 	sb.WriteString("Some **bold** and *italic* text with `code` inline.\n\n")
 	sb.WriteString("```python\n")
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		fmt.Fprintf(&sb, "def function_%d():\n    return %d\n", i, i)
 	}
 	sb.WriteString("```\n\n")
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		fmt.Fprintf(&sb, "- List item %d\n", i)
 	}
 	sb.WriteString("\n| Col1 | Col2 | Col3 |\n|------|------|------|\n")
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		fmt.Fprintf(&sb, "| %d | val%d | data |\n", i, i)
 	}
 	text := sb.String()
@@ -125,7 +125,7 @@ func BenchmarkMarkdownRenderWidth_Mixed(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("# Heading\n\n")
 	sb.WriteString("Some paragraph text.\n\n")
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		fmt.Fprintf(&sb, "- Item %d\n", i)
 	}
 	text := sb.String()

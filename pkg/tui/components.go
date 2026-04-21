@@ -7,8 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/mattn/go-runewidth"
 )
 
 // dot is a bullet indicator rendered before tool calls.
@@ -22,8 +22,8 @@ var (
 	styleDotError   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	styleDotSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	styleNameBold   = lipgloss.NewStyle().Bold(true)
-	styleTimeDim = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
-	styleDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	styleTimeDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	styleDim        = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 	stylePrompt     = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 )
 
@@ -126,14 +126,8 @@ func (i *Input) wrapLines() []wrappedLine {
 	}
 
 	// First line has less room due to prompt prefix
-	availFirst := i.width - promptDisplayWidth
-	if availFirst < 1 {
-		availFirst = 1
-	}
-	availRest := i.width
-	if availRest < 1 {
-		availRest = 1
-	}
+	availFirst := max(i.width-promptDisplayWidth, 1)
+	availRest := max(i.width, 1)
 
 	var lines []wrappedLine
 	var current []rune
@@ -577,9 +571,9 @@ func (s Spinner) View() string {
 
 // MessageView renders a single conversation message.
 type MessageView struct {
-	Role        string // "user", "assistant", "system"
+	Role        string         // "user", "assistant", "system"
 	Blocks      []ContentBlock // interleaved content: text and tool blocks in order
-	ExpandTools bool   // when true, show full tool output instead of collapsed
+	ExpandTools bool           // when true, show full tool output instead of collapsed
 }
 
 // AgentLogEntry records one tool call from a sub-agent for live progress display.
@@ -623,10 +617,9 @@ func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, m
 	}
 
 	var sb strings.Builder
-	availWidth := width - 2 // minimal margin
-	if availWidth < 10 {
-		availWidth = 10
-	}
+	availWidth := max(
+		// minimal margin
+		width-2, 10)
 
 	// Render using Blocks (interleaved text+tool, per TS).
 	if len(m.Blocks) > 0 {
@@ -730,7 +723,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", tc.Summary)
 		}
-	header += " " + styleDim.Render("running...")
+		header += " " + styleDim.Render("running...")
 		sb.WriteString(wordWrap(header, availWidth))
 		if len(tc.AgentLogs) > 0 {
 			sb.WriteString(renderAgentLogs(&tc, availWidth))
@@ -885,7 +878,7 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 		var sb strings.Builder
 		lineIdx := 0
 		for _, line := range lines {
-			for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
+			for wl := range strings.SplitSeq(wordWrap(line, availWidth), "\n") {
 				sb.WriteString(prefixLine(lineIdx, wl, contentStyle) + "\n")
 				lineIdx++
 			}
@@ -908,7 +901,7 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	var sb strings.Builder
 	lineIdx := 0
 	for _, line := range shown {
-		for _, wl := range strings.Split(wordWrap(line, availWidth), "\n") {
+		for wl := range strings.SplitSeq(wordWrap(line, availWidth), "\n") {
 			sb.WriteString(prefixLine(lineIdx, wl, contentStyle) + "\n")
 			lineIdx++
 		}
@@ -917,11 +910,10 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 	return sb.String()
 }
 
-
 // Pre-cached styles for thinking blocks.
 var (
-	styleThinkingStar     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	styleThinkingContent  = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
+	styleThinkingStar    = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	styleThinkingContent = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 )
 
 // renderThinkingBlock renders a thinking block using ✦ symbol.
@@ -974,7 +966,6 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 		sb.WriteString("\n" + styleThinkingContent.Render(formatted))
 	}
 }
-
 
 // wordWrap wraps text to the given width, breaking at word boundaries.
 // Tabs are expanded to 4 spaces so runewidth correctly accounts for their
@@ -1087,6 +1078,7 @@ func consumeAnsiEscape(s string) string {
 func runeDisplayWidth(r rune) int {
 	return runewidth.RuneWidth(r)
 }
+
 // isEmojiPresentation returns true for emoji that render as colorful by default.
 // VS16 (U+FE0F) is redundant for these and causes visible artifacts on some
 // terminals, breaking table alignment.
@@ -1170,4 +1162,3 @@ func stripRedundantVS16(s string) string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-

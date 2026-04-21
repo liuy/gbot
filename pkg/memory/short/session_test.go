@@ -201,7 +201,7 @@ func TestListSessions_WithLimit(t *testing.T) {
 	store, cleanup := testStore(t)
 	defer cleanup()
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := store.CreateSession("/project", "model"); err != nil {
 			t.Fatalf("CreateSession %d: %v", i, err)
 		}
@@ -366,7 +366,7 @@ func TestDeleteSession_CascadeDeleteMessages(t *testing.T) {
 	ses, _ := store.CreateSession("/project", "model")
 
 	// Directly insert messages via SQL (independent of message.go implementation)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := store.db.Exec(
 			"INSERT INTO messages (session_id, uuid, type, content) VALUES (?, ?, ?, ?)",
 			ses.SessionID, uuid.New().String(), "user", `{"type":"text","text":"hello"}`,
@@ -553,7 +553,9 @@ func TestCreateSession_ErrorPaths(t *testing.T) {
 	defer cleanup()
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, err := store.CreateSession("/project", "model")
 	if err == nil {
@@ -712,7 +714,6 @@ func TestGetSession_InvalidSettings(t *testing.T) {
 		t.Errorf("error should mention unmarshal settings, got: %v", err)
 	}
 }
-
 
 // Lines 118-120: ListSessions — query error
 func TestListSessions_QueryError(t *testing.T) {
@@ -898,4 +899,3 @@ func TestListSessions_EmptySettings(t *testing.T) {
 		t.Error("empty-settings-session not found in results")
 	}
 }
-

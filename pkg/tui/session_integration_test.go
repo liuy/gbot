@@ -335,9 +335,9 @@ func TestIntegration_ForkPreservesToolUseMessages(t *testing.T) {
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			{
-				Type:     types.ContentTypeToolResult,
+				Type:      types.ContentTypeToolResult,
 				ToolUseID: "tu_123",
-				Content:  []byte(`"package main\nfunc main() {}"`),
+				Content:   []byte(`"package main\nfunc main() {}"`),
 			},
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("The file contains...")}},
@@ -408,7 +408,7 @@ func TestIntegration_MultipleForks(t *testing.T) {
 	sessionIDs := []string{originalID}
 
 	// Fork 3 times from the original (need to switch back each time)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		// Fork
 		a.handleSwitch("fork-"+string(rune('A'+i)), nil)
 		sessionIDs = append(sessionIDs, a.sessionID)
@@ -655,9 +655,9 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	// Create a titled session first
 	store := a2.store
 	session, _ := store.CreateSession(a2.projectDir, "test-model")
-		if err := store.UpdateSessionTitle(session.SessionID, "taken-title"); err != nil {
-			t.Fatalf("UpdateSessionTitle: %v", err)
-		}
+	if err := store.UpdateSessionTitle(session.SessionID, "taken-title"); err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
 
 	// Now try to fork with same title
 	cmd = a2.handleSwitch("taken-title", nil)

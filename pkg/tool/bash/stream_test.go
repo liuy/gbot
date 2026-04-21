@@ -83,7 +83,7 @@ func TestStreamingOutput_RollingWindow(t *testing.T) {
 	})
 
 	// Write 25 lines — should keep only last 20
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		n, err := s.Write([]byte("line\n"))
 		if err != nil {
 			t.Fatalf("Write() error: %v", err)
@@ -299,12 +299,10 @@ func TestStreamingOutput_ConcurrentWrites(t *testing.T) {
 	s := NewStreamingOutput(nil)
 	var wg sync.WaitGroup
 
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			_, _ = s.Write([]byte("line\n"))
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -471,14 +469,14 @@ func TestStreamingOutput_Cap_LinesStopsGrowing(t *testing.T) {
 
 	// Fill to just under cap
 	under := strings.Repeat("a", MaxOutputSize-1)
-	mustWrite(t, s,[]byte(under))
+	mustWrite(t, s, []byte(under))
 
 	if s.Exceeded() {
 		t.Fatal("should not be exceeded yet")
 	}
 
 	// Write more to trigger cap
-	mustWrite(t, s,[]byte("extra data here\n"))
+	mustWrite(t, s, []byte("extra data here\n"))
 
 	if !s.Exceeded() {
 		t.Fatal("should be exceeded now")
@@ -487,8 +485,8 @@ func TestStreamingOutput_Cap_LinesStopsGrowing(t *testing.T) {
 	linesLen := len(s.Lines())
 
 	// Write even more — lines should not grow
-	mustWrite(t, s,[]byte("even more data\n"))
-	mustWrite(t, s,[]byte("and more\n"))
+	mustWrite(t, s, []byte("even more data\n"))
+	mustWrite(t, s, []byte("and more\n"))
 
 	if len(s.Lines()) != linesLen {
 		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesLen, len(s.Lines()))
@@ -505,13 +503,13 @@ func TestStreamingOutput_Cap_LastLinesKeepsUpdating(t *testing.T) {
 
 	// Exceed cap
 	big := strings.Repeat("x", MaxOutputSize+1000)
-	mustWrite(t, s,[]byte(big))
+	mustWrite(t, s, []byte(big))
 	if !s.Exceeded() {
 		t.Fatal("should be exceeded")
 	}
 
 	// Write more — lastLines should still update
-	mustWrite(t, s,[]byte("new-line-after-cap\n"))
+	mustWrite(t, s, []byte("new-line-after-cap\n"))
 
 	found := false
 	for _, l := range lastUpdate.Lines {
@@ -531,11 +529,11 @@ func TestStreamingOutput_Cap_TotalBytesKeepsCounting(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Exceed cap
-	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s, []byte(strings.Repeat("x", MaxOutputSize+1)))
 	firstTotal := s.TotalBytes()
 
 	// Write more — totalBytes should keep growing
-	mustWrite(t, s,[]byte("more data"))
+	mustWrite(t, s, []byte("more data"))
 	secondTotal := s.TotalBytes()
 
 	if secondTotal <= firstTotal {
@@ -552,10 +550,10 @@ func TestStreamingOutput_Cap_TotalLinesKeepsCounting(t *testing.T) {
 	})
 
 	// Exceed cap with no newlines
-	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s, []byte(strings.Repeat("x", MaxOutputSize+1)))
 
 	// Write lines after cap
-	mustWrite(t, s,[]byte("line1\nline2\nline3\n"))
+	mustWrite(t, s, []byte("line1\nline2\nline3\n"))
 
 	if lastUpdate.TotalLines < 3 {
 		t.Errorf("TotalLines = %d, want at least 3 (lines after cap should still be counted)", lastUpdate.TotalLines)
@@ -571,12 +569,12 @@ func TestStreamingOutput_Cap_ProgressCallbackKeepsFiring(t *testing.T) {
 	})
 
 	// Exceed cap
-	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s, []byte(strings.Repeat("x", MaxOutputSize+1)))
 	countAfterExceed := updateCount
 
 	// Write more — callback should still fire
-	mustWrite(t, s,[]byte("data\n"))
-	mustWrite(t, s,[]byte("more\n"))
+	mustWrite(t, s, []byte("data\n"))
+	mustWrite(t, s, []byte("more\n"))
 
 	if updateCount <= countAfterExceed {
 		t.Errorf("callback count didn't increase after cap: %d -> %d", countAfterExceed, updateCount)
@@ -594,10 +592,10 @@ func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Fill to just under cap with a partial line (no newline)
-	mustWrite(t, s,[]byte(strings.Repeat("a", MaxOutputSize-5)))
+	mustWrite(t, s, []byte(strings.Repeat("a", MaxOutputSize-5)))
 
 	// This write triggers cap
-	mustWrite(t, s,[]byte("hello\nworld\n"))
+	mustWrite(t, s, []byte("hello\nworld\n"))
 
 	// exceeded is now true
 	if !s.Exceeded() {
@@ -615,7 +613,7 @@ func TestStreamingOutput_Cap_PartialLineAcrossCap(t *testing.T) {
 
 	// Write more — lines should NOT grow further
 	linesBefore := len(lines)
-	mustWrite(t, s,[]byte("extra\n"))
+	mustWrite(t, s, []byte("extra\n"))
 	if len(s.Lines()) != linesBefore {
 		t.Errorf("lines grew from %d to %d after cap — should stop growing", linesBefore, len(s.Lines()))
 	}
@@ -656,11 +654,11 @@ func TestStreamingOutput_Cap_PartialLineAfterCap(t *testing.T) {
 	})
 
 	// Exceed cap with no newline
-	mustWrite(t, s,[]byte(strings.Repeat("x", MaxOutputSize+1)))
+	mustWrite(t, s, []byte(strings.Repeat("x", MaxOutputSize+1)))
 
 	// Write partial line after cap, then complete it
-	mustWrite(t, s,[]byte("par"))
-	mustWrite(t, s,[]byte("tial\n"))
+	mustWrite(t, s, []byte("par"))
+	mustWrite(t, s, []byte("tial\n"))
 
 	// lastLines[0] = "xxxxx...xpar" (many x's + partial), last element ends with "tial"
 	found := false
@@ -709,7 +707,7 @@ func TestStreamingOutput_WriteEmptyLastFragment(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// "a\n" → Split gives ["a", ""], last fragment "" is ignored
-	mustWrite(t, s,[]byte("a\n"))
+	mustWrite(t, s, []byte("a\n"))
 
 	lines := s.Lines()
 	if len(lines) != 1 {
@@ -724,7 +722,7 @@ func TestStreamingOutput_WriteOnlyNewlines(t *testing.T) {
 	t.Parallel()
 
 	s := NewStreamingOutput(nil)
-	mustWrite(t, s,[]byte("\n\n\n"))
+	mustWrite(t, s, []byte("\n\n\n"))
 
 	lines := s.Lines()
 	// Split("\n\n\n") = ["", "", "", ""], last "" is empty fragment
@@ -743,8 +741,8 @@ func TestStreamingOutput_RollingWindowExact(t *testing.T) {
 	})
 
 	// Write exactly 20 lines — all should be kept
-	for i := 0; i < 20; i++ {
-		mustWrite(t, s,[]byte(strings.Repeat("x", i+1) + "\n"))
+	for i := range 20 {
+		mustWrite(t, s, []byte(strings.Repeat("x", i+1)+"\n"))
 	}
 
 	if len(lastUpdate.Lines) != 20 {
@@ -765,7 +763,7 @@ func TestStreamingOutput_LastLines(t *testing.T) {
 	s := NewStreamingOutput(nil)
 
 	// Write 30 lines — LastLines should return only last 20
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		n, err := fmt.Fprintf(s, "line%d\n", i)
 		if err != nil {
 			t.Fatalf("Fprintf() error: %v", err)

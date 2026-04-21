@@ -209,7 +209,7 @@ func TestLoadMessages_Multiple(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg := testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 		if err := store.AppendMessage(sessionID, msg); err != nil {
 			t.Fatalf("AppendMessage %d: %v", i, err)
@@ -226,7 +226,7 @@ func TestLoadMessages_Multiple(t *testing.T) {
 	}
 
 	// Check order is by seq (ascending)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if messages[i].Seq != int64(i+1) {
 			t.Errorf("message %d seq = %d, want %d", i, messages[i].Seq, i+1)
 		}
@@ -238,7 +238,7 @@ func TestLoadMessagesAfterSeq(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg := testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 		if err := store.AppendMessage(sessionID, msg); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
@@ -528,7 +528,7 @@ func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 
 	// Insert messages
 	baseTime := time.Now()
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		msg := &Message{
 			UUID:      fmt.Sprintf("uuid-%d", i),
 			Type:      "user",
@@ -652,7 +652,9 @@ func TestAppendMessages_TransactionError(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Close store to force transaction errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	messages := []*Message{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"first"}]`),
@@ -669,7 +671,9 @@ func TestLoadMessages_ErrorPaths(t *testing.T) {
 	store := openTestStore(t)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, err := store.LoadMessages("test-session")
 	if err == nil {
@@ -689,7 +693,9 @@ func TestRemoveMessageByUUID_Transaction(t *testing.T) {
 	}
 
 	// Close store to force transaction errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	err := store.RemoveMessageByUUID(sessionID, "uuid-1")
 	if err == nil {
@@ -805,7 +811,9 @@ func TestAppendMessage_TransactionBeginError(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	msg := testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"test"}]`)
 	err := store.AppendMessage(sessionID, msg)
@@ -912,7 +920,9 @@ func TestRecordSidechainTranscript_TransactionError(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	sideMsgs := []*Message{
 		testMessage(0, "assistant", "side-1", "", `[{"type":"text","text":"agent response"}]`),
@@ -929,7 +939,9 @@ func TestLoadSidechainTranscript_ErrorPath(t *testing.T) {
 	store := openTestStore(t)
 
 	// Close store to force errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, err := store.LoadSidechainTranscript("test-session", "agent-1")
 	if err == nil {
@@ -1865,4 +1877,3 @@ func TestRemoveMessageByUUID_DeleteTriggerError(t *testing.T) {
 		t.Errorf("error should mention 'delete message', got: %v", err)
 	}
 }
-

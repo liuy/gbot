@@ -22,7 +22,7 @@ type Config struct {
 	SmallModel string `json:"small_model,omitempty"`
 
 	// Multi-provider configuration
-	DefaultTier Tier      `json:"default,omitempty"`    // "lite" | "pro" | "max", defaults to "pro"
+	DefaultTier Tier       `json:"default,omitempty"`   // "lite" | "pro" | "max", defaults to "pro"
 	Providers   []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
 
 	// Permissions
@@ -50,10 +50,10 @@ const (
 
 // Provider holds configuration for a single LLM provider.
 type Provider struct {
-	Name   string          `json:"name"`            // "anthropic" | "openai"
-	URL    string          `json:"url"`             // e.g. "https://api.anthropic.com"
-	Keys   []string        `json:"keys"`            // env var references like "$ANTHROPIC_API_KEY"
-	Models map[Tier]string `json:"models"`          // per-tier model names
+	Name   string          `json:"name"`   // "anthropic" | "openai"
+	URL    string          `json:"url"`    // e.g. "https://api.anthropic.com"
+	Keys   []string        `json:"keys"`   // env var references like "$ANTHROPIC_API_KEY"
+	Models map[Tier]string `json:"models"` // per-tier model names
 }
 
 // ResolveKey resolves the first key that yields a non-empty value.
@@ -61,8 +61,8 @@ type Provider struct {
 // Entries without "$" are used as literal API keys.
 func (p *Provider) ResolveKey() string {
 	for _, ref := range p.Keys {
-		if strings.HasPrefix(ref, "$") {
-			if v := os.Getenv(strings.TrimPrefix(ref, "$")); v != "" {
+		if after, ok := strings.CutPrefix(ref, "$"); ok {
+			if v := os.Getenv(after); v != "" {
 				return v
 			}
 		} else if ref != "" {

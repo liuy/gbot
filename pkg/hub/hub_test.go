@@ -167,12 +167,10 @@ func TestConcurrentDispatch(t *testing.T) {
 	h.Subscribe(m)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 100 {
+		wg.Go(func() {
 			h.Dispatch(Event{Type: types.EventTextDelta, Text: "concurrent"})
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -237,7 +235,7 @@ func TestHub_RaceStress(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Start 5 handlers that subscribe/unsubscribe in a loop
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -256,11 +254,11 @@ func TestHub_RaceStress(t *testing.T) {
 	}
 
 	// Start 10 dispatchers
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 200; j++ {
+			for j := range 200 {
 				h.Dispatch(Event{Type: types.EventTextDelta, Text: fmt.Sprintf("disp-%d-%d", id, j)})
 			}
 		}(i)

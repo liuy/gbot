@@ -17,25 +17,25 @@ import (
 // minimalTool is a minimal tool implementation for covers skip path in executeTools.
 type minimalTool struct{}
 
-func (m *minimalTool) Name() string                                                { return "test" }
-func (m *minimalTool) Aliases() []string                                           { return nil }
-func (m *minimalTool) Description(json.RawMessage) (string, error)                 { return "test", nil }
-func (m *minimalTool) InputSchema() json.RawMessage                                { return nil }
+func (m *minimalTool) Name() string                                { return "test" }
+func (m *minimalTool) Aliases() []string                           { return nil }
+func (m *minimalTool) Description(json.RawMessage) (string, error) { return "test", nil }
+func (m *minimalTool) InputSchema() json.RawMessage                { return nil }
 func (m *minimalTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
 func (m *minimalTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (m *minimalTool) IsReadOnly(json.RawMessage) bool            { return true }
-func (m *minimalTool) IsDestructive(json.RawMessage) bool         { return false }
-func (m *minimalTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (m *minimalTool) IsEnabled() bool                            { return true }
+func (m *minimalTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (m *minimalTool) IsDestructive(json.RawMessage) bool     { return false }
+func (m *minimalTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (m *minimalTool) IsEnabled() bool                        { return true }
 func (m *minimalTool) InterruptBehavior() tool.InterruptBehavior {
 	return tool.InterruptCancel
 }
-func (m *minimalTool) Prompt() string                             { return "" }
-func (m *minimalTool) RenderResult(any) string                    { return "" }
+func (m *minimalTool) Prompt() string          { return "" }
+func (m *minimalTool) RenderResult(any) string { return "" }
 
 func (m *minimalTool) MaxResultSize() int { return 50000 }
 
@@ -448,7 +448,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 1}},
 		{Type: "message_stop"},
 	}
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		mp.addResponse(toolEvents, nil)
 	}
 
@@ -558,9 +558,9 @@ func TestRefreshTools_WithProvider(t *testing.T) {
 		Model:    "test",
 		ToolsProvider: func() map[string]tool.Tool {
 			return map[string]tool.Tool{
-				"Zulu":   &minimalTool{},
-				"Alpha":  &minimalTool{},
-				"Bravo":  &minimalTool{},
+				"Zulu":  &minimalTool{},
+				"Alpha": &minimalTool{},
+				"Bravo": &minimalTool{},
 			}
 		},
 	})
@@ -689,21 +689,25 @@ type nonStreamingSuccessTool struct {
 	data any
 }
 
-func (t *nonStreamingSuccessTool) Name() string                                                             { return t.name }
-func (t *nonStreamingSuccessTool) Aliases() []string                                                        { return nil }
-func (t *nonStreamingSuccessTool) Description(json.RawMessage) (string, error)                             { return t.name, nil }
-func (t *nonStreamingSuccessTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *nonStreamingSuccessTool) Name() string                                { return t.name }
+func (t *nonStreamingSuccessTool) Aliases() []string                           { return nil }
+func (t *nonStreamingSuccessTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *nonStreamingSuccessTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *nonStreamingSuccessTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: t.data}, nil
 }
-func (t *nonStreamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
-func (t *nonStreamingSuccessTool) IsReadOnly(json.RawMessage) bool         { return true }
-func (t *nonStreamingSuccessTool) IsDestructive(json.RawMessage) bool        { return false }
-func (t *nonStreamingSuccessTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (t *nonStreamingSuccessTool) IsEnabled() bool                            { return true }
-func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
-func (t *nonStreamingSuccessTool) Prompt() string                             { return "" }
-func (t *nonStreamingSuccessTool) RenderResult(any) string                    { return "rendered output" }
+func (t *nonStreamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *nonStreamingSuccessTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *nonStreamingSuccessTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *nonStreamingSuccessTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *nonStreamingSuccessTool) IsEnabled() bool                        { return true }
+func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *nonStreamingSuccessTool) Prompt() string          { return "" }
+func (t *nonStreamingSuccessTool) RenderResult(any) string { return "rendered output" }
 
 func (*nonStreamingSuccessTool) MaxResultSize() int { return 50000 }
 
@@ -805,20 +809,22 @@ type slowCancelTool struct {
 	onCancel func()
 }
 
-func (t *slowCancelTool) Name() string                                                             { return "slow" }
-func (t *slowCancelTool) Aliases() []string                                                        { return nil }
-func (t *slowCancelTool) Description(json.RawMessage) (string, error)                             { return "slow", nil }
-func (t *slowCancelTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *slowCancelTool) Name() string                                { return "slow" }
+func (t *slowCancelTool) Aliases() []string                           { return nil }
+func (t *slowCancelTool) Description(json.RawMessage) (string, error) { return "slow", nil }
+func (t *slowCancelTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	<-ctx.Done()
 	t.onCancel()
 	return nil, ctx.Err()
 }
-func (t *slowCancelTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
-func (t *slowCancelTool) IsReadOnly(json.RawMessage) bool         { return false }
-func (t *slowCancelTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *slowCancelTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *slowCancelTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (t *slowCancelTool) IsDestructive(json.RawMessage) bool        { return false }
 func (t *slowCancelTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
-func (t *slowCancelTool) IsEnabled() bool                          { return true }
+func (t *slowCancelTool) IsEnabled() bool                           { return true }
 func (t *slowCancelTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *slowCancelTool) Prompt() string                            { return "" }
 func (t *slowCancelTool) RenderResult(any) string                   { return "" }
@@ -830,19 +836,21 @@ type neverRunTool struct {
 	onStart func()
 }
 
-func (t *neverRunTool) Name() string                                                             { return "never_run" }
-func (t *neverRunTool) Aliases() []string                                                        { return nil }
-func (t *neverRunTool) Description(json.RawMessage) (string, error)                             { return "never_run", nil }
-func (t *neverRunTool) InputSchema() json.RawMessage                                              { return json.RawMessage(`{}`) }
+func (t *neverRunTool) Name() string                                { return "never_run" }
+func (t *neverRunTool) Aliases() []string                           { return nil }
+func (t *neverRunTool) Description(json.RawMessage) (string, error) { return "never_run", nil }
+func (t *neverRunTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *neverRunTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	t.onStart()
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *neverRunTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
-func (t *neverRunTool) IsReadOnly(json.RawMessage) bool         { return false }
-func (t *neverRunTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *neverRunTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *neverRunTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (t *neverRunTool) IsDestructive(json.RawMessage) bool        { return false }
 func (t *neverRunTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
-func (t *neverRunTool) IsEnabled() bool                          { return true }
+func (t *neverRunTool) IsEnabled() bool                           { return true }
 func (t *neverRunTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *neverRunTool) Prompt() string                            { return "" }
 func (t *neverRunTool) RenderResult(any) string                   { return "" }
@@ -861,10 +869,10 @@ type discardSlowTool struct {
 	mu        sync.Mutex
 }
 
-func (t *discardSlowTool) Name() string { return "discard_slow" }
-func (t *discardSlowTool) Aliases() []string { return nil }
+func (t *discardSlowTool) Name() string                                { return "discard_slow" }
+func (t *discardSlowTool) Aliases() []string                           { return nil }
 func (t *discardSlowTool) Description(json.RawMessage) (string, error) { return "discard_slow", nil }
-func (t *discardSlowTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
+func (t *discardSlowTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	t.mu.Lock()
 	t.started = true
@@ -875,11 +883,13 @@ func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx 
 	t.mu.Unlock()
 	return nil, ctx.Err()
 }
-func (t *discardSlowTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
-func (t *discardSlowTool) IsReadOnly(json.RawMessage) bool         { return false }
-func (t *discardSlowTool) IsDestructive(json.RawMessage) bool       { return false }
+func (t *discardSlowTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *discardSlowTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (t *discardSlowTool) IsDestructive(json.RawMessage) bool        { return false }
 func (t *discardSlowTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
-func (t *discardSlowTool) IsEnabled() bool                          { return true }
+func (t *discardSlowTool) IsEnabled() bool                           { return true }
 func (t *discardSlowTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *discardSlowTool) Prompt() string                            { return "" }
 func (t *discardSlowTool) RenderResult(any) string                   { return "" }
@@ -961,8 +971,7 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 		Model:    "test",
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	eventCh, resultCh := eng.Query(ctx, "test", nil)
 	for range eventCh {
@@ -1134,10 +1143,10 @@ type testTool struct {
 	name string
 }
 
-func (t *testTool) Name() string                                                          { return t.name }
-func (t *testTool) Aliases() []string                                                     { return nil }
-func (t *testTool) Description(json.RawMessage) (string, error)                           { return t.name, nil }
-func (t *testTool) InputSchema() json.RawMessage                                          { return nil }
+func (t *testTool) Name() string                                { return t.name }
+func (t *testTool) Aliases() []string                           { return nil }
+func (t *testTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *testTool) InputSchema() json.RawMessage                { return nil }
 func (t *testTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "ok"}, nil
 }
@@ -1150,7 +1159,7 @@ func (t *testTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
 func (t *testTool) IsEnabled() bool                           { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                            { return "" }
-func (t *testTool) RenderResult(any) string                     { return "" }
+func (t *testTool) RenderResult(any) string                   { return "" }
 
 func (t *testTool) MaxResultSize() int { return 50000 }
 
@@ -1503,7 +1512,7 @@ func TestNewSubEngine_TaggedDispatcher(t *testing.T) {
 
 	// Emit an event through the sub-engine and verify it reaches the mock dispatcher
 	subEng.emitEvent(nil, types.QueryEvent{
-		Type: types.EventToolStart,
+		Type:    types.EventToolStart,
 		ToolUse: &types.ToolUseEvent{ID: "sub_1", Name: "Read"},
 	})
 
@@ -1549,10 +1558,10 @@ type captureMessagesTool struct {
 	mu       sync.Mutex
 }
 
-func (t *captureMessagesTool) Name() string                                                          { return "capture" }
-func (t *captureMessagesTool) Aliases() []string                                                     { return nil }
-func (t *captureMessagesTool) Description(json.RawMessage) (string, error)                           { return "capture", nil }
-func (t *captureMessagesTool) InputSchema() json.RawMessage                                          { return json.RawMessage(`{}`) }
+func (t *captureMessagesTool) Name() string                                { return "capture" }
+func (t *captureMessagesTool) Aliases() []string                           { return nil }
+func (t *captureMessagesTool) Description(json.RawMessage) (string, error) { return "capture", nil }
+func (t *captureMessagesTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *captureMessagesTool) Call(_ context.Context, _ json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 	if tctx != nil {
 		t.mu.Lock()
@@ -1570,7 +1579,7 @@ func (t *captureMessagesTool) IsConcurrencySafe(json.RawMessage) bool    { retur
 func (t *captureMessagesTool) IsEnabled() bool                           { return true }
 func (t *captureMessagesTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *captureMessagesTool) Prompt() string                            { return "" }
-func (t *captureMessagesTool) RenderResult(any) string                     { return "" }
+func (t *captureMessagesTool) RenderResult(any) string                   { return "" }
 
 func (t *captureMessagesTool) MaxResultSize() int { return 50000 }
 
@@ -1789,7 +1798,7 @@ func TestNewSubEngine_SetsAgentType(t *testing.T) {
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
-		Tools:    map[string]tool.Tool{},
+		Tools:     map[string]tool.Tool{},
 	})
 	if sub.agentType != "Explore" {
 		t.Errorf("sub.agentType = %q, want %q", sub.agentType, "Explore")

@@ -169,8 +169,8 @@ func TestIsBlockedDevicePath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		path  string
-		want  bool
+		path string
+		want bool
 	}{
 		{"/dev/zero", true},
 		{"/dev/urandom", true},
@@ -1119,8 +1119,8 @@ func TestExecute_ImageResizedJpeg(t *testing.T) {
 	dir := t.TempDir()
 	// Create a 3000x3000 JPEG image (exceeds 2000x2000 max) to test jpeg resize path
 	img := image.NewRGBA(image.Rect(0, 0, 3000, 3000))
-	for y := 0; y < 3000; y++ {
-		for x := 0; x < 3000; x++ {
+	for y := range 3000 {
+		for x := range 3000 {
 			img.SetRGBA(x, y, color.RGBA{255, 128, 0, 255})
 		}
 	}

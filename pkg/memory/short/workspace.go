@@ -11,7 +11,7 @@ import (
 // WorkspaceMeta stores workspace-level session metadata in .gbot/meta.json.
 type WorkspaceMeta struct {
 	CurrentSessionID string    `json:"current_session_id,omitempty"`
-	LastActiveAt     time.Time `json:"last_active_at,omitempty"`
+	LastActiveAt     time.Time `json:"last_active_at"`
 }
 
 // ReadWorkspaceMeta reads .gbot/meta.json from the given project directory.

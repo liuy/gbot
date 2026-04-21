@@ -29,7 +29,7 @@ type AnthropicConfig struct {
 	APIKey      string
 	BaseURL     string
 	Model       string
-	Timeout    time.Duration
+	Timeout     time.Duration
 	RetryConfig *RetryConfig
 }
 
@@ -273,14 +273,14 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, eventC
 		}
 
 		// Event type line
-		if strings.HasPrefix(line, "event: ") {
-			eventType = strings.TrimPrefix(line, "event: ")
+		if after, ok := strings.CutPrefix(line, "event: "); ok {
+			eventType = after
 			continue
 		}
 
 		// Data line
-		if strings.HasPrefix(line, "data: ") {
-			eventData.WriteString(strings.TrimPrefix(line, "data: "))
+		if after, ok := strings.CutPrefix(line, "data: "); ok {
+			eventData.WriteString(after)
 			continue
 		}
 
@@ -321,8 +321,8 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 
 	case "content_block_start":
 		var block struct {
-			Index        int                   `json:"index"`
-			ContentBlock types.ContentBlock    `json:"content_block"`
+			Index        int                `json:"index"`
+			ContentBlock types.ContentBlock `json:"content_block"`
 		}
 		if err := json.Unmarshal([]byte(data), &block); err == nil {
 			event.Index = block.Index
@@ -447,4 +447,3 @@ func (p *AnthropicProvider) ParseAPIError(body []byte, statusCode int) *APIError
 
 	return apiErr
 }
-

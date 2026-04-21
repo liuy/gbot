@@ -41,10 +41,10 @@ func FindActualString(fileContent, searchString string) (string, bool) {
 	normalizedSearch := NormalizeQuotes(searchString)
 	normalizedFile := NormalizeQuotes(fileContent)
 
-	byteIdx := strings.Index(normalizedFile, normalizedSearch)
-	if byteIdx != -1 {
+	before, _, ok := strings.Cut(normalizedFile, normalizedSearch)
+	if ok {
 		// Convert byte offset in normalized → rune offset
-		runeIdx := utf8.RuneCountInString(normalizedFile[:byteIdx])
+		runeIdx := utf8.RuneCountInString(before)
 		searchRuneLen := utf8.RuneCountInString(searchString)
 
 		fileRunes := []rune(fileContent)

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,10 +29,10 @@ import (
 )
 
 const (
-	PDFMaxPagesPerRead           = 20
-	PDFAtMentionInlineThreshold  = 10
-	PDFTargetRawSize             = 20 * 1024 * 1024  // 20 MB
-	PDFMaxExtractSize            = 100 * 1024 * 1024 // 100 MB
+	PDFMaxPagesPerRead          = 20
+	PDFAtMentionInlineThreshold = 10
+	PDFTargetRawSize            = 20 * 1024 * 1024  // 20 MB
+	PDFMaxExtractSize           = 100 * 1024 * 1024 // 100 MB
 )
 
 // Source: FileReadTool.ts — apiLimits.ts IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHT
@@ -51,18 +52,18 @@ var imageExtensions = map[string]bool{
 // Device files that would hang the process: infinite output or blocking input.
 // Source: FileReadTool.ts — BLOCKED_DEVICE_PATHS.
 var blockedDevicePaths = map[string]bool{
-	"/dev/zero":     true,
-	"/dev/urandom":  true,
-	"/dev/random":   true,
-	"/dev/full":     true,
-	"/dev/stdin":    true,
-	"/dev/tty":      true,
-	"/dev/console":  true,
-	"/dev/stdout":   true,
-	"/dev/stderr":   true,
-	"/dev/fd/0":     true,
-	"/dev/fd/1":     true,
-	"/dev/fd/2":     true,
+	"/dev/zero":    true,
+	"/dev/urandom": true,
+	"/dev/random":  true,
+	"/dev/full":    true,
+	"/dev/stdin":   true,
+	"/dev/tty":     true,
+	"/dev/console": true,
+	"/dev/stdout":  true,
+	"/dev/stderr":  true,
+	"/dev/fd/0":    true,
+	"/dev/fd/1":    true,
+	"/dev/fd/2":    true,
 }
 
 // isBlockedDevicePath checks if a path is a blocked device or its alias.
@@ -188,37 +189,37 @@ type Output interface{ output() }
 
 // TextOutput represents normal text file output.
 type TextOutput struct {
-	Type      string `json:"type"`
-	FilePath  string `json:"filePath"`
-	Content   string `json:"content"`
-	NumLines  int    `json:"numLines"`
-	StartLine int    `json:"startLine"`
-	TotalLines int   `json:"totalLines"`
+	Type       string `json:"type"`
+	FilePath   string `json:"filePath"`
+	Content    string `json:"content"`
+	NumLines   int    `json:"numLines"`
+	StartLine  int    `json:"startLine"`
+	TotalLines int    `json:"totalLines"`
 }
 
 func (TextOutput) output() {}
 
 // ImageOutput represents image file output.
 type ImageOutput struct {
-	Type      string `json:"type"`
-	FilePath  string `json:"filePath"`
-	Base64    string `json:"base64"`
-	MimeType  string `json:"mimeType"`
-	OriginalSize int64 `json:"originalSize"`
-	OriginalWidth  int `json:"originalWidth"`
-	OriginalHeight int `json:"originalHeight"`
-	DisplayWidth   int `json:"displayWidth"`
-	DisplayHeight  int `json:"displayHeight"`
+	Type           string `json:"type"`
+	FilePath       string `json:"filePath"`
+	Base64         string `json:"base64"`
+	MimeType       string `json:"mimeType"`
+	OriginalSize   int64  `json:"originalSize"`
+	OriginalWidth  int    `json:"originalWidth"`
+	OriginalHeight int    `json:"originalHeight"`
+	DisplayWidth   int    `json:"displayWidth"`
+	DisplayHeight  int    `json:"displayHeight"`
 }
 
 func (ImageOutput) output() {}
 
 // PDFOutput represents PDF file output.
 type PDFOutput struct {
-	Type        string `json:"type"`
-	FilePath    string `json:"filePath"`
-	Base64      string `json:"base64"`
-	OriginalSize int64 `json:"originalSize"`
+	Type         string `json:"type"`
+	FilePath     string `json:"filePath"`
+	Base64       string `json:"base64"`
+	OriginalSize int64  `json:"originalSize"`
 }
 
 func (PDFOutput) output() {}
@@ -273,7 +274,7 @@ func getPDFPageCount(filePath string) int {
 		return 0
 	}
 	// Parse "Pages: N" from output
-	for _, line := range strings.Split(string(output), "\n") {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		if strings.HasPrefix(line, "Pages:") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
@@ -358,8 +359,8 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "Read",
-		Aliases_: []string{"fileread", "read", "cat"},
+		Name_:        "Read",
+		Aliases_:     []string{"fileread", "read", "cat"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
@@ -376,9 +377,9 @@ func New() tool.Tool {
 			return true // reading is concurrency-safe
 		},
 		InterruptBehavior_: tool.InterruptCancel,
-		MaxResultSizeChars:   -1, // -1 = no truncation (TS: Infinity)
-		Prompt_: fileReadPrompt(),
-		RenderResult_: renderResult,
+		MaxResultSizeChars: -1, // -1 = no truncation (TS: Infinity)
+		Prompt_:            fileReadPrompt(),
+		RenderResult_:      renderResult,
 	})
 }
 
@@ -715,10 +716,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *type
 	}
 
 	// Normalize offset: 0 or 1 both mean start from line 1
-	offset := in.Offset
-	if offset < 1 {
-		offset = 1
-	}
+	offset := max(in.Offset, 1)
 
 	var output Output
 	var content string
@@ -733,10 +731,8 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *type
 		}
 
 		// Check for null bytes (binary content indicator)
-		for _, b := range data {
-			if b == 0 {
-				return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
-			}
+		if slices.Contains(data, 0) {
+			return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
 		}
 
 		content = string(data)
@@ -761,10 +757,8 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *type
 		}
 
 		// Check for null bytes (binary content indicator) — same as full-file path
-		for _, b := range data {
-			if b == 0 {
-				return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
-			}
+		if slices.Contains(data, 0) {
+			return nil, fmt.Errorf("file contains binary data (null bytes): %s", in.FilePath)
 		}
 
 		text := string(data)
@@ -780,10 +774,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *type
 		}
 
 		// Extract the requested range (offset is 1-indexed)
-		start := offset - 1
-		if start < 0 {
-			start = 0
-		}
+		start := max(offset-1, 0)
 		end := totalLines
 		if in.Limit > 0 && start+in.Limit < end {
 			end = start + in.Limit
@@ -838,8 +829,8 @@ func resizeImage(src image.Image, newWidth, newHeight int) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
 	srcW := src.Bounds().Dx()
 	srcH := src.Bounds().Dy()
-	for y := 0; y < newHeight; y++ {
-		for x := 0; x < newWidth; x++ {
+	for y := range newHeight {
+		for x := range newWidth {
 			srcX := x * srcW / newWidth
 			srcY := y * srcH / newHeight
 			dst.Set(x, y, src.At(srcX, srcY))

@@ -195,8 +195,8 @@ func TestRender_BlockQuote_EveryLineHasPrefix(t *testing.T) {
 	// TS behavior: blockquote renders inner content first, then splits by \n
 	// and adds "│ " prefix to every non-empty line. Both lines must have prefix.
 	result := Render("> q1\n>\n> q2")
-	lines := strings.Split(result, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(result, "\n")
+	for line := range lines {
 		stripped := stripANSI(line)
 		if stripped == "" {
 			continue // empty lines have no prefix
@@ -985,7 +985,7 @@ End text.`
 
 	// ---- Blockquote: every content line has │ prefix ----
 	bqLines := []string{}
-	for _, line := range strings.Split(plain, "\n") {
+	for line := range strings.SplitSeq(plain, "\n") {
 		if strings.Contains(line, "quote line") {
 			bqLines = append(bqLines, line)
 		}

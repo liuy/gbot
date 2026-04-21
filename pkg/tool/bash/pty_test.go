@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -474,25 +475,13 @@ func TestPtyApplyEnvOverrides(t *testing.T) {
 
 	result := applyEnvOverrides(base, overrides)
 
-	foundB := false
-	for _, e := range result {
-		if e == "B=override" {
-			foundB = true
-			break
-		}
-	}
+	foundB := slices.Contains(result, "B=override")
 	if !foundB {
 		t.Errorf("result = %v, want B=override", result)
 	}
 
 	for _, want := range []string{"A=1", "C=3", "D=4"} {
-		found := false
-		for _, e := range result {
-			if e == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(result, want)
 		if !found {
 			t.Errorf("result = %v, want %s", result, want)
 		}

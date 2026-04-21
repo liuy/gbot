@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,13 +121,7 @@ func TestExploreAgentDisallowedTools(t *testing.T) {
 		t.Fatalf("Explore should have %d disallowed tools, got %d: %v", len(expectedDisallowed), len(def.DisallowedTools), def.DisallowedTools)
 	}
 	for _, expected := range expectedDisallowed {
-		found := false
-		for _, actual := range def.DisallowedTools {
-			if actual == expected {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(def.DisallowedTools, expected)
 		if !found {
 			t.Errorf("Explore should disallow %q, but it's not in DisallowedTools: %v", expected, def.DisallowedTools)
 		}

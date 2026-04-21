@@ -9,9 +9,9 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 var MaxEditFileSize int64 = 1024 * 1024 * 1024
@@ -34,11 +34,11 @@ type PatchHunk struct {
 }
 
 type Output struct {
-	FilePath        string     `json:"filePath"`
-	OldString       string     `json:"oldString"`
-	NewString       string     `json:"newString"`
-	ReplaceAll      bool       `json:"replaceAll"`
-	OriginalFile    *string    `json:"originalFile"`
+	FilePath        string      `json:"filePath"`
+	OldString       string      `json:"oldString"`
+	NewString       string      `json:"newString"`
+	ReplaceAll      bool        `json:"replaceAll"`
+	OriginalFile    *string     `json:"originalFile"`
 	StructuredPatch []PatchHunk `json:"structuredPatch"`
 }
 
@@ -126,7 +126,7 @@ func New() tool.Tool {
 		IsDestructive_:     func(json.RawMessage) bool { return false },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,
-		MaxResultSizeChars:   100000,
+		MaxResultSizeChars: 100000,
 		Prompt_:            fileEditPrompt(),
 		RenderResult_:      renderEditResult,
 	})
@@ -338,25 +338,25 @@ func expandPath(filePath string) string {
 // desanitizations maps API-sanitized tags back to their real counterparts.
 // Source: FileEditTool/utils.ts — DESANITIZATIONS.
 var desanitizations = map[string]string{
-	"<fnr>":        "<function_results>",
-	"</fnr>":       "</function_results>",
-	"<n>":          "<name>",
-	"</n>":         "</name>",
-	"<o>":          "<output>",
-	"</o>":         "</output>",
-	"<e>":          "<error>",
-	"</e>":         "</error>",
-	"<s>":          "<system>",
-	"</s>":         "</system>",
-	"<r>":          "<result>",
-	"</r>":         "</result>",
+	"<fnr>":          "<function_results>",
+	"</fnr>":         "</function_results>",
+	"<n>":            "<name>",
+	"</n>":           "</name>",
+	"<o>":            "<output>",
+	"</o>":           "</output>",
+	"<e>":            "<error>",
+	"</e>":           "</error>",
+	"<s>":            "<system>",
+	"</s>":           "</system>",
+	"<r>":            "<result>",
+	"</r>":           "</result>",
 	"< META_START >": "<META_START>",
 	"< META_END >":   "<META_END>",
 	"< EOT >":        "<EOT>",
 	"< META >":       "<META>",
 	"< SOS >":        "<SOS>",
-	"\n\nH:":       "\n\nHuman:",
-	"\n\nA:":       "\n\nAssistant:",
+	"\n\nH:":         "\n\nHuman:",
+	"\n\nA:":         "\n\nAssistant:",
 }
 
 // desanitizeMatchString applies desanitization replacements to a match string.
@@ -456,10 +456,7 @@ func getStructuredPatch(oldContent, newContent string) []PatchHunk {
 			NewLines: newCnt,
 			Lines:    linesCopy,
 		})
-		tc := trailingCtx()
-		if tc > ctxLines {
-			tc = ctxLines
-		}
+		tc := min(trailingCtx(), ctxLines)
 		if tc > 0 {
 			saved := make([]string, tc)
 			copy(saved, hunkLines[len(hunkLines)-tc:])

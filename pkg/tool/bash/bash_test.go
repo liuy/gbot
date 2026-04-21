@@ -3,6 +3,7 @@ package bash_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,13 +49,7 @@ func TestNewAliases(t *testing.T) {
 	}
 	expected := []string{"bash", "shell", "sh"}
 	for _, e := range expected {
-		found := false
-		for _, a := range aliases {
-			if a == e {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(aliases, e)
 		if !found {
 			t.Errorf("alias %q not found", e)
 		}
@@ -767,5 +762,3 @@ func TestExecute_WithToolContextCWD(t *testing.T) {
 		t.Errorf("Stdout = %q, want to contain %q", output.Stdout, dir)
 	}
 }
-
-
