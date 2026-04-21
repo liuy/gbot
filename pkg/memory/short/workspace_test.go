@@ -110,7 +110,7 @@ func TestRoundTrip_EmptyMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("invalid JSON output: %v", err)
 	}

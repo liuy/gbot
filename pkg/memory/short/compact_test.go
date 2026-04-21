@@ -55,7 +55,7 @@ func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 			}
 
 			// Parse and check compactMetadata
-			var contentMap map[string]interface{}
+			var contentMap map[string]any
 			if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
 				t.Fatalf("Failed to parse content JSON: %v", err)
 			}
@@ -107,7 +107,7 @@ func TestCreateCompactBoundaryMessage_PreservedSegment(t *testing.T) {
 	}
 
 	// Parse and verify
-	var contentMap map[string]interface{}
+	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
 		t.Fatalf("Failed to parse content JSON: %v", err)
 	}
@@ -846,11 +846,11 @@ func TestApplySnipRemovals_NoSnips(t *testing.T) {
 
 func TestApplySnipRemovals_WithRemovals(t *testing.T) {
 	// Create a boundary with snipMetadata
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type": "system",
-		"compactMetadata": map[string]interface{}{},
-		"snipMetadata": map[string]interface{}{
-			"removedUuids": []interface{}{"msg-to-delete"},
+		"compactMetadata": map[string]any{},
+		"snipMetadata": map[string]any{
+			"removedUuids": []any{"msg-to-delete"},
 		},
 	}
 	contentJSON, err := json.Marshal(content)
@@ -980,7 +980,7 @@ func TestCreateCompactCanUseTool(t *testing.T) {
 	}
 
 	// Parse and verify content
-	var contentMap map[string]interface{}
+	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
 		t.Fatalf("Failed to parse content JSON: %v", err)
 	}
@@ -1034,13 +1034,13 @@ func TestCreateSkillAttachmentIfNeeded(t *testing.T) {
 
 func TestZeroUsageInContent_WithUsage(t *testing.T) {
 	// Create an assistant message with usage
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type": "assistant",
-		"message": map[string]interface{}{
+		"message": map[string]any{
 			"id":      "msg-123",
 			"role":    "assistant",
 			"content": "Hello",
-			"usage": map[string]interface{}{
+			"usage": map[string]any{
 				"input_tokens":                 1500,
 				"output_tokens":                500,
 				"cache_creation_input_tokens":  200,
@@ -1058,17 +1058,17 @@ func TestZeroUsageInContent_WithUsage(t *testing.T) {
 	zeroUsageInContent(msg)
 
 	// Parse and verify all tokens are zeroed
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &parsed); err != nil {
 		t.Fatalf("Failed to parse content: %v", err)
 	}
 
-	messageObj, ok := parsed["message"].(map[string]interface{})
+	messageObj, ok := parsed["message"].(map[string]any)
 	if !ok {
 		t.Fatal("message object not found")
 	}
 
-	usage, ok := messageObj["usage"].(map[string]interface{})
+	usage, ok := messageObj["usage"].(map[string]any)
 	if !ok {
 		t.Fatal("usage not found in message")
 	}
@@ -1090,9 +1090,9 @@ func TestZeroUsageInContent_WithUsage(t *testing.T) {
 
 func TestZeroUsageInContent_NoUsage(t *testing.T) {
 	// Message without usage field
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":    "assistant",
-		"message": map[string]interface{}{"id": "msg-123", "role": "assistant", "content": "Hello"},
+		"message": map[string]any{"id": "msg-123", "role": "assistant", "content": "Hello"},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msg := &Message{
@@ -1105,12 +1105,12 @@ func TestZeroUsageInContent_NoUsage(t *testing.T) {
 	zeroUsageInContent(msg)
 
 	// Content should be unchanged
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &parsed); err != nil {
 		t.Fatalf("Failed to parse content: %v", err)
 	}
 
-	messageObj, ok := parsed["message"].(map[string]interface{})
+	messageObj, ok := parsed["message"].(map[string]any)
 	if !ok {
 		t.Fatal("message object not found")
 	}
@@ -1205,7 +1205,7 @@ func TestExtractCompactMetadata_WithPreservedSegment(t *testing.T) {
 }
 
 func TestExtractCompactMetadata_NoCompactMetadata(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":    "system",
 		"subtype": "compact_boundary",
 		"content": "Conversation compacted",
@@ -1557,7 +1557,7 @@ func TestApplyPreservedSegmentRelinks_InvalidBoundaryContent(t *testing.T) {
 }
 
 func TestApplyPreservedSegmentRelinks_NoMetadata(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":    "system",
 		"subtype": "compact_boundary",
 		"content": "Conversation compacted",
@@ -1624,11 +1624,11 @@ func TestApplyPreservedSegmentRelinksOnLoad_MultipleBoundaries(t *testing.T) {
 func TestApplySnipRemovals_PathCompression(t *testing.T) {
 	// Test path compression: a->b->c where b and c are deleted
 	// a should link to c's parent (boundary)
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type": "system",
-		"compactMetadata": map[string]interface{}{},
-		"snipMetadata": map[string]interface{}{
-			"removedUuids": []interface{}{"msg-b", "msg-c"},
+		"compactMetadata": map[string]any{},
+		"snipMetadata": map[string]any{
+			"removedUuids": []any{"msg-b", "msg-c"},
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
@@ -1710,9 +1710,9 @@ func TestAnnotateBoundaryWithPreservedSegment_InvalidContent(t *testing.T) {
 
 func TestExtractCompactMetadata_EmptyCompactMetadata(t *testing.T) {
 	// Test with empty compactMetadata object
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":            "system",
-		"compactMetadata": map[string]interface{}{},
+		"compactMetadata": map[string]any{},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msg := &Message{Content: string(contentJSON)}
@@ -1732,7 +1732,7 @@ func TestExtractCompactMetadata_EmptyCompactMetadata(t *testing.T) {
 
 func TestExtractCompactMetadata_InvalidMetadataStructure(t *testing.T) {
 	// Test with compactMetadata that can't be unmarshaled
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":            "system",
 		"compactMetadata": "not a map",
 	}
@@ -2030,7 +2030,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_InvalidContentJSON(t *testing.T) {
 }
 
 func TestApplyPreservedSegmentRelinksOnLoad_NoCompactMetadataKey(t *testing.T) {
-	content := map[string]interface{}{"type": "system", "subtype": "compact_boundary"}
+	content := map[string]any{"type": "system", "subtype": "compact_boundary"}
 	contentJSON, _ := json.Marshal(content)
 	msgs := []*Message{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
@@ -2042,7 +2042,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_NoCompactMetadataKey(t *testing.T) {
 }
 
 func TestApplyPreservedSegmentRelinksOnLoad_CompactMetadataNotMap(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":            "system",
 		"compactMetadata": "not-a-map",
 	}
@@ -2057,9 +2057,9 @@ func TestApplyPreservedSegmentRelinksOnLoad_CompactMetadataNotMap(t *testing.T) 
 }
 
 func TestApplyPreservedSegmentRelinksOnLoad_PreservedSegmentNil(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":            "system",
-		"compactMetadata": map[string]interface{}{"trigger": "auto"},
+		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msgs := []*Message{
@@ -2083,7 +2083,7 @@ func TestApplySnipRemovals_InvalidJSON(t *testing.T) {
 }
 
 func TestApplySnipRemovals_NoSnipMetadata(t *testing.T) {
-	content := map[string]interface{}{"type": "system"}
+	content := map[string]any{"type": "system"}
 	contentJSON, _ := json.Marshal(content)
 	msgs := []*Message{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
@@ -2095,7 +2095,7 @@ func TestApplySnipRemovals_NoSnipMetadata(t *testing.T) {
 }
 
 func TestApplySnipRemovals_SnipMetadataNotMap(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":         "system",
 		"snipMetadata": "not-a-map",
 	}
@@ -2110,9 +2110,9 @@ func TestApplySnipRemovals_SnipMetadataNotMap(t *testing.T) {
 }
 
 func TestApplySnipRemovals_NoRemovedUUIDs(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":         "system",
-		"snipMetadata": map[string]interface{}{},
+		"snipMetadata": map[string]any{},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msgs := []*Message{
@@ -2125,9 +2125,9 @@ func TestApplySnipRemovals_NoRemovedUUIDs(t *testing.T) {
 }
 
 func TestApplySnipRemovals_RemovedUUIDsNotList(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":         "system",
-		"snipMetadata": map[string]interface{}{"removedUuids": "not-a-list"},
+		"snipMetadata": map[string]any{"removedUuids": "not-a-list"},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msgs := []*Message{
@@ -2142,10 +2142,10 @@ func TestApplySnipRemovals_RemovedUUIDsNotList(t *testing.T) {
 // Line 560-562: ApplySnipRemovals — resolve path: parent not in deletedParent (not found)
 func TestApplySnipRemovals_ResolveNotFound(t *testing.T) {
 	// msg-to-delete has a parent that is NOT in the messages list
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type": "system",
-		"snipMetadata": map[string]interface{}{
-			"removedUuids": []interface{}{"msg-to-delete"},
+		"snipMetadata": map[string]any{
+			"removedUuids": []any{"msg-to-delete"},
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
@@ -2172,7 +2172,7 @@ func TestApplySnipRemovals_ResolveNotFound(t *testing.T) {
 
 // Lines 595-597: zeroUsageInContent — no message key
 func TestZeroUsageInContent_NoMessageKey(t *testing.T) {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type": "assistant",
 		// no "message" key
 	}
@@ -2180,7 +2180,7 @@ func TestZeroUsageInContent_NoMessageKey(t *testing.T) {
 	msg := &Message{UUID: "m1", Type: "assistant", Content: string(contentJSON)}
 	zeroUsageInContent(msg)
 	// Should not panic, content unchanged
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &parsed); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
@@ -2218,9 +2218,9 @@ func TestAnnotateBoundaryWithPreservedSegment_MarshalError(t *testing.T) {
 // Line 812-814: extractCompactMetadata — marshal error for compactMetadata
 func TestExtractCompactMetadata_MarshalError(t *testing.T) {
 	// compactMetadata value that can't be re-marshaled
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":            "system",
-		"compactMetadata": map[string]interface{}{"trigger": "auto"},
+		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
 	contentJSON, _ := json.Marshal(content)
 	msg := &Message{Content: string(contentJSON)}
@@ -2545,10 +2545,10 @@ func TestRecordCompact_UpdateTimestampError_DroppedTable(t *testing.T) {
 func TestApplySnipRemovals_ResolveNotFound_DirectTrigger(t *testing.T) {
 	// Create a message marked for deletion whose parent UUID is not in
 	// the chain at all (so deletedParent lookup fails)
-	snipContent := map[string]interface{}{
+	snipContent := map[string]any{
 		"type": "system",
-		"snipMetadata": map[string]interface{}{
-			"removedUuids": []interface{}{"del-1"},
+		"snipMetadata": map[string]any{
+			"removedUuids": []any{"del-1"},
 		},
 	}
 	snipJSON, _ := json.Marshal(snipContent)
@@ -2727,8 +2727,8 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound_V2(t *testing.T) {
 	chain := []*Message{boundary, orphan}
 
 	// The boundary has preserved_segment metadata pointing to an entry not in chain
-	preservedSeg := map[string]interface{}{
-		"preserved_segment": map[string]interface{}{
+	preservedSeg := map[string]any{
+		"preserved_segment": map[string]any{
 			"headUUID":  "nonexistent-uuid", // not in chain
 			"tailUUID":  "orphan-1",
 			"anchorUUID": "boundary-1",
@@ -2748,10 +2748,10 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound_V2(t *testing.T) {
 // a deleted message's parent is not found in deletedParent because
 // the deleted message itself is not in the messages list.
 func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
-	snipContent := map[string]interface{}{
+	snipContent := map[string]any{
 		"type": "system",
-		"snipMetadata": map[string]interface{}{
-			"removedUuids": []interface{}{"del-1"},
+		"snipMetadata": map[string]any{
+			"removedUuids": []any{"del-1"},
 		},
 	}
 	snipJSON, _ := json.Marshal(snipContent)

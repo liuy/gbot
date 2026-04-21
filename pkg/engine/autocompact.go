@@ -107,7 +107,7 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.Message) int {
 
 	totalTokens := 0
 	for i := len(messages) - 1; i >= minKeep-1; i-- {
-		tokens := roughTokens(messages[i])
+		tokens := EstimateTokens(messages[i].Content)
 		if totalTokens+tokens > targetKeepTokens {
 			return i + 1
 		}
@@ -221,12 +221,6 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	}
 
 	return msgs
-}
-
-// roughTokens estimates token count for a short.Message.
-// Uses 4 chars/token heuristic.
-func roughTokens(msg *short.Message) int {
-	return len(msg.Content) / 4
 }
 
 // extractTextFromShortContent extracts readable text from a short.Message's JSON content.

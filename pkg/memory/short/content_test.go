@@ -597,7 +597,7 @@ func TestContentBlockToolUseInput(t *testing.T) {
 	}
 
 	// Check input is preserved as RawMessage
-	var input map[string]interface{}
+	var input map[string]any
 	if err := json.Unmarshal(blocks[0].Input, &input); err != nil {
 		t.Fatalf("failed to unmarshal Input: %v", err)
 	}

@@ -92,6 +92,10 @@ type Engine struct {
 	compactor   Compactor
 	autoCompactConfig          AutoCompactConfig
 	consecutiveCompactFailures int
+
+	// lastInputTokens stores the exact input token count from the last API call.
+	// Used by currentInputTokens() to avoid re-walking all messages when available.
+	lastInputTokens int
 }
 
 // Params holds the constructor arguments for Engine.
@@ -306,6 +310,21 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			)
 		}
 	}()
+
+	// Microcompact: shrink prompt before the turn loop.
+	// Source: query.ts:413-419 — runs once per query, before autocompact.
+	// Sub-agents use agent-specific querySource so isMainThreadSource excludes them.
+	mcQuerySource := QuerySourceReplMainThread
+	if e.isSubagent {
+		if isBuiltInAgent(e.agentType) {
+			mcQuerySource = "agent:builtin:" + e.agentType
+		} else {
+			mcQuerySource = "agent:custom"
+		}
+	}
+	mcResult := MicrocompactMessages(e.messages, mcQuerySource, e.logger)
+	e.setMessages(mcResult.Messages)
+
 	reactiveCompactDone := false
 
 	for e.turnCount < e.maxTurns {
@@ -388,6 +407,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			totalUsage.OutputTokens += resp.Usage.OutputTokens
 			totalUsage.CacheReadInputTokens += resp.Usage.CacheReadInputTokens
 			totalUsage.CacheCreationInputTokens += resp.Usage.CacheCreationInputTokens
+			// Store exact input tokens for currentInputTokens() optimization.
+			e.mu.Lock()
+			e.lastInputTokens = totalUsage.InputTokens
+			e.mu.Unlock()
 		}
 
 		// Add assistant message to history
@@ -852,11 +875,16 @@ func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
 	return types.TerminalModelError
 }
 
-// estimateTokens returns a rough token count estimate for the current messages.
-// Uses the 4 chars/token heuristic, matching TS's roughTokenCount.
-func (e *Engine) estimateTokens() int {
+// currentInputTokens returns the estimated input token count.
+// Prefers the exact value from lastInputTokens (set after each API call).
+// Falls back to the 4 chars/token heuristic via EstimateTokens when no API
+// call has occurred yet (e.g. first turn before any response).
+func (e *Engine) currentInputTokens() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	if e.lastInputTokens > 0 {
+		return e.lastInputTokens
+	}
 	total := 0
 	for _, msg := range e.messages {
 		for _, block := range msg.Content {
@@ -875,7 +903,7 @@ func (e *Engine) estimateTokens() int {
 // TS align: autoCompact.ts:shouldAutoCompact()
 func (e *Engine) shouldAutoCompact() bool {
 	// Estimate tokens first (takes its own RLock) to avoid nested locking.
-	tokens := e.estimateTokens()
+	tokens := e.currentInputTokens()
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -998,6 +1026,7 @@ func (e *Engine) Reset() {
 	e.mu.Lock()
 	e.messages = nil
 	e.turnCount = 0
+	e.lastInputTokens = 0
 	e.mu.Unlock()
 }
 

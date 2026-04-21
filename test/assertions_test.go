@@ -200,6 +200,62 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+		{
+			Name:  "test result compared only to 0 (use exact value)",
+			Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				// Exempt: comments
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				if strings.HasPrefix(trimmed, "//") {
+					return true
+				}
+				// Exempt: if there's an exact value check for 'got' nearby in the
+				// same test function, this zero-check is a valid early guard.
+				// Scan up to 30 lines before and 10 lines after.
+				start := lineIdx - 30
+				if start < 0 {
+					start = 0
+				}
+				for i := start; i <= lineIdx+10 && i < len(lines); i++ {
+					if i == lineIdx {
+						continue
+					}
+					line := lines[i]
+					// Has exact comparison: got == want, got == <non-zero>
+					if (strings.Contains(line, "got ==") || strings.Contains(line, "got !=")) &&
+						!strings.Contains(line, "== 0") && !strings.Contains(line, "!= 0") {
+						return true
+					}
+					// Has want calculation: want := ... or want = ...
+					if strings.Contains(line, "want :=") || strings.Contains(line, "want=") {
+						return true
+					}
+					// Has assertEqual/assertTokensEqual helper
+					if strings.Contains(line, "assertEqual") || strings.Contains(line, "assertTokensEqual") {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			Name:  "interface{} should be any (Go 1.18+)",
+			Regex: regexp.MustCompile(`interface\{\}`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				// Exempt: comments
+				if strings.HasPrefix(trimmed, "//") {
+					return true
+				}
+				// Exempt: string literals (e.g. JSON tags, documentation)
+				if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
+					return true
+				}
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.

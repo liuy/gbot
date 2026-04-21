@@ -312,11 +312,11 @@ func TestExtractFirstPrompt_MultipleCommandNames(t *testing.T) {
 // Lines 298-299, 302-303: extractTextBlocks — non-text blocks, empty text
 func TestExtractTextBlocks_NonTextBlock(t *testing.T) {
 	// Array with non-text blocks
-	content := []interface{}{
-		map[string]interface{}{"type": "tool_use", "id": "tu1"},
-		map[string]interface{}{"type": "text", "text": "hello"},
-		map[string]interface{}{"type": "text", "text": ""},
-		map[string]interface{}{"type": "image"},
+	content := []any{
+		map[string]any{"type": "tool_use", "id": "tu1"},
+		map[string]any{"type": "text", "text": "hello"},
+		map[string]any{"type": "text", "text": ""},
+		map[string]any{"type": "image"},
 	}
 	texts := extractTextBlocks(content)
 	if len(texts) != 1 {
@@ -328,9 +328,9 @@ func TestExtractTextBlocks_NonTextBlock(t *testing.T) {
 }
 
 func TestExtractTextBlocks_BlockNotMap(t *testing.T) {
-	content := []interface{}{
+	content := []any{
 		"not-a-map",
-		map[string]interface{}{"type": "text", "text": "hello"},
+		map[string]any{"type": "text", "text": "hello"},
 	}
 	texts := extractTextBlocks(content)
 	if len(texts) != 1 {

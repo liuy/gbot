@@ -40,7 +40,7 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 		UserContext:       "", // Filled later by RecordCompact
 	}
 
-	contentMap := map[string]interface{}{
+	contentMap := map[string]any{
 		"type":      "system",
 		"subtype":   "compact_boundary",
 		"content":   "Conversation compacted",
@@ -299,7 +299,7 @@ func CreatePostCompactFileAttachments(preCompactMessages []*Message) []*Message 
 	// (Simplified - full implementation would group files and create proper attachments)
 	attachments := make([]*Message, 0)
 	for _, path := range filePaths {
-		content := map[string]interface{}{
+		content := map[string]any{
 			"type":       "attachment",
 			"subtype":    "file_reference",
 			"content":    fmt.Sprintf("File: %s", path),
@@ -467,7 +467,7 @@ func applyPreservedSegmentRelinksOnLoad(messages []*Message) []*Message {
 	for i, msg := range messages {
 		if msg.Type == "system" && msg.Subtype == "compact_boundary" {
 			absoluteLastBoundaryIdx = i
-			var contentMap map[string]interface{}
+			var contentMap map[string]any
 			if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
 				continue
 			}
@@ -475,7 +475,7 @@ func applyPreservedSegmentRelinksOnLoad(messages []*Message) []*Message {
 			if !ok {
 				continue
 			}
-			metaMap, ok := meta.(map[string]interface{})
+			metaMap, ok := meta.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -506,7 +506,7 @@ func ApplySnipRemovals(messages []*Message) []*Message {
 		if msg.Type != "system" || msg.Subtype != "compact_boundary" {
 			continue
 		}
-		var contentMap map[string]interface{}
+		var contentMap map[string]any
 		if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
 			continue
 		}
@@ -514,7 +514,7 @@ func ApplySnipRemovals(messages []*Message) []*Message {
 		if !ok {
 			continue
 		}
-		snipMap, ok := snipMeta.(map[string]interface{})
+		snipMap, ok := snipMeta.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -522,7 +522,7 @@ func ApplySnipRemovals(messages []*Message) []*Message {
 		if !ok {
 			continue
 		}
-		uuidList, ok := removedUUIDs.([]interface{})
+		uuidList, ok := removedUUIDs.([]any)
 		if !ok {
 			continue
 		}
@@ -647,7 +647,7 @@ func MergeHookInstructions(postCompact []*Message, hookInstructions []*Message) 
 // CreateCompactCanUseTool creates a can-use-tool message for post-compact.
 // TS align: compact.ts:625-640
 func CreateCompactCanUseTool() *Message {
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":    "system",
 		"subtype": "can_use_tool",
 		"content": "Tool use restored after compact",
@@ -691,7 +691,7 @@ func AddErrorNotificationIfNeeded(postCompact []*Message, compactErr error) []*M
 		return postCompact
 	}
 
-	content := map[string]interface{}{
+	content := map[string]any{
 		"type":    "system",
 		"subtype": "error_notification",
 		"content": fmt.Sprintf("Compact error: %v", compactErr),
@@ -765,7 +765,7 @@ func TruncateHeadForPTLRetry(messages []*Message, maxTokens int) []*Message {
 // annotateBoundaryWithPreservedSegment adds preserved segment metadata to boundary.
 func annotateBoundaryWithPreservedSegment(boundary *Message, headUUID, anchorUUID, tailUUID string) error {
 	// Parse existing content
-	var contentMap map[string]interface{}
+	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
 		return err
 	}
@@ -797,7 +797,7 @@ func annotateBoundaryWithPreservedSegment(boundary *Message, headUUID, anchorUUI
 }
 // extractCompactMetadata extracts compact metadata from boundary content JSON.
 func extractCompactMetadata(boundary *Message) (*CompactMetadata, error) {
-	var contentMap map[string]interface{}
+	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
 		return nil, err
 	}
@@ -862,6 +862,8 @@ func (s *Store) indexMessageFTS(db dbExec, seq int64, content string) {
 }
 
 // roughTokenCount estimates token count for messages.
+// Same heuristic as engine.EstimateTokens: 4 chars/token.
+// Kept local due to import cycle (engine → memory/short).
 func roughTokenCount(messages []*Message) int {
 	count := 0
 	for _, msg := range messages {
@@ -871,7 +873,8 @@ func roughTokenCount(messages []*Message) int {
 }
 
 // roughTokenCountForMessage estimates token count for a single message.
-// Rough estimate: 1 token per 4 characters.
+// Same heuristic as engine.EstimateTokens: 4 chars/token.
+// Kept local due to import cycle (engine → memory/short).
 func roughTokenCountForMessage(msg *Message) int {
 	return len(msg.Content) / 4
 }

@@ -443,11 +443,11 @@ func TestInputSchema(t *testing.T) {
 		t.Fatal("InputSchema() returned empty")
 	}
 	// Verify it's valid JSON containing expected fields
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(schema, &parsed); err != nil {
 		t.Fatalf("InputSchema() is not valid JSON: %v", err)
 	}
-	props, ok := parsed["properties"].(map[string]interface{})
+	props, ok := parsed["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("InputSchema() missing properties")
 	}

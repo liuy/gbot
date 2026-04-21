@@ -591,37 +591,37 @@ func TestStripSystemReminders(t *testing.T) {
 func TestExtractToolUseInput(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    map[string]interface{}
+		input    map[string]any
 		expected []string
 	}{
 		{
 			name:     "bash command",
-			input:    map[string]interface{}{"command": "ls -la", "other": "ignored"},
+			input:    map[string]any{"command": "ls -la", "other": "ignored"},
 			expected: []string{"ls -la"},
 		},
 		{
 			name:     "grep pattern",
-			input:    map[string]interface{}{"pattern": "func.*Test", "path": "./"},
+			input:    map[string]any{"pattern": "func.*Test", "path": "./"},
 			expected: []string{"func.*Test", "./"},
 		},
 		{
 			name:     "read file",
-			input:    map[string]interface{}{"file_path": "/path/to/file.txt"},
+			input:    map[string]any{"file_path": "/path/to/file.txt"},
 			expected: []string{"/path/to/file.txt"},
 		},
 		{
 			name:     "agent prompt",
-			input:    map[string]interface{}{"prompt": "Help me write code"},
+			input:    map[string]any{"prompt": "Help me write code"},
 			expected: []string{"Help me write code"},
 		},
 		{
 			name:     "array args",
-			input:    map[string]interface{}{"args": []interface{}{"arg1", "arg2", "arg3"}},
+			input:    map[string]any{"args": []any{"arg1", "arg2", "arg3"}},
 			expected: []string{"arg1 arg2 arg3"},
 		},
 		{
 			name:     "mixed fields",
-			input:    map[string]interface{}{"command": "git", "args": []interface{}{"status"}},
+			input:    map[string]any{"command": "git", "args": []any{"status"}},
 			expected: []string{"git", "status"},
 		},
 	}

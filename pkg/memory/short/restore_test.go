@@ -11,15 +11,15 @@ func TestRestoreSkillStateFromMessages_InvokedSkills(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type": "invoked_skills",
-				"skills": []interface{}{
-					map[string]interface{}{
+				"skills": []any{
+					map[string]any{
 						"name":    "graphify",
 						"path":    "/skills/graphify",
 						"content": "# graphify skill",
 					},
-					map[string]interface{}{
+					map[string]any{
 						"name":    "plan",
 						"path":    "/skills/plan",
 						"content": "# plan skill",
@@ -49,7 +49,7 @@ func TestRestoreSkillStateFromMessages_CronTasks(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":       "cron_task",
 				"skill_name": "graphify",
 				"cron_expr":  "0 * * * *",
@@ -84,10 +84,10 @@ func TestRestoreSkillStateFromMessages_SkillMissingFields(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type": "invoked_skills",
-				"skills": []interface{}{
-					map[string]interface{}{
+				"skills": []any{
+					map[string]any{
 						"name": "incomplete",
 						// missing path and content
 					},
@@ -129,7 +129,7 @@ func TestRestoreAgentFromSession_AgentSetting(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":       "agent-setting",
 				"agent_type": "Explore",
 				"model":      "sonnet",
@@ -174,15 +174,15 @@ func TestRestoreAgentFromSession_NoAgentSetting(t *testing.T) {
 }
 
 func TestExtractTodosFromTranscript_WithTodoWrite(t *testing.T) {
-	todoInput := map[string]interface{}{
-		"todos": []interface{}{
-			map[string]interface{}{
+	todoInput := map[string]any{
+		"todos": []any{
+			map[string]any{
 				"id":          "1",
 				"subject":     "Fix bug",
 				"status":      "completed",
 				"description": "Fix the auth bug",
 			},
-			map[string]interface{}{
+			map[string]any{
 				"id":          "2",
 				"subject":     "Add tests",
 				"status":      "in_progress",
@@ -195,8 +195,8 @@ func TestExtractTodosFromTranscript_WithTodoWrite(t *testing.T) {
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite"}]`},
 		{
 			Type: "assistant",
-			Content: mustMarshal([]interface{}{
-				map[string]interface{}{
+			Content: mustMarshal([]any{
+				map[string]any{
 					"type":  "tool_use",
 					"id":    "tu2",
 					"name":  "TodoWrite",
@@ -249,7 +249,7 @@ func TestComputeRestoredAttributionState_SubAgent(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attribution-snapshot",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"parent_agent_id": "parent-1",
 				"tool_use_id":     "tu-1",
 			}),
@@ -290,7 +290,7 @@ func TestComputeStandaloneAgentContext_WithNameAndColor(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":  "agent-name",
 				"name":  "worker-1",
 				"color": "blue",
@@ -328,7 +328,7 @@ func TestCheckResumeConsistency_Valid(t *testing.T) {
 		{
 			Type:    "system",
 			Subtype: "turn_duration",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"messageCount": 2,
 				"duration":     5000,
 			}),
@@ -346,7 +346,7 @@ func TestCheckResumeConsistency_Mismatch(t *testing.T) {
 		{
 			Type:    "system",
 			Subtype: "turn_duration",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"messageCount": 5, // Position is 1, not 5
 			}),
 		},
@@ -448,7 +448,7 @@ func TestProcessResumedConversation_WithAgent(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":       "agent-setting",
 				"agent_type": "Explore",
 				"model":      "sonnet",
@@ -535,7 +535,7 @@ func TestCheckResumeConsistency_DifferentTypes(t *testing.T) {
 		{
 			Type:    "system",
 			Subtype: "turn_duration",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"messageCount": "not-a-number", // Invalid type
 				"duration":     5000,
 			}),
@@ -553,7 +553,7 @@ func TestCheckResumeConsistency_MissingMessageCount(t *testing.T) {
 		{
 			Type:    "system",
 			Subtype: "turn_duration",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"duration": 5000, // No messageCount
 			}),
 		},
@@ -566,7 +566,7 @@ func TestCheckResumeConsistency_MissingMessageCount(t *testing.T) {
 func TestValueAsString(t *testing.T) {
 	tests := []struct {
 		name string
-		v    interface{}
+		v    any
 		want string
 	}{
 		{
@@ -673,7 +673,7 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 			messages: []*Message{
 				{
 					Type: "attachment",
-					Content: mustMarshal(map[string]interface{}{
+					Content: mustMarshal(map[string]any{
 						"type":       "cron_task",
 						"skill_name": "test-skill",
 						"cron_expr":  "0 * * * *",
@@ -690,7 +690,7 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 			messages: []*Message{
 				{
 					Type: "attachment",
-					Content: mustMarshal(map[string]interface{}{
+					Content: mustMarshal(map[string]any{
 						"type":      "cron_task",
 						"cron_expr": "0 * * * *",
 					}),
@@ -703,7 +703,7 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 			messages: []*Message{
 				{
 					Type: "attachment",
-					Content: mustMarshal(map[string]interface{}{
+					Content: mustMarshal(map[string]any{
 						"type":       "cron_task",
 						"skill_name": "test-skill",
 					}),
@@ -757,7 +757,7 @@ func TestComputeStandaloneAgentContext_NilReturn(t *testing.T) {
 			messages: []*Message{
 				{
 					Type:    "attachment",
-					Content: mustMarshal(map[string]interface{}{"type": "other"}),
+					Content: mustMarshal(map[string]any{"type": "other"}),
 				},
 			},
 		},
@@ -791,7 +791,7 @@ func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 			messages: []*Message{
 				{
 					Type:    "attachment",
-					Content: mustMarshal(map[string]interface{}{"type": "other"}),
+					Content: mustMarshal(map[string]any{"type": "other"}),
 				},
 			},
 			wantNil: true,
@@ -801,7 +801,7 @@ func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 			messages: []*Message{
 				{
 					Type:    "attachment",
-					Content: mustMarshal(map[string]interface{}{
+					Content: mustMarshal(map[string]any{
 						"type": "agent-setting",
 						// Missing agent_type and model
 					}),
@@ -854,7 +854,7 @@ func TestComputeRestoredAttributionState_InvalidMessages(t *testing.T) {
 	}
 }
 
-func mustMarshal(v interface{}) string {
+func mustMarshal(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		panic(err)
@@ -871,9 +871,9 @@ func TestRestoreSkillStateFromMessages_SkillNotMap(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":   "invoked_skills",
-				"skills": []interface{}{"not-a-map"},
+				"skills": []any{"not-a-map"},
 			}),
 		},
 	}
@@ -888,7 +888,7 @@ func TestComputeStandaloneAgentContext_AgentColorOnly(t *testing.T) {
 	messages := []*Message{
 		{
 			Type: "attachment",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"type":  "agent-color",
 				"color": "blue",
 			}),
@@ -908,7 +908,7 @@ func TestComputeStandaloneAgentContext_EmptyMessagesWithAttachment(t *testing.T)
 	messages := []*Message{
 		{
 			Type:    "attachment",
-			Content: mustMarshal(map[string]interface{}{"type": "agent-name", "name": "worker"}),
+			Content: mustMarshal(map[string]any{"type": "agent-name", "name": "worker"}),
 		},
 	}
 	ctx := ComputeStandaloneAgentContext(messages)
@@ -944,7 +944,7 @@ func TestCheckResumeConsistency_MessageCountBool(t *testing.T) {
 		{
 			Type:    "system",
 			Subtype: "turn_duration",
-			Content: mustMarshal(map[string]interface{}{
+			Content: mustMarshal(map[string]any{
 				"messageCount": true,
 			}),
 		},
@@ -1007,7 +1007,7 @@ func TestCheckResumeConsistency_FloatMessageCount(t *testing.T) {
 func TestCheckResumeConsistency_Float64Only(t *testing.T) {
 	// Verify that json.Unmarshal always produces float64 for numbers
 	data := []byte(`{"messageCount": 5}`)
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestCheckResumeConsistency_MismatchCount(t *testing.T) {
 // type switch when messageCount is a string (not float64 or int).
 func TestCheckResumeConsistency_DefaultCase(t *testing.T) {
 	// messageCount as a string triggers the default case → early return
-	content, _ := json.Marshal(map[string]interface{}{
+	content, _ := json.Marshal(map[string]any{
 		"messageCount": "not_a_number",
 	})
 	chain := []*Message{

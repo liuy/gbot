@@ -116,7 +116,7 @@ func extractTextFromBlocks(blocks []types.ContentBlock) string {
 }
 
 // makeLargeMessages creates n messages, each with ~tokensPerMsg estimated tokens.
-// Uses the 4 chars/token heuristic to match the engine's estimateTokens().
+// Uses the 4 chars/token heuristic to match the engine.currentInputTokens().
 func makeLargeMessages(n, tokensPerMsg int) []types.Message {
 	text := strings.Repeat("x", tokensPerMsg*4)
 	msgs := make([]types.Message, n)
