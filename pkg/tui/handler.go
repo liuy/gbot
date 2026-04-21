@@ -100,6 +100,16 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				Depth:           evt.Agent.Depth,
 				SubType:         "thinking_end",
 			}
+		case types.EventToolRun:
+			if evt.ToolUse != nil {
+				return agentToolMsg{
+					ParentToolUseID: evt.Agent.ParentToolUseID,
+					AgentType:       evt.Agent.AgentType,
+					Depth:           evt.Agent.Depth,
+					SubType:         "tool_run",
+					ToolName:        evt.ToolUse.Name,
+				}
+			}
 		case types.EventUsage:
 			if evt.Usage != nil {
 				return agentUsageMsg{
@@ -122,8 +132,14 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventTurnStart:
 		return turnStartMsg{}
 
+	case types.EventTextStart:
+		return textStartMsg{}
+
 	case types.EventTextDelta:
 		return textDeltaMsg{Text: evt.Text}
+
+	case types.EventTextEnd:
+		return textEndMsg{}
 
 	case types.EventQueryStart:
 		if evt.Message != nil {
@@ -141,15 +157,23 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			}
 		}
 
-		case types.EventToolEnd:
-			if evt.ToolResult != nil {
-				return toolEndMsg{
-					ToolUseID: evt.ToolResult.ToolUseID,
-					Output:    evt.ToolResult.DisplayOutput,
-					IsError:   evt.ToolResult.IsError,
-					Timing:    evt.ToolResult.Timing,
-				}
+	case types.EventToolRun:
+		if evt.ToolUse != nil {
+			return toolRunMsg{
+				ID:   evt.ToolUse.ID,
+				Name: evt.ToolUse.Name,
 			}
+		}
+
+	case types.EventToolEnd:
+		if evt.ToolResult != nil {
+			return toolEndMsg{
+				ToolUseID: evt.ToolResult.ToolUseID,
+				Output:    evt.ToolResult.DisplayOutput,
+				IsError:   evt.ToolResult.IsError,
+				Timing:    evt.ToolResult.Timing,
+			}
+		}
 
 	case types.EventError:
 		return errMsg{Err: evt.Error}

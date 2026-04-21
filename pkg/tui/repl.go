@@ -396,6 +396,17 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.repl.AppendChunk(m.Text)
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
+	case textStartMsg:
+		// No-op: text content block started. Future use: viewport transitions.
+		return true, a.readEvents()
+
+	case textEndMsg:
+		// No-op: text content block finished.
+		return true, a.readEvents()
+
+	case toolRunMsg:
+		// No-op: tool execution started after input accumulation.
+		return true, a.readEvents()
 
 	case turnStartMsg:
 		a.markViewportDirty()

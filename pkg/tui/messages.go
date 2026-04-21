@@ -133,3 +133,15 @@ type errMsg struct {
 type infoMsg string
 
 type spinnerTickMsg struct{}
+
+// textStartMsg signals that a text content block has started streaming.
+type textStartMsg struct{}
+
+// textEndMsg signals that a text content block has finished streaming.
+type textEndMsg struct{}
+
+// toolRunMsg signals that a tool's input is complete and execution is starting.
+type toolRunMsg struct {
+	ID   string
+	Name string
+}

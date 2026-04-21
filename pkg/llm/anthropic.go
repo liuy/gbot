@@ -314,6 +314,7 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		}
 		if err := json.Unmarshal([]byte(data), &msg); err == nil {
 			event.Message = &msg.Message
+			slog.Info("llm:message_start_raw", "id", msg.Message.ID, "usage", msg.Message.Usage)
 		} else {
 			slog.Warn("parse message_start failed", "error", err, "data", truncateForLog(data, 200))
 		}
@@ -360,6 +361,10 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		if err := json.Unmarshal([]byte(data), &delta); err == nil {
 			event.DeltaMsg = &delta.Delta
 			event.Usage = &delta.Usage
+			slog.Info("llm:message_delta_raw", "output_tokens", delta.Usage.OutputTokens,
+				"cache_read", delta.Usage.CacheReadInputTokens,
+				"cache_creation", delta.Usage.CacheCreationInputTokens,
+				"input_tokens", delta.Usage.InputTokens)
 		} else {
 			slog.Warn("parse message_delta failed", "error", err, "data", truncateForLog(data, 200))
 		}

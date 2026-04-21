@@ -606,6 +606,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventThinkingStart,
 					})
+				case types.ContentTypeText:
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventTextStart,
+					})
 				}
 			}
 
@@ -651,6 +655,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case types.ContentTypeText:
 					cb.Text = currentText.String()
 					currentText.Reset()
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventTextEnd,
+					})
 				case types.ContentTypeToolUse:
 					cb.Input = json.RawMessage(currentToolInput.String())
 					currentToolInput.Reset()
@@ -663,6 +670,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							ctx,
 						)
 					}
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventToolRun,
+						ToolUse: &types.ToolUseEvent{
+							ID:   cb.ID,
+							Name: cb.Name,
+						},
+					})
 					streamingExecutor.AddTool(*cb)
 				case types.ContentTypeThinking:
 					cb.Text = currentText.String()
@@ -683,11 +697,15 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			}
 			if event.Usage != nil {
 				usage.OutputTokens = event.Usage.OutputTokens
-				// Accumulate cache tokens from message_delta.
-				// Some providers (e.g. minimax) report cache tokens in
-				// message_delta rather than message_start.
-				usage.CacheReadInputTokens += event.Usage.CacheReadInputTokens
-				usage.CacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+				// Cache tokens are totals, not deltas — use max() to avoid
+				// double-counting when a provider reports them in both
+				// message_start and message_delta.
+				if event.Usage.CacheReadInputTokens > usage.CacheReadInputTokens {
+					usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+				}
+				if event.Usage.CacheCreationInputTokens > usage.CacheCreationInputTokens {
+					usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+				}
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{

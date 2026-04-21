@@ -88,9 +88,15 @@ func (h *Hub) Close() {
 // and rendering issues without needing verbose mode.
 func logEngineEvent(event Event) {
 	switch event.Type {
+	case types.EventTextStart:
+		slog.Info("engine:text_start")
+
 	case types.EventTextDelta:
 		preview := tool.TruncateRunes(event.Text, 60)
 		slog.Info("engine:text_delta", "text", preview)
+
+	case types.EventTextEnd:
+		slog.Info("engine:text_end")
 
 	case types.EventToolStart:
 		if event.ToolUse != nil {
@@ -104,6 +110,11 @@ func logEngineEvent(event Event) {
 				preview = preview[:80] + "..."
 			}
 			slog.Info("engine:tool_param_delta", "id", event.PartialInput.ID, "delta", preview, "summary", event.PartialInput.Summary)
+		}
+
+	case types.EventToolRun:
+		if event.ToolUse != nil {
+			slog.Info("engine:tool_run", "id", event.ToolUse.ID, "name", event.ToolUse.Name)
 		}
 
 	case types.EventToolOutputDelta:

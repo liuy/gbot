@@ -2607,3 +2607,287 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	}
 }
 
+
+func TestQuery_EventTextStartEmitted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "hello"), nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var textStartSeen bool
+	var textStartBeforeDelta bool
+	var deltaSeen bool
+	for evt := range eventCh {
+		if evt.Type == types.EventTextStart {
+			textStartSeen = true
+			if !deltaSeen {
+				textStartBeforeDelta = true
+			}
+		}
+		if evt.Type == types.EventTextDelta {
+			deltaSeen = true
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !textStartSeen {
+		t.Error("expected EventTextStart event to be emitted for text content block")
+	}
+	if !textStartBeforeDelta {
+		t.Error("expected EventTextStart to fire before any EventTextDelta")
+	}
+}
+
+func TestQuery_EventTextEndEmitted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "hello"), nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var textEndSeen bool
+	var textEndAfterDelta bool
+	var deltaSeen bool
+	for evt := range eventCh {
+		if evt.Type == types.EventTextDelta {
+			deltaSeen = true
+		}
+		if evt.Type == types.EventTextEnd {
+			textEndSeen = true
+			if deltaSeen {
+				textEndAfterDelta = true
+			}
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !textEndSeen {
+		t.Error("expected EventTextEnd event to be emitted for text content block")
+	}
+	if !textEndAfterDelta {
+		t.Error("expected EventTextEnd to fire after last EventTextDelta")
+	}
+}
+
+func TestQuery_EventToolRunEmitted(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "tu_1", "my_tool", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: "my_tool", enabled: true}
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var toolRunSeen bool
+	var toolRunID, toolRunName string
+	var toolStartSeen, toolEndSeen bool
+	var toolStartBeforeRun, toolRunBeforeEnd bool
+	for evt := range eventCh {
+		switch evt.Type {
+		case types.EventToolStart:
+			toolStartSeen = true
+		case types.EventToolRun:
+			toolRunSeen = true
+			if evt.ToolUse != nil {
+				toolRunID = evt.ToolUse.ID
+				toolRunName = evt.ToolUse.Name
+			}
+			if toolStartSeen {
+				toolStartBeforeRun = true
+			}
+		case types.EventToolEnd:
+			toolEndSeen = true
+			if toolRunSeen {
+				toolRunBeforeEnd = true
+			}
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !toolRunSeen {
+		t.Error("expected EventToolRun event to be emitted for tool_use content block")
+	}
+	if toolRunID != "tu_1" {
+		t.Errorf("EventToolRun ID = %q, want tu_1", toolRunID)
+	}
+	if toolRunName != "my_tool" {
+		t.Errorf("EventToolRun Name = %q, want my_tool", toolRunName)
+	}
+	if !toolStartSeen {
+		t.Error("expected EventToolStart")
+	}
+	if !toolEndSeen {
+		t.Error("expected EventToolEnd")
+	}
+	if !toolStartBeforeRun {
+		t.Error("expected EventToolStart to fire before EventToolRun")
+	}
+	if !toolRunBeforeEnd {
+		t.Error("expected EventToolRun to fire before EventToolEnd")
+	}
+}
+
+func TestQuery_EventOrderingMultiBlock(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// Response: thinking -> tool_use (realistic LLM response order)
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 30}}},
+		// Block 0: thinking
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "thinking_delta", Thinking: "let me think..."}},
+		{Type: "content_block_stop", Index: 0},
+		// Block 1: tool_use
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "my_tool"}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 10}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+	// Turn 2: text response after tool execution
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: "my_tool", enabled: true}
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	// Collect all content lifecycle events in order
+	var eventOrder []string
+	for evt := range eventCh {
+		switch evt.Type {
+		case types.EventThinkingStart, types.EventThinkingDelta, types.EventThinkingEnd,
+			types.EventToolStart, types.EventToolParamDelta, types.EventToolRun, types.EventToolEnd,
+			types.EventTextStart, types.EventTextDelta, types.EventTextEnd:
+			eventOrder = append(eventOrder, string(evt.Type))
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Expected order: thinking_start -> thinking_delta -> thinking_end ->
+	//                 tool_start -> tool_param_delta -> tool_run -> tool_end ->
+	//                 text_start -> text_delta -> text_end
+	want := []string{
+		"thinking_start", "thinking_delta", "thinking_end",
+		"tool_start", "tool_param_delta", "tool_run", "tool_end",
+		"text_start", "text_delta", "text_end",
+	}
+
+	if len(eventOrder) != len(want) {
+		t.Fatalf("event count = %d, want %d\n  got:  %v\n  want: %v", len(eventOrder), len(want), eventOrder, want)
+	}
+	for i, got := range eventOrder {
+		if got != want[i] {
+			t.Errorf("event[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+
+	t.Logf("event order: %v", eventOrder)
+}
+
+
+// TestQuery_EventTextStartEnd_EmptyBlock verifies that text start/end events
+// are emitted even when the text block has zero deltas (empty text).
+func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// Response with a text block that has no delta events — just start+stop
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		// No content_block_delta — empty text block
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 0}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+
+	var gotTextStart, gotTextEnd bool
+	for evt := range eventCh {
+		switch evt.Type {
+		case types.EventTextStart:
+			gotTextStart = true
+		case types.EventTextEnd:
+			gotTextEnd = true
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	if !gotTextStart {
+		t.Error("EventTextStart not emitted for empty text block")
+	}
+	if !gotTextEnd {
+		t.Error("EventTextEnd not emitted for empty text block")
+	}
+}

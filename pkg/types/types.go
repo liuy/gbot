@@ -239,8 +239,14 @@ const (
 	EventToolOutputDelta     QueryEventType = "tool_output_delta"
 	EventToolEnd       QueryEventType = "tool_end"
 
-	// Text and usage
-	EventTextDelta     QueryEventType = "text_delta"
+	// Text content lifecycle
+	EventTextStart    QueryEventType = "text_start"
+	EventTextDelta    QueryEventType = "text_delta"
+	EventTextEnd      QueryEventType = "text_end"
+
+	// Tool execution: EventToolRun signals input fully accumulated, execution starting.
+	// Distinct from EventToolStart which signals the tool_use content block began streaming.
+	EventToolRun      QueryEventType = "tool_run"
 	EventUsage         QueryEventType = "usage"
 	EventError                QueryEventType = "error"
 	EventNotificationPending  QueryEventType = "notification_pending"
