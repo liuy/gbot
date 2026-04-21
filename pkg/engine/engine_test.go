@@ -2157,8 +2157,8 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	t.Parallel()
 
 	// Single LLM call: message_start has input=2500, message_delta has output=100.
-	// The engine must not emit input tokens again in message_delta,
-	// so that TUI += accumulation stays correct.
+	// The engine emits cumulative usage snapshots using max() for input/cache tokens.
+	// TUI must also use max() (not +=) for input/cache to avoid double-counting.
 	mp := &mockProvider{}
 	events := []llm.StreamEvent{
 		{
@@ -2209,18 +2209,20 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 		t.Errorf("first usage OutputTokens = %d, want 0 (not yet known)", usageEvents[0].OutputTokens)
 	}
 
-	// Second event (message_delta): output tokens set, input=0 (no double-count)
+	// Second event (message_delta): output tokens set, input carries max() value (2500)
 	if usageEvents[1].OutputTokens != 100 {
 		t.Errorf("second usage OutputTokens = %d, want 100", usageEvents[1].OutputTokens)
 	}
-	if usageEvents[1].InputTokens != 0 {
-		t.Errorf("second usage InputTokens = %d, want 0 (avoid double-count with +=)", usageEvents[1].InputTokens)
+	if usageEvents[1].InputTokens != 2500 {
+		t.Errorf("second usage InputTokens = %d, want 2500 (max of start+delta)", usageEvents[1].InputTokens)
 	}
 
-	// Verify TUI-style accumulation: total = 2500 input + 100 output
+	// Verify TUI-style accumulation using max() for input, += for output:
 	totalIn, totalOut := 0, 0
 	for _, u := range usageEvents {
-		totalIn += u.InputTokens
+		if u.InputTokens > totalIn {
+			totalIn = u.InputTokens
+		}
 		totalOut += u.OutputTokens
 	}
 	if totalIn != 2500 {
@@ -2309,7 +2311,9 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 	// Verify TUI-style accumulation
 	totalCacheRead := 0
 	for _, u := range usageEvents {
-		totalCacheRead += u.CacheReadInputTokens
+			if u.CacheReadInputTokens > 0 {
+			totalCacheRead = u.CacheReadInputTokens
+		}
 	}
 	if totalCacheRead != 5000 {
 		t.Errorf("accumulated cache_read = %d, want 5000", totalCacheRead)
@@ -2389,10 +2393,12 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 		t.Errorf("first usage CacheCreation = %d, want 5409", usageEvents[0].CacheCreationInputTokens)
 	}
 
-	// Accumulated total
+	// Accumulated total using TUI-style > 0 overwrite (not +=)
 	totalCacheCreation := 0
 	for _, u := range usageEvents {
-		totalCacheCreation += u.CacheCreationInputTokens
+		if u.CacheCreationInputTokens > 0 {
+			totalCacheCreation = u.CacheCreationInputTokens
+		}
 	}
 	if totalCacheCreation != 5409 {
 		t.Errorf("accumulated cache_creation = %d, want 5409", totalCacheCreation)

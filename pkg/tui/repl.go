@@ -510,10 +510,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
-		a.status.usage.InputTokens += m.InputTokens
+		// Align with TS updateUsage: > 0 overwrite for input/cache, += for output.
+		if m.InputTokens > 0 { a.status.usage.InputTokens = m.InputTokens }
 		a.status.usage.OutputTokens += m.OutputTokens
-		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
-		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
+		if m.CacheReadInputTokens > 0 { a.status.usage.CacheReadInputTokens = m.CacheReadInputTokens }
+		if m.CacheCreationInputTokens > 0 { a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens }
 		// Input tokens arrive all at once — snap immediately
 		a.displayedInputTokens = a.status.usage.TotalInputTokens()
 		a.inputTokenTarget = a.status.usage.TotalInputTokens()

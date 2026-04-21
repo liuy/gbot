@@ -4242,3 +4242,64 @@ func TestApp_ToolCount_NotShownWhenNotStreaming(t *testing.T) {
 		t.Errorf("should not show tool count when not streaming, got:\n%s", v)
 	}
 }
+
+// TestApp_UsageMsg_NoDoubleCount_MaxValue verifies that usage tokens use max()
+// not +=, preventing double-counting when providers report the same values
+// in both message_start and message_delta (e.g. MiniMax).
+func TestApp_UsageMsg_NoDoubleCount_MaxValue(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// First usage event (simulates message_start): input=6, cache_creation=404
+	app.updateRepl(usageMsg{InputTokens: 6, OutputTokens: 0, CacheReadInputTokens: 0, CacheCreationInputTokens: 404})
+
+	if app.status.usage.InputTokens != 6 {
+		t.Errorf("after first usageMsg, InputTokens = %d, want 6", app.status.usage.InputTokens)
+	}
+	if app.status.usage.CacheCreationInputTokens != 404 {
+		t.Errorf("after first usageMsg, CacheCreationInputTokens = %d, want 404", app.status.usage.CacheCreationInputTokens)
+	}
+
+	// Second usage event (simulates message_delta): same input/cache values + output
+	// MiniMax reports: input=6 (same), cache_creation=404 (same), output=44
+	app.updateRepl(usageMsg{InputTokens: 6, OutputTokens: 44, CacheReadInputTokens: 0, CacheCreationInputTokens: 404})
+
+	// With +=, InputTokens would be 12 and CacheCreationInputTokens would be 808.
+	// With max(), they should stay at 6 and 404.
+	if app.status.usage.InputTokens != 6 {
+		t.Errorf("after second usageMsg, InputTokens = %d, want 6 (max, not += which gives 12)", app.status.usage.InputTokens)
+	}
+	if app.status.usage.CacheCreationInputTokens != 404 {
+		t.Errorf("after second usageMsg, CacheCreationInputTokens = %d, want 404 (max, not += which gives 808)", app.status.usage.CacheCreationInputTokens)
+	}
+	// OutputTokens should accumulate (0 then 44 = 44)
+	if app.status.usage.OutputTokens != 44 {
+		t.Errorf("OutputTokens = %d, want 44", app.status.usage.OutputTokens)
+	}
+
+	// Verify displayed values also correct
+	totalInput := app.status.usage.TotalInputTokens()
+	if app.displayedInputTokens != totalInput {
+		t.Errorf("displayedInputTokens = %d, want %d", app.displayedInputTokens, totalInput)
+	}
+}
+
+// TestApp_UsageMsg_MaxValue_SecondLarger verifies max() works when delta has larger values.
+func TestApp_UsageMsg_MaxValue_SecondLarger(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// First: input=10
+	app.updateRepl(usageMsg{InputTokens: 10, OutputTokens: 0})
+	// Second: input=21 (larger, e.g. cache hit with more context)
+	app.updateRepl(usageMsg{InputTokens: 21, OutputTokens: 35})
+
+	if app.status.usage.InputTokens != 21 {
+		t.Errorf("InputTokens = %d, want 21 (max of 10 and 21)", app.status.usage.InputTokens)
+	}
+	if app.status.usage.OutputTokens != 35 {
+		t.Errorf("OutputTokens = %d, want 35", app.status.usage.OutputTokens)
+	}
+}

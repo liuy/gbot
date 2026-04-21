@@ -696,23 +696,26 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				stopReason = event.DeltaMsg.StopReason
 			}
 			if event.Usage != nil {
+				// Align with TS updateUsage (claude.ts:2924-2946):
+				// input/cache: overwrite if > 0, else keep start value.
+				// output: direct set (like TS ??).
+				if event.Usage.InputTokens > 0 {
+					usage.InputTokens = event.Usage.InputTokens
+				}
 				usage.OutputTokens = event.Usage.OutputTokens
-				// Cache tokens are totals, not deltas — use max() to avoid
-				// double-counting when a provider reports them in both
-				// message_start and message_delta.
-				if event.Usage.CacheReadInputTokens > usage.CacheReadInputTokens {
+				if event.Usage.CacheReadInputTokens > 0 {
 					usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
 				}
-				if event.Usage.CacheCreationInputTokens > usage.CacheCreationInputTokens {
+				if event.Usage.CacheCreationInputTokens > 0 {
 					usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
 				}
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
-						InputTokens:              0,
+						InputTokens:              usage.InputTokens,
 						OutputTokens:             usage.OutputTokens,
-						CacheReadInputTokens:     event.Usage.CacheReadInputTokens,
-						CacheCreationInputTokens: event.Usage.CacheCreationInputTokens,
+						CacheReadInputTokens:     usage.CacheReadInputTokens,
+						CacheCreationInputTokens: usage.CacheCreationInputTokens,
 					},
 				})
 			}
