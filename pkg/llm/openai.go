@@ -129,9 +129,10 @@ type openaiChoice struct {
 }
 
 type openaiDelta struct {
-	Role      string           `json:"role,omitempty"`
-	Content   *string          `json:"content,omitempty"` // pointer: null vs empty
-	ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          *string          `json:"content,omitempty"` // pointer: null vs empty
+	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // GLM extended field
 }
 
 type openaiPromptTokensDetails struct {
@@ -147,10 +148,10 @@ type openaiCompletionTokensDetails struct {
 }
 
 type openaiUsage struct {
-	PromptTokens            int                            `json:"prompt_tokens"`
-	CompletionTokens        int                            `json:"completion_tokens"`
-	PromptTokensDetails     openaiPromptTokensDetails      `json:"prompt_tokens_details,omitempty"`
-	CompletionTokensDetails openaiCompletionTokensDetails  `json:"completion_tokens_details,omitempty"`
+	PromptTokens            int                           `json:"prompt_tokens"`
+	CompletionTokens        int                           `json:"completion_tokens"`
+	PromptTokensDetails     openaiPromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails openaiCompletionTokensDetails `json:"completion_tokens_details"`
 }
 
 // Non-streaming response
@@ -253,8 +254,8 @@ func (p *OpenAIProvider) translateResponse(body []byte) (*Response, error) {
 		StopReason: mapFinishReason(choice.FinishReason),
 		Usage: types.Usage{
 			InputTokens:              oResp.Usage.PromptTokens - oResp.Usage.PromptTokensDetails.CachedTokens,
-			OutputTokens:            oResp.Usage.CompletionTokens,
-			CacheReadInputTokens:    oResp.Usage.PromptTokensDetails.CachedTokens,
+			OutputTokens:             oResp.Usage.CompletionTokens,
+			CacheReadInputTokens:     oResp.Usage.PromptTokensDetails.CachedTokens,
 			CacheCreationInputTokens: 0, // OpenAI API does not report cache creation
 		},
 	}, nil
@@ -362,6 +363,8 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 	nextContentIndex := 0
 	textBlockOpen := false
 	textContentIndex := 0
+	thinkingBlockOpen := false
+	thinkingContentIndex := 0
 	lastData := time.Now()
 
 	for scanner.Scan() {
@@ -422,6 +425,30 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
 
+			// GLM extended: reasoning_content delta → emit as thinking block
+			if delta.ReasoningContent != nil && *delta.ReasoningContent != "" {
+				if !thinkingBlockOpen {
+					thinkingContentIndex = nextContentIndex
+					nextContentIndex++
+					send(ctx, eventCh, StreamEvent{
+						Type:         "content_block_start",
+						Index:        thinkingContentIndex,
+						ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking, Text: ""},
+					})
+					thinkingBlockOpen = true
+				}
+				send(ctx, eventCh, StreamEvent{
+					Type:  "content_block_delta",
+					Index: thinkingContentIndex,
+					Delta: &StreamDelta{Type: "text_delta", Text: *delta.ReasoningContent},
+				})
+			}
+
+			// Close thinking block when actual content starts (GLM sends reasoning_content first, then content)
+			if delta.Content != nil && *delta.Content != "" && thinkingBlockOpen {
+				send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: thinkingContentIndex})
+				thinkingBlockOpen = false
+			}
 			// Process text content
 			if delta.Content != nil && *delta.Content != "" {
 				if !textBlockOpen {
