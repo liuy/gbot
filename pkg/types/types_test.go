@@ -616,6 +616,39 @@ func TestToolResultEventJSON(t *testing.T) {
 // ToolUseContext
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Usage.TotalInputTokens
+// ---------------------------------------------------------------------------
+
+func TestTotalInputTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		u    types.Usage
+		want int
+	}{
+		{"zero", types.Usage{}, 0},
+		{"input only", types.Usage{InputTokens: 100}, 100},
+		{"all fields", types.Usage{InputTokens: 100, CacheReadInputTokens: 30, CacheCreationInputTokens: 20}, 150},
+		{"cache only", types.Usage{CacheReadInputTokens: 50, CacheCreationInputTokens: 50}, 100},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.u.TotalInputTokens()
+			if got != tc.want {
+				t.Errorf("TotalInputTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolUseContext
+// ---------------------------------------------------------------------------
+
 func TestToolUseContext(t *testing.T) {
 	t.Parallel()
 

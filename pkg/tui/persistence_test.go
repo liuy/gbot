@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -258,6 +259,82 @@ func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
 	}
 	if ses.Title != "my custom title" {
 		t.Errorf("title = %q, want %q (should not overwrite)", ses.Title, "my custom title")
+	}
+}
+
+func TestExtractUserTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []types.Message
+		want string
+	}{
+		{
+			"first user text",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello world")}},
+			},
+			"hello world",
+		},
+		{
+			"skips assistant messages",
+			[]types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("real prompt")}},
+			},
+			"real prompt",
+		},
+		{
+			"skips XML tags",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("<command-name>test</command-name>")}},
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("visible prompt")}},
+			},
+			"visible prompt",
+		},
+		{
+			"truncates long text",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 300))}},
+			},
+			strings.Repeat("a", 200) + "…",
+		},
+		{
+			"skips empty text",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("")}},
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("actual")}},
+			},
+			"actual",
+		},
+		{
+			"skips tool_result blocks",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewToolResultBlock("id1", json.RawMessage(`"result"`), false)}},
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("text after tool")}},
+			},
+			"text after tool",
+		},
+		{
+			"empty messages",
+			[]types.Message{},
+			"",
+		},
+		{
+			"only whitespace text",
+			[]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("   \n  ")}},
+			},
+			"",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractUserTitle(tc.msgs)
+			if got != tc.want {
+				t.Errorf("extractUserTitle() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	ast "github.com/gomarkdown/markdown/ast"
+	"github.com/gomarkdown/markdown/parser"
 )
 
 // ansiStyleRe matches common ANSI SGR sequences (e.g., \x1b[1m = bold, \x1b[3m = italic, etc.)
@@ -1208,5 +1209,109 @@ func TestRender_Table_EmojiAlignment(t *testing.T) {
 		if w != borderW {
 			t.Errorf("line %d width=%d != border width=%d (%q)", i, w, borderW, line)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// needsBlockSeparator
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// needsBlockSeparator
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// needsBlockSeparator
+// ---------------------------------------------------------------------------
+
+func TestNeedsBlockSeparator(t *testing.T) {
+	t.Parallel()
+
+	// Parse a markdown doc with multiple block elements
+	source := []byte("paragraph1\n\nparagraph2\n\nparagraph3")
+	p := parser.New()
+	doc := p.Parse(source)
+
+	children := doc.GetChildren()
+	if len(children) < 3 {
+		t.Fatalf("expected at least 3 children, got %d", len(children))
+	}
+
+	// First child should get separator (not last)
+	if !needsBlockSeparator(children[0]) {
+		t.Error("first child should need separator")
+	}
+	// Last child should NOT get separator
+	if needsBlockSeparator(children[len(children)-1]) {
+		t.Error("last child should not need separator")
+	}
+	// Nil parent (doc itself) → false
+	if needsBlockSeparator(doc) {
+		t.Error("node with nil parent should not need separator")
+	}
+}
+
+func TestNeedsBlockSeparator_BlockQuote(t *testing.T) {
+	t.Parallel()
+
+	source := []byte("> line1\n>\n> line2")
+	p := parser.New()
+	doc := p.Parse(source)
+
+	// Find a blockquote
+	var bq *ast.BlockQuote
+	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
+		if entering {
+			if quote, ok := node.(*ast.BlockQuote); ok {
+				bq = quote
+				return ast.Terminate
+			}
+		}
+		return ast.GoToNext
+	})
+	if bq == nil {
+		t.Fatal("expected to find a BlockQuote")
+	}
+
+	children := bq.GetChildren()
+	if len(children) < 2 {
+		t.Fatalf("expected at least 2 children in blockquote, got %d", len(children))
+	}
+
+	// First child in blockquote should get separator
+	if !needsBlockSeparator(children[0]) {
+		t.Error("first child in blockquote should need separator")
+	}
+	// Last child in blockquote should NOT get separator
+	if needsBlockSeparator(children[len(children)-1]) {
+		t.Error("last child in blockquote should not need separator")
+	}
+}
+
+func TestNeedsBlockSeparator_NonBlockParent(t *testing.T) {
+	t.Parallel()
+
+	source := []byte("- item1\n- item2")
+	p := parser.New()
+	doc := p.Parse(source)
+
+	// Find a list item and its child paragraph
+	var para ast.Node
+	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
+		if entering {
+			if _, ok := node.(*ast.Paragraph); ok && para == nil {
+				para = node
+			}
+		}
+		return ast.GoToNext
+	})
+	if para == nil {
+		t.Fatal("expected to find a Paragraph")
+	}
+
+	// Paragraph inside a ListItem should NOT get block separator
+	// (ListItem is not Document or BlockQuote)
+	if needsBlockSeparator(para) {
+		t.Error("child of ListItem should not need block separator")
 	}
 }

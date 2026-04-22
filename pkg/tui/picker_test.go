@@ -146,6 +146,37 @@ func TestSessionPicker_EmptyView(t *testing.T) {
 	}
 }
 
+func TestSessionPicker_Init(t *testing.T) {
+	p := NewSessionPicker([]SessionItem{{SessionID: "s1", Title: "Test"}})
+	cmd := p.Init()
+	if cmd != nil {
+		t.Errorf("Init() should return nil, got %v", cmd)
+	}
+}
+
+func TestRelativeTime(t *testing.T) {
+	tests := []struct {
+		name string
+		t    time.Time
+		want string
+	}{
+		{"just now", time.Now().Add(-30 * time.Second), "just now"},
+		{"minutes ago", time.Now().Add(-5 * time.Minute), "5m ago"},
+		{"hours ago", time.Now().Add(-3 * time.Hour), "3h ago"},
+		{"yesterday", time.Now().Add(-30 * time.Hour), "yesterday"},
+		{"days ago", time.Now().Add(-72 * time.Hour), "3d ago"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := relativeTime(tc.t)
+			if got != tc.want {
+				t.Errorf("relativeTime() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSessionPicker_WrapAround(t *testing.T) {
 	items := []SessionItem{
 		{SessionID: "s1", Title: "Session 1"},

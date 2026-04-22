@@ -357,3 +357,27 @@ func parseTime(s string) time.Time {
 	}
 	return t
 }
+
+func TestForkCurrentSession_NoActiveSession(t *testing.T) {
+	a := &App{
+		engine: engine.New(&engine.Params{Logger: slog.Default()}),
+		repl:   NewReplState(),
+	}
+	// No sessionID set
+	cmd := a.forkCurrentSession("title", nil)
+	msg := cmd()
+	info, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("expected infoMsg, got %T", msg)
+	}
+	if !strings.Contains(string(info), "No active session") {
+		t.Errorf("info = %q, should mention no active session", info)
+	}
+}
+
+func TestWriteWorkspaceMeta_EmptyDir(t *testing.T) {
+	err := WriteWorkspaceMeta("", "session-123")
+	if err != nil {
+		t.Errorf("empty dir should skip write and return nil, got: %v", err)
+	}
+}

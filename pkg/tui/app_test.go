@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -4301,5 +4303,296 @@ func TestApp_UsageMsg_MaxValue_SecondLarger(t *testing.T) {
 	}
 	if app.status.usage.OutputTokens != 35 {
 		t.Errorf("OutputTokens = %d, want 35", app.status.usage.OutputTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetStore
+// ---------------------------------------------------------------------------
+
+func TestApp_SetStore(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	if app.store != nil {
+		t.Error("expected nil store initially")
+	}
+
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	app.SetStore(store, "session-123", "/project", 5)
+	if app.store != store {
+		t.Error("store not set correctly")
+	}
+	if app.sessionID != "session-123" {
+		t.Errorf("sessionID = %q, want %q", app.sessionID, "session-123")
+	}
+	if app.projectDir != "/project" {
+		t.Errorf("projectDir = %q, want %q", app.projectDir, "/project")
+	}
+	if app.lastPersistedIdx != 5 {
+		t.Errorf("lastPersistedIdx = %d, want 5", app.lastPersistedIdx)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleSlashCommand — dispatches to correct handler
+// ---------------------------------------------------------------------------
+
+func TestApp_HandleSlashCommand_Clear(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	app.SetStore(store, "session-abc", "/project", 0)
+
+	cmd := app.handleSlashCommand(SlashCommand{Name: "clear"}, nil)
+	if cmd == nil {
+		t.Error("clear should return a tea.Cmd")
+	}
+}
+
+func TestApp_HandleSlashCommand_Unknown(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	commitCmd := func() tea.Msg { return nil }
+	cmd := app.handleSlashCommand(SlashCommand{Name: "unknown_cmd"}, commitCmd)
+	// Unknown command returns the commitCmd
+	if cmd == nil {
+		t.Error("unknown command should return commitCmd")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// openPicker
+// ---------------------------------------------------------------------------
+
+func TestApp_OpenPicker(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	app.SetStore(store, "session-abc", dir, 0)
+
+	// Create some sessions
+	_, err = store.CreateSession(dir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	commitCmd := func() tea.Msg { return nil }
+	cmd := app.openPicker(commitCmd)
+
+	if cmd == nil {
+		t.Error("openPicker should return a tea.Cmd")
+	}
+	if !app.pickerMode {
+		t.Error("pickerMode should be true after openPicker")
+	}
+	if app.picker == nil {
+		t.Fatal("picker should not be nil after openPicker")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scroll functions
+// ---------------------------------------------------------------------------
+
+func TestApp_ScrollUp(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.scrollTotal = 10
+	app.height = 5
+
+	app.scrollUp(3)
+	if app.scrollOffset != 0 {
+		// scrollOffset starts at 0, going up should clamp at 0
+		t.Errorf("scrollOffset = %d, want 0 (clamped)", app.scrollOffset)
+	}
+	if !app.userScrolled {
+		t.Error("userScrolled should be true after scrollUp")
+	}
+}
+
+func TestApp_ScrollDown(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.scrollTotal = 20
+	app.height = 5
+	app.scrollOffset = 0
+
+	app.scrollDown(3)
+	if app.scrollOffset != 3 {
+		t.Errorf("scrollOffset = %d, want 3", app.scrollOffset)
+	}
+}
+
+func TestApp_ScrollDown_ClampsToMax(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.scrollTotal = 10
+	app.height = 5
+	app.scrollOffset = 0
+
+	// Scroll way past the end
+	app.scrollDown(100)
+	// Should clamp to max(scrollTotal - viewLines, 0)
+	maxOff := max(app.scrollTotal-app.calcViewLines(), 0)
+	if app.scrollOffset != maxOff {
+		t.Errorf("scrollOffset = %d, want %d (clamped to max)", app.scrollOffset, maxOff)
+	}
+}
+
+func TestApp_CalcViewLines(t *testing.T) {
+	tests := []struct {
+		name        string
+		height      int
+		scrollTotal int
+		wantMin     int
+		wantMax     int
+	}{
+		{"short content", 10, 5, 7, 7},     // content < maxContentLines → use maxContentLines
+		{"overflow content", 10, 20, 1, 6}, // content > maxContentLines → reserve 1 line
+		{"minimal height", 2, 20, 1, 1},    // very small terminal
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp(&tuiMockProvider{})
+			app.height = tc.height
+			app.scrollTotal = tc.scrollTotal
+			got := app.calcViewLines()
+			if got < tc.wantMin || got > tc.wantMax {
+				t.Errorf("calcViewLines() = %d, want in range [%d, %d]", got, tc.wantMin, tc.wantMax)
+			}
+		})
+	}
+}
+
+func TestApp_ScrollZeroTotal(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.scrollTotal = 0
+
+	app.scrollUp(5)
+	if app.scrollOffset != 0 {
+		t.Errorf("scrollUp with zero total should not change offset, got %d", app.scrollOffset)
+	}
+
+	app.scrollDown(5)
+	if app.scrollOffset != 0 {
+		t.Errorf("scrollDown with zero total should not change offset, got %d", app.scrollOffset)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update — picker mode routing
+// ---------------------------------------------------------------------------
+
+func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
+	store.CreateSession(dir, "model") //nolint:errcheck
+	app.SetStore(store, "existing-session", dir, 0)
+
+	commitCmd := func() tea.Msg { return nil }
+	app.openPicker(commitCmd)
+
+	// Send a key message while in picker mode
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated := model.(*App)
+	if !updated.pickerMode {
+		t.Error("should still be in pickerMode after key event")
+	}
+	if cmd != nil {
+		// Down key doesn't quit picker, so cmd should be nil
+		t.Error("expected nil cmd for non-quit picker key")
+	}
+}
+
+func TestApp_Update_WindowSize_Nil(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated := model.(*App)
+	if updated.width != 80 {
+		t.Errorf("width = %d, want 80", updated.width)
+	}
+	if updated.height != 24 {
+		t.Errorf("height = %d, want 24", updated.height)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// readEvents — edge cases
+// ---------------------------------------------------------------------------
+
+func TestApp_ReadEvents_ChannelDrain(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	h := NewTUIHandler()
+	app.tuiHandler = h
+
+	// Pre-fill the channel with an event
+	h.appCh <- textDeltaMsg{Text: "buffered"}
+
+	cmd := app.readEvents()
+	msg := cmd()
+	tdm, ok := msg.(textDeltaMsg)
+	if !ok {
+		t.Fatalf("expected textDeltaMsg from buffered channel, got %T", msg)
+	}
+	if tdm.Text != "buffered" {
+		t.Errorf("Text = %q, want %q", tdm.Text, "buffered")
+	}
+}
+
+func TestApp_ReadEvents_IdleModeWithStop(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	h := NewTUIHandler()
+	app.tuiHandler = h
+	app.repl.resultCh = nil // idle mode
+	app.idleStop = make(chan struct{})
+
+	// Signal stop immediately
+	close(app.idleStop)
+
+	cmd := app.readEvents()
+	msg := cmd()
+	if _, ok := msg.(idleAbortedMsg); !ok {
+		t.Fatalf("expected idleAbortedMsg, got %T", msg)
+	}
+}
+
+func TestApp_ReadEvents_ResultChannelClosed(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	h := NewTUIHandler()
+	app.tuiHandler = h
+
+	// Create and immediately close result channel
+	resultCh := make(chan engine.QueryResult)
+	close(resultCh)
+	app.repl.resultCh = resultCh
+
+	cmd := app.readEvents()
+	msg := cmd()
+	if _, ok := msg.(queryEndMsg); !ok {
+		t.Fatalf("expected queryEndMsg from closed resultCh, got %T", msg)
+	}
+}
+
+func TestApp_HandleSlashCommand_Switch(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
+	store.CreateSession(dir, "model") //nolint:errcheck
+	app.SetStore(store, "existing-session", dir, 0)
+
+	app.handleSlashCommand(SlashCommand{Name: "switch"}, nil)
+	if !app.pickerMode {
+		t.Error("should be in pickerMode after /switch")
+	}
+	if app.picker == nil {
+		t.Error("picker should be initialized after /switch")
 	}
 }

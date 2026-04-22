@@ -2595,3 +2595,15 @@ func TestWordWrap_TabWidth(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// StatusBar.SetInfo
+// ---------------------------------------------------------------------------
+
+func TestStatusBar_SetInfo(t *testing.T) {
+	s := NewStatusBar()
+	s.SetInfo("session saved")
+	if s.info != "session saved" {
+		t.Errorf("info = %q, want %q", s.info, "session saved")
+	}
+}

@@ -341,3 +341,209 @@ func TestConvertEventToMsg_TurnEnd(t *testing.T) {
 		t.Errorf("EventTurnEnd should return nil, got %T", msg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — agent (sub-agent) event branches
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_AgentToolStart(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolStart,
+		Agent: &types.AgentMeta{ParentToolUseID: "parent-1", AgentType: "Explore", Depth: 0},
+		ToolUse: &types.ToolUseEvent{ID: "child-1", Name: "Grep", Summary: "searching"},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if am.ParentToolUseID != "parent-1" {
+		t.Errorf("ParentToolUseID = %q, want %q", am.ParentToolUseID, "parent-1")
+	}
+	if am.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", am.AgentType, "Explore")
+	}
+	if am.ToolName != "Grep" {
+		t.Errorf("ToolName = %q, want %q", am.ToolName, "Grep")
+	}
+}
+
+func TestConvertEventToMsg_AgentToolStart_NilToolUse(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:   types.EventToolStart,
+		Agent:  &types.AgentMeta{ParentToolUseID: "p1"},
+		ToolUse: nil,
+	})
+	if msg != nil {
+		t.Errorf("nil ToolUse with agent should return nil, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_AgentToolParamDelta(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolParamDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose", Depth: 1},
+		PartialInput: &types.PartialInputEvent{ID: "c1", Name: "Read", Delta: `{"path":"a.go"}`, Summary: "reading"},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if am.SubType != "tool_param_delta" {
+		t.Errorf("SubType = %q, want tool_param_delta", am.SubType)
+	}
+	if am.ToolName != "Read" {
+		t.Errorf("ToolName = %q, want Read", am.ToolName)
+	}
+}
+
+func TestConvertEventToMsg_AgentToolEnd(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventToolEnd,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
+		ToolResult: &types.ToolResultEvent{ToolUseID: "c1", IsError: true},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if !am.IsError {
+		t.Error("IsError = false, want true")
+	}
+}
+
+func TestConvertEventToMsg_AgentToolRun(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:   types.EventToolRun,
+		Agent:  &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose"},
+		ToolUse: &types.ToolUseEvent{ID: "c1", Name: "Bash"},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if am.SubType != "tool_run" {
+		t.Errorf("SubType = %q, want tool_run", am.SubType)
+	}
+}
+
+func TestConvertEventToMsg_AgentThinkingStart(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventThinkingStart,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if am.SubType != "thinking_start" {
+		t.Errorf("SubType = %q, want thinking_start", am.SubType)
+	}
+}
+
+func TestConvertEventToMsg_AgentThinkingEnd(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventThinkingEnd,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
+	})
+	am, ok := msg.(agentToolMsg)
+	if !ok {
+		t.Fatalf("expected agentToolMsg, got %T", msg)
+	}
+	if am.SubType != "thinking_end" {
+		t.Errorf("SubType = %q, want thinking_end", am.SubType)
+	}
+}
+
+func TestConvertEventToMsg_AgentUsage(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventUsage,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
+		Usage: &types.UsageEvent{InputTokens: 50, OutputTokens: 25, CacheReadInputTokens: 10},
+	})
+	au, ok := msg.(agentUsageMsg)
+	if !ok {
+		t.Fatalf("expected agentUsageMsg, got %T", msg)
+	}
+	if au.InputTokens != 50 {
+		t.Errorf("InputTokens = %d, want 50", au.InputTokens)
+	}
+	if au.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens = %d, want 10", au.CacheReadInputTokens)
+	}
+}
+
+func TestConvertEventToMsg_AgentTextDelta_Filtered(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventTextDelta,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
+		Text:  "sub-agent text",
+	})
+	if msg != nil {
+		t.Errorf("agent text_delta should be filtered (nil), got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_EventTextStart(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventTextStart})
+	if msg == nil {
+		t.Fatal("EventTextStart should not return nil")
+	}
+	if _, ok := msg.(textStartMsg); !ok {
+		t.Errorf("expected textStartMsg, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_EventTextEnd(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventTextEnd})
+	if msg == nil {
+		t.Fatal("EventTextEnd should not return nil")
+	}
+	if _, ok := msg.(textEndMsg); !ok {
+		t.Errorf("expected textEndMsg, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_EventNotificationPending(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventNotificationPending})
+	if msg == nil {
+		t.Fatal("EventNotificationPending should not return nil")
+	}
+	if _, ok := msg.(notificationPendingMsg); !ok {
+		t.Errorf("expected notificationPendingMsg, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_UnknownEventType(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{Type: "something_else"})
+	if msg != nil {
+		t.Errorf("unknown event type should return nil, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_ToolRun(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:    types.EventToolRun,
+		ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Bash"},
+	})
+	trm, ok := msg.(toolRunMsg)
+	if !ok {
+		t.Fatalf("expected toolRunMsg, got %T", msg)
+	}
+	if trm.Name != "Bash" {
+		t.Errorf("Name = %q, want Bash", trm.Name)
+	}
+}
