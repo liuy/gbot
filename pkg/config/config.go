@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,10 +51,34 @@ const (
 
 // Provider holds configuration for a single LLM provider.
 type Provider struct {
-	Name   string          `json:"name"`   // "anthropic" | "openai"
-	URL    string          `json:"url"`    // e.g. "https://api.anthropic.com"
-	Keys   []string        `json:"keys"`   // env var references like "$ANTHROPIC_API_KEY"
-	Models map[Tier]string `json:"models"` // per-tier model names
+	Name   string          `json:"name"`             // display name, e.g. "glm", "claude", "deepseek"
+	URL    string          `json:"url"`              // e.g. "https://api.anthropic.com"
+	Keys   []string        `json:"keys"`             // env var references like "$ANTHROPIC_API_KEY"
+	Models map[Tier]string `json:"models"`           // per-tier model names
+	Type   string          `json:"type,omitempty"`   // "auto" (default) | "openai" | "anthropic"
+}
+
+const (
+	ProviderTypeAuto     = "auto"
+	ProviderTypeOpenAI   = "openai"
+	ProviderTypeAnthropic = "anthropic"
+)
+
+// ProviderType returns the resolved provider type.
+// If Type is "auto" or empty, it is inferred from the URL.
+func (p *Provider) ProviderType() string {
+	switch p.Type {
+	case ProviderTypeOpenAI, ProviderTypeAnthropic:
+		return p.Type
+	default:
+		// auto-detect from URL: hostname or path containing "anthropic"
+		if u, err := url.Parse(p.URL); err == nil {
+			if strings.HasSuffix(u.Hostname(), "anthropic.com") || strings.Contains(u.Path, "anthropic") {
+				return ProviderTypeAnthropic
+			}
+		}
+		return ProviderTypeOpenAI
+	}
 }
 
 // ResolveKey resolves the first key that yields a non-empty value.

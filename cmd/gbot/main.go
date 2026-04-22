@@ -248,14 +248,14 @@ func createAllProviders(cfg *config.Config) ProviderMap {
 		if model == "" {
 			model = p.Models[config.TierPro]
 		}
-		switch p.Name {
-		case "openai":
+		switch p.ProviderType() {
+		case config.ProviderTypeOpenAI:
 			m[p.Name] = llm.NewOpenAIProvider(&llm.OpenAIConfig{
 				APIKey:  apiKey,
 				BaseURL: p.URL,
 				Model:   model,
 			})
-		default: // "anthropic" or empty
+		default: // anthropic
 			url := p.URL
 			if url == "" {
 				url = "https://api.anthropic.com"

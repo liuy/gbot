@@ -704,6 +704,30 @@ func TestProvider_ModelFor_FallbackToPro(t *testing.T) {
 	}
 }
 
+func TestProvider_ProviderType(t *testing.T) {
+	tests := []struct {
+		name string
+		p    config.Provider
+		want string
+	}{
+		{"explicit openai", config.Provider{Type: "openai", URL: "https://anything.com"}, "openai"},
+		{"explicit anthropic", config.Provider{Type: "anthropic", URL: "https://anything.com"}, "anthropic"},
+		{"auto with anthropic url", config.Provider{URL: "https://api.anthropic.com"}, "anthropic"},
+		{"auto with openai url", config.Provider{URL: "https://api.openai.com"}, "openai"},
+		{"auto with custom url", config.Provider{URL: "https://open.bigmodel.cn/api/paas"}, "openai"},
+		{"empty type and url", config.Provider{}, "openai"},
+		{"type auto", config.Provider{Type: "auto", URL: "https://api.anthropic.com"}, "anthropic"},
+		{"auto with anthropic in path", config.Provider{URL: "https://api.minimaxi.com/anthropic"}, "anthropic"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.p.ProviderType(); got != tc.want {
+				t.Errorf("ProviderType() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoad_ProviderConfig(t *testing.T) {
 	dir := t.TempDir()
 
