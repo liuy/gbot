@@ -9,13 +9,13 @@ import (
 
 // SlashCommand represents a parsed slash command from user input.
 type SlashCommand struct {
-	Name string // e.g. "switch"
+	Name string // e.g. "session"
 	Args string // everything after the command name, e.g. "-n title"
 }
 
 // commandDefs maps slash command names to their definitions.
 var commandDefs = map[string]struct{}{
-	"switch": {},
+	"session": {},
 	"clear":  {},
 	"model":  {},
 }
@@ -53,8 +53,8 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 	slog.Info("tui:slash_command", "name", cmd.Name, "args", cmd.Args)
 
 	switch cmd.Name {
-	case "switch":
-		return a.handleSwitch(cmd.Args, commitCmd)
+	case "session":
+		return a.handleSession(cmd.Args, commitCmd)
 	case "clear":
 		return a.handleClear(commitCmd)
 	case "model":

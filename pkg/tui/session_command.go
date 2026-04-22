@@ -13,16 +13,16 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 )
 
-// handleSwitch implements the /switch command.
+// handleSession implements the /session command.
 //
-//	/switch          → show session picker (US-009)
-//	/switch -n       → create new empty session
-//	/switch -n title → create new session with title
-//	/switch title    → fork current session and switch to fork
-func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
+//	/session          → show session picker (US-009)
+//	/session -n       → create new empty session
+//	/session -n title → create new session with title
+//	/session title    → fork current session and switch to fork
+func (a *App) handleSession(args string, commitCmd tea.Cmd) tea.Cmd {
 	// Guard: no switching while streaming
 	if a.repl.IsStreaming() {
-		return a.showInfo("Cannot switch sessions while streaming")
+		return a.showInfo("Cannot switch session while streaming")
 	}
 
 	// Guard: no store
@@ -32,7 +32,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 
 	// Parse args
 	if args == "" {
-		// /switch with no args → open session picker
+		// /session with no args → open session picker
 		return a.openPicker(commitCmd)
 		}
 	if args == "-n" {
@@ -42,7 +42,7 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 	if strings.HasPrefix(args, "-n ") {
 		title := strings.TrimSpace(args[3:])
 		if title == "" {
-			return a.showInfo("Title cannot be empty. Usage: /switch -n <title>")
+			return a.showInfo("Title cannot be empty. Usage: /session -n <title>")
 		}
 		return a.createNewSession(title, "Switched to", commitCmd)
 	}
@@ -55,13 +55,13 @@ func (a *App) handleSwitch(args string, commitCmd tea.Cmd) tea.Cmd {
 func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	session, err := a.store.CreateSession(a.projectDir, a.engine.Model())
 	if err != nil {
-		slog.Error("switch: create session failed", "error", err)
+		slog.Error("session: create session failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to create session: %v", err))
 	}
 
 	if title != "" {
 		if err := a.store.UpdateSessionTitle(session.SessionID, title); err != nil {
-			slog.Error("switch: set title failed", "error", err)
+			slog.Error("session: set title failed", "error", err)
 		}
 	}
 
@@ -89,14 +89,14 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
-		slog.Warn("switch: write workspace meta failed", "error", err)
+		slog.Warn("session: write workspace meta failed", "error", err)
 	}
 
 	displayTitle := title
 	if displayTitle == "" {
 		displayTitle = session.SessionID[:8]
 	}
-	slog.Info("switch: created new session", "sessionID", session.SessionID, "title", title)
+	slog.Info("session: created new session", "sessionID", session.SessionID, "title", title)
 
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
 }
@@ -110,7 +110,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	// Duplicate title detection
 	sessions, err := a.store.ListSessions(a.projectDir, 1000)
 	if err != nil {
-		slog.Error("switch: list sessions failed", "error", err)
+		slog.Error("session: list sessions failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to check titles: %v", err))
 	}
 	for _, s := range sessions {
@@ -122,19 +122,19 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	// Fork: forkPointSeq=0 means fork all messages
 	forked, err := a.store.ForkSession(a.sessionID, 0, "")
 	if err != nil {
-		slog.Error("switch: fork session failed", "error", err)
+		slog.Error("session: fork session failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to fork session: %v", err))
 	}
 
 	// Set title on forked session
 	if err := a.store.UpdateSessionTitle(forked.SessionID, title); err != nil {
-		slog.Error("switch: set fork title failed", "error", err)
+		slog.Error("session: set fork title failed", "error", err)
 	}
 
 	// Load and convert forked messages
 	engineMsgs, err := loadAndConvertMessages(a.store, forked.SessionID)
 	if err != nil {
-		slog.Error("switch: load/convert forked messages failed", "error", err)
+		slog.Error("session: load/convert forked messages failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to load forked messages: %v", err))
 	}
 
@@ -151,10 +151,10 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
-		slog.Warn("switch: write workspace meta failed", "error", err)
+		slog.Warn("session: write workspace meta failed", "error", err)
 	}
 
-	slog.Info("switch: forked session", "parent", parentID, "child", forked.SessionID, "title", title)
+	slog.Info("session: forked session", "parent", parentID, "child", forked.SessionID, "title", title)
 
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Forked session: %s", title)))
 }

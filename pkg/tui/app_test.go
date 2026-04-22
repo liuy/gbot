@@ -4630,8 +4630,8 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	store.CreateSession(dir, "model") //nolint:errcheck
 	app.SetStore(store, "existing-session", dir, 0)
 
-	app.handleSlashCommand(SlashCommand{Name: "switch"}, nil)
+	app.handleSlashCommand(SlashCommand{Name: "session"}, nil)
 	if app.listPicker == nil {
-		t.Error("listPicker should be set after /switch")
+		t.Error("listPicker should be set after /session")
 	}
 }

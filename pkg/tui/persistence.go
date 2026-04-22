@@ -52,7 +52,7 @@ func (a *App) persistTurn() {
 	if a.lastPersistedIdx == 0 && len(storeMsgs) > 0 {
 		title := extractUserTitle(uncommitted)
 		if title != "" {
-			// Only set if no custom title exists (e.g. /switch -n "my title")
+			// Only set if no custom title exists (e.g. /session -n "my title")
 			if ses, err := a.store.GetSession(a.sessionID); err == nil && ses.Title == "" {
 				if err := a.store.UpdateSessionTitle(a.sessionID, title); err != nil {
 					slog.Error("persistTurn: auto-title", "error", err)

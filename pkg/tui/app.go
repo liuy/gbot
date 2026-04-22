@@ -53,7 +53,7 @@ type App struct {
 	lastPersistedIdx int    // tracks how many engine messages have been persisted
 	projectDir       string // working directory for .gbot/meta.json
 
-	// Picker overlay (generic ListPicker for /switch, /model, etc.)
+	// Picker overlay (generic ListPicker for /session, /model, etc.)
 	listPicker   *ListPicker
 	onPickerDone func(*ListPicker) (tea.Model, tea.Cmd)
 
@@ -169,7 +169,7 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 }
 
 // resetDisplayState zeros all App-level display fields for a clean session.
-// Called by createNewSession so both /clear and /switch -n benefit.
+// Called by createNewSession so both /clear and /session -n benefit.
 func (a *App) resetDisplayState() {
 	a.scrollOffset = 0
 	a.scrollTotal = 0

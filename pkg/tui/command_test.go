@@ -9,17 +9,17 @@ func TestLookupSlashCommand(t *testing.T) {
 		wantName string
 		wantArgs string
 	}{
-		{"/switch", true, "switch", ""},
-		{"/switch -n", true, "switch", "-n"},
-		{"/switch -n title", true, "switch", "-n title"},
-		{"/switch title", true, "switch", "title"},
-		{"/switch   extra   spaces", true, "switch", "extra   spaces"},
+		{"/session", true, "session", ""},
+		{"/session -n", true, "session", "-n"},
+		{"/session -n title", true, "session", "-n title"},
+		{"/session title", true, "session", "title"},
+		{"/session   extra   spaces", true, "session", "extra   spaces"},
 		{"/clear", true, "clear", ""},
 		{"/unknown", false, "", ""},
 		{"hello", false, "", ""},
 		{"not a command", false, "", ""},
 		{"", false, "", ""},
-		{"  /switch  -n test  ", true, "switch", "-n test"},
+		{"  /session  -n test  ", true, "session", "-n test"},
 	}
 
 	for _, tc := range tests {

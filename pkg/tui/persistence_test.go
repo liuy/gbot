@@ -232,7 +232,7 @@ func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	// Pre-set a custom title (simulates /switch -n "my session")
+	// Pre-set a custom title (simulates /session -n "my session")
 	if err := store.UpdateSessionTitle(session.SessionID, "my custom title"); err != nil {
 		t.Fatalf("UpdateSessionTitle: %v", err)
 	}

@@ -62,7 +62,7 @@ func persistTestMessages(t *testing.T, a *App) {
 // ------- RED PHASE: these tests should fail before the fix -------
 
 // TestIntegration_PickerShowsAllSessionsAfterFork verifies the core bug:
-// after /switch title (fork), /switch (picker) must show BOTH sessions.
+// after /session title (fork), /session (picker) must show BOTH sessions.
 //
 // BUG: openPicker used ListSessions("") while sessions were created with
 // real projectDir, so the picker found zero sessions.
@@ -75,8 +75,8 @@ func TestIntegration_PickerShowsAllSessionsAfterFork(t *testing.T) {
 		t.Fatalf("expected lastPersistedIdx=4 after persist, got %d", a.lastPersistedIdx)
 	}
 
-	// /switch my-fork → fork current session
-	_ = a.handleSwitch("my-fork", nil)
+	// /session my-fork → fork current session
+	_ = a.handleSession("my-fork", nil)
 	if a.sessionID == "" {
 		t.Fatal("expected session ID after fork")
 	}
@@ -90,7 +90,7 @@ func TestIntegration_PickerShowsAllSessionsAfterFork(t *testing.T) {
 		t.Fatalf("expected >= 2 sessions in DB with projectDir=%q, got %d", projectDir, len(sessions))
 	}
 
-	// Now simulate /switch (no args) → openPicker
+	// Now simulate /session (no args) → openPicker
 	// The bug was: openPicker called ListSessions("") which returns 0 results
 	pickerSessions, err := store.ListSessions(a.projectDir, 100)
 	if err != nil {
@@ -115,7 +115,7 @@ func TestIntegration_ForkCarriesHistory(t *testing.T) {
 
 	// Fork
 	forkedSessionID := a.sessionID
-	cmd := a.handleSwitch("history-fork", nil)
+	cmd := a.handleSession("history-fork", nil)
 	_ = cmd
 	newSessionID := a.sessionID
 
@@ -155,7 +155,7 @@ func TestIntegration_ForkCarriesHistory(t *testing.T) {
 	}
 }
 
-// TestIntegration_NewSessionIsEmpty verifies /switch -n creates
+// TestIntegration_NewSessionIsEmpty verifies /session -n creates
 // a clean session with no messages and the correct projectDir.
 func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 	a, store, projectDir := newIntegrationApp(t)
@@ -166,8 +166,8 @@ func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 		t.Fatalf("setup: expected 4 messages, got %d", len(a.engine.Messages()))
 	}
 
-	// /switch -n
-	cmd := a.handleSwitch("-n", nil)
+	// /session -n
+	cmd := a.handleSession("-n", nil)
 	_ = cmd
 
 	// Engine should be empty
@@ -199,11 +199,11 @@ func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 	}
 }
 
-// TestIntegration_NewSessionWithTitle verifies /switch -n My Title.
+// TestIntegration_NewSessionWithTitle verifies /session -n My Title.
 func TestIntegration_NewSessionWithTitle(t *testing.T) {
 	a, store, projectDir := newIntegrationApp(t)
 
-	cmd := a.handleSwitch("-n My Project", nil)
+	cmd := a.handleSession("-n My Project", nil)
 	_ = cmd
 
 	sessions, err := store.ListSessions(projectDir, 100)
@@ -232,7 +232,7 @@ func TestIntegration_SwitchBackViaPickerRestoreMessages(t *testing.T) {
 	persistTestMessages(t, a)
 
 	// Fork → switches to new session
-	a.handleSwitch("temp-fork", nil)
+	a.handleSession("temp-fork", nil)
 	forkedSessionID := a.sessionID
 	if forkedSessionID == originalSessionID {
 		t.Fatal("fork should change session ID")
@@ -279,14 +279,14 @@ func TestIntegration_ForkThenNewThenPickerShowsAll(t *testing.T) {
 	persistTestMessages(t, a)
 
 	// Fork
-	a.handleSwitch("my-fork", nil)
+	a.handleSession("my-fork", nil)
 	forkID := a.sessionID
 	if forkID == originalID {
 		t.Fatal("fork should change session ID")
 	}
 
 	// New session
-	a.handleSwitch("-n fresh-start", nil)
+	a.handleSession("-n fresh-start", nil)
 	newID := a.sessionID
 	if newID == forkID || newID == originalID {
 		t.Fatal("new session should have unique ID")
@@ -345,7 +345,7 @@ func TestIntegration_ForkPreservesToolUseMessages(t *testing.T) {
 	}
 
 	// Fork
-	cmd := a.handleSwitch("tool-fork", nil)
+	cmd := a.handleSession("tool-fork", nil)
 	_ = cmd
 
 	// Load forked messages
@@ -406,7 +406,7 @@ func TestIntegration_MultipleForks(t *testing.T) {
 	// Fork 3 times from the original (need to switch back each time)
 	for i := range 3 {
 		// Fork
-		a.handleSwitch("fork-"+string(rune('A'+i)), nil)
+		a.handleSession("fork-"+string(rune('A'+i)), nil)
 		sessionIDs = append(sessionIDs, a.sessionID)
 
 		// Switch back to original for next fork
@@ -456,7 +456,7 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 	}
 
 	// Fork A
-	_ = a.handleSwitch("fork-A", nil)
+	_ = a.handleSession("fork-A", nil)
 	forkAID := a.sessionID
 	if forkAID == originalID {
 		t.Fatal("fork A should have different ID")
@@ -501,7 +501,7 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 	}
 
 	// Fork B from original
-	_ = a.handleSwitch("fork-B", nil)
+	_ = a.handleSession("fork-B", nil)
 	forkBID := a.sessionID
 
 	// Fork B should have exactly 4 messages (original content, not fork A's extras)
@@ -587,7 +587,7 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 	persistTestMessages(t, a)
 
 	// Fork with extra state
-	_ = a.handleSwitch("fork-X", nil)
+	_ = a.handleSession("fork-X", nil)
 	forkXID := a.sessionID
 
 	// Add messages to fork X in engine
@@ -646,7 +646,7 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	persistTestMessages(t, a)
 
 	// First fork succeeds
-	cmd := a.handleSwitch("unique-title", nil)
+	cmd := a.handleSession("unique-title", nil)
 	_ = cmd
 	_ = a.sessionID
 
@@ -663,7 +663,7 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	}
 
 	// Now try to fork with same title
-	cmd = a2.handleSwitch("taken-title", nil)
+	cmd = a2.handleSession("taken-title", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {

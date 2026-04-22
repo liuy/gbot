@@ -12,7 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-func newSwitchTestApp(t *testing.T) (*App, *short.Store) {
+func newSessionTestApp(t *testing.T) (*App, *short.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := short.NewStore(filepath.Join(dir, "test.db"))
@@ -40,10 +40,10 @@ func newSwitchTestApp(t *testing.T) (*App, *short.Store) {
 }
 
 func TestHandleSwitch_Streaming(t *testing.T) {
-	a, _ := newSwitchTestApp(t)
+	a, _ := newSessionTestApp(t)
 	a.repl.streaming = true
 
-	cmd := a.handleSwitch("-n", nil)
+	cmd := a.handleSession("-n", nil)
 	if cmd == nil {
 		t.Fatal("expected a command from streaming guard")
 	}
@@ -55,10 +55,10 @@ func TestHandleSwitch_Streaming(t *testing.T) {
 }
 
 func TestHandleSwitch_NewSessionNoTitle(t *testing.T) {
-	a, _ := newSwitchTestApp(t)
+	a, _ := newSessionTestApp(t)
 	oldSessionID := a.sessionID
 
-	cmd := a.handleSwitch("-n", nil)
+	cmd := a.handleSession("-n", nil)
 	_ = cmd
 
 	if a.sessionID == oldSessionID {
@@ -77,9 +77,9 @@ func TestHandleSwitch_NewSessionNoTitle(t *testing.T) {
 }
 
 func TestHandleSwitch_NewSessionWithTitle(t *testing.T) {
-	a, store := newSwitchTestApp(t)
+	a, store := newSessionTestApp(t)
 
-	cmd := a.handleSwitch("-n My New Session", nil)
+	cmd := a.handleSession("-n My New Session", nil)
 	_ = cmd
 
 	// Verify session was created with title
@@ -100,7 +100,7 @@ func TestHandleSwitch_NewSessionWithTitle(t *testing.T) {
 }
 
 func TestHandleSwitch_ForkWithDuplicateTitle(t *testing.T) {
-	a, store := newSwitchTestApp(t)
+	a, store := newSessionTestApp(t)
 
 	// Create a session with a known title
 	session, _ := store.CreateSession(a.projectDir, "test-model")
@@ -109,7 +109,7 @@ func TestHandleSwitch_ForkWithDuplicateTitle(t *testing.T) {
 	}
 
 	// Try to fork with duplicate title
-	cmd := a.handleSwitch("existing-title", nil)
+	cmd := a.handleSession("existing-title", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -124,7 +124,7 @@ func TestHandleSwitch_ForkWithDuplicateTitle(t *testing.T) {
 }
 
 func TestHandleSwitch_ForkSuccess(t *testing.T) {
-	a, store := newSwitchTestApp(t)
+	a, store := newSessionTestApp(t)
 
 	// Add and persist messages to the current session
 	a.engine.SetMessages([]types.Message{
@@ -138,7 +138,7 @@ func TestHandleSwitch_ForkSuccess(t *testing.T) {
 	}
 
 	// Fork
-	cmd := a.handleSwitch("fork-title", nil)
+	cmd := a.handleSession("fork-title", nil)
 	_ = cmd
 
 	if a.sessionID == "" {
@@ -171,7 +171,7 @@ func TestHandleSwitch_NoStore(t *testing.T) {
 		repl:   NewReplState(),
 	}
 
-	cmd := a.handleSwitch("-n", nil)
+	cmd := a.handleSession("-n", nil)
 	msg := cmd()
 	if _, ok := msg.(infoMsg); !ok {
 		t.Fatalf("expected infoMsg about no store, got %T", msg)
@@ -183,7 +183,7 @@ func TestHandleSwitch_NoStore(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleClear_Streaming(t *testing.T) {
-	a, _ := newSwitchTestApp(t)
+	a, _ := newSessionTestApp(t)
 	a.repl.streaming = true
 
 	cmd := a.handleClear(nil)
@@ -218,7 +218,7 @@ func TestHandleClear_NoStore(t *testing.T) {
 }
 
 func TestHandleClear_Success(t *testing.T) {
-	a, _ := newSwitchTestApp(t)
+	a, _ := newSessionTestApp(t)
 	oldSessionID := a.sessionID
 
 	// Set some state that should be cleared
