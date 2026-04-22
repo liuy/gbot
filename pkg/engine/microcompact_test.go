@@ -837,3 +837,12 @@ func TestCollectCompactableToolIds_Order(t *testing.T) {
 		}
 	}
 }
+
+func TestNoOpStubs(t *testing.T) {
+	t.Parallel()
+
+	// These are intentional no-ops (source unavailable). Verify they don't panic.
+	PinCacheEdits(0, nil)
+	MarkToolsSentToAPIState()
+	ResetMicrocompactState()
+}

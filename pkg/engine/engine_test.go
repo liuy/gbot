@@ -3059,3 +3059,34 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 		t.Errorf("Grep input = %q, want %q", string(inputs["Grep"]), `{"pattern": "TODO"}`)
 	}
 }
+
+func TestSetCompactor(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Set compactor and verify it doesn't panic
+	eng.SetCompactor(
+		&mockCompactor{},
+		engine.AutoCompactConfig{
+			Threshold:              0.9,
+			ContextWindow:          100000,
+			MaxConsecutiveFailures: 3,
+		},
+	)
+
+	// Verify concurrent SetCompactor doesn't race
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			eng.SetCompactor(&mockCompactor{}, engine.AutoCompactConfig{Threshold: 0.5})
+		}()
+	}
+	wg.Wait()
+}

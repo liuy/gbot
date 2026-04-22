@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1810,5 +1811,192 @@ func TestNewSubEngine_SetsAgentType(t *testing.T) {
 	// Main engine should have empty agentType
 	if parent.agentType != "" {
 		t.Errorf("parent.agentType = %q, want empty", parent.agentType)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// truncateToolOutput tests
+// ---------------------------------------------------------------------------
+
+func TestTruncateToolOutput(t *testing.T) {
+	t.Parallel()
+
+	// maxChars <= 0: pass through
+	input := []byte("hello world")
+	got := truncateToolOutput(input, 0)
+	if string(got) != "hello world" {
+		t.Errorf("maxChars=0: got %q, want %q", string(got), "hello world")
+	}
+	got = truncateToolOutput(input, -1)
+	if string(got) != "hello world" {
+		t.Errorf("maxChars=-1: got %q, want %q", string(got), "hello world")
+	}
+
+	// Short output: pass through
+	got = truncateToolOutput(input, 100)
+	if string(got) != "hello world" {
+		t.Errorf("short output: got %q, want %q", string(got), "hello world")
+	}
+
+	// Exact length: no truncation
+	got = truncateToolOutput(input, 11)
+	if string(got) != "hello world" {
+		t.Errorf("exact length: got %q, want %q", string(got), "hello world")
+	}
+
+	// Truncation: output cut at maxChars + suffix
+	got = truncateToolOutput(input, 5)
+	if string(got) != "hello\n\n[Output truncated]" {
+		t.Errorf("truncated: got %q, want %q", string(got), "hello\n\n[Output truncated]")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// marshalToolOutput tests
+// ---------------------------------------------------------------------------
+
+type wireFormatTool struct {
+	minimalTool
+}
+
+func (w *wireFormatTool) FormatWireResult(data any) string {
+	return fmt.Sprintf("custom:%v", data)
+}
+
+func TestMarshalToolOutput(t *testing.T) {
+	t.Parallel()
+
+	// ToolWithWireFormat: uses custom format
+	wfTool := &wireFormatTool{}
+	got := marshalToolOutput(wfTool, "result", false)
+	if string(got) != `"custom:result"` {
+		t.Errorf("wire format: got %q, want %q", string(got), `"custom:result"`)
+	}
+
+	// doubleWrap=false: raw JSON
+	plainTool := &minimalTool{}
+	got = marshalToolOutput(plainTool, map[string]string{"key": "val"}, false)
+	if string(got) != `{"key":"val"}` {
+		t.Errorf("doubleWrap=false: got %q, want %q", string(got), `{"key":"val"}`)
+	}
+
+	// doubleWrap=true: double-wrapped JSON string
+	got = marshalToolOutput(plainTool, "hello", true)
+	var unwrapped string
+	if err := json.Unmarshal(got, &unwrapped); err != nil {
+		t.Fatalf("doubleWrap=true: outer unmarshal failed: %v", err)
+	}
+	if unwrapped != `"hello"` {
+		t.Errorf("doubleWrap=true inner: got %q, want %q", unwrapped, `"hello"`)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SequentialToolLoop panic test
+// ---------------------------------------------------------------------------
+
+func TestSequentialToolLoop_Panics(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Error("SequentialToolLoop should panic")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "deprecated") {
+			t.Errorf("panic message should mention deprecated, got: %v", r)
+		}
+	}()
+
+	SequentialToolLoop(context.Background(), nil, nil, nil, nil)
+}
+
+// ---------------------------------------------------------------------------
+// shouldAutoCompact tests
+// ---------------------------------------------------------------------------
+
+type internalMockCompactor struct{}
+
+func (c *internalMockCompactor) Compact(_ context.Context, messages []types.Message) ([]types.Message, error) {
+	return messages, nil
+}
+
+func TestShouldAutoCompact(t *testing.T) {
+	t.Parallel()
+
+	// No compactor → false
+	eng := New(&Params{Model: "test"})
+	if eng.shouldAutoCompact() {
+		t.Error("should be false without compactor")
+	}
+
+	// Set compactor with valid config
+	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.9,
+		ContextWindow: 100000,
+	})
+	// No messages → tokens=0 → below threshold → false
+	if eng.shouldAutoCompact() {
+		t.Error("should be false with 0 tokens")
+	}
+
+	// Subagent → always false
+	sub := eng.NewSubEngine(SubEngineOptions{
+		AgentType: "Explore",
+	})
+	sub.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.5,
+		ContextWindow: 100000,
+	})
+	if sub.shouldAutoCompact() {
+		t.Error("subagent should never auto-compact")
+	}
+
+	// Invalid config (zero values) → false
+	eng2 := New(&Params{Model: "test"})
+	eng2.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0,
+		ContextWindow: 100000,
+	})
+	if eng2.shouldAutoCompact() {
+		t.Error("should be false with Threshold=0")
+	}
+	eng2.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.9,
+		ContextWindow: 0,
+	})
+	if eng2.shouldAutoCompact() {
+		t.Error("should be false with ContextWindow=0")
+	}
+
+	// Circuit breaker: too many failures → false
+	eng3 := New(&Params{Model: "test"})
+	eng3.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:              0.5,
+		ContextWindow:          100,
+		MaxConsecutiveFailures: 2,
+	})
+	eng3.consecutiveCompactFailures = 2
+	// Even with high tokens, circuit breaker trips
+	eng3.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if eng3.shouldAutoCompact() {
+		t.Error("should be false when circuit breaker trips")
+	}
+
+	// Default MaxConsecutiveFailures (0 → defaults to 3)
+	eng4 := New(&Params{Model: "test"})
+	eng4.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.5,
+		ContextWindow: 100,
+	})
+	eng4.consecutiveCompactFailures = 3
+	eng4.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+	if eng4.shouldAutoCompact() {
+		t.Error("should be false with default circuit breaker at 3 failures")
 	}
 }
