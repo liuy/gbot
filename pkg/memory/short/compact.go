@@ -775,7 +775,9 @@ func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID,
 	var compactMetadata CompactMetadata
 	if ok {
 		compactMetadataBytes, _ := json.Marshal(compactMetadataJSON)
-		_ = json.Unmarshal(compactMetadataBytes, &compactMetadata)
+		if err := json.Unmarshal(compactMetadataBytes, &compactMetadata); err != nil {
+			slog.Warn("compact: failed to parse compactMetadata", "error", err)
+		}
 	}
 
 	// Add preserved segment

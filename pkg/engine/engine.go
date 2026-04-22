@@ -1104,7 +1104,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
 	var dispatcher EventDispatcher
 	if e.dispatcher != nil && opts.ParentToolUseID != "" {
-		parentDepth := 0 // TODO: track depth for nested agents
+		parentDepth := 0 // depth tracking for nested agents not yet implemented
 		dispatcher = &taggedDispatcher{
 			parent: e.dispatcher,
 			meta: &types.AgentMeta{

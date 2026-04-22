@@ -35,10 +35,18 @@ import (
 )
 
 func main() {
-	// Debug logging: always write info-level events to /tmp/gbot.log
+	// Debug logging: write info-level events to log file.
 	// This provides comprehensive observability for diagnosing token stats,
 	// event ordering, and rendering issues.
-	if f, err := os.OpenFile("/tmp/gbot.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+	var logPath string
+	if home, err := os.UserHomeDir(); err == nil {
+		logDir := filepath.Join(home, ".gbot")
+		_ = os.MkdirAll(logDir, 0755)
+		logPath = filepath.Join(logDir, "gbot.log")
+	} else {
+		logPath = filepath.Join(os.TempDir(), "gbot.log")
+	}
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
 		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
 
@@ -246,31 +254,9 @@ func createProvider(cfg *config.Config) (llm.Provider, string) {
 	}), cfg.Model
 }
 
-// loadConfig reads configuration from the minimax settings file then env vars.
+// loadConfig reads configuration from gbot's own settings files and env vars.
 func loadConfig() (*config.Config, error) {
-	// Try ~/.claude/settings.minimax.json first
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		minimaxPath := filepath.Join(homeDir, ".claude", "settings.minimax.json")
-		if _, err := os.Stat(minimaxPath); err == nil {
-			cfg, err := config.LoadFromSettingsFile(minimaxPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to load %s: %v\n", minimaxPath, err)
-			} else {
-				// Settings file is authoritative — do NOT apply env overrides.
-				// Env vars (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL etc.) may belong
-				// to a different provider (e.g. GLM) and would corrupt minimax config.
-				return cfg, nil
-			}
-		}
-	}
-
-	// Fallback to standard config loading
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return config.Load()
 }
 
 

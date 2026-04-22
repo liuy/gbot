@@ -142,50 +142,6 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// LoadFromSettingsFile reads from a specific settings file path.
-// Used for reading ~/.claude/settings.minimax.json format.
-func LoadFromSettingsFile(path string) (*Config, error) {
-	cfg := DefaultConfig()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read settings: %w", err)
-	}
-
-	// Parse the settings file format (env section)
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse settings: %w", err)
-	}
-
-	// Extract env section
-	if envRaw, ok := raw["env"]; ok {
-		var env map[string]string
-		if err := json.Unmarshal(envRaw, &env); err == nil {
-			if v, ok := env["ANTHROPIC_BASE_URL"]; ok {
-				cfg.BaseURL = strings.TrimRight(v, "/")
-			}
-			if v, ok := env["ANTHROPIC_AUTH_TOKEN"]; ok {
-				cfg.APIKey = v
-			}
-			if v, ok := env["ANTHROPIC_MODEL"]; ok {
-				cfg.Model = v
-			}
-			if v, ok := env["ANTHROPIC_SMALL_FAST_MODEL"]; ok {
-				cfg.SmallModel = v
-			}
-			if v, ok := env["API_TIMEOUT_MS"]; ok {
-				var ms int
-				if _, err := fmt.Sscanf(v, "%d", &ms); err == nil && ms > 0 {
-					cfg.APITimeoutMS = ms
-				}
-			}
-		}
-	}
-
-	return cfg, nil
-}
-
 func loadFromFile(cfg *Config, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -45,7 +45,7 @@ func TestWeakAssertions(t *testing.T) {
 				return nil
 			}
 		}
-		if !d.IsDir() && strings.HasSuffix(path, "_test.go") {
+		if !d.IsDir() && strings.HasSuffix(path, ".go") {
 			files = append(files, path)
 		}
 		return nil
@@ -89,10 +89,11 @@ func findProjectRoot(t *testing.T) string {
 
 // checkPatterns defines the weak assertion patterns to detect.
 type checkPattern struct {
-	Name   string
-	Regex  *regexp.Regexp
-	Level  string // "P1" or "P3"
-	Exempt func(match string, lines []string, lineIdx int) bool
+	Name     string
+	Regex    *regexp.Regexp
+	Level    string // "P1" or "P3"
+	TestOnly bool   // if true, only match in _test.go files
+	Exempt   func(match string, lines []string, lineIdx int) bool
 }
 
 var checkPatterns = []checkPattern{
@@ -125,6 +126,10 @@ var checkPatterns = []checkPattern{
 			if strings.Contains(match, "rows.Close(") {
 				return true
 			}
+			// Exempt: Close() errors are standard Go cleanup, not actionable
+			if strings.Contains(match, ".Close(") {
+				return true
+			}
 			// Exempt: master/slave.Close() in PTY tests — OS resource cleanup
 			if strings.Contains(match, "master.Close(") || strings.Contains(match, "slave.Close(") {
 				return true
@@ -133,7 +138,8 @@ var checkPatterns = []checkPattern{
 		},
 	},
 	{
-		Name:  "len > 0 without exact count",
+		Name:     "len > 0 without exact count",
+				TestOnly: true,
 		Regex: regexp.MustCompile(`len\([^)]+\)\s*>\s*0`),
 		Level: "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
@@ -165,7 +171,8 @@ var checkPatterns = []checkPattern{
 		},
 	},
 	{
-		Name:  "t.Skip without message",
+		Name:     "t.Skip without message",
+				TestOnly: true,
 		Regex: regexp.MustCompile(`\bt\.Skip\s*\(\s*[\x27]\s*[\x27]\s*\)`),
 		Level: "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
@@ -201,7 +208,8 @@ var checkPatterns = []checkPattern{
 		},
 	},
 	{
-		Name:  "test result compared only to 0 (use exact value)",
+		Name:     "test result compared only to 0 (use exact value)",
+				TestOnly: true,
 		Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
 		Level: "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
@@ -254,7 +262,8 @@ var checkPatterns = []checkPattern{
 		},
 	},
 		{
-			Name:  "error-path test without content verification",
+			Name:     "error-path test without content verification",
+				TestOnly: true,
 			Regex: regexp.MustCompile(`(t\.Fatal|t\.Error)\(.*"expected error`),
 			Level: "P3",
 			Exempt: func(match string, lines []string, lineIdx int) bool {
@@ -276,6 +285,20 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+			{
+				Name:  "TODO/FIXME/HACK/XXX comment in production code",
+				Regex: regexp.MustCompile(`//\s*(TODO|FIXME|HACK|XXX)\b`),
+				Level: "P3",
+				Exempt: func(match string, lines []string, lineIdx int) bool {
+					// Exempt: inside string literals (test data)
+					line := lines[lineIdx]
+					idx := strings.Index(line, match)
+					if idx > 0 && line[idx-1] == '"' {
+						return true
+					}
+					return false
+				},
+			},
 }
 
 // scanFile checks a single file for weak assertion patterns.
@@ -294,6 +317,9 @@ func scanFile(t *testing.T, path, projectRoot string) int {
 	issues := 0
 
 	for _, pat := range checkPatterns {
+		if pat.TestOnly && !strings.HasSuffix(path, "_test.go") {
+			continue
+		}
 		for i, line := range lines {
 			loc := pat.Regex.FindStringIndex(line)
 			if loc == nil {

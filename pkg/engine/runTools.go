@@ -337,7 +337,9 @@ func getToolDescription(tt *TrackedTool) string {
 		FilePath string `json:"file_path"`
 		Pattern  string `json:"pattern"`
 	}
-	_ = json.Unmarshal(tt.Input, &input)
+	if err := json.Unmarshal(tt.Input, &input); err != nil {
+		return tt.Name
+	}
 	summary := input.Command
 	if summary == "" {
 		summary = input.FilePath

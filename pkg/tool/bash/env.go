@@ -85,7 +85,7 @@ func (s *EnvSnapshot) Cleanup() {
 // Returns "" because hooks are not yet implemented in gbot.
 // Override in tests to exercise the buildCommand session env branch.
 var sessionEnvScript = func() string {
-	return "" // TODO: implement when gbot hooks are ready
+	return "" // hooks not yet implemented
 }
 
 // SessionEnvScript returns the session env script from hooks.

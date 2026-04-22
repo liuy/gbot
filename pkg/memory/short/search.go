@@ -3,6 +3,7 @@ package short
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"fmt"
 	"regexp"
 	"strings"
@@ -119,7 +120,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		var subtype sql.NullString
 		var parentUUID, logicalParentUUID sql.NullString
 
-		_ = rows.Scan(
+		if err := rows.Scan(
 			&msg.Seq,
 			&msg.SessionID,
 			&msg.UUID,
@@ -131,7 +132,10 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 			&msg.Content,
 			&msg.CreatedAt,
 			&score,
-		)
+		); err != nil {
+			slog.Warn("search: scan message row", "error", err)
+			continue
+		}
 		if parentUUID.Valid {
 			msg.ParentUUID = parentUUID.String
 		}

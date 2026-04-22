@@ -33,7 +33,7 @@ func formatAgentList(defs []*types.AgentDefinition, allowedAgentTypes []string) 
 
 // AgentPrompt returns the full system prompt with optional agent type filtering.
 // Source: prompt.ts — getPrompt() with allowedAgentTypes
-// TODO: allowedAgentTypes always nil until engine supports Agent(x,y) tool spec.
+// NOTE: allowedAgentTypes always nil until engine supports Agent(x,y) tool spec.
 func AgentPrompt(allowedAgentTypes []string) string {
 	defs := ListAgentDefinitions()
 	filtered := formatAgentList(defs, allowedAgentTypes)

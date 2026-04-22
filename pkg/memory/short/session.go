@@ -3,6 +3,7 @@ package short
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"fmt"
 	"regexp"
 	"strings"
@@ -344,7 +345,9 @@ func (s *Store) getSession(sessionID string) (*Session, error) {
 		ses.Mode = mode.String
 	}
 	if settingsJSON != "" {
-		_ = json.Unmarshal([]byte(settingsJSON), &ses.Settings)
+		if err := json.Unmarshal([]byte(settingsJSON), &ses.Settings); err != nil {
+		slog.Warn("session: failed to parse settings", "error", err)
+	}
 	}
 	if ses.Settings == nil {
 		ses.Settings = map[string]string{}

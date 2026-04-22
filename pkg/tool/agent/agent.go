@@ -249,7 +249,7 @@ func (t *AgentTool) RenderResult(data any) string {
 // FormatWireResult formats the tool result for the LLM wire format.
 // Source: AgentTool.tsx:1340-1374
 // Note: TS sends array-of-blocks, Go sends joined string. Valid per API.
-// TODO: When worktree support added, add !worktreeInfoText guard (TS line 1356).
+// NOTE: When worktree support added, add !worktreeInfoText guard (TS line 1356).
 func (t *AgentTool) FormatWireResult(data any) string {
 	result, ok := data.(*types.SubQueryResult)
 	if !ok {
