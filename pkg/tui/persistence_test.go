@@ -3,6 +3,7 @@ package tui
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,5 +170,141 @@ func TestPersistTurn_Incremental(t *testing.T) {
 	msgs, _ := store.LoadMessages(session.SessionID)
 	if len(msgs) != 3 {
 		t.Fatalf("expected 3 messages in store, got %d", len(msgs))
+	}
+}
+
+func TestPersistTurn_AutoTitle(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Session should have no title initially
+	ses, err := store.GetSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if ses.Title != "" {
+		t.Fatalf("initial title should be empty, got %q", ses.Title)
+	}
+
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Now()},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Now()},
+	})
+
+	a := &App{
+		engine:           eng,
+		store:            store,
+		sessionID:        session.SessionID,
+		lastPersistedIdx: 0,
+	}
+
+	a.persistTurn()
+
+	// After first persist, session should be auto-titled with the first user prompt
+	ses, err = store.GetSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession after persist: %v", err)
+	}
+	if ses.Title != "help me fix a bug in auth.go" {
+		t.Errorf("auto-title = %q, want %q", ses.Title, "help me fix a bug in auth.go")
+	}
+}
+
+func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Pre-set a custom title (simulates /switch -n "my session")
+	if err := store.UpdateSessionTitle(session.SessionID, "my custom title"); err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
+
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Now()},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
+	})
+
+	a := &App{
+		engine:           eng,
+		store:            store,
+		sessionID:        session.SessionID,
+		lastPersistedIdx: 0,
+	}
+
+	a.persistTurn()
+
+	// Custom title should NOT be overwritten
+	ses, err := store.GetSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if ses.Title != "my custom title" {
+		t.Errorf("title = %q, want %q (should not overwrite)", ses.Title, "my custom title")
+	}
+}
+
+func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
+	})
+
+	a := &App{
+		engine:           eng,
+		store:            store,
+		sessionID:        session.SessionID,
+		lastPersistedIdx: 0,
+	}
+
+	// First persist — auto-titles
+	a.persistTurn()
+
+	// Add more messages
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second prompt")}, Timestamp: time.Now()},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply2")}, Timestamp: time.Now()},
+	})
+
+	// Second persist — should NOT change title
+	a.persistTurn()
+
+	ses, err := store.GetSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !strings.Contains(ses.Title, "first prompt") {
+		t.Errorf("title = %q, should still contain first prompt", ses.Title)
 	}
 }

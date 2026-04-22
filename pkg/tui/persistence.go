@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -46,6 +47,21 @@ func (a *App) persistTurn() {
 		// non-fatal: messages were persisted, timestamp is best-effort
 	}
 
+	// Auto-title: extract first user prompt as session title (TS: saveCustomTitle)
+	// Only runs on the first persist to avoid overwriting user-set titles.
+	if a.lastPersistedIdx == 0 && len(storeMsgs) > 0 {
+		title := extractUserTitle(uncommitted)
+		if title != "" {
+			// Only set if no custom title exists (e.g. /switch -n "my title")
+			if ses, err := a.store.GetSession(a.sessionID); err == nil && ses.Title == "" {
+				if err := a.store.UpdateSessionTitle(a.sessionID, title); err != nil {
+					slog.Error("persistTurn: auto-title", "error", err)
+				}
+				slog.Info("persistTurn: auto-titled session", "title", title)
+			}
+		}
+	}
+
 	a.lastPersistedIdx = len(engMsgs)
 	slog.Info("persistTurn: persisted messages",
 		"count", len(ptrs),
@@ -66,4 +82,34 @@ func loadAndConvertMessages(store *short.Store, sessionID string) ([]types.Messa
 		msgSlice[i] = *m
 	}
 	return StoreMessagesToEngine(msgSlice)
+}
+
+// extractUserTitle extracts the first user message text as a session title.
+// Skips tool_result and other non-text content. Truncates to 200 chars.
+// TS aligned: extractFirstPromptFromHead() (sessionStoragePortable.ts:135-201)
+func extractUserTitle(msgs []types.Message) string {
+	for _, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range m.Content {
+			if block.Type != types.ContentTypeText {
+				continue
+			}
+			text := strings.ReplaceAll(block.Text, "\n", " ")
+			text = strings.TrimSpace(text)
+			if text == "" {
+				continue
+			}
+			// Skip XML-like tags (system messages, command-name, etc.)
+			if strings.HasPrefix(text, "<") {
+				continue
+			}
+			if len(text) > 200 {
+				text = strings.TrimSpace(text[:200]) + "…"
+			}
+			return text
+		}
+	}
+	return ""
 }
