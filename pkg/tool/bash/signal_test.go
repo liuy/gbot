@@ -2,6 +2,7 @@ package bash
 
 import (
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -61,7 +62,10 @@ func TestIsLinux(t *testing.T) {
 func TestSetPTYWindowSize_InvalidFd(t *testing.T) {
 	err := setPTYWindowSize(uintptr(syscall.Stdin))
 	if err == nil {
-		t.Error("expected error for invalid fd (stdin is not a PTY)")
+		t.Fatal("expected error for invalid fd (stdin is not a PTY)")
+	}
+	if !strings.Contains(err.Error(), "bad file descriptor") && !strings.Contains(err.Error(), "inappropriate ioctl") {
+		t.Errorf("error should mention bad file descriptor or inappropriate ioctl, got: %v", err)
 	}
 }
 
@@ -106,7 +110,10 @@ func TestSetPTYWindowSizeFd_InvalidFd(t *testing.T) {
 	// Invalid ctlFd → IoctlGetWinsize fails
 	err := setPTYWindowSizeFd(999, 0)
 	if err == nil {
-		t.Error("expected error with invalid ctlFd")
+		t.Fatal("expected error with invalid ctlFd")
+	}
+	if !strings.Contains(err.Error(), "bad file descriptor") {
+		t.Errorf("error should mention bad file descriptor, got: %v", err)
 	}
 }
 
@@ -125,7 +132,10 @@ func TestSetPTYWindowSizeFd_InvalidPtyFd(t *testing.T) {
 	// Valid ctlFd (master), invalid ptyFd → IoctlSetWinsize fails
 	err = setPTYWindowSizeFd(int(master.Fd()), 999)
 	if err == nil {
-		t.Error("expected error with invalid ptyFd")
+		t.Fatal("expected error with invalid ptyFd")
+	}
+	if !strings.Contains(err.Error(), "bad file descriptor") {
+		t.Errorf("error should mention bad file descriptor, got: %v", err)
 	}
 }
 

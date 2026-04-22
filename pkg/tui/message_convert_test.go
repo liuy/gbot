@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,9 @@ func TestStoreMessagesToEngine_InvalidRole(t *testing.T) {
 	_, err := StoreMessagesToEngine(msgs)
 	if err == nil {
 		t.Fatal("expected error for invalid role")
+	}
+	if !strings.Contains(err.Error(), "unknown message role") {
+		t.Errorf("error should mention unknown message role, got: %v", err)
 	}
 }
 

@@ -384,6 +384,9 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error when reactive compact retry also fails")
 	}
+	if !strings.Contains(result.Error.Error(), "too long") {
+		t.Errorf("error should mention too long, got: %v", result.Error)
+	}
 	if result.Terminal != types.TerminalPromptTooLong {
 		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
 	}
@@ -419,6 +422,9 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 	result := <-resultCh
 	if result.Error == nil {
 		t.Fatal("expected error when no compactor available")
+	}
+	if !strings.Contains(result.Error.Error(), "too long") {
+		t.Errorf("error should mention too long, got: %v", result.Error)
 	}
 	if result.Terminal != types.TerminalPromptTooLong {
 		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)

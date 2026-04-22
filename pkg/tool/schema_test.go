@@ -2,6 +2,7 @@ package tool_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -162,8 +163,12 @@ func TestValidateInput_MissingRequired(t *testing.T) {
 		Build()
 
 	input := json.RawMessage(`{"other":"value"}`)
-	if err := tool.ValidateInput(schema, input); err == nil {
-		t.Error("expected error for missing required field")
+	err := tool.ValidateInput(schema, input)
+	if err == nil {
+		t.Fatal("expected error for missing required field")
+	}
+	if !strings.Contains(err.Error(), "missing required field") {
+		t.Errorf("error should mention missing required field, got: %v", err)
 	}
 }
 
@@ -181,8 +186,12 @@ func TestValidateInput_NoRequired(t *testing.T) {
 func TestValidateInput_InvalidSchema(t *testing.T) {
 	schema := json.RawMessage(`not json`)
 	input := json.RawMessage(`{}`)
-	if err := tool.ValidateInput(schema, input); err == nil {
-		t.Error("expected error for invalid schema")
+	err := tool.ValidateInput(schema, input)
+	if err == nil {
+		t.Fatal("expected error for invalid schema")
+	}
+	if !strings.Contains(err.Error(), "invalid schema") {
+		t.Errorf("error should mention invalid schema, got: %v", err)
 	}
 }
 
@@ -192,8 +201,12 @@ func TestValidateInput_InvalidInput(t *testing.T) {
 		Build()
 
 	input := json.RawMessage(`not json`)
-	if err := tool.ValidateInput(schema, input); err == nil {
-		t.Error("expected error for invalid input")
+	err := tool.ValidateInput(schema, input)
+	if err == nil {
+		t.Fatal("expected error for invalid input")
+	}
+	if !strings.Contains(err.Error(), "invalid input") {
+		t.Errorf("error should mention invalid input, got: %v", err)
 	}
 }
 
@@ -345,8 +358,15 @@ func TestValidateInput_OneOfManyRequiredMissing(t *testing.T) {
 		Build()
 
 	input := json.RawMessage(`{"a":"1","c":"3"}`)
-	if err := tool.ValidateInput(schema, input); err == nil {
-		t.Error("expected error for missing 'b'")
+	err := tool.ValidateInput(schema, input)
+	if err == nil {
+		t.Fatal("expected error for missing 'b'")
+	}
+	if !strings.Contains(err.Error(), "missing required field") {
+		t.Errorf("error should mention missing required field, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "b") {
+		t.Errorf("error should mention field 'b', got: %v", err)
 	}
 }
 

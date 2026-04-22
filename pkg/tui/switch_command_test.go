@@ -3,6 +3,7 @@ package tui
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,7 +116,10 @@ func TestHandleSwitch_ForkWithDuplicateTitle(t *testing.T) {
 		t.Fatalf("expected infoMsg, got %T", msg)
 	}
 	if string(info) == "" {
-		t.Error("expected error message about duplicate title")
+		t.Fatal("infoMsg should not be empty for duplicate title")
+	}
+	if !strings.Contains(string(info), "already exists") {
+		t.Errorf("info should mention already exists, got: %q", string(info))
 	}
 }
 

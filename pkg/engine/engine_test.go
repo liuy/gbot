@@ -541,9 +541,11 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 	eventCh, resultCh := eng.Query(ctx, "call failing tool", nil)
 
 	var gotErrorResult bool
+	var errorDisplayOutput string
 	for evt := range eventCh {
 		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
 			gotErrorResult = true
+			errorDisplayOutput = evt.ToolResult.DisplayOutput
 		}
 	}
 
@@ -553,6 +555,9 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 	}
 	if !gotErrorResult {
 		t.Error("expected tool result error event")
+	}
+	if gotErrorResult && !strings.Contains(errorDisplayOutput, "tool execution failed") {
+		t.Errorf("error DisplayOutput should mention 'tool execution failed', got: %q", errorDisplayOutput)
 	}
 }
 
@@ -1378,6 +1383,9 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
+	if !strings.Contains(result.Error.Error(), "prompt too long") {
+		t.Errorf("error should mention 'prompt too long', got: %v", result.Error)
+	}
 	if result.Terminal != types.TerminalPromptTooLong {
 		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
 	}
@@ -1409,6 +1417,9 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	result := <-resultCh
 	if result.Error == nil {
 		t.Fatal("expected error")
+	}
+	if !strings.Contains(result.Error.Error(), "rate limited") {
+		t.Errorf("error should mention 'rate limited', got: %v", result.Error)
 	}
 	if result.Terminal != types.TerminalBlockingLimit {
 		t.Errorf("expected TerminalBlockingLimit, got %s", result.Terminal)
@@ -2532,6 +2543,9 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	result := <-resultCh
 	if result.Error == nil {
 		t.Error("expected error from cancelled context")
+	}
+	if result.Error != nil && !strings.Contains(result.Error.Error(), "context canceled") {
+		t.Errorf("error should mention 'context canceled', got: %v", result.Error)
 	}
 	// Context cancellation from provider error path classifies as model_error,
 	// not aborted_streaming (which only fires from engine's own <-ctx.Done() check)

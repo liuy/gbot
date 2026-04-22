@@ -485,6 +485,9 @@ func TestIsSessionResumable_CountError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when store is closed")
 	}
+	if !strings.Contains(err.Error(), "database") {
+		t.Errorf("error should mention database, got: %v", err)
+	}
 }
 
 // TestDetectInterruptedTurn_MixedTextAndToolUse verifies that an assistant

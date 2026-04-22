@@ -173,7 +173,7 @@ func TestConcurrentToolLoop_SingleTool(t *testing.T) {
 		t.Errorf("expected ToolUseID tu_1, got %s", results[0].ToolUseID)
 	}
 	if results[0].IsError {
-		t.Error("expected no error")
+		t.Fatalf("expected no error, got IsError=true")
 	}
 	if results[0].Type != types.ContentTypeToolResult {
 		t.Errorf("expected ContentTypeToolResult, got %s", results[0].Type)
@@ -201,14 +201,14 @@ func TestConcurrentToolLoop_UnknownTool(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if !results[0].IsError {
-		t.Error("expected error for unknown tool")
+		t.Fatal("expected error for unknown tool")
 	}
 	var parsed map[string]string
 	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
-		t.Fatalf("failed to parse: %v", err)
+		t.Fatalf("failed to parse error content: %v", err)
 	}
 	if !strings.Contains(parsed["error"], "No such tool available") {
-		t.Errorf("unexpected error: %q", parsed["error"])
+		t.Errorf("error should mention 'No such tool available', got: %q", parsed["error"])
 	}
 }
 
@@ -236,7 +236,7 @@ func TestConcurrentToolLoop_ToolError(t *testing.T) {
 	}
 	var parsed map[string]string
 	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
-		t.Fatalf("failed to parse: %v", err)
+		t.Fatalf("failed to parse error content: %v", err)
 	}
 	if parsed["error"] != "tool crashed" {
 		t.Errorf("expected 'tool crashed', got %q", parsed["error"])
@@ -477,10 +477,24 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 	if !results[0].IsError {
-		t.Error("expected Bash error")
+		t.Fatal("expected Bash error")
+	}
+	var bashParsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &bashParsed); err != nil {
+		t.Fatalf("failed to parse Bash error content: %v", err)
+	}
+	if !strings.Contains(bashParsed["error"], "command failed") {
+		t.Errorf("error should mention 'command failed', got: %q", bashParsed["error"])
 	}
 	if !results[1].IsError {
-		t.Error("expected safe_tool to be cancelled by sibling error")
+		t.Fatal("expected safe_tool to be cancelled by sibling error")
+	}
+	var safeParsed map[string]string
+	if err := json.Unmarshal(results[1].Content, &safeParsed); err != nil {
+		t.Fatalf("failed to parse safe_tool error content: %v", err)
+	}
+	if !strings.Contains(safeParsed["error"], "context canceled") && !strings.Contains(safeParsed["error"], "Cancelled") {
+		t.Errorf("error should mention cancellation, got: %q", safeParsed["error"])
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("sibling cancellation should be fast, took %v", elapsed)
@@ -518,7 +532,14 @@ func TestConcurrentToolLoop_NonBashErrorNoKill(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 	if !results[0].IsError {
-		t.Error("expected fail_tool error")
+		t.Fatal("expected fail_tool error")
+	}
+	var failParsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &failParsed); err != nil {
+		t.Fatalf("failed to parse fail_tool error content: %v", err)
+	}
+	if !strings.Contains(failParsed["error"], "non-bash failure") {
+		t.Errorf("error should mention 'non-bash failure', got: %q", failParsed["error"])
 	}
 	if results[1].IsError {
 		t.Error("safe_tool should NOT be cancelled by non-Bash error")
@@ -542,7 +563,7 @@ func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if !results[0].IsError {
-		t.Error("expected error for cancelled context")
+		t.Fatal("expected error for cancelled context")
 	}
 	var parsed map[string]string
 	if err := json.Unmarshal(results[0].Content, &parsed); err != nil {
@@ -659,7 +680,7 @@ func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].IsError {
-		t.Error("expected no error")
+		t.Fatalf("expected no error, got IsError=true")
 	}
 	if progressCalls != 2 {
 		t.Errorf("expected 2 progress calls, got %d", progressCalls)
@@ -745,10 +766,17 @@ func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 	if !results[0].IsError {
-		t.Error("expected Bash error")
+		t.Fatal("expected Bash error")
+	}
+	var bashParsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &bashParsed); err != nil {
+		t.Fatalf("failed to parse Bash error content: %v", err)
+	}
+	if !strings.Contains(bashParsed["error"], "command failed") {
+		t.Errorf("error should mention 'command failed', got: %q", bashParsed["error"])
 	}
 	if !results[1].IsError {
-		t.Error("expected safe_tool to be cancelled (sibling error)")
+		t.Fatal("expected safe_tool to be cancelled (sibling error)")
 	}
 	// Verify safe_tool got sibling error message, not its own output.
 	var parsed map[string]string
@@ -780,6 +808,13 @@ func TestConcurrentToolLoop_UnknownToolDisplayOutput(t *testing.T) {
 	}
 	if !results[0].IsError {
 		t.Fatal("expected error result")
+	}
+	var unkParsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &unkParsed); err != nil {
+		t.Fatalf("failed to parse error content: %v", err)
+	}
+	if !strings.Contains(unkParsed["error"], "No such tool available") {
+		t.Errorf("error should mention 'No such tool available', got: %q", unkParsed["error"])
 	}
 
 	// Event must have non-empty DisplayOutput
@@ -831,6 +866,13 @@ func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
 	}
 	if !results[0].IsError {
 		t.Fatal("expected error result")
+	}
+	var errParsed map[string]string
+	if err := json.Unmarshal(results[0].Content, &errParsed); err != nil {
+		t.Fatalf("failed to parse error content: %v", err)
+	}
+	if !strings.Contains(errParsed["error"], "specific failure X") {
+		t.Errorf("error should mention 'specific failure X', got: %q", errParsed["error"])
 	}
 
 	// Verify DisplayOutput in event

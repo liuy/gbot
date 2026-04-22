@@ -1038,7 +1038,10 @@ func TestGetAgentDefinition_WithGlobalLoader(t *testing.T) {
 	// Unknown type through globalLoader
 	_, err = GetAgentDefinition("nonexistent-global-test")
 	if err == nil {
-		t.Error("expected error for unknown agent type via globalLoader")
+		t.Fatal("expected error for unknown agent type via globalLoader")
+	}
+	if !strings.Contains(err.Error(), "unknown agent type") {
+		t.Errorf("error should mention unknown agent type, got: %v", err)
 	}
 }
 

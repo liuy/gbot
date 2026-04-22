@@ -709,6 +709,9 @@ func TestStream_NonRetryableError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 400 response")
 	}
+	if !strings.Contains(err.Error(), "invalid request") {
+		t.Errorf("error should mention invalid request, got: %v", err)
+	}
 }
 
 func TestStream_RetryOn5xx(t *testing.T) {
@@ -854,6 +857,9 @@ func TestComplete_Non200Response(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 401 response")
 	}
+	if !strings.Contains(err.Error(), "invalid api key") {
+		t.Errorf("error should mention invalid api key, got: %v", err)
+	}
 }
 
 func TestParseAPIError_ValidJSON(t *testing.T) {
@@ -925,6 +931,9 @@ func TestStream_ContextCancellation(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error from context cancellation")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("error should mention context deadline exceeded, got: %v", err)
 	}
 }
 
@@ -1037,6 +1046,9 @@ func TestStream_ConnectionError(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error from connection failure")
+	}
+	if !strings.Contains(err.Error(), "max retries exceeded") {
+		t.Errorf("error should mention max retries exceeded, got: %v", err)
 	}
 }
 
@@ -1189,6 +1201,9 @@ func TestComplete_ContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from canceled context")
 	}
+	if !strings.Contains(err.Error(), "send request") {
+		t.Errorf("error should mention send request, got: %v", err)
+	}
 }
 
 func TestComplete_ReadBodyError(t *testing.T) {
@@ -1284,6 +1299,9 @@ func TestComplete_InvalidURL(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error from invalid URL")
+	}
+	if !strings.Contains(err.Error(), "create request") {
+		t.Errorf("error should mention create request, got: %v", err)
 	}
 }
 
@@ -1445,6 +1463,9 @@ func TestStream_ContextCanceledDuringBackoff(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error from context cancellation during backoff")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("error should mention context deadline exceeded, got: %v", err)
 	}
 }
 
@@ -1936,6 +1957,9 @@ func TestStream_BodyClosedOnError(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "bad") {
+		t.Errorf("error should mention bad, got: %v", err)
 	}
 }
 

@@ -69,7 +69,10 @@ func TestForkSession_ParentNotFound(t *testing.T) {
 
 	_, err := store.ForkSession("nonexistent", 0, "Explore")
 	if err == nil {
-		t.Error("expected error for nonexistent parent session")
+		t.Fatal("expected error for nonexistent parent session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found, got: %v", err)
 	}
 }
 
@@ -235,7 +238,10 @@ func TestMergeForkBack_NotAFork(t *testing.T) {
 
 	err := store.MergeForkBack(sessionID)
 	if err == nil {
-		t.Error("expected error when merging non-fork session")
+		t.Fatal("expected error when merging non-fork session")
+	}
+	if !strings.Contains(err.Error(), "not a fork") {
+		t.Errorf("error should mention 'not a fork', got: %v", err)
 	}
 }
 
@@ -384,7 +390,10 @@ func TestMergeForkBack_ChildNotFound(t *testing.T) {
 
 	err := store.MergeForkBack("nonexistent-child")
 	if err == nil {
-		t.Error("expected error for nonexistent child session")
+		t.Fatal("expected error for nonexistent child session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found, got: %v", err)
 	}
 }
 
@@ -443,7 +452,10 @@ func TestForkSession_ErrorCases(t *testing.T) {
 	// Test with nil parent (session doesn't exist)
 	_, err := store.ForkSession("nonexistent-parent", 0, "Explore")
 	if err == nil {
-		t.Error("expected error for nonexistent parent")
+		t.Fatal("expected error for nonexistent parent")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found, got: %v", err)
 	}
 }
 
@@ -612,7 +624,10 @@ func TestCopyMessagesToFork_ScanError(t *testing.T) {
 
 	err = store.copyMessagesToFork(parentID, childID, 1)
 	if err == nil {
-		t.Error("expected scan error from corrupted timestamp")
+		t.Fatal("expected scan error from corrupted timestamp")
+	}
+	if !strings.Contains(err.Error(), "scan message") {
+		t.Errorf("error should mention scan message, got: %v", err)
 	}
 }
 

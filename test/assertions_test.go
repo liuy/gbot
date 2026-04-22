@@ -253,6 +253,29 @@ var checkPatterns = []checkPattern{
 			return false
 		},
 	},
+		{
+			Name:  "error-path test without content verification",
+			Regex: regexp.MustCompile(`(t\.Fatal|t\.Error)\(.*"expected error`),
+			Level: "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				for i := lineIdx + 1; i < len(lines) && i <= lineIdx+10; i++ {
+					line := lines[i]
+					if strings.Contains(line, ".Error()") {
+						return true
+					}
+					if strings.Contains(line, "errors.Is(") || strings.Contains(line, "errors.As(") {
+						return true
+					}
+					if strings.Contains(line, "errMsg") || strings.Contains(line, "errStr") {
+						return true
+					}
+					if strings.Contains(line, "json.Unmarshal") {
+						return true
+					}
+				}
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.

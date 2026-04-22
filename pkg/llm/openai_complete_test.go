@@ -206,6 +206,9 @@ func TestOpenAIComplete_ErrorResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 429 response, got nil")
 	}
+	if !strings.Contains(err.Error(), "Rate limit exceeded") {
+		t.Errorf("error should mention 'Rate limit exceeded', got: %v", err)
+	}
 	if resp != nil {
 		t.Errorf("expected nil response on error, got %+v", resp)
 	}
@@ -238,6 +241,9 @@ func TestOpenAIComplete_ContextLengthExceeded(t *testing.T) {
 	resp, err := provider.Complete(ctx, defaultTestRequest())
 	if err == nil {
 		t.Fatal("expected error for context_length_exceeded, got nil")
+	}
+	if !strings.Contains(err.Error(), "too long") {
+		t.Errorf("error should mention 'too long', got: %v", err)
 	}
 	if resp != nil {
 		t.Errorf("expected nil response on error, got %+v", resp)
@@ -275,6 +281,9 @@ func TestOpenAIComplete_ServerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}
+	if !strings.Contains(err.Error(), "Internal server error") {
+		t.Errorf("error should mention 'Internal server error', got: %v", err)
+	}
 	if resp != nil {
 		t.Errorf("expected nil response on error, got %+v", resp)
 	}
@@ -307,6 +316,9 @@ func TestOpenAIComplete_NonRetryableError(t *testing.T) {
 	resp, err := provider.Complete(ctx, defaultTestRequest())
 	if err == nil {
 		t.Fatal("expected error for 401 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "Invalid API key") {
+		t.Errorf("error should mention 'Invalid API key', got: %v", err)
 	}
 	if resp != nil {
 		t.Errorf("expected nil response on error, got %+v", resp)
@@ -588,6 +600,9 @@ func TestOpenAIStream_ContextCancellation(t *testing.T) {
 	_, err := provider.Stream(ctx, req)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("error should mention 'context deadline exceeded', got: %v", err)
 	}
 }
 

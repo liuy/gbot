@@ -1617,7 +1617,7 @@ func TestStreamingToolExecutor_SetMessages_NilTctx(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].IsError {
-		t.Fatal("expected no error")
+		t.Fatalf("expected no error, got error content: %s", string(results[0].Content))
 	}
 
 	captured := captureTool.Captured()

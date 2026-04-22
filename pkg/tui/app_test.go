@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -321,7 +322,11 @@ func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected system error message in messages")
+		var sb strings.Builder
+		for _, m := range a.repl.messages {
+			fmt.Fprintf(&sb, "  role=%s blocks=%d\n", m.Role, len(m.Blocks))
+		}
+		t.Errorf("no system message with 'stream failed' found; messages:\n%s", sb.String())
 	}
 }
 

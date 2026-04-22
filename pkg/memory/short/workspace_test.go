@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +33,9 @@ func TestReadWorkspaceMeta_InvalidJSON(t *testing.T) {
 	_, err := ReadWorkspaceMeta(dir)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse workspace meta") {
+		t.Errorf("error should mention parse workspace meta, got: %v", err)
 	}
 }
 

@@ -420,6 +420,9 @@ func TestGoGrep_ReadDirErrorViaPermission(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ReadDir error due to permissions")
 	}
+	if !strings.Contains(err.Error(), "read directory") {
+		t.Errorf("error should mention read directory, got: %v", err)
+	}
 }
 
 func TestGoGrep_SingleFileGrepFileError(t *testing.T) {
@@ -438,6 +441,9 @@ func TestGoGrep_SingleFileGrepFileError(t *testing.T) {
 	_, err := goGrep(context.Background(), "test", fp, "")
 	if err == nil {
 		t.Fatal("expected error for unreadable single file")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("error should mention permission denied, got: %v", err)
 	}
 }
 
