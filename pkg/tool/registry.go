@@ -1,8 +1,9 @@
 package tool
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 )
 
@@ -74,9 +75,7 @@ func (r *Registry) List() []Tool {
 	}
 
 	// Deterministic order
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name() < result[j].Name()
-	})
+	slices.SortFunc(result, func(a, b Tool) int { return cmp.Compare(a.Name(), b.Name()) })
 
 	return result
 }
@@ -97,9 +96,7 @@ func (r *Registry) EnabledTools() []Tool {
 		result = append(result, t)
 	}
 
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name() < result[j].Name()
-	})
+	slices.SortFunc(result, func(a, b Tool) int { return cmp.Compare(a.Name(), b.Name()) })
 
 	return result
 }
@@ -142,7 +139,7 @@ func (r *Registry) Names() []string {
 		names = append(names, name)
 	}
 
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

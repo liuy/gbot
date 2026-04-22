@@ -5,7 +5,8 @@ package agent
 
 import (
 	"fmt"
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -110,9 +111,7 @@ func ListAgentDefinitions() []*types.AgentDefinition {
 	for _, def := range builtInAgents {
 		defs = append(defs, def)
 	}
-	sort.Slice(defs, func(i, j int) bool {
-		return defs[i].AgentType < defs[j].AgentType
-	})
+	slices.SortFunc(defs, func(a, b *types.AgentDefinition) int { return cmp.Compare(a.AgentType, b.AgentType) })
 	return defs
 }
 

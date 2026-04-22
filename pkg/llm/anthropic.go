@@ -89,7 +89,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 50<<20)) // 50MB safety cap
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -182,7 +182,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		}
 
 		// Read error body
-		errBody, _ := io.ReadAll(httpResp.Body)
+		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
 		_ = httpResp.Body.Close()
 		apiErr := p.ParseAPIError(errBody, httpResp.StatusCode)
 

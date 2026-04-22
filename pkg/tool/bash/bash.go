@@ -395,7 +395,7 @@ func executeNonPTYStreaming(ctx context.Context, in Input, cwd string, timeout t
 // executeNonPTYStreamingSync runs a non-PTY command synchronously (original behavior).
 // When timeout fires, the process is killed and TimedOut=true is returned.
 func executeNonPTYStreamingSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("command %q exceeded %s", in.Command, timeout))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", in.Command)
@@ -567,7 +567,7 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 // This is the original implementation, used when PTY is not available.
 func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration) (*tool.ToolResult, error) {
 	// Create context with timeout
-	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	cmdCtx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("command %q exceeded %s", in.Command, timeout))
 	defer cancel()
 
 	// Build command

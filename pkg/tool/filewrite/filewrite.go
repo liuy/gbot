@@ -71,27 +71,21 @@ func findGitRoot(dir string) string {
 	}
 }
 
-// isInGitRepo checks if we're in a git repository. Result cached via sync.Once.
-func isInGitRepo() bool {
-	gitRepoOnce.Do(func() {
-		root := findGitRoot("/")
-		if root == "" {
-			cwd, err := os.Getwd()
-			if err != nil {
-				gitRepoCached = false
-				return
-			}
-			root = findGitRoot(cwd)
+// checkGitRepo is the underlying function that checks git repo status.
+func checkGitRepo() bool {
+	root := findGitRoot("/")
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return false
 		}
-		gitRepoCached = root != ""
-	})
-	return gitRepoCached
+		root = findGitRoot(cwd)
+	}
+	return root != ""
 }
 
-var (
-	gitRepoOnce   sync.Once
-	gitRepoCached bool
-)
+// isInGitRepo checks if we're in a git repository. Result cached via sync.OnceValue.
+var isInGitRepo = sync.OnceValue(checkGitRepo)
 
 // shouldComputeGitDiff returns true only when CLAUDE_CODE_REMOTE env var is
 // set to a truthy value ("1", "true", "yes"). This gates expensive git

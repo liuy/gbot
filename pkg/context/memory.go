@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 )
 
@@ -30,9 +31,7 @@ func LoadMemoryFiles(workingDir string) []MemoryFile {
 		}
 
 		// Sort for deterministic order
-		sort.Slice(entries, func(i, j int) bool {
-			return entries[i].Name() < entries[j].Name()
-		})
+		slices.SortFunc(entries, func(a, b os.DirEntry) int { return cmp.Compare(a.Name(), b.Name()) })
 
 		for _, entry := range entries {
 			if entry.IsDir() {

@@ -9,8 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"maps"
+	"cmp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -116,9 +117,7 @@ func (l *Loader) load() {
 
 	// Sort by AgentType
 	// Source: loadAgentsDir.ts:220 — Array.from returns insertion-order
-	sort.Slice(activeAgents, func(i, j int) bool {
-		return activeAgents[i].AgentType < activeAgents[j].AgentType
-	})
+	slices.SortFunc(activeAgents, func(a, b *types.AgentDefinition) int { return cmp.Compare(a.AgentType, b.AgentType) })
 
 	l.cached = activeAgents
 	l.failed = failed
@@ -389,11 +388,7 @@ func getActiveAgentsFromList(allAgents []*types.AgentDefinition) []*types.AgentD
 	}
 
 	// Return all resolved agents
-	result := make([]*types.AgentDefinition, 0, len(agentMap))
-	for _, agent := range agentMap {
-		result = append(result, agent)
-	}
-	return result
+	return slices.Collect(maps.Values(agentMap))
 }
 
 // ---------------------------------------------------------------------------

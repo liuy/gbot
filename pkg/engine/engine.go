@@ -13,8 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -166,11 +166,7 @@ func New(p *Params) *Engine {
 			toolMap[t.Name()] = t
 		}
 	}
-	var toolOrder []string
-	for name := range toolMap {
-		toolOrder = append(toolOrder, name)
-	}
-	sort.Strings(toolOrder)
+	toolOrder := slices.Sorted(maps.Keys(toolMap))
 
 	return &Engine{
 		provider:          p.Provider,
@@ -984,7 +980,7 @@ func (e *Engine) refreshTools() {
 	for name := range e.tools {
 		e.toolOrder = append(e.toolOrder, name)
 	}
-	sort.Strings(e.toolOrder)
+	slices.Sort(e.toolOrder)
 }
 
 // MaxTokens returns the max tokens setting.
@@ -1099,7 +1095,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	for name := range opts.Tools {
 		toolOrder = append(toolOrder, name)
 	}
-	sort.Strings(toolOrder)
+	slices.Sort(toolOrder)
 
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
 	var dispatcher EventDispatcher

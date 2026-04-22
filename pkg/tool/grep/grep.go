@@ -13,7 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"cmp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -486,11 +487,11 @@ func sortByMtime(paths []string) []string {
 		}
 		infos = append(infos, fileInfo{path: p, mtimeMs: mtime})
 	}
-	sort.Slice(infos, func(i, j int) bool {
-		if infos[i].mtimeMs != infos[j].mtimeMs {
-			return infos[i].mtimeMs > infos[j].mtimeMs // newest first
+	slices.SortFunc(infos, func(a, b fileInfo) int {
+		if a.mtimeMs != b.mtimeMs {
+			return cmp.Compare(b.mtimeMs, a.mtimeMs) // newest first (descending)
 		}
-		return infos[i].path < infos[j].path // tiebreak by name
+		return cmp.Compare(a.path, b.path) // tiebreak by name
 	})
 	result := make([]string, len(infos))
 	for i, info := range infos {

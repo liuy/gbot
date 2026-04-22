@@ -190,7 +190,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response,
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 50<<20)) // 50MB safety cap
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
@@ -301,7 +301,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 			break
 		}
 
-		errBody, _ := io.ReadAll(httpResp.Body)
+		errBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20)) // 1MB cap for error bodies
 		_ = httpResp.Body.Close()
 		apiErr := p.ParseAPIError(errBody, httpResp.StatusCode)
 

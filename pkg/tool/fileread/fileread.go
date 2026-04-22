@@ -254,17 +254,7 @@ func isPdftoppmAvailable() bool {
 	return true
 }
 
-var (
-	pdftoppmOnce      sync.Once
-	pdftoppmAvailable bool
-)
-
-func checkPdftoppm() bool {
-	pdftoppmOnce.Do(func() {
-		pdftoppmAvailable = isPdftoppmAvailable()
-	})
-	return pdftoppmAvailable
-}
+var checkPdftoppm = sync.OnceValue(isPdftoppmAvailable)
 
 // getPDFPageCount returns page count via pdfinfo command.
 func getPDFPageCount(filePath string) int {

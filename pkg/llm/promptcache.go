@@ -14,7 +14,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -176,7 +177,7 @@ func sortCopy(ss []string) []string {
 	}
 	out := make([]string, len(ss))
 	copy(out, ss)
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -226,9 +227,7 @@ func buildDiffableContent(system []map[string]any, tools []map[string]any, model
 		}
 		details = append(details, toolDetail{name: name, description: desc, schema: schema})
 	}
-	sort.Slice(details, func(i, j int) bool {
-		return details[i].name < details[j].name
-	})
+	slices.SortFunc(details, func(a, b toolDetail) int { return cmp.Compare(a.name, b.name) })
 
 	var toolLines []string
 	for _, d := range details {

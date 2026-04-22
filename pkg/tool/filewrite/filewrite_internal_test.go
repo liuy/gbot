@@ -989,8 +989,8 @@ func TestExecute_WriteFileErrorInternal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsInGitRepo_GetwdError(t *testing.T) {
-	// Reset the sync.Once so the function re-evaluates
-	gitRepoOnce = sync.Once{}
+	// Reset the OnceValue cache
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 
 	// We can't easily make os.Getwd fail, but we can at least ensure
 	// the function re-evaluates. In the current git repo, it should
@@ -1049,7 +1049,7 @@ func setupTestGitRepo(t *testing.T) string {
 }
 
 func TestGetDefaultBranch_SymbolicRefSucceeds(t *testing.T) {
-	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	// Non-parallel: resets isInGitRepo cache
 	dir := setupTestGitRepo(t)
 	branch := getDefaultBranch(dir)
 	if branch != "master" {
@@ -1058,7 +1058,7 @@ func TestGetDefaultBranch_SymbolicRefSucceeds(t *testing.T) {
 }
 
 func TestGetRepository_WithGitHubRemote(t *testing.T) {
-	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	// Non-parallel: resets isInGitRepo cache
 	dir := setupTestGitRepo(t)
 	result := getRepository(dir)
 	if result == nil {
@@ -1084,7 +1084,7 @@ func TestGetRepository_NoOrigin(t *testing.T) {
 }
 
 func TestFetchGitDiffForFile_UntrackedInTestRepo(t *testing.T) {
-	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	// Non-parallel: resets isInGitRepo cache
 	dir := setupTestGitRepo(t)
 
 	// Create an untracked file
@@ -1093,8 +1093,8 @@ func TestFetchGitDiffForFile_UntrackedInTestRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reset git repo cache so it picks up our test repo
-	gitRepoOnce = sync.Once{}
+	// Reset git repo cache
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 
 	result, err := fetchGitDiffForFile(fp)
 	if err != nil {
@@ -1113,7 +1113,7 @@ func TestFetchGitDiffForFile_UntrackedInTestRepo(t *testing.T) {
 	}
 
 	// Restore git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 	isInGitRepo()
 }
 
@@ -1127,7 +1127,7 @@ func TestFetchGitDiffForFile_TrackedWithDiff(t *testing.T) {
 	}
 
 	// Reset git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 
 	result, err := fetchGitDiffForFile(fp)
 	if err != nil {
@@ -1145,14 +1145,14 @@ func TestFetchGitDiffForFile_TrackedWithDiff(t *testing.T) {
 	}
 
 	// Restore git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 	isInGitRepo()
 }
 
 func TestFetchGitDiffForFile_NotInGitRepo(t *testing.T) {
-	// Force isInGitRepo to return false by directly setting cached value.
+	// Force isInGitRepo to return false by overriding isInGitRepo to return false.
 	// We do NOT reset sync.Once so it won't re-evaluate.
-	gitRepoCached = false
+	isInGitRepo = func() bool { return false }
 
 	// Use a temp dir that's definitely not in a git repo
 	dir := t.TempDir()
@@ -1170,7 +1170,7 @@ func TestFetchGitDiffForFile_NotInGitRepo(t *testing.T) {
 	}
 
 	// Restore git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 	isInGitRepo()
 }
 
@@ -1179,7 +1179,7 @@ func TestFetchGitDiffForFile_NotInGitRepo(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
-	// Non-parallel: modifies global gitRepoOnce/gitRepoCached
+	// Non-parallel: resets isInGitRepo cache
 	dir := setupTestGitRepo(t)
 
 	// Create an untracked file, then remove it to trigger read error
@@ -1191,7 +1191,7 @@ func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
 	_ = os.Remove(fp)
 
 	// Reset git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 
 	result, err := fetchGitDiffForFile(fp)
 	// The file doesn't exist on disk, so generateSyntheticDiff should fail
@@ -1218,7 +1218,7 @@ func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
 	}
 
 	// Restore git repo cache
-	gitRepoOnce = sync.Once{}
+	isInGitRepo = sync.OnceValue(checkGitRepo)
 	isInGitRepo()
 }
 
