@@ -4391,11 +4391,8 @@ func TestApp_OpenPicker(t *testing.T) {
 	if cmd == nil {
 		t.Error("openPicker should return a tea.Cmd")
 	}
-	if app.pickerMode == pickerNone {
-		t.Error("pickerMode should be pickerSession after openPicker")
-	}
-	if app.picker == nil {
-		t.Fatal("picker should not be nil after openPicker")
+	if app.listPicker == nil {
+		t.Error("listPicker should be set after openPicker")
 	}
 }
 
@@ -4503,12 +4500,57 @@ func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
 	// Send a key message while in picker mode
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated := model.(*App)
-	if updated.pickerMode == pickerNone {
-		t.Error("should still be in pickerSession after key event")
+	if updated.listPicker == nil {
+		t.Error("listPicker should still be set after key event")
 	}
 	if cmd != nil {
 		// Down key doesn't quit picker, so cmd should be nil
 		t.Error("expected nil cmd for non-quit picker key")
+	}
+}
+
+func TestApp_Update_PickerMode_SelectClosesPicker(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
+	store.CreateSession(dir, "model") //nolint:errcheck
+	app.SetStore(store, "existing-session", dir, 0)
+
+	commitCmd := func() tea.Msg { return nil }
+	app.openPicker(commitCmd)
+	if app.listPicker == nil {
+		t.Fatal("listPicker should be set after openPicker")
+	}
+
+	// Send Esc to cancel picker
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated := model.(*App)
+	if updated.listPicker != nil {
+		t.Error("listPicker should be nil after cancel")
+	}
+}
+
+func TestApp_Update_PickerMode_WindowSize(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
+	store.CreateSession(dir, "model") //nolint:errcheck
+	app.SetStore(store, "existing-session", dir, 0)
+
+	commitCmd := func() tea.Msg { return nil }
+	app.openPicker(commitCmd)
+
+	// Send WindowSize while picker active — should update picker dims
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	updated := model.(*App)
+	if updated.listPicker == nil {
+		t.Fatal("listPicker should still be set after WindowSizeMsg")
+	}
+	if updated.listPicker.width != 120 {
+		t.Errorf("picker width = %d, want 120", updated.listPicker.width)
+	}
+	if updated.listPicker.height != 40 {
+		t.Errorf("picker height = %d, want 40", updated.listPicker.height)
 	}
 }
 
@@ -4589,10 +4631,7 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app.SetStore(store, "existing-session", dir, 0)
 
 	app.handleSlashCommand(SlashCommand{Name: "switch"}, nil)
-	if app.pickerMode == pickerNone {
-		t.Error("should be in pickerMode after /switch")
-	}
-	if app.picker == nil {
-		t.Error("picker should be initialized after /switch")
+	if app.listPicker == nil {
+		t.Error("listPicker should be set after /switch")
 	}
 }

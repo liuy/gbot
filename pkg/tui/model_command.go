@@ -49,26 +49,40 @@ func (a *App) handleModel(args string, commitCmd tea.Cmd) tea.Cmd {
 
 // openModelPicker opens the interactive model picker.
 func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
-	a.modelPicker = NewModelPicker(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
-	a.pickerMode = pickerModel
+	if a.listPicker != nil {
+		return a.showInfo("A picker is already open")
+	}
+
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	items := make([]PickerItem, len(modelItems))
+	for i := range modelItems {
+		items[i] = &modelItems[i]
+	}
+	currentIdx := findCurrentIndex(modelItems)
+	a.listPicker = NewListPicker("Select model", items, WithInitialCursor(currentIdx))
+
+	captured := modelItems
+	a.onPickerDone = func(p *ListPicker) (tea.Model, tea.Cmd) {
+		return a.handleModelPickerDone(p, captured)
+	}
 	return commitCmd
 }
 
-// handleModelPickerResult processes the model picker selection or cancellation.
-func (a *App) handleModelPickerResult() (tea.Model, tea.Cmd) {
-	a.pickerMode = pickerNone
+// handleModelPickerDone processes the model picker selection or cancellation.
+func (a *App) handleModelPickerDone(p *ListPicker, items []ModelItem) (tea.Model, tea.Cmd) {
+	a.listPicker = nil
+	a.onPickerDone = nil
 
-	if a.modelPicker.aborted {
-		a.modelPicker = nil
+	if p.Aborted() {
 		return a, nil
 	}
 
-	selected := a.modelPicker.selected
-	a.modelPicker = nil
-
-	if selected == nil {
+	idx := p.SelectedIndex()
+	if idx < 0 || idx >= len(items) {
 		return a, nil
 	}
+
+	selected := items[idx]
 
 	provider, ok := a.providers[selected.Provider]
 	if !ok {

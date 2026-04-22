@@ -9,6 +9,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// PickerItem is the interface for items displayed in a ListPicker.
+type PickerItem interface {
+	Label() string
+}
+
 // SessionItem represents a session in the picker list.
 type SessionItem struct {
 	SessionID string
@@ -16,28 +21,63 @@ type SessionItem struct {
 	UpdatedAt time.Time
 }
 
-// SessionPicker is a Bubble Tea model for selecting a session.
-type SessionPicker struct {
-	items    []SessionItem
+// Label returns a display line for the session item (name + relative time).
+func (s *SessionItem) Label() string {
+	name := s.Title
+	if name == "" && len(s.SessionID) >= 8 {
+		name = s.SessionID[:8]
+	} else if name == "" {
+		name = s.SessionID
+	}
+	return fmt.Sprintf("%-20s %s", name, relativeTime(s.UpdatedAt))
+}
+
+// ListPickerOption is a functional option for ListPicker.
+type ListPickerOption func(*ListPicker)
+
+// WithInitialCursor sets the initial cursor position.
+// Out-of-range values are clamped to valid bounds.
+func WithInitialCursor(idx int) ListPickerOption {
+	return func(p *ListPicker) {
+		if idx < 0 {
+			p.cursor = 0
+		} else if len(p.items) > 0 && idx >= len(p.items) {
+			p.cursor = len(p.items) - 1
+		} else {
+			p.cursor = idx
+		}
+	}
+}
+
+// ListPicker is a generic Bubble Tea model for selecting from a list of items.
+type ListPicker struct {
+	title    string
+	items    []PickerItem
 	cursor   int
-	selected *SessionItem
+	selected int   // -1 = none
 	aborted  bool
 	width    int
 	height   int
 }
 
-// NewSessionPicker creates a picker with the given session items.
-func NewSessionPicker(items []SessionItem) *SessionPicker {
-	return &SessionPicker{
-		items: items,
+// NewListPicker creates a picker with the given title and items.
+func NewListPicker(title string, items []PickerItem, opts ...ListPickerOption) *ListPicker {
+	p := &ListPicker{
+		title:    title,
+		items:    items,
+		selected: -1,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Init satisfies tea.Model.
-func (p *SessionPicker) Init() tea.Cmd { return nil }
+func (p *ListPicker) Init() tea.Cmd { return nil }
 
 // Update handles key events for the picker.
-func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p *ListPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		p.width = msg.Width
@@ -63,14 +103,17 @@ func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "enter":
-			if p.cursor < len(p.items) {
-				item := p.items[p.cursor]
-				p.selected = &item
+			if len(p.items) == 0 {
+				p.aborted = true
+				return p, nil
 			}
-			return p, tea.Quit
+			if p.cursor < len(p.items) {
+				p.selected = p.cursor
+			}
+			return p, nil
 		case "esc", "q":
 			p.aborted = true
-			return p, tea.Quit
+			return p, nil
 		}
 	}
 
@@ -78,9 +121,9 @@ func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the picker.
-func (p *SessionPicker) View() string {
+func (p *ListPicker) View() string {
 	if len(p.items) == 0 {
-		return "No sessions found.\n\nPress Esc to cancel."
+		return "No items available.\n\nPress Esc to cancel."
 	}
 
 	highlight := lipgloss.NewStyle().
@@ -91,18 +134,15 @@ func (p *SessionPicker) View() string {
 	normal := lipgloss.NewStyle().
 		Padding(0, 1)
 
-	title := lipgloss.NewStyle().
+	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		MarginBottom(1)
 
 	var s strings.Builder
-	s.WriteString(title.Render("Switch Session") + "\n")
+	s.WriteString(titleStyle.Render(p.title) + "\n")
 
 	for i, item := range p.items {
-		label := item.Label()
-		timeStr := relativeTime(item.UpdatedAt)
-
-		row := fmt.Sprintf("  %s  %s", label, timeStr)
+		row := "  " + item.Label()
 
 		if i == p.cursor {
 			s.WriteString(highlight.Render(row) + "\n")
@@ -111,19 +151,23 @@ func (p *SessionPicker) View() string {
 		}
 	}
 
-	s.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("↑/k up · ↓/j down · Enter select · Esc cancel"))
+	s.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("↑/k up · ↓/j down · Enter select · Esc/q cancel"))
 	return s.String()
 }
 
-// Label returns a display name for the session item.
-func (s *SessionItem) Label() string {
-	if s.Title != "" {
-		return s.Title
-	}
-	if len(s.SessionID) >= 8 {
-		return s.SessionID[:8]
-	}
-	return s.SessionID
+// Done returns true if the picker has finished (selected or aborted).
+func (p *ListPicker) Done() bool {
+	return p.aborted || p.selected >= 0
+}
+
+// Aborted returns true if the user cancelled the picker.
+func (p *ListPicker) Aborted() bool {
+	return p.aborted
+}
+
+// SelectedIndex returns the index of the selected item, or -1 if none/aborted.
+func (p *ListPicker) SelectedIndex() int {
+	return p.selected
 }
 
 // relativeTime returns a human-friendly relative time string.
@@ -159,26 +203,38 @@ func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 		}
 	}
 
-	a.picker = NewSessionPicker(items)
-	a.pickerMode = pickerSession
+	if a.listPicker != nil {
+		return a.showInfo("A picker is already open")
+	}
+
+	pickerItems := make([]PickerItem, len(items))
+	for i := range items {
+		pickerItems[i] = &items[i]
+	}
+	a.listPicker = NewListPicker("Switch Session", pickerItems)
+
+	captured := items
+	a.onPickerDone = func(p *ListPicker) (tea.Model, tea.Cmd) {
+		return a.handleSessionPickerDone(p, captured)
+	}
 	return commitCmd
 }
 
-// handlePickerResult processes the picker selection or cancellation.
-func (a *App) handlePickerResult() (tea.Model, tea.Cmd) {
-	a.pickerMode = pickerNone
+// handleSessionPickerDone processes the session picker selection or cancellation.
+func (a *App) handleSessionPickerDone(p *ListPicker, items []SessionItem) (tea.Model, tea.Cmd) {
+	a.listPicker = nil
+	a.onPickerDone = nil
 
-	if a.picker.aborted {
-		a.picker = nil
+	if p.Aborted() {
 		return a, nil
 	}
 
-	selected := a.picker.selected
-	a.picker = nil
-
-	if selected == nil {
+	idx := p.SelectedIndex()
+	if idx < 0 || idx >= len(items) {
 		return a, nil
 	}
+
+	selected := items[idx]
 
 	// Same session — no-op
 	if selected.SessionID == a.sessionID {

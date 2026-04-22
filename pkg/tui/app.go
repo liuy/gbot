@@ -24,15 +24,6 @@ import (
 // App — bubbletea root Model
 // ---------------------------------------------------------------------------
 
-// pickerKind enumerates the active picker overlay.
-type pickerKind int
-
-const (
-	pickerNone    pickerKind = iota
-	pickerSession
-	pickerModel
-)
-
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
 type App struct {
@@ -62,12 +53,9 @@ type App struct {
 	lastPersistedIdx int    // tracks how many engine messages have been persisted
 	projectDir       string // working directory for .gbot/meta.json
 
-	// Session picker overlay
-	pickerMode pickerKind
-	picker     *SessionPicker
-
-	// Model picker overlay
-	modelPicker *ModelPicker
+	// Picker overlay (generic ListPicker for /switch, /model, etc.)
+	listPicker   *ListPicker
+	onPickerDone func(*ListPicker) (tea.Model, tea.Cmd)
 
 	// Multi-provider model switching
 	providers       map[string]llm.Provider
@@ -219,40 +207,25 @@ func (a *App) Init() tea.Cmd {
 // Update handles bubbletea messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Route to picker overlay when active
-	switch a.pickerMode {
-	case pickerSession:
+	if a.listPicker != nil {
 		switch msg := msg.(type) {
 		case tea.WindowSizeMsg:
-			a.width = msg.Width
-			a.height = msg.Height
+			a.listPicker.width = msg.Width
+			a.listPicker.height = msg.Height
 			return a, nil
 		case tea.KeyMsg:
-			model, cmd := a.picker.Update(msg)
-			if p, ok := model.(*SessionPicker); ok {
-				a.picker = p
+			model, cmd := a.listPicker.Update(msg)
+			if p, ok := model.(*ListPicker); ok {
+				a.listPicker = p
 			}
-			// Check if picker is done
-			if a.picker.aborted || a.picker.selected != nil {
-				return a.handlePickerResult()
-			}
-			return a, cmd
-		}
-		return a, nil
-
-	case pickerModel:
-		switch msg := msg.(type) {
-		case tea.WindowSizeMsg:
-			a.width = msg.Width
-			a.height = msg.Height
-			return a, nil
-		case tea.KeyMsg:
-			model, cmd := a.modelPicker.Update(msg)
-			if p, ok := model.(*ModelPicker); ok {
-				a.modelPicker = p
-			}
-			// Check if picker is done
-			if a.modelPicker.aborted || a.modelPicker.selected != nil {
-				return a.handleModelPickerResult()
+			if a.listPicker.Done() {
+				handler := a.onPickerDone
+				a.onPickerDone = nil
+				if handler == nil {
+					a.listPicker = nil
+					return a, nil
+				}
+				return handler(a.listPicker)
 			}
 			return a, cmd
 		}
@@ -303,15 +276,8 @@ func (a *App) View() string {
 	}
 
 	// Picker overlay
-	switch a.pickerMode {
-	case pickerSession:
-		if a.picker != nil {
-			return a.picker.View()
-		}
-	case pickerModel:
-		if a.modelPicker != nil {
-			return a.modelPicker.View()
-		}
+	if a.listPicker != nil {
+		return a.listPicker.View()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]

@@ -3,13 +3,15 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
-	"log/slog"
 )
 
 // mockLLMProvider is a minimal mock for testing model switching.
@@ -67,6 +69,24 @@ func newTestAppWithProviders() *App {
 
 	a.SetProviders(providers, cfg)
 	return a
+}
+
+// helperSetupModelPicker creates a ListPicker for model items and sets up the onPickerDone closure.
+// Returns the captured modelItems for assertion after picker interaction.
+func helperSetupModelPicker(a *App) []ModelItem {
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	items := make([]PickerItem, len(modelItems))
+	for i := range modelItems {
+		items[i] = &modelItems[i]
+	}
+	currentIdx := findCurrentIndex(modelItems)
+	a.listPicker = NewListPicker("Select model", items, WithInitialCursor(currentIdx))
+
+	captured := modelItems
+	a.onPickerDone = func(p *ListPicker) (tea.Model, tea.Cmd) {
+		return a.handleModelPickerDone(p, captured)
+	}
+	return captured
 }
 
 // ---------------------------------------------------------------------------
@@ -127,11 +147,11 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 	if cmd != nil {
 		t.Error("expected nil cmd for empty args (commitCmd was nil)")
 	}
-	if a.pickerMode != pickerModel {
-		t.Errorf("pickerMode = %v, want pickerModel", a.pickerMode)
+	if a.listPicker == nil {
+		t.Error("listPicker should be set")
 	}
-	if a.modelPicker == nil {
-		t.Error("modelPicker should be set")
+	if a.onPickerDone == nil {
+		t.Error("onPickerDone should be set")
 	}
 }
 
@@ -322,41 +342,45 @@ func TestIsValidTier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleModelPickerResult
+// handleModelPickerDone — cancel
 // ---------------------------------------------------------------------------
 
-func TestHandleModelPickerResult_Cancel(t *testing.T) {
+func TestHandleModelPickerDone_Cancel(t *testing.T) {
 	a := newTestAppWithProviders()
-	a.pickerMode = pickerModel
-	a.modelPicker = NewModelPicker(a.providers, a.providerConfigs, "openai", config.TierPro)
-	a.modelPicker.aborted = true
+	captured := helperSetupModelPicker(a)
+	_ = captured
 
-	_, cmd := a.handleModelPickerResult()
-	if a.pickerMode != pickerNone {
-		t.Errorf("pickerMode = %v, want pickerNone", a.pickerMode)
+	// Simulate abort
+	p := a.listPicker
+	p.aborted = true
+
+	model, cmd := a.handleModelPickerDone(p, captured)
+	if _, ok := model.(*App); !ok {
+		t.Fatal("expected *App")
 	}
 	if cmd != nil {
 		t.Error("expected nil cmd on cancel")
 	}
 }
 
-func TestHandleModelPickerResult_Select(t *testing.T) {
+// ---------------------------------------------------------------------------
+// handleModelPickerDone — select
+// ---------------------------------------------------------------------------
+
+func TestHandleModelPickerDone_Select(t *testing.T) {
 	a := newTestAppWithProviders()
-	a.pickerMode = pickerModel
-	a.modelPicker = NewModelPicker(a.providers, a.providerConfigs, "openai", config.TierPro)
+	captured := helperSetupModelPicker(a)
+
 	// Select second item (index 1)
-	a.modelPicker.cursor = 1
-	a.modelPicker.selected = &a.modelPicker.items[1]
+	wantProvider := captured[1].Provider
+	wantTier := captured[1].Tier
 
-	wantProvider := a.modelPicker.items[1].Provider
-	wantTier := a.modelPicker.items[1].Tier
+	p := a.listPicker
+	p.selected = 1
 
-	model, cmd := a.handleModelPickerResult()
+	model, cmd := a.handleModelPickerDone(p, captured)
 	_ = model
 
-	if a.pickerMode != pickerNone {
-		t.Errorf("pickerMode = %v, want pickerNone", a.pickerMode)
-	}
 	if a.currentProvider != wantProvider || a.currentTier != wantTier {
 		t.Errorf("provider=%q tier=%q, want provider=%q tier=%q",
 			a.currentProvider, a.currentTier,
@@ -368,22 +392,37 @@ func TestHandleModelPickerResult_Select(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleModelPickerResult — unknown provider in selection
+// handleModelPickerDone — unknown provider in selection
 // ---------------------------------------------------------------------------
 
-func TestHandleModelPickerResult_UnknownProvider(t *testing.T) {
+func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
 	a := newTestAppWithProviders()
-	a.pickerMode = pickerModel
-	a.modelPicker = NewModelPicker(a.providers, a.providerConfigs, "openai", config.TierPro)
-	// Manually craft a selection with a provider not in a.providers
-	a.modelPicker.selected = &ModelItem{Provider: "ghost", Tier: config.TierPro, Model: "ghost-model"}
+	helperSetupModelPicker(a)
 
-	_, cmd := a.handleModelPickerResult()
-	if a.pickerMode != pickerNone {
-		t.Errorf("pickerMode = %v, want pickerNone", a.pickerMode)
-	}
+	// Create a picker with ghost provider item not in a.providers
+	p := a.listPicker
+	ghostItems := []ModelItem{{Provider: "ghost", Tier: config.TierPro, Model: "ghost-model"}}
+	p.selected = 0
+
+	_, cmd := a.handleModelPickerDone(p, ghostItems)
 	if cmd == nil {
 		t.Error("expected non-nil cmd for unknown provider error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleModelPickerDone — no selection
+// ---------------------------------------------------------------------------
+
+func TestHandleModelPickerDone_NilSelected(t *testing.T) {
+	a := newTestAppWithProviders()
+	helperSetupModelPicker(a)
+
+	// Neither aborted nor selected
+	p := a.listPicker
+	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier))
+	if cmd != nil {
+		t.Error("expected nil cmd when no selection")
 	}
 }
 
@@ -456,16 +495,142 @@ func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 	}
 }
 
-func TestHandleModelPickerResult_NilSelected(t *testing.T) {
+// ---------------------------------------------------------------------------
+// buildModelItems tests
+// ---------------------------------------------------------------------------
+
+func TestBuildModelItems_Items(t *testing.T) {
 	a := newTestAppWithProviders()
-	a.pickerMode = pickerModel
-	a.modelPicker = NewModelPicker(a.providers, a.providerConfigs, "openai", config.TierPro)
-	// Neither aborted nor selected
-	_, cmd := a.handleModelPickerResult()
-	if a.pickerMode != pickerNone {
-		t.Errorf("pickerMode should be pickerNone, got %v", a.pickerMode)
+	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+
+	// openai: 3 tiers + anthropic: 1 tier = 4 items
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
 	}
-	if cmd != nil {
-		t.Error("expected nil cmd when no selection")
+
+	// Sorted by provider name: anthropic first, then openai
+	if items[0].Provider != "anthropic" {
+		t.Errorf("items[0].Provider = %q, want anthropic", items[0].Provider)
+	}
+	if items[1].Provider != "openai" {
+		t.Errorf("items[1].Provider = %q, want openai", items[1].Provider)
+	}
+}
+
+func TestBuildModelItems_CurrentMarked(t *testing.T) {
+	a := newTestAppWithProviders()
+	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+
+	found := false
+	for _, item := range items {
+		if item.Provider == "openai" && item.Tier == config.TierPro {
+			if !item.Current {
+				t.Error("openai/pro should be Current=true")
+			}
+			found = true
+		} else {
+			if item.Current {
+				t.Errorf("%s/%s should not be Current", item.Provider, item.Tier)
+			}
+		}
+	}
+	if !found {
+		t.Error("openai/pro item not found")
+	}
+}
+
+func TestBuildModelItems_SkipsProviderWithoutImpl(t *testing.T) {
+	providers := map[string]llm.Provider{
+		"openai": &mockLLMProvider{},
+	}
+	providerConfigs := map[string]*config.Provider{
+		"openai": {
+			Name: "openai",
+			Models: map[config.Tier]string{
+				config.TierPro: "glm-5",
+			},
+		},
+		"anthropic": {
+			Name: "anthropic",
+			Models: map[config.Tier]string{
+				config.TierPro: "claude-sonnet",
+			},
+		},
+	}
+	items := buildModelItems(providers, providerConfigs, "openai", config.TierPro)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item (anthropic skipped), got %d", len(items))
+	}
+	if items[0].Provider != "openai" {
+		t.Errorf("expected openai item, got %q", items[0].Provider)
+	}
+}
+
+func TestBuildModelItems_Empty(t *testing.T) {
+	items := buildModelItems(
+		map[string]llm.Provider{},
+		map[string]*config.Provider{},
+		"openai",
+		config.TierPro,
+	)
+	if len(items) != 0 {
+		t.Errorf("expected 0 items, got %d", len(items))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findCurrentIndex tests
+// ---------------------------------------------------------------------------
+
+func TestFindCurrentIndex_Found(t *testing.T) {
+	items := []ModelItem{
+		{Provider: "openai", Tier: config.TierLite, Model: "glm-lite", Current: false},
+		{Provider: "openai", Tier: config.TierPro, Model: "glm-5", Current: true},
+		{Provider: "openai", Tier: config.TierMax, Model: "glm-max", Current: false},
+	}
+	idx := findCurrentIndex(items)
+	if idx != 1 {
+		t.Errorf("findCurrentIndex = %d, want 1", idx)
+	}
+}
+
+func TestFindCurrentIndex_NotFound(t *testing.T) {
+	items := []ModelItem{
+		{Provider: "openai", Tier: config.TierPro, Model: "glm-5", Current: false},
+	}
+	idx := findCurrentIndex(items)
+	if idx != -1 {
+		t.Errorf("findCurrentIndex = %d, want -1 (not found)", idx)
+	}
+}
+
+func TestFindCurrentIndex_Empty(t *testing.T) {
+	idx := findCurrentIndex(nil)
+	if idx != -1 {
+		t.Errorf("findCurrentIndex(nil) = %d, want -1", idx)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// picker-already-open guard
+// ---------------------------------------------------------------------------
+
+func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
+	a := newTestAppWithProviders()
+	// Open a model picker first
+	a.handleModel("", nil)
+	if a.listPicker == nil {
+		t.Fatal("expected listPicker to be set")
+	}
+	// Try opening again — should show info, not replace picker
+	cmd := a.handleModel("", nil)
+	msg := cmd()
+	info, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("expected infoMsg, got %T", msg)
+	}
+	if !strings.Contains(string(info), "picker is already open") {
+		t.Errorf("expected already-open message, got %q", info)
 	}
 }
