@@ -2880,3 +2880,182 @@ func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
 		t.Error("EventTextEnd not emitted for empty text block")
 	}
 }
+
+// TestCallLLM_InterleavedToolCallDeltas verifies that interleaved input_json_delta
+// events across two parallel tool_use blocks do not mix arguments.
+// This reproduces the bug where OpenAI SSE sends deltas for multiple tool calls
+// in interleaved order (index 0 delta, index 1 delta, index 0 delta, ...).
+func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// Simulate OpenAI-style interleaved deltas:
+	// Tool 0 (Read): {"file_path": "/a.txt"}
+	// Tool 1 (Bash): {"command": "ls"}
+	// Deltas arrive interleaved: chunk of tool 0, chunk of tool 1, etc.
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 30}}},
+		// Both tool_use blocks start
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t_read", Name: "Read"}},
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t_bash", Name: "Bash"}},
+		// Interleaved input_json_delta: tool 0 gets first chunk
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"file`}},
+		// Tool 1 gets its first chunk
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"comman`}},
+		// Tool 0 gets second chunk
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `_path": "/a.txt"}`}},
+		// Tool 1 gets second chunk
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `d": "ls"}`}},
+		// Both stop
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 15}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	var readInput, bashInput json.RawMessage
+	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		readInput = input
+		return &tool.ToolResult{Data: "file content"}, nil
+	}}
+	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		bashInput = input
+		return &tool.ToolResult{Data: "file1\nfile2"}, nil
+	}}
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{toolRead, toolBash},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "read and ls", nil)
+
+	// Collect EventToolParamDelta events to verify ID/Name correspondence
+	var paramDeltas []types.PartialInputEvent
+	for evt := range eventCh {
+		if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
+			paramDeltas = append(paramDeltas, *evt.PartialInput)
+		}
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Verify tool inputs are complete and NOT mixed
+	if readInput == nil {
+		t.Fatal("Read tool was not called")
+	}
+	if string(readInput) != `{"file_path": "/a.txt"}` {
+		t.Errorf("Read input mixed or incomplete: got %q, want %q", string(readInput), `{"file_path": "/a.txt"}`)
+	}
+
+	if bashInput == nil {
+		t.Fatal("Bash tool was not called")
+	}
+	if string(bashInput) != `{"command": "ls"}` {
+		t.Errorf("Bash input mixed or incomplete: got %q, want %q", string(bashInput), `{"command": "ls"}`)
+	}
+
+	// Verify EventToolParamDelta has correct ID/Name for each tool
+	readDeltas := 0
+	bashDeltas := 0
+	for _, pd := range paramDeltas {
+		if pd.ID == "t_read" && pd.Name == "Read" {
+			readDeltas++
+		} else if pd.ID == "t_bash" && pd.Name == "Bash" {
+			bashDeltas++
+		} else {
+			t.Errorf("unexpected param delta: ID=%q Name=%q", pd.ID, pd.Name)
+		}
+	}
+	if readDeltas == 0 {
+		t.Error("no EventToolParamDelta emitted for Read tool")
+	}
+	if bashDeltas == 0 {
+		t.Error("no EventToolParamDelta emitted for Bash tool")
+	}
+}
+
+// TestCallLLM_ParallelToolCalls_WithRealInput verifies that 3 parallel tool calls
+// each receive the correct, unmixed input JSON.
+func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	// 3 tool calls with distinct JSON inputs, all interleaved
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 40}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t0", Name: "Read"}},
+		{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "Bash"}},
+		{Type: "content_block_start", Index: 2, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t2", Name: "Grep"}},
+		// Interleaved deltas: each tool gets its input in 2 chunks
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"file_path":`}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"command":`}},
+		{Type: "content_block_delta", Index: 2, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"pattern":`}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: ` "/src/main.go"}`}},
+		{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: ` "go test"}`}},
+		{Type: "content_block_delta", Index: 2, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: ` "TODO"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "content_block_stop", Index: 1},
+		{Type: "content_block_stop", Index: 2},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 20}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
+
+	var inputs map[string]json.RawMessage
+	inputs = make(map[string]json.RawMessage)
+	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		inputs["Read"] = input
+		return &tool.ToolResult{Data: "contents"}, nil
+	}}
+	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		inputs["Bash"] = input
+		return &tool.ToolResult{Data: "ok"}, nil
+	}}
+	toolGrep := &mockTool{name: "Grep", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		inputs["Grep"] = input
+		return &tool.ToolResult{Data: "matches"}, nil
+	}}
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{toolRead, toolBash, toolGrep},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "parallel ops", nil)
+	// Drain events
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Verify each tool got exactly the right input, no mixing
+	if string(inputs["Read"]) != `{"file_path": "/src/main.go"}` {
+		t.Errorf("Read input = %q, want %q", string(inputs["Read"]), `{"file_path": "/src/main.go"}`)
+	}
+	if string(inputs["Bash"]) != `{"command": "go test"}` {
+		t.Errorf("Bash input = %q, want %q", string(inputs["Bash"]), `{"command": "go test"}`)
+	}
+	if string(inputs["Grep"]) != `{"pattern": "TODO"}` {
+		t.Errorf("Grep input = %q, want %q", string(inputs["Grep"]), `{"pattern": "TODO"}`)
+	}
+}

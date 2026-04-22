@@ -555,13 +555,20 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	// Accumulate streaming response
 	var contentBlocks []types.ContentBlock
 	var currentText strings.Builder
-	var currentToolInput strings.Builder
-	var currentToolID string
-	var currentToolName string
 	var model string
 	var stopReason string
 	var usage types.Usage
 	var thinkingStart time.Time
+
+	// Per-index accumulator for parallel tool calls.
+	// OpenAI SSE can interleave input_json_delta across multiple tool_use
+	// blocks; each block's state must be isolated by event.Index.
+	type blockAccumulator struct {
+		toolInput strings.Builder
+		toolID    string
+		toolName  string
+	}
+	var blockAcc []*blockAccumulator
 
 	// StreamingToolExecutor — lazily created on first tool_use block.
 	// Source: query.ts:562-568 — executor created before streaming.
@@ -610,9 +617,12 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				contentBlocks = append(contentBlocks, cb)
 				switch cb.Type {
 				case types.ContentTypeToolUse:
-					currentToolID = cb.ID
-					currentToolName = cb.Name
-					currentToolInput.Reset()
+					acc := &blockAccumulator{toolID: cb.ID, toolName: cb.Name}
+					bidx := event.Index
+					for len(blockAcc) <= bidx {
+						blockAcc = append(blockAcc, nil)
+					}
+					blockAcc[bidx] = acc
 					summary := e.computeSummary(cb.Name, cb.Input)
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolStart,
@@ -646,18 +656,20 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						Text: event.Delta.Text,
 					})
 				case "input_json_delta":
-					currentToolInput.WriteString(event.Delta.PartialJSON)
-					accumulated := currentToolInput.String()
-					summary := e.computeSummary(currentToolName, json.RawMessage(accumulated))
-					e.emitEvent(eventCh, types.QueryEvent{
-						Type: types.EventToolParamDelta,
-						PartialInput: &types.PartialInputEvent{
-							ID:      currentToolID,
-							Name:    currentToolName,
-							Delta:   event.Delta.PartialJSON,
-							Summary: summary,
-						},
-					})
+					if event.Index < len(blockAcc) && blockAcc[event.Index] != nil {
+						acc := blockAcc[event.Index]
+						acc.toolInput.WriteString(event.Delta.PartialJSON)
+						summary := e.computeSummary(acc.toolName, json.RawMessage(acc.toolInput.String()))
+						e.emitEvent(eventCh, types.QueryEvent{
+							Type: types.EventToolParamDelta,
+							PartialInput: &types.PartialInputEvent{
+								ID:      acc.toolID,
+								Name:    acc.toolName,
+								Delta:   event.Delta.PartialJSON,
+								Summary: summary,
+							},
+						})
+					}
 				case "thinking_delta":
 					currentText.WriteString(event.Delta.Thinking)
 					e.emitEvent(eventCh, types.QueryEvent{
@@ -681,8 +693,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						Type: types.EventTextEnd,
 					})
 				case types.ContentTypeToolUse:
-					cb.Input = json.RawMessage(currentToolInput.String())
-					currentToolInput.Reset()
+					if idx < len(blockAcc) && blockAcc[idx] != nil {
+						cb.Input = json.RawMessage(blockAcc[idx].toolInput.String())
+					}
 					// Source: query.ts:841-843 — addTool as soon as input is complete.
 					// Tools begin executing during LLM streaming, not after.
 					if streamingExecutor == nil {
