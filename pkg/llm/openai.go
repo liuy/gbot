@@ -169,9 +169,10 @@ type openaiRespChoice struct {
 }
 
 type openaiRespMessage struct {
-	Role      string           `json:"role"`
-	Content   *string          `json:"content"` // null when tool_calls present
-	ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          *string          `json:"content"` // null when tool_calls present
+	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent *string          `json:"reasoning_content,omitempty"` // GLM extended field
 }
 
 // toolCallAccumulator tracks per-index state for fragmented tool calls.
@@ -229,6 +230,14 @@ func (p *OpenAIProvider) translateResponse(body []byte) (*Response, error) {
 
 	choice := oResp.Choices[0]
 	var content []types.ContentBlock
+
+	// GLM extended: reasoning_content → thinking block
+	if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
+		content = append(content, types.ContentBlock{
+			Type: types.ContentTypeThinking,
+			Text: *choice.Message.ReasoningContent,
+		})
+	}
 
 	// Text content
 	if choice.Message.Content != nil && *choice.Message.Content != "" {
@@ -440,7 +449,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 				send(ctx, eventCh, StreamEvent{
 					Type:  "content_block_delta",
 					Index: thinkingContentIndex,
-					Delta: &StreamDelta{Type: "text_delta", Text: *delta.ReasoningContent},
+					Delta: &StreamDelta{Type: "thinking_delta", Thinking: *delta.ReasoningContent},
 				})
 			}
 
@@ -554,6 +563,14 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					usage.InputTokens = chunk.Usage.PromptTokens - chunk.Usage.PromptTokensDetails.CachedTokens
 					usage.OutputTokens = chunk.Usage.CompletionTokens
 					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+					slog.Info("llm:message_delta_raw",
+						"output_tokens", chunk.Usage.CompletionTokens,
+						"cache_read", chunk.Usage.PromptTokensDetails.CachedTokens,
+						"cache_creation", 0,
+						"input_tokens", usage.InputTokens,
+						"reasoning_tokens", chunk.Usage.CompletionTokensDetails.ReasoningTokens,
+						"prompt_tokens", chunk.Usage.PromptTokens,
+					)
 				}
 				send(ctx, eventCh, StreamEvent{
 					Type:     "message_delta",
