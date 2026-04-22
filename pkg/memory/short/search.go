@@ -114,7 +114,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 
 	var results []*SearchResult
 	for rows.Next() {
-		var msg Message
+		var msg TranscriptMessage
 		var score float64
 		var subtype sql.NullString
 		var parentUUID, logicalParentUUID sql.NullString
@@ -143,7 +143,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		}
 
 		results = append(results, &SearchResult{
-			Message: &msg,
+			TranscriptMessage: &msg,
 			Score:   score,
 		})
 	}

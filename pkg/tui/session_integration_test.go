@@ -552,7 +552,7 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 	}
 }
 
-func collectUUIDs(t *testing.T, msgs []*short.Message) []string {
+func collectUUIDs(t *testing.T, msgs []*short.TranscriptMessage) []string {
 	t.Helper()
 	uuids := make([]string, len(msgs))
 	for i, m := range msgs {

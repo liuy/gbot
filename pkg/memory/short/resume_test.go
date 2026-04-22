@@ -6,7 +6,7 @@ import (
 )
 
 func TestFilterForResume_UnresolvedToolUse(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
 		// No tool_result for tu1 → unresolved
@@ -22,7 +22,7 @@ func TestFilterForResume_UnresolvedToolUse(t *testing.T) {
 }
 
 func TestFilterForResume_AllResolved(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
 		{Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`},
@@ -36,7 +36,7 @@ func TestFilterForResume_AllResolved(t *testing.T) {
 }
 
 func TestDetectInterruptedTurn_EmptyContent(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[]`},
 	}
@@ -47,7 +47,7 @@ func TestDetectInterruptedTurn_EmptyContent(t *testing.T) {
 }
 
 func TestDetectInterruptedTurn_ToolUseWithoutResult(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
 	}
@@ -58,7 +58,7 @@ func TestDetectInterruptedTurn_ToolUseWithoutResult(t *testing.T) {
 }
 
 func TestDetectInterruptedTurn_OnlyThinking(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"thinking","text":"hmm..."}]`},
 	}
@@ -69,7 +69,7 @@ func TestDetectInterruptedTurn_OnlyThinking(t *testing.T) {
 }
 
 func TestDetectInterruptedTurn_Complete(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"text","text":"hi there"}]`},
 	}
@@ -80,7 +80,7 @@ func TestDetectInterruptedTurn_Complete(t *testing.T) {
 }
 
 func TestDetectInterruptedTurn_UserLast(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "assistant", Content: `[{"type":"text","text":"hi"}]`},
 		{Type: "user", Content: `[{"type":"text","text":"next question"}]`},
 	}
@@ -97,7 +97,7 @@ func TestDetectInterruptedTurn_Empty(t *testing.T) {
 }
 
 func TestTruncateInterruptedTurn_RemovesTrailingAssistant(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
 	}
@@ -112,7 +112,7 @@ func TestTruncateInterruptedTurn_RemovesTrailingAssistant(t *testing.T) {
 }
 
 func TestTruncateInterruptedTurn_MultipleTrailingAssistant(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"thinking","text":"hmm"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
@@ -125,7 +125,7 @@ func TestTruncateInterruptedTurn_MultipleTrailingAssistant(t *testing.T) {
 }
 
 func TestTruncateInterruptedTurn_NoAssistant(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -162,7 +162,7 @@ func TestResumeSession_WithMessages(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
 	}
@@ -219,7 +219,7 @@ func TestResumeSession_FullFlow(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add messages that simulate a real conversation
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi there"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"how are you?"}]`),
@@ -255,7 +255,7 @@ func TestResumeSession_WithInterruptedTurn(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add messages ending with an incomplete turn (tool_use without result)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"tool_use","id":"tu1","name":"bash"}]`),
 	}
@@ -377,7 +377,7 @@ func TestResumeSession_ThinkingOnlyTruncation(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add a normal exchange followed by a thinking-only assistant (interrupted)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi there"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"read this file"}]`),
@@ -418,7 +418,7 @@ func TestResumeSession_EmptyContentTruncation(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[]`), // empty content
 	}
@@ -491,7 +491,7 @@ func TestIsSessionResumable_CountError(t *testing.T) {
 // with both text AND tool_use is still detected as interrupted (it's the
 // last message so there can't be a tool_result).
 func TestDetectInterruptedTurn_MixedTextAndToolUse(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"text","text":"let me check"},{"type":"tool_use","id":"tu1","name":"Read"}]`},
 	}
@@ -504,7 +504,7 @@ func TestDetectInterruptedTurn_MixedTextAndToolUse(t *testing.T) {
 // TestTruncateInterruptedTurn_AllAssistants verifies behavior when ALL messages are assistants.
 // In this case truncation removes everything, returning empty slice.
 func TestTruncateInterruptedTurn_AllAssistants(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "assistant", Content: `[{"type":"thinking","text":"hmm"}]`},
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"Read"}]`},
 	}

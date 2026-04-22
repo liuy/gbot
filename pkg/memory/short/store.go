@@ -51,7 +51,10 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	db, _ := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
 
 	// Performance pragmas
 	pragmas := []string{
@@ -72,7 +75,10 @@ func NewStore(dbPath string) (*Store, error) {
 	go initGse()
 
 	s := &Store{db: db, dbPath: dbPath}
-	_ = s.initSchema()
+	if err := s.initSchema(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("init schema: %w", err)
+	}
 
 	return s, nil
 }

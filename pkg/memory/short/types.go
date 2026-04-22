@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// Message represents a single message in a session transcript.
+// TranscriptMessage represents a single message in a session transcript.
 // Aligned with TS TranscriptMessage (types/logs.ts:221-231).
-type Message struct {
+type TranscriptMessage struct {
 	Seq       int64
 	SessionID string
 	UUID      string
@@ -58,10 +58,10 @@ type ContentBlock struct {
 // CompactResult holds the output of a compact operation.
 // Aligned with TS CompactionResult.
 type CompactResult struct {
-	BoundaryMarker   *Message   // system, subtype=compact_boundary
-	SummaryMessages  []*Message // user, isCompactSummary=true
-	MessagesToKeep   []*Message // partial compact preserved messages
-	Attachments      []*Message // reinjected attachments
+	BoundaryMarker   *TranscriptMessage   // system, subtype=compact_boundary
+	SummaryMessages  []*TranscriptMessage // user, isCompactSummary=true
+	MessagesToKeep   []*TranscriptMessage // partial compact preserved messages
+	Attachments      []*TranscriptMessage // reinjected attachments
 	PreCompactTokens  int
 	PostCompactTokens int
 }
@@ -77,7 +77,7 @@ type SearchOptions struct {
 
 // SearchResult holds a matched message with its relevance score.
 type SearchResult struct {
-	Message *Message
+	TranscriptMessage *TranscriptMessage
 	Score   float64
 }
 

@@ -74,8 +74,8 @@ func TestAgentInputMissingFields(t *testing.T) {
 }
 
 func TestCallWithMockFactory(t *testing.T) {
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{
 			AgentType: "General",
@@ -111,8 +111,8 @@ func TestCallWithMockFactory(t *testing.T) {
 }
 
 func TestCallEmptySubagentTypeDefaults(t *testing.T) {
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{AgentType: "General", Content: "ok"}, nil
 	}
@@ -133,7 +133,7 @@ func TestCallEmptySubagentTypeDefaults(t *testing.T) {
 }
 
 func TestCallFactoryError(t *testing.T) {
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return nil, fmt.Errorf("engine crashed: out of memory")
 	}
 
@@ -236,7 +236,7 @@ func TestCallWithInvalidAgentType(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(
-		func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{}, nil
 		},
 		func() map[string]tool.Tool { return parentTools },
@@ -292,7 +292,7 @@ func TestRenderResult(t *testing.T) {
 }
 
 // TestCallPassesToolUseID verifies that AgentTool.Call propagates the
-// ToolUseContext.ToolUseID to the SubEngineOpts.ParentToolUseID.
+// ToolUseContext.ToolUseID to the AgentOpts.ParentToolUseID.
 // This is required for the TUI to display sub-agent tool progress.
 // TestCallFork_DetachedContext verifies that fork agents use a detached context
 // (context.Background), NOT the parent query's context. When the parent query's
@@ -307,7 +307,7 @@ func TestCallFork_DetachedContext(t *testing.T) {
 
 	var factoryCtx context.Context
 	var factoryMu sync.Mutex
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		factoryMu.Lock()
 		factoryCtx = ctx
 		factoryMu.Unlock()
@@ -386,8 +386,8 @@ func TestCallFork_DetachedContext(t *testing.T) {
 }
 
 func TestCallPassesToolUseID(t *testing.T) {
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{
 			AgentType: "General",
@@ -583,8 +583,8 @@ func TestModelInheritResolvedToEmpty(t *testing.T) {
 	// All built-in agents have Model="inherit", which must be resolved to ""
 	// before passing to the factory. Otherwise NewSubEngine treats "inherit"
 	// as a literal model name and passes it to the API.
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{Content: "done"}, nil
 	}
@@ -606,8 +606,8 @@ func TestModelInheritResolvedToEmpty(t *testing.T) {
 
 func TestModelExplicitOverride(t *testing.T) {
 	// When user specifies an explicit model, it should pass through
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
 		return &types.SubQueryResult{Content: "done"}, nil
 	}
@@ -651,8 +651,8 @@ func TestFilterToolsForAgent_GlobalDisallowed(t *testing.T) {
 func TestCallFork_LaunchesInBackground(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		mu.Lock()
 		capturedOpts = opts
 		mu.Unlock()
@@ -706,8 +706,8 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		mu.Lock()
 		capturedOpts = opts
 		mu.Unlock()
@@ -736,8 +736,8 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 func TestCallFork_AgentTypeName(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	var capturedOpts SubEngineOpts
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		mu.Lock()
 		capturedOpts = opts
 		mu.Unlock()
@@ -767,7 +767,7 @@ func TestCallFork_RecursiveGuard(t *testing.T) {
 	t.Parallel()
 	at := New()
 	at.SetFactory(
-		func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{}, nil
 		},
 		func() map[string]tool.Tool { return makeTestTools("Bash") },
@@ -798,7 +798,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 	var mu sync.Mutex
 	var notifications []string
 
-	factory := func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		return &types.SubQueryResult{
 			Content:         "search complete",
 			TotalDurationMs: 500,
@@ -854,7 +854,7 @@ func TestCallFork_NoForkWithoutSetNotifyFn(t *testing.T) {
 	t.Parallel()
 	at := New()
 	at.SetFactory(
-		func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error) {
+		func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 			return &types.SubQueryResult{Content: "sync done"}, nil
 		},
 		func() map[string]tool.Tool { return makeTestTools("Bash") },

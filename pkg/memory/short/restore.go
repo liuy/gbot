@@ -8,7 +8,7 @@ import (
 // RestoreSkillStateFromMessages restores skill invocation state from messages.
 // Looks for 'invoked_skills' attachment messages and extracts the skill list.
 // TS: conversationRecovery.ts:382-403
-func RestoreSkillStateFromMessages(messages []*Message) *SkillState {
+func RestoreSkillStateFromMessages(messages []*TranscriptMessage) *SkillState {
 	state := &SkillState{
 		InvokedSkills: make(map[string]bool),
 		CronTasks:     nil,
@@ -68,7 +68,7 @@ func RestoreSkillStateFromMessages(messages []*Message) *SkillState {
 // RestoreAgentFromSession restores agent state from session messages.
 // Looks for 'agent-setting' attachment messages to recover agent configuration.
 // TS: sessionRestore.ts:200-242
-func RestoreAgentFromSession(messages []*Message) *AgentState {
+func RestoreAgentFromSession(messages []*TranscriptMessage) *AgentState {
 	for _, msg := range messages {
 		if msg.Type != "attachment" {
 			continue
@@ -120,7 +120,7 @@ func RestoreAgentFromSession(messages []*Message) *AgentState {
 // ExtractTodosFromTranscript extracts TODO items from the transcript.
 // Looks for the most recent TodoWrite tool_use and parses its todos list.
 // TS: sessionRestore.ts:77-93
-func ExtractTodosFromTranscript(messages []*Message) []*TodoItem {
+func ExtractTodosFromTranscript(messages []*TranscriptMessage) []*TodoItem {
 	// Search backwards from the end to find the latest TodoWrite
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
@@ -185,7 +185,7 @@ func ExtractTodosFromTranscript(messages []*Message) []*TodoItem {
 // ComputeRestoredAttributionState computes attribution state from messages.
 // Looks for 'attribution-snapshot' messages to determine if this is a sub-agent session.
 // TS: sessionRestore.ts:157-168
-func ComputeRestoredAttributionState(messages []*Message) *AttributionState {
+func ComputeRestoredAttributionState(messages []*TranscriptMessage) *AttributionState {
 	for _, msg := range messages {
 		if msg.Type != "attribution-snapshot" {
 			continue
@@ -214,7 +214,7 @@ func ComputeRestoredAttributionState(messages []*Message) *AttributionState {
 // ComputeStandaloneAgentContext computes standalone agent context from messages.
 // Extracts agent name and color from the session metadata.
 // TS: sessionRestore.ts:175-188
-func ComputeStandaloneAgentContext(messages []*Message) *AgentContext {
+func ComputeStandaloneAgentContext(messages []*TranscriptMessage) *AgentContext {
 	var agentName, agentColor string
 
 	for _, msg := range messages {
@@ -282,7 +282,7 @@ func RefreshAgentDefinitionsForModeSwitch(sessionID string) error {
 // ProcessResumedConversation orchestrates the resume process by calling all restore functions.
 // Returns a consolidated ResumedState with all restored information.
 // TS: sessionRestore.ts:409-534 (partial)
-func (s *Store) ProcessResumedConversation(sessionID string, messages []*Message) (*ResumedState, error) {
+func (s *Store) ProcessResumedConversation(sessionID string, messages []*TranscriptMessage) (*ResumedState, error) {
 	if len(messages) == 0 {
 		return &ResumedState{}, nil
 	}
@@ -314,7 +314,7 @@ func (s *Store) ProcessResumedConversation(sessionID string, messages []*Message
 // Looks for 'turn_duration' checkpoints and verifies messageCount matches actual position.
 // Logs warnings via slog for any inconsistencies (fail-open).
 // TS: sessionStorage.ts:2224-2243
-func CheckResumeConsistency(chain []*Message) {
+func CheckResumeConsistency(chain []*TranscriptMessage) {
 	for i := len(chain) - 1; i >= 0; i-- {
 		msg := chain[i]
 		if msg.Type != "system" || msg.Subtype != "turn_duration" {
@@ -358,13 +358,13 @@ func CheckResumeConsistency(chain []*Message) {
 // A new group starts when an assistant message has a different "message_id" from the previous assistant.
 // For Go messages without message_id, we group by UUID sequence as a heuristic.
 // TS: grouping.ts:22-63
-func GroupMessagesByApiRound(messages []*Message) [][]*Message {
+func GroupMessagesByApiRound(messages []*TranscriptMessage) [][]*TranscriptMessage {
 	if len(messages) == 0 {
 		return nil
 	}
 
-	var groups [][]*Message
-	var current []*Message
+	var groups [][]*TranscriptMessage
+	var current []*TranscriptMessage
 
 	// Track the last assistant's message_id (extracted from content if available)
 	var lastMessageID string
@@ -386,7 +386,7 @@ func GroupMessagesByApiRound(messages []*Message) [][]*Message {
 			currentMessageID != lastMessageID &&
 			len(current) > 0 {
 			groups = append(groups, current)
-			current = []*Message{msg}
+			current = []*TranscriptMessage{msg}
 		} else {
 			current = append(current, msg)
 		}

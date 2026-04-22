@@ -30,8 +30,8 @@ func (a *App) persistTurn() {
 		return
 	}
 
-	// Convert []*short.Message for AppendMessages
-	ptrs := make([]*short.Message, len(storeMsgs))
+	// Convert []*short.TranscriptMessage for AppendMessages
+	ptrs := make([]*short.TranscriptMessage, len(storeMsgs))
 	for i := range storeMsgs {
 		ptrs[i] = &storeMsgs[i]
 	}
@@ -61,7 +61,7 @@ func loadAndConvertMessages(store *short.Store, sessionID string) ([]types.Messa
 	if err != nil {
 		return nil, fmt.Errorf("load messages: %w", err)
 	}
-	msgSlice := make([]short.Message, len(storeMsgs))
+	msgSlice := make([]short.TranscriptMessage, len(storeMsgs))
 	for i, m := range storeMsgs {
 		msgSlice[i] = *m
 	}

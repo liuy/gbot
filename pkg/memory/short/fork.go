@@ -16,7 +16,7 @@ import (
 func (s *Store) ForkSession(parentSessionID string, forkPointSeq int, agentType string) (*Session, error) {
 
 	// Load parent session
-	parent, err := s.getSessionLocked(parentSessionID)
+	parent, err := s.getSession(parentSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load parent session: %w", err)
 	}
@@ -40,7 +40,7 @@ func (s *Store) ForkSession(parentSessionID string, forkPointSeq int, agentType 
 		UpdatedAt:       time.Now(),
 	}
 
-	if err := s.insertSessionLocked(child); err != nil {
+	if err := s.insertSession(child); err != nil {
 		return nil, fmt.Errorf("insert fork session: %w", err)
 	}
 
@@ -176,7 +176,7 @@ func (s *Store) MergeForkBack(childSessionID string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	// Load child session to get parent and fork point
-	child, err := s.getSessionLocked(childSessionID)
+	child, err := s.getSession(childSessionID)
 	if err != nil {
 		return fmt.Errorf("load child session: %w", err)
 	}

@@ -58,8 +58,8 @@ func TestSearchMessages_English(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
-	if !strings.Contains(results[0].Message.Content, "weather") {
-		t.Errorf("expected content to contain 'weather', got %q", results[0].Message.Content)
+	if !strings.Contains(results[0].TranscriptMessage.Content, "weather") {
+		t.Errorf("expected content to contain 'weather', got %q", results[0].TranscriptMessage.Content)
 	}
 	// FTS5 rank can be negative (lower rank = better match)
 	if results[0].Score == 0 {
@@ -123,7 +123,7 @@ func TestSearchMessages_Chinese(t *testing.T) {
 	// Verify the result contains the search term
 	found := false
 	for _, r := range results {
-		if strings.Contains(r.Message.Content, "会话管理") {
+		if strings.Contains(r.TranscriptMessage.Content, "会话管理") {
 			found = true
 			break
 		}
@@ -251,8 +251,8 @@ func TestSearchMessages_TypeFilter(t *testing.T) {
 		t.Errorf("expected 2 user messages, got %d", len(results))
 	}
 	for _, r := range results {
-		if r.Message.Type != "user" {
-			t.Errorf("expected type 'user', got %q", r.Message.Type)
+		if r.TranscriptMessage.Type != "user" {
+			t.Errorf("expected type 'user', got %q", r.TranscriptMessage.Type)
 		}
 	}
 
@@ -269,8 +269,8 @@ func TestSearchMessages_TypeFilter(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 assistant message, got %d", len(results))
 	}
-	if results[0].Message.Type != "assistant" {
-		t.Errorf("expected type 'assistant', got %q", results[0].Message.Type)
+	if results[0].TranscriptMessage.Type != "assistant" {
+		t.Errorf("expected type 'assistant', got %q", results[0].TranscriptMessage.Type)
 	}
 }
 
@@ -753,8 +753,8 @@ func TestSearchMessages_ProjectFilter(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result with project filter, got %d", len(results))
 	}
-	if results[0].Message.SessionID != sessions[0].SessionID {
-		t.Errorf("expected session %q, got %q", sessions[0].SessionID, results[0].Message.SessionID)
+	if results[0].TranscriptMessage.SessionID != sessions[0].SessionID {
+		t.Errorf("expected session %q, got %q", sessions[0].SessionID, results[0].TranscriptMessage.SessionID)
 	}
 }
 
@@ -973,8 +973,8 @@ func TestSearchMessages_TypesFilter(t *testing.T) {
 		t.Errorf("expected 2 results with Types filter, got %d", len(results))
 	}
 	for _, r := range results {
-		if r.Message.Type != "user" && r.Message.Type != "assistant" {
-			t.Errorf("got type %q, want user or assistant", r.Message.Type)
+		if r.TranscriptMessage.Type != "user" && r.TranscriptMessage.Type != "assistant" {
+			t.Errorf("got type %q, want user or assistant", r.TranscriptMessage.Type)
 		}
 	}
 }
@@ -1158,9 +1158,9 @@ func TestIndexMessageFTS_InsertError(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("manual", 100, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err == nil {

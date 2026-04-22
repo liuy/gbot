@@ -306,8 +306,8 @@ func extractTextBlocks(content any) []string {
 	return texts
 }
 
-// getSessionLocked loads a session without acquiring the lock (caller must hold lock).
-func (s *Store) getSessionLocked(sessionID string) (*Session, error) {
+// getSession loads a session without acquiring the lock (caller must hold lock).
+func (s *Store) getSession(sessionID string) (*Session, error) {
 	var ses Session
 	var settingsJSON string
 	var parentSessionID, agentType, mode sql.NullString
@@ -353,8 +353,8 @@ func (s *Store) getSessionLocked(sessionID string) (*Session, error) {
 	return &ses, nil
 }
 
-// insertSessionLocked inserts a session without acquiring the lock (caller must hold lock).
-func (s *Store) insertSessionLocked(sess *Session) error {
+// insertSession inserts a session without acquiring the lock (caller must hold lock).
+func (s *Store) insertSession(sess *Session) error {
 	settingsJSON, _ := json.Marshal(sess.Settings)
 
 	query := `

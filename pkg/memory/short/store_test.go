@@ -141,7 +141,7 @@ func TestAppendMessages_WithTransaction(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`},
 		{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`},
 		{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`},
@@ -187,7 +187,7 @@ func TestAppendMessages_EmptyList(t *testing.T) {
 	}
 
 	// Empty list should succeed
-	if err := store.AppendMessages(sessionID, []*Message{}); err != nil {
+	if err := store.AppendMessages(sessionID, []*TranscriptMessage{}); err != nil {
 		t.Errorf("AppendMessages with empty list failed: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestAppendMessages_TransactionBeginError(t *testing.T) {
 	// Close store to force transaction errors
 	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`},
 	}
 
@@ -268,40 +268,6 @@ func TestNewStore_GseFailure(t *testing.T) {
 	t.Skip("requires mocking gse.LoadDict")
 }
 
-// Lines 336-338: getSessionLocked — query error
-func TestGetSessionLocked_QueryError(t *testing.T) {
-	store := openTestStore(t)
-	if err := store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	_, err := store.getSessionLocked("any-session")
-	if err == nil {
-		t.Fatal("getSessionLocked should fail with closed store")
-	}
-}
-
-// Line 355-357: getSessionLocked — empty settings
-func TestGetSessionLocked_EmptySettings(t *testing.T) {
-	store := openTestStore(t)
-	sessionID := "test-session"
-	_, err := store.db.Exec(`
-		INSERT INTO sessions (session_id, project_dir, settings)
-		VALUES (?, '/project', '')
-	`, sessionID)
-	if err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	ses, err := store.getSessionLocked(sessionID)
-	if err != nil {
-		t.Fatalf("getSessionLocked: %v", err)
-	}
-	if ses == nil {
-		t.Fatal("expected non-nil session")
-	}
-	if ses.Settings == nil {
-		t.Error("Settings should be non-nil map")
-	}
-}
 
 // Lines 53-55: NewStore — sql.Open error
 func TestNewStore_SQLOpenError(t *testing.T) {

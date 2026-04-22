@@ -13,7 +13,7 @@ import (
 //
 // TS: sessionRestore.ts:409-534 (ProcessResumedConversation)
 // TS: conversationRecovery.ts (full recovery flow)
-func (s *Store) ResumeSession(sessionID string) (*ResumedState, []*Message, error) {
+func (s *Store) ResumeSession(sessionID string) (*ResumedState, []*TranscriptMessage, error) {
 	// Phase 1: Load messages from last compact boundary (or all)
 	messages, err := s.LoadPostCompactMessages(sessionID)
 	if err != nil {
@@ -21,7 +21,7 @@ func (s *Store) ResumeSession(sessionID string) (*ResumedState, []*Message, erro
 	}
 
 	if len(messages) == 0 {
-		return &ResumedState{}, []*Message{}, nil
+		return &ResumedState{}, []*TranscriptMessage{}, nil
 	}
 
 	// Phase 2: Apply filters for API compatibility
@@ -43,7 +43,7 @@ func (s *Store) ResumeSession(sessionID string) (*ResumedState, []*Message, erro
 // FilterForResume applies all message filters needed for a clean resume.
 // Order matters: unresolved tool uses → orphaned thinking → whitespace-only.
 // TS: messages.ts:4920-4960 (filterMessagesForResume)
-func FilterForResume(messages []*Message) []*Message {
+func FilterForResume(messages []*TranscriptMessage) []*TranscriptMessage {
 	messages = FilterUnresolvedToolUses(messages)
 	messages = FilterOrphanedThinking(messages)
 	messages = FilterWhitespaceOnlyAssistant(messages)
@@ -57,7 +57,7 @@ func FilterForResume(messages []*Message) []*Message {
 // - The last message is an assistant with empty content
 //
 // TS: conversationRecovery.ts:250-290 (detectInterruptedTurn)
-func DetectInterruptedTurn(messages []*Message) bool {
+func DetectInterruptedTurn(messages []*TranscriptMessage) bool {
 	if len(messages) == 0 {
 		return false
 	}
@@ -107,7 +107,7 @@ func DetectInterruptedTurn(messages []*Message) bool {
 // Removes the last assistant message and any preceding partial messages
 // that belong to the incomplete turn.
 // TS: conversationRecovery.ts:295-320 (truncateInterruptedTurn)
-func TruncateInterruptedTurn(messages []*Message) []*Message {
+func TruncateInterruptedTurn(messages []*TranscriptMessage) []*TranscriptMessage {
 	if len(messages) == 0 {
 		return messages
 	}

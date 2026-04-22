@@ -914,34 +914,6 @@ func TestClassifyTerminalError(t *testing.T) {
 	}
 }
 
-func TestEscapeJSONString(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "simple", input: "hello", want: "hello"},
-		{name: "with newline", input: "line1\nline2", want: "line1\nline2"},
-		{name: "with tab", input: "col1\tcol2", want: "col1\tcol2"},
-		{name: "with backslash", input: `path\to\file`, want: `path\to\file`},
-		{name: "with quotes", input: `say "hi"`, want: `say "hi"`},
-		{name: "empty", input: "", want: ""},
-		{name: "html chars", input: "<b>bold</b>", want: "\\u003cb\\u003ebold\\u003c/b\\u003e"},
-		{name: "ampersand", input: "a&b", want: "a\\u0026b"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := engine.EscapeJSONString(tt.input)
-			if got != tt.want {
-				t.Errorf("EscapeJSONString(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestQuery_MultipleToolCalls(t *testing.T) {
 	t.Parallel()
@@ -1530,59 +1502,12 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 	}
 }
 
-// TestEscapeJSONString_QuotedInput tests the branch where HTMLEscape output
-// starts and ends with '"' (line 432-433).
-func TestEscapeJSONString_QuotedInput(t *testing.T) {
-	t.Parallel()
-	got := engine.EscapeJSONString(`"quoted"`)
-	if got != "quoted" {
-		t.Errorf("EscapeJSONString(%q) = %q, want %q", `"quoted"`, got, "quoted")
-	}
-}
-
-// TestEscapeJSONString_Unicode tests unicode and special char escaping edge cases.
-func TestEscapeJSONString_Unicode(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "multi-byte unicode", input: "日本語", want: "日本語"},
-		{name: "emoji", input: "🎉", want: "🎉"},
-		{name: "mixed html", input: "a<b&c", want: "a\\u003cb\\u0026c"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := engine.EscapeJSONString(tt.input)
-			if got != tt.want {
-				t.Errorf("EscapeJSONString(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestEscapeJSONString_ShortString tests the branch where result is shorter than 2 chars
-// (no surrounding quotes to strip).
-func TestEscapeJSONString_ShortString(t *testing.T) {
-	t.Parallel()
-	// Single char
-	got := engine.EscapeJSONString("a")
-	if got != "a" {
-		t.Errorf("expected 'a', got %q", got)
-	}
-}
-
 // TestQuery_HasContentNoBlocks tests callLLM's fallback path where text deltas
 // are received but no content_block_start events occurred.
 func TestQuery_HasContentNoBlocks(t *testing.T) {
 	t.Parallel()
-
-	mp := &mockProvider{}
-	// Stream with text deltas but no content_block_start — triggers the
 	// hasContent && len(contentBlocks) == 0 fallback in callLLM.
+	mp := &mockProvider{}
 	events := []llm.StreamEvent{
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "orphan text"}},

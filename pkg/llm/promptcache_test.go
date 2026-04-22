@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // --- djb2Hash tests ---
@@ -915,7 +917,7 @@ func TestUsageDelta_OmitEmpty(t *testing.T) {
 }
 
 func TestCacheControlConfig(t *testing.T) {
-	cc := CacheControlConfig{Type: "ephemeral", TTL: "1h", Scope: "global"}
+	cc := types.CacheControlConfig{Type: "ephemeral", TTL: "1h", Scope: "global"}
 	// Just verify the struct is usable
 	if cc.Type != "ephemeral" {
 		t.Error("Type should be ephemeral")
@@ -934,7 +936,7 @@ func TestPromptStateKey_String(t *testing.T) {
 }
 
 func TestSystemBlockParam(t *testing.T) {
-	cc := &CacheControlConfig{Type: "ephemeral", TTL: "1h"}
+	cc := &types.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
 	block := SystemBlockParam{Type: "text", Text: "hello", CacheControl: cc}
 	b, err := json.Marshal(block)
 	if err != nil {

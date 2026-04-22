@@ -311,49 +311,7 @@ func TestGitStatusSection_Dirty(t *testing.T) {
 	}
 }
 
-func TestEscapeJSONString(t *testing.T) {
-	t.Parallel()
-	// EscapeJSONString uses json.HTMLEscape which produces JSON-safe output.
-	// Verify round-trip: escaped output should parse correctly as JSON string.
-	tests := []string{
-		"hello",
-		`say "hi"`,
-		"line1\nline2",
-		"<b>bold</b>",
-		"tab\there",
-		"back\\slash",
-	}
-	for _, input := range tests {
-		t.Run(input, func(t *testing.T) {
-			t.Parallel()
-			escaped := context.EscapeJSONString(input)
-			// Wrap in quotes to make valid JSON
-			roundtrip := `"` + escaped + `"`
-			var got string
-			if err := json.Unmarshal([]byte(roundtrip), &got); err != nil {
-				t.Fatalf("EscapeJSONString(%q) produced invalid JSON: %v, escaped=%q", input, err, escaped)
-			}
-			if got != input {
-				t.Errorf("roundtrip mismatch: got %q, want %q", got, input)
-			}
-		})
-	}
-}
-
-func TestEscapeJSONString_ShortOutput(t *testing.T) {
-	t.Parallel()
-	// The EscapeJSONString function has a fallback path for when
-	// json.Marshal returns output shorter than 2 bytes or without
-	// surrounding quotes. Test with an empty string to exercise the
-	// short-output path (len(b) < 2).
-	result := context.EscapeJSONString("")
-	if result != "" {
-		t.Errorf("expected empty string for empty input, got %q", result)
-	}
-}
-
 func TestLoadGitStatus(t *testing.T) {
-	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Initialize a git repo with a specific branch

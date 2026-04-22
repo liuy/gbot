@@ -735,7 +735,7 @@ func TestShortMessageToEngine_ContentRoundTrip(t *testing.T) {
 	}
 
 	contentBytes, _ := json.Marshal(original.Content)
-	shortMsg := &short.Message{
+	shortMsg := &short.TranscriptMessage{
 		UUID:      "test-uuid",
 		Type:      string(original.Role),
 		Content:   string(contentBytes),
@@ -757,7 +757,7 @@ func TestShortMessageToEngine_ContentRoundTrip(t *testing.T) {
 func TestShortMessageToEngine_NonJSONContent(t *testing.T) {
 	t.Parallel()
 
-	shortMsg := &short.Message{
+	shortMsg := &short.TranscriptMessage{
 		Type:      "user",
 		Content:   "plain text content",
 		CreatedAt: time.Now(),
@@ -783,7 +783,7 @@ func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 		{Type: "tool_use", Name: "Read", ID: "tu_1", Input: json.RawMessage(`{"path":"/a.go"}`)},
 	}
 	contentBytes, _ := json.Marshal(blocks)
-	shortMsg := &short.Message{
+	shortMsg := &short.TranscriptMessage{
 		Type:      "assistant",
 		Content:   string(contentBytes),
 		CreatedAt: time.Now(),

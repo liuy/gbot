@@ -13,7 +13,7 @@ func TestForkSession_BasicFork(t *testing.T) {
 	parentID := "parent-session"
 	createTestSession(t, store, parentID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"how are you?"}]`),
@@ -79,7 +79,7 @@ func TestForkSession_ChainIntegrity(t *testing.T) {
 	parentID := "parent-session"
 	createTestSession(t, store, parentID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"first"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"second"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"third"}]`),
@@ -178,7 +178,7 @@ func TestMergeForkBack_Basic(t *testing.T) {
 	createTestSession(t, store, parentID)
 
 	// Parent has 2 messages
-	pMsgs := []*Message{
+	pMsgs := []*TranscriptMessage{
 		testMessage(0, "user", "p-1", "", `[{"type":"text","text":"parent msg"}]`),
 		testMessage(0, "assistant", "p-2", "", `[{"type":"text","text":"parent reply"}]`),
 	}
@@ -195,7 +195,7 @@ func TestMergeForkBack_Basic(t *testing.T) {
 	}
 
 	// Add new messages to child
-	cMsgs := []*Message{
+	cMsgs := []*TranscriptMessage{
 		testMessage(0, "user", "c-1", "", `[{"type":"text","text":"child msg"}]`),
 		testMessage(0, "assistant", "c-2", "", `[{"type":"text","text":"child reply"}]`),
 	}
@@ -246,7 +246,7 @@ func TestForkSession_WithProgressMessages(t *testing.T) {
 	createTestSession(t, store, parentID)
 
 	// Create parent with progress messages
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "progress", "uuid-2", "", `[{"type":"text","text":"processing..."}]`),
 		testMessage(0, "assistant", "uuid-3", "", `[{"type":"text","text":"hi"}]`),
@@ -321,7 +321,7 @@ func TestCopyMessagesToFork_ChainRebuild(t *testing.T) {
 	createTestSession(t, store, childID)
 
 	// Create parent messages with proper chain
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "p-1", "", `[{"type":"text","text":"first"}]`),
 		testMessage(0, "assistant", "p-2", "p-1", `[{"type":"text","text":"second"}]`),
 		testMessage(0, "user", "p-3", "p-2", `[{"type":"text","text":"third"}]`),
@@ -406,7 +406,7 @@ func TestMergeForkBack_FullMerge(t *testing.T) {
 		t.Fatalf("ForkSession: %v", err)
 	}
 
-	cMsgs := []*Message{
+	cMsgs := []*TranscriptMessage{
 		testMessage(0, "user", "c-1", "", `[{"type":"text","text":"child 1"}]`),
 		testMessage(0, "assistant", "c-2", "", `[{"type":"text","text":"child 2"}]`),
 		testMessage(0, "user", "c-3", "", `[{"type":"text","text":"child 3"}]`),
@@ -530,7 +530,7 @@ func TestMergeForkBack_NoDuplicateInheritedMessages(t *testing.T) {
 	}
 }
 
-// Lines 20-22: ForkSession — getSessionLocked error
+// Lines 20-22: ForkSession — getSession error
 func TestForkSession_GetSessionError(t *testing.T) {
 	store := openTestStore(t)
 	if err := store.Close(); err != nil {
@@ -542,7 +542,7 @@ func TestForkSession_GetSessionError(t *testing.T) {
 	}
 }
 
-// Lines 43-45: ForkSession — insertSessionLocked error
+// Lines 43-45: ForkSession — insertSession error
 func TestForkSession_InsertError(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "parent-session"
@@ -710,7 +710,7 @@ func TestMergeForkBack_BeginError(t *testing.T) {
 // Lines 177-179: MergeForkBack — child not found
 func TestMergeForkBack_ChildNil(t *testing.T) {
 	store := openTestStore(t)
-	// No session exists — getSessionLocked returns nil,nil for nonexistent
+	// No session exists — getSession returns nil,nil for nonexistent
 	err := store.MergeForkBack("nonexistent-session-id")
 	if err == nil {
 		t.Fatal("MergeForkBack should fail for nonexistent child")
@@ -841,7 +841,7 @@ func TestMergeForkBack_SkipProgressMessages(t *testing.T) {
 	}
 
 	// Insert progress message in child (should be skipped during merge)
-	progressMsg := &Message{
+	progressMsg := &TranscriptMessage{
 		UUID:      "c-prog",
 		Type:      "progress",
 		Content:   "running...",
@@ -886,7 +886,7 @@ func TestForkSession_InsertSessionLockedError(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Close store to make insertSessionLocked fail
+	// Close store to make insertSession fail
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -898,7 +898,7 @@ func TestForkSession_InsertSessionLockedError(t *testing.T) {
 }
 
 func TestForkSession_CopyMessagesToForkError(t *testing.T) {
-	// This is hard to trigger because after insertSessionLocked succeeds,
+	// This is hard to trigger because after insertSession succeeds,
 	// copyMessagesToFork would need to fail. The easiest way is to have
 	// a parent with messages but close the db between the two operations.
 	// In practice, this is very hard to do in a unit test without
@@ -930,9 +930,9 @@ func TestForkSession_InsertSessionLocked_DuplicateSession(t *testing.T) {
 	}
 
 	// Load the parent session into memory first, then drop sessions table.
-	// This way getSessionLocked succeeds (cached or separate query), but
-	// insertSessionLocked fails because the table is gone.
-	// Actually, getSessionLocked queries the DB, so we can't preload.
+	// This way getSession succeeds (cached or separate query), but
+	// insertSession fails because the table is gone.
+	// Actually, getSession queries the DB, so we can't preload.
 	// Strategy: use a BEFORE INSERT trigger to raise an error instead.
 	_, err := store.db.Exec("CREATE TRIGGER fail_session_insert BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'forced error'); END")
 	if err != nil {
@@ -964,7 +964,7 @@ func TestForkSession_CopyMessagesToFork_AfterInsertSession(t *testing.T) {
 		t.Fatalf("insert bad message: %v", err)
 	}
 
-	// ForkSession should succeed with getSessionLocked and insertSessionLocked
+	// ForkSession should succeed with getSession and insertSession
 	// but fail at copyMessagesToFork because of the bad timestamp
 	_, err = store.ForkSession(parentID, 1, "Explore")
 	if err == nil {
@@ -1258,7 +1258,7 @@ func TestMergeForkBack_InsertMergedError_CorruptParent(t *testing.T) {
 	}
 }
 
-// TestForkSession_InsertSessionError triggers insertSessionLocked error
+// TestForkSession_InsertSessionError triggers insertSession error
 // by creating a session with the same ID first.
 func TestForkSession_InsertSessionError(t *testing.T) {
 	store := openTestStore(t)
@@ -1271,7 +1271,7 @@ func TestForkSession_InsertSessionError(t *testing.T) {
 	}
 
 	// Create a session with a known ID that will conflict
-	// insertSessionLocked generates a random UUID, so we can't predict it.
+	// insertSession generates a random UUID, so we can't predict it.
 	// Instead, drop the sessions table to force the insert to fail.
 	if _, err := store.db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
 		t.Fatalf("PRAGMA foreign_keys=OFF: %v", err)
@@ -1473,7 +1473,7 @@ func TestMergeForkBack_SkipProgressMessages_V2(t *testing.T) {
 }
 
 // TestMergeForkBack_GetSessionLockedError tests the error path when
-// getSessionLocked fails inside MergeForkBack (sessions table dropped).
+// getSession fails inside MergeForkBack (sessions table dropped).
 func TestMergeForkBack_GetSessionLockedError(t *testing.T) {
 	store := openTestStore(t)
 
@@ -1497,7 +1497,7 @@ func TestMergeForkBack_GetSessionLockedError(t *testing.T) {
 		t.Fatalf("AppendMessage child: %v", err)
 	}
 
-	// Drop sessions table so getSessionLocked fails inside MergeForkBack
+	// Drop sessions table so getSession fails inside MergeForkBack
 	if _, err := store.db.Exec("PRAGMA foreign_keys=OFF"); err != nil {
 		t.Fatalf("PRAGMA foreign_keys=OFF: %v", err)
 	}
@@ -1522,7 +1522,7 @@ func TestCopyMessagesToFork_InsertTriggerError(t *testing.T) {
 	parentID := "parent-session"
 	createTestSession(t, store, parentID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "p-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "p-2", "", `[{"type":"text","text":"hi"}]`),
 	}

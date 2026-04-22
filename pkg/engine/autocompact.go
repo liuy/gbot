@@ -96,7 +96,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 // Counts rough tokens from the end and stops when reaching ~80K tokens,
 // leaving enough budget for the summary output.
 // TS align: compact.ts — keeps enough recent messages for context
-func (c *AutoCompactor) findKeepFrom(messages []*short.Message) int {
+func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 	const targetKeepTokens = 80000
 
 	// Always keep at least 4 messages (2 turns)
@@ -118,7 +118,7 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.Message) int {
 
 // summarizeMessages calls the LLM to generate a summary of the given messages.
 // Uses the full compact prompt template from short.GetCompactPrompt.
-func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short.Message) (string, error) {
+func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short.TranscriptMessage) (string, error) {
 	if len(messages) == 0 {
 		return "", nil
 	}
@@ -223,7 +223,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	return msgs
 }
 
-// extractTextFromShortContent extracts readable text from a short.Message's JSON content.
+// extractTextFromShortContent extracts readable text from a short.TranscriptMessage's JSON content.
 func extractTextFromShortContent(content string) string {
 	if content == "" {
 		return ""
@@ -259,13 +259,13 @@ func extractTextFromShortContent(content string) string {
 	return strings.TrimSpace(sb.String())
 }
 
-// engineToShort converts []types.Message → []*short.Message.
-func engineToShort(messages []types.Message) []*short.Message {
-	result := make([]*short.Message, 0, len(messages))
+// engineToShort converts []types.Message → []*short.TranscriptMessage.
+func engineToShort(messages []types.Message) []*short.TranscriptMessage {
+	result := make([]*short.TranscriptMessage, 0, len(messages))
 	for _, m := range messages {
 		contentBytes, _ := json.Marshal(m.Content)
 		uid := uuid.New().String()
-		result = append(result, &short.Message{
+		result = append(result, &short.TranscriptMessage{
 			UUID:      uid,
 			ParentUUID: "",
 			Type:      string(m.Role),
@@ -276,8 +276,8 @@ func engineToShort(messages []types.Message) []*short.Message {
 	return result
 }
 
-// ShortMessageToEngine converts a *short.Message → types.Message.
-func ShortMessageToEngine(m *short.Message) types.Message {
+// ShortMessageToEngine converts a *short.TranscriptMessage → types.Message.
+func ShortMessageToEngine(m *short.TranscriptMessage) types.Message {
 	if m == nil {
 		return types.Message{}
 	}

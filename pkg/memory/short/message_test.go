@@ -38,8 +38,8 @@ func createTestSession(t *testing.T, store *Store, sessionID string) {
 }
 
 // Test helper to create a test message
-func testMessage(seq int64, msgType, uuid, parentUUID, content string) *Message {
-	return &Message{
+func testMessage(seq int64, msgType, uuid, parentUUID, content string) *TranscriptMessage {
+	return &TranscriptMessage{
 		Seq:        seq,
 		Type:       msgType,
 		UUID:       uuid,
@@ -159,7 +159,7 @@ func TestAppendMessages_BatchWrite(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"first"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"second"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"third"}]`),
@@ -273,7 +273,7 @@ func TestGetLastBoundary_WithBoundary(t *testing.T) {
 	}
 
 	// Add compact boundary
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		Type:    "system",
 		Subtype: "compact_boundary",
 		UUID:    "boundary-1",
@@ -341,7 +341,7 @@ func TestGetLastBoundary_MultipleBoundaries(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add first boundary
-	boundary1 := &Message{
+	boundary1 := &TranscriptMessage{
 		Type:    "system",
 		Subtype: "compact_boundary",
 		UUID:    "boundary-1",
@@ -358,7 +358,7 @@ func TestGetLastBoundary_MultipleBoundaries(t *testing.T) {
 	}
 
 	// Add second boundary
-	boundary2 := &Message{
+	boundary2 := &TranscriptMessage{
 		Type:    "system",
 		Subtype: "compact_boundary",
 		UUID:    "boundary-2",
@@ -494,7 +494,7 @@ func TestRecordSidechainTranscript(t *testing.T) {
 	}
 
 	// Record sidechain messages
-	sideMsgs := []*Message{
+	sideMsgs := []*TranscriptMessage{
 		testMessage(0, "assistant", "side-1", "", `[{"type":"text","text":"agent response"}]`),
 		testMessage(0, "user", "side-2", "", `[{"type":"text","text":"user reply"}]`),
 	}
@@ -529,7 +529,7 @@ func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 	// Insert messages
 	baseTime := time.Now()
 	for i := range 10 {
-		msg := &Message{
+		msg := &TranscriptMessage{
 			UUID:      fmt.Sprintf("uuid-%d", i),
 			Type:      "user",
 			Content:   fmt.Sprintf(`[{"type":"text","text":"msg-%d"}]`, i),
@@ -545,7 +545,7 @@ func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 	// causing deadlock under writer contention.
 	done := make(chan error, 1)
 	go func() {
-		msg := &Message{
+		msg := &TranscriptMessage{
 			UUID:    "uuid-writer",
 			Type:    "assistant",
 			Content: `[{"type":"text","text":"concurrent write"}]`,
@@ -553,7 +553,7 @@ func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 		done <- store.AppendMessage(sessionID, msg)
 	}()
 
-	latest, err := store.FindLatestMessage(sessionID, func(m *Message) bool {
+	latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
 		return m.Type == "user"
 	})
 	if err != nil {
@@ -583,9 +583,9 @@ func TestFindLatestMessage(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	baseTime := time.Now()
-	msg1 := &Message{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: baseTime}
-	msg2 := &Message{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`, CreatedAt: baseTime.Add(1 * time.Second)}
-	msg3 := &Message{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`, CreatedAt: baseTime.Add(2 * time.Second)}
+	msg1 := &TranscriptMessage{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: baseTime}
+	msg2 := &TranscriptMessage{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`, CreatedAt: baseTime.Add(1 * time.Second)}
+	msg3 := &TranscriptMessage{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`, CreatedAt: baseTime.Add(2 * time.Second)}
 
 	if err := store.AppendMessage(sessionID, msg1); err != nil {
 		t.Fatalf("AppendMessage 1: %v", err)
@@ -598,7 +598,7 @@ func TestFindLatestMessage(t *testing.T) {
 	}
 
 	// Find latest user message
-	latest, err := store.FindLatestMessage(sessionID, func(m *Message) bool {
+	latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
 		return m.Type == "user"
 	})
 	if err != nil {
@@ -620,7 +620,7 @@ func TestCountVisibleMessages(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add mix of visible and progress messages
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"visible"}]`),
 		testMessage(0, "progress", "uuid-2", "", `running...`),
 		testMessage(0, "assistant", "uuid-3", "", `[{"type":"text","text":"visible"}]`),
@@ -656,7 +656,7 @@ func TestAppendMessages_TransactionError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"first"}]`),
 	}
 
@@ -856,7 +856,7 @@ func TestGetLastChainUUID_SkipsProgress(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Add user, then progress, then verify chain UUID is the user's
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-user", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "progress", "uuid-progress", "", `[{"type":"text","text":"thinking..."}]`),
 	}
@@ -876,7 +876,7 @@ func TestGetLastChainUUID_SkipsProgress(t *testing.T) {
 	}
 
 	// Find the assistant message
-	var assistant *Message
+	var assistant *TranscriptMessage
 	for _, m := range messages {
 		if m.UUID == "uuid-assistant" {
 			assistant = m
@@ -924,7 +924,7 @@ func TestRecordSidechainTranscript_TransactionError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	sideMsgs := []*Message{
+	sideMsgs := []*TranscriptMessage{
 		testMessage(0, "assistant", "side-1", "", `[{"type":"text","text":"agent response"}]`),
 	}
 
@@ -962,7 +962,7 @@ func TestAppendMessages_CommitError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	msgs := []*Message{testMessage(0, "user", "u1", "", `[{"type":"text","text":"hi"}]`)}
+	msgs := []*TranscriptMessage{testMessage(0, "user", "u1", "", `[{"type":"text","text":"hi"}]`)}
 	err := store.AppendMessages(sessionID, msgs)
 	if err == nil {
 		t.Fatal("AppendMessages should fail with closed store")
@@ -1024,7 +1024,7 @@ func TestRecordSidechainTranscript_CommitError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	sideMsgs := []*Message{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
+	sideMsgs := []*TranscriptMessage{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
 	err := store.RecordSidechainTranscript(sessionID, "agent", sideMsgs)
 	if err == nil {
 		t.Fatal("RecordSidechainTranscript should fail with closed store")
@@ -1049,7 +1049,7 @@ func TestFindLatestMessage_LoadError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	_, err := store.FindLatestMessage("any", func(m *Message) bool { return true })
+	_, err := store.FindLatestMessage("any", func(m *TranscriptMessage) bool { return true })
 	if err == nil {
 		t.Fatal("FindLatestMessage should fail with closed store")
 	}
@@ -1067,7 +1067,7 @@ func TestFindLatestMessage_EmptyResult(t *testing.T) {
 	}
 
 	// Filter that matches nothing
-	result, err := store.FindLatestMessage(sessionID, func(m *Message) bool { return m.Type == "nonexistent" })
+	result, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool { return m.Type == "nonexistent" })
 	if err != nil {
 		t.Fatalf("FindLatestMessage: %v", err)
 	}
@@ -1181,7 +1181,7 @@ func TestAppendMessages_AppendFailureMidBatch(t *testing.T) {
 	}
 
 	// Try to batch-insert with same UUID — should fail on uniqueness constraint
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "unique-uuid", "", `[{"type":"text","text":"ok"}]`),
 		testMessage(0, "user", "dup-uuid", "", `[{"type":"text","text":"duplicate"}]`),
 	}
@@ -1205,7 +1205,7 @@ func TestRecordSidechainTranscript_CommitError2(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	sideMsgs := []*Message{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
+	sideMsgs := []*TranscriptMessage{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
 	err := store.RecordSidechainTranscript(sessionID, "agent", sideMsgs)
 	if err == nil {
 		t.Fatal("should fail with closed store")
@@ -1234,7 +1234,7 @@ func TestAppendMessages_MidBatchError(t *testing.T) {
 	}
 
 	// Now try AppendMessages with a message that has the same UUID (duplicate)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-new", "", `[{"type":"text","text":"ok"}]`),
 		testMessage(0, "user", "uuid-dup", "", `[{"type":"text","text":"duplicate"}]`), // duplicate UUID
 	}
@@ -1254,7 +1254,7 @@ func TestAppendMessages_CommitErrorPath(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	msgs := []*Message{testMessage(0, "user", "u1", "", `[{"type":"text","text":"hi"}]`)}
+	msgs := []*TranscriptMessage{testMessage(0, "user", "u1", "", `[{"type":"text","text":"hi"}]`)}
 	err := store.AppendMessages(sessionID, msgs)
 	if err == nil {
 		t.Fatal("AppendMessages should fail with closed store")
@@ -1371,7 +1371,7 @@ func TestRecordSidechainTranscript_MidBatchError(t *testing.T) {
 	}
 
 	// Try to record sidechain with duplicate UUID
-	sideMsgs := []*Message{
+	sideMsgs := []*TranscriptMessage{
 		testMessage(0, "assistant", "side-new", "", `[{"type":"text","text":"ok"}]`),
 		testMessage(0, "assistant", "side-dup", "", `[{"type":"text","text":"dup"}]`),
 	}
@@ -1391,7 +1391,7 @@ func TestRecordSidechainTranscript_CommitError_Coverage(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	sideMsgs := []*Message{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
+	sideMsgs := []*TranscriptMessage{testMessage(0, "assistant", "s1", "", `[{"type":"text","text":"side"}]`)}
 	err := store.RecordSidechainTranscript(sessionID, "agent", sideMsgs)
 	if err == nil {
 		t.Fatal("RecordSidechainTranscript should fail with closed store")
@@ -1560,7 +1560,7 @@ func TestAppendMessages_CommitError_Coverage(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	msgs := []*Message{testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hi"}]`)}
+	msgs := []*TranscriptMessage{testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hi"}]`)}
 	err := store.AppendMessages(sessionID, msgs)
 	if err == nil {
 		t.Fatal("AppendMessages should fail with closed store")
@@ -1637,7 +1637,7 @@ func TestAppendMessages_CommitError_MidTransaction(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	msgs := []*Message{testMessage(0, "user", "uuid-new", "", `[{"type":"text","text":"hi"}]`)}
+	msgs := []*TranscriptMessage{testMessage(0, "user", "uuid-new", "", `[{"type":"text","text":"hi"}]`)}
 	err := store.AppendMessages(sessionID, msgs)
 	if err == nil {
 		t.Fatal("AppendMessages should fail with closed store")
@@ -1802,7 +1802,7 @@ func TestAppendMessages_BatchInsertError(t *testing.T) {
 	}
 
 	// Now try batch append with same UUID — should fail
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "dup", "", `[{"type":"text","text":"dup"}]`),
 		testMessage(0, "assistant", "new-1", "", `[{"type":"text","text":"ok"}]`),
 	}

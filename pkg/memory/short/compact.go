@@ -29,7 +29,7 @@ type CompactMetadata struct {
 
 // CreateCompactBoundaryMessage creates a compact boundary marker message.
 // TS align: messages.ts:4530-4555
-func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactUUID string) *Message {
+func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactUUID string) *TranscriptMessage {
 	now := time.Now().UTC()
 	msgUUID := uuid.New().String()
 
@@ -58,7 +58,7 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 
 	contentBytes, _ := json.Marshal(contentMap)
 
-	return &Message{
+	return &TranscriptMessage{
 		UUID:       msgUUID,
 		ParentUUID: "", // Boundary is always chain root
 		Type:       "system",
@@ -71,8 +71,8 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 // BuildPostCompactMessages constructs the post-compact message array.
 // Order: [boundaryMarker, summaryMessages..., messagesToKeep..., attachments...]
 // TS align: compact.ts:330-338
-func BuildPostCompactMessages(result *CompactResult) []*Message {
-	messages := make([]*Message, 0)
+func BuildPostCompactMessages(result *CompactResult) []*TranscriptMessage {
+	messages := make([]*TranscriptMessage, 0)
 	messages = append(messages, result.BoundaryMarker)
 	messages = append(messages, result.SummaryMessages...)
 	messages = append(messages, result.MessagesToKeep...)
@@ -149,7 +149,7 @@ func (s *Store) RecordCompact(sessionID string, result *CompactResult) error {
 // LoadPostCompactMessages loads messages from the last compact boundary onward.
 // If no boundary exists, loads all messages.
 // TS align: loadTranscriptFile compact loading logic
-func (s *Store) LoadPostCompactMessages(sessionID string) ([]*Message, error) {
+func (s *Store) LoadPostCompactMessages(sessionID string) ([]*TranscriptMessage, error) {
 
 	// Find last boundary
 	_, boundarySeq, err := s.GetLastBoundary(sessionID)
@@ -169,14 +169,14 @@ func (s *Store) LoadPostCompactMessages(sessionID string) ([]*Message, error) {
 // GetMessagesAfterCompactBoundary returns messages after the last compact boundary.
 // Includes the boundary itself in the result.
 // TS align: messages.ts:4643-4656
-func (s *Store) GetMessagesAfterCompactBoundary(sessionID string) ([]*Message, error) {
+func (s *Store) GetMessagesAfterCompactBoundary(sessionID string) ([]*TranscriptMessage, error) {
 	return s.LoadPostCompactMessages(sessionID)
 }
 
 // PartialCompact compacts only the head portion of messages, keeping the tail.
 // keepFrom specifies the index (0-based) from which to start keeping messages.
 // TS align: compact.ts:1500-1600 partialCompactConversation
-func (s *Store) PartialCompact(sessionID string, messages []*Message, keepFrom int) (*CompactResult, error) {
+func (s *Store) PartialCompact(sessionID string, messages []*TranscriptMessage, keepFrom int) (*CompactResult, error) {
 	if keepFrom <= 0 {
 		return nil, fmt.Errorf("keepFrom must be positive, got %d", keepFrom)
 	}
@@ -204,9 +204,9 @@ func (s *Store) PartialCompact(sessionID string, messages []*Message, keepFrom i
 
 	result := &CompactResult{
 		BoundaryMarker:    boundary,
-		SummaryMessages:   []*Message{}, // Filled by engine layer
+		SummaryMessages:   []*TranscriptMessage{}, // Filled by engine layer
 		MessagesToKeep:    messagesToKeep,
-		Attachments:       []*Message{},
+		Attachments:       []*TranscriptMessage{},
 		PreCompactTokens:  preTokens,
 		PostCompactTokens: 0, // Filled after summary generation
 	}
@@ -217,8 +217,8 @@ func (s *Store) PartialCompact(sessionID string, messages []*Message, keepFrom i
 // StripImagesFromMessages removes image and document blocks from messages.
 // Replaces them with [image] or [document] text markers.
 // TS align: compact.ts:145-200
-func StripImagesFromMessages(messages []*Message) []*Message {
-	result := make([]*Message, 0, len(messages))
+func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage {
+	result := make([]*TranscriptMessage, 0, len(messages))
 
 	for _, msg := range messages {
 		if msg.Type != "user" {
@@ -269,8 +269,8 @@ func StripImagesFromMessages(messages []*Message) []*Message {
 // StripReinjectedAttachments removes attachment types that will be re-injected.
 // Removes skill_discovery and skill_listing attachments.
 // TS align: compact.ts:211-223
-func StripReinjectedAttachments(messages []*Message) []*Message {
-	result := make([]*Message, 0, len(messages))
+func StripReinjectedAttachments(messages []*TranscriptMessage) []*TranscriptMessage {
+	result := make([]*TranscriptMessage, 0, len(messages))
 
 	for _, msg := range messages {
 		if msg.Type == "attachment" && msg.Subtype == "skill_discovery" {
@@ -288,7 +288,7 @@ func StripReinjectedAttachments(messages []*Message) []*Message {
 // CreatePostCompactFileAttachments extracts file attachments from tool_results.
 // Collects file paths from Read tool results and creates attachment messages.
 // TS align: compact.ts:500-530
-func CreatePostCompactFileAttachments(preCompactMessages []*Message) []*Message {
+func CreatePostCompactFileAttachments(preCompactMessages []*TranscriptMessage) []*TranscriptMessage {
 	// Collect file paths from Read tool results
 	filePaths := CollectReadToolFilePaths(preCompactMessages)
 	if len(filePaths) == 0 {
@@ -297,7 +297,7 @@ func CreatePostCompactFileAttachments(preCompactMessages []*Message) []*Message 
 
 	// Create attachment message(s)
 	// (Simplified - full implementation would group files and create proper attachments)
-	attachments := make([]*Message, 0)
+	attachments := make([]*TranscriptMessage, 0)
 	for _, path := range filePaths {
 		content := map[string]any{
 			"type":       "attachment",
@@ -306,7 +306,7 @@ func CreatePostCompactFileAttachments(preCompactMessages []*Message) []*Message 
 			"filepath":   path,
 		}
 		contentBytes, _ := json.Marshal(content)
-		attachments = append(attachments, &Message{
+		attachments = append(attachments, &TranscriptMessage{
 			Type:    "attachment",
 			Subtype: "file_reference",
 			Content: string(contentBytes),
@@ -319,7 +319,7 @@ func CreatePostCompactFileAttachments(preCompactMessages []*Message) []*Message 
 // ShouldExcludeFromPostCompactRestore returns true if a message should be
 // excluded from post-compact restoration (progress, temporary system messages).
 // TS align: compact.ts:540-560
-func ShouldExcludeFromPostCompactRestore(msg *Message) bool {
+func ShouldExcludeFromPostCompactRestore(msg *TranscriptMessage) bool {
 	if msg.Type == "progress" {
 		return true
 	}
@@ -335,9 +335,9 @@ func ShouldExcludeFromPostCompactRestore(msg *Message) bool {
 // TruncateToTokens truncates messages to fit within maxTokens.
 // Keeps the most recent messages (tail) and drops the oldest.
 // TS align: compact.ts:570-590
-func TruncateToTokens(messages []*Message, maxTokens int) []*Message {
+func TruncateToTokens(messages []*TranscriptMessage, maxTokens int) []*TranscriptMessage {
 	if maxTokens <= 0 {
-		return []*Message{}
+		return []*TranscriptMessage{}
 	}
 
 	totalTokens := 0
@@ -347,7 +347,7 @@ func TruncateToTokens(messages []*Message, maxTokens int) []*Message {
 		if totalTokens+msgTokens > maxTokens {
 			// Include this message if we'd otherwise have nothing
 			if i == len(messages)-1 {
-				return []*Message{messages[i]}
+				return []*TranscriptMessage{messages[i]}
 			}
 			return messages[i+1:]
 		}
@@ -367,7 +367,7 @@ func TruncateToTokens(messages []*Message, maxTokens int) []*Message {
 //  5. Prunes messages before boundary that aren't in the preserved segment
 //
 // TS align: sessionStorage.ts:1839-1956 (applyPreservedSegmentRelinks)
-func ApplyPreservedSegmentRelinks(boundary *Message, chain []*Message) []*Message {
+func ApplyPreservedSegmentRelinks(boundary *TranscriptMessage, chain []*TranscriptMessage) []*TranscriptMessage {
 	metadata, err := extractCompactMetadata(boundary)
 	if err != nil {
 		return chain
@@ -381,7 +381,7 @@ func ApplyPreservedSegmentRelinks(boundary *Message, chain []*Message) []*Messag
 
 	// Build index: uuid → position in chain
 	entryIndex := make(map[string]int, len(chain))
-	msgMap := make(map[string]*Message, len(chain))
+	msgMap := make(map[string]*TranscriptMessage, len(chain))
 	for i, msg := range chain {
 		entryIndex[msg.UUID] = i
 		msgMap[msg.UUID] = msg
@@ -445,7 +445,7 @@ func ApplyPreservedSegmentRelinks(boundary *Message, chain []*Message) []*Messag
 	if !ok {
 		return chain
 	}
-	var result []*Message
+	var result []*TranscriptMessage
 	for _, msg := range chain {
 		idx := entryIndex[msg.UUID]
 		// Keep if at or after boundary, or in preserved segment
@@ -459,8 +459,8 @@ func ApplyPreservedSegmentRelinks(boundary *Message, chain []*Message) []*Messag
 
 // applyPreservedSegmentRelinksOnLoad scans messages for the last compact boundary
 // with a preserved segment and applies relinks. Mirrors TS loadTranscriptFile:3704.
-func applyPreservedSegmentRelinksOnLoad(messages []*Message) []*Message {
-	var lastSegBoundary *Message
+func applyPreservedSegmentRelinksOnLoad(messages []*TranscriptMessage) []*TranscriptMessage {
+	var lastSegBoundary *TranscriptMessage
 	absoluteLastBoundaryIdx := -1
 	lastSegBoundaryIdx := -1
 
@@ -500,7 +500,7 @@ func applyPreservedSegmentRelinksOnLoad(messages []*Message) []*Message {
 
 // ApplySnipRemovals removes messages marked as deleted by snip operations.
 // Mirrors TS applySnipRemovals (sessionStorage.ts:1982-2040).
-func ApplySnipRemovals(messages []*Message) []*Message {
+func ApplySnipRemovals(messages []*TranscriptMessage) []*TranscriptMessage {
 	toDelete := make(map[string]bool)
 	for _, msg := range messages {
 		if msg.Type != "system" || msg.Subtype != "compact_boundary" {
@@ -565,7 +565,7 @@ func ApplySnipRemovals(messages []*Message) []*Message {
 	}
 
 	// Filter out deleted messages and relink survivors
-	var result []*Message
+	var result []*TranscriptMessage
 	for _, msg := range messages {
 		if toDelete[msg.UUID] {
 			continue
@@ -581,7 +581,7 @@ func ApplySnipRemovals(messages []*Message) []*Message {
 
 // zeroUsageInContent zeros usage tokens in an assistant message's content JSON.
 // Prevents resume→autocompact spiral from stale pre-compact token counts.
-func zeroUsageInContent(msg *Message) {
+func zeroUsageInContent(msg *TranscriptMessage) {
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(msg.Content), &parsed); err != nil {
 		return
@@ -605,7 +605,7 @@ func zeroUsageInContent(msg *Message) {
 
 // segIsLive checks if a preserved segment is still valid (not superseded).
 // TS align: sessionStorage.ts:1846-1870
-func segIsLive(boundary *Message, allMessages []*Message) bool {
+func segIsLive(boundary *TranscriptMessage, allMessages []*TranscriptMessage) bool {
 	metadata, err := extractCompactMetadata(boundary)
 	if err != nil {
 		return false
@@ -632,13 +632,13 @@ func segIsLive(boundary *Message, allMessages []*Message) bool {
 
 // MergeHookInstructions merges hook instructions into post-compact messages.
 // TS align: compact.ts:600-620
-func MergeHookInstructions(postCompact []*Message, hookInstructions []*Message) []*Message {
+func MergeHookInstructions(postCompact []*TranscriptMessage, hookInstructions []*TranscriptMessage) []*TranscriptMessage {
 	if len(hookInstructions) == 0 {
 		return postCompact
 	}
 
 	// Append hook instructions to the end
-	result := make([]*Message, 0, len(postCompact)+len(hookInstructions))
+	result := make([]*TranscriptMessage, 0, len(postCompact)+len(hookInstructions))
 	result = append(result, postCompact...)
 	result = append(result, hookInstructions...)
 	return result
@@ -646,14 +646,14 @@ func MergeHookInstructions(postCompact []*Message, hookInstructions []*Message) 
 
 // CreateCompactCanUseTool creates a can-use-tool message for post-compact.
 // TS align: compact.ts:625-640
-func CreateCompactCanUseTool() *Message {
+func CreateCompactCanUseTool() *TranscriptMessage {
 	content := map[string]any{
 		"type":    "system",
 		"subtype": "can_use_tool",
 		"content": "Tool use restored after compact",
 	}
 	contentBytes, _ := json.Marshal(content)
-	return &Message{
+	return &TranscriptMessage{
 		Type:    "system",
 		Subtype: "can_use_tool",
 		Content: string(contentBytes),
@@ -662,7 +662,7 @@ func CreateCompactCanUseTool() *Message {
 
 // CreateAsyncAgentAttachmentsIfNeeded creates attachments for async agents.
 // TS align: compact.ts:645-670
-func CreateAsyncAgentAttachmentsIfNeeded(preCompact []*Message) []*Message {
+func CreateAsyncAgentAttachmentsIfNeeded(preCompact []*TranscriptMessage) []*TranscriptMessage {
 	// Check for running async agents
 	// (Simplified - full implementation would check agent state)
 	return nil
@@ -670,7 +670,7 @@ func CreateAsyncAgentAttachmentsIfNeeded(preCompact []*Message) []*Message {
 
 // CreatePlanAttachmentIfNeeded creates a plan attachment if plan mode was active.
 // TS align: compact.ts:675-695
-func CreatePlanAttachmentIfNeeded(preCompact []*Message) []*Message {
+func CreatePlanAttachmentIfNeeded(preCompact []*TranscriptMessage) []*TranscriptMessage {
 	// Check for plan mode in pre-compact messages
 	// (Simplified - full implementation would detect plan state)
 	return nil
@@ -678,7 +678,7 @@ func CreatePlanAttachmentIfNeeded(preCompact []*Message) []*Message {
 
 // CreateSkillAttachmentIfNeeded creates skill attachment for active skills.
 // TS align: compact.ts:725-745
-func CreateSkillAttachmentIfNeeded(preCompact []*Message) []*Message {
+func CreateSkillAttachmentIfNeeded(preCompact []*TranscriptMessage) []*TranscriptMessage {
 	// Check for invoked skills
 	// (Simplified - full implementation would check skill state)
 	return nil
@@ -686,7 +686,7 @@ func CreateSkillAttachmentIfNeeded(preCompact []*Message) []*Message {
 
 // AddErrorNotificationIfNeeded adds an error notification on compact failure.
 // TS align: compact.ts:750-770
-func AddErrorNotificationIfNeeded(postCompact []*Message, compactErr error) []*Message {
+func AddErrorNotificationIfNeeded(postCompact []*TranscriptMessage, compactErr error) []*TranscriptMessage {
 	if compactErr == nil {
 		return postCompact
 	}
@@ -698,13 +698,13 @@ func AddErrorNotificationIfNeeded(postCompact []*Message, compactErr error) []*M
 		"level":   "error",
 	}
 	contentBytes, _ := json.Marshal(content)
-	errorMsg := &Message{
+	errorMsg := &TranscriptMessage{
 		Type:    "system",
 		Subtype: "error_notification",
 		Content: string(contentBytes),
 	}
 
-	result := make([]*Message, 0, len(postCompact)+1)
+	result := make([]*TranscriptMessage, 0, len(postCompact)+1)
 	result = append(result, postCompact...)
 	result = append(result, errorMsg)
 	return result
@@ -712,7 +712,7 @@ func AddErrorNotificationIfNeeded(postCompact []*Message, compactErr error) []*M
 
 // CollectReadToolFilePaths collects file paths from Read tool results.
 // TS align: compact.ts:775-795
-func CollectReadToolFilePaths(messages []*Message) []string {
+func CollectReadToolFilePaths(messages []*TranscriptMessage) []string {
 	paths := make(map[string]bool)
 
 	for _, msg := range messages {
@@ -755,15 +755,15 @@ func CollectReadToolFilePaths(messages []*Message) []string {
 
 // TruncateHeadForPTLRetry truncates head for prompt-too-long retry.
 // TS align: compact.ts:243-291
-func TruncateHeadForPTLRetry(messages []*Message, maxTokens int) []*Message {
+func TruncateHeadForPTLRetry(messages []*TranscriptMessage, maxTokens int) []*TranscriptMessage {
 	if maxTokens <= 0 {
-		return []*Message{}
+		return []*TranscriptMessage{}
 	}
 	return TruncateToTokens(messages, maxTokens)
 }
 
 // annotateBoundaryWithPreservedSegment adds preserved segment metadata to boundary.
-func annotateBoundaryWithPreservedSegment(boundary *Message, headUUID, anchorUUID, tailUUID string) error {
+func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID, anchorUUID, tailUUID string) error {
 	// Parse existing content
 	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
@@ -796,7 +796,7 @@ func annotateBoundaryWithPreservedSegment(boundary *Message, headUUID, anchorUUI
 	return nil
 }
 // extractCompactMetadata extracts compact metadata from boundary content JSON.
-func extractCompactMetadata(boundary *Message) (*CompactMetadata, error) {
+func extractCompactMetadata(boundary *TranscriptMessage) (*CompactMetadata, error) {
 	var contentMap map[string]any
 	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
 		return nil, err
@@ -819,7 +819,7 @@ func extractCompactMetadata(boundary *Message) (*CompactMetadata, error) {
 
 // insertMessageTx inserts a message within a transaction (ignores parent tracking).
 // Returns the auto-increment seq for FTS indexing.
-func (s *Store) insertMessageTx(tx *sql.Tx, sessionID string, msg *Message) (int64, error) {
+func (s *Store) insertMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMessage) (int64, error) {
 	createdAt := msg.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -864,7 +864,7 @@ func (s *Store) indexMessageFTS(db dbExec, seq int64, content string) {
 // roughTokenCount estimates token count for messages.
 // Same heuristic as engine.EstimateTokens: CJK-aware character classification.
 // Kept local due to import cycle (engine → memory/short).
-func roughTokenCount(messages []*Message) int {
+func roughTokenCount(messages []*TranscriptMessage) int {
 	count := 0
 	for _, msg := range messages {
 		count += roughTokenCountForMessage(msg)
@@ -875,7 +875,7 @@ func roughTokenCount(messages []*Message) int {
 // roughTokenCountForMessage estimates token count for a single message.
 // Same heuristic as engine.EstimateTokens: CJK ~1.5 tokens/char, non-CJK ~0.25.
 // Kept local due to import cycle (engine → memory/short).
-func roughTokenCountForMessage(msg *Message) int {
+func roughTokenCountForMessage(msg *TranscriptMessage) int {
 	if msg.Content == "" {
 		return 0
 	}

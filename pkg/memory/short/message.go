@@ -11,14 +11,14 @@ import (
 // AppendMessage adds a single message to the session.
 // TS align: insertMessageChain (sessionStorage.ts:993-1083)
 // Maintains parent_uuid chain; progress messages don't advance the chain.
-func (s *Store) AppendMessage(sessionID string, msg *Message) error {
+func (s *Store) AppendMessage(sessionID string, msg *TranscriptMessage) error {
 
 	return s.appendMessage(sessionID, msg)
 }
 
 // AppendMessages adds multiple messages to the session in a single transaction.
 // TS align: recordTranscript → insertMessageChain for batch writes.
-func (s *Store) AppendMessages(sessionID string, msgs []*Message) error {
+func (s *Store) AppendMessages(sessionID string, msgs []*TranscriptMessage) error {
 
 	// Begin transaction
 	tx, err := s.db.Begin()
@@ -46,7 +46,7 @@ func (s *Store) AppendMessages(sessionID string, msgs []*Message) error {
 
 // LoadMessages loads all messages for a session ordered by seq.
 // TS align: loadTranscriptFile (sessionStorage.ts:370-440)
-func (s *Store) LoadMessages(sessionID string) ([]*Message, error) {
+func (s *Store) LoadMessages(sessionID string) ([]*TranscriptMessage, error) {
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
@@ -62,7 +62,7 @@ func (s *Store) LoadMessages(sessionID string) ([]*Message, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var messages []*Message
+	var messages []*TranscriptMessage
 	for rows.Next() {
 		msg, err := s.scanMessage(rows)
 		if err != nil {
@@ -82,7 +82,7 @@ func (s *Store) LoadMessages(sessionID string) ([]*Message, error) {
 // LoadMessagesAfterSeq loads messages with seq > afterSeq.
 // Used for loading messages after a compact boundary.
 // TS align: getMessagesAfterCompactBoundary (sessionStorage.ts:2581-2603)
-func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Message, error) {
+func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*TranscriptMessage, error) {
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
@@ -98,7 +98,7 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Message
 	}
 	defer func() { _ = rows.Close() }()
 
-	var messages []*Message
+	var messages []*TranscriptMessage
 	for rows.Next() {
 		msg, err := s.scanMessage(rows)
 		if err != nil {
@@ -113,7 +113,7 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Message
 // GetLastBoundary finds the last compact boundary message.
 // Returns the message, its seq, and error. Returns nil, 0, nil if none found.
 // TS align: findLastCompactBoundaryIndex (messages.ts:4618-4629)
-func (s *Store) GetLastBoundary(sessionID string) (*Message, int, error) {
+func (s *Store) GetLastBoundary(sessionID string) (*TranscriptMessage, int, error) {
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
@@ -191,7 +191,7 @@ func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {
 // RecordSidechainTranscript stores a sub-agent's transcript.
 // Messages are marked with is_sidechain=1.
 // TS align: recordSidechainTranscript (sessionStorage.ts:2800-2830)
-func (s *Store) RecordSidechainTranscript(sessionID string, agentID string, messages []*Message) error {
+func (s *Store) RecordSidechainTranscript(sessionID string, agentID string, messages []*TranscriptMessage) error {
 
 	// Begin transaction
 	tx, err := s.db.Begin()
@@ -220,7 +220,7 @@ func (s *Store) RecordSidechainTranscript(sessionID string, agentID string, mess
 
 // LoadSidechainTranscript loads messages for a specific agent from the sidechain.
 // TS align: loadSubagentTranscripts (sessionStorage.ts:2840-2860)
-func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Message, error) {
+func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*TranscriptMessage, error) {
 
 	query := `
 		SELECT m.seq, m.session_id, m.uuid, m.parent_uuid, m.logical_parent_uuid,
@@ -236,7 +236,7 @@ func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Me
 	}
 	defer func() { _ = rows.Close() }()
 
-	var messages []*Message
+	var messages []*TranscriptMessage
 	for rows.Next() {
 		msg, err := s.scanMessage(rows)
 		if err != nil {
@@ -251,7 +251,7 @@ func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Me
 // FindLatestMessage finds the latest message matching the filter function.
 // Returns nil, nil if no message matches.
 // TS align: findLatestMessage (sessionStorage.ts:2046-2061)
-func (s *Store) FindLatestMessage(sessionID string, filter func(*Message) bool) (*Message, error) {
+func (s *Store) FindLatestMessage(sessionID string, filter func(*TranscriptMessage) bool) (*TranscriptMessage, error) {
 	// Delegate locking to LoadMessages — holding our own RLock here would
 	// recursively RLock when LoadMessages is called, risking deadlock under
 	// writer contention (Go's sync.RWMutex is not reentrant).
@@ -260,7 +260,7 @@ func (s *Store) FindLatestMessage(sessionID string, filter func(*Message) bool) 
 		return nil, err
 	}
 
-	var latest *Message
+	var latest *TranscriptMessage
 	var maxTime time.Time
 
 	for _, msg := range messages {
@@ -326,7 +326,7 @@ func (s *Store) GetPreBoundaryMetadata(sessionID string) (*PreBoundaryMetadata, 
 }
 
 // appendMessage adds a single message within a transaction.
-func (s *Store) appendMessage(sessionID string, msg *Message) error {
+func (s *Store) appendMessage(sessionID string, msg *TranscriptMessage) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -342,7 +342,7 @@ func (s *Store) appendMessage(sessionID string, msg *Message) error {
 }
 
 // appendMessageTx adds a message within a transaction.
-func (s *Store) appendMessageTx(tx *sql.Tx, sessionID string, msg *Message, lastChainUUID string) error {
+func (s *Store) appendMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMessage, lastChainUUID string) error {
 	// Set parent_uuid
 	// - First message: empty string
 	// - Compact boundary: empty string (new chain root), logical_parent_uuid = lastChainUUID
@@ -417,14 +417,14 @@ func (s *Store) getLastChainUUID(tx *sql.Tx, sessionID string) string {
 }
 
 // queryOneMessage executes a query and returns a single message.
-func (s *Store) queryOneMessage(query string, args ...any) (*Message, error) {
+func (s *Store) queryOneMessage(query string, args ...any) (*TranscriptMessage, error) {
 	row := s.db.QueryRow(query, args...)
 	return s.scanMessageFromRow(row)
 }
 
 // scanMessage scans a message from a rows object.
-func (s *Store) scanMessage(rows *sql.Rows) (*Message, error) {
-	var msg Message
+func (s *Store) scanMessage(rows *sql.Rows) (*TranscriptMessage, error) {
+	var msg TranscriptMessage
 	err := rows.Scan(
 		&msg.Seq, &msg.SessionID, &msg.UUID, &msg.ParentUUID, &msg.LogicalParentUUID,
 		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &msg.CreatedAt,
@@ -436,8 +436,8 @@ func (s *Store) scanMessage(rows *sql.Rows) (*Message, error) {
 }
 
 // scanMessageFromRow scans a message from a single row.
-func (s *Store) scanMessageFromRow(row *sql.Row) (*Message, error) {
-	var msg Message
+func (s *Store) scanMessageFromRow(row *sql.Row) (*TranscriptMessage, error) {
+	var msg TranscriptMessage
 	err := row.Scan(
 		&msg.Seq, &msg.SessionID, &msg.UUID, &msg.ParentUUID, &msg.LogicalParentUUID,
 		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &msg.CreatedAt,

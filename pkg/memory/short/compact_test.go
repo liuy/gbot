@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func findByUUID(msgs []*Message, uuid string) *Message {
+func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
 	for _, m := range msgs {
 		if m.UUID == uuid {
 			return m
@@ -135,16 +135,16 @@ func TestCreateCompactBoundaryMessage_PreservedSegment(t *testing.T) {
 }
 
 func TestBuildPostCompactMessages_Order(t *testing.T) {
-	boundary := &Message{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary"}
-	summary := &Message{UUID: "summary-1", Type: "user"}
-	kept := &Message{UUID: "kept-1", Type: "user"}
-	att := &Message{UUID: "att-1", Type: "attachment"}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary"}
+	summary := &TranscriptMessage{UUID: "summary-1", Type: "user"}
+	kept := &TranscriptMessage{UUID: "kept-1", Type: "user"}
+	att := &TranscriptMessage{UUID: "att-1", Type: "attachment"}
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary},
-		MessagesToKeep:  []*Message{kept},
-		Attachments:     []*Message{att},
+		SummaryMessages: []*TranscriptMessage{summary},
+		MessagesToKeep:  []*TranscriptMessage{kept},
+		Attachments:     []*TranscriptMessage{att},
 	}
 
 	messages := BuildPostCompactMessages(result)
@@ -175,7 +175,7 @@ func TestRecordCompact_WriteVerification(t *testing.T) {
 	// Need to create a session first (session.go is worker-2's responsibility)
 	// For this test, we'll skip if session doesn't exist
 	boundary := CreateCompactBoundaryMessage("manual", 1000, "")
-	summary := &Message{
+	summary := &TranscriptMessage{
 		UUID:    "summary-1",
 		Type:    "user",
 		Content: `[{"type":"text","text":"Summary"}]`,
@@ -183,9 +183,9 @@ func TestRecordCompact_WriteVerification(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{summary},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -202,7 +202,7 @@ func TestApplyPreservedSegmentRelinks_ValidSegment(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, anchorUUID, tailUUID)
 
 	// Create messages: pre-compact + boundary + summary + preserved segment
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "old-1", ParentUUID: ""},                // pre-compact, should be pruned
 		{UUID: "old-2", ParentUUID: "old-1"},           // pre-compact, should be pruned
 		boundary,                                       // idx 2 = boundaryIdx
@@ -254,7 +254,7 @@ func TestApplyPreservedSegmentRelinks_TailSplice(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, anchorUUID, tailUUID)
 
 	// anchor has two children: head and other-child
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: headUUID, ParentUUID: anchorUUID},
 		{UUID: "middle", ParentUUID: headUUID},
@@ -283,7 +283,7 @@ func TestApplyPreservedSegmentRelinks_BrokenWalk(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, anchorUUID, tailUUID)
 
 	// tail exists but head doesn't — walk broken
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: tailUUID, ParentUUID: "nonexistent"},
 	}
@@ -298,7 +298,7 @@ func TestApplyPreservedSegmentRelinks_BrokenWalk(t *testing.T) {
 
 func TestApplyPreservedSegmentRelinks_NoSegment(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("auto", 5000, "")
-	messages := []*Message{boundary}
+	messages := []*TranscriptMessage{boundary}
 
 	chain := ApplyPreservedSegmentRelinks(boundary, messages)
 
@@ -418,7 +418,7 @@ func TestPartialCompact_PreservesTail(t *testing.T) {
 	sessionID := "test-session"
 
 	// Create 10 messages
-	messages := make([]*Message, 10)
+	messages := make([]*TranscriptMessage, 10)
 	for i := range 10 {
 		messages[i] = testMessage(0, "user", string(rune('a'+i)), "", `[{"type":"text","text":"msg"}]`)
 	}
@@ -441,12 +441,12 @@ func TestPartialCompact_PreservesTail(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_RemovesImage(t *testing.T) {
-	msgWithImage := &Message{
+	msgWithImage := &TranscriptMessage{
 		Type:    "user",
 		Content: `[{"type":"text","text":"hello"},{"type":"image","source":{"type":"base64","data":"abc..."}}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msgWithImage})
+	result := StripImagesFromMessages([]*TranscriptMessage{msgWithImage})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -463,12 +463,12 @@ func TestStripImagesFromMessages_RemovesImage(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_KeepsText(t *testing.T) {
-	msgTextOnly := &Message{
+	msgTextOnly := &TranscriptMessage{
 		Type:    "user",
 		Content: `[{"type":"text","text":"hello world"}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msgTextOnly})
+	result := StripImagesFromMessages([]*TranscriptMessage{msgTextOnly})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -480,7 +480,7 @@ func TestStripImagesFromMessages_KeepsText(t *testing.T) {
 }
 
 func TestStripReinjectedAttachments_RemovesSkillDiscovery(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hi"}]`},
 		{Type: "attachment", Subtype: "skill_discovery", Content: `{}`},
 		{Type: "attachment", Subtype: "skill_listing", Content: `{}`},
@@ -505,7 +505,7 @@ func TestStripReinjectedAttachments_RemovesSkillDiscovery(t *testing.T) {
 }
 
 func TestCreatePostCompactFileAttachments_ExtractsFilePaths(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"/path/to/file.txt","is_error":false}]`,
@@ -523,27 +523,27 @@ func TestCreatePostCompactFileAttachments_ExtractsFilePaths(t *testing.T) {
 func TestShouldExcludeFromPostCompactRestore_ExcludesProgress(t *testing.T) {
 	tests := []struct {
 		name        string
-		msg         *Message
+		msg         *TranscriptMessage
 		wantExclude bool
 	}{
 		{
 			name:        "progress message excluded",
-			msg:         &Message{Type: "progress"},
+			msg:         &TranscriptMessage{Type: "progress"},
 			wantExclude: true,
 		},
 		{
 			name:        "informational system excluded",
-			msg:         &Message{Type: "system", Subtype: "informational"},
+			msg:         &TranscriptMessage{Type: "system", Subtype: "informational"},
 			wantExclude: true,
 		},
 		{
 			name:        "user message kept",
-			msg:         &Message{Type: "user"},
+			msg:         &TranscriptMessage{Type: "user"},
 			wantExclude: false,
 		},
 		{
 			name:        "assistant message kept",
-			msg:         &Message{Type: "assistant"},
+			msg:         &TranscriptMessage{Type: "assistant"},
 			wantExclude: false,
 		},
 	}
@@ -560,10 +560,10 @@ func TestShouldExcludeFromPostCompactRestore_ExcludesProgress(t *testing.T) {
 
 func TestTruncateToTokens_Truncates(t *testing.T) {
 	// Create messages with estimated sizes
-	messages := make([]*Message, 10)
+	messages := make([]*TranscriptMessage, 10)
 	for i := range 10 {
 		// Each message has ~40 chars content ~10 tokens
-		messages[i] = &Message{
+		messages[i] = &TranscriptMessage{
 			UUID:    string(rune('a' + i)),
 			Content: `[{"type":"text","text":"` + strings.Repeat("x", 30) + `"}]`,
 		}
@@ -585,7 +585,7 @@ func TestTruncateToTokens_Truncates(t *testing.T) {
 }
 
 func TestTruncateToTokens_KeepsAtLeastOne(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a", Content: `[{"type":"text","text":"very long message..."}]`},
 	}
 
@@ -598,11 +598,11 @@ func TestTruncateToTokens_KeepsAtLeastOne(t *testing.T) {
 }
 
 func TestMergeHookInstructions(t *testing.T) {
-	postCompact := []*Message{
+	postCompact := []*TranscriptMessage{
 		{UUID: "post-1", Type: "user"},
 	}
 
-	hookInstructions := []*Message{
+	hookInstructions := []*TranscriptMessage{
 		{UUID: "hook-1", Type: "system"},
 		{UUID: "hook-2", Type: "system"},
 	}
@@ -620,7 +620,7 @@ func TestMergeHookInstructions(t *testing.T) {
 }
 
 func TestAddErrorNotificationIfNeeded_NoError(t *testing.T) {
-	postCompact := []*Message{{UUID: "post-1"}}
+	postCompact := []*TranscriptMessage{{UUID: "post-1"}}
 
 	result := AddErrorNotificationIfNeeded(postCompact, nil)
 
@@ -630,7 +630,7 @@ func TestAddErrorNotificationIfNeeded_NoError(t *testing.T) {
 }
 
 func TestAddErrorNotificationIfNeeded_WithError(t *testing.T) {
-	postCompact := []*Message{{UUID: "post-1"}}
+	postCompact := []*TranscriptMessage{{UUID: "post-1"}}
 
 	result := AddErrorNotificationIfNeeded(postCompact, fmt.Errorf("compact failed"))
 
@@ -645,7 +645,7 @@ func TestAddErrorNotificationIfNeeded_WithError(t *testing.T) {
 }
 
 func TestCollectReadToolFilePaths(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"/path/to/file.txt"}]`,
@@ -674,9 +674,9 @@ func TestCollectReadToolFilePaths(t *testing.T) {
 }
 
 func TestTruncateHeadForPTLRetry(t *testing.T) {
-	messages := make([]*Message, 10)
+	messages := make([]*TranscriptMessage, 10)
 	for i := range 10 {
-		messages[i] = &Message{
+		messages[i] = &TranscriptMessage{
 			UUID:    string(rune('a' + i)),
 			Content: `[{"type":"text","text":"message"}]`,
 		}
@@ -702,7 +702,7 @@ func TestTruncateHeadForPTLRetry(t *testing.T) {
 func TestSegIsLive_NoSegment(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("auto", 5000, "")
 
-	if !segIsLive(boundary, []*Message{boundary}) {
+	if !segIsLive(boundary, []*TranscriptMessage{boundary}) {
 		t.Error("segIsLive should return true when no preserved segment")
 	}
 }
@@ -713,7 +713,7 @@ func TestSegIsLive_SegmentValid(t *testing.T) {
 	tailUUID := "tail-789"
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: headUUID},
 		{UUID: tailUUID},
@@ -731,7 +731,7 @@ func TestSegIsLive_SegmentStale(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
 	// Messages don't include the segment messages
-	messages := []*Message{boundary}
+	messages := []*TranscriptMessage{boundary}
 
 	if segIsLive(boundary, messages) {
 		t.Error("segIsLive should return false when segment messages missing")
@@ -739,7 +739,7 @@ func TestSegIsLive_SegmentStale(t *testing.T) {
 }
 
 func TestRoughTokenCountForMessage(t *testing.T) {
-	msg := &Message{Content: "1234567890"} // 10 chars
+	msg := &TranscriptMessage{Content: "1234567890"} // 10 chars
 
 	count := roughTokenCountForMessage(msg)
 
@@ -748,14 +748,14 @@ func TestRoughTokenCountForMessage(t *testing.T) {
 	}
 
 	// CJK: 1.5 tokens/char (3/2)
-	cjkMsg := &Message{Content: "你好世界"} // 4 CJK chars
+	cjkMsg := &TranscriptMessage{Content: "你好世界"} // 4 CJK chars
 	got := roughTokenCountForMessage(cjkMsg)
 	if got != 6 { // 4 * 3/2 = 6
 		t.Errorf("roughTokenCountForMessage(CJK) = %d, want 6", got)
 	}
 
 	// Mixed
-	mixedMsg := &Message{Content: "Hello 你好"} // 6 nonCJK + 2 CJK
+	mixedMsg := &TranscriptMessage{Content: "Hello 你好"} // 6 nonCJK + 2 CJK
 	got = roughTokenCountForMessage(mixedMsg)
 	if got != 4 { // 6/4 + 2*3/2 = 1 + 3 = 4
 		t.Errorf("roughTokenCountForMessage(mixed) = %d, want 4", got)
@@ -797,7 +797,7 @@ func TestCompactResumeCycle_Integration(t *testing.T) {
 
 func TestApplyPreservedSegmentRelinksOnLoad_NoBoundary(t *testing.T) {
 	// No boundary → messages returned unchanged
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "a", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{UUID: "b", Type: "assistant", Content: `[{"type":"text","text":"reply"}]`},
 	}
@@ -813,12 +813,12 @@ func TestApplyPreservedSegmentRelinksOnLoad_WithPreservedSegment(t *testing.T) {
 	tailUUID := "tail-1"
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
-	head := &Message{UUID: headUUID, Type: "assistant", ParentUUID: boundary.UUID, Content: `[{"type":"text","text":"head"}]`}
-	tail := &Message{UUID: tailUUID, Type: "assistant", ParentUUID: headUUID, Content: `[{"type":"text","text":"tail"}]`}
-	preCompact := &Message{UUID: "pre-1", Type: "user", ParentUUID: "", Content: `[{"type":"text","text":"before"}]`}
-	postTail := &Message{UUID: "post-1", Type: "user", ParentUUID: tailUUID, Content: `[{"type":"text","text":"after"}]`}
+	head := &TranscriptMessage{UUID: headUUID, Type: "assistant", ParentUUID: boundary.UUID, Content: `[{"type":"text","text":"head"}]`}
+	tail := &TranscriptMessage{UUID: tailUUID, Type: "assistant", ParentUUID: headUUID, Content: `[{"type":"text","text":"tail"}]`}
+	preCompact := &TranscriptMessage{UUID: "pre-1", Type: "user", ParentUUID: "", Content: `[{"type":"text","text":"before"}]`}
+	postTail := &TranscriptMessage{UUID: "post-1", Type: "user", ParentUUID: tailUUID, Content: `[{"type":"text","text":"after"}]`}
 
-	msgs := []*Message{preCompact, boundary, head, tail, postTail}
+	msgs := []*TranscriptMessage{preCompact, boundary, head, tail, postTail}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
 
 	// Pre-compact should be pruned; boundary + preserved + post should remain
@@ -841,7 +841,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_StaleSeg(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary1, "head-1", boundary1.UUID, "tail-1")
 	boundary2 := CreateCompactBoundaryMessage("manual", 3000, "")
 
-	msgs := []*Message{boundary1, boundary2}
+	msgs := []*TranscriptMessage{boundary1, boundary2}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
 	if len(result) != 2 {
 		t.Errorf("stale seg should be no-op, got %d messages", len(result))
@@ -849,7 +849,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_StaleSeg(t *testing.T) {
 }
 
 func TestApplySnipRemovals_NoSnips(t *testing.T) {
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "a", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -871,11 +871,11 @@ func TestApplySnipRemovals_WithRemovals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	boundary := &Message{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
-	toDelete := &Message{UUID: "msg-to-delete", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"delete me"}]`}
-	survivor := &Message{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: `[{"type":"text","text":"I stay"}]`}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	toDelete := &TranscriptMessage{UUID: "msg-to-delete", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"delete me"}]`}
+	survivor := &TranscriptMessage{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: `[{"type":"text","text":"I stay"}]`}
 
-	msgs := []*Message{boundary, toDelete, survivor}
+	msgs := []*TranscriptMessage{boundary, toDelete, survivor}
 	result := ApplySnipRemovals(msgs)
 
 	if len(result) != 2 {
@@ -898,27 +898,27 @@ func TestRecordCompact_FullResult(t *testing.T) {
 
 	// Create full CompactResult with all fields
 	boundary := CreateCompactBoundaryMessage("manual", 1000, "")
-	summary1 := &Message{
+	summary1 := &TranscriptMessage{
 		UUID:    "summary-1",
 		Type:    "user",
 		Content: `[{"type":"text","text":"Summary part 1"}]`,
 	}
-	summary2 := &Message{
+	summary2 := &TranscriptMessage{
 		UUID:    "summary-2",
 		Type:    "user",
 		Content: `[{"type":"text","text":"Summary part 2"}]`,
 	}
-	kept1 := &Message{
+	kept1 := &TranscriptMessage{
 		UUID:    "kept-1",
 		Type:    "user",
 		Content: `[{"type":"text","text":"Kept message 1"}]`,
 	}
-	kept2 := &Message{
+	kept2 := &TranscriptMessage{
 		UUID:    "kept-2",
 		Type:    "assistant",
 		Content: `[{"type":"text","text":"Kept message 2"}]`,
 	}
-	att1 := &Message{
+	att1 := &TranscriptMessage{
 		UUID:    "att-1",
 		Type:    "attachment",
 		Subtype: "file",
@@ -927,9 +927,9 @@ func TestRecordCompact_FullResult(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary1, summary2},
-		MessagesToKeep:  []*Message{kept1, kept2},
-		Attachments:     []*Message{att1},
+		SummaryMessages: []*TranscriptMessage{summary1, summary2},
+		MessagesToKeep:  []*TranscriptMessage{kept1, kept2},
+		Attachments:     []*TranscriptMessage{att1},
 	}
 
 	if err := store.RecordCompact(sessionID, result); err != nil {
@@ -1011,7 +1011,7 @@ func TestCreateCompactCanUseTool(t *testing.T) {
 }
 
 func TestCreateAsyncAgentAttachmentsIfNeeded(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -1023,7 +1023,7 @@ func TestCreateAsyncAgentAttachmentsIfNeeded(t *testing.T) {
 }
 
 func TestCreatePlanAttachmentIfNeeded(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -1035,7 +1035,7 @@ func TestCreatePlanAttachmentIfNeeded(t *testing.T) {
 }
 
 func TestCreateSkillAttachmentIfNeeded(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -1063,7 +1063,7 @@ func TestZeroUsageInContent_WithUsage(t *testing.T) {
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "msg-123",
 		Type:    "assistant",
 		Content: string(contentJSON),
@@ -1103,13 +1103,13 @@ func TestZeroUsageInContent_WithUsage(t *testing.T) {
 }
 
 func TestZeroUsageInContent_NoUsage(t *testing.T) {
-	// Message without usage field
+	// TranscriptMessage without usage field
 	content := map[string]any{
 		"type":    "assistant",
 		"message": map[string]any{"id": "msg-123", "role": "assistant", "content": "Hello"},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "msg-123",
 		Type:    "assistant",
 		Content: string(contentJSON),
@@ -1135,7 +1135,7 @@ func TestZeroUsageInContent_NoUsage(t *testing.T) {
 }
 
 func TestZeroUsageInContent_InvalidJSON(t *testing.T) {
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "msg-123",
 		Type:    "assistant",
 		Content: `{invalid json`,
@@ -1152,9 +1152,9 @@ func TestZeroUsageInContent_InvalidJSON(t *testing.T) {
 
 func TestTruncateHeadForPTLRetry_Truncates(t *testing.T) {
 	// Create messages where each is ~10 tokens
-	messages := make([]*Message, 10)
+	messages := make([]*TranscriptMessage, 10)
 	for i := range 10 {
-		messages[i] = &Message{
+		messages[i] = &TranscriptMessage{
 			UUID:    string(rune('a' + i)),
 			Content: `[{"type":"text","text":"message"}]`, // ~40 chars ~10 tokens
 		}
@@ -1174,7 +1174,7 @@ func TestTruncateHeadForPTLRetry_Truncates(t *testing.T) {
 }
 
 func TestTruncateHeadForPTLRetry_ZeroBudget(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a", Content: `[{"type":"text","text":"message"}]`},
 	}
 
@@ -1225,7 +1225,7 @@ func TestExtractCompactMetadata_NoCompactMetadata(t *testing.T) {
 		"content": "Conversation compacted",
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
@@ -1246,7 +1246,7 @@ func TestExtractCompactMetadata_NoCompactMetadata(t *testing.T) {
 }
 
 func TestExtractCompactMetadata_InvalidJSON(t *testing.T) {
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
@@ -1264,7 +1264,7 @@ func TestInsertMessageTx_WithNilTx(t *testing.T) {
 	sessionID := "test-session-nil-tx"
 	createTestSession(t, store, sessionID)
 
-	msg := &Message{
+	msg := &TranscriptMessage{
 		UUID:    "msg-1",
 		Type:    "user",
 		Content: `[{"type":"text","text":"test"}]`,
@@ -1292,12 +1292,12 @@ func TestInsertMessageTx_WithNilTx(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_Document(t *testing.T) {
-	msgWithDocument := &Message{
+	msgWithDocument := &TranscriptMessage{
 		Type:    "user",
 		Content: `[{"type":"text","text":"hello"},{"type":"document","source":{"type":"base64","data":"doc..."}}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msgWithDocument})
+	result := StripImagesFromMessages([]*TranscriptMessage{msgWithDocument})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -1314,12 +1314,12 @@ func TestStripImagesFromMessages_Document(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_NonUser(t *testing.T) {
-	msgAssistant := &Message{
+	msgAssistant := &TranscriptMessage{
 		Type:    "assistant",
 		Content: `[{"type":"text","text":"response"}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msgAssistant})
+	result := StripImagesFromMessages([]*TranscriptMessage{msgAssistant})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -1331,12 +1331,12 @@ func TestStripImagesFromMessages_NonUser(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_EmptyBlocks(t *testing.T) {
-	msgEmpty := &Message{
+	msgEmpty := &TranscriptMessage{
 		Type:    "user",
 		Content: `[]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msgEmpty})
+	result := StripImagesFromMessages([]*TranscriptMessage{msgEmpty})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -1348,7 +1348,7 @@ func TestStripImagesFromMessages_EmptyBlocks(t *testing.T) {
 }
 
 func TestTruncateToTokens_ZeroBudget(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a", Content: `[{"type":"text","text":"message"}]`},
 		{UUID: "b", Content: `[{"type":"text","text":"message"}]`},
 	}
@@ -1362,9 +1362,9 @@ func TestTruncateToTokens_ZeroBudget(t *testing.T) {
 
 func TestTruncateToTokens_AllFit(t *testing.T) {
 	// Create small messages that all fit within budget
-	messages := make([]*Message, 3)
+	messages := make([]*TranscriptMessage, 3)
 	for i := range 3 {
-		messages[i] = &Message{
+		messages[i] = &TranscriptMessage{
 			UUID:    string(rune('a' + i)),
 			Content: `[{"type":"text","text":"hi"}]`, // small
 		}
@@ -1378,7 +1378,7 @@ func TestTruncateToTokens_AllFit(t *testing.T) {
 }
 
 func TestTruncateHeadForPTLRetry_NegativeBudget(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a", Content: `[{"type":"text","text":"message"}]`},
 	}
 
@@ -1390,7 +1390,7 @@ func TestTruncateHeadForPTLRetry_NegativeBudget(t *testing.T) {
 }
 
 func TestShouldExcludeFromPostCompactRestore_Transient(t *testing.T) {
-	msg := &Message{Type: "system", Subtype: "transient"}
+	msg := &TranscriptMessage{Type: "system", Subtype: "transient"}
 
 	got := ShouldExcludeFromPostCompactRestore(msg)
 	if !got {
@@ -1399,7 +1399,7 @@ func TestShouldExcludeFromPostCompactRestore_Transient(t *testing.T) {
 }
 
 func TestRoughTokenCount(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Content: "1234"},     // 4 chars -> 1 token
 		{Content: "12345678"}, // 8 chars -> 2 tokens
 	}
@@ -1411,7 +1411,7 @@ func TestRoughTokenCount(t *testing.T) {
 	}
 
 	// CJK messages
-	cjkMessages := []*Message{
+	cjkMessages := []*TranscriptMessage{
 		{Content: "你好"}, // 2 CJK -> 3 tokens
 		{Content: "world"}, // 5 nonCJK -> 1 token
 	}
@@ -1429,9 +1429,9 @@ func TestRecordCompact_OnlyBoundary(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("manual", 500, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	if err := store.RecordCompact(sessionID, result); err != nil {
@@ -1456,9 +1456,9 @@ func TestRecordCompact_TransactionFailure(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("manual", 500, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -1469,7 +1469,7 @@ func TestRecordCompact_TransactionFailure(t *testing.T) {
 
 func TestPartialCompact_InvalidKeepFrom(t *testing.T) {
 	store := openTestStore(t)
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1"},
 		{UUID: "msg-2"},
 	}
@@ -1495,7 +1495,7 @@ func TestPartialCompact_InvalidKeepFrom(t *testing.T) {
 
 func TestPartialCompact_NoTail(t *testing.T) {
 	store := openTestStore(t)
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Content: `[{"type":"text","text":"message 1"}]`},
 	}
 
@@ -1510,12 +1510,12 @@ func TestPartialCompact_NoTail(t *testing.T) {
 
 func TestStripImagesFromMessages_ToolResultWithImages(t *testing.T) {
 	// Test tool_result block with nested image content
-	msg := &Message{
+	msg := &TranscriptMessage{
 		Type:    "user",
 		Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"Some text"}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{msg})
+	result := StripImagesFromMessages([]*TranscriptMessage{msg})
 
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
@@ -1528,13 +1528,13 @@ func TestStripImagesFromMessages_ToolResultWithImages(t *testing.T) {
 }
 
 func TestStripImagesFromMessages_ModifiedClone(t *testing.T) {
-	original := &Message{
+	original := &TranscriptMessage{
 		UUID:    "msg-1",
 		Type:    "user",
 		Content: `[{"type":"image","source":{"type":"base64","data":"abc"}}]`,
 	}
 
-	result := StripImagesFromMessages([]*Message{original})
+	result := StripImagesFromMessages([]*TranscriptMessage{original})
 
 	// Original message should not be modified (it's cloned)
 	if original.Content == result[0].Content {
@@ -1549,7 +1549,7 @@ func TestStripImagesFromMessages_ModifiedClone(t *testing.T) {
 }
 
 func TestCreatePostCompactFileAttachments_NoReadTools(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -1561,14 +1561,14 @@ func TestCreatePostCompactFileAttachments_NoReadTools(t *testing.T) {
 }
 
 func TestApplyPreservedSegmentRelinks_InvalidBoundaryContent(t *testing.T) {
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
 		Content: `{invalid json`,
 	}
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1"},
 	}
 
@@ -1588,14 +1588,14 @@ func TestApplyPreservedSegmentRelinks_NoMetadata(t *testing.T) {
 		// No compactMetadata
 	}
 	contentJSON, _ := json.Marshal(content)
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
 		Content: string(contentJSON),
 	}
 
-	messages := []*Message{boundary}
+	messages := []*TranscriptMessage{boundary}
 	result := ApplyPreservedSegmentRelinks(boundary, messages)
 
 	if len(result) != 1 {
@@ -1607,7 +1607,7 @@ func TestApplyPreservedSegmentRelinks_HeadNotFound(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("auto", 5000, "")
 	_ = annotateBoundaryWithPreservedSegment(boundary, "nonexistent-head", boundary.UUID, "tail-1")
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: "tail-1"},
 	}
@@ -1628,10 +1628,10 @@ func TestApplyPreservedSegmentRelinksOnLoad_MultipleBoundaries(t *testing.T) {
 	boundary2 := CreateCompactBoundaryMessage("auto", 6000, "")
 	_ = annotateBoundaryWithPreservedSegment(boundary2, "head-2", boundary2.UUID, "tail-2")
 
-	head2 := &Message{UUID: "head-2", Type: "assistant", ParentUUID: boundary2.UUID, Content: `[{"type":"text","text":"head2"}]`}
-	tail2 := &Message{UUID: "tail-2", Type: "user", ParentUUID: "head-2", Content: `[{"type":"text","text":"tail2"}]`}
+	head2 := &TranscriptMessage{UUID: "head-2", Type: "assistant", ParentUUID: boundary2.UUID, Content: `[{"type":"text","text":"head2"}]`}
+	tail2 := &TranscriptMessage{UUID: "tail-2", Type: "user", ParentUUID: "head-2", Content: `[{"type":"text","text":"tail2"}]`}
 
-	msgs := []*Message{boundary1, boundary2, head2, tail2}
+	msgs := []*TranscriptMessage{boundary1, boundary2, head2, tail2}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
 
 	// Should use boundary2 (last one with preserved segment)
@@ -1656,12 +1656,12 @@ func TestApplySnipRemovals_PathCompression(t *testing.T) {
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	boundary := &Message{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
-	msgB := &Message{UUID: "msg-b", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"b"}]`}
-	msgC := &Message{UUID: "msg-c", Type: "assistant", ParentUUID: "msg-b", Content: `[{"type":"text","text":"c"}]`}
-	msgA := &Message{UUID: "msg-a", Type: "user", ParentUUID: "msg-c", Content: `[{"type":"text","text":"a"}]`}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	msgB := &TranscriptMessage{UUID: "msg-b", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"b"}]`}
+	msgC := &TranscriptMessage{UUID: "msg-c", Type: "assistant", ParentUUID: "msg-b", Content: `[{"type":"text","text":"c"}]`}
+	msgA := &TranscriptMessage{UUID: "msg-a", Type: "user", ParentUUID: "msg-c", Content: `[{"type":"text","text":"a"}]`}
 
-	msgs := []*Message{boundary, msgB, msgC, msgA}
+	msgs := []*TranscriptMessage{boundary, msgB, msgC, msgA}
 	result := ApplySnipRemovals(msgs)
 
 	if len(result) != 2 {
@@ -1675,9 +1675,9 @@ func TestApplySnipRemovals_PathCompression(t *testing.T) {
 }
 
 func TestMergeHookInstructions_EmptyHooks(t *testing.T) {
-	postCompact := []*Message{{UUID: "post-1"}}
+	postCompact := []*TranscriptMessage{{UUID: "post-1"}}
 
-	result := MergeHookInstructions(postCompact, []*Message{})
+	result := MergeHookInstructions(postCompact, []*TranscriptMessage{})
 
 	if len(result) != 1 {
 		t.Errorf("got %d messages, want 1 (unchanged)", len(result))
@@ -1686,7 +1686,7 @@ func TestMergeHookInstructions_EmptyHooks(t *testing.T) {
 
 func TestCollectReadToolFilePaths_DuplicatePaths(t *testing.T) {
 	// Test that duplicate paths are deduplicated
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type:    "user",
 			Content: `[{"type":"tool_result","content":"/path/to/file.txt"}]`,
@@ -1709,7 +1709,7 @@ func TestCollectReadToolFilePaths_DuplicatePaths(t *testing.T) {
 
 func TestCollectReadToolFilePaths_NonUserMessages(t *testing.T) {
 	// Test that non-user messages are skipped
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "assistant", Content: `[{"type":"tool_result","content":"/file.txt"}]`},
 		{Type: "system", Content: `[{"type":"tool_result","content":"/file2.txt"}]`},
 	}
@@ -1722,7 +1722,7 @@ func TestCollectReadToolFilePaths_NonUserMessages(t *testing.T) {
 }
 
 func TestAnnotateBoundaryWithPreservedSegment_InvalidContent(t *testing.T) {
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		Content: `{invalid json`,
 	}
 
@@ -1739,7 +1739,7 @@ func TestExtractCompactMetadata_EmptyCompactMetadata(t *testing.T) {
 		"compactMetadata": map[string]any{},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{Content: string(contentJSON)}
+	msg := &TranscriptMessage{Content: string(contentJSON)}
 
 	metadata, err := extractCompactMetadata(msg)
 	if err != nil {
@@ -1761,7 +1761,7 @@ func TestExtractCompactMetadata_InvalidMetadataStructure(t *testing.T) {
 		"compactMetadata": "not a map",
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{Content: string(contentJSON)}
+	msg := &TranscriptMessage{Content: string(contentJSON)}
 
 	_, err := extractCompactMetadata(msg)
 	if err == nil {
@@ -1782,9 +1782,9 @@ func TestIndexMessageFTS_EmptyText(t *testing.T) {
 	// but RecordCompact calls it internally)
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -1794,7 +1794,7 @@ func TestIndexMessageFTS_EmptyText(t *testing.T) {
 }
 
 func TestSegIsLive_ExtractError(t *testing.T) {
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
@@ -1802,7 +1802,7 @@ func TestSegIsLive_ExtractError(t *testing.T) {
 	}
 
 	// Should return false when metadata extraction fails
-	if segIsLive(boundary, []*Message{}) {
+	if segIsLive(boundary, []*TranscriptMessage{}) {
 		t.Error("segIsLive should return false when metadata extraction fails")
 	}
 }
@@ -1812,7 +1812,7 @@ func TestSegIsLive_OnlyHead(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, "head-1", boundary.UUID, "tail-1")
 
 	// Only head exists, tail is missing
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: "head-1"},
 	}
@@ -1827,7 +1827,7 @@ func TestSegIsLive_OnlyTail(t *testing.T) {
 	_ = annotateBoundaryWithPreservedSegment(boundary, "head-1", boundary.UUID, "tail-1")
 
 	// Only tail exists, head is missing
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		boundary,
 		{UUID: "tail-1"},
 	}
@@ -1846,9 +1846,9 @@ func TestRecordCompact_BeginError(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("manual", 100, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	err := store.RecordCompact("session", result)
 	if err == nil {
@@ -1875,12 +1875,12 @@ func TestRecordCompact_InsertSummaryError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	summary := &Message{UUID: "summary-1", Type: "user", Content: `[{"type":"text","text":"s"}]`}
+	summary := &TranscriptMessage{UUID: "summary-1", Type: "user", Content: `[{"type":"text","text":"s"}]`}
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{summary},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	err = store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -1897,14 +1897,14 @@ func TestRecordCompact_InsertKeptError(t *testing.T) {
 	// Use a transaction-based approach: insert boundary + summary manually,
 	// then try RecordCompact with kept messages on a closed store
 	boundary := CreateCompactBoundaryMessage("manual", 100, "")
-	summary := &Message{UUID: "summary-1", Type: "user", Content: `[{"type":"text","text":"s"}]`}
-	kept := &Message{UUID: "kept-1", Type: "user", Content: `[{"type":"text","text":"k"}]`}
+	summary := &TranscriptMessage{UUID: "summary-1", Type: "user", Content: `[{"type":"text","text":"s"}]`}
+	kept := &TranscriptMessage{UUID: "kept-1", Type: "user", Content: `[{"type":"text","text":"k"}]`}
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary},
-		MessagesToKeep:  []*Message{kept},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{summary},
+		MessagesToKeep:  []*TranscriptMessage{kept},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	// Close before calling RecordCompact — begin will fail
@@ -1924,12 +1924,12 @@ func TestRecordCompact_InsertAttachmentError(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	boundary := CreateCompactBoundaryMessage("manual", 100, "")
-	att := &Message{UUID: "att-1", Type: "attachment", Content: `[{"type":"text","text":"a"}]`}
+	att := &TranscriptMessage{UUID: "att-1", Type: "attachment", Content: `[{"type":"text","text":"a"}]`}
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{att},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{att},
 	}
 
 	if err := store.Close(); err != nil {
@@ -1951,9 +1951,9 @@ func TestRecordCompact_UpdateTimestampError(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("manual", 100, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	if err := store.RecordCompact(sessionID, result); err != nil {
 		t.Fatalf("RecordCompact should succeed: %v", err)
@@ -1964,7 +1964,7 @@ func TestRecordCompact_UpdateTimestampError(t *testing.T) {
 func TestPartialCompact_AnnotateError(t *testing.T) {
 	store := openTestStore(t)
 	// Create messages where boundary has invalid content
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "msg-1", Content: "a"},
 		{UUID: "msg-2", Content: "b"},
 	}
@@ -1983,15 +1983,15 @@ func TestApplyPreservedSegmentRelinks_EmptyParentUUID(t *testing.T) {
 	tailUUID := "tail-1"
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
-	head := &Message{UUID: headUUID, Type: "assistant", ParentUUID: boundary.UUID, Content: `[{"type":"text","text":"h"}]`}
+	head := &TranscriptMessage{UUID: headUUID, Type: "assistant", ParentUUID: boundary.UUID, Content: `[{"type":"text","text":"h"}]`}
 	// middle has no parent (empty), which should stop the walk
-	middle := &Message{UUID: "mid-1", Type: "user", ParentUUID: "", Content: `[{"type":"text","text":"m"}]`}
-	tail := &Message{UUID: tailUUID, Type: "user", ParentUUID: "mid-1", Content: `[{"type":"text","text":"t"}]`}
+	middle := &TranscriptMessage{UUID: "mid-1", Type: "user", ParentUUID: "", Content: `[{"type":"text","text":"m"}]`}
+	tail := &TranscriptMessage{UUID: tailUUID, Type: "user", ParentUUID: "mid-1", Content: `[{"type":"text","text":"t"}]`}
 
 	// chain: boundary -> head -> mid -> tail
 	// mid has empty parent, so tail->head walk should NOT reach head
 	// since the chain is: tail.ParentUUID=mid-1, mid.ParentUUID="" -> stops before reaching head
-	msgs := []*Message{boundary, head, middle, tail}
+	msgs := []*TranscriptMessage{boundary, head, middle, tail}
 	chain := ApplyPreservedSegmentRelinks(boundary, msgs)
 
 	// Walk is broken (mid has empty parent, so tail->mid stops before head)
@@ -2008,11 +2008,11 @@ func TestApplyPreservedSegmentRelinks_BoundaryNotInChain(t *testing.T) {
 	tailUUID := "tail-1"
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
-	head := &Message{UUID: headUUID, ParentUUID: boundary.UUID, Content: "h"}
-	tail := &Message{UUID: tailUUID, ParentUUID: headUUID, Content: "t"}
+	head := &TranscriptMessage{UUID: headUUID, ParentUUID: boundary.UUID, Content: "h"}
+	tail := &TranscriptMessage{UUID: tailUUID, ParentUUID: headUUID, Content: "t"}
 
 	// Chain does NOT include the boundary itself
-	chain := []*Message{head, tail}
+	chain := []*TranscriptMessage{head, tail}
 	result := ApplyPreservedSegmentRelinks(boundary, chain)
 
 	// boundary not in chain -> entryIndex lookup fails -> return chain
@@ -2028,12 +2028,12 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound(t *testing.T) {
 	tailUUID := "tail-1"
 	_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, boundary.UUID, tailUUID)
 
-	head := &Message{UUID: headUUID, ParentUUID: boundary.UUID, Content: "h"}
-	tail := &Message{UUID: tailUUID, ParentUUID: headUUID, Content: "t"}
+	head := &TranscriptMessage{UUID: headUUID, ParentUUID: boundary.UUID, Content: "h"}
+	tail := &TranscriptMessage{UUID: tailUUID, ParentUUID: headUUID, Content: "t"}
 	// orphan message not in entryIndex
-	orphan := &Message{UUID: "orphan-1", ParentUUID: "", Content: "o"}
+	orphan := &TranscriptMessage{UUID: "orphan-1", ParentUUID: "", Content: "o"}
 
-	chain := []*Message{boundary, head, tail, orphan}
+	chain := []*TranscriptMessage{boundary, head, tail, orphan}
 	result := ApplyPreservedSegmentRelinks(boundary, chain)
 
 	// The orphan's UUID won't be in entryIndex (actually it will since we build from chain)
@@ -2044,7 +2044,7 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound(t *testing.T) {
 // Lines 476-485: applyPreservedSegmentRelinksOnLoad — various JSON parse failures
 func TestApplyPreservedSegmentRelinksOnLoad_InvalidContentJSON(t *testing.T) {
 	// Boundary with invalid content JSON
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: "not-json"},
 	}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
@@ -2056,7 +2056,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_InvalidContentJSON(t *testing.T) {
 func TestApplyPreservedSegmentRelinksOnLoad_NoCompactMetadataKey(t *testing.T) {
 	content := map[string]any{"type": "system", "subtype": "compact_boundary"}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
@@ -2071,7 +2071,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_CompactMetadataNotMap(t *testing.T) 
 		"compactMetadata": "not-a-map",
 	}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
@@ -2086,7 +2086,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_PreservedSegmentNil(t *testing.T) {
 		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := applyPreservedSegmentRelinksOnLoad(msgs)
@@ -2097,7 +2097,7 @@ func TestApplyPreservedSegmentRelinksOnLoad_PreservedSegmentNil(t *testing.T) {
 
 // Lines 515-532: ApplySnipRemovals — various parse failures
 func TestApplySnipRemovals_InvalidJSON(t *testing.T) {
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: "not-json"},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -2109,7 +2109,7 @@ func TestApplySnipRemovals_InvalidJSON(t *testing.T) {
 func TestApplySnipRemovals_NoSnipMetadata(t *testing.T) {
 	content := map[string]any{"type": "system"}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -2124,7 +2124,7 @@ func TestApplySnipRemovals_SnipMetadataNotMap(t *testing.T) {
 		"snipMetadata": "not-a-map",
 	}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -2139,7 +2139,7 @@ func TestApplySnipRemovals_NoRemovedUUIDs(t *testing.T) {
 		"snipMetadata": map[string]any{},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -2154,7 +2154,7 @@ func TestApplySnipRemovals_RemovedUUIDsNotList(t *testing.T) {
 		"snipMetadata": map[string]any{"removedUuids": "not-a-list"},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "b1", Type: "system", Subtype: "compact_boundary", Content: string(contentJSON)},
 	}
 	result := ApplySnipRemovals(msgs)
@@ -2173,12 +2173,12 @@ func TestApplySnipRemovals_ResolveNotFound(t *testing.T) {
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	boundary := &Message{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
 	// msg-to-delete has a parent "nonexistent" which is not in messages
-	toDelete := &Message{UUID: "msg-to-delete", Type: "user", ParentUUID: "nonexistent-parent", Content: "delete me"}
-	survivor := &Message{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: "I stay"}
+	toDelete := &TranscriptMessage{UUID: "msg-to-delete", Type: "user", ParentUUID: "nonexistent-parent", Content: "delete me"}
+	survivor := &TranscriptMessage{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: "I stay"}
 
-	msgs := []*Message{boundary, toDelete, survivor}
+	msgs := []*TranscriptMessage{boundary, toDelete, survivor}
 	result := ApplySnipRemovals(msgs)
 
 	if len(result) != 2 {
@@ -2201,7 +2201,7 @@ func TestZeroUsageInContent_NoMessageKey(t *testing.T) {
 		// no "message" key
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{UUID: "m1", Type: "assistant", Content: string(contentJSON)}
+	msg := &TranscriptMessage{UUID: "m1", Type: "assistant", Content: string(contentJSON)}
 	zeroUsageInContent(msg)
 	// Should not panic, content unchanged
 	var parsed map[string]any
@@ -2215,7 +2215,7 @@ func TestZeroUsageInContent_NoMessageKey(t *testing.T) {
 
 // Line 734-736: CollectReadToolFilePaths — contentToCheck empty, falls back to Text which is also empty
 func TestCollectReadToolFilePaths_EmptyContentAndText(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, // no content or text
@@ -2229,7 +2229,7 @@ func TestCollectReadToolFilePaths_EmptyContentAndText(t *testing.T) {
 
 // Line 791-793: annotateBoundaryWithPreservedSegment — marshal error
 func TestAnnotateBoundaryWithPreservedSegment_MarshalError(t *testing.T) {
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		Content: `{"type":"system"}`,
 	}
 	// This should succeed — the function re-marshals contentMap
@@ -2247,7 +2247,7 @@ func TestExtractCompactMetadata_MarshalError(t *testing.T) {
 		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &Message{Content: string(contentJSON)}
+	msg := &TranscriptMessage{Content: string(contentJSON)}
 	// This should succeed normally
 	meta, err := extractCompactMetadata(msg)
 	if err != nil {
@@ -2270,7 +2270,7 @@ func TestRecordCompact_ClosedStore(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{testMessage(0, "assistant", "sum-1", "", `[{"type":"text","text":"summary"}]`)},
+		SummaryMessages: []*TranscriptMessage{testMessage(0, "assistant", "sum-1", "", `[{"type":"text","text":"summary"}]`)},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -2286,7 +2286,7 @@ func TestRecordCompact_InsertSummaryAfterBoundary(t *testing.T) {
 	// RecordCompact with summary messages (normal success path)
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{testMessage(0, "assistant", "sum-1", "", `[{"type":"text","text":"summary"}]`)},
+		SummaryMessages: []*TranscriptMessage{testMessage(0, "assistant", "sum-1", "", `[{"type":"text","text":"summary"}]`)},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err != nil {
@@ -2311,8 +2311,8 @@ func TestRecordCompact_WithKeptMessages(t *testing.T) {
 	kept := testMessage(0, "user", "kept-1", "", `[{"type":"text","text":"important"}]`)
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{kept},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{kept},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err != nil {
@@ -2336,8 +2336,8 @@ func TestRecordCompact_WithAttachments(t *testing.T) {
 	att := testMessage(0, "user", "att-1", "", `[{"type":"text","text":"file content"}]`)
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{},
-		Attachments:     []*Message{att},
+		SummaryMessages: []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{att},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err != nil {
@@ -2358,7 +2358,7 @@ func TestPartialCompact_WithMessagesToKeep(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "u-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "a-1", "", `[{"type":"text","text":"hi"}]`),
 		testMessage(0, "user", "u-2", "", `[{"type":"text","text":"world"}]`),
@@ -2377,7 +2377,7 @@ func TestPartialCompact_WithMessagesToKeep(t *testing.T) {
 }
 
 func TestApplyPreservedSegmentRelinks_EntryNotFound_Batch2(t *testing.T) {
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "system", Subtype: "compact_boundary", Content: `{"type":"text","text":"boundary"}`},
 		{UUID: "msg-2", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
@@ -2393,7 +2393,7 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound_Batch2(t *testing.T) {
 func TestApplySnipRemovals_ResolveNotFoundParent(t *testing.T) {
 	// Create messages where the first message has a snip with a removed UUID
 	// but the parent chain can't be resolved (parent not in deletedParent map)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{
 			UUID:    "msg-1",
 			Type:    "user",
@@ -2435,7 +2435,7 @@ func TestAnnotateBoundaryWithPreservedSegment_Normal(t *testing.T) {
 
 func TestExtractCompactMetadata_NoMetadata(t *testing.T) {
 	// Content must be a JSON object (map), not an array
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		Content: `{"type":"text","text":"plain boundary"}`,
 	}
 	meta, err := extractCompactMetadata(boundary)
@@ -2461,9 +2461,9 @@ func TestRecordCompact_InsertSummaryError_DupUUID(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{summary}, // Same UUID as already inserted
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{summary}, // Same UUID as already inserted
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -2487,9 +2487,9 @@ func TestRecordCompact_InsertKeptError_DupUUID(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("auto", 100, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{kept}, // Same UUID
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{kept}, // Same UUID
+		Attachments:     []*TranscriptMessage{},
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -2513,9 +2513,9 @@ func TestRecordCompact_InsertAttachmentError_DupUUID(t *testing.T) {
 	boundary := CreateCompactBoundaryMessage("auto", 100, "")
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{att}, // Same UUID
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{att}, // Same UUID
 	}
 	err := store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -2553,9 +2553,9 @@ func TestRecordCompact_UpdateTimestampError_DroppedTable(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 	err = store.RecordCompact(sessionID, result)
 	if err == nil {
@@ -2577,7 +2577,7 @@ func TestApplySnipRemovals_ResolveNotFound_DirectTrigger(t *testing.T) {
 	}
 	snipJSON, _ := json.Marshal(snipContent)
 
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:       "boundary-1",
 		Type:       "system",
 		Subtype:    "compact_boundary",
@@ -2599,14 +2599,14 @@ func TestApplySnipRemovals_ResolveNotFound_DirectTrigger(t *testing.T) {
 	// Then resolve("del-1"): cur="del-1", toDelete["del-1"]=true, deletedParent["del-1"] not found -> !found -> cur="" -> break.
 	// But we need a survivor whose parent is del-1 to trigger resolve.
 	// Note: del-1 is NOT included in the messages list — it's only referenced by snipMetadata.
-	survivor := &Message{
+	survivor := &TranscriptMessage{
 		UUID:       "survivor-1",
 		Type:       "assistant",
 		ParentUUID: "del-1", // references the deleted UUID
 		Content:    `[{"type":"text","text":"I survive"}]`,
 	}
 
-	msgs := []*Message{boundary, survivor}
+	msgs := []*TranscriptMessage{boundary, survivor}
 	result := ApplySnipRemovals(msgs)
 
 	if len(result) != 2 {
@@ -2632,9 +2632,9 @@ func TestRecordCompact_InsertSummaryError_V2(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{summary},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{summary},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -2659,9 +2659,9 @@ func TestRecordCompact_InsertKeptError_V2(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{kept},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{kept},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -2686,9 +2686,9 @@ func TestRecordCompact_InsertAttachmentError_V2(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{att},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{att},
 	}
 
 	err := store.RecordCompact(sessionID, result)
@@ -2713,9 +2713,9 @@ func TestRecordCompact_UpdateTimestampError_V2(t *testing.T) {
 
 	result := &CompactResult{
 		BoundaryMarker:  CreateCompactBoundaryMessage("auto", 100, ""),
-		SummaryMessages: []*Message{},
-		MessagesToKeep:  []*Message{},
-		Attachments:     []*Message{},
+		SummaryMessages: []*TranscriptMessage{},
+		MessagesToKeep:  []*TranscriptMessage{},
+		Attachments:     []*TranscriptMessage{},
 	}
 
 	err = store.RecordCompact(sessionID, result)
@@ -2732,7 +2732,7 @@ func TestRecordCompact_UpdateTimestampError_V2(t *testing.T) {
 func TestApplyPreservedSegmentRelinks_EntryNotFound_V2(t *testing.T) {
 	// Create a chain with a message whose UUID is not in the chain
 	// but appears as someone's parent
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:       "boundary-1",
 		Type:       "system",
 		Subtype:    "compact_boundary",
@@ -2741,14 +2741,14 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound_V2(t *testing.T) {
 	}
 
 	// This message references a UUID that's not in the chain
-	orphan := &Message{
+	orphan := &TranscriptMessage{
 		UUID:       "orphan-1",
 		Type:       "assistant",
 		ParentUUID: "nonexistent-uuid", // not in chain
 		Content:    `[{"type":"text","text":"orphan"}]`,
 	}
 
-	chain := []*Message{boundary, orphan}
+	chain := []*TranscriptMessage{boundary, orphan}
 
 	// The boundary has preserved_segment metadata pointing to an entry not in chain
 	preservedSeg := map[string]any{
@@ -2780,7 +2780,7 @@ func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
 	}
 	snipJSON, _ := json.Marshal(snipContent)
 
-	boundary := &Message{
+	boundary := &TranscriptMessage{
 		UUID:       "boundary-1",
 		Type:       "system",
 		Subtype:    "compact_boundary",
@@ -2793,14 +2793,14 @@ func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
 	// resolve("del-1"): cur="del-1", toDelete["del-1"]=true,
 	// but deletedParent["del-1"] is not found (del-1 not in messages),
 	// so !found → cur="" → break → returns ""
-	survivor := &Message{
+	survivor := &TranscriptMessage{
 		UUID:       "survivor-1",
 		Type:       "assistant",
 		ParentUUID: "del-1",
 		Content:    `[{"type":"text","text":"I survive"}]`,
 	}
 
-	msgs := []*Message{boundary, survivor}
+	msgs := []*TranscriptMessage{boundary, survivor}
 	result := ApplySnipRemovals(msgs)
 
 	if len(result) != 2 {

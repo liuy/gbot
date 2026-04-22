@@ -8,18 +8,18 @@ import (
 // Traverses from leaf to root via parent_uuid, then reverses.
 // Includes cycle detection and orphan recovery.
 // TS align: buildConversationChain (sessionStorage.ts:2069-2094)
-func (s *Store) BuildConversationChain(sessionID string) ([]*Message, error) {
+func (s *Store) BuildConversationChain(sessionID string) ([]*TranscriptMessage, error) {
 	messages, err := s.LoadMessages(sessionID)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(messages) == 0 {
-		return []*Message{}, nil
+		return []*TranscriptMessage{}, nil
 	}
 
 	// Build message map by UUID
-	msgMap := make(map[string]*Message)
+	msgMap := make(map[string]*TranscriptMessage)
 	for _, msg := range messages {
 		msgMap[msg.UUID] = msg
 	}
@@ -28,7 +28,7 @@ func (s *Store) BuildConversationChain(sessionID string) ([]*Message, error) {
 	leaf := findLeafMessage(messages)
 	if leaf == nil {
 		// No leaf found (possibly all orphans or circular), return empty
-		return []*Message{}, nil
+		return []*TranscriptMessage{}, nil
 	}
 
 	// Walk from leaf to root with cycle detection
@@ -53,9 +53,9 @@ func (s *Store) BuildConversationChain(sessionID string) ([]*Message, error) {
 // This function recovers the orphaned siblings by finding groups with the same message.id
 // and inserting them after the anchor (last on-chain member of the group).
 // TS align: recoverOrphanedParallelToolResults (sessionStorage.ts:2118-2204)
-func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message) []*Message {
+func recoverOrphanedParallelToolResults(allMessages []*TranscriptMessage, chain []*TranscriptMessage) []*TranscriptMessage {
 	// Extract message.id from content JSON for assistant messages
-	getMessageID := func(msg *Message) string {
+	getMessageID := func(msg *TranscriptMessage) string {
 		blocks := ParseContentBlocks(msg.Content)
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.ID != "" {
@@ -67,13 +67,13 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 	}
 
 	// Build map of all messages by UUID
-	allMsgsByUUID := make(map[string]*Message)
+	allMsgsByUUID := make(map[string]*TranscriptMessage)
 	for _, msg := range allMessages {
 		allMsgsByUUID[msg.UUID] = msg
 	}
 
 	// Collect chain assistants
-	chainAssistants := make([]*Message, 0)
+	chainAssistants := make([]*TranscriptMessage, 0)
 	for _, msg := range chain {
 		if msg.Type == "assistant" {
 			chainAssistants = append(chainAssistants, msg)
@@ -85,7 +85,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 	}
 
 	// Build anchorByMsgId: last on-chain member of each message.id group
-	anchorByMsgId := make(map[string]*Message)
+	anchorByMsgId := make(map[string]*TranscriptMessage)
 	for _, asst := range chainAssistants {
 		if msgID := getMessageID(asst); msgID != "" {
 			anchorByMsgId[msgID] = asst // later iterations overwrite → last wins
@@ -93,7 +93,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 	}
 
 	// Build siblingsByMsgId: all assistant messages with same message.id
-	siblingsByMsgId := make(map[string][]*Message)
+	siblingsByMsgId := make(map[string][]*TranscriptMessage)
 	for _, msg := range allMessages {
 		if msg.Type != "assistant" {
 			continue
@@ -106,7 +106,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 	}
 
 	// Build toolResultsByAsst: user messages with tool_result pointing to assistant
-	toolResultsByAsst := make(map[string][]*Message)
+	toolResultsByAsst := make(map[string][]*TranscriptMessage)
 	for _, msg := range allMessages {
 		if msg.Type != "user" {
 			continue
@@ -136,7 +136,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 
 	// For each message.id group: collect off-chain siblings and their TRs
 	processedGroups := make(map[string]bool)
-	inserts := make(map[string][]*Message) // anchor UUID → messages to insert after
+	inserts := make(map[string][]*TranscriptMessage) // anchor UUID → messages to insert after
 
 	for _, asst := range chainAssistants {
 		msgID := getMessageID(asst)
@@ -147,11 +147,11 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 
 		group := siblingsByMsgId[msgID]
 		if group == nil {
-			group = []*Message{asst}
+			group = []*TranscriptMessage{asst}
 		}
 
 		// Collect orphaned siblings (not in chain)
-		orphanedSiblings := make([]*Message, 0)
+		orphanedSiblings := make([]*TranscriptMessage, 0)
 		for _, sib := range group {
 			if !chainUUIDs[sib.UUID] {
 				orphanedSiblings = append(orphanedSiblings, sib)
@@ -159,7 +159,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 		}
 
 		// Collect orphaned TRs for ALL members of the group
-		orphanedTRs := make([]*Message, 0)
+		orphanedTRs := make([]*TranscriptMessage, 0)
 		for _, member := range group {
 			trs := toolResultsByAsst[member.UUID]
 			for _, tr := range trs {
@@ -187,7 +187,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 	}
 
 	// Splice recovered messages into chain
-	result := make([]*Message, 0, len(chain)+len(inserts))
+	result := make([]*TranscriptMessage, 0, len(chain)+len(inserts))
 	for _, msg := range chain {
 		result = append(result, msg)
 		if toInsert, exists := inserts[msg.UUID]; exists {
@@ -202,7 +202,7 @@ func recoverOrphanedParallelToolResults(allMessages []*Message, chain []*Message
 
 // findLeafMessage finds the leaf message (no other message's parent_uuid points to it).
 // Prefers non-sidechain, non-progress messages regardless of timestamp.
-func findLeafMessage(messages []*Message) *Message {
+func findLeafMessage(messages []*TranscriptMessage) *TranscriptMessage {
 	// Build set of all UUIDs that are someone's parent
 	childUUIDs := make(map[string]bool)
 
@@ -213,7 +213,7 @@ func findLeafMessage(messages []*Message) *Message {
 	}
 
 	// Find messages that are not anyone's parent (potential leaves)
-	leaves := make([]*Message, 0)
+	leaves := make([]*TranscriptMessage, 0)
 	for _, msg := range messages {
 		if !childUUIDs[msg.UUID] {
 			leaves = append(leaves, msg)
@@ -225,7 +225,7 @@ func findLeafMessage(messages []*Message) *Message {
 	}
 
 	// First pass: prefer non-sidechain, non-progress leaves (latest by timestamp)
-	var best *Message
+	var best *TranscriptMessage
 	var bestTime int64 = -1
 	for _, candidate := range leaves {
 		if candidate.IsSidechain == 1 || candidate.Type == "progress" {
@@ -241,7 +241,7 @@ func findLeafMessage(messages []*Message) *Message {
 	}
 
 	// Fall back to any leaf (latest by timestamp)
-	var leaf *Message
+	var leaf *TranscriptMessage
 	var maxTime int64 = -1
 	for _, candidate := range leaves {
 		if candidate.CreatedAt.Unix() > maxTime {
@@ -254,8 +254,8 @@ func findLeafMessage(messages []*Message) *Message {
 }
 
 // walkToRoot walks from leaf to root via parent_uuid with cycle detection.
-func walkToRoot(leaf *Message, msgMap map[string]*Message) []*Message {
-	chain := make([]*Message, 0)
+func walkToRoot(leaf *TranscriptMessage, msgMap map[string]*TranscriptMessage) []*TranscriptMessage {
+	chain := make([]*TranscriptMessage, 0)
 	seen := make(map[string]bool)
 
 	current := leaf
@@ -279,14 +279,14 @@ func walkToRoot(leaf *Message, msgMap map[string]*Message) []*Message {
 }
 
 // reverseMessages reverses a slice of messages in place.
-func reverseMessages(messages []*Message) {
+func reverseMessages(messages []*TranscriptMessage) {
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 }
 
 // sortByCreated sorts messages by created_at timestamp (ascending).
-func sortByCreated(messages []*Message) {
+func sortByCreated(messages []*TranscriptMessage) {
 	// Simple insertion sort for small slices
 	for i := 1; i < len(messages); i++ {
 		key := messages[i]

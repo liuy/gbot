@@ -5,7 +5,7 @@ package agent
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,13 +272,13 @@ func loadMarkdownFiles(dir string, source types.AgentSource) []markdownFileEntry
 			continue
 		}
 		if info.Size() > maxFrontmatterFileSize {
-			log.Printf("agent: skipping %s: file too large (%d bytes)\n", filePath, info.Size())
+			slog.Warn("agent: skipping file: too large", "path", filePath, "size", info.Size())
 			continue
 		}
 
 		rawContent, err := os.ReadFile(filePath)
 		if err != nil {
-			log.Printf("agent: failed to read %s: %v\n", filePath, err)
+			slog.Warn("agent: failed to read file", "path", filePath, "error", err)
 			continue
 		}
 
@@ -382,7 +382,7 @@ func getActiveAgentsFromList(allAgents []*types.AgentDefinition) []*types.AgentD
 	for _, source := range agentSourcePriority {
 		for _, agent := range groups[source] {
 	if existing, ok := agentMap[agent.AgentType]; ok {
-				log.Printf("agent: %q from %s overridden by %s", agent.AgentType, existing.Source, source)
+				slog.Info("agent: overridden by higher priority source", "type", agent.AgentType, "existing", existing.Source, "new", source)
 			}
 			agentMap[agent.AgentType] = agent
 		}
@@ -420,7 +420,7 @@ func parseAgentFromMarkdown(
 
 	whenToUse, ok := frontmatter["description"].(string)
 	if !ok || whenToUse == "" {
-		log.Printf("agent: %s is missing required 'description' in frontmatter\n", filePath)
+		slog.Warn("agent: missing required 'description' in frontmatter", "path", filePath)
 		return nil
 	}
 
@@ -497,7 +497,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		if effort != "" {
 			def.Effort = effort
 		} else {
-			log.Printf("agent: %s has invalid effort '%v'. Valid options: low, medium, high, max or an integer\n", filePath, effortRaw)
+			slog.Warn("agent: invalid effort value", "path", filePath, "value", effortRaw)
 		}
 	}
 
@@ -507,7 +507,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		if isValidPermissionMode(pmRaw) {
 			def.PermissionModeField = types.PermissionMode(pmRaw)
 		} else {
-			log.Printf("agent: %s has invalid permissionMode '%s'\n", filePath, pmRaw)
+			slog.Warn("agent: invalid permissionMode", "path", filePath, "value", pmRaw)
 		}
 	}
 
@@ -518,7 +518,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		if maxTurns != nil {
 			def.MaxTurns = *maxTurns
 		} else {
-			log.Printf("agent: %s has invalid maxTurns '%v'. Must be a positive integer.\n", filePath, maxTurnsRaw)
+			slog.Warn("agent: invalid maxTurns", "path", filePath, "value", maxTurnsRaw)
 		}
 	}
 
@@ -535,7 +535,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 				def.Background = true
 			}
 		default:
-			log.Printf("agent: %s has invalid background value '%v'. Must be 'true', 'false', or omitted.\n", filePath, bgRaw)
+			slog.Warn("agent: invalid background value", "path", filePath, "value", bgRaw)
 		}
 	}
 
@@ -545,7 +545,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		if isValidMemoryScope(memRaw) {
 			def.Memory = memRaw
 		} else {
-			log.Printf("agent: %s has invalid memory value '%s'. Valid options: user, project, local\n", filePath, memRaw)
+			slog.Warn("agent: invalid memory value", "path", filePath, "value", memRaw)
 		}
 	}
 
@@ -555,7 +555,7 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		if isoRaw == "worktree" {
 			def.Isolation = isoRaw
 		} else {
-			log.Printf("agent: %s has invalid isolation value '%s'. Valid options: worktree\n", filePath, isoRaw)
+			slog.Warn("agent: invalid isolation value", "path", filePath, "value", isoRaw)
 		}
 	}
 

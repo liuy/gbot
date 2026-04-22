@@ -1,7 +1,6 @@
 package context
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -45,18 +44,4 @@ func (b *Builder) PlatformInfo() string {
 	}
 
 	return result
-}
-
-// EscapeJSONString escapes a string for JSON embedding.
-// Uses json.Marshal to get proper JSON escaping, then strips surrounding quotes.
-func EscapeJSONString(s string) string {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return s
-	}
-	// json.Marshal wraps in quotes; strip them
-	if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
-		return string(b[1 : len(b)-1])
-	}
-	return string(b)
 }

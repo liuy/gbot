@@ -8,7 +8,7 @@ import (
 )
 
 func TestRestoreSkillStateFromMessages_InvokedSkills(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -46,7 +46,7 @@ func TestRestoreSkillStateFromMessages_InvokedSkills(t *testing.T) {
 }
 
 func TestRestoreSkillStateFromMessages_CronTasks(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -81,7 +81,7 @@ func TestRestoreSkillStateFromMessages_CronTasks(t *testing.T) {
 
 func TestRestoreSkillStateFromMessages_SkillMissingFields(t *testing.T) {
 	// Skill with missing path should be skipped
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -103,7 +103,7 @@ func TestRestoreSkillStateFromMessages_SkillMissingFields(t *testing.T) {
 }
 
 func TestRestoreSkillStateFromMessages_NoAttachments(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "assistant", Content: `[{"type":"text","text":"hi"}]`},
 	}
@@ -115,7 +115,7 @@ func TestRestoreSkillStateFromMessages_NoAttachments(t *testing.T) {
 }
 
 func TestRestoreSkillStateFromMessages_InvalidJSON(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "attachment", Content: "not valid json"},
 	}
 
@@ -126,7 +126,7 @@ func TestRestoreSkillStateFromMessages_InvalidJSON(t *testing.T) {
 }
 
 func TestRestoreAgentFromSession_AgentSetting(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -163,7 +163,7 @@ func TestRestoreAgentFromSession_AgentSetting(t *testing.T) {
 }
 
 func TestRestoreAgentFromSession_NoAgentSetting(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -191,7 +191,7 @@ func TestExtractTodosFromTranscript_WithTodoWrite(t *testing.T) {
 		},
 	}
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite"}]`},
 		{
 			Type: "assistant",
@@ -235,7 +235,7 @@ func TestExtractTodosFromTranscript_WithTodoWrite(t *testing.T) {
 }
 
 func TestExtractTodosFromTranscript_NoTodoWrite(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "assistant", Content: `[{"type":"text","text":"response"}]`},
 	}
 
@@ -246,7 +246,7 @@ func TestExtractTodosFromTranscript_NoTodoWrite(t *testing.T) {
 }
 
 func TestComputeRestoredAttributionState_SubAgent(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attribution-snapshot",
 			Content: mustMarshal(map[string]any{
@@ -273,7 +273,7 @@ func TestComputeRestoredAttributionState_SubAgent(t *testing.T) {
 }
 
 func TestComputeRestoredAttributionState_NotSubAgent(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -287,7 +287,7 @@ func TestComputeRestoredAttributionState_NotSubAgent(t *testing.T) {
 }
 
 func TestComputeStandaloneAgentContext_WithNameAndColor(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -310,7 +310,7 @@ func TestComputeStandaloneAgentContext_WithNameAndColor(t *testing.T) {
 }
 
 func TestComputeStandaloneAgentContext_NoNameOrColor(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
 
@@ -322,7 +322,7 @@ func TestComputeStandaloneAgentContext_NoNameOrColor(t *testing.T) {
 
 func TestCheckResumeConsistency_Valid(t *testing.T) {
 	// Create chain where messageCount matches position
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{Type: "assistant", Content: "{}"},
 		{
@@ -341,7 +341,7 @@ func TestCheckResumeConsistency_Valid(t *testing.T) {
 
 func TestCheckResumeConsistency_Mismatch(t *testing.T) {
 	// Create chain where messageCount does NOT match position
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{
 			Type:    "system",
@@ -357,7 +357,7 @@ func TestCheckResumeConsistency_Mismatch(t *testing.T) {
 }
 
 func TestCheckResumeConsistency_NoCheckpoint(t *testing.T) {
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{Type: "assistant", Content: "{}"},
 	}
@@ -369,7 +369,7 @@ func TestCheckResumeConsistency_NoCheckpoint(t *testing.T) {
 func TestGroupMessagesByApiRound_SingleRound(t *testing.T) {
 	// Without message_id, function groups by UUID — each assistant starts a new group.
 	// user→assistant produces 2 groups: [user], [assistant]
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", UUID: "u1", Content: `[{"type":"text","text":"hi"}]`},
 		{Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"hello"}]`},
 	}
@@ -389,7 +389,7 @@ func TestGroupMessagesByApiRound_SingleRound(t *testing.T) {
 func TestGroupMessagesByApiRound_MultipleRounds(t *testing.T) {
 	// Each assistant with different UUID starts a new group.
 	// u1, a1, u2, a2 → [u1], [a1, u2], [a2]
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "user", UUID: "u1", Content: `[{"type":"text","text":"hi"}]`},
 		{Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "user", UUID: "u2", Content: `[{"type":"text","text":"next"}]`},
@@ -445,7 +445,7 @@ func TestProcessResumedConversation_Empty(t *testing.T) {
 func TestProcessResumedConversation_WithAgent(t *testing.T) {
 	store := openTestStore(t)
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -530,7 +530,7 @@ func TestExtractMessageID(t *testing.T) {
 
 func TestCheckResumeConsistency_DifferentTypes(t *testing.T) {
 	// Test with non-int messageCount (should handle gracefully)
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{
 			Type:    "system",
@@ -548,7 +548,7 @@ func TestCheckResumeConsistency_DifferentTypes(t *testing.T) {
 
 func TestCheckResumeConsistency_MissingMessageCount(t *testing.T) {
 	// Test with missing messageCount field
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{
 			Type:    "system",
@@ -604,12 +604,12 @@ func TestValueAsString(t *testing.T) {
 func TestExtractTodosFromTranscript_MalformedInput(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantNil  bool
 	}{
 		{
 			name: "invalid JSON in tool_use input",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "assistant",
 					Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite","input":"invalid json"}]`,
@@ -619,7 +619,7 @@ func TestExtractTodosFromTranscript_MalformedInput(t *testing.T) {
 		},
 		{
 			name: "no todos field in input",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "assistant",
 					Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite","input":{"other":"data"}}]`,
@@ -629,7 +629,7 @@ func TestExtractTodosFromTranscript_MalformedInput(t *testing.T) {
 		},
 		{
 			name: "todos not a list",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "assistant",
 					Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite","input":{"todos":"not-a-list"}}]`,
@@ -639,7 +639,7 @@ func TestExtractTodosFromTranscript_MalformedInput(t *testing.T) {
 		},
 		{
 			name: "todo item not a map",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "assistant",
 					Content: `[{"type":"tool_use","id":"tu1","name":"TodoWrite","input":{"todos":["string-item"]}}]`,
@@ -663,14 +663,14 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 	// Test cron task extraction edge cases
 	tests := []struct {
 		name       string
-		messages   []*Message
+		messages   []*TranscriptMessage
 		wantCron   bool
 		cronExpr   string
 		skillName  string
 	}{
 		{
 			name: "valid cron task",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type: "attachment",
 					Content: mustMarshal(map[string]any{
@@ -687,7 +687,7 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 		},
 		{
 			name: "cron task missing skill_name",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type: "attachment",
 					Content: mustMarshal(map[string]any{
@@ -700,7 +700,7 @@ func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 		},
 		{
 			name: "cron task missing cron_expr",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type: "attachment",
 					Content: mustMarshal(map[string]any{
@@ -740,21 +740,21 @@ func TestComputeStandaloneAgentContext_NilReturn(t *testing.T) {
 	// Test cases that should return nil
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 	}{
 		{
 			name:     "empty messages",
-			messages: []*Message{},
+			messages: []*TranscriptMessage{},
 		},
 		{
 			name: "no agent attachments",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 			},
 		},
 		{
 			name: "other attachment types",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "attachment",
 					Content: mustMarshal(map[string]any{"type": "other"}),
@@ -776,19 +776,19 @@ func TestComputeStandaloneAgentContext_NilReturn(t *testing.T) {
 func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantNil  bool
 	}{
 		{
 			name: "invalid JSON in attachment",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Type: "attachment", Content: "not valid json"},
 			},
 			wantNil: true,
 		},
 		{
 			name: "non-agent-setting attachment",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "attachment",
 					Content: mustMarshal(map[string]any{"type": "other"}),
@@ -798,7 +798,7 @@ func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 		},
 		{
 			name: "agent-setting with missing fields",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{
 					Type:    "attachment",
 					Content: mustMarshal(map[string]any{
@@ -824,17 +824,17 @@ func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 func TestComputeRestoredAttributionState_InvalidMessages(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 	}{
 		{
 			name: "invalid JSON in attribution-snapshot",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Type: "attribution-snapshot", Content: "invalid json"},
 			},
 		},
 		{
 			name: "other message types",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 				{Type: "assistant", Content: `[{"type":"text","text":"hi"}]`},
 			},
@@ -868,7 +868,7 @@ var _ = time.Now
 
 // Line 34-35: RestoreSkillStateFromMessages — skill missing name (not a map)
 func TestRestoreSkillStateFromMessages_SkillNotMap(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -885,7 +885,7 @@ func TestRestoreSkillStateFromMessages_SkillNotMap(t *testing.T) {
 
 // Line 226-227: ComputeStandaloneAgentContext — agent-color attachment
 func TestComputeStandaloneAgentContext_AgentColorOnly(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type: "attachment",
 			Content: mustMarshal(map[string]any{
@@ -905,7 +905,7 @@ func TestComputeStandaloneAgentContext_AgentColorOnly(t *testing.T) {
 
 // Line 233-235: ComputeStandaloneAgentContext — empty messages list
 func TestComputeStandaloneAgentContext_EmptyMessagesWithAttachment(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Type:    "attachment",
 			Content: mustMarshal(map[string]any{"type": "agent-name", "name": "worker"}),
@@ -925,7 +925,7 @@ func TestComputeStandaloneAgentContext_EmptyMessagesWithAttachment(t *testing.T)
 func TestCheckResumeConsistency_IntMessageCount(t *testing.T) {
 	// JSON numbers unmarshal as float64 by default, but let's test the int case
 	// by creating a chain where messageCount is specifically an int
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{
 			Type:    "system",
@@ -939,7 +939,7 @@ func TestCheckResumeConsistency_IntMessageCount(t *testing.T) {
 
 // Line 339-340: CheckResumeConsistency — messageCount type is default (not float64, not int)
 func TestCheckResumeConsistency_MessageCountBool(t *testing.T) {
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: "{}"},
 		{
 			Type:    "system",
@@ -954,7 +954,7 @@ func TestCheckResumeConsistency_MessageCountBool(t *testing.T) {
 }
 
 func TestComputeStandaloneAgentContext_InvalidAttachmentJSON(t *testing.T) {
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{
 			UUID:    "att-1",
 			Type:    "attachment",
@@ -973,7 +973,7 @@ func TestComputeStandaloneAgentContext_InvalidAttachmentJSON(t *testing.T) {
 }
 
 func TestComputeStandaloneAgentContext_AgentColorOnly_Batch2(t *testing.T) {
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{
 			UUID:    "att-1",
 			Type:    "attachment",
@@ -987,7 +987,7 @@ func TestComputeStandaloneAgentContext_AgentColorOnly_Batch2(t *testing.T) {
 }
 
 func TestCheckResumeConsistency_InvalidJSON(t *testing.T) {
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "system", Subtype: "turn_duration", Content: "invalid-json"},
 	}
 	// Should not panic, just continue
@@ -996,7 +996,7 @@ func TestCheckResumeConsistency_InvalidJSON(t *testing.T) {
 
 func TestCheckResumeConsistency_FloatMessageCount(t *testing.T) {
 	// Create a chain where the turn_duration checkpoint has a float64 messageCount
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{UUID: "msg-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{UUID: "msg-2", Type: "system", Subtype: "turn_duration", Content: `{"messageCount":1}`},
 	}
@@ -1024,7 +1024,7 @@ func TestCheckResumeConsistency_Float64Only(t *testing.T) {
 // TestCheckResumeConsistency_MismatchCount verifies warning is logged when count mismatches.
 func TestCheckResumeConsistency_MismatchCount(t *testing.T) {
 	// CheckResumeConsistency is a standalone function that logs warnings but never errors.
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "system", Subtype: "turn_duration", Content: `{"messageCount": 99}`},
 	}
@@ -1039,7 +1039,7 @@ func TestCheckResumeConsistency_DefaultCase(t *testing.T) {
 	content, _ := json.Marshal(map[string]any{
 		"messageCount": "not_a_number",
 	})
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{Type: "system", Subtype: "turn_duration", Content: string(content)},
 	}

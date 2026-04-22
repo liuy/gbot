@@ -9,7 +9,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -314,14 +313,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	// Microcompact: shrink prompt before the turn loop.
 	// Source: query.ts:413-419 — runs once per query, before autocompact.
 	// Sub-agents use agent-specific querySource so isMainThreadSource excludes them.
-	mcQuerySource := QuerySourceReplMainThread
-	if e.isSubagent {
-		if isBuiltInAgent(e.agentType) {
-			mcQuerySource = "agent:builtin:" + e.agentType
-		} else {
-			mcQuerySource = "agent:custom"
-		}
-	}
+	mcQuerySource := e.querySource()
 	mcResult := MicrocompactMessages(e.messages, mcQuerySource, e.logger)
 	e.setMessages(mcResult.Messages)
 
@@ -523,7 +515,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	// so applyCacheControlToSystem can inject cache_control markers.
 	// Source: claude.ts:1374-1376 — always on by default.
 	var systemBlocks []llm.SystemBlockParam
-	var cacheControl *llm.CacheControlConfig
+	var cacheControl *types.CacheControlConfig
 	var promptStateKey *llm.PromptStateKey
 	if len(systemPrompt) > 0 {
 		var promptText string
@@ -534,18 +526,14 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			if e.isSubagent {
 				// Sub-agent: 5m TTL, agent-specific QuerySource
 				// Source: promptCategory.ts:16-28 — getQuerySourceForAgent
-				querySource := "agent:custom"
-				if isBuiltInAgent(e.agentType) {
-					querySource = "agent:builtin:" + e.agentType
-				}
-				cacheControl = &llm.CacheControlConfig{Type: "ephemeral", TTL: "5m"}
+				cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "5m"}
 				promptStateKey = &llm.PromptStateKey{
-					QuerySource: querySource,
+					QuerySource: e.querySource(),
 					AgentID:     e.agentType,
 				}
 			} else {
-				cacheControl = &llm.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
-				promptStateKey = &llm.PromptStateKey{QuerySource: "repl_main_thread"}
+				cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
+				promptStateKey = &llm.PromptStateKey{QuerySource: e.querySource()}
 			}
 		}
 	}
@@ -960,17 +948,6 @@ func (e *Engine) marshalMessages() []types.Message {
 	return result
 }
 
-// EscapeJSONString escapes a string for JSON embedding.
-func EscapeJSONString(s string) string {
-	var buf bytes.Buffer
-	json.HTMLEscape(&buf, []byte(s))
-	result := buf.String()
-	if len(result) >= 2 && result[0] == '"' && result[len(result)-1] == '"' {
-		return result[1 : len(result)-1]
-	}
-	return result
-}
-
 // AddSystemMessage adds a system message to the conversation.
 func (e *Engine) AddSystemMessage(content string) {
 	e.appendMessage(types.Message{
@@ -1164,6 +1141,18 @@ func isBuiltInAgent(agentType string) bool {
 		return true
 	}
 	return false
+}
+
+// querySource returns the query source identifier for prompt caching and microcompact.
+// Source: utils/promptCategory.ts:16-28 — getQuerySourceForAgent()
+func (e *Engine) querySource() string {
+	if !e.isSubagent {
+		return QuerySourceReplMainThread
+	}
+	if isBuiltInAgent(e.agentType) {
+		return "agent:builtin:" + e.agentType
+	}
+	return QuerySourceAgentCustom
 }
 
 // QuerySync executes the agentic loop synchronously (no goroutine, no channels).

@@ -11,7 +11,7 @@ func TestBuildConversationChain_LinearChain(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Create a simple linear chain: user -> assistant -> user -> assistant
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"how are you?"}]`),
@@ -56,7 +56,7 @@ func TestBuildConversationChain_LeafToRootTraversal(t *testing.T) {
 	createTestSession(t, store, sessionID)
 
 	// Create chain: A -> B -> C (C is leaf)
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-a", "", `[{"type":"text","text":"A"}]`),
 		testMessage(0, "assistant", "uuid-b", "", `[{"type":"text","text":"B"}]`),
 		testMessage(0, "user", "uuid-c", "", `[{"type":"text","text":"C"}]`),
@@ -96,7 +96,7 @@ func TestBuildConversationChain_BranchRecovery(t *testing.T) {
 	//
 	// Main chain: user -> assistant -> user
 	// Orphan: another assistant with same parent_uuid
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"prompt"}]`),
 		testMessage(0, "assistant", "uuid-2", "", `[{"type":"tool_use","id":"tu1","name":"bash"}]`),
 		testMessage(0, "user", "uuid-3", "", `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`),
@@ -104,7 +104,7 @@ func TestBuildConversationChain_BranchRecovery(t *testing.T) {
 
 	// Manually insert orphaned assistant with same parent as uuid-2
 	// This simulates the case where streaming emitted multiple assistant messages
-	orphan := &Message{
+	orphan := &TranscriptMessage{
 		Type:       "assistant",
 		UUID:       "uuid-2b",
 		ParentUUID: "uuid-1", // Same parent as uuid-2
@@ -196,7 +196,7 @@ func TestBuildConversationChain_SkipsProgress(t *testing.T) {
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		testMessage(0, "progress", "uuid-2", "", `[{"type":"text","text":"running..."}]`),
 		testMessage(0, "assistant", "uuid-3", "", `[{"type":"text","text":"response"}]`),
@@ -231,7 +231,7 @@ func TestBuildConversationChain_SkipsProgress(t *testing.T) {
 
 func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testing.T) {
 	// Test the core recovery logic directly
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		// Main chain assistant
 		{
 			UUID:       "asst-1",
@@ -256,7 +256,7 @@ func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testi
 		},
 	}
 
-	chain := []*Message{allMessages[0]} // Chain has only the first assistant
+	chain := []*TranscriptMessage{allMessages[0]} // Chain has only the first assistant
 
 	recovered := recoverOrphanedParallelToolResults(allMessages, chain)
 
@@ -280,7 +280,7 @@ func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testi
 
 func TestRecoverOrphanedParallelToolResults_NoSiblings(t *testing.T) {
 	// When there are no siblings, chain should be unchanged
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{
 			UUID:      "asst-1",
 			Type:      "assistant",
@@ -295,7 +295,7 @@ func TestRecoverOrphanedParallelToolResults_NoSiblings(t *testing.T) {
 		},
 	}
 
-	chain := []*Message{allMessages[0], allMessages[1]}
+	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 
 	recovered := recoverOrphanedParallelToolResults(allMessages, chain)
 
@@ -308,7 +308,7 @@ func TestRecoverOrphanedParallelToolResults_TimeOrder(t *testing.T) {
 	// Verify recovered messages are sorted by timestamp
 	now := time.Now()
 
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{
 			UUID:      "asst-1",
 			Type:      "assistant",
@@ -330,7 +330,7 @@ func TestRecoverOrphanedParallelToolResults_TimeOrder(t *testing.T) {
 		},
 	}
 
-	chain := []*Message{allMessages[0]}
+	chain := []*TranscriptMessage{allMessages[0]}
 
 	recovered := recoverOrphanedParallelToolResults(allMessages, chain)
 
@@ -352,7 +352,7 @@ func TestRecoverOrphanedParallelToolResults_TimeOrder(t *testing.T) {
 }
 
 func TestFindLeafMessage(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a", ParentUUID: "b", CreatedAt: time.Now()}, // a's parent is b
 		{UUID: "b", ParentUUID: "", CreatedAt: time.Now()},  // b is root
 		{UUID: "c", ParentUUID: "b", CreatedAt: time.Now()}, // c's parent is b
@@ -373,7 +373,7 @@ func TestFindLeafMessage(t *testing.T) {
 
 func TestWalkToRoot(t *testing.T) {
 	// Create a simple chain: a <- b <- c (c's parent is b, b's parent is a)
-	msgMap := map[string]*Message{
+	msgMap := map[string]*TranscriptMessage{
 		"a": {UUID: "a", ParentUUID: ""},
 		"b": {UUID: "b", ParentUUID: "a"},
 		"c": {UUID: "c", ParentUUID: "b"},
@@ -397,7 +397,7 @@ func TestWalkToRoot(t *testing.T) {
 }
 
 func TestReverseMessages(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "a"},
 		{UUID: "b"},
 		{UUID: "c"},
@@ -416,7 +416,7 @@ func TestReverseMessages(t *testing.T) {
 func TestFindLeafMessage_NoProgressMessages(t *testing.T) {
 	now := time.Now()
 
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "user-1", Type: "user", ParentUUID: "", CreatedAt: now.Add(-2 * time.Second)},
 		{UUID: "asst-1", Type: "assistant", ParentUUID: "user-1", CreatedAt: now.Add(-1 * time.Second)},
 		{UUID: "prog-1", Type: "progress", ParentUUID: "asst-1", CreatedAt: now},
@@ -442,7 +442,7 @@ func TestFindLeafMessage_NoProgressMessages(t *testing.T) {
 
 func TestWalkToRoot_BrokenChain(t *testing.T) {
 	// Test with broken parent references
-	msgMap := map[string]*Message{
+	msgMap := map[string]*TranscriptMessage{
 		"a": {UUID: "a", ParentUUID: ""},
 		"b": {UUID: "b", ParentUUID: "a"},
 		"c": {UUID: "c", ParentUUID: "broken-ref"}, // Points to non-existent parent
@@ -464,7 +464,7 @@ func TestWalkToRoot_BrokenChain(t *testing.T) {
 
 func TestWalkToRoot_CircularRef(t *testing.T) {
 	// Create a circular reference
-	msgMap := map[string]*Message{
+	msgMap := map[string]*TranscriptMessage{
 		"a": {UUID: "a", ParentUUID: "b"},
 		"b": {UUID: "b", ParentUUID: "c"},
 		"c": {UUID: "c", ParentUUID: "a"}, // Cycle back to a
@@ -498,10 +498,10 @@ func TestBuildConversationChain_LoadError(t *testing.T) {
 
 // Line 59-61: recoverOrphanedParallelToolResults — chainAssistants empty returns chain
 func TestRecoverOrphanedParallelToolResults_NoChainAssistants(t *testing.T) {
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
 	}
-	chain := []*Message{allMessages[0]}
+	chain := []*TranscriptMessage{allMessages[0]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
 	if len(result) != 1 {
 		t.Errorf("got %d messages, want 1 (no assistants in chain)", len(result))
@@ -511,11 +511,11 @@ func TestRecoverOrphanedParallelToolResults_NoChainAssistants(t *testing.T) {
 // Line 86-88: recoverOrphanedParallelToolResults — non-assistant msg, getMessageID returns ""
 func TestRecoverOrphanedParallelToolResults_NonAssistantWithToolUseID(t *testing.T) {
 	// User message with a tool_use-like block (edge case: non-assistant but tool_use block)
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()},
 		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"reply"}]`, CreatedAt: time.Now()},
 	}
-	chain := []*Message{allMessages[0], allMessages[1]}
+	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
 	if len(result) != 2 {
 		t.Errorf("got %d messages, want 2 (no orphans to recover)", len(result))
@@ -525,11 +525,11 @@ func TestRecoverOrphanedParallelToolResults_NonAssistantWithToolUseID(t *testing
 // Line 152-154: recoverOrphanedParallelToolResults — group nil
 func TestRecoverOrphanedParallelToolResults_NoSiblingsGroup(t *testing.T) {
 	// Assistant in chain with tool_use ID, but no siblings at all
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()},
 		{UUID: "user-1", Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, CreatedAt: time.Now()},
 	}
-	chain := []*Message{allMessages[0], allMessages[1]}
+	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	// The anchor is asst-1 with tool_use id tu1. No other assistant has same id.
 	// So no orphaned siblings. No orphaned TRs.
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -541,7 +541,7 @@ func TestRecoverOrphanedParallelToolResults_NoSiblingsGroup(t *testing.T) {
 // Lines 247-256: findLeafMessage — all leaves are sidechain or progress (fallback path)
 func TestFindLeafMessage_AllSidechainOrProgress(t *testing.T) {
 	now := time.Now()
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "root", Type: "user", ParentUUID: "", CreatedAt: now},
 		{UUID: "leaf-1", Type: "progress", ParentUUID: "root", IsSidechain: 0, CreatedAt: now.Add(1 * time.Second)},
 		{UUID: "leaf-2", Type: "user", ParentUUID: "root", IsSidechain: 1, CreatedAt: now.Add(2 * time.Second)},
@@ -559,7 +559,7 @@ func TestFindLeafMessage_AllSidechainOrProgress(t *testing.T) {
 // Lines 247-256: findLeafMessage — all leaves are sidechain (only sidechain candidates)
 func TestFindLeafMessage_OnlySidechainLeaves(t *testing.T) {
 	now := time.Now()
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{UUID: "root", Type: "user", ParentUUID: "", CreatedAt: now},
 		{UUID: "side-1", Type: "user", ParentUUID: "root", IsSidechain: 1, CreatedAt: now.Add(1 * time.Second)},
 	}
@@ -574,7 +574,7 @@ func TestFindLeafMessage_OnlySidechainLeaves(t *testing.T) {
 
 // Line 56-57: FilterUnresolvedToolUses — non user/assistant message skipped
 func TestFilterUnresolvedToolUses_NonUserAssistantSkipped(t *testing.T) {
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{Type: "system", Content: `[{"type":"text","text":"system msg"}]`},
 		{Type: "progress", Content: `running...`},
 		{Type: "attachment", Content: `{}`},
@@ -590,10 +590,10 @@ func TestRecoverOrphanedParallelToolResults_NilSiblings(t *testing.T) {
 	// Create messages where an assistant has tool_use blocks but the
 	// siblings map entry is nil, which shouldn't happen normally.
 	// Test by having only a user message in the chain.
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash","input":{}}]`, CreatedAt: time.Now()},
 	}
-	chain := []*Message{allMessages[0]}
+	chain := []*TranscriptMessage{allMessages[0]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
 	if len(result) != 1 {
 		t.Errorf("got %d messages, want 1", len(result))
@@ -603,11 +603,11 @@ func TestRecoverOrphanedParallelToolResults_NilSiblings(t *testing.T) {
 func TestChain_GetMessageID_NonAssistant(t *testing.T) {
 	// Direct test of the non-assistant path in recoverOrphanedParallelToolResults
 	// by having a chain with only user messages (no assistants with tool_use)
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
 		{UUID: "user-2", Type: "user", Content: `[{"type":"text","text":"world"}]`, CreatedAt: time.Now().Add(time.Second)},
 	}
-	chain := []*Message{allMessages[0], allMessages[1]}
+	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
 	if len(result) != 2 {
 		t.Errorf("got %d, want 2 (no assistants to process)", len(result))
@@ -617,11 +617,11 @@ func TestChain_GetMessageID_NonAssistant(t *testing.T) {
 func TestChain_NilGroup_Fallback(t *testing.T) {
 	// Create a chain with an assistant that has a tool_use block with an ID
 	// that no other message shares. This should trigger the nil group fallback.
-	allMessages := []*Message{
+	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"unique-id-1","name":"bash","input":{}}]`, CreatedAt: time.Now()},
 		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"result"}]`, CreatedAt: time.Now().Add(time.Second)},
 	}
-	chain := []*Message{allMessages[0], allMessages[1]}
+	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 
 	// The assistant has tool_use with id "unique-id-1"
 	// siblingsByMsgId["unique-id-1"] = [] = {asst-1}
@@ -646,7 +646,7 @@ func TestChain_NilGroup_Fallback(t *testing.T) {
 // TestRecoverOrphanedParallelToolResults_NonToolResultWithToolUseID
 // tests that a non-tool_result message with tool_use_id triggers the correct path.
 func TestRecoverOrphanedParallelToolResults_NonToolResultWithToolUseID(t *testing.T) {
-	msgs := []*Message{
+	msgs := []*TranscriptMessage{
 		{UUID: "u1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 		{UUID: "a1", Type: "assistant", Content: `[{"type":"text","text":"check"},{"type":"tool_use","id":"tu1","name":"Read"}]`},
 		// This is a "user" message (not tool_result) but has tool_use_id in content
@@ -664,7 +664,7 @@ func TestRecoverOrphanedParallelToolResults_NonToolResultWithToolUseID(t *testin
 func TestRecoverOrphaned_GroupNil(t *testing.T) {
 	// chain has an assistant with a tool_use ID, but allMessages is empty.
 	// This means siblingsByMsgId won't contain the msgID, so group == nil.
-	chain := []*Message{
+	chain := []*TranscriptMessage{
 		{
 			Type:    "assistant",
 			UUID:    "asst-1",
@@ -672,7 +672,7 @@ func TestRecoverOrphaned_GroupNil(t *testing.T) {
 		},
 	}
 	// allMessages is empty — so chain assistant is not in siblingsByMsgId
-	allMsgs := []*Message{}
+	allMsgs := []*TranscriptMessage{}
 
 	result := recoverOrphanedParallelToolResults(allMsgs, chain)
 	if len(result) != 1 || result[0].UUID != "asst-1" {

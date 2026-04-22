@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/context"
@@ -212,39 +211,6 @@ func BenchmarkLoadGBOTMD_MultipleFiles(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// EscapeJSONString benchmarks
-// ---------------------------------------------------------------------------
-
-func BenchmarkEscapeJSONString_Plain(b *testing.B) {
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = context.EscapeJSONString("hello world")
-	}
-}
-
-func BenchmarkEscapeJSONString_SpecialChars(b *testing.B) {
-	input := `<div class="foo">&bar; contains "quotes" and <tags>`
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = context.EscapeJSONString(input)
-	}
-}
-
-func BenchmarkEscapeJSONString_LongString(b *testing.B) {
-	var input strings.Builder
-	for range 1000 {
-		input.WriteString("The quick brown fox jumps over the lazy dog. ")
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = context.EscapeJSONString(input.String())
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Build output JSON unmarshal (round-trip)
 // ---------------------------------------------------------------------------
 

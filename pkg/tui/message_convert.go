@@ -41,7 +41,7 @@ func engineBlockToStore(eb types.ContentBlock) short.ContentBlock {
 
 // StoreMessagesToEngine converts short-term store messages to engine messages.
 // Used when resuming a session from the store.
-func StoreMessagesToEngine(storeMsgs []short.Message) ([]types.Message, error) {
+func StoreMessagesToEngine(storeMsgs []short.TranscriptMessage) ([]types.Message, error) {
 	if len(storeMsgs) == 0 {
 		return nil, nil
 	}
@@ -74,12 +74,12 @@ func StoreMessagesToEngine(storeMsgs []short.Message) ([]types.Message, error) {
 
 // EngineMessagesToStore converts engine messages to short-term store messages.
 // Used when persisting engine state to the store.
-func EngineMessagesToStore(engineMsgs []types.Message) ([]short.Message, error) {
+func EngineMessagesToStore(engineMsgs []types.Message) ([]short.TranscriptMessage, error) {
 	if len(engineMsgs) == 0 {
 		return nil, nil
 	}
 
-	result := make([]short.Message, 0, len(engineMsgs))
+	result := make([]short.TranscriptMessage, 0, len(engineMsgs))
 	for _, em := range engineMsgs {
 		storeBlocks := make([]short.ContentBlock, 0, len(em.Content))
 		for _, eb := range em.Content {
@@ -91,7 +91,7 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]short.Message, error) 
 			return nil, fmt.Errorf("marshal content blocks: %w", err)
 		}
 
-		result = append(result, short.Message{
+		result = append(result, short.TranscriptMessage{
 			UUID:      uuid.New().String(),
 			Type:      string(em.Role),
 			Content:   string(contentBytes),

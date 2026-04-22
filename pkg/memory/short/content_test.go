@@ -145,13 +145,13 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantLen  int
 		wantLast string // type of last message
 	}{
 		{
 			name: "truncates to last complete user/assistant pair",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"prompt"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"response"}]`, CreatedAt: now},
 				// unresolved tool_use
@@ -162,7 +162,7 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 		},
 		{
 			name: "no unresolved when tool_result exists",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"prompt"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`, CreatedAt: now},
@@ -173,7 +173,7 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 		},
 		{
 			name: "multiple consecutive unresolved tool_use all removed",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"prompt"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"}]`, CreatedAt: now},
 				{Seq: 3, Type: "assistant", Content: `[{"type":"tool_use","id":"tu2"}]`, CreatedAt: now},
@@ -184,7 +184,7 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 		},
 		{
 			name: "middle unresolved不影响前面的完整对",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"response1"}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", Content: `[{"type":"text","text":"second"}]`, CreatedAt: now},
@@ -196,7 +196,7 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 		},
 		{
 			name: "mixed resolved and unresolved - assistant with some resolved kept",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"prompt"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"},{"type":"tool_use","id":"tu2"}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"out1"}]`, CreatedAt: now},
@@ -227,13 +227,13 @@ func TestFilterOrphanedThinking(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantLen  int
 		wantUUID string // check that this UUID is present
 	}{
 		{
 			name: "removes only-thinking messages",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking","text":"thinking..."}]`, CreatedAt: now},
 			},
@@ -241,7 +241,7 @@ func TestFilterOrphanedThinking(t *testing.T) {
 		},
 		{
 			name: "keeps text+thinking messages",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking"},{"type":"text","text":"response"}]`, CreatedAt: now},
 			},
@@ -250,7 +250,7 @@ func TestFilterOrphanedThinking(t *testing.T) {
 		},
 		{
 			name: "keeps non-thinking messages",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"response"}]`, CreatedAt: now},
 			},
@@ -259,7 +259,7 @@ func TestFilterOrphanedThinking(t *testing.T) {
 		},
 		{
 			name: "multiple consecutive orphan thinking all removed",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking"}]`, CreatedAt: now},
 				{Seq: 3, Type: "assistant", UUID: "a2", Content: `[{"type":"thinking"}]`, CreatedAt: now},
@@ -269,7 +269,7 @@ func TestFilterOrphanedThinking(t *testing.T) {
 		},
 		{
 			name: "keeps thinking-only if same UUID has non-thinking sibling",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking"}]`, CreatedAt: now},
 				{Seq: 3, Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"response"}]`, CreatedAt: now},
@@ -279,7 +279,7 @@ func TestFilterOrphanedThinking(t *testing.T) {
 		},
 		{
 			name: "redacted_thinking also considered thinking block",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"redacted_thinking"}]`, CreatedAt: now},
 			},
@@ -314,52 +314,52 @@ func TestFilterOrphanedThinking(t *testing.T) {
 func TestHasOnlyWhitespaceTextContent(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  *Message
+		msg  *TranscriptMessage
 		want bool
 	}{
 		{
 			name: "removes assistant with only spaces",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"   "}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"   "}]`},
 			want: true,
 		},
 		{
 			name: "removes assistant with only tabs",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"\t\t\t"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"\t\t\t"}]`},
 			want: true,
 		},
 		{
 			name: "removes assistant with only newlines",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"\n\n\n"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"\n\n\n"}]`},
 			want: true,
 		},
 		{
 			name: "removes assistant with mixed whitespace",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"  \n\t  \n"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"  \n\t  \n"}]`},
 			want: true,
 		},
 		{
 			name: "keeps assistant with non-whitespace text",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"hello"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"hello"}]`},
 			want: false,
 		},
 		{
 			name: "keeps assistant with tool_use block",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"}]`},
 			want: false,
 		},
 		{
 			name: "keeps assistant with mixed text and tool_use",
-			msg:  &Message{Type: "assistant", Content: `[{"type":"text","text":"  "},{"type":"tool_use","id":"tu1"}]`},
+			msg:  &TranscriptMessage{Type: "assistant", Content: `[{"type":"text","text":"  "},{"type":"tool_use","id":"tu1"}]`},
 			want: false,
 		},
 		{
 			name: "empty content returns false",
-			msg:  &Message{Type: "assistant", Content: "[]"},
+			msg:  &TranscriptMessage{Type: "assistant", Content: "[]"},
 			want: false,
 		},
 		{
 			name: "empty string content returns false",
-			msg:  &Message{Type: "assistant", Content: ""},
+			msg:  &TranscriptMessage{Type: "assistant", Content: ""},
 			want: false,
 		},
 	}
@@ -379,14 +379,14 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		messages      []*Message
+		messages      []*TranscriptMessage
 		wantLen       int
 		wantLastType  string
 		wantLastCount int // number of user messages (should be merged if adjacent)
 	}{
 		{
 			name: "removes whitespace-only assistant",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"\n\n"}]`, CreatedAt: now},
 			},
@@ -395,7 +395,7 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 		},
 		{
 			name: "keeps non-whitespace assistant",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: now},
 			},
@@ -404,7 +404,7 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 		},
 		{
 			name: "keeps user and system messages (doesn't check non-assistant)",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "system", Content: `[{"type":"text","text":"\n\n"}]`, CreatedAt: now},
 			},
@@ -413,7 +413,7 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 		},
 		{
 			name: "merges adjacent user messages after filtering whitespace assistant",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", UUID: "u1", Content: `[{"type":"text","text":"first"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"  \n  "}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", UUID: "u2", Content: `[{"type":"text","text":"second"}]`, CreatedAt: now},
@@ -423,7 +423,7 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 		},
 		{
 			name: "no changes when no whitespace-only messages",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: now},
 			},
@@ -452,27 +452,27 @@ func TestMergeUserMessages(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		a     *Message
-		b     *Message
-		check func(*Message) // validation function for result
+		a     *TranscriptMessage
+		b     *TranscriptMessage
+		check func(*TranscriptMessage) // validation function for result
 	}{
 		{
 			name: "merges content blocks",
-			a: &Message{
+			a: &TranscriptMessage{
 				Seq:    1,
 				UUID:   "u1",
 				Type:   "user",
 				ParentUUID: "p1",
 				CreatedAt: now,
 			},
-			b: &Message{
+			b: &TranscriptMessage{
 				Seq:    2,
 				UUID:   "u2",
 				Type:   "user",
 				ParentUUID: "p2",
 				CreatedAt: now.Add(1),
 			},
-			check: func(m *Message) {
+			check: func(m *TranscriptMessage) {
 				if m.Type != "user" {
 					t.Errorf("merged type = %q, want user", m.Type)
 				}
@@ -485,19 +485,19 @@ func TestMergeUserMessages(t *testing.T) {
 		},
 		{
 			name: "preserves b's ParentUUID",
-			a: &Message{
+			a: &TranscriptMessage{
 				Seq:    1,
 				Type:   "user",
 				ParentUUID: "p1",
 				CreatedAt: now,
 			},
-			b: &Message{
+			b: &TranscriptMessage{
 				Seq:    2,
 				Type:   "user",
 				ParentUUID: "p2",
 				CreatedAt: now.Add(1),
 			},
-			check: func(m *Message) {
+			check: func(m *TranscriptMessage) {
 				if m.ParentUUID != "p2" {
 					t.Errorf("ParentUUID = %q, want p2", m.ParentUUID)
 				}
@@ -505,17 +505,17 @@ func TestMergeUserMessages(t *testing.T) {
 		},
 		{
 			name: "uses b's CreatedAt",
-			a: &Message{
+			a: &TranscriptMessage{
 				Seq:    1,
 				Type:   "user",
 				CreatedAt: now,
 			},
-			b: &Message{
+			b: &TranscriptMessage{
 				Seq:    2,
 				Type:   "user",
 				CreatedAt: now.Add(1),
 			},
-			check: func(m *Message) {
+			check: func(m *TranscriptMessage) {
 				expectedTime := now.Add(1)
 				if !m.CreatedAt.Equal(expectedTime) && m.CreatedAt.IsZero() {
 					t.Errorf("CreatedAt not as expected")
@@ -537,32 +537,32 @@ func TestMergeUserMessages(t *testing.T) {
 func TestIsChainParticipant(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  *Message
+		msg  *TranscriptMessage
 		want bool
 	}{
 		{
 			name: "user message is participant",
-			msg:  &Message{Type: "user"},
+			msg:  &TranscriptMessage{Type: "user"},
 			want: true,
 		},
 		{
 			name: "assistant message is participant",
-			msg:  &Message{Type: "assistant"},
+			msg:  &TranscriptMessage{Type: "assistant"},
 			want: true,
 		},
 		{
 			name: "system message is participant",
-			msg:  &Message{Type: "system"},
+			msg:  &TranscriptMessage{Type: "system"},
 			want: true,
 		},
 		{
 			name: "attachment message is participant",
-			msg:  &Message{Type: "attachment"},
+			msg:  &TranscriptMessage{Type: "attachment"},
 			want: true,
 		},
 		{
 			name: "progress message is NOT participant",
-			msg:  &Message{Type: "progress"},
+			msg:  &TranscriptMessage{Type: "progress"},
 			want: false,
 		},
 	}
@@ -634,8 +634,8 @@ func TestMergeUserMessages_NilMessages(t *testing.T) {
 
 	tests := []struct {
 		name string
-		a    *Message
-		b    *Message
+		a    *TranscriptMessage
+		b    *TranscriptMessage
 	}{
 		{
 			name: "both nil",
@@ -645,11 +645,11 @@ func TestMergeUserMessages_NilMessages(t *testing.T) {
 		{
 			name: "first nil",
 			a:    nil,
-			b:    &Message{Seq: 1, Type: "user", UUID: "u1", CreatedAt: now},
+			b:    &TranscriptMessage{Seq: 1, Type: "user", UUID: "u1", CreatedAt: now},
 		},
 		{
 			name: "second nil",
-			a:    &Message{Seq: 1, Type: "user", UUID: "u1", CreatedAt: now},
+			a:    &TranscriptMessage{Seq: 1, Type: "user", UUID: "u1", CreatedAt: now},
 			b:    nil,
 		},
 	}
@@ -671,7 +671,7 @@ func TestFilterWhitespaceOnlyAssistant_WithMerge(t *testing.T) {
 	now := time.Now()
 
 	// Test that adjacent user messages are properly merged after filtering
-	messages := []*Message{
+	messages := []*TranscriptMessage{
 		{
 			Seq:       1,
 			Type:      "user",
@@ -716,12 +716,12 @@ func TestFilterOrphanedThinking_EdgeCases(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantLen  int
 	}{
 		{
 			name: "empty blocks in assistant message",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[]`, CreatedAt: now},
 			},
@@ -729,7 +729,7 @@ func TestFilterOrphanedThinking_EdgeCases(t *testing.T) {
 		},
 		{
 			name: "mixed thinking and redacted_thinking",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking"},{"type":"redacted_thinking"}]`, CreatedAt: now},
 			},
@@ -737,7 +737,7 @@ func TestFilterOrphanedThinking_EdgeCases(t *testing.T) {
 		},
 		{
 			name: "thinking with text sibling same UUID",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", UUID: "a1", Content: `[{"type":"thinking"}]`, CreatedAt: now},
 				{Seq: 3, Type: "assistant", UUID: "a1", Content: `[{"type":"text","text":"response"}]`, CreatedAt: now.Add(1)},
@@ -761,12 +761,12 @@ func TestFilterUnresolvedToolUses_EdgeCases(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		messages []*Message
+		messages []*TranscriptMessage
 		wantLen  int
 	}{
 		{
 			name: "assistant with no blocks",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[]`, CreatedAt: now},
 			},
@@ -774,7 +774,7 @@ func TestFilterUnresolvedToolUses_EdgeCases(t *testing.T) {
 		},
 		{
 			name: "all tool_uses resolved",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"},{"type":"tool_use","id":"tu2"}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"out1"}]`, CreatedAt: now},
@@ -784,7 +784,7 @@ func TestFilterUnresolvedToolUses_EdgeCases(t *testing.T) {
 		},
 		{
 			name: "assistant with some resolved some unresolved",
-			messages: []*Message{
+			messages: []*TranscriptMessage{
 				{Seq: 1, Type: "user", Content: `[{"type":"text","text":"hi"}]`, CreatedAt: now},
 				{Seq: 2, Type: "assistant", Content: `[{"type":"tool_use","id":"tu1"},{"type":"tool_use","id":"tu2"}]`, CreatedAt: now},
 				{Seq: 3, Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1","content":"out1"}]`, CreatedAt: now},

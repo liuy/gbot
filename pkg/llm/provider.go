@@ -51,7 +51,7 @@ type Request struct {
 
 	// Cache control for Anthropic prompt caching.
 	// Source: claude.ts:358-374 — when non-nil, system blocks get cache_control markers.
-	CacheControl *CacheControlConfig `json:"-"`
+	CacheControl *types.CacheControlConfig `json:"-"`
 
 	// SystemBlocks stores structured system blocks for hash computation.
 	// When CacheControl is non-nil, Complete/Stream use these blocks and inject cache_control.
@@ -310,20 +310,13 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// CacheControlConfig carries cache control settings for Anthropic API.
-// Source: claude.ts:358-374
-type CacheControlConfig struct {
-	Type  string `json:"type"`            // always "ephemeral"
-	TTL   string `json:"ttl,omitempty"`   // "1h" | "5m" | "" (default)
-	Scope string `json:"scope,omitempty"` // "global" | "org" | "" (none)
-}
 
 // SystemBlockParam represents a single system prompt block.
 // Source: Anthropic API system parameter (array variant).
 type SystemBlockParam struct {
 	Type         string              `json:"type"`                    // "text"
 	Text         string              `json:"text"`
-	CacheControl *CacheControlConfig `json:"cache_control,omitempty"`
+	CacheControl *types.CacheControlConfig `json:"cache_control,omitempty"`
 }
 
 // PromptStateKey identifies a tracked prompt state source.

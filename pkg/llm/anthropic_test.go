@@ -2056,7 +2056,7 @@ func TestAnthropicRequest_CacheControlHeader(t *testing.T) {
 	resp, err := p.Complete(ctx, &llm.Request{
 		Model:     "test-model",
 		MaxTokens: 1024,
-		CacheControl: &llm.CacheControlConfig{
+		CacheControl: &types.CacheControlConfig{
 			Type: "ephemeral",
 		},
 		Messages: []types.Message{
@@ -2146,7 +2146,7 @@ func TestAnthropicRequest_SystemWithCacheControl(t *testing.T) {
 	_, err := p.Complete(ctx, &llm.Request{
 		Model:     "test-model",
 		MaxTokens: 1024,
-		CacheControl: &llm.CacheControlConfig{
+		CacheControl: &types.CacheControlConfig{
 			Type: "ephemeral",
 			TTL:  "1h",
 		},
@@ -2488,7 +2488,7 @@ func TestAnthropicComplete_CacheBreakWithSystemBlocks(t *testing.T) {
 	_, err := p.Complete(ctx, &llm.Request{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 1024,
-		CacheControl: &llm.CacheControlConfig{
+		CacheControl: &types.CacheControlConfig{
 			Type: "ephemeral",
 			TTL:  "1h",
 		},
@@ -2508,7 +2508,7 @@ func TestAnthropicComplete_CacheBreakWithSystemBlocks(t *testing.T) {
 	_, err = p.Complete(ctx, &llm.Request{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 1024,
-		CacheControl: &llm.CacheControlConfig{
+		CacheControl: &types.CacheControlConfig{
 			Type: "ephemeral",
 			TTL:  "1h",
 		},
@@ -2533,7 +2533,7 @@ func TestRequestToSystemMaps_SystemBlocks(t *testing.T) {
 	req := &llm.Request{
 		SystemBlocks: []llm.SystemBlockParam{
 			{Type: "text", Text: "Block 1"},
-			{Type: "text", Text: "Block 2", CacheControl: &llm.CacheControlConfig{Type: "ephemeral"}},
+			{Type: "text", Text: "Block 2", CacheControl: &types.CacheControlConfig{Type: "ephemeral"}},
 		},
 	}
 

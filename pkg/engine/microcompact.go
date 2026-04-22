@@ -43,6 +43,9 @@ const (
 // Source: TS constants/querySource.ts, engine.go uses "repl_main_thread" for PromptStateKey.
 const QuerySourceReplMainThread = "repl_main_thread"
 
+// QuerySourceAgentCustom identifies a custom (non-built-in) sub-agent.
+const QuerySourceAgentCustom = "agent:custom"
+
 // compactableTools maps gbot tool names to microcompact eligibility.
 // Source: microCompact.ts:41-50 — COMPACTABLE_TOOLS set.
 // MAINTENANCE: When adding a new compactable tool, update this map and

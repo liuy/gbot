@@ -47,7 +47,7 @@ func ExtractTextFromJSON(contentJSON string) string {
 // FilterUnresolvedToolUses removes assistant messages that contain tool_use blocks
 // without corresponding tool_result blocks. Truncates to the last complete user/assistant pair.
 // TS: messages.ts:2795-2841 filterUnresolvedToolUses()
-func FilterUnresolvedToolUses(messages []*Message) []*Message {
+func FilterUnresolvedToolUses(messages []*TranscriptMessage) []*TranscriptMessage {
 	// Collect all tool_use IDs and tool_result tool_use_ids
 	toolUseIDs := make(map[string]bool)
 	toolResultIDs := make(map[string]bool)
@@ -81,7 +81,7 @@ func FilterUnresolvedToolUses(messages []*Message) []*Message {
 	}
 
 	// Filter out assistant messages where ALL tool_use blocks are unresolved
-	filtered := make([]*Message, 0, len(messages))
+	filtered := make([]*TranscriptMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Type != "assistant" {
 			filtered = append(filtered, msg)
@@ -125,7 +125,7 @@ func FilterUnresolvedToolUses(messages []*Message) []*Message {
 // UUID containing non-thinking content. These cause "thinking blocks cannot be modified"
 // API errors.
 // TS: messages.ts:4991-5058 filterOrphanedThinkingOnlyMessages()
-func FilterOrphanedThinking(messages []*Message) []*Message {
+func FilterOrphanedThinking(messages []*TranscriptMessage) []*TranscriptMessage {
 	// First pass: collect message UUIDs that have non-thinking content
 	// Note: Go messages don't have a separate message.id field like TS, so we use UUID
 	uuidsWithNonThinking := make(map[string]bool)
@@ -149,7 +149,7 @@ func FilterOrphanedThinking(messages []*Message) []*Message {
 	}
 
 	// Second pass: filter out thinking-only messages that are truly orphaned
-	filtered := make([]*Message, 0, len(messages))
+	filtered := make([]*TranscriptMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Type != "assistant" {
 			filtered = append(filtered, msg)
@@ -195,7 +195,7 @@ func FilterOrphanedThinking(messages []*Message) []*Message {
 // text blocks containing only whitespace characters.
 // Returns false for empty content, non-text blocks, or text with actual content.
 // TS: messages.ts:4835-4855 hasOnlyWhitespaceTextContent()
-func HasOnlyWhitespaceTextContent(msg *Message) bool {
+func HasOnlyWhitespaceTextContent(msg *TranscriptMessage) bool {
 	blocks := ParseContentBlocks(msg.Content)
 	if len(blocks) == 0 {
 		return false
@@ -221,9 +221,9 @@ func HasOnlyWhitespaceTextContent(msg *Message) bool {
 // "text content blocks must contain non-whitespace text".
 // Merges adjacent user messages that result from filtering.
 // TS: messages.ts:4869-4919 filterWhitespaceOnlyAssistantMessages()
-func FilterWhitespaceOnlyAssistant(messages []*Message) []*Message {
+func FilterWhitespaceOnlyAssistant(messages []*TranscriptMessage) []*TranscriptMessage {
 	// First pass: filter out whitespace-only assistant messages
-	filtered := make([]*Message, 0, len(messages))
+	filtered := make([]*TranscriptMessage, 0, len(messages))
 	hasChanges := false
 
 	for _, msg := range messages {
@@ -254,7 +254,7 @@ func FilterWhitespaceOnlyAssistant(messages []*Message) []*Message {
 
 	// Second pass: merge adjacent user messages
 	// (removing assistant messages may leave adjacent user messages needing merge)
-	merged := make([]*Message, 0, len(filtered))
+	merged := make([]*TranscriptMessage, 0, len(filtered))
 	for _, msg := range filtered {
 		prev := lastMessage(merged)
 		if msg.Type == "user" && prev != nil && prev.Type == "user" {
@@ -271,12 +271,12 @@ func FilterWhitespaceOnlyAssistant(messages []*Message) []*Message {
 // isChainParticipant returns true if the message is part of the main conversation chain.
 // Progress messages are excluded from chain building and content processing.
 // TS: Implicit in various chain-building functions (progress messages are skipped).
-func isChainParticipant(msg *Message) bool {
+func isChainParticipant(msg *TranscriptMessage) bool {
 	return msg.Type != "progress"
 }
 
 // lastMessage returns the last message in a slice, or nil if empty.
-func lastMessage(messages []*Message) *Message {
+func lastMessage(messages []*TranscriptMessage) *TranscriptMessage {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -286,7 +286,7 @@ func lastMessage(messages []*Message) *Message {
 // mergeUserMessages merges two adjacent user messages into one.
 // Concatenates their content blocks. Preserves metadata from the first message.
 // TS: messages.ts:2411-2449 mergeUserMessages()
-func mergeUserMessages(a, b *Message) *Message {
+func mergeUserMessages(a, b *TranscriptMessage) *TranscriptMessage {
 	if a == nil {
 		return b
 	}
@@ -303,7 +303,7 @@ func mergeUserMessages(a, b *Message) *Message {
 	mergedContent, _ := json.Marshal(mergedBlocks)
 
 	// Create merged message - preserve metadata from first message
-	return &Message{
+	return &TranscriptMessage{
 		Seq:              a.Seq,
 		SessionID:        a.SessionID,
 		UUID:             a.UUID,

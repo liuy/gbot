@@ -5,6 +5,7 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -67,7 +68,7 @@ func ParseFrontmatter(markdown string, sourcePath string) ParsedMarkdown {
 			if sourcePath != "" {
 				location = " in " + sourcePath
 			}
-			fmt.Printf("frontmatter: failed to parse YAML%s: %v\n", location, err)
+			slog.Warn("frontmatter: failed to parse YAML", "location", location, "error", err)
 			return ParsedMarkdown{
 				Frontmatter: make(map[string]any),
 				Content:     content,

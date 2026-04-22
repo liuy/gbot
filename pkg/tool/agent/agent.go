@@ -21,11 +21,11 @@ import (
 
 // SubEngineFactory creates a sub-engine and synchronously executes a query.
 // Injected by main.go after engine construction to avoid agent → engine import cycle.
-type SubEngineFactory func(ctx context.Context, opts SubEngineOpts) (*types.SubQueryResult, error)
+type SubEngineFactory func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error)
 
-// SubEngineOpts passes parameters to the sub-engine factory.
+// AgentOpts passes parameters to the sub-engine factory.
 // Uses only types from shared packages (no engine dependency).
-type SubEngineOpts struct {
+type AgentOpts struct {
 	Prompt             string               // actual user prompt for the sub-agent
 	SystemPrompt       json.RawMessage      // sub-agent's system prompt
 	Tools              map[string]tool.Tool // filtered tool set
@@ -184,7 +184,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	if tctx != nil {
 		parentToolUseID = tctx.ToolUseID
 	}
-	opts := SubEngineOpts{
+	opts := AgentOpts{
 		Prompt:          agentInput.Prompt,
 		SystemPrompt:    systemPrompt,
 		Tools:           filteredTools,
@@ -323,7 +323,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Build the runFn closure
 	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
-		opts := SubEngineOpts{
+		opts := AgentOpts{
 			ForkMessages:       forkMessages,
 			SystemPrompt:       systemPrompt,
 			Tools:              parentTools,

@@ -18,7 +18,7 @@ func TestStoreMessagesToEngine_Empty(t *testing.T) {
 		t.Fatalf("expected nil for nil input, got %v", result)
 	}
 
-	result, err = StoreMessagesToEngine([]short.Message{})
+	result, err = StoreMessagesToEngine([]short.TranscriptMessage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestEngineMessagesToStore_Empty(t *testing.T) {
 }
 
 func TestStoreMessagesToEngine_InvalidRole(t *testing.T) {
-	msgs := []short.Message{
+	msgs := []short.TranscriptMessage{
 		{Type: "alien", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
 	}
 	_, err := StoreMessagesToEngine(msgs)

@@ -147,7 +147,7 @@ func main() {
 			if err == nil && resumable {
 				_, msgs, err := store.ResumeSession(meta.CurrentSessionID)
 				if err == nil && len(msgs) > 0 {
-					storeMsgs := make([]short.Message, len(msgs))
+					storeMsgs := make([]short.TranscriptMessage, len(msgs))
 					for i, m := range msgs {
 						storeMsgs[i] = *m
 					}
@@ -298,7 +298,7 @@ func createTools() *tool.Registry {
 func createAgentTool(eng *engine.Engine) *agenttool.AgentTool {
 	at := agenttool.New()
 	at.SetFactory(
-		func(ctx context.Context, opts agenttool.SubEngineOpts) (*types.SubQueryResult, error) {
+		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 			startTime := time.Now()
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
 				SystemPrompt:    string(opts.SystemPrompt),
