@@ -245,7 +245,7 @@ func TestIntegration_SwitchBackViaPickerRestoreMessages(t *testing.T) {
 
 	// Switch back by calling handlePickerResult with original session selected
 	// First, simulate picker state
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: forkedSessionID, Title: "temp-fork"},
 		{SessionID: originalSessionID, Title: ""},
@@ -414,7 +414,7 @@ func TestIntegration_MultipleForks(t *testing.T) {
 		sessionIDs = append(sessionIDs, a.sessionID)
 
 		// Switch back to original for next fork
-		a.pickerMode = true
+		a.pickerMode = pickerSession
 		a.picker = NewSessionPicker([]SessionItem{
 			{SessionID: originalID, Title: "original"},
 		})
@@ -484,7 +484,7 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 	}
 
 	// Switch back to original via picker
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: originalID, Title: "original"},
 	})
@@ -582,7 +582,7 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 	})
 
 	// Switch back to original
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: originalID, Title: "original"},
 	})
@@ -601,7 +601,7 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 	}
 
 	// Switch to fork X again
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: forkXID, Title: "fork-X"},
 	})
@@ -639,7 +639,7 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	firstForkID := a.sessionID
 
 	// Switch back to original
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: firstForkID, Title: "unique-title"},
 	})
@@ -678,7 +678,7 @@ func TestIntegration_PickerCancelAborts(t *testing.T) {
 	originalID := a.sessionID
 
 	// Activate picker
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: "other-session", Title: "Other"},
 	})
@@ -690,7 +690,7 @@ func TestIntegration_PickerCancelAborts(t *testing.T) {
 		t.Fatal("handlePickerResult should return *App")
 	}
 
-	if a.pickerMode {
+	if a.pickerMode != pickerNone {
 		t.Error("pickerMode should be false after cancel")
 	}
 	if a.sessionID != originalID {
@@ -704,7 +704,7 @@ func TestIntegration_PickerSameSessionNoop(t *testing.T) {
 	a, _, _ := newIntegrationApp(t)
 	originalID := a.sessionID
 
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	a.picker = NewSessionPicker([]SessionItem{
 		{SessionID: originalID, Title: "current"},
 	})

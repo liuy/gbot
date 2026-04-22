@@ -15,6 +15,7 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -22,6 +23,15 @@ import (
 // ---------------------------------------------------------------------------
 // App — bubbletea root Model
 // ---------------------------------------------------------------------------
+
+// pickerKind enumerates the active picker overlay.
+type pickerKind int
+
+const (
+	pickerNone    pickerKind = iota
+	pickerSession
+	pickerModel
+)
 
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
@@ -53,8 +63,18 @@ type App struct {
 	projectDir       string // working directory for .gbot/meta.json
 
 	// Session picker overlay
-	pickerMode bool
+	pickerMode pickerKind
 	picker     *SessionPicker
+
+	// Model picker overlay
+	modelPicker *ModelPicker
+
+	// Multi-provider model switching
+	providers       map[string]llm.Provider
+	cfg             *config.Config
+	currentProvider string
+	currentTier     config.Tier
+	providerConfigs map[string]*config.Provider
 
 	// Hub — callback-based event routing
 	hub        *hub.Hub
@@ -136,6 +156,21 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 	return a
 }
 
+// SetProviders configures multi-provider model switching.
+// Called from main.go after createAllProviders().
+func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config) {
+	a.providers = providers
+	a.cfg = cfg
+	a.providerConfigs = make(map[string]*config.Provider, len(cfg.Providers))
+	for i := range cfg.Providers {
+		a.providerConfigs[cfg.Providers[i].Name] = &cfg.Providers[i]
+	}
+	if len(cfg.Providers) > 0 {
+		a.currentProvider = cfg.Providers[0].Name
+	}
+	a.currentTier = cfg.DefaultTier
+}
+
 // SetStore configures persistence on the App after creation.
 // Called from main.go after auto-resume logic determines the session state.
 func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPersistedIdx int) {
@@ -184,7 +219,8 @@ func (a *App) Init() tea.Cmd {
 // Update handles bubbletea messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Route to picker overlay when active
-	if a.pickerMode {
+	switch a.pickerMode {
+	case pickerSession:
 		switch msg := msg.(type) {
 		case tea.WindowSizeMsg:
 			a.width = msg.Width
@@ -198,6 +234,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if picker is done
 			if a.picker.aborted || a.picker.selected != nil {
 				return a.handlePickerResult()
+			}
+			return a, cmd
+		}
+		return a, nil
+
+	case pickerModel:
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			a.width = msg.Width
+			a.height = msg.Height
+			return a, nil
+		case tea.KeyMsg:
+			model, cmd := a.modelPicker.Update(msg)
+			if p, ok := model.(*ModelPicker); ok {
+				a.modelPicker = p
+			}
+			// Check if picker is done
+			if a.modelPicker.aborted || a.modelPicker.selected != nil {
+				return a.handleModelPickerResult()
 			}
 			return a, cmd
 		}
@@ -248,8 +303,15 @@ func (a *App) View() string {
 	}
 
 	// Picker overlay
-	if a.pickerMode && a.picker != nil {
-		return a.picker.View()
+	switch a.pickerMode {
+	case pickerSession:
+		if a.picker != nil {
+			return a.picker.View()
+		}
+	case pickerModel:
+		if a.modelPicker != nil {
+			return a.modelPicker.View()
+		}
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]

@@ -4391,8 +4391,8 @@ func TestApp_OpenPicker(t *testing.T) {
 	if cmd == nil {
 		t.Error("openPicker should return a tea.Cmd")
 	}
-	if !app.pickerMode {
-		t.Error("pickerMode should be true after openPicker")
+	if app.pickerMode == pickerNone {
+		t.Error("pickerMode should be pickerSession after openPicker")
 	}
 	if app.picker == nil {
 		t.Fatal("picker should not be nil after openPicker")
@@ -4503,8 +4503,8 @@ func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
 	// Send a key message while in picker mode
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated := model.(*App)
-	if !updated.pickerMode {
-		t.Error("should still be in pickerMode after key event")
+	if updated.pickerMode == pickerNone {
+		t.Error("should still be in pickerSession after key event")
 	}
 	if cmd != nil {
 		// Down key doesn't quit picker, so cmd should be nil
@@ -4589,7 +4589,7 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app.SetStore(store, "existing-session", dir, 0)
 
 	app.handleSlashCommand(SlashCommand{Name: "switch"}, nil)
-	if !app.pickerMode {
+	if app.pickerMode == pickerNone {
 		t.Error("should be in pickerMode after /switch")
 	}
 	if app.picker == nil {

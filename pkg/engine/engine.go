@@ -1035,6 +1035,20 @@ func (e *Engine) SetSessionID(id string) {
 	e.mu.Unlock()
 }
 
+// SetModel sets the model name for subsequent API calls.
+func (e *Engine) SetModel(model string) {
+	e.mu.Lock()
+	e.model = model
+	e.mu.Unlock()
+}
+
+// SetProvider replaces the LLM provider for subsequent API calls.
+func (e *Engine) SetProvider(provider llm.Provider) {
+	e.mu.Lock()
+	e.provider = provider
+	e.mu.Unlock()
+}
+
 // SetCompactor configures the auto-compact compactor and threshold.
 // Call after engine construction when the store is available.
 func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {

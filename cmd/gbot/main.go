@@ -57,11 +57,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Create LLM provider from config
-	provider, model := createProvider(cfg)
-	if provider == nil {
+	// 2. Create LLM providers from config
+	providerMap := createAllProviders(cfg)
+	if len(providerMap) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: no API key configured.")
-		fmt.Fprintln(os.Stderr, "Set providers[].keys in ~/.gbot/settings.json or ANTHROPIC_API_KEY env var")
+		fmt.Fprintln(os.Stderr, "Set providers[].keys in ~/.gbot/settings.json")
+		os.Exit(1)
+	}
+
+	// Primary provider is the first configured one
+	var provider llm.Provider
+	var model string
+	for _, p := range cfg.Providers {
+		if prov, ok := providerMap[p.Name]; ok {
+			provider = prov
+			model = p.Models[cfg.DefaultTier]
+			if model == "" {
+				model = p.Models[config.TierPro]
+			}
+			break
+		}
+	}
+	if provider == nil || model == "" {
+		fmt.Fprintln(os.Stderr, "Error: could not resolve primary provider/model")
 		os.Exit(1)
 	}
 
@@ -198,6 +216,7 @@ func main() {
 		}
 		// 8. Create TUI App
 		app := tui.NewApp(eng, systemPrompt, h)
+		app.SetProviders(providerMap, cfg)
 		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
 
 	// 9. Run bubbletea program
@@ -208,50 +227,47 @@ func main() {
 	}
 }
 
-// createProvider creates the LLM provider and resolves the model name from config.
-// Returns (provider, model). Provider is nil if no API key is configured.
-func createProvider(cfg *config.Config) (llm.Provider, string) {
-	// Multi-provider config takes priority
-	if len(cfg.Providers) > 0 {
-		p := cfg.Providers[0]
+// ProviderMap maps provider names to their llm.Provider instances.
+type ProviderMap map[string]llm.Provider
+
+// createAllProviders creates llm.Provider instances for all configured providers.
+// Providers without a TierPro model are skipped with a warning.
+func createAllProviders(cfg *config.Config) ProviderMap {
+	m := make(ProviderMap)
+	for _, p := range cfg.Providers {
 		apiKey := p.ResolveKey()
 		if apiKey == "" {
-			return nil, ""
+			continue
 		}
-		model := p.ModelFor(cfg.DefaultTier)
+		// Validate: at least TierPro must have a model
+		if p.Models[config.TierPro] == "" {
+			fmt.Fprintf(os.Stderr, "warning: provider %q has no pro model defined, skipping\n", p.Name)
+			continue
+		}
+		model := p.Models[cfg.DefaultTier]
 		if model == "" {
-			model = cfg.Model
+			model = p.Models[config.TierPro]
 		}
-
 		switch p.Name {
 		case "openai":
-			return llm.NewOpenAIProvider(&llm.OpenAIConfig{
+			m[p.Name] = llm.NewOpenAIProvider(&llm.OpenAIConfig{
 				APIKey:  apiKey,
 				BaseURL: p.URL,
 				Model:   model,
-			}), model
+			})
 		default: // "anthropic" or empty
 			url := p.URL
 			if url == "" {
 				url = "https://api.anthropic.com"
 			}
-			return llm.NewAnthropicProvider(&llm.AnthropicConfig{
+			m[p.Name] = llm.NewAnthropicProvider(&llm.AnthropicConfig{
 				APIKey:  apiKey,
 				BaseURL: url,
 				Model:   model,
-			}), model
+			})
 		}
 	}
-
-	// Legacy single-provider config
-	if cfg.APIKey == "" {
-		return nil, ""
-	}
-	return llm.NewAnthropicProvider(&llm.AnthropicConfig{
-		APIKey:  cfg.APIKey,
-		BaseURL: cfg.BaseURL,
-		Model:   cfg.Model,
-	}), cfg.Model
+	return m
 }
 
 // loadConfig reads configuration from gbot's own settings files and env vars.

@@ -810,6 +810,50 @@ func TestSetSessionID(t *testing.T) {
 	}
 }
 
+func TestSetModel(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockProvider{},
+		Model:    "initial-model",
+		Logger:   slog.Default(),
+	})
+
+	if eng.Model() != "initial-model" {
+		t.Fatalf("expected initial model %q, got %q", "initial-model", eng.Model())
+	}
+
+	eng.SetModel("new-model")
+	if eng.Model() != "new-model" {
+		t.Fatalf("expected model %q after SetModel, got %q", "new-model", eng.Model())
+	}
+}
+
+func TestSetProvider(t *testing.T) {
+	t.Parallel()
+
+	initialProvider := &mockProvider{}
+	eng := engine.New(&engine.Params{
+		Provider: initialProvider,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	// Verify initial provider is functional (no panic)
+	if eng.Model() != "test-model" {
+		t.Fatalf("expected model %q, got %q", "test-model", eng.Model())
+	}
+
+	// Switch provider
+	newProvider := &mockProvider{}
+	eng.SetProvider(newProvider)
+
+	// Verify engine still works after switch
+	if eng.Model() != "test-model" {
+		t.Fatalf("SetProvider should not change model, got %q", eng.Model())
+	}
+}
+
 func TestSetMessages(t *testing.T) {
 	t.Parallel()
 

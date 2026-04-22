@@ -160,13 +160,13 @@ func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	a.picker = NewSessionPicker(items)
-	a.pickerMode = true
+	a.pickerMode = pickerSession
 	return commitCmd
 }
 
 // handlePickerResult processes the picker selection or cancellation.
 func (a *App) handlePickerResult() (tea.Model, tea.Cmd) {
-	a.pickerMode = false
+	a.pickerMode = pickerNone
 
 	if a.picker.aborted {
 		a.picker = nil
