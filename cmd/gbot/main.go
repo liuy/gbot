@@ -66,12 +66,20 @@ func main() {
 	}
 
 	// Primary provider is the first configured one
+	defaultProvider, defaultTier, err := cfg.ParseModel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	var provider llm.Provider
 	var model string
 	for _, p := range cfg.Providers {
 		if prov, ok := providerMap[p.Name]; ok {
+			if defaultProvider != "" && p.Name != defaultProvider {
+				continue
+			}
 			provider = prov
-			model = p.Models[cfg.DefaultTier]
+			model = p.Models[defaultTier]
 			if model == "" {
 				model = p.Models[config.TierPro]
 			}
@@ -234,6 +242,11 @@ type ProviderMap map[string]llm.Provider
 // Providers without a TierPro model are skipped with a warning.
 func createAllProviders(cfg *config.Config) ProviderMap {
 	m := make(ProviderMap)
+	_, tier, err := cfg.ParseModel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	for _, p := range cfg.Providers {
 		apiKey := p.ResolveKey()
 		if apiKey == "" {
@@ -244,7 +257,7 @@ func createAllProviders(cfg *config.Config) ProviderMap {
 			fmt.Fprintf(os.Stderr, "warning: provider %q has no pro model defined, skipping\n", p.Name)
 			continue
 		}
-		model := p.Models[cfg.DefaultTier]
+		model := p.Models[tier]
 		if model == "" {
 			model = p.Models[config.TierPro]
 		}

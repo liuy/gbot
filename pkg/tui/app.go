@@ -153,10 +153,28 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 	for i := range cfg.Providers {
 		a.providerConfigs[cfg.Providers[i].Name] = &cfg.Providers[i]
 	}
-	if len(cfg.Providers) > 0 {
+	providerName, tier, err := cfg.ParseModel()
+	if err != nil {
+		slog.Warn("config: invalid model, falling back to pro", "model", cfg.Model, "error", err)
+		tier = config.TierPro
+	}
+	if providerName != "" {
+		a.currentProvider = providerName
+	} else if len(cfg.Providers) > 0 {
 		a.currentProvider = cfg.Providers[0].Name
 	}
-	a.currentTier = cfg.DefaultTier
+	a.currentTier = tier
+}
+
+// persistModelSelection writes the current provider/tier back to settings.json.
+func (a *App) persistModelSelection() {
+	if a.cfg == nil {
+		return
+	}
+	a.cfg.Model = a.currentProvider + "/" + string(a.currentTier)
+	if err := a.cfg.Save(); err != nil {
+		slog.Warn("model: failed to persist selection", "error", err)
+	}
 }
 
 // SetStore configures persistence on the App after creation.

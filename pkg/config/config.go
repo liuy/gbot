@@ -16,15 +16,12 @@ import (
 
 // Config holds the full application configuration.
 type Config struct {
-	// API (legacy — used until main.go wiring in US-004)
 	APIKey     string `json:"api_key,omitempty"`
 	BaseURL    string `json:"base_url,omitempty"`
-	Model      string `json:"model,omitempty"`
-	SmallModel string `json:"small_model,omitempty"`
 
 	// Multi-provider configuration
-	DefaultTier Tier       `json:"default,omitempty"`   // "lite" | "pro" | "max", defaults to "pro"
-	Providers   []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
+	Model     string     `json:"model,omitempty"`      // "provider/tier" e.g. "zhipu/pro", empty → providers[0]/pro
+	Providers []Provider `json:"providers,omitempty"`  // ordered by priority, providers[0] is primary
 
 	// Permissions
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
@@ -110,9 +107,6 @@ func (p *Provider) ModelFor(tier Tier) string {
 func DefaultConfig() *Config {
 	return &Config{
 		BaseURL:        "https://api.anthropic.com",
-		Model:          "claude-sonnet-4-20250514",
-		SmallModel:     "claude-haiku-4-5-20251001",
-		DefaultTier:    TierPro,
 		PermissionMode: types.PermissionModeDefault,
 		APITimeoutMS:   300000,
 	}
@@ -138,25 +132,10 @@ func Load() (*Config, error) {
 	}
 
 	// 3. Override with environment variables
-	if cfg.DefaultTier == "" {
-		cfg.DefaultTier = TierPro
+	if cfg.Model == "" {
+		cfg.Model = "pro"
 	}
 
-	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
-		cfg.APIKey = v
-	}
-	if v := os.Getenv("ANTHROPIC_AUTH_TOKEN"); v != "" {
-		cfg.APIKey = v
-	}
-	if v := os.Getenv("ANTHROPIC_BASE_URL"); v != "" {
-		cfg.BaseURL = v
-	}
-	if v := os.Getenv("ANTHROPIC_MODEL"); v != "" {
-		cfg.Model = v
-	}
-	if v := os.Getenv("ANTHROPIC_SMALL_FAST_MODEL"); v != "" {
-		cfg.SmallModel = v
-	}
 	if v := os.Getenv("API_TIMEOUT_MS"); v != "" {
 		var ms int
 		if _, err := fmt.Sscanf(v, "%d", &ms); err == nil && ms > 0 {
@@ -185,4 +164,69 @@ func ConfigDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(homeDir, ".gbot"), nil
+}
+
+// ValidTiers is the set of recognized tier values.
+var ValidTiers = map[Tier]bool{
+	TierLite: true,
+	TierPro:  true,
+	TierMax:  true,
+}
+
+// ParseModel parses the Model field into provider name and tier.
+// Formats: "provider/tier", "tier", or "" → ("", "pro").
+// Returns an error if the tier is not one of lite, pro, max.
+func (c *Config) ParseModel() (provider string, tier Tier, err error) {
+	if c.Model == "" {
+		return "", TierPro, nil
+	}
+	if before, after, ok := strings.Cut(c.Model, "/"); ok {
+		tier = Tier(after)
+		if !ValidTiers[tier] {
+			return "", "", fmt.Errorf("invalid tier %q in model %q (valid: lite, pro, max)", after, c.Model)
+		}
+		return before, tier, nil
+	}
+	tier = Tier(c.Model)
+	if !ValidTiers[tier] {
+		return "", "", fmt.Errorf("invalid tier %q (valid: lite, pro, max)", c.Model)
+	}
+	return "", tier, nil
+}
+
+// Save writes the configuration back to the user settings file (~/.gbot/settings.json).
+// Only updates the "model" field in the existing file to avoid persisting
+// env-var-derived secrets or overwriting unrelated settings.
+func (c *Config) Save() error {
+	configDir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+	path := filepath.Join(configDir, "settings.json")
+
+	// Read existing file as raw JSON map
+	raw := make(map[string]json.RawMessage)
+	if existing, _ := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(existing, &raw); err != nil {
+			raw = make(map[string]json.RawMessage) // corrupted file — start fresh
+		}
+	}
+
+	// Update only the model field
+	modelJSON, _ := json.Marshal(c.Model)
+	raw["model"] = modelJSON
+
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Atomic write: write to temp file then rename
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

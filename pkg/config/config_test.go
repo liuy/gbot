@@ -19,12 +19,6 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.BaseURL != "https://api.anthropic.com" {
 		t.Errorf("expected BaseURL 'https://api.anthropic.com', got %s", cfg.BaseURL)
 	}
-	if cfg.Model != "claude-sonnet-4-20250514" {
-		t.Errorf("expected Model 'claude-sonnet-4-20250514', got %s", cfg.Model)
-	}
-	if cfg.SmallModel != "claude-haiku-4-5-20251001" {
-		t.Errorf("expected SmallModel 'claude-haiku-4-5-20251001', got %s", cfg.SmallModel)
-	}
 	if cfg.PermissionMode != types.PermissionModeDefault {
 		t.Errorf("expected PermissionModeDefault, got %s", cfg.PermissionMode)
 	}
@@ -33,79 +27,7 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestLoad_EnvOverrides(t *testing.T) {
-	// Not parallel because we set env vars
 
-	dir := t.TempDir()
-	// Create user config dir (empty, so defaults come through)
-	userGbotDir := filepath.Join(dir, "userhome", ".gbot")
-	_ = os.MkdirAll(userGbotDir, 0755)
-
-	_ = os.Setenv("HOME", filepath.Join(dir, "userhome"))
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	// Unset any existing env vars first
-	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
-	}
-
-	// Set our test env vars
-	_ = os.Setenv("ANTHROPIC_API_KEY", "env-api-key")
-	_ = os.Setenv("ANTHROPIC_BASE_URL", "https://env.api.com")
-	_ = os.Setenv("ANTHROPIC_MODEL", "env-model")
-	_ = os.Setenv("ANTHROPIC_SMALL_FAST_MODEL", "env-small-model")
-	_ = os.Setenv("API_TIMEOUT_MS", "120000")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if cfg.APIKey != "env-api-key" {
-		t.Errorf("expected APIKey 'env-api-key', got %s", cfg.APIKey)
-	}
-	if cfg.BaseURL != "https://env.api.com" {
-		t.Errorf("expected BaseURL 'https://env.api.com', got %s", cfg.BaseURL)
-	}
-	if cfg.Model != "env-model" {
-		t.Errorf("expected Model 'env-model', got %s", cfg.Model)
-	}
-	if cfg.SmallModel != "env-small-model" {
-		t.Errorf("expected SmallModel 'env-small-model', got %s", cfg.SmallModel)
-	}
-	if cfg.APITimeoutMS != 120000 {
-		t.Errorf("expected APITimeoutMS 120000, got %d", cfg.APITimeoutMS)
-	}
-}
-
-func TestLoad_AuthTokenEnv(t *testing.T) {
-	_ = os.Setenv("HOME", t.TempDir())
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	_ = os.Unsetenv("ANTHROPIC_API_KEY")
-	_ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
-	defer func() { _ = os.Unsetenv("ANTHROPIC_API_KEY") }()
-	defer func() { _ = os.Unsetenv("ANTHROPIC_AUTH_TOKEN") }()
-
-	_ = os.Setenv("ANTHROPIC_AUTH_TOKEN", "auth-token-value")
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if cfg.APIKey != "auth-token-value" {
-		t.Errorf("expected APIKey from ANTHROPIC_AUTH_TOKEN, got %s", cfg.APIKey)
-	}
-}
 
 func TestLoad_InvalidTimeoutEnv(t *testing.T) {
 	_ = os.Setenv("HOME", t.TempDir())
@@ -241,11 +163,6 @@ func TestLoad_UserConfigFileError(t *testing.T) {
 
 	// Clear env vars that might interfere
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
@@ -286,11 +203,6 @@ func TestLoad_ProjectConfigFileError(t *testing.T) {
 
 	// Clear env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
@@ -341,11 +253,6 @@ func TestLoadFromFile_PermissionError(t *testing.T) {
 
 	// Clear env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
@@ -378,11 +285,6 @@ func TestLoadFromFile_FileNotFound(t *testing.T) {
 
 	// Clear env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
@@ -394,9 +296,8 @@ func TestLoadFromFile_FileNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Should return defaults since no config files exist
-	defaultCfg := config.DefaultConfig()
-	if cfg.Model != defaultCfg.Model {
-		t.Errorf("expected default model %s, got %s", defaultCfg.Model, cfg.Model)
+	if cfg.Model != "pro" {
+		t.Errorf("expected Model pro, got %s", cfg.Model)
 	}
 }
 
@@ -416,11 +317,6 @@ func TestLoad_MissingHomeDir(t *testing.T) {
 
 	// Clear env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 		"HOME",
 	} {
@@ -496,11 +392,6 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 
 	// Clear all relevant env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL",
-		"ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL",
 		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
@@ -519,11 +410,8 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 	if cfg.BaseURL != defaults.BaseURL {
 		t.Errorf("expected default BaseURL, got %s", cfg.BaseURL)
 	}
-	if cfg.Model != defaults.Model {
-		t.Errorf("expected default Model, got %s", cfg.Model)
-	}
-	if cfg.SmallModel != defaults.SmallModel {
-		t.Errorf("expected default SmallModel, got %s", cfg.SmallModel)
+	if cfg.Model != "pro" {
+		t.Errorf("expected Model pro, got %s", cfg.Model)
 	}
 	if cfg.APITimeoutMS != defaults.APITimeoutMS {
 		t.Errorf("expected default APITimeoutMS, got %d", cfg.APITimeoutMS)
@@ -596,8 +484,8 @@ func TestDefaultConfig_DefaultTier(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.DefaultConfig()
-	if cfg.DefaultTier != config.TierPro {
-		t.Errorf("DefaultTier = %q, want %q", cfg.DefaultTier, config.TierPro)
+	if cfg.Model != "" {
+		t.Errorf("Model = %q, want empty", cfg.Model)
 	}
 }
 
@@ -740,9 +628,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 
 	// Clear env vars
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL", "API_TIMEOUT_MS",
+		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
 		defer func(key string) { _ = os.Unsetenv(key) }(k)
@@ -755,7 +641,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 	}
 
 	settings := map[string]any{
-		"default": "pro",
+		"model": "pro",
 		"providers": []map[string]any{
 			{
 				"name": "openai",
@@ -786,8 +672,8 @@ func TestLoad_ProviderConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.DefaultTier != config.TierPro {
-		t.Errorf("DefaultTier = %q, want %q", cfg.DefaultTier, config.TierPro)
+	if cfg.Model != "pro" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "pro")
 	}
 	if len(cfg.Providers) != 1 {
 		t.Fatalf("len(Providers) = %d, want 1", len(cfg.Providers))
@@ -814,9 +700,7 @@ func TestLoad_DefaultTierDefaultsToPro(t *testing.T) {
 	defer func() { _ = os.Unsetenv("HOME") }()
 
 	for _, k := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
-		"ANTHROPIC_SMALL_FAST_MODEL", "API_TIMEOUT_MS",
+		"API_TIMEOUT_MS",
 	} {
 		_ = os.Unsetenv(k)
 		defer func(key string) { _ = os.Unsetenv(key) }(k)
@@ -831,7 +715,230 @@ func TestLoad_DefaultTierDefaultsToPro(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.DefaultTier != config.TierPro {
-		t.Errorf("DefaultTier = %q, want %q when not set", cfg.DefaultTier, config.TierPro)
+	if cfg.Model != "pro" {
+		t.Errorf("Model = %q, want %q when not set", cfg.Model, "pro")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseModel tests
+// ---------------------------------------------------------------------------
+
+func TestParseModel_ProviderTier(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Model: "zhipu/pro"}
+	provider, tier, err := cfg.ParseModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != "zhipu" {
+		t.Errorf("provider = %q, want %q", provider, "zhipu")
+	}
+	if tier != config.TierPro {
+		t.Errorf("tier = %q, want %q", tier, config.TierPro)
+	}
+}
+
+func TestParseModel_TierOnly(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Model: "lite"}
+	provider, tier, err := cfg.ParseModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != "" {
+		t.Errorf("provider = %q, want empty", provider)
+	}
+	if tier != config.TierLite {
+		t.Errorf("tier = %q, want %q", tier, config.TierLite)
+	}
+}
+
+func TestParseModel_Empty(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Model: ""}
+	provider, tier, err := cfg.ParseModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider != "" {
+		t.Errorf("provider = %q, want empty", provider)
+	}
+	if tier != config.TierPro {
+		t.Errorf("tier = %q, want %q", tier, config.TierPro)
+	}
+}
+
+func TestParseModel_AllTiers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		input     string
+		wantTier  config.Tier
+		wantProvd string
+	}{
+		{"zhipu/lite", config.TierLite, "zhipu"},
+		{"zhipu/pro", config.TierPro, "zhipu"},
+		{"zhipu/max", config.TierMax, "zhipu"},
+		{"lite", config.TierLite, ""},
+		{"pro", config.TierPro, ""},
+		{"max", config.TierMax, ""},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			cfg := &config.Config{Model: tc.input}
+			provider, tier, err := cfg.ParseModel()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if provider != tc.wantProvd {
+				t.Errorf("provider = %q, want %q", provider, tc.wantProvd)
+			}
+			if tier != tc.wantTier {
+				t.Errorf("tier = %q, want %q", tier, tc.wantTier)
+			}
+		})
+	}
+}
+
+func TestParseModel_InvalidTier(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		model string
+	}{
+		{"invalid tier in provider/tier", "zhipu/fast"},
+		{"invalid tier alone", "ultra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Model: tc.model}
+			_, _, err := cfg.ParseModel()
+			if err == nil {
+				t.Fatal("expected error for invalid tier")
+			}
+			if !strings.Contains(err.Error(), "invalid tier") {
+				t.Errorf("error should mention 'invalid tier', got: %v", err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Save tests
+// ---------------------------------------------------------------------------
+
+func TestSave_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	cfg := &config.Config{Model: "zhipu/pro"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Read back and verify
+	data, err := os.ReadFile(filepath.Join(dir, ".gbot", "settings.json"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(raw["model"]) != `"zhipu/pro"` {
+		t.Errorf("model = %s, want %q", string(raw["model"]), `"zhipu/pro"`)
+	}
+}
+
+func TestSave_FieldLevelUpdate(t *testing.T) {
+	dir := t.TempDir()
+	gbotDir := filepath.Join(dir, ".gbot")
+	_ = os.MkdirAll(gbotDir, 0755)
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	// Pre-existing settings with other fields
+	existing := map[string]any{
+		"api_timeout_ms": 60000,
+		"theme":          "dark",
+		"providers":      []string{"zhipu"},
+	}
+	existingData, _ := json.Marshal(existing)
+	_ = os.WriteFile(filepath.Join(gbotDir, "settings.json"), existingData, 0644)
+
+	cfg := &config.Config{Model: "zhipu/lite"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Read back and verify all fields preserved
+	data, err := os.ReadFile(filepath.Join(gbotDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(raw["model"]) != `"zhipu/lite"` {
+		t.Errorf("model = %s, want %q", string(raw["model"]), `"zhipu/lite"`)
+	}
+	if string(raw["theme"]) != `"dark"` {
+		t.Errorf("theme should be preserved, got %s", string(raw["theme"]))
+	}
+	if string(raw["api_timeout_ms"]) != "60000" {
+		t.Errorf("api_timeout_ms should be preserved, got %s", string(raw["api_timeout_ms"]))
+	}
+}
+
+func TestSave_CorruptedFile(t *testing.T) {
+	dir := t.TempDir()
+	gbotDir := filepath.Join(dir, ".gbot")
+	_ = os.MkdirAll(gbotDir, 0755)
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	// Write corrupted JSON
+	_ = os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte("{{broken}}"), 0644)
+
+	cfg := &config.Config{Model: "pro"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Read back — should only have model (corrupted content replaced)
+	data, err := os.ReadFile(filepath.Join(gbotDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(raw["model"]) != `"pro"` {
+		t.Errorf("model = %s, want %q", string(raw["model"]), `"pro"`)
+	}
+	// Corrupted content should be gone — only model field
+	if len(raw) != 1 {
+		t.Errorf("expected 1 field, got %d", len(raw))
+	}
+}
+
+func TestSave_NoTmpFileLeft(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	cfg := &config.Config{Model: "pro"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// No .tmp file should remain
+	gbotDir := filepath.Join(dir, ".gbot")
+	entries, _ := os.ReadDir(gbotDir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file should not remain: %s", e.Name())
+		}
 	}
 }

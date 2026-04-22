@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 
@@ -26,7 +27,10 @@ func (m *mockLLMProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.
 }
 
 // newTestAppWithProviders creates an App with providers configured for testing.
-func newTestAppWithProviders() *App {
+func newTestAppWithProviders(t *testing.T) *App {
+	t.Helper()
+	// Isolate HOME so persistModelSelection() writes to temp dir
+	_ = os.Setenv("HOME", t.TempDir())
 	eng := engine.New(&engine.Params{
 		Provider: &mockLLMProvider{},
 		Model:    "glm-5",
@@ -39,7 +43,7 @@ func newTestAppWithProviders() *App {
 	}
 
 	cfg := &config.Config{
-		DefaultTier: config.TierPro,
+		Model: "pro",
 		Providers: []config.Provider{
 			{
 				Name: "openai",
@@ -94,7 +98,7 @@ func helperSetupModelPicker(a *App) []ModelItem {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_StreamingGuard(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	a.repl.streaming = true
 
 	cmd := a.handleModel("openai/pro", nil)
@@ -140,7 +144,7 @@ func TestHandleModel_NoProviders(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_OpenPicker(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("", nil)
 	// openModelPicker returns commitCmd (nil in this case)
@@ -160,7 +164,7 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_ProviderTier_Success(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("anthropic/pro", nil)
 	_ = cmd // tea.Batch cmd
@@ -181,7 +185,7 @@ func TestHandleModel_ProviderTier_Success(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_ProviderTier_UnknownProvider(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("foo/pro", nil)
 	msg := cmd()
@@ -202,7 +206,7 @@ func TestHandleModel_ProviderTier_UnknownProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_ProviderTier_MissingTier(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("anthropic/lite", nil)
 	msg := cmd()
@@ -220,7 +224,7 @@ func TestHandleModel_ProviderTier_MissingTier(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchTier_Success(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("lite", nil)
 	_ = cmd
@@ -241,7 +245,7 @@ func TestHandleModel_SwitchTier_Success(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchTier_MissingTier(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	// Switch to anthropic which has no max tier
 	a.currentProvider = "anthropic"
 
@@ -261,7 +265,7 @@ func TestHandleModel_SwitchTier_MissingTier(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchProvider_Success(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("anthropic", nil)
 	_ = cmd
@@ -283,7 +287,7 @@ func TestHandleModel_SwitchProvider_Success(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchProvider_Unknown(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("unknown", nil)
 	msg := cmd()
@@ -301,7 +305,7 @@ func TestHandleModel_SwitchProvider_Unknown(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchProvider_MissingTierOnTarget(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	// Current tier is max (openai has it, anthropic does not)
 	a.currentTier = config.TierMax
 
@@ -346,7 +350,7 @@ func TestIsValidTier(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModelPickerDone_Cancel(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	captured := helperSetupModelPicker(a)
 	_ = captured
 
@@ -368,7 +372,7 @@ func TestHandleModelPickerDone_Cancel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModelPickerDone_Select(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	captured := helperSetupModelPicker(a)
 
 	// Select second item (index 1)
@@ -396,7 +400,7 @@ func TestHandleModelPickerDone_Select(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	helperSetupModelPicker(a)
 
 	// Create a picker with ghost provider item not in a.providers
@@ -415,7 +419,7 @@ func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModelPickerDone_NilSelected(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	helperSetupModelPicker(a)
 
 	// Neither aborted nor selected
@@ -431,7 +435,7 @@ func TestHandleModelPickerDone_NilSelected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_ProviderTier_NilConfig(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	// Add a provider in providers map but not in providerConfigs
 	a.providers["ghost"] = &mockLLMProvider{}
 
@@ -480,7 +484,7 @@ func TestHandleModel_SwitchTier_NilConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	// Add a provider in providers map but not in providerConfigs
 	a.providers["ghost"] = &mockLLMProvider{}
 
@@ -500,7 +504,7 @@ func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildModelItems_Items(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
 
 	// openai: 3 tiers + anthropic: 1 tier = 4 items
@@ -518,7 +522,7 @@ func TestBuildModelItems_Items(t *testing.T) {
 }
 
 func TestBuildModelItems_CurrentMarked(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
 
 	found := false
@@ -617,7 +621,7 @@ func TestFindCurrentIndex_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
-	a := newTestAppWithProviders()
+	a := newTestAppWithProviders(t)
 	// Open a model picker first
 	a.handleModel("", nil)
 	if a.listPicker == nil {

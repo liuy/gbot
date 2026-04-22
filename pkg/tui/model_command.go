@@ -93,6 +93,7 @@ func (a *App) handleModelPickerDone(p *ListPicker, items []ModelItem) (tea.Model
 	a.engine.SetModel(selected.Model)
 	a.currentProvider = selected.Provider
 	a.currentTier = selected.Tier
+	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", selected.Provider, "tier", selected.Tier, "model", selected.Model)
 
@@ -120,6 +121,7 @@ func (a *App) switchProviderTier(providerName, tierName string, commitCmd tea.Cm
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
 	a.currentTier = tier
+	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", providerName, "tier", tier, "model", model)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", providerName, tier, model)))
@@ -139,6 +141,7 @@ func (a *App) switchTier(tierName string, commitCmd tea.Cmd) tea.Cmd {
 
 	a.engine.SetModel(model)
 	a.currentTier = tier
+	a.persistModelSelection()
 
 	slog.Info("model: switched tier", "provider", a.currentProvider, "tier", tier, "model", model)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", a.currentProvider, tier, model)))
@@ -163,6 +166,7 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
+	a.persistModelSelection()
 
 	slog.Info("model: switched provider", "provider", providerName, "tier", a.currentTier, "model", model)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", providerName, a.currentTier, model)))
