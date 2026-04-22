@@ -134,9 +134,23 @@ type openaiDelta struct {
 	ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
 }
 
+type openaiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
+}
+
+type openaiCompletionTokensDetails struct {
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+}
+
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens            int                            `json:"prompt_tokens"`
+	CompletionTokens        int                            `json:"completion_tokens"`
+	PromptTokensDetails     openaiPromptTokensDetails      `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails openaiCompletionTokensDetails  `json:"completion_tokens_details,omitempty"`
 }
 
 // Non-streaming response
@@ -238,8 +252,10 @@ func (p *OpenAIProvider) translateResponse(body []byte) (*Response, error) {
 		Model:      oResp.Model,
 		StopReason: mapFinishReason(choice.FinishReason),
 		Usage: types.Usage{
-			InputTokens:  oResp.Usage.PromptTokens,
-			OutputTokens: oResp.Usage.CompletionTokens,
+			InputTokens:              oResp.Usage.PromptTokens - oResp.Usage.PromptTokensDetails.CachedTokens,
+			OutputTokens:            oResp.Usage.CompletionTokens,
+			CacheReadInputTokens:    oResp.Usage.PromptTokensDetails.CachedTokens,
+			CacheCreationInputTokens: 0, // OpenAI API does not report cache creation
 		},
 	}, nil
 }
@@ -508,8 +524,9 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 				// Emit message_delta with stop_reason + usage
 				usage := &UsageDelta{}
 				if chunk.Usage != nil {
-					usage.InputTokens = chunk.Usage.PromptTokens
+					usage.InputTokens = chunk.Usage.PromptTokens - chunk.Usage.PromptTokensDetails.CachedTokens
 					usage.OutputTokens = chunk.Usage.CompletionTokens
+					usage.CacheReadInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 				}
 				send(ctx, eventCh, StreamEvent{
 					Type:     "message_delta",
