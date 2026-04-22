@@ -52,14 +52,21 @@ func TestSessionPicker_Navigation(t *testing.T) {
 		t.Errorf("cursor after 2nd down = %d, want 2", p.cursor)
 	}
 
-	// Can't go past end
+	// Wrap around at end
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p = model.(*SessionPicker)
-	if p.cursor != 2 {
-		t.Errorf("cursor after 3rd down = %d, want 2 (clamped)", p.cursor)
+	if p.cursor != 0 {
+		t.Errorf("cursor after 3rd down = %d, want 0 (wrap to top)", p.cursor)
 	}
 
-	// Move up
+	// Wrap around at top
+	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyUp})
+	p = model.(*SessionPicker)
+	if p.cursor != 2 {
+		t.Errorf("cursor after up-at-top = %d, want 2 (wrap to bottom)", p.cursor)
+	}
+
+	// Move up normally
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyUp})
 	p = model.(*SessionPicker)
 	if p.cursor != 1 {
@@ -136,6 +143,29 @@ func TestSessionPicker_EmptyView(t *testing.T) {
 	view := p.View()
 	if !strings.Contains(view, "No sessions") {
 		t.Errorf("empty picker should say no sessions, got %q", view)
+	}
+}
+
+func TestSessionPicker_WrapAround(t *testing.T) {
+	items := []SessionItem{
+		{SessionID: "s1", Title: "Session 1"},
+		{SessionID: "s2", Title: "Session 2"},
+		{SessionID: "s3", Title: "Session 3"},
+	}
+	p := NewSessionPicker(items)
+
+	// At top (cursor=0), press up → should wrap to bottom
+	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyUp})
+	p = model.(*SessionPicker)
+	if p.cursor != 2 {
+		t.Errorf("cursor after up-at-top = %d, want 2 (wrap to bottom)", p.cursor)
+	}
+
+	// At bottom (cursor=2), press down → should wrap to top
+	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
+	p = model.(*SessionPicker)
+	if p.cursor != 0 {
+		t.Errorf("cursor after down-at-bottom = %d, want 0 (wrap to top)", p.cursor)
 	}
 }
 

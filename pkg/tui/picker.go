@@ -47,12 +47,20 @@ func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
-			if p.cursor > 0 {
-				p.cursor--
+			if len(p.items) > 0 {
+				if p.cursor > 0 {
+					p.cursor--
+				} else {
+					p.cursor = len(p.items) - 1
+				}
 			}
 		case "down", "j":
-			if p.cursor < len(p.items)-1 {
-				p.cursor++
+			if len(p.items) > 0 {
+				if p.cursor < len(p.items)-1 {
+					p.cursor++
+				} else {
+					p.cursor = 0
+				}
 			}
 		case "enter":
 			if p.cursor < len(p.items) {
