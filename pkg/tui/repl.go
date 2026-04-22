@@ -471,6 +471,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						cachePart = fmt.Sprintf(" · %s warmed", formatTokenCount(a.status.usage.CacheCreationInputTokens))
 					}
 				}
+			} else {
+				cachePart = " · cache missed"
 			}
 			var toolsPart string
 			if tc := a.repl.toolCount; tc > 0 {
