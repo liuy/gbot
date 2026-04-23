@@ -46,6 +46,16 @@ const QuerySourceReplMainThread = "repl_main_thread"
 // QuerySourceAgentCustom identifies a custom (non-built-in) sub-agent.
 const QuerySourceAgentCustom = "agent:custom"
 
+// QuerySourceCompact identifies the compact system's internal forked agent.
+// Used as recursion guard — compact agents must not trigger another compact.
+// Source: TS services/compact/compact.ts — querySource: 'compact'
+const QuerySourceCompact = "compact"
+
+// QuerySourceSessionMemory identifies the session memory forked agent.
+// Used as recursion guard — session memory agents must not trigger compact.
+// Source: TS services/SessionMemory/sessionMemory.ts — querySource: 'session_memory'
+const QuerySourceSessionMemory = "session_memory"
+
 // compactableTools maps gbot tool names to microcompact eligibility.
 // Source: microCompact.ts:41-50 — COMPACTABLE_TOOLS set.
 // MAINTENANCE: When adding a new compactable tool, update this map and

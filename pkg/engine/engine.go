@@ -365,14 +365,19 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			// Reactive compact: try compact + retry on context overflow.
 			// TS align: query.ts:1119-1175 — reactiveCompact.tryReactiveCompact()
 			if e.compactor != nil && llm.IsContextOverflow(err) && !reactiveCompactDone {
-				compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
-				if compactErr == nil {
-					e.setMessages(compacted)
-					reactiveCompactDone = true
-					e.logger.Info("reactive auto-compact succeeded, retrying")
-					continue
+				// Recursion guard: compact/session_memory forked agents
+				// must not retry on overflow — they'd deadlock.
+				src := e.querySource()
+				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
+					compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
+					if compactErr == nil {
+						e.setMessages(compacted)
+						reactiveCompactDone = true
+						e.logger.Info("reactive auto-compact succeeded, retrying")
+						continue
+					}
+					e.logger.Warn("reactive auto-compact failed", "error", compactErr)
 				}
-				e.logger.Warn("reactive auto-compact failed", "error", compactErr)
 			}
 
 			// Stage 16: Error handling
@@ -911,7 +916,11 @@ func (e *Engine) shouldAutoCompact() bool {
 	if cfg.ContextWindow <= 0 || cfg.Threshold <= 0 {
 		return false
 	}
-	if e.isSubagent {
+	// Recursion guard: compact and session_memory are forked agents
+	// that would deadlock if they triggered another compact.
+	// Source: TS autoCompact.ts:169-172
+	src := e.querySource()
+	if src == QuerySourceCompact || src == QuerySourceSessionMemory {
 		return false
 	}
 	// Circuit breaker
@@ -1139,20 +1148,22 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 
 	return &Engine{
-		provider:      e.provider,
-		tools:         opts.Tools,
-		toolOrder:     toolOrder,
-		model:         model,
-		maxTokens:     e.maxTokens,
-		logger:        e.logger,
-		messages:      []types.Message{},
-		tokenBudget:   0, // sub-agents bypass budget checks via isSubagent
-		turnCount:     0,
-		dispatcher:    dispatcher,
-		notifications: &notificationQueue{},
-		isSubagent:    true,
-		agentType:     opts.AgentType,
-		maxTurns:      subMaxTurns(opts.MaxTurns),
+		provider:          e.provider,
+		tools:             opts.Tools,
+		toolOrder:         toolOrder,
+		model:             model,
+		maxTokens:         e.maxTokens,
+		logger:            e.logger,
+		messages:          []types.Message{},
+		tokenBudget:       0, // sub-agents bypass budget checks via isSubagent
+		turnCount:         0,
+		dispatcher:        dispatcher,
+		notifications:     &notificationQueue{},
+		isSubagent:        true,
+		agentType:         opts.AgentType,
+		maxTurns:          subMaxTurns(opts.MaxTurns),
+		compactor:         e.compactor,
+		autoCompactConfig: e.autoCompactConfig,
 	}
 }
 

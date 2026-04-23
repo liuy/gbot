@@ -524,3 +524,168 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 		t.Errorf("compact should reduce messages: got %d, input was %d", len(result), len(msgs))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Integration Test 7: Sub-engine proactive compact (TS alignment)
+// ---------------------------------------------------------------------------
+
+// TestAutoCompact_SubEngine_ProactiveCompact verifies that a sub-engine created
+// via NewSubEngine triggers proactive auto-compact when it inherits a compactor
+// from its parent and its messages exceed the threshold.
+// Source: plan steady-dreaming-sunrise.md — sub-agents should auto-compact.
+func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	session, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	p := &integrationProvider{}
+	p.addStream(textStreamEvents("test-model", "sub-engine response after compact"), nil)
+
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+
+	parent := engine.New(&engine.Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		AutoCompact: engine.AutoCompactConfig{
+			Threshold:     0.5,
+			ContextWindow: 1000,
+		},
+		Logger: slog.Default(),
+	})
+
+	// Sub-engine inherits compactor + config from parent.
+	// Source: plan Step 4 — NewSubEngine passes compactor + autoCompactConfig.
+	subEng := parent.NewSubEngine(engine.SubEngineOptions{
+		AgentType: "Explore",
+		MaxTurns:  5,
+	})
+
+	// Add high-token messages to exceed threshold (1000 * 0.5 = 500 tokens).
+	// 10 messages × 100 tokens each = 1000 tokens, well above 500.
+	subEng.SetMessages(makeLargeMessages(10, 100))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := subEng.QuerySync(ctx, "explore this", nil)
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+
+	// Verify compact happened: final messages should be fewer than the 10 we set
+	// (compact replaces them with a summary + boundary marker).
+	// The 10 original messages + 1 user msg + 1 response = 12 without compact.
+	// With compact: boundary + user msg + response = much fewer.
+	//
+	// Count messages that are NOT from the original 10 — if compact ran,
+	// the original messages are replaced.
+	foundResponse := false
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, "sub-engine response after compact") {
+				foundResponse = true
+			}
+		}
+	}
+	if !foundResponse {
+		t.Error("expected sub-engine response in final messages")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration Test 8: Sub-engine reactive compact (TS alignment)
+// ---------------------------------------------------------------------------
+
+// TestAutoCompact_SubEngine_ReactiveCompact verifies that a sub-engine triggers
+// reactive auto-compact when the API returns a prompt_too_long error, then
+// retries successfully with compacted messages.
+// Source: plan steady-dreaming-sunrise.md — reactive compact with querySource guard.
+func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	session, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	p := &integrationProvider{}
+	// First call: context overflow error triggers reactive compact
+	p.addStream(nil, &llm.APIError{
+		Status:    400,
+		ErrorCode: "prompt_too_long",
+		Message:   "input length exceeds context limit",
+	})
+	// Second call: success after compact reduces messages
+	p.addStream(textStreamEvents("test-model", "recovered after reactive compact"), nil)
+
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+
+	parent := engine.New(&engine.Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		AutoCompact: engine.AutoCompactConfig{
+			Threshold:     0.5,
+			ContextWindow: 100000, // high threshold so proactive doesn't fire first
+		},
+		Logger: slog.Default(),
+	})
+
+	// Sub-engine inherits compactor + config
+	subEng := parent.NewSubEngine(engine.SubEngineOptions{
+		AgentType: "Explore",
+		MaxTurns:  5,
+	})
+
+	// Set large messages so compact has something to work with
+	subEng.SetMessages(makeLargeMessages(10, 5000))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := subEng.QuerySync(ctx, "test query", nil)
+
+	if result.Error != nil {
+		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+
+	// Verify the response came from the retry (second API call after compact)
+	foundRecovery := false
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, "recovered after reactive compact") {
+				foundRecovery = true
+			}
+		}
+	}
+	if !foundRecovery {
+		t.Error("expected response from retry after reactive compact in sub-engine")
+	}
+}

@@ -1941,18 +1941,6 @@ func TestShouldAutoCompact(t *testing.T) {
 		t.Error("should be false with 0 tokens")
 	}
 
-	// Subagent → always false
-	sub := eng.NewSubEngine(SubEngineOptions{
-		AgentType: "Explore",
-	})
-	sub.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.5,
-		ContextWindow: 100000,
-	})
-	if sub.shouldAutoCompact() {
-		t.Error("subagent should never auto-compact")
-	}
-
 	// Invalid config (zero values) → false
 	eng2 := New(&Params{Model: "test"})
 	eng2.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
@@ -1998,5 +1986,113 @@ func TestShouldAutoCompact(t *testing.T) {
 	})
 	if eng4.shouldAutoCompact() {
 		t.Error("should be false with default circuit breaker at 3 failures")
+	}
+}
+
+// TestShouldAutoCompact_SubAgentCanCompact verifies that sub-agents CAN trigger
+// proactive auto-compact when they inherit a compactor and exceed the threshold.
+// This is the core behavioral change: TS only guards compact/session_memory,
+// not all sub-agents. Source: TS autoCompact.ts:169-172.
+func TestShouldAutoCompact_SubAgentCanCompact(t *testing.T) {
+	t.Parallel()
+
+	parent := New(&Params{Model: "test"})
+	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.5,
+		ContextWindow: 100,
+	})
+
+	sub := parent.NewSubEngine(SubEngineOptions{
+		AgentType: "Explore",
+		Tools:     map[string]tool.Tool{},
+	})
+
+	// Sub should inherit compactor from parent
+	if sub.compactor == nil {
+		t.Fatal("sub-engine should inherit compactor from parent")
+	}
+
+	// Add enough messages to exceed threshold (100 * 0.5 = 50 tokens)
+	sub.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+	})
+
+	if !sub.shouldAutoCompact() {
+		t.Error("sub-agent with compactor and high tokens should trigger auto-compact")
+	}
+}
+
+// TestNewSubEngine_SharesCompactor verifies that NewSubEngine passes compactor
+// and autoCompactConfig from parent to sub-engine. Source: plan Step 4.
+func TestNewSubEngine_SharesCompactor(t *testing.T) {
+	t.Parallel()
+
+	parent := New(&Params{Model: "test"})
+	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		Threshold:     0.8,
+		ContextWindow: 200000,
+	})
+
+	sub := parent.NewSubEngine(SubEngineOptions{
+		AgentType: "Explore",
+		Tools:     map[string]tool.Tool{},
+	})
+
+	if sub.compactor == nil {
+		t.Fatal("sub-engine should inherit compactor from parent")
+	}
+	if sub.autoCompactConfig.Threshold != 0.8 {
+		t.Errorf("sub.autoCompactConfig.Threshold = %v, want 0.8", sub.autoCompactConfig.Threshold)
+	}
+	if sub.autoCompactConfig.ContextWindow != 200000 {
+		t.Errorf("sub.autoCompactConfig.ContextWindow = %d, want 200000", sub.autoCompactConfig.ContextWindow)
+	}
+}
+
+// TestShouldAutoCompact_QuerySourceGuard verifies that built-in and custom
+// sub-agents can trigger auto-compact. The compact/session_memory guards are
+// forward-looking — they will be tested when those features are implemented.
+// Source: TS autoCompact.ts:169-172 — guards only compact and session_memory.
+func TestShouldAutoCompact_QuerySourceGuard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+	}{
+		{"Explore agent", "Explore"},
+		{"Plan agent", "Plan"},
+		{"General agent", "General"},
+		{"Custom agent", "my-custom-agent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := New(&Params{Model: "test"})
+			parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+				Threshold:     0.5,
+				ContextWindow: 100,
+			})
+
+			sub := parent.NewSubEngine(SubEngineOptions{
+				AgentType: tt.agentType,
+				Tools:     map[string]tool.Tool{},
+			})
+
+			// Verify querySource is NOT compact or session_memory
+			src := sub.querySource()
+			if src == QuerySourceCompact || src == QuerySourceSessionMemory {
+				t.Fatalf("querySource %q should not match guard for %s", src, tt.agentType)
+			}
+
+			// With enough tokens, shouldAutoCompact should return true
+			sub.SetMessages([]types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 10000))}},
+			})
+
+			if !sub.shouldAutoCompact() {
+				t.Errorf("%s should trigger auto-compact with compactor and high tokens", tt.name)
+			}
+		})
 	}
 }
