@@ -21,7 +21,10 @@ func TestKillProcessTree(t *testing.T) {
 	if err != nil {
 		t.Errorf("killProcessTree() error: %v", err)
 	}
-	_ = cmd.Wait() // process already killed, wait just reaps
+	// Process was killed; Wait should return a signal-related error.
+	if waitErr := cmd.Wait(); waitErr == nil {
+		t.Error("expected non-nil error from cmd.Wait() after killProcessTree")
+	}
 }
 
 func TestKillProcessTree_AlreadyExited(t *testing.T) {
@@ -32,7 +35,9 @@ func TestKillProcessTree_AlreadyExited(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("cmd.Wait for 'true': %v", err)
+	}
 
 	err := killProcessTree(cmd.Process.Pid)
 	if err != nil {
@@ -51,7 +56,10 @@ func TestKillProcess(t *testing.T) {
 	pid := cmd.Process.Pid
 
 	killProcess(pid)
-	_ = cmd.Wait() // process already killed, wait just reaps
+	// Process was killed; Wait should return a signal-related error.
+	if waitErr := cmd.Wait(); waitErr == nil {
+		t.Error("expected non-nil error from cmd.Wait() after killProcess")
+	}
 
 	// Verify process was killed by checking if it's still running
 	_, err := os.Stat("/proc/" + strconv.Itoa(pid))
@@ -68,7 +76,9 @@ func TestKillProcess_AlreadyExited(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("cmd.Wait for 'true': %v", err)
+	}
 
 	// Killing already-exited process should not error
 	killProcess(cmd.Process.Pid)
@@ -95,7 +105,10 @@ func TestKillProcessTree_Setsid(t *testing.T) {
 	}
 
 	_ = killProcessTree(cmd.Process.Pid)
-	_ = cmd.Wait() // process already killed, wait just reaps
+	// Process was killed; Wait should return a signal-related error.
+	if waitErr := cmd.Wait(); waitErr == nil {
+		t.Error("expected non-nil error from cmd.Wait() after killProcessTree")
+	}
 }
 
 func TestKillProcessTree_ESRCHPath(t *testing.T) {
@@ -106,7 +119,9 @@ func TestKillProcessTree_ESRCHPath(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("cmd.Wait for 'true': %v", err)
+	}
 
 	// Now killProcessTree: pgid may still be valid but Kill(-pgid, 0)
 	// returns ESRCH (process group doesn't exist). This covers the

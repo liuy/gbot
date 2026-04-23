@@ -4491,7 +4491,9 @@ func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	dir := t.TempDir()
 	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
-	store.CreateSession(dir, "model") //nolint:errcheck
+	if _, err := store.CreateSession(dir, "model"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	app.SetStore(store, "existing-session", dir, 0)
 
 	commitCmd := func() tea.Msg { return nil }
@@ -4513,7 +4515,9 @@ func TestApp_Update_PickerMode_SelectClosesPicker(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	dir := t.TempDir()
 	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
-	store.CreateSession(dir, "model") //nolint:errcheck
+	if _, err := store.CreateSession(dir, "model"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	app.SetStore(store, "existing-session", dir, 0)
 
 	commitCmd := func() tea.Msg { return nil }
@@ -4534,7 +4538,9 @@ func TestApp_Update_PickerMode_WindowSize(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	dir := t.TempDir()
 	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
-	store.CreateSession(dir, "model") //nolint:errcheck
+	if _, err := store.CreateSession(dir, "model"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	app.SetStore(store, "existing-session", dir, 0)
 
 	commitCmd := func() tea.Msg { return nil }
@@ -4627,7 +4633,9 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	dir := t.TempDir()
 	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
-	store.CreateSession(dir, "model") //nolint:errcheck
+	if _, err := store.CreateSession(dir, "model"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	app.SetStore(store, "existing-session", dir, 0)
 
 	app.handleSlashCommand(SlashCommand{Name: "session"}, nil)

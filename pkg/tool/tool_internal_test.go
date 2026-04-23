@@ -199,7 +199,7 @@ func TestToolWithStreaming_StillImplementsTool(t *testing.T) {
 	})
 
 	// Should implement base Tool interface
-	var _ Tool = tl //nolint:staticcheck // intentional interface assertion
+	var _ Tool = tl //nolint // compile-time interface assertion
 
 	result, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err != nil {

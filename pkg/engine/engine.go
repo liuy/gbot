@@ -20,17 +20,10 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
-
-// EventDispatcher is the interface for routing events from Engine to consumers.
-// Engine depends on this abstraction rather than a concrete Hub type,
-// following the Dependency Inversion Principle.
-// *hub.Hub satisfies this interface.
-type EventDispatcher interface {
-	Dispatch(event types.QueryEvent)
-}
 
 // Compactor is the interface for auto-compact operations.
 // The engine calls this when it detects token usage approaching limits
@@ -69,7 +62,7 @@ type Engine struct {
 	sessionID     string
 	tokenBudget   int
 	turnCount     int
-	dispatcher    EventDispatcher
+	dispatcher    types.EventDispatcher
 	notifications *notificationQueue
 	systemPrompt  json.RawMessage // stored system prompt for fork agent access
 
@@ -95,6 +88,9 @@ type Engine struct {
 	// lastInputTokens stores the exact input token count from the last API call.
 	// Used by currentInputTokens() to avoid re-walking all messages when available.
 	lastInputTokens int
+
+	// mcpRegistry manages MCP server connections and tool discovery.
+	mcpRegistry *mcp.Registry
 }
 
 // Params holds the constructor arguments for Engine.
@@ -106,9 +102,10 @@ type Params struct {
 	MaxTokens     int
 	TokenBudget   int
 	Logger        *slog.Logger
-	Dispatcher    EventDispatcher
+	Dispatcher    types.EventDispatcher
 	Compactor     Compactor
 	AutoCompact   AutoCompactConfig
+	MCPRegistry   *mcp.Registry
 }
 
 // QueryResult is the final result of a query.
@@ -182,6 +179,7 @@ func New(p *Params) *Engine {
 		maxTurns:          50,
 		compactor:         p.Compactor,
 		autoCompactConfig: p.AutoCompact,
+		mcpRegistry:       p.MCPRegistry,
 	}
 }
 
@@ -1005,6 +1003,40 @@ func (e *Engine) refreshTools() {
 	slices.Sort(e.toolOrder)
 }
 
+// ---------------------------------------------------------------------------
+// MCP integration — tool merging + shutdown
+// ---------------------------------------------------------------------------
+
+// MCPTools returns MCP tools as tool.Tool adapters from the registry.
+func (e *Engine) MCPTools() []tool.Tool {
+	if e.mcpRegistry == nil {
+		return nil
+	}
+	discovered := e.mcpRegistry.GetTools()
+	tools := make([]tool.Tool, 0, len(discovered))
+	for _, dt := range discovered {
+		tools = append(tools, NewMCPTool(dt, e.mcpRegistry))
+	}
+	return tools
+}
+
+// AllTools returns the combined tool map including MCP tools.
+func (e *Engine) AllTools() map[string]tool.Tool {
+	result := make(map[string]tool.Tool, len(e.tools))
+	maps.Copy(result, e.tools)
+	for _, t := range e.MCPTools() {
+		result[t.Name()] = t
+	}
+	return result
+}
+
+// Close shuts down the engine and its MCP registry.
+func (e *Engine) Close() {
+	if e.mcpRegistry != nil {
+		_ = e.mcpRegistry.Close()
+	}
+}
+
 // MaxTokens returns the max tokens setting.
 func (e *Engine) MaxTokens() int {
 	return e.maxTokens
@@ -1091,10 +1123,10 @@ func (e *Engine) SessionID() string {
 // TaggedDispatcher — wraps parent dispatcher to inject AgentMeta into sub-agent events
 // ---------------------------------------------------------------------------
 
-// taggedDispatcher wraps an EventDispatcher and injects AgentMeta into every event.
+// taggedDispatcher wraps an types.EventDispatcher and injects AgentMeta into every event.
 // Used by sub-engines so their tool events reach the parent TUI with agent context.
 type taggedDispatcher struct {
-	parent EventDispatcher
+	parent types.EventDispatcher
 	meta   *types.AgentMeta
 }
 
@@ -1134,7 +1166,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	slices.Sort(toolOrder)
 
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
-	var dispatcher EventDispatcher
+	var dispatcher types.EventDispatcher
 	if e.dispatcher != nil && opts.ParentToolUseID != "" {
 		parentDepth := 0 // depth tracking for nested agents not yet implemented
 		dispatcher = &taggedDispatcher{
@@ -1164,6 +1196,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		maxTurns:          subMaxTurns(opts.MaxTurns),
 		compactor:         e.compactor,
 		autoCompactConfig: e.autoCompactConfig,
+		mcpRegistry:       e.mcpRegistry,
 	}
 }
 

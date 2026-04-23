@@ -99,7 +99,7 @@ type checkPattern struct {
 var checkPatterns = []checkPattern{
 	{
 		Name:  "discarded setup error (_ = xxx.Method())",
-		Regex: regexp.MustCompile(`^\s*_ = .*\.(Scan|Exec|Close|Unmarshal|Marshal|Query|Open|Begin|Commit|Write|Read|Insert|Delete|Update)\(`),
+		Regex: regexp.MustCompile(`^\s*_ = .*\.(Scan|Exec|Close|Unmarshal|Marshal|Query|Open|Begin|Commit|Write|Read|Insert|Delete|Update|WriteTokens|ReadTokens|WriteClientConfig|ReadClientConfig|SaveTokens|Release|Wait)\(`),
 		Level: "P1",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
 			// Exempt: defer cleanup
@@ -299,6 +299,18 @@ var checkPatterns = []checkPattern{
 					return false
 				},
 			},
+		{
+			Name:  "//nolint suppressions — fix the issue, not hide it",
+			Regex: regexp.MustCompile(`//nolint:`),
+			Level: "P1",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "`") {
+					return true
+				}
+				return false
+			},
+		},
 }
 
 // scanFile checks a single file for weak assertion patterns.

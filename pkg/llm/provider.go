@@ -257,7 +257,7 @@ func DefaultRetryConfig() *RetryConfig {
 type BaseProvider struct {
 	httpClient  *http.Client
 	retryConfig *RetryConfig
-	idleTimeout time.Duration //nolint:unused // SSE idle timeout, used by OpenAI provider
+	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider
 }
 
 // CalculateBackoff computes exponential backoff with jitter.
