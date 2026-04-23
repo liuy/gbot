@@ -736,3 +736,308 @@ func TestParseAPIError_ServerErrorMapping(t *testing.T) {
 		t.Error("500 should be retryable")
 	}
 }
+
+// TestOpenAIStream_ReasoningContent tests the GLM reasoning_content (thinking) delta handling.
+func TestOpenAIStream_ReasoningContent(t *testing.T) {
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Send reasoning_content first (thinking block)
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-4\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Let me think\"},\"finish_reason\":null}]}\n\n")
+		// Then content (should close thinking block, open text block)
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"glm-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ctx := context.Background()
+	req := &llm.Request{Model: "glm-4", MaxTokens: 100}
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var events []llm.StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	// Should have: message_start, thinking_start, thinking_delta, thinking_stop,
+	// text_start, text_delta, text_end, message_delta, message_stop
+	var gotThinkingStart, gotThinkingDelta bool
+	var gotTextStart, gotTextDelta bool
+	for _, e := range events {
+		switch e.Type {
+		case "content_block_start":
+			if e.ContentBlock != nil && e.ContentBlock.Type == types.ContentTypeThinking {
+				gotThinkingStart = true
+			}
+			if e.ContentBlock != nil && e.ContentBlock.Type == types.ContentTypeText {
+				gotTextStart = true
+			}
+		case "content_block_delta":
+			if e.Delta != nil {
+				switch e.Delta.Type {
+				case "thinking_delta":
+					gotThinkingDelta = true
+					if e.Delta.Thinking != "Let me think" {
+						t.Errorf("thinking text = %q, want %q", e.Delta.Thinking, "Let me think")
+					}
+				case "text_delta":
+					gotTextDelta = true
+				}
+			}
+		}
+	}
+	if !gotThinkingStart {
+		t.Error("missing thinking_start event")
+	}
+	if !gotThinkingDelta {
+		t.Error("missing thinking_delta event")
+	}
+	if !gotTextStart {
+		t.Error("missing text_start event")
+	}
+	if !gotTextDelta {
+		t.Error("missing text_delta event")
+	}
+}
+
+// TestOpenAIStream_ToolCallArgsBeforeName tests the edge case where tool call
+// arguments arrive before the function name in the SSE stream.
+func TestOpenAIStream_ToolCallArgsBeforeName(t *testing.T) {
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Chunk 1: tool call with ID but no name yet, has arguments
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"\",\"arguments\":\"{\\\"cmd\\\"\"}}]},\"finish_reason\":null}]}\n\n")
+		// Chunk 2: name arrives later
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"bash\",\"arguments\":\":\\\"ls\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ctx := context.Background()
+	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var events []llm.StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	// When arguments arrive before the name, content_block_start fires with
+	// whatever is available (ID but empty name). Arguments still accumulate correctly.
+	var gotToolStart bool
+	var toolInput strings.Builder
+	var toolID string
+	for _, e := range events {
+		switch e.Type {
+		case "content_block_start":
+			if e.ContentBlock != nil && e.ContentBlock.Type == types.ContentTypeToolUse {
+				gotToolStart = true
+				// ID is set from the first chunk, name is empty (arrives later)
+				toolID = e.ContentBlock.ID
+			}
+		case "content_block_delta":
+			if e.Delta != nil && e.Delta.Type == "input_json_delta" {
+				toolInput.WriteString(e.Delta.PartialJSON)
+			}
+		}
+	}
+	if !gotToolStart {
+		t.Error("missing tool_start event")
+	}
+	if toolID != "call_1" {
+		t.Errorf("tool ID = %q, want %q", toolID, "call_1")
+	}
+	if toolInput.String() != `{"cmd":"ls"}` {
+		t.Errorf("accumulated tool input = %q, want %q", toolInput.String(), `{"cmd":"ls"}`)
+	}
+}
+
+// TestOpenAIStream_StreamEndsWithoutDONE tests graceful handling when stream
+// ends without a [DONE] marker.
+func TestOpenAIStream_StreamEndsWithoutDONE(t *testing.T) {
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Send text but no [DONE] — just close the connection
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Partial\"},\"finish_reason\":null}]}\n\n")
+		// Connection closes here — no [DONE]
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ctx := context.Background()
+	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var events []llm.StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	// Should still get message_stop even without [DONE]
+	last := events[len(events)-1]
+	if last.Type != "message_stop" {
+		t.Errorf("last event = %q, want message_stop", last.Type)
+	}
+}
+
+// TestOpenAIStream_RetryAfterHeader tests that Retry-After header is parsed
+// during retry backoff.
+func TestOpenAIStream_RetryAfterHeader(t *testing.T) {
+	callCount := 0
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.Header().Set("Retry-After", "1") // 1 second
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	for range ch {
+	}
+
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (1 retry), got %d", callCount)
+	}
+}
+
+// TestOpenAIStream_InterleavedParallelToolCalls tests real-world interleaved
+// parallel tool call streaming: 3 tools with deltas arriving out of order.
+func TestOpenAIStream_InterleavedParallelToolCalls(t *testing.T) {
+	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// Chunk 1: tool 0 starts — bash with id + name
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bash\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"co\"}}]},\"finish_reason\":null}]}\n\n")
+		// Chunk 2: tool 1 starts — read with id + name
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_read\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"pa\"}}]},\"finish_reason\":null}]}\n\n")
+		// Chunk 3: tool 0 continues — more bash args
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"mmand\\\":\\\"ls\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
+		// Chunk 4: tool 2 starts — write with id + name
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":2,\"id\":\"call_write\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"out.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
+		// Chunk 5: tool 1 continues — more read args
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"th\\\":\\\"main.go\\\"}\"}}]},\"finish_reason\":null}]}\n\n")
+		// Finish
+		_, _ = fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-p1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := newOpenAIProviderWithServer(server)
+	ctx := context.Background()
+	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
+	ch, err := provider.Stream(ctx, req)
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var events []llm.StreamEvent
+	for e := range ch {
+		events = append(events, e)
+	}
+
+	// Collect tool starts and their accumulated input
+	toolStarts := map[int]struct {
+		id   string
+		name string
+	}{}
+	toolInputs := map[int]string{}
+	var stopIndices []int
+
+	for _, e := range events {
+		switch e.Type {
+		case "content_block_start":
+			if e.ContentBlock != nil && e.ContentBlock.Type == types.ContentTypeToolUse {
+				toolStarts[e.Index] = struct {
+					id   string
+					name string
+				}{id: e.ContentBlock.ID, name: e.ContentBlock.Name}
+			}
+		case "content_block_delta":
+			if e.Delta != nil && e.Delta.Type == "input_json_delta" {
+				toolInputs[e.Index] += e.Delta.PartialJSON
+			}
+		case "content_block_stop":
+			stopIndices = append(stopIndices, e.Index)
+		}
+	}
+
+	// Verify 3 tool calls started
+	if len(toolStarts) != 3 {
+		t.Fatalf("expected 3 tool starts, got %d", len(toolStarts))
+	}
+
+	// Tool 0: bash
+	if toolStarts[0].name != "bash" {
+		t.Errorf("tool[0] name = %q, want %q", toolStarts[0].name, "bash")
+	}
+	if toolStarts[0].id != "call_bash" {
+		t.Errorf("tool[0] id = %q, want %q", toolStarts[0].id, "call_bash")
+	}
+	if toolInputs[0] != `{"command":"ls"}` {
+		t.Errorf("tool[0] input = %q, want %q", toolInputs[0], `{"command":"ls"}`)
+	}
+
+	// Tool 1: read_file
+	if toolStarts[1].name != "read_file" {
+		t.Errorf("tool[1] name = %q, want %q", toolStarts[1].name, "read_file")
+	}
+	if toolStarts[1].id != "call_read" {
+		t.Errorf("tool[1] id = %q, want %q", toolStarts[1].id, "call_read")
+	}
+	if toolInputs[1] != `{"path":"main.go"}` {
+		t.Errorf("tool[1] input = %q, want %q", toolInputs[1], `{"path":"main.go"}`)
+	}
+
+	// Tool 2: write_file
+	if toolStarts[2].name != "write_file" {
+		t.Errorf("tool[2] name = %q, want %q", toolStarts[2].name, "write_file")
+	}
+	if toolStarts[2].id != "call_write" {
+		t.Errorf("tool[2] id = %q, want %q", toolStarts[2].id, "call_write")
+	}
+	if toolInputs[2] != `{"path":"out.txt"}` {
+		t.Errorf("tool[2] input = %q, want %q", toolInputs[2], `{"path":"out.txt"}`)
+	}
+
+	// All 3 stops must fire
+	stopSet := map[int]bool{}
+	for _, idx := range stopIndices {
+		stopSet[idx] = true
+	}
+	for i := range 3 {
+		if !stopSet[i] {
+			t.Errorf("missing content_block_stop for tool index %d", i)
+		}
+	}
+}

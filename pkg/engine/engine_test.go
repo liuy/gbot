@@ -963,7 +963,6 @@ func TestClassifyTerminalError(t *testing.T) {
 	}
 }
 
-
 func TestQuery_MultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -3013,18 +3012,17 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 	mp.addResponse(events, nil)
 	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
 
-	var inputs map[string]json.RawMessage
-	inputs = make(map[string]json.RawMessage)
+	var inputs sync.Map
 	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
-		inputs["Read"] = input
+		inputs.Store("Read", input)
 		return &tool.ToolResult{Data: "contents"}, nil
 	}}
 	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
-		inputs["Bash"] = input
+		inputs.Store("Bash", input)
 		return &tool.ToolResult{Data: "ok"}, nil
 	}}
 	toolGrep := &mockTool{name: "Grep", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
-		inputs["Grep"] = input
+		inputs.Store("Grep", input)
 		return &tool.ToolResult{Data: "matches"}, nil
 	}}
 
@@ -3049,14 +3047,17 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 	}
 
 	// Verify each tool got exactly the right input, no mixing
-	if string(inputs["Read"]) != `{"file_path": "/src/main.go"}` {
-		t.Errorf("Read input = %q, want %q", string(inputs["Read"]), `{"file_path": "/src/main.go"}`)
+	readInput, _ := inputs.Load("Read")
+	if string(readInput.(json.RawMessage)) != `{"file_path": "/src/main.go"}` {
+		t.Errorf("Read input = %q, want %q", string(readInput.(json.RawMessage)), `{"file_path": "/src/main.go"}`)
 	}
-	if string(inputs["Bash"]) != `{"command": "go test"}` {
-		t.Errorf("Bash input = %q, want %q", string(inputs["Bash"]), `{"command": "go test"}`)
+	bashInput, _ := inputs.Load("Bash")
+	if string(bashInput.(json.RawMessage)) != `{"command": "go test"}` {
+		t.Errorf("Bash input = %q, want %q", string(bashInput.(json.RawMessage)), `{"command": "go test"}`)
 	}
-	if string(inputs["Grep"]) != `{"pattern": "TODO"}` {
-		t.Errorf("Grep input = %q, want %q", string(inputs["Grep"]), `{"pattern": "TODO"}`)
+	grepInput, _ := inputs.Load("Grep")
+	if string(grepInput.(json.RawMessage)) != `{"pattern": "TODO"}` {
+		t.Errorf("Grep input = %q, want %q", string(grepInput.(json.RawMessage)), `{"pattern": "TODO"}`)
 	}
 }
 
@@ -3081,12 +3082,10 @@ func TestSetCompactor(t *testing.T) {
 
 	// Verify concurrent SetCompactor doesn't race
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			eng.SetCompactor(&mockCompactor{}, engine.AutoCompactConfig{Threshold: 0.5})
-		}()
+		})
 	}
 	wg.Wait()
 }
