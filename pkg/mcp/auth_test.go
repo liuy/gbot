@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1424,6 +1425,10 @@ func TestRefreshLock_AcquireRelease(t *testing.T) {
 }
 
 func TestRefreshLock_Concurrent(t *testing.T) {
+	origBase, origInc := lockRetryBase, lockRetryInc
+	lockRetryBase, lockRetryInc = 1, 1
+	defer func() { lockRetryBase, lockRetryInc = origBase, origInc }()
+
 	dir := t.TempDir()
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -2328,6 +2333,10 @@ func TestInvalidateCredentials_WithTokenData(t *testing.T) {
 // =========================================================================
 
 func TestRefreshLock_AcquireAlreadyHeld(t *testing.T) {
+	origBase, origInc := lockRetryBase, lockRetryInc
+	lockRetryBase, lockRetryInc = 1, 1
+	defer func() { lockRetryBase, lockRetryInc = origBase, origInc }()
+
 	tmpDir := t.TempDir()
 	lock := NewRefreshLock(tmpDir, "test-server")
 
@@ -3304,6 +3313,10 @@ func TestRefreshAuthorization_ReadTokensError(t *testing.T) {
 // --- RefreshAuthorization: transient error retry succeeds (line 643) ---
 
 func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
+	origSleep := authBackoffSleep
+	authBackoffSleep = func(d time.Duration) {} // instant for testing
+	defer func() { authBackoffSleep = origSleep }()
+
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3346,6 +3359,10 @@ func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
 // --- RefreshAuthorization: transient error retry exhausted (line 646) ---
 
 func TestRefreshAuthorization_TransientRetryExhausted(t *testing.T) {
+	origSleep := authBackoffSleep
+	authBackoffSleep = func(d time.Duration) {} // instant for testing
+	defer func() { authBackoffSleep = origSleep }()
+
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4929,5 +4946,328 @@ func TestRedirectPortRange_AllPlatforms(t *testing.T) {
 		if min != 49152 || max != 65535 {
 			t.Errorf("non-windows: expected 49152-65535, got %d-%d", min, max)
 		}
+	}
+}
+
+// --- RefreshAuthorization: exponential backoff between retries (Step 1) ---
+
+func TestRefreshAuthorization_ExponentialBackoff(t *testing.T) {
+	// Record sleep durations instead of actually sleeping
+	var delays []time.Duration
+	origSleep := authBackoffSleep
+	authBackoffSleep = func(d time.Duration) { delays = append(delays, d) }
+	defer func() { authBackoffSleep = origSleep }()
+
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
+	if err := store.WriteTokens("key", &OAuthTokenData{
+		AccessToken:  "old",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
+
+	var callTimes []time.Time
+	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+		callTimes = append(callTimes, time.Now())
+		if len(callTimes) < 3 {
+			return nil, fmt.Errorf("server returned 503 Service Unavailable")
+		}
+		return &OAuthTokens{
+			AccessToken:  "new-token",
+			RefreshToken: "new-refresh",
+			ExpiresIn:    3600,
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tokens == nil {
+		t.Fatal("expected tokens after retries")
+	}
+	if tokens.AccessToken != "new-token" {
+		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
+	}
+	if len(callTimes) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(callTimes))
+	}
+
+	// Verify exponential backoff delays: 1s, 2s
+	// Source: auth.ts:2349 — delayMs = 1000 * Math.pow(2, attempt - 1)
+	if len(delays) != 2 {
+		t.Fatalf("expected 2 backoff sleeps, got %d", len(delays))
+	}
+	if delays[0] != 1000*time.Millisecond {
+		t.Errorf("delay[0] = %v, want 1s", delays[0])
+	}
+	if delays[1] != 2000*time.Millisecond {
+		t.Errorf("delay[1] = %v, want 2s", delays[1])
+	}
+}
+
+func TestRefreshAuthorization_NoBackoffOnNonTransient(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
+	if err := store.WriteTokens("key", &OAuthTokenData{
+		AccessToken:  "old",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
+
+	start := time.Now()
+	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+		return nil, fmt.Errorf("permission denied")
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error for non-transient failure")
+	}
+	if tokens != nil {
+		t.Error("expected nil tokens")
+	}
+	// Non-transient errors should return immediately, no backoff delay
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("non-transient error took %v, should be < 500ms (no backoff)", elapsed)
+	}
+}
+
+func TestRefreshAuthorization_NoBackoffOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileTokenStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileTokenStore: %v", err)
+	}
+	if err := store.WriteTokens("key", &OAuthTokenData{
+		AccessToken:  "old",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("WriteTokens: %v", err)
+	}
+
+	start := time.Now()
+	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+		return &OAuthTokens{
+			AccessToken:  "new-token",
+			RefreshToken: "new-refresh",
+			ExpiresIn:    3600,
+		}, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tokens == nil {
+		t.Fatal("expected tokens")
+	}
+	// First attempt succeeds — no backoff at all
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("successful refresh took %v, should be < 500ms (no backoff)", elapsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExchangeAuthCode tests — Step 6
+// Source: @modelcontextprotocol/sdk — auth.js token exchange
+// ---------------------------------------------------------------------------
+
+func TestExchangeAuthCode_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("expected form content type, got %s", r.Header.Get("Content-Type"))
+		}
+
+		// Parse form body
+		body, _ := io.ReadAll(r.Body)
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("parse body: %v", err)
+		}
+
+		// Verify required parameters
+		if values.Get("grant_type") != "authorization_code" {
+			t.Errorf("grant_type = %q, want authorization_code", values.Get("grant_type"))
+		}
+		if values.Get("code") != "test-auth-code" {
+			t.Errorf("code = %q, want test-auth-code", values.Get("code"))
+		}
+		if values.Get("code_verifier") != "test-verifier" {
+			t.Errorf("code_verifier = %q, want test-verifier", values.Get("code_verifier"))
+		}
+		if values.Get("redirect_uri") != "http://localhost:1234/callback" {
+			t.Errorf("redirect_uri = %q", values.Get("redirect_uri"))
+		}
+		if values.Get("client_id") != "test-client" {
+			t.Errorf("client_id = %q", values.Get("client_id"))
+		}
+
+		// Return valid token response
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{
+			"access_token": "at-123",
+			"token_type": "Bearer",
+			"expires_in": 3600,
+			"refresh_token": "rt-456",
+			"scope": "read write"
+		}`)
+	}))
+	defer server.Close()
+
+	tokens, err := ExchangeAuthCode(context.Background(), server.URL, "test-auth-code", "test-verifier", "http://localhost:1234/callback", "test-client")
+	if err != nil {
+		t.Fatalf("ExchangeAuthCode: %v", err)
+	}
+
+	if tokens.AccessToken != "at-123" {
+		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "at-123")
+	}
+	if tokens.TokenType != "Bearer" {
+		t.Errorf("TokenType = %q, want %q", tokens.TokenType, "Bearer")
+	}
+	if tokens.ExpiresIn != 3600 {
+		t.Errorf("ExpiresIn = %v, want 3600", tokens.ExpiresIn)
+	}
+	if tokens.RefreshToken != "rt-456" {
+		t.Errorf("RefreshToken = %q, want %q", tokens.RefreshToken, "rt-456")
+	}
+	if tokens.Scope != "read write" {
+		t.Errorf("Scope = %q, want %q", tokens.Scope, "read write")
+	}
+}
+
+func TestExchangeAuthCode_Error400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"error":"invalid_request","error_description":"Missing code parameter"}`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "invalid_request") {
+		t.Errorf("error should contain error code, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Missing code parameter") {
+		t.Errorf("error should contain description, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_CodeVerifierSent(t *testing.T) {
+	var receivedVerifier string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		values, _ := url.ParseQuery(string(body))
+		receivedVerifier = values.Get("code_verifier")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "code", "my-pkce-verifier-123", "http://localhost/cb", "client")
+	if err != nil {
+		t.Fatalf("ExchangeAuthCode: %v", err)
+	}
+
+	if receivedVerifier != "my-pkce-verifier-123" {
+		t.Errorf("code_verifier sent = %q, want %q", receivedVerifier, "my-pkce-verifier-123")
+	}
+}
+
+func TestExchangeAuthCode_InvalidGrant(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"Authorization code expired"}`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "expired-code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error for invalid_grant")
+	}
+	if !strings.Contains(err.Error(), "invalid_grant") {
+		t.Errorf("error should mention invalid_grant, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_MissingAccessToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error for missing access_token")
+	}
+	if !strings.Contains(err.Error(), "access_token") {
+		t.Errorf("error should mention access_token, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `not json`)
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error should mention parse, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_500Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "internal server error")
+	}))
+	defer server.Close()
+
+	_, err := ExchangeAuthCode(context.Background(), server.URL, "code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error for 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should mention 500, got: %v", err)
+	}
+}
+
+func TestExchangeAuthCode_CancelledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer"}`)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := ExchangeAuthCode(ctx, server.URL, "code", "verifier", "http://localhost/cb", "client")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
 	}
 }

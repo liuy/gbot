@@ -53,6 +53,13 @@ const (
 
 // sensitiveOAuthParams are query parameters that should be redacted from logs.
 // Source: auth.ts:100-106
+// Injectable timing parameters for fast unit tests.
+var (
+	authBackoffSleep = time.Sleep // exponential backoff sleep in RefreshAuthorization
+	lockRetryBase    = 1000       // ms base for RefreshLock.Acquire retry sleep
+	lockRetryInc     = 300        // ms increment per retry
+)
+
 var sensitiveOAuthParams = []string{"state", "nonce", "code_challenge", "code_verifier", "code"}
 
 // ---------------------------------------------------------------------------
@@ -442,6 +449,8 @@ type OAuthFlowConfig struct {
 	TokenStore    *FileTokenStore
 	OnAuthURL     func(url string) // called when auth URL is available
 	SkipBrowser   bool
+	TokenEndpoint string // OAuth token endpoint URL
+	ClientID      string // OAuth client ID
 }
 
 // OAuthFlowResult holds the result of a completed OAuth flow.
@@ -553,7 +562,15 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 	select {
 	case code := <-codeChan:
 		// Source: auth.ts:1218-1258 — authorization code obtained
-		// The caller does the actual token exchange with the code
+		// Exchange authorization code for tokens if endpoint is configured
+		if config.TokenEndpoint != "" && config.ClientID != "" {
+			tokens, err := ExchangeAuthCode(ctx, config.TokenEndpoint, code, codeVerifier, redirectURI, config.ClientID)
+			if err != nil {
+				return nil, fmt.Errorf("mcp: %s: token exchange failed: %w", config.ServerName, err)
+			}
+			return &OAuthFlowResult{Tokens: tokens}, nil
+		}
+		// Fallback: return code as placeholder for SDK-driven exchange
 		return &OAuthFlowResult{
 			Tokens: &OAuthTokens{
 				AccessToken: code, // placeholder; actual exchange is SDK-dependent
@@ -568,6 +585,68 @@ func PerformMCPOAuthFlow(ctx context.Context, config OAuthFlowConfig) (*OAuthFlo
 		}
 		return nil, &AuthenticationCancelledError{}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ExchangeAuthCode — Source: auth.ts SDK internal + xaaIdpLogin.ts:453
+//
+// Exchanges an authorization code for OAuth tokens via POST to the token endpoint.
+// Source: client.ts SDK auth.js — standard authorization_code grant with PKCE.
+// ---------------------------------------------------------------------------
+
+// ExchangeAuthCode exchanges an authorization code for OAuth tokens.
+// Source: @modelcontextprotocol/sdk — auth.js token exchange
+func ExchangeAuthCode(ctx context.Context, tokenEndpoint, code, codeVerifier, redirectURI, clientID string) (*OAuthTokens, error) {
+	data := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {codeVerifier},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenEndpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("mcp: create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: token exchange request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: read token response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// Source: auth.ts:127-191 — normalizeOAuthErrorBody
+		var errResp struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+			if errResp.Error == "invalid_grant" {
+				return nil, fmt.Errorf("mcp: invalid_grant: %s", errResp.ErrorDescription)
+			}
+			return nil, fmt.Errorf("mcp: OAuth error %s: %s", errResp.Error, errResp.ErrorDescription)
+		}
+		return nil, fmt.Errorf("mcp: token exchange failed: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokens OAuthTokens
+	if err := json.Unmarshal(body, &tokens); err != nil {
+		return nil, fmt.Errorf("mcp: parse token response: %w", err)
+	}
+
+	if tokens.AccessToken == "" {
+		return nil, fmt.Errorf("mcp: token response missing access_token")
+	}
+
+	return &tokens, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -639,8 +718,12 @@ func RefreshAuthorization(
 				return nil, nil
 			}
 
-			// Source: auth.ts:2328-2355 — retry on transient errors
+			// Source: auth.ts:2328-2355 — retry on transient errors with exponential backoff
 			if attempt < maxAttempts && isTransientError(err) {
+				// Source: auth.ts:2349 — delayMs = 1000 * Math.pow(2, attempt - 1)
+				delay := time.Duration(1000*(1<<uint(attempt-1))) * time.Millisecond
+				slog.Debug("mcp: transient refresh error, retrying", "attempt", attempt, "delay", delay)
+				authBackoffSleep(delay)
 				continue
 			}
 			return nil, err
@@ -827,7 +910,7 @@ func (l *RefreshLock) Acquire() error {
 			return nil
 		}
 		// Source: auth.ts:2122 — sleep 1000 + random * 1000 ms
-		time.Sleep(time.Duration(1000+retry*300) * time.Millisecond)
+		time.Sleep(time.Duration(lockRetryBase+retry*lockRetryInc) * time.Millisecond)
 	}
 	// Source: auth.ts:2131-2135 — proceed without lock after max retries
 	return nil

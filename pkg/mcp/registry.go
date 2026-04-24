@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"maps"
 	"math/rand"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -30,10 +32,47 @@ const (
 	// maxBackoff is the maximum backoff duration for reconnection.
 	// Source: useManageMCPConnections.ts:18 — MAX_BACKOFF_MS
 	maxBackoff = time.Duration(MaxBackoffMs) * time.Millisecond
+)
 
+var (
 	// shutdownGracePeriod is the time to wait for graceful shutdown before forcing.
 	shutdownGracePeriod = 5 * time.Second
+
+	// reconnectMinBackoff is the minimum backoff for ScheduleReconnect (tests can override).
+	reconnectMinBackoff = initialBackoff
 )
+
+// ---------------------------------------------------------------------------
+// Batch size constants — Source: client.ts:552-561
+// ---------------------------------------------------------------------------
+
+const (
+	// localBatchDefault is the default concurrency for local (stdio/sdk) servers.
+	// Source: client.ts:552-554 — MCP_SERVER_CONNECTION_BATCH_SIZE
+	localBatchDefault = 3
+
+	// remoteBatchDefault is the default concurrency for remote (sse/http/ws) servers.
+	// Source: client.ts:556-561 — MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE
+	remoteBatchDefault = 20
+)
+
+func getLocalBatchSize() int {
+	if v := os.Getenv("MCP_SERVER_CONNECTION_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return localBatchDefault
+}
+
+func getRemoteBatchSize() int {
+	if v := os.Getenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return remoteBatchDefault
+}
 
 // ---------------------------------------------------------------------------
 // Change callbacks — Source: useManageMCPConnections.ts:618-752
@@ -131,6 +170,7 @@ func NewRegistry(manager *ClientManager, callbacks ChangeCallbacks) *Registry {
 
 // ConnectAll connects to all configured servers that are not disabled.
 // Source: useManageMCPConnections.ts:858-1024 — effect connects to all servers
+// Source: client.ts:2388-2402 — processBatched with local/remote concurrency limits
 //
 // Returns a map of server name → connection result for each server.
 func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpServerConfig) map[string]ServerConnection {
@@ -147,7 +187,16 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 	r.mu.Unlock()
 
 	results := make(map[string]ServerConnection, len(configs))
+	var resultsMu sync.Mutex
 
+	// serverEntry holds a name+config pair for batch classification.
+	type serverEntry struct {
+		name string
+		cfg  ScopedMcpServerConfig
+	}
+
+	// Classify into local/remote groups; handle disabled inline.
+	var local, remote []serverEntry
 	for name, cfg := range configs {
 		r.mu.RLock()
 		disabled := r.disabled[name]
@@ -161,17 +210,52 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 			continue
 		}
 
-		conn, err := r.manager.ConnectToServer(ctx, name, cfg)
-		if err != nil {
-			results[name] = &FailedServer{Name: name, Config: cfg, Error: err.Error()}
+		if IsLocalServer(cfg) {
+			local = append(local, serverEntry{name, cfg})
 		} else {
-			results[name] = conn
+			remote = append(remote, serverEntry{name, cfg})
 		}
-
-		r.mu.Lock()
-		r.connections[name] = results[name]
-		r.mu.Unlock()
 	}
+
+	// processGroup connects a batch of servers with sliding-window concurrency.
+	// Source: client.ts:2212-2224 — processBatched (pMap-style concurrency)
+	processGroup := func(entries []serverEntry, batchSize int) {
+		sem := make(chan struct{}, batchSize)
+		var wg sync.WaitGroup
+		for _, e := range entries {
+			wg.Add(1)
+			sem <- struct{}{} // acquire slot
+			go func(name string, cfg ScopedMcpServerConfig) {
+				defer wg.Done()
+				defer func() { <-sem }() // release slot
+
+				conn, err := r.manager.ConnectToServer(ctx, name, cfg)
+
+				var result ServerConnection
+				if err != nil {
+					result = &FailedServer{Name: name, Config: cfg, Error: err.Error()}
+				} else {
+					result = conn
+				}
+
+				resultsMu.Lock()
+				results[name] = result
+				r.mu.Lock()
+				r.connections[name] = result
+				r.mu.Unlock()
+				resultsMu.Unlock()
+			}(e.name, e.cfg)
+		}
+		wg.Wait()
+	}
+
+	// Run local and remote groups concurrently.
+	// Source: client.ts:2388-2402 — Promise.all([processBatched(local), processBatched(remote)])
+	var groupWg sync.WaitGroup
+	groupWg.Add(2)
+	go func() { defer groupWg.Done(); processGroup(local, getLocalBatchSize()) }()
+	go func() { defer groupWg.Done(); processGroup(remote, getRemoteBatchSize()) }()
+	groupWg.Wait()
 
 	// Batch discovery for all connected servers
 	var connected []*ConnectedServer
@@ -492,7 +576,7 @@ func (r *Registry) ScheduleReconnect(serverName string, attempt int) {
 
 	// Exponential backoff with jitter
 	// Source: useManageMCPConnections.ts:834 — Math.min(INITIAL * 2^attempt, MAX)
-	backoff := min(initialBackoff*time.Duration(1<<uint(attempt)), maxBackoff)
+	backoff := min(reconnectMinBackoff*time.Duration(1<<uint(attempt)), maxBackoff)
 	// Add jitter (±50%)
 	jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
 	backoff = backoff/2 + jitter

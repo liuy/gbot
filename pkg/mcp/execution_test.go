@@ -1,16 +1,23 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 // ---------------------------------------------------------------------------
@@ -1505,5 +1512,360 @@ func TestInferCompactSchema_Exactly10Keys(t *testing.T) {
 		if !strings.Contains(schema, key) {
 			t.Errorf("schema should contain %q, got: %q", key, schema)
 		}
+	}
+}
+
+// --- URL elicitation retry tests (Step 7) ---
+
+func TestIsURLElicitationError_WithJsonrpcError(t *testing.T) {
+	rpcErr := &jsonrpc.Error{Code: mcp.CodeURLElicitationRequired, Message: "URL elicitation required"}
+	if !isURLElicitationError(rpcErr) {
+		t.Error("expected true for -32042 jsonrpc error")
+	}
+}
+
+func TestIsURLElicitationError_WrappedInToolCallError(t *testing.T) {
+	rpcErr := &jsonrpc.Error{Code: mcp.CodeURLElicitationRequired, Message: "URL elicitation required"}
+	toolErr := &McpToolCallError{ServerName: "srv", ToolName: "tool", Err: rpcErr}
+	if !isURLElicitationError(toolErr) {
+		t.Error("expected true for -32042 wrapped in McpToolCallError")
+	}
+}
+
+func TestIsURLElicitationError_OtherError(t *testing.T) {
+	if isURLElicitationError(fmt.Errorf("some other error")) {
+		t.Error("expected false for non-elicitation error")
+	}
+}
+
+func TestIsURLElicitationError_OtherJsonrpcCode(t *testing.T) {
+	rpcErr := &jsonrpc.Error{Code: -32600, Message: "invalid request"}
+	if isURLElicitationError(rpcErr) {
+		t.Error("expected false for non--32042 jsonrpc error")
+	}
+}
+
+func TestCallMCPToolWithUrlElicitationRetry_Success(t *testing.T) {
+	callCount := 0
+	origCallMCPTool := _callMCPTool
+	_callMCPTool = func(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
+		callCount++
+		return &MCPToolCallResult{Content: nil}, nil
+	}
+	defer func() { _callMCPTool = origCallMCPTool }()
+
+	result, err := CallMCPToolWithUrlElicitationRetry(context.Background(), CallMCPToolParams{
+		Server:   &ConnectedServer{Name: "test"},
+		ToolName: "tool",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call, got %d", callCount)
+	}
+}
+
+func TestCallMCPToolWithUrlElicitationRetry_NonElicitationError(t *testing.T) {
+	origCallMCPTool := _callMCPTool
+	_callMCPTool = func(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
+		return nil, fmt.Errorf("some error")
+	}
+	defer func() { _callMCPTool = origCallMCPTool }()
+
+	_, err := CallMCPToolWithUrlElicitationRetry(context.Background(), CallMCPToolParams{
+		Server:   &ConnectedServer{Name: "test"},
+		ToolName: "tool",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "some error") {
+		t.Errorf("error should contain original message, got: %v", err)
+	}
+}
+
+func TestCallMCPToolWithUrlElicitationRetry_RetriesOn32042(t *testing.T) {
+	callCount := 0
+	origCallMCPTool := _callMCPTool
+	_callMCPTool = func(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
+		callCount++
+		if callCount < 3 {
+			return nil, &McpToolCallError{
+				ServerName: "srv",
+				ToolName:   "tool",
+				Err:        &jsonrpc.Error{Code: mcp.CodeURLElicitationRequired, Message: "need url"},
+			}
+		}
+		return &MCPToolCallResult{Content: nil}, nil
+	}
+	defer func() { _callMCPTool = origCallMCPTool }()
+
+	result, err := CallMCPToolWithUrlElicitationRetry(context.Background(), CallMCPToolParams{
+		Server:   &ConnectedServer{Name: "test"},
+		ToolName: "tool",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result after retries")
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 calls (2 retries + 1 success), got %d", callCount)
+	}
+}
+
+func TestCallMCPToolWithUrlElicitationRetry_MaxRetriesExceeded(t *testing.T) {
+	origCallMCPTool := _callMCPTool
+	_callMCPTool = func(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
+		return nil, &McpToolCallError{
+			ServerName: "srv",
+			ToolName:   "tool",
+			Err:        &jsonrpc.Error{Code: mcp.CodeURLElicitationRequired, Message: "need url"},
+		}
+	}
+	defer func() { _callMCPTool = origCallMCPTool }()
+
+	_, err := CallMCPToolWithUrlElicitationRetry(context.Background(), CallMCPToolParams{
+		Server:   &ConnectedServer{Name: "test"},
+		ToolName: "tool",
+	})
+	if err == nil {
+		t.Fatal("expected error after max retries exceeded")
+	}
+	if !strings.Contains(err.Error(), "max retries") {
+		t.Errorf("error should mention max retries, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test") {
+		t.Errorf("error should contain server name, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Image resize tests — Step 5
+// Source: imageResizer.ts:169-433 — maybeResizeAndDownsampleImageBuffer
+// ---------------------------------------------------------------------------
+
+// createPNG creates a minimal valid PNG of the given dimensions.
+func createPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	// Fill with a gradient to make compression harder
+	for y := range h {
+		for x := range w {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(x % 256),
+				G: uint8(y % 256),
+				B: uint8((x + y) % 256),
+				A: 255,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// createJPEG creates a JPEG image of the given dimensions.
+func createJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(x % 256),
+				G: uint8(y % 256),
+				B: 128,
+				A: 255,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestResizeImage_NoResizeNeeded(t *testing.T) {
+	// Small image — should return original data unchanged
+	original := createPNG(t, 100, 100)
+	result, err := resizeImageWithLimits(original, "image/png", 200, 200, 10<<20)
+	if err != nil {
+		t.Fatalf("resizeImage: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Error("small image should be returned unchanged")
+	}
+}
+
+func TestResizeImage_DownscaleByDimensions(t *testing.T) {
+	// Image larger than 2000x2000 → should be downscaled
+	original := createJPEG(t, 100, 100)
+	result, err := resizeImageWithLimits(original, "image/jpeg", 50, 50, 10<<20)
+	if err != nil {
+		t.Fatalf("resizeImage: %v", err)
+	}
+	t.Logf("original: %d bytes, resized: %d bytes", len(original), len(result))
+	if len(result) == 0 {
+		t.Fatal("resized image should not be empty")
+	}
+
+	// Verify dimensions are within limits
+	img, _, err := image.Decode(bytes.NewReader(result))
+	if err != nil {
+		t.Fatalf("decode resized image: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() > imageMaxWidth {
+		t.Errorf("width %d exceeds max %d", bounds.Dx(), imageMaxWidth)
+	}
+	if bounds.Dy() > imageMaxHeight {
+		t.Errorf("height %d exceeds max %d", bounds.Dy(), imageMaxHeight)
+	}
+	t.Logf("resized: %dx%d → %d bytes", bounds.Dx(), bounds.Dy(), len(result))
+}
+
+func TestResizeImage_PNGKeptAsPNG(t *testing.T) {
+	// Small PNG that's within limits — should stay as PNG
+	original := createPNG(t, 50, 50)
+	result, err := resizeImageWithLimits(original, "image/png", 200, 200, 10<<20)
+	if err != nil {
+		t.Fatalf("resizeImage: %v", err)
+	}
+	if !bytes.Equal(result, original) {
+		t.Error("small PNG should be returned unchanged")
+	}
+}
+
+func TestResizeImage_LargePNGDownscaled(t *testing.T) {
+	// Large PNG that exceeds dimension limits
+	original := createPNG(t, 100, 100)
+	result, err := resizeImageWithLimits(original, "image/png", 50, 50, 10<<20)
+	if err != nil {
+		t.Fatalf("resizeImage: %v", err)
+	}
+
+	// Should be downscaled
+	img, _, err := image.Decode(bytes.NewReader(result))
+	if err != nil {
+		t.Fatalf("decode resized image: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() > imageMaxWidth {
+		t.Errorf("width %d exceeds max %d", bounds.Dx(), imageMaxWidth)
+	}
+	if bounds.Dy() > imageMaxHeight {
+		t.Errorf("height %d exceeds max %d", bounds.Dy(), imageMaxHeight)
+	}
+}
+
+func TestResizeImage_EmptyData(t *testing.T) {
+	_, err := resizeImageWithLimits([]byte{}, "image/png", 50, 50, 10<<20)
+	if err == nil {
+		t.Fatal("expected error for empty data")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention empty, got: %v", err)
+	}
+}
+
+func TestResizeImage_InvalidImageFallback(t *testing.T) {
+	_, err := resizeImageWithLimits([]byte("not an image"), "image/png", 50, 50, 10<<20)
+	if err == nil {
+		t.Fatal("expected error for invalid image")
+	}
+}
+
+func TestResizeImage_AspectRatioPreserved(t *testing.T) {
+	// 2100x1050 image → should scale to 2000x1000 (width hits max first)
+	original := createJPEG(t, 100, 50)
+	result, err := resizeImageWithLimits(original, "image/jpeg", 50, 50, 10<<20)
+	if err != nil {
+		t.Fatalf("resizeImage: %v", err)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(result))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	b := img.Bounds()
+	// Aspect ratio should be 2:1
+	ratio := float64(b.Dx()) / float64(b.Dy())
+	if ratio < 1.9 || ratio > 2.1 {
+		t.Logf("dimensions: %dx%d, ratio: %.2f", b.Dx(), b.Dy(), ratio)
+		t.Errorf("aspect ratio should be ~2.0, got %.2f (%dx%d)", ratio, b.Dx(), b.Dy())
+	}
+	if b.Dx() > imageMaxWidth {
+		t.Errorf("width %d exceeds max %d", b.Dx(), imageMaxWidth)
+	}
+}
+
+func TestTransformResultContent_ImageResized(t *testing.T) {
+	// Use small limits so a tiny image triggers the resize path
+	origMaxW, origMaxH := imageMaxWidth, imageMaxHeight
+	imageMaxWidth, imageMaxHeight = 50, 50
+	defer func() { imageMaxWidth, imageMaxHeight = origMaxW, origMaxH }()
+
+	// Image larger than 50x50 → should be resized
+	largeJPEG := createJPEG(t, 100, 100)
+	content := &mcp.ImageContent{
+		Data:     largeJPEG,
+		MIMEType: "image/jpeg",
+	}
+	results := TransformResultContent(content, "test-server")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Type != MCPResultImage {
+		t.Errorf("type = %v, want MCPResultImage", results[0].Type)
+	}
+	// The result data should be different from original (resized)
+	if results[0].RawData == "" {
+		t.Error("expected non-empty RawData")
+	}
+	// Decode the base64 to verify it's valid
+	decoded, err := base64.StdEncoding.DecodeString(results[0].RawData)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	// Verify the decoded image has smaller dimensions than the original
+	img, _, err := image.Decode(bytes.NewReader(decoded))
+	if err != nil {
+		t.Fatalf("decode resized image: %v", err)
+	}
+	b := img.Bounds()
+	if b.Dx() > imageMaxWidth {
+		t.Errorf("width %d exceeds max %d", b.Dx(), imageMaxWidth)
+	}
+	if b.Dy() > imageMaxHeight {
+		t.Errorf("height %d exceeds max %d", b.Dy(), imageMaxHeight)
+	}
+}
+
+func TestTransformResultContent_ImageResizeErrorFallback(t *testing.T) {
+	// Invalid image data should fall back to original data
+	content := &mcp.ImageContent{
+		Data:     []byte("not-a-real-image"),
+		MIMEType: "image/png",
+	}
+	results := TransformResultContent(content, "test-server")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// Should still work — fallback to original data
+	if results[0].Type != MCPResultImage {
+		t.Errorf("type = %v, want MCPResultImage", results[0].Type)
+	}
+	// RawData should be the base64 of the original invalid data
+	expected := base64.StdEncoding.EncodeToString([]byte("not-a-real-image"))
+	if results[0].RawData != expected {
+		t.Error("fallback should use original data")
 	}
 }

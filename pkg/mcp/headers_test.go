@@ -212,7 +212,7 @@ func TestGetDynamicHeaders_Timeout(t *testing.T) {
 		URL:           "http://example.com",
 		HeadersHelper: "sleep 60",
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -222,8 +222,8 @@ func TestGetDynamicHeaders_Timeout(t *testing.T) {
 	if result != nil {
 		t.Errorf("expected nil on timeout, got %v", result)
 	}
-	// Should be killed well before the 60s sleep completes
-	if elapsed > 5*time.Second {
+	// Process cleanup escalation adds ~2s overhead (SIGINT→SIGTERM→SIGKILL)
+	if elapsed > 3*time.Second {
 		t.Errorf("timeout took too long: %v", elapsed)
 	}
 }

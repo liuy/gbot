@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,7 +156,7 @@ func (p *panicProvider) NewTransport(name string, cfg McpServerConfig, scope Con
 func TestClientManager_Memoization(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -196,7 +197,7 @@ func TestClientManager_Memoization(t *testing.T) {
 func TestClientManager_CacheInvalidation(t *testing.T) {
 	_, t2a := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2a}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -241,7 +242,7 @@ func TestClientManager_CacheInvalidation(t *testing.T) {
 func TestClientManager_ConcurrentGoroutines(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -304,7 +305,7 @@ func TestClientManager_ConcurrentGoroutines(t *testing.T) {
 func TestClientManager_AuthCacheSkip(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -601,7 +602,7 @@ func TestGetConnectionTimeout(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClientManager_EnsureConnected_SDKBypass(t *testing.T) {
-	cm := NewClientManager(TransportFactory{}, true)
+	cm := NewClientManager(TransportFactory{}, true, "")
 
 	// SDK servers are returned as-is without connecting
 	sdkConn := &ConnectedServer{
@@ -624,7 +625,7 @@ func TestClientManager_EnsureConnected_SDKBypass(t *testing.T) {
 func TestClientManager_EnsureConnected_SuccessfulReconnect(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -646,7 +647,7 @@ func TestClientManager_EnsureConnected_SuccessfulReconnect(t *testing.T) {
 
 func TestClientManager_EnsureConnected_FailedReconnection(t *testing.T) {
 	provider := &countingProvider{}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	// Create a FailedServer scenario
 	failedConn := &ConnectedServer{
@@ -667,7 +668,7 @@ func TestClientManager_EnsureConnected_FailedReconnection(t *testing.T) {
 }
 
 func TestClientManager_EnsureConnected_NeedsAuth(t *testing.T) {
-	cm := NewClientManager(TransportFactory{}, true)
+	cm := NewClientManager(TransportFactory{}, true, "")
 
 	cfg := makeTestConfig()
 
@@ -695,7 +696,7 @@ func TestClientManager_EnsureConnected_NeedsAuth(t *testing.T) {
 func TestClientManager_ClearAllCache(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := makeTestConfig()
 
@@ -742,7 +743,7 @@ func TestClientManager_ConnectToServer_ConnectInnerSDKFail(t *testing.T) {
 	// will cause the SDK connect to fail immediately
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -769,7 +770,7 @@ func TestClientManager_ConnectToServer_ConnectInnerSDKFail(t *testing.T) {
 // where the cached entry has an error.
 func TestClientManager_ConnectToServer_CacheHitWithError(t *testing.T) {
 	// Create a manager with a provider that panics
-	cm := NewClientManager(&panicProvider{}, true)
+	cm := NewClientManager(&panicProvider{}, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -803,7 +804,7 @@ func (p *connectFailProvider) NewTransport(name string, cfg McpServerConfig, sco
 func TestClientManager_connectInner_NoCmdProcess(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -827,7 +828,7 @@ func TestClientManager_connectInner_NoCmdProcess(t *testing.T) {
 func TestClientManager_connectInner_InitResultWithServerInfo(t *testing.T) {
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1011,7 +1012,7 @@ func TestWaitProcessGone_ProcessStillRunning(t *testing.T) {
 // and the first connection fails with an error.
 func TestClientManager_ConnectToServer_ConcurrentErrorCacheHit(t *testing.T) {
 	provider := &connectFailProvider{}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1062,7 +1063,7 @@ func TestClientManager_connectInner_StdioNoCommandTransport(t *testing.T) {
 // --- ConnectToServer: cache hit with discovery error (entry.err != nil) ---
 
 func TestClientManager_ConnectToServer_CacheHitDiscoveryError(t *testing.T) {
-	cm := NewClientManager(&errorProvider{}, true)
+	cm := NewClientManager(&errorProvider{}, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1094,7 +1095,7 @@ func TestClientManager_connectInner_NilInitResult(t *testing.T) {
 	// Setup a server that returns nil init result (default behavior for in-memory)
 	_, t2 := setupInMemoryServer(t)
 	provider := &countingProvider{transport: t2}
-	cm := NewClientManager(provider, true)
+	cm := NewClientManager(provider, true, "")
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1119,4 +1120,132 @@ func TestClientManager_connectInner_NilInitResult(t *testing.T) {
 		t.Error("ServerInfo should not be nil for in-memory server")
 	}
 	_ = conn.Close()
+}
+
+// ---------------------------------------------------------------------------
+// Auth cache file persistence tests — Step 3
+// Source: client.ts:257-316 — mcp-needs-auth-cache.json
+// ---------------------------------------------------------------------------
+
+func TestFileAuthCache_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+	store.loadFromFile()
+	// Should start empty — no error
+	if store.isCached("any-server") {
+		t.Error("expected empty cache in new dir")
+	}
+}
+
+func TestFileAuthCache_SetAndIsCached(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+	store.set("server-a")
+	if !store.isCached("server-a") {
+		t.Error("expected server-a to be cached after set")
+	}
+	// Verify file was written
+	data, err := os.ReadFile(store.filePath)
+	if err != nil {
+		t.Fatalf("cache file should exist: %v", err)
+	}
+	if !strings.Contains(string(data), "server-a") {
+		t.Errorf("file should contain server-a, got: %s", data)
+	}
+	if !strings.Contains(string(data), "timestamp") {
+		t.Errorf("file should contain timestamp field, got: %s", data)
+	}
+}
+
+func TestFileAuthCache_Clear(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+	store.set("server-a")
+	if !store.isCached("server-a") {
+		t.Fatal("expected server-a cached after set")
+	}
+	store.clear("server-a")
+	if store.isCached("server-a") {
+		t.Error("server-a should not be cached after clear")
+	}
+}
+
+func TestFileAuthCache_TTLExpiry(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+	store.set("server-a")
+	// Force expiry
+	store.mu.Lock()
+	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}
+	store.mu.Unlock()
+	if store.isCached("server-a") {
+		t.Error("should not be cached after TTL expiry")
+	}
+}
+
+func TestFileAuthCache_PersistsAcrossInstances(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp-needs-auth-cache.json")
+
+	// Instance 1: set entry
+	store1 := &authCacheStore{filePath: path}
+	store1.set("server-x")
+
+	// Instance 2: load from file
+	store2 := &authCacheStore{filePath: path}
+	store2.loadFromFile()
+	if !store2.isCached("server-x") {
+		t.Error("server-x should be cached in second instance (loaded from file)")
+	}
+}
+
+func TestFileAuthCache_CorruptFileIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp-needs-auth-cache.json")
+	if err := os.WriteFile(path, []byte("{invalid json!!!"), 0600); err != nil {
+		t.Fatalf("write corrupt file: %v", err)
+	}
+	store := &authCacheStore{filePath: path}
+	store.loadFromFile()
+	// Should start empty — corrupt file ignored
+	if store.isCached("any-server") {
+		t.Error("corrupt file should result in empty cache")
+	}
+}
+
+func TestFileAuthCache_ClearAll(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+	store.set("server-a")
+	store.set("server-b")
+	store.clearAll()
+	if store.isCached("server-a") {
+		t.Error("server-a should not be cached after clearAll")
+	}
+	if store.isCached("server-b") {
+		t.Error("server-b should not be cached after clearAll")
+	}
+	// File should be deleted
+	if _, err := os.Stat(store.filePath); !os.IsNotExist(err) {
+		t.Error("cache file should be deleted after clearAll")
+	}
+}
+
+func TestFileAuthCache_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	store := &authCacheStore{filePath: filepath.Join(dir, "mcp-needs-auth-cache.json")}
+
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			name := fmt.Sprintf("server-%d", id)
+			store.set(name)
+			_ = store.isCached(name)
+			store.clear(name)
+		}(i)
+	}
+	wg.Wait()
+	// No race detector failures = success
 }

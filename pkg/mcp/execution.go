@@ -7,9 +7,12 @@ package mcp
 
 import (
 	"context"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +21,15 @@ import (
 	"time"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+
+	"golang.org/x/image/draw"
+	// gif, jpeg, png registered by image.Decode; webp needs explicit import
+	_ "golang.org/x/image/webp"
+
+	"image"
+	"image/jpeg"
+	"image/png"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,6 +47,21 @@ type MCPProgress struct {
 	Total           float64
 	ProgressMessage string
 }
+
+// ---------------------------------------------------------------------------
+// Image resize constants — Source: client.ts:449-454, imageResizer.ts, apiLimits.ts
+// ---------------------------------------------------------------------------
+
+var (
+	// imageMaxWidth/Height are the maximum image dimensions.
+	// Source: apiLimits.ts — IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT
+	imageMaxWidth  = 2000
+	imageMaxHeight = 2000
+
+	// imageTargetRawSize is the maximum raw image size (3.75MB = 5MB * 3/4).
+	// Source: apiLimits.ts — IMAGE_TARGET_RAW_SIZE
+	imageTargetRawSize int64 = 5 * 1024 * 1024 * 3 / 4
+)
 
 // ---------------------------------------------------------------------------
 // Tool timeout — Source: client.ts:3068-3089 getMcpToolTimeoutMs
@@ -238,17 +265,27 @@ func TransformResultContent(content mcp.Content, serverName string) []Transforme
 		}}
 
 	case *mcp.ImageContent:
-		// Source: client.ts:2514-2533 — base64 image data
-		data := base64.StdEncoding.EncodeToString(c.Data)
+		// Source: client.ts:2503-2523 — decode, resize, re-encode
+		imgData := c.Data
+		imgMIME := c.MIMEType
+		if resized, err := resizeImage(imgData, imgMIME); err == nil && len(resized) > 0 {
+			imgData = resized
+			// Resize may convert to JPEG for compression
+			if len(resized) < len(c.Data) {
+				imgMIME = "image/jpeg"
+			}
+		} else if err != nil {
+			slog.Debug("mcp: image resize failed, using original", "error", err)
+		}
+		data := base64.StdEncoding.EncodeToString(imgData)
 		return []TransformedMCPResult{{
 			Type: MCPResultImage,
 			Content: fmt.Sprintf(
 				"[Image from %s: %s, %d bytes]",
-				serverName, c.MIMEType, len(c.Data),
+				serverName, imgMIME, len(imgData),
 			),
-			// Store raw data for downstream use
 			RawData:  data,
-			MIMEType: c.MIMEType,
+			MIMEType: imgMIME,
 		}}
 
 	case *mcp.AudioContent:
@@ -405,6 +442,75 @@ func ProcessMCPResult(result *mcp.CallToolResult, toolName, serverName string) (
 		filePath, len(content)), nil
 }
 
+// resizeImage resizes image data if it exceeds dimension or size limits.
+// Source: imageResizer.ts:169-433 — maybeResizeAndDownsampleImageBuffer
+//
+// Returns the (possibly resized) image bytes, or an error.
+// On error, callers should fall back to the original data.
+// resizeImage resizes image data if it exceeds the maximum dimensions or size.
+func resizeImage(data []byte, mimeType string) ([]byte, error) {
+	return resizeImageWithLimits(data, mimeType, imageMaxWidth, imageMaxHeight, imageTargetRawSize)
+}
+
+// resizeImageWithLimits resizes image data using the given limits.
+// Separated from resizeImage for fast unit testing with small dimensions.
+func resizeImageWithLimits(data []byte, mimeType string, maxWidth, maxHeight int, targetRawSize int64) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("mcp: empty image data")
+	}
+
+	// Decode once — reuse for both dimension check and resize
+	img, format, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("mcp: decode image: %w", err)
+	}
+
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	// Fast path: within limits — return original
+	if int64(len(data)) <= targetRawSize && w <= maxWidth && h <= maxHeight {
+		return data, nil
+	}
+
+	// Calculate target dimensions preserving aspect ratio
+	if w > maxWidth {
+		h = h * maxWidth / w
+		w = maxWidth
+	}
+	if h > maxHeight {
+		w = w * maxHeight / h
+		h = maxHeight
+	}
+
+	// Resize using CatmullRom interpolation
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.CatmullRom.Scale(rgba, rgba.Bounds(), img, bounds, draw.Over, nil)
+
+	// Encode: prefer JPEG for compression, PNG for lossless formats
+	var buf bytes.Buffer
+	switch format {
+	case "png":
+		if err := png.Encode(&buf, rgba); err != nil {
+			return nil, fmt.Errorf("mcp: encode png: %w", err)
+		}
+	default:
+		if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 80}); err != nil {
+			return nil, fmt.Errorf("mcp: encode jpeg: %w", err)
+		}
+	}
+
+	// If still over size limit, try lower JPEG quality
+	if buf.Len() > int(targetRawSize) {
+		buf.Reset()
+		if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 60}); err != nil {
+			return nil, fmt.Errorf("mcp: encode jpeg q60: %w", err)
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
 // truncateContent truncates content to maxLen with a truncation notice.
 func truncateContent(content string, maxLen int) string {
 	if len(content) <= maxLen {
@@ -435,9 +541,47 @@ func persistToolResult(content, persistID string) (string, error) {
 // This stub delegates to CallMCPTool directly.
 // ---------------------------------------------------------------------------
 
-// CallMCPToolWithUrlElicitationRetry is a stub that delegates to CallMCPTool.
-// Source: client.ts:2813-3027 — full implementation handles -32042 error code
-// with URL elicitation UI flow. For now, this just calls CallMCPTool.
+// _callMCPTool is the internal call target for CallMCPToolWithUrlElicitationRetry.
+// It defaults to CallMCPTool but can be overridden in tests.
+var _callMCPTool = CallMCPTool
+
+// CallMCPToolWithUrlElicitationRetry calls an MCP tool with URL elicitation retry.
+// Source: client.ts:2813-3027 — handles -32042 (UrlElicitationRequired) error code
+// with up to maxURLElicitationRetries (3) retries.
+// The Go SDK handles URL elicitation at the session level via ElicitationHandler.
+// This wrapper detects -32042 errors that escape the SDK (no handler configured)
+// and returns a clear error message. Full retry logic requires TUI integration.
 func CallMCPToolWithUrlElicitationRetry(ctx context.Context, params CallMCPToolParams) (*MCPToolCallResult, error) {
-	return CallMCPTool(ctx, params)
+	const maxURLElicitationRetries = 3
+	for attempt := 0; ; attempt++ {
+		result, err := _callMCPTool(ctx, params)
+		if err != nil {
+			if isURLElicitationError(err) {
+				if attempt >= maxURLElicitationRetries {
+					return nil, fmt.Errorf("mcp: URL elicitation required for server %q, max retries (%d) exceeded: %w",
+						params.Server.Name, maxURLElicitationRetries, err)
+				}
+				slog.Info("mcp: URL elicitation required, retrying",
+					"server", params.Server.Name, "tool", params.ToolName, "attempt", attempt+1)
+				continue
+			}
+			return nil, err
+		}
+		return result, nil
+	}
+}
+
+// isURLElicitationError checks if an error is a URL elicitation required error (-32042).
+// Source: client.ts:2862-2868 — checks McpError.code !== ErrorCode.UrlElicitationRequired
+func isURLElicitationError(err error) bool {
+	// Unwrap McpToolCallError to get the underlying error
+	var toolErr *McpToolCallError
+	if errors.As(err, &toolErr) {
+		err = toolErr.Err
+	}
+	var rpcErr *jsonrpc.Error
+	if errors.As(err, &rpcErr) {
+		return rpcErr.Code == mcp.CodeURLElicitationRequired
+	}
+	return false
 }

@@ -52,7 +52,7 @@ func (p *inMemoryProvider) NewTransport(name string, cfg McpServerConfig, scope 
 // newTestRegistry creates a Registry with an in-memory provider.
 func newTestRegistry(callbacks ChangeCallbacks) (*Registry, *inMemoryProvider) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	return NewRegistry(mgr, callbacks), p
 }
 
@@ -1024,7 +1024,7 @@ func TestRegistry_Lifecycle(t *testing.T) {
 // connected servers that go through BatchDiscovery.
 func TestRegistry_ConnectAll_WithActualConnections(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1063,7 +1063,7 @@ func TestRegistry_ConnectAll_WithActualConnections(t *testing.T) {
 // the provider fails, resulting in a FailedServer entry.
 func TestRegistry_ConnectAll_FailedServerResult(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1098,7 +1098,7 @@ func TestRegistry_ConnectAll_FailedServerResult(t *testing.T) {
 // removes configs/connections not present in the new configs map.
 func TestRegistry_ConnectAll_RemovesStaleConnections(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1153,7 +1153,7 @@ func TestRegistry_Reconnect_SuccessWithInMemory(t *testing.T) {
 	var commandsChanged atomic.Int32
 
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{
 		OnToolsChanged: func(serverName string, tools []DiscoveredTool) {
 			toolsChanged.Add(1)
@@ -1213,7 +1213,7 @@ func TestRegistry_Reconnect_SuccessWithInMemory(t *testing.T) {
 // connection fails, returning a FailedServer in connections.
 func TestRegistry_Reconnect_FailedConnection(t *testing.T) {
 	// Use an errorProvider that returns errors from NewTransport
-	cm := NewClientManager(&errorProvider{}, true)
+	cm := NewClientManager(&errorProvider{}, true, "")
 	r := NewRegistry(cm, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1261,7 +1261,7 @@ func (p *errorProvider) NewTransport(name string, cfg McpServerConfig, scope Con
 // any pending reconnect timer and calls Close on a ConnectedServer.
 func TestRegistry_Disconnect_WithReconnectTimer(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1314,7 +1314,7 @@ func TestRegistry_Disconnect_WithReconnectTimer(t *testing.T) {
 // takes a bit of time but within grace period.
 func TestRegistry_Close_SlowServer(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 
 	cfg := ScopedMcpServerConfig{
@@ -1343,8 +1343,12 @@ func TestRegistry_Close_SlowServer(t *testing.T) {
 // TestRegistry_Close_TimedOutServer tests closeInner when servers don't
 // close within the grace period, returning an error.
 func TestRegistry_Close_TimedOutServer(t *testing.T) {
+	origGrace := shutdownGracePeriod
+	shutdownGracePeriod = 50 * time.Millisecond
+	defer func() { shutdownGracePeriod = origGrace }()
+
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 
 	r := &Registry{
 		manager:         mgr,
@@ -1397,8 +1401,12 @@ func TestRegistry_Close_TimedOutServer(t *testing.T) {
 // scheduled reconnect timer fires and the connection fails, it schedules
 // the next attempt.
 func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
+	origBackoff := reconnectMinBackoff
+	reconnectMinBackoff = 1 * time.Millisecond
+	defer func() { reconnectMinBackoff = origBackoff }()
+
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1419,8 +1427,8 @@ func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
 	// Schedule reconnect at attempt 0
 	r.ScheduleReconnect("remote", 0)
 
-	// Wait for timer to fire (with jitter)
-	time.Sleep(3 * time.Second)
+	// Wait for timer to fire (short backoff + jitter)
+	time.Sleep(100 * time.Millisecond)
 
 	// After failed reconnect, either:
 	// - timer entry is gone (cleaned up by the fired func)
@@ -1434,9 +1442,13 @@ func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
 // TestRegistry_ScheduleReconnect_CallbackOnSuccess tests that when
 // ScheduleReconnect fires and succeeds, OnServerStatusChanged is called.
 func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
+	origBackoff := reconnectMinBackoff
+	reconnectMinBackoff = 1 * time.Millisecond
+	defer func() { reconnectMinBackoff = origBackoff }()
+
 	var statusChanged atomic.Int32
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{
 		OnServerStatusChanged: func(serverName string, conn ServerConnection) {
 			statusChanged.Add(1)
@@ -1463,8 +1475,8 @@ func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
 	// Schedule reconnect at attempt 0
 	r.ScheduleReconnect("remote", 0)
 
-	// Wait for timer to fire
-	time.Sleep(3 * time.Second)
+	// Wait for timer to fire (short backoff + jitter)
+	time.Sleep(100 * time.Millisecond)
 
 	// Status callback should have been called
 	if statusChanged.Load() != 1 {
@@ -1481,7 +1493,7 @@ func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
 // returns a NeedsAuthServer (auth cached).
 func TestRegistry_Reconnect_NonConnectedResult(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1518,7 +1530,7 @@ func TestRegistry_Reconnect_NonConnectedResult(t *testing.T) {
 // connection (no Cleanup method).
 func TestRegistry_Disconnect_NonConnectedServer(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1554,7 +1566,7 @@ func TestRegistry_Disconnect_NonConnectedServer(t *testing.T) {
 // from tool/resource/command caches and rebuilds aggregates.
 func TestRegistry_Disconnect_CleansUpCaches(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1600,7 +1612,7 @@ func TestRegistry_Disconnect_CleansUpCaches(t *testing.T) {
 // needs auth, resulting in a NeedsAuthServer entry.
 func TestRegistry_ConnectAll_NeedsAuthResult(t *testing.T) {
 	p := newInMemoryProvider()
-	mgr := NewClientManager(p, true)
+	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
 	defer func() { _ = r.Close() }()
 
@@ -1622,5 +1634,288 @@ func TestRegistry_ConnectAll_NeedsAuthResult(t *testing.T) {
 	}
 	if conn.ConnType() != "needs-auth" {
 		t.Errorf("expected needs-auth, got %s", conn.ConnType())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ConnectAll concurrent execution tests — Step 4
+// Source: client.ts:2388-2402 — processBatched with local/remote concurrency
+// ---------------------------------------------------------------------------
+
+// slowProvider wraps inMemoryProvider and sleeps before each transport creation.
+type slowProvider struct {
+	*inMemoryProvider
+	delay time.Duration
+}
+
+func (p *slowProvider) NewTransport(name string, cfg McpServerConfig, scope ConfigScope, trusted bool) (mcp.Transport, error) {
+	time.Sleep(p.delay)
+	return p.inMemoryProvider.NewTransport(name, cfg, scope, trusted)
+}
+
+func TestConnectAll_ConcurrentExecution(t *testing.T) {
+	// 5 servers with 50ms each — sequential would be 250ms, concurrent should be <150ms
+	p := newInMemoryProvider()
+
+	// Pre-register server transports so ConnectToServer succeeds
+	for i := range 5 {
+		srv, clientTransport := setupInMemoryServer(t)
+		mcp.AddTool(srv, &mcp.Tool{Name: fmt.Sprintf("tool-%d", i), Description: "test"}, noopToolHandler)
+		name := fmt.Sprintf("server-%d", i)
+		p.mu.Lock()
+		p.transports[name] = clientTransport
+		p.mu.Unlock()
+	}
+
+	slowP := &slowProvider{inMemoryProvider: p, delay: 50 * time.Millisecond}
+	mgr := NewClientManager(slowP, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer func() { _ = r.Close() }()
+
+	configs := make(map[string]ScopedMcpServerConfig, 5)
+	for i := range 5 {
+		configs[fmt.Sprintf("server-%d", i)] = ScopedMcpServerConfig{
+			Config: &SSEConfig{URL: "http://localhost/" + fmt.Sprint(i)},
+			Scope:  ScopeUser,
+		}
+	}
+
+	start := time.Now()
+	results := r.ConnectAll(context.Background(), configs)
+	elapsed := time.Since(start)
+
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+
+	// With remote batch=20, all 5 should run concurrently: ~50ms total
+	// Sequential would be ~250ms. Use 150ms as threshold.
+	if elapsed > 150*time.Millisecond {
+		t.Errorf("expected concurrent execution (<150ms), took %v", elapsed)
+	}
+	t.Logf("5 servers connected in %v (concurrent)", elapsed)
+}
+
+// concurrentCountProvider tracks max concurrent NewTransport calls.
+// Always returns errors after delay — used for batch size verification.
+type concurrentCountProvider struct {
+	mu         sync.Mutex
+	current    int
+	maxCurrent int
+	delay      time.Duration
+	failNames  map[string]bool
+}
+
+func newConcurrentCountProvider(delay time.Duration) *concurrentCountProvider {
+	return &concurrentCountProvider{
+		delay:     delay,
+		failNames: make(map[string]bool),
+	}
+}
+
+func (p *concurrentCountProvider) NewTransport(name string, cfg McpServerConfig, scope ConfigScope, trusted bool) (mcp.Transport, error) {
+	p.mu.Lock()
+	p.current++
+	if p.current > p.maxCurrent {
+		p.maxCurrent = p.current
+	}
+	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		p.current--
+		p.mu.Unlock()
+	}()
+
+	time.Sleep(p.delay)
+
+	if p.failNames[name] {
+		return nil, fmt.Errorf("mock: connection failed for %q", name)
+	}
+	return nil, fmt.Errorf("mock: no server for %q", name)
+}
+
+func (p *concurrentCountProvider) getMax() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxCurrent
+}
+
+func TestConnectAll_LocalBatchSize(t *testing.T) {
+	// 5 local (stdio) servers with batch=2 — max concurrent should be <=2
+	t.Setenv("MCP_SERVER_CONNECTION_BATCH_SIZE", "2")
+	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "2")
+
+	p := newConcurrentCountProvider(20 * time.Millisecond)
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer func() { _ = r.Close() }()
+
+	configs := make(map[string]ScopedMcpServerConfig, 5)
+	for i := range 5 {
+		configs[fmt.Sprintf("local-%d", i)] = ScopedMcpServerConfig{
+			Config: &StdioConfig{Command: "echo"},
+			Scope:  ScopeUser,
+		}
+	}
+
+	results := r.ConnectAll(context.Background(), configs)
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+
+	maxConcurrent := p.getMax()
+	if maxConcurrent > 2 {
+		t.Errorf("max concurrent connections should be <= 2 (batch size), got %d", maxConcurrent)
+	}
+	t.Logf("max concurrent: %d (batch=2)", maxConcurrent)
+}
+
+func TestConnectAll_DisabledSkipped(t *testing.T) {
+	p := newConcurrentCountProvider(10 * time.Millisecond)
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer func() { _ = r.Close() }()
+
+	// Disable 2 out of 4 servers
+	r.mu.Lock()
+	r.disabled["disabled-0"] = true
+	r.disabled["disabled-1"] = true
+	r.mu.Unlock()
+
+	configs := make(map[string]ScopedMcpServerConfig, 4)
+	for i := range 4 {
+		configs[fmt.Sprintf("disabled-%d", i)] = ScopedMcpServerConfig{
+			Config: &StdioConfig{Command: "echo"},
+			Scope:  ScopeUser,
+		}
+	}
+
+	results := r.ConnectAll(context.Background(), configs)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(results))
+	}
+
+	// Only 2 should have actual connections (disabled ones are skipped)
+	maxConcurrent := p.getMax()
+	if maxConcurrent > 2 {
+		t.Errorf("only 2 active servers should create connections, max concurrent = %d", maxConcurrent)
+	}
+
+	// Verify disabled servers have correct type
+	for i := range 2 {
+		conn := results[fmt.Sprintf("disabled-%d", i)]
+		if conn.ConnType() != "disabled" {
+			t.Errorf("disabled-%d should be disabled type, got %s", i, conn.ConnType())
+		}
+	}
+}
+
+func TestConnectAll_MixedResults(t *testing.T) {
+	// One success (pre-registered server), one failure
+	prov := newInMemoryProvider()
+
+	srv, clientTransport := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "ok-tool", Description: "test"}, noopToolHandler)
+	prov.mu.Lock()
+	prov.transports["ok-server"] = clientTransport
+	prov.mu.Unlock()
+
+	prov.failConn["fail-server"] = true
+
+	mgr := NewClientManager(prov, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer func() { _ = r.Close() }()
+
+	configs := map[string]ScopedMcpServerConfig{
+		"ok-server":   {Config: &SSEConfig{URL: "http://localhost/ok"}, Scope: ScopeUser},
+		"fail-server": {Config: &SSEConfig{URL: "http://localhost/fail"}, Scope: ScopeUser},
+	}
+
+	results := r.ConnectAll(context.Background(), configs)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	if _, ok := results["ok-server"].(*ConnectedServer); !ok {
+		t.Errorf("ok-server should be ConnectedServer, got %T", results["ok-server"])
+	}
+	if _, ok := results["fail-server"].(*FailedServer); !ok {
+		t.Errorf("fail-server should be FailedServer, got %T", results["fail-server"])
+	}
+}
+
+func TestConnectAll_MixedLocalRemote(t *testing.T) {
+	prov := newInMemoryProvider()
+
+	// Pre-register 4 servers
+	for i := range 2 {
+		srv, ct := setupInMemoryServer(t)
+		mcp.AddTool(srv, &mcp.Tool{Name: fmt.Sprintf("ltool-%d", i), Description: "test"}, noopToolHandler)
+		prov.mu.Lock()
+		prov.transports[fmt.Sprintf("local-%d", i)] = ct
+		prov.mu.Unlock()
+	}
+	for i := range 2 {
+		srv, ct := setupInMemoryServer(t)
+		mcp.AddTool(srv, &mcp.Tool{Name: fmt.Sprintf("rtool-%d", i), Description: "test"}, noopToolHandler)
+		prov.mu.Lock()
+		prov.transports[fmt.Sprintf("remote-%d", i)] = ct
+		prov.mu.Unlock()
+	}
+
+	mgr := NewClientManager(prov, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer func() { _ = r.Close() }()
+
+	configs := map[string]ScopedMcpServerConfig{
+		"local-0":  {Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser},
+		"local-1":  {Config: &StdioConfig{Command: "cat"}, Scope: ScopeUser},
+		"remote-0": {Config: &SSEConfig{URL: "http://localhost/r0"}, Scope: ScopeUser},
+		"remote-1": {Config: &SSEConfig{URL: "http://localhost/r1"}, Scope: ScopeUser},
+	}
+
+	results := r.ConnectAll(context.Background(), configs)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(results))
+	}
+
+	for name, conn := range results {
+		if _, ok := conn.(*ConnectedServer); !ok {
+			t.Errorf("%s should be ConnectedServer, got %T", name, conn)
+		}
+	}
+}
+
+func TestGetBatchSizeDefaults(t *testing.T) {
+	if v := getLocalBatchSize(); v != localBatchDefault {
+		t.Errorf("default local batch = %d, want %d", v, localBatchDefault)
+	}
+	if v := getRemoteBatchSize(); v != remoteBatchDefault {
+		t.Errorf("default remote batch = %d, want %d", v, remoteBatchDefault)
+	}
+}
+
+func TestGetBatchSizeFromEnv(t *testing.T) {
+	t.Setenv("MCP_SERVER_CONNECTION_BATCH_SIZE", "5")
+	if v := getLocalBatchSize(); v != 5 {
+		t.Errorf("env local batch = %d, want 5", v)
+	}
+
+	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "10")
+	if v := getRemoteBatchSize(); v != 10 {
+		t.Errorf("env remote batch = %d, want 10", v)
+	}
+}
+
+func TestGetBatchSizeInvalidEnv(t *testing.T) {
+	t.Setenv("MCP_SERVER_CONNECTION_BATCH_SIZE", "invalid")
+	if v := getLocalBatchSize(); v != localBatchDefault {
+		t.Errorf("invalid env should use default, got %d", v)
+	}
+
+	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "-1")
+	if v := getRemoteBatchSize(); v != remoteBatchDefault {
+		t.Errorf("negative env should use default, got %d", v)
 	}
 }

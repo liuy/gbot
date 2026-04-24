@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,12 +80,19 @@ type ClientManager struct {
 }
 
 // NewClientManager creates a new connection manager.
-func NewClientManager(provider TransportProvider, trusted bool) *ClientManager {
-	return &ClientManager{
+// configDir enables file-backed auth cache persistence when non-empty.
+// Source: client.ts:261-263 — getClaudeConfigHomeDir()/mcp-needs-auth-cache.json
+func NewClientManager(provider TransportProvider, trusted bool, configDir string) *ClientManager {
+	cm := &ClientManager{
 		cache:    make(map[string]*cacheEntry),
 		provider: provider,
 		trusted:  trusted,
 	}
+	if configDir != "" {
+		cm.auth.filePath = filepath.Join(configDir, "mcp-needs-auth-cache.json")
+		cm.auth.loadFromFile()
+	}
+	return cm
 }
 
 // ConnectToServer connects to an MCP server with memoized single-flight.
@@ -319,9 +327,15 @@ type authCacheEntry struct {
 	timestamp time.Time
 }
 
+// authCacheJSONEntry is the on-disk format matching TS: { timestamp: number }
+type authCacheJSONEntry struct {
+	Timestamp int64 `json:"timestamp"`
+}
+
 type authCacheStore struct {
-	mu      sync.Mutex
-	entries map[string]authCacheEntry
+	mu       sync.Mutex
+	entries  map[string]authCacheEntry
+	filePath string // if set, persists to this file
 }
 
 func (s *authCacheStore) isCached(serverID string) bool {
@@ -344,6 +358,9 @@ func (s *authCacheStore) set(serverID string) {
 		s.entries = make(map[string]authCacheEntry)
 	}
 	s.entries[serverID] = authCacheEntry{timestamp: time.Now()}
+	if s.filePath != "" {
+		s.writeToFileLocked()
+	}
 }
 
 func (s *authCacheStore) clear(serverID string) {
@@ -352,6 +369,59 @@ func (s *authCacheStore) clear(serverID string) {
 	if s.entries != nil {
 		delete(s.entries, serverID)
 	}
+	if s.filePath != "" {
+		s.writeToFileLocked()
+	}
+}
+
+// clearAll removes all entries and deletes the cache file.
+// Source: client.ts:311-316 — clearMcpAuthCache (exported, deletes file)
+func (s *authCacheStore) clearAll() {
+	s.mu.Lock()
+	s.entries = nil
+	path := s.filePath
+	s.mu.Unlock()
+	if path != "" {
+		_ = os.Remove(path)
+	}
+}
+
+// loadFromFile reads the cache from disk. Called once at construction.
+// Source: client.ts:265-278 — getMcpAuthCache (lazy load)
+func (s *authCacheStore) loadFromFile() {
+	if s.filePath == "" {
+		return
+	}
+	data, err := os.ReadFile(s.filePath)
+	if err != nil {
+		return // file does not exist — start empty
+	}
+	var raw map[string]authCacheJSONEntry
+	if json.Unmarshal(data, &raw) != nil {
+		return // corrupt file — start empty
+	}
+	s.entries = make(map[string]authCacheEntry, len(raw))
+	for k, v := range raw {
+		s.entries[k] = authCacheEntry{
+			timestamp: time.UnixMilli(v.Timestamp),
+		}
+	}
+}
+
+// writeToFileLocked persists the cache to disk.
+// Must be called with s.mu held.
+// Source: client.ts:289-309 — setMcpAuthCacheEntry (serialized write)
+func (s *authCacheStore) writeToFileLocked() {
+	raw := make(map[string]authCacheJSONEntry, len(s.entries))
+	for k, v := range s.entries {
+		raw[k] = authCacheJSONEntry{Timestamp: v.timestamp.UnixMilli()}
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(s.filePath), 0700)
+	_ = os.WriteFile(s.filePath, data, 0600)
 }
 
 // ---------------------------------------------------------------------------

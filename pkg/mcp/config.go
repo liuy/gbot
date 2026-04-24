@@ -1094,20 +1094,32 @@ func toggleMembership(list []string, name string, shouldContain bool) []string {
 	return result
 }
 
-// SetMcpServerEnabled enables or disables an MCP server.
-// Source: config.ts:1553-1578 setMcpServerEnabled
-func SetMcpServerEnabled(name string, enabled bool, provider McpConfigProvider) error {
-	prev := provider.ProjectDisabledServers()
-	next := toggleMembership(prev, name, !enabled)
-	if fmt.Sprint(next) == fmt.Sprint(prev) {
-		// No change — TS checks identity via `next === prev`, we compare content.
-		// Actually TS uses reference equality. Let's check length match instead.
-		if len(next) == len(prev) {
+	// SetMcpServerEnabled enables or disables an MCP server.
+	// Source: config.ts:1553-1578 setMcpServerEnabled
+	func SetMcpServerEnabled(name string, enabled bool, provider McpConfigProvider) error {
+		prev := provider.ProjectDisabledServers()
+		next := toggleMembership(prev, name, !enabled)
+		// Source: config.ts:1565 — TS uses \`next === prev\` (reference equality).
+		// toggleMembership returns the same slice when no change is needed,
+		// but Go cannot use reference equality. Compare contents instead.
+		if stringSlicesEqual(next, prev) {
 			return nil
 		}
+		return provider.SaveProjectDisabledServers(next)
 	}
-	return provider.SaveProjectDisabledServers(next)
-}
+
+	// stringSlicesEqual compares two string slices by value.
+	func stringSlicesEqual(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
 
 // ---------------------------------------------------------------------------
 // Primary orchestration — Source: config.ts:1071-1290

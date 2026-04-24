@@ -3111,3 +3111,76 @@ func TestParseMcpConfig_EnvExpansion(t *testing.T) {
 	}
 }
 
+
+// --- stringSlicesEqual + SetMcpServerEnabled fixes (Step 2) ---
+
+func TestStringSlicesEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"both nil", nil, nil, true},
+		{"both empty", []string{}, []string{}, true},
+		{"nil vs empty", nil, []string{}, true},
+		{"same content", []string{"a", "b"}, []string{"a", "b"}, true},
+		{"different content", []string{"a", "b"}, []string{"a", "c"}, false},
+		{"different order", []string{"a", "b"}, []string{"b", "a"}, false},
+		{"different length", []string{"a"}, []string{"a", "b"}, false},
+		{"a longer", []string{"a", "b", "c"}, []string{"a", "b"}, false},
+		{"single element match", []string{"x"}, []string{"x"}, true},
+		{"single element differ", []string{"x"}, []string{"y"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stringSlicesEqual(tt.a, tt.b); got != tt.want {
+				t.Errorf("stringSlicesEqual(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetMcpServerEnabled_EnableRemovesFromDisabled(t *testing.T) {
+	provider := &mockConfigProvider{
+		disabledServers: []string{"myserver", "other"},
+	}
+	err := SetMcpServerEnabled("myserver", true, provider)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.savedDisabled == nil {
+		t.Fatal("SaveProjectDisabledServers should be called")
+	}
+	if stringSlicesEqual(provider.savedDisabled, []string{"other"}) == false {
+		t.Errorf("expected savedDisabled = [other], got %v", provider.savedDisabled)
+	}
+}
+
+func TestSetMcpServerEnabled_DisableAddsToDisabled(t *testing.T) {
+	provider := &mockConfigProvider{
+		disabledServers: []string{"other"},
+	}
+	err := SetMcpServerEnabled("myserver", false, provider)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provider.savedDisabled == nil {
+		t.Fatal("SaveProjectDisabledServers should be called")
+	}
+	hasMyserver := false
+	hasOther := false
+	for _, s := range provider.savedDisabled {
+		if s == "myserver" {
+			hasMyserver = true
+		}
+		if s == "other" {
+			hasOther = true
+		}
+	}
+	if !hasMyserver {
+		t.Errorf("myserver should be in disabled list, got %v", provider.savedDisabled)
+	}
+	if !hasOther {
+		t.Errorf("other should remain in disabled list, got %v", provider.savedDisabled)
+	}
+}
