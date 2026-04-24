@@ -116,7 +116,7 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var sessions []*Session
 	for rows.Next() {

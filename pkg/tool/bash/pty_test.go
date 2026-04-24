@@ -162,8 +162,8 @@ func TestOpenPTY_SlavePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	// Verify slave path is not empty
 	if slave.Name() == "" {
@@ -453,8 +453,8 @@ func TestMakeRaw_RestoreTerminal_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openPTY() error: %v", err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	state, err := makeRaw(int(slave.Fd()))
 	if err != nil {

@@ -76,7 +76,7 @@ func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
 	if err != nil {
 		return -1, false, fmt.Errorf("open PTY: %w", err)
 	}
-	defer func() { _ = ptyMaster.Close() }()
+	defer ptyMaster.Close()
 
 	// Set initial window size from terminal
 	_ = setPTYWindowSize(ptyMaster.Fd())

@@ -1614,7 +1614,7 @@ func TestIsPortAvailable_OccupiedPort(t *testing.T) {
 		t.Fatalf("failed to get random port: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	if isPortAvailable(port) {
 		t.Errorf("port %d should not be available while listener is active", port)
@@ -3808,7 +3808,7 @@ func TestFindAvailablePort_FallbackOccupied(t *testing.T) {
 	if err != nil {
 		t.Skipf("can't occupy fallback port %d: %v", redirectPortFallback, err)
 	}
-	defer func() { _ = fallbackLn.Close() }()
+	defer fallbackLn.Close()
 
 	// Also occupy a bunch of ports in the range
 	var listeners []net.Listener
@@ -5032,6 +5032,9 @@ func TestRefreshAuthorization_NoBackoffOnNonTransient(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-transient failure")
 	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("error should mention 'permission denied', got: %v", err)
+	}
 	if tokens != nil {
 		t.Error("expected nil tokens")
 	}
@@ -5117,7 +5120,7 @@ func TestExchangeAuthCode_Success(t *testing.T) {
 
 		// Return valid token response
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"access_token": "at-123",
 			"token_type": "Bearer",
 			"expires_in": 3600,
@@ -5153,7 +5156,7 @@ func TestExchangeAuthCode_Error400(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"error":"invalid_request","error_description":"Missing code parameter"}`)
+		_, _ = fmt.Fprintf(w, `{"error":"invalid_request","error_description":"Missing code parameter"}`)
 	}))
 	defer server.Close()
 
@@ -5176,7 +5179,7 @@ func TestExchangeAuthCode_CodeVerifierSent(t *testing.T) {
 		values, _ := url.ParseQuery(string(body))
 		receivedVerifier = values.Get("code_verifier")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer","expires_in":3600}`)
+		_, _ = fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer","expires_in":3600}`)
 	}))
 	defer server.Close()
 
@@ -5194,7 +5197,7 @@ func TestExchangeAuthCode_InvalidGrant(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"Authorization code expired"}`)
+		_, _ = fmt.Fprintf(w, `{"error":"invalid_grant","error_description":"Authorization code expired"}`)
 	}))
 	defer server.Close()
 
@@ -5210,7 +5213,7 @@ func TestExchangeAuthCode_InvalidGrant(t *testing.T) {
 func TestExchangeAuthCode_MissingAccessToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"token_type":"Bearer","expires_in":3600}`)
+		_, _ = fmt.Fprintf(w, `{"token_type":"Bearer","expires_in":3600}`)
 	}))
 	defer server.Close()
 
@@ -5226,7 +5229,7 @@ func TestExchangeAuthCode_MissingAccessToken(t *testing.T) {
 func TestExchangeAuthCode_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `not json`)
+		_, _ = fmt.Fprintf(w, `not json`)
 	}))
 	defer server.Close()
 
@@ -5242,7 +5245,7 @@ func TestExchangeAuthCode_InvalidJSON(t *testing.T) {
 func TestExchangeAuthCode_500Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "internal server error")
+		_, _ = fmt.Fprintf(w, "internal server error")
 	}))
 	defer server.Close()
 
@@ -5259,7 +5262,7 @@ func TestExchangeAuthCode_CancelledContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer"}`)
+		_, _ = fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer"}`)
 	}))
 	defer server.Close()
 
@@ -5269,5 +5272,8 @@ func TestExchangeAuthCode_CancelledContext(t *testing.T) {
 	_, err := ExchangeAuthCode(ctx, server.URL, "code", "verifier", "http://localhost/cb", "client")
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("error should mention context, got: %v", err)
 	}
 }

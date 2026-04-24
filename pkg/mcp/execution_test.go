@@ -68,7 +68,7 @@ func TestCallMCPTool_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -114,7 +114,7 @@ func TestCallMCPTool_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -154,7 +154,7 @@ func TestCallMCPTool_IsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -874,7 +874,7 @@ func TestCallMCPTool_AuthError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "auth-server",
@@ -928,7 +928,7 @@ func TestCallMCPTool_SessionExpiredError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "expired-server",
@@ -988,7 +988,7 @@ func TestCallMCPTool_MetaResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -1197,7 +1197,7 @@ func TestCallMCPTool_WithOnProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -1245,7 +1245,7 @@ func TestCallMCPTool_ResultWithMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -1384,7 +1384,7 @@ func TestCallMCPTool_NilArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -1431,7 +1431,7 @@ func TestCallMCPTool_WithMetaParam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:         "test-server",
@@ -1780,6 +1780,9 @@ func TestResizeImage_InvalidImageFallback(t *testing.T) {
 	_, err := resizeImageWithLimits([]byte("not an image"), "image/png", 50, 50, 10<<20)
 	if err == nil {
 		t.Fatal("expected error for invalid image")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error should mention decode, got: %v", err)
 	}
 }
 

@@ -265,7 +265,7 @@ func readTail(path string, maxBytes int) string {
 	if err != nil {
 		return ""
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {

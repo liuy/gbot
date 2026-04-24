@@ -989,13 +989,20 @@ func (e *Engine) Tools() map[string]tool.Tool {
 	return e.tools
 }
 
-// refreshTools rebuilds the tool map and order from the provider if set.
+// refreshTools rebuilds the tool map and order from the provider if set,
+// then merges MCP tools from the registry.
 // Called at the start of each callLLM so late-registered tools are visible.
 func (e *Engine) refreshTools() {
 	if e.toolsProvider == nil {
 		return
 	}
 	e.tools = e.toolsProvider()
+
+	// Merge MCP tools from registry into the tool map.
+	for _, t := range e.MCPTools() {
+		e.tools[t.Name()] = t
+	}
+
 	e.toolOrder = make([]string, 0, len(e.tools))
 	for name := range e.tools {
 		e.toolOrder = append(e.toolOrder, name)

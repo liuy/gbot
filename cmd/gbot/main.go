@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -102,6 +103,15 @@ func main() {
 
 	h := hub.NewHub()
 
+	// Resolve working directory early (needed for MCP and system prompt)
+	workingDir, _ := os.Getwd()
+
+	// 3.5 Initialize MCP registry from .mcp.json
+	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{})
+	if err != nil {
+		slog.Warn("main: MCP initialization failed", "error", err)
+	}
+
 	eng := engine.New(&engine.Params{
 		Provider:      provider,
 		ToolsProvider: reg.ToolMapFn(),
@@ -110,6 +120,7 @@ func main() {
 		TokenBudget:   200000,
 		Logger:        logger,
 		Dispatcher:    h,
+		MCPRegistry:   mcpRegistry,
 	})
 
 	// Wire background task notifications into the engine's notification queue.
@@ -128,7 +139,7 @@ func main() {
 	reg.MustRegister(agentTool)
 
 	// 5. Build system prompt using context builder
-	workingDir, _ := os.Getwd()
+	// workingDir already resolved above for MCP init
 
 		// Initialize agent loader (lazy — discovers ~/.gbot/agents/ and .gbot/agents/)
 		agenttool.InitLoader(workingDir)
@@ -231,8 +242,12 @@ func main() {
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
+		eng.Close()
 		os.Exit(1)
 	}
+
+	// Clean shutdown: close MCP connections
+	eng.Close()
 }
 
 // ProviderMap maps provider names to their llm.Provider instances.

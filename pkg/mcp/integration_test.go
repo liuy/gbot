@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -285,4 +288,123 @@ func TestIntegration_MultiToolWorkflow(t *testing.T) {
 		t.Error("generated image should not be empty")
 	}
 	t.Logf("✓ step 3: celebration image (%d bytes)", len(imgData))
+}
+
+// ---------------------------------------------------------------------------
+// Wireup integration test: .mcp.json → config → Registry → tools
+// Tests the full startup path that main.go should follow.
+// RED: calls LoadAndConnectMCP which doesn't exist yet.
+// ---------------------------------------------------------------------------
+
+// TestIntegration_LoadAndConnectMCP verifies the full startup wireup:
+// write .mcp.json → load configs → create Registry → connect → discover tools.
+//
+// This tests the function that main.go should call. Currently RED because
+// LoadAndConnectMCP doesn't exist.
+func TestIntegration_LoadAndConnectMCP(t *testing.T) {
+	// 1. Write a .mcp.json to a temp directory
+	tmpDir := t.TempDir()
+	mcpJSON := map[string]any{
+		"mcpServers": map[string]any{
+			"echo-srv": map[string]any{
+				"command": "echo",
+				"args":    []string{"test"},
+			},
+		},
+	}
+	data, err := json.Marshal(mcpJSON)
+	if err != nil {
+		t.Fatalf("marshal .mcp.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".mcp.json"), data, 0644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	// 2. Create an in-memory MCP server with a hello tool
+	t1, t2 := mcp.NewInMemoryTransports()
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "wireup-test-server",
+		Version: "1.0.0",
+	}, nil)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "hello",
+		Description: "Says hello",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "Hello from MCP!"}},
+		}, nil, nil
+	})
+	go func() {
+		_, _ = server.Connect(context.Background(), t1, nil)
+	}()
+
+	// 3. Create a provider that returns our in-memory transport for "echo-srv"
+	provider := newInMemoryProvider()
+	provider.mu.Lock()
+	provider.transports["echo-srv"] = t2
+	provider.mu.Unlock()
+
+	// 4. Call the wireup function (doesn't exist yet → compile error = RED)
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, provider)
+	if err != nil {
+		t.Fatalf("LoadAndConnectMCP: %v", err)
+	}
+	if registry == nil {
+		t.Fatal("expected non-nil registry")
+	}
+	defer registry.Close()
+
+	// 5. Verify tools were discovered
+	tools := registry.GetTools()
+	if len(tools) == 0 {
+		t.Fatal("expected tools to be discovered from connected server")
+	}
+
+	foundHello := false
+	for _, dt := range tools {
+		if dt.OriginalName == "hello" {
+			foundHello = true
+			if dt.ServerName != "echo-srv" {
+				t.Errorf("server name = %q, want %q", dt.ServerName, "echo-srv")
+			}
+			break
+		}
+	}
+	if !foundHello {
+		t.Error("expected 'hello' tool to be discovered")
+	}
+
+	t.Logf("✓ wireup: .mcp.json → config → Registry → %d tools discovered", len(tools))
+}
+
+// TestIntegration_LoadAndConnectMCP_NoConfig verifies nil return when no .mcp.json exists.
+func TestIntegration_LoadAndConnectMCP_NoConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if registry != nil {
+		t.Error("expected nil registry when no .mcp.json exists")
+	}
+}
+
+// TestIntegration_LoadAndConnectMCP_EmptyConfig verifies nil return when .mcp.json has no servers.
+func TestIntegration_LoadAndConnectMCP_EmptyConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	data, _ := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{},
+	})
+	if err := os.WriteFile(filepath.Join(tmpDir, ".mcp.json"), data, 0644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if registry != nil {
+		t.Error("expected nil registry when .mcp.json has no servers")
+	}
 }

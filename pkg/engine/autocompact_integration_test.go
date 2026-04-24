@@ -96,7 +96,7 @@ func TestAutoCompact_Proactive_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	// Create a session in the store so RecordCompact can succeed
 	session, err := store.CreateSession(tmpDir, "test-model")
@@ -170,7 +170,7 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -246,7 +246,7 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -316,7 +316,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -399,7 +399,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -480,7 +480,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -542,7 +542,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -625,7 +625,7 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {

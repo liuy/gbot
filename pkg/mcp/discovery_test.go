@@ -339,7 +339,7 @@ func TestFetchResourcesForServer_SuccessfulFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:    "test-server",
@@ -374,7 +374,7 @@ func TestFetchResourcesForServer_EmptyResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:    "test-server",
@@ -509,7 +509,7 @@ func TestFetchCommandsForServer_SuccessfulFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:    "test-server",
@@ -556,7 +556,7 @@ func TestFetchCommandsForServer_EmptyPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:    "test-server",
@@ -1145,7 +1145,7 @@ func TestFetchToolsForServer_MetaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	defer func() { _ = session.Close() }()
+	defer session.Close()
 
 	conn := &ConnectedServer{
 		Name:    "test-server",

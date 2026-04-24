@@ -204,7 +204,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response,
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
-	defer func() { _ = httpResp.Body.Close() }()
+	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 50<<20)) // 50MB safety cap
 	if err != nil {
@@ -345,7 +345,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 	eventCh := make(chan StreamEvent, 64)
 	go func() {
 		defer close(eventCh)
-		defer func() { _ = httpResp.Body.Close() }()
+		defer httpResp.Body.Close()
 		p.parseOpenAISSE(ctx, req, httpResp.Body, eventCh)
 	}()
 

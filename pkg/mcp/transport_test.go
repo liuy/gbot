@@ -298,7 +298,7 @@ func TestSsrfDialContext_AllowedIPLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	ctx := context.Background()
 	conn, err := ssrfDialContext(ctx, "tcp", "127.0.0.1:"+strings.TrimPrefix(ln.Addr().String(), "127.0.0.1:"))
@@ -735,7 +735,7 @@ func TestSsrfDialContext_LocalServer(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot listen: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	// Accept in background
 	go func() {
@@ -848,7 +848,7 @@ func TestSsrfDialContext_Allowed127_0_0_1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	ctx := context.Background()
 	conn, err := ssrfDialContext(ctx, "tcp", "127.0.0.1:"+strings.TrimPrefix(ln.Addr().String(), "127.0.0.1:"))
@@ -892,7 +892,7 @@ func TestSsrfDialContext_DNSResolvesAllowed(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot listen: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	// Accept in background
 	go func() {
@@ -951,7 +951,7 @@ func TestSsrfDialContext_IPv6LoopbackAllowed(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot listen on ::1: %v", err)
 	}
-	defer func() { _ = ln.Close() }()
+	defer ln.Close()
 
 	go func() {
 		conn, err := ln.Accept()

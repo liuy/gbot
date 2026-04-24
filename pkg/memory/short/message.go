@@ -60,7 +60,7 @@ func (s *Store) LoadMessages(sessionID string) ([]*TranscriptMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var messages []*TranscriptMessage
 	for rows.Next() {
@@ -96,7 +96,7 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Transcr
 	if err != nil {
 		return nil, fmt.Errorf("query messages after seq: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var messages []*TranscriptMessage
 	for rows.Next() {
@@ -234,7 +234,7 @@ func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Tr
 	if err != nil {
 		return nil, fmt.Errorf("query sidechain messages: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var messages []*TranscriptMessage
 	for rows.Next() {

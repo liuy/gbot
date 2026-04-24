@@ -1039,7 +1039,7 @@ func revokeToken(ctx context.Context, endpoint, token, tokenTypeHint, clientID, 
 	if err != nil {
 		return fmt.Errorf("mcp: revocation request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	// Source: auth.ts:433-460 — fallback to Bearer auth for non-compliant servers
 	if resp.StatusCode == http.StatusUnauthorized && accessToken != "" {
@@ -1054,7 +1054,7 @@ func revokeToken(ctx context.Context, endpoint, token, tokenTypeHint, clientID, 
 		if err != nil {
 			return fmt.Errorf("mcp: revocation retry failed: %w", err)
 		}
-		defer func() { _ = resp2.Body.Close() }()
+		defer resp2.Body.Close()
 		if resp2.StatusCode >= 400 {
 			return fmt.Errorf("mcp: revocation failed with status %d", resp2.StatusCode)
 		}
@@ -1086,7 +1086,7 @@ func RevokeServerTokens(ctx context.Context, store *FileTokenStore, serverKey, s
 			client := &http.Client{Timeout: time.Duration(AuthRequestTimeoutMs) * time.Millisecond}
 			resp, err := client.Do(req)
 			if err == nil {
-				defer func() { _ = resp.Body.Close() }()
+				defer resp.Body.Close()
 				if resp.StatusCode == http.StatusOK {
 					var m OAuthMetadata
 					if json.NewDecoder(resp.Body).Decode(&m) == nil {

@@ -8,6 +8,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"math/rand"
 	"os"
@@ -425,6 +426,15 @@ func (r *Registry) GetTools() []DiscoveredTool {
 	return append([]DiscoveredTool(nil), r.tools...)
 }
 
+// SetToolsForTest injects discovered tools into the registry for testing.
+// This simulates the state after a successful ConnectAll + discovery without
+// requiring a real MCP server connection.
+func (r *Registry) SetToolsForTest(tools []DiscoveredTool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools = append([]DiscoveredTool(nil), tools...)
+}
+
 // GetCommands returns all discovered commands across all servers.
 func (r *Registry) GetCommands() []MCPCommand {
 	r.mu.RLock()
@@ -437,6 +447,44 @@ func (r *Registry) GetResources() []ServerResource {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return append([]ServerResource(nil), r.resources...)
+}
+
+// ---------------------------------------------------------------------------
+// LoadAndConnectMCP — startup wireup (called from main.go)
+// ---------------------------------------------------------------------------
+
+// LoadAndConnectMCP loads MCP server configs from .mcp.json in the given directory,
+// creates a Registry, and connects to all configured servers.
+//
+// Returns nil registry if no servers are configured (no .mcp.json or empty servers).
+// This is the primary entry point for wiring MCP into the engine at startup.
+func LoadAndConnectMCP(ctx context.Context, cwd string, provider TransportProvider) (*Registry, error) {
+	configs, _ := GetProjectMcpConfigsFromCwd(cwd)
+	if len(configs) == 0 {
+		return nil, nil
+	}
+
+	mgr := NewClientManager(provider, true, "")
+	registry := NewRegistry(mgr, ChangeCallbacks{})
+
+	results := registry.ConnectAll(ctx, configs)
+
+	// Log connection results
+	connected := 0
+	failed := 0
+	for name, conn := range results {
+		switch conn.(type) {
+		case *ConnectedServer:
+			connected++
+			slog.Info("mcp: connected", "server", name)
+		default:
+			failed++
+			slog.Warn("mcp: failed to connect", "server", name, "result", conn)
+		}
+	}
+	slog.Info("mcp: startup complete", "connected", connected, "failed", failed, "total", len(configs))
+
+	return registry, nil
 }
 
 // GetConnection returns the connection state for a server.

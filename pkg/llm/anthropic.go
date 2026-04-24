@@ -87,7 +87,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
-	defer func() { _ = httpResp.Body.Close() }()
+	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, 50<<20)) // 50MB safety cap
 	if err != nil {
@@ -201,7 +201,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 
 	go func() {
 		defer close(eventCh)
-		defer func() { _ = httpResp.Body.Close() }()
+		defer httpResp.Body.Close()
 
 		// Use a wrapper channel to intercept events for cache token tracking.
 		// After streaming completes, accumulated tokens feed into CheckResponseForCacheBreak.

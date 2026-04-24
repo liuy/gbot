@@ -1539,7 +1539,7 @@ func TestScanMessage_DirectError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	if !rows.Next() {
 		t.Fatal("expected one row")

@@ -31,8 +31,8 @@ func TestGetTerminalSize_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	_ = setPTYWindowSize(master.Fd())
 	rows, cols, err := GetTerminalSize()
@@ -78,8 +78,8 @@ func TestSetPTYWindowSize_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	// setPTYWindowSize reads from fd 0 (stdin) which may not be a PTY
 	// So we use setPTYWindowSizeFd directly with slave as control
@@ -126,8 +126,8 @@ func TestSetPTYWindowSizeFd_InvalidPtyFd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	// Valid ctlFd (master), invalid ptyFd → IoctlSetWinsize fails
 	err = setPTYWindowSizeFd(int(master.Fd()), 999)
@@ -148,8 +148,8 @@ func TestGetTerminalSizeFd_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	// First set a window size, then read it back
 	_ = setPTYWindowSizeFd(int(slave.Fd()), master.Fd())
@@ -173,8 +173,8 @@ func TestSetPTYWindowSizeFd_WithPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = master.Close() }()
-	defer func() { _ = slave.Close() }()
+	defer master.Close()
+	defer slave.Close()
 
 	// Use master as both ctlFd and ptyFd — both are valid PTY fds
 	err = setPTYWindowSizeFd(int(master.Fd()), master.Fd())

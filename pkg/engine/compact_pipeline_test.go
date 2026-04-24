@@ -126,7 +126,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
@@ -265,7 +265,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {

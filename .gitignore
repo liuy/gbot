@@ -30,3 +30,6 @@ Thumbs.db
 vendor/
 *graphify-out/
 .gbot/
+
+# MCP user config (per-user, not committed)
+.mcp.json

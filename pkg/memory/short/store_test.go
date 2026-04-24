@@ -49,7 +49,7 @@ func TestDBPath_ReturnsPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	if store.DBPath() != dbPath {
 		t.Errorf("DBPath() = %q, want %q", store.DBPath(), dbPath)
@@ -83,7 +83,7 @@ func TestNewStore_CreatesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	// Verify directory was created
 	info, err := os.Stat(dbPath)

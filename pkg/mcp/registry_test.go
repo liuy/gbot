@@ -62,7 +62,7 @@ func newTestRegistry(callbacks ChangeCallbacks) (*Registry, *inMemoryProvider) {
 
 func TestRegistry_ConnectAll_Empty(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	results := r.ConnectAll(context.Background(), nil)
 	if len(results) != 0 {
@@ -72,7 +72,7 @@ func TestRegistry_ConnectAll_Empty(t *testing.T) {
 
 func TestRegistry_ConnectAll_Disabled(t *testing.T) {
 	r, p := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -100,7 +100,7 @@ func TestRegistry_ConnectAll_Disabled(t *testing.T) {
 
 func TestRegistry_ConnectAll_WithEnabledDisabled(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg1 := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -146,7 +146,7 @@ func TestRegistry_ConnectAll_WithEnabledDisabled(t *testing.T) {
 
 func TestRegistry_ConnectAll_WithFailedServer(t *testing.T) {
 	r, p := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg1 := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -197,7 +197,7 @@ func TestRegistry_ConnectAll_WithFailedServer(t *testing.T) {
 
 func TestRegistry_ConnectAll_EmptyConfigs(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	results := r.ConnectAll(context.Background(), map[string]ScopedMcpServerConfig{})
 	if len(results) != 0 {
@@ -207,7 +207,7 @@ func TestRegistry_ConnectAll_EmptyConfigs(t *testing.T) {
 
 func TestRegistry_ConnectAll_ReconnectExisting(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -256,7 +256,7 @@ func TestRegistry_ConnectAll_ReconnectExisting(t *testing.T) {
 
 func TestRegistry_ConnectAll_RemovesStaleConfigs(t *testing.T) {
 	r, p := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg1 := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -314,7 +314,7 @@ func TestRegistry_ConnectAll_RemovesStaleConfigs(t *testing.T) {
 
 func TestRegistry_GetTools_Empty(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	tools := r.GetTools()
 	if len(tools) != 0 {
@@ -324,7 +324,7 @@ func TestRegistry_GetTools_Empty(t *testing.T) {
 
 func TestRegistry_GetCommands_Empty(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	commands := r.GetCommands()
 	if len(commands) != 0 {
@@ -334,7 +334,7 @@ func TestRegistry_GetCommands_Empty(t *testing.T) {
 
 func TestRegistry_GetResources_Empty(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	resources := r.GetResources()
 	if len(resources) != 0 {
@@ -348,7 +348,7 @@ func TestRegistry_GetResources_Empty(t *testing.T) {
 
 func TestRegistry_GetConnection_NotFound(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	_, ok := r.GetConnection("nonexistent")
 	if ok {
@@ -362,7 +362,7 @@ func TestRegistry_GetConnection_NotFound(t *testing.T) {
 
 func TestRegistry_GetConfigs_Empty(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	configs := r.GetConfigs()
 	if len(configs) != 0 {
@@ -376,7 +376,7 @@ func TestRegistry_GetConfigs_Empty(t *testing.T) {
 
 func TestRegistry_Disconnect_NotConnected(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	err := r.Disconnect("nonexistent")
 	if err != nil {
@@ -386,7 +386,7 @@ func TestRegistry_Disconnect_NotConnected(t *testing.T) {
 
 func TestRegistry_Disconnect_Connected(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -416,7 +416,7 @@ func TestRegistry_Disconnect_Connected(t *testing.T) {
 
 func TestRegistry_ToggleServer_NotFound(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	err := r.ToggleServer(context.Background(), "nonexistent")
 	if err == nil {
@@ -429,7 +429,7 @@ func TestRegistry_ToggleServer_NotFound(t *testing.T) {
 
 func TestRegistry_ToggleServer_Disable(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -463,7 +463,7 @@ func TestRegistry_ToggleServer_Disable(t *testing.T) {
 
 func TestRegistry_ToggleServer_Enable(t *testing.T) {
 	r, p := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -503,7 +503,7 @@ func TestRegistry_ToggleServer_Enable(t *testing.T) {
 
 func TestRegistry_ToggleServer_NoConnection(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "echo"},
@@ -535,7 +535,7 @@ func TestRegistry_ToggleServer_NoConnection(t *testing.T) {
 
 func TestRegistry_Reconnect_NotFound(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	_, err := r.Reconnect(context.Background(), "nonexistent")
 	if err == nil {
@@ -627,14 +627,14 @@ func TestRegistry_Close_CancelledContext(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_UnknownServer(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.ScheduleReconnect("nonexistent", 0)
 }
 
 func TestRegistry_ScheduleReconnect_MaxAttempts(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -654,7 +654,7 @@ func TestRegistry_ScheduleReconnect_MaxAttempts(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_LocalServer(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["local"] = ScopedMcpServerConfig{
@@ -674,7 +674,7 @@ func TestRegistry_ScheduleReconnect_LocalServer(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_SetsTimer(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -695,7 +695,7 @@ func TestRegistry_ScheduleReconnect_SetsTimer(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_FiresAfterDelay(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -733,7 +733,7 @@ func TestRegistry_ScheduleReconnect_FiresAfterDelay(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_CancelsPrevious(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -761,7 +761,7 @@ func TestRegistry_ScheduleReconnect_CancelsPrevious(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_ZeroDelay(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -788,7 +788,7 @@ func TestRegistry_ScheduleReconnect_ZeroDelay(t *testing.T) {
 
 func TestRegistry_ScheduleReconnect_CancelsExistingTimer(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -848,7 +848,7 @@ func TestRegistry_Callbacks_OnToolsChanged(t *testing.T) {
 			called.Add(1)
 		},
 	})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.callbacks.OnToolsChanged("test", nil)
 	if called.Load() != 1 {
@@ -863,7 +863,7 @@ func TestRegistry_Callbacks_OnServerStatusChanged(t *testing.T) {
 			called.Add(1)
 		},
 	})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.callbacks.OnServerStatusChanged("test", &PendingServer{Name: "test"})
 	if called.Load() != 1 {
@@ -877,7 +877,7 @@ func TestRegistry_Callbacks_OnServerStatusChanged(t *testing.T) {
 
 func TestRegistry_ConcurrentAccess(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	var wg sync.WaitGroup
 	for i := range 50 {
@@ -934,7 +934,7 @@ func TestRegistry_BackoffCalculation(t *testing.T) {
 
 func TestRegistry_RebuildAggregatesLocked(t *testing.T) {
 	r, _ := newTestRegistry(ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	r.mu.Lock()
 	r.toolCache.Put("srv1", []DiscoveredTool{
@@ -1026,7 +1026,7 @@ func TestRegistry_ConnectAll_WithActualConnections(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Setup a real server with a tool
 	srv, t2 := setupInMemoryServer(t)
@@ -1065,7 +1065,7 @@ func TestRegistry_ConnectAll_FailedServerResult(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Make the provider fail for server1
 	p.mu.Lock()
@@ -1100,7 +1100,7 @@ func TestRegistry_ConnectAll_RemovesStaleConnections(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1165,7 +1165,7 @@ func TestRegistry_Reconnect_SuccessWithInMemory(t *testing.T) {
 			commandsChanged.Add(1)
 		},
 	})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Setup server with a tool
 	srv, t2 := setupInMemoryServer(t)
@@ -1215,7 +1215,7 @@ func TestRegistry_Reconnect_FailedConnection(t *testing.T) {
 	// Use an errorProvider that returns errors from NewTransport
 	cm := NewClientManager(&errorProvider{}, true, "")
 	r := NewRegistry(cm, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1263,7 +1263,7 @@ func TestRegistry_Disconnect_WithReconnectTimer(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1408,7 +1408,7 @@ func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &SSEConfig{URL: "http://example.com"},
@@ -1454,7 +1454,7 @@ func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
 			statusChanged.Add(1)
 		},
 	})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Setup a real server
 	srv, t2 := setupInMemoryServer(t)
@@ -1495,7 +1495,7 @@ func TestRegistry_Reconnect_NonConnectedResult(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1532,7 +1532,7 @@ func TestRegistry_Disconnect_NonConnectedServer(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1568,7 +1568,7 @@ func TestRegistry_Disconnect_CleansUpCaches(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
 		Config: &StdioConfig{Command: "test-cmd"},
@@ -1614,7 +1614,7 @@ func TestRegistry_ConnectAll_NeedsAuthResult(t *testing.T) {
 	p := newInMemoryProvider()
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Mark server as auth-cached
 	mgr.SetAuthCached("auth-srv")
@@ -1670,7 +1670,7 @@ func TestConnectAll_ConcurrentExecution(t *testing.T) {
 	slowP := &slowProvider{inMemoryProvider: p, delay: 50 * time.Millisecond}
 	mgr := NewClientManager(slowP, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	configs := make(map[string]ScopedMcpServerConfig, 5)
 	for i := range 5 {
@@ -1749,7 +1749,7 @@ func TestConnectAll_LocalBatchSize(t *testing.T) {
 	p := newConcurrentCountProvider(20 * time.Millisecond)
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	configs := make(map[string]ScopedMcpServerConfig, 5)
 	for i := range 5 {
@@ -1775,7 +1775,7 @@ func TestConnectAll_DisabledSkipped(t *testing.T) {
 	p := newConcurrentCountProvider(10 * time.Millisecond)
 	mgr := NewClientManager(p, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	// Disable 2 out of 4 servers
 	r.mu.Lock()
@@ -1825,7 +1825,7 @@ func TestConnectAll_MixedResults(t *testing.T) {
 
 	mgr := NewClientManager(prov, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	configs := map[string]ScopedMcpServerConfig{
 		"ok-server":   {Config: &SSEConfig{URL: "http://localhost/ok"}, Scope: ScopeUser},
@@ -1866,7 +1866,7 @@ func TestConnectAll_MixedLocalRemote(t *testing.T) {
 
 	mgr := NewClientManager(prov, true, "")
 	r := NewRegistry(mgr, ChangeCallbacks{})
-	defer func() { _ = r.Close() }()
+	defer r.Close()
 
 	configs := map[string]ScopedMcpServerConfig{
 		"local-0":  {Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser},

@@ -31,7 +31,7 @@ func TestWSTransport_Connect_Subprotocol(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		// Echo messages back
 		for {
 			msgType, data, err := conn.ReadMessage()
@@ -51,7 +51,7 @@ func TestWSTransport_Connect_Subprotocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect() = %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	if conn.SessionID() != "" {
 		t.Errorf("SessionID() = %q, want empty", conn.SessionID())
@@ -101,7 +101,7 @@ func TestWSConn_ReadWrite_Echo(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		// Echo: read a message, send it back
 		for {
 			_, data, err := conn.ReadMessage()
@@ -121,7 +121,7 @@ func TestWSConn_ReadWrite_Echo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect() = %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Write a JSON-RPC request
 	req := &jsonrpc.Request{
@@ -212,7 +212,7 @@ func TestWSConn_Read_ContextCancelled(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		select {} // block forever
 	}))
 	defer server.Close()
@@ -227,7 +227,7 @@ func TestWSConn_Read_ContextCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect() = %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Cancel context while waiting for a message
 	go func() {
@@ -475,7 +475,7 @@ func TestWSConn_ReadLoop_BinaryFrames(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 
 		// Send a binary frame (should be ignored)
 		_ = conn.WriteMessage(websocket.BinaryMessage, []byte("binary-data"))
@@ -493,7 +493,7 @@ func TestWSConn_ReadLoop_BinaryFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Read should get the text message (binary is skipped)
 	msg, err := conn.Read(ctx)
@@ -517,7 +517,7 @@ func TestWSConn_ReadLoop_DecodeError(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 
 		// Send invalid JSON-RPC text frame
 		_ = conn.WriteMessage(websocket.TextMessage, []byte("not-json-rpc"))
@@ -532,7 +532,7 @@ func TestWSConn_ReadLoop_DecodeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Read should get a decode error
 	_, err = conn.Read(ctx)
@@ -601,7 +601,7 @@ func TestWSConn_Read_IncomingChannelClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Read should get io.EOF after server closes
 	_, err = conn.Read(ctx)
@@ -624,7 +624,7 @@ func TestWSConn_Write_Success(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		// Read one message to confirm write worked
 		_, _, _ = conn.ReadMessage()
 	}))
@@ -638,7 +638,7 @@ func TestWSConn_Write_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	msg := &jsonrpc.Request{Method: "test_method"}
 	if err := conn.Write(ctx, msg); err != nil {
@@ -661,7 +661,7 @@ func TestWSConn_WriteEncodeSuccess(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		// Read messages until error
 		for {
 			_, _, err := conn.ReadMessage()
@@ -680,7 +680,7 @@ func TestWSConn_WriteEncodeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Write a response (uses jsonrpc.Response, different code path than Request)
 	id, _ := jsonrpc.MakeID("1")
@@ -822,7 +822,7 @@ func TestWSConn_Read_IncomingClosedNoMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Read should return io.EOF since incoming channel closed without messages
 	msg, err := conn.Read(ctx)
@@ -846,7 +846,7 @@ func TestWSConn_Write_ContextCancelled(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 		// Read messages until error
 		for {
 			_, _, err := conn.ReadMessage()
@@ -864,7 +864,7 @@ func TestWSConn_Write_ContextCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Cancel context before writing
 	ctx, cancel := context.WithCancel(context.Background())
@@ -890,7 +890,7 @@ func TestWSConn_ReadLoop_ServerSendsMultipleFrames(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer conn.Close()
 
 		// Send binary frame (should be ignored)
 		_ = conn.WriteMessage(websocket.BinaryMessage, []byte("binary"))
@@ -907,7 +907,7 @@ func TestWSConn_ReadLoop_ServerSendsMultipleFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer conn.Close()
 
 	// Read should get a decode error (binary was skipped, invalid text caused error)
 	_, err = conn.Read(ctx)

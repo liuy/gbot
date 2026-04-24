@@ -111,7 +111,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var results []*SearchResult
 	for rows.Next() {
@@ -195,7 +195,7 @@ func (s *Store) SearchSessions(query string, projectDir string, limit int) ([]*S
 	if err != nil {
 		return nil, fmt.Errorf("search sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var sessions []*Session
 	for rows.Next() {

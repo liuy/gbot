@@ -1,0 +1,8 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # Deferred Close is best-effort — not checking its error is standard Go practice.
+      - linters: [errcheck]
+        source: "defer .+\\.Close\\(\\)"

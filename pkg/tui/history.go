@@ -148,7 +148,7 @@ func (h *History) save(cmd string) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 
 	if _, err := f.Write(line); err != nil {
 			return
@@ -165,7 +165,7 @@ func (h *History) load() {
 	if err != nil {
 		return // file doesn't exist yet — that's fine
 	}
-	defer func() { _ = f.Close() }()
+	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

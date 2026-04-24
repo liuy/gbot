@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -128,7 +130,7 @@ func TestMCPTool_CheckPermissions(t *testing.T) {
 
 func TestMCPTool_Call_ServerNotFound(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
-	defer func() { _ = registry.Close() }()
+	defer registry.Close()
 
 	tl := NewMCPTool(mcp.DiscoveredTool{
 		Name:         "mcp__test__echo",
@@ -147,7 +149,7 @@ func TestMCPTool_Call_ServerNotFound(t *testing.T) {
 
 func TestMCPTool_Call_ServerNotConnected(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
-	defer func() { _ = registry.Close() }()
+	defer registry.Close()
 
 	// Register a config but don't connect (connection map empty)
 	cfg := mcp.ScopedMcpServerConfig{
@@ -222,7 +224,7 @@ func TestEngine_MCPRegistryParam(t *testing.T) {
 
 func TestEngine_AllTools_MergesStaticAndMCP(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
-	defer func() { _ = registry.Close() }()
+	defer registry.Close()
 
 	eng := New(&Params{
 		MCPRegistry: registry,
@@ -235,6 +237,87 @@ func TestEngine_AllTools_MergesStaticAndMCP(t *testing.T) {
 		t.Errorf("expected empty, got %d", len(all))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// refreshTools wireup — RED test for MCP tool merging
+// ---------------------------------------------------------------------------
+
+// TestEngine_RefreshTools_MergesMCPTools verifies that refreshTools() includes
+// MCP tools from the registry in the engine's tool map.
+// This is the wireup that connects Registry → Engine → callLLM tool list.
+//
+// BUG: Currently refreshTools() only rebuilds from toolsProvider (built-in tools)
+// and ignores mcpRegistry. This test should FAIL until that is fixed.
+func TestEngine_RefreshTools_MergesMCPTools(t *testing.T) {
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+
+	// Simulate a built-in tool via ToolsProvider
+	builtIn := map[string]tool.Tool{
+		"Bash": &stubTool{name: "Bash"},
+	}
+
+	eng := New(&Params{
+		ToolsProvider: func() map[string]tool.Tool { return builtIn },
+		MCPRegistry:   registry,
+	})
+	defer eng.Close()
+
+	// Pre-populate registry with a discovered tool (simulates ConnectAll result)
+	// We directly inject into the registry's tool list — this is the same state
+	// that would exist after a successful ConnectAll + discovery.
+	echoTool := mcp.DiscoveredTool{
+		Name:         "mcp__echo-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "echo-srv",
+		Description:  "Echo tool",
+	}
+	registry.SetToolsForTest([]mcp.DiscoveredTool{echoTool})
+
+	// refreshTools rebuilds e.tools from toolsProvider
+	eng.refreshTools()
+
+	// Verify built-in tool is present
+	if _, ok := eng.tools["Bash"]; !ok {
+		t.Error("built-in tool 'Bash' missing from engine.tools after refreshTools")
+	}
+
+	// RED: MCP tool should be present but currently refreshTools ignores registry
+	if _, ok := eng.tools["mcp__echo-srv__echo"]; !ok {
+		t.Error("MCP tool 'mcp__echo-srv__echo' missing from engine.tools after refreshTools — " +
+			"refreshTools() does not merge MCP tools from registry")
+	}
+
+	// Verify toolOrder includes MCP tool
+	found := slices.Contains(eng.toolOrder, "mcp__echo-srv__echo")
+	if !found {
+		t.Error("toolOrder does not include MCP tool 'mcp__echo-srv__echo'")
+	}
+}
+
+// stubTool is a minimal tool.Tool implementation for testing.
+type stubTool struct {
+	name string
+}
+
+func (s *stubTool) Name() string                                { return s.name }
+func (s *stubTool) Aliases() []string                           { return nil }
+func (s *stubTool) InputSchema() json.RawMessage                { return nil }
+func (s *stubTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (s *stubTool) IsEnabled() bool                             { return true }
+func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.InterruptCancel }
+func (s *stubTool) MaxResultSize() int                          { return 0 }
+func (s *stubTool) Prompt() string                              { return "" }
+func (s *stubTool) RenderResult(any) string                     { return "" }
+func (s *stubTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil
+}
+func (s *stubTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (s *stubTool) IsReadOnly(json.RawMessage) bool        { return false }
+func (s *stubTool) IsDestructive(json.RawMessage) bool     { return false }
+func (s *stubTool) IsConcurrencySafe(json.RawMessage) bool { return false }
 
 func TestMCPTool_DestructiveProperties(t *testing.T) {
 	tl := NewMCPTool(mcp.DiscoveredTool{

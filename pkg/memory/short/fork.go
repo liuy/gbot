@@ -76,7 +76,7 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 	if err != nil {
 		return fmt.Errorf("query parent messages: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	// Track UUID mapping for chain rebuild
 	uuidMap := make(map[string]string) // old UUID → new UUID
@@ -146,7 +146,7 @@ func (s *Store) GetForkChildren(parentSessionID string) ([]*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query fork children: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var children []*Session
 	for rows.Next() {
@@ -224,7 +224,7 @@ func (s *Store) MergeForkBack(childSessionID string) error {
 		ORDER BY seq ASC
 		LIMIT -1 OFFSET ?
 	`, childSessionID, inheritedCount)
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	for rows.Next() {
 		var msgUUID, msgType, subtype, content string

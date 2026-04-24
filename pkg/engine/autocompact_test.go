@@ -528,7 +528,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &compactMockProvider{}
 	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
@@ -548,7 +548,7 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &compactMockProvider{}
 	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
@@ -580,7 +580,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &compactMockProvider{}
 	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
@@ -621,7 +621,7 @@ func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
 	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
@@ -649,7 +649,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &compactMockProvider{}
 	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
@@ -687,7 +687,7 @@ func TestCompactor_EngineIntegration_ProactiveCompact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	defer store.Close()
 
 	mp := &mockProvider{}
 	mp.addResponse(nil, &llm.APIError{
