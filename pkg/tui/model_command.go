@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/engine"
 )
 
 // handleModel implements the /model command.
@@ -93,8 +94,8 @@ func (a *App) handleModelPickerDone(p *ListPicker, items []ModelItem) (tea.Model
 	a.engine.SetModel(selected.Model)
 	a.currentProvider = selected.Provider
 	a.currentTier = selected.Tier
+	a.updateEngineCapabilities(selected.Provider, selected.Model)
 	a.status.SetModel(a.engine.Model())
-	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", selected.Provider, "tier", selected.Tier, "model", selected.Model)
@@ -123,8 +124,8 @@ func (a *App) switchProviderTier(providerName, tierName string, commitCmd tea.Cm
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
 	a.currentTier = tier
+	a.updateEngineCapabilities(providerName, model)
 	a.status.SetModel(a.engine.Model())
-	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", providerName, "tier", tier, "model", model)
@@ -145,8 +146,8 @@ func (a *App) switchTier(tierName string, commitCmd tea.Cmd) tea.Cmd {
 
 	a.engine.SetModel(model)
 	a.currentTier = tier
+	a.updateEngineCapabilities(a.currentProvider, model)
 	a.status.SetModel(a.engine.Model())
-	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched tier", "provider", a.currentProvider, "tier", tier, "model", model)
@@ -172,6 +173,8 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
+	a.updateEngineCapabilities(providerName, model)
+	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
 
 	slog.Info("model: switched provider", "provider", providerName, "tier", a.currentTier, "model", model)
@@ -187,4 +190,20 @@ var validTiers = map[string]config.Tier{
 func isValidTier(s string) bool {
 	_, ok := validTiers[s]
 	return ok
+}
+
+// updateEngineCapabilities updates the engine's context window and max tokens
+// based on the provider config and model name. Called after every model switch.
+func (a *App) updateEngineCapabilities(providerName, model string) {
+	cfgProvider := a.providerConfigs[providerName]
+	if cfgProvider == nil {
+		return
+	}
+	cw, mt := cfgProvider.ResolveCapabilities(model)
+	a.engine.SetMaxTokens(mt)
+	a.engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+		ContextWindow:          cw,
+		MaxConsecutiveFailures: 3,
+	})
+	a.status.SetContext(0, cw)
 }

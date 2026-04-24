@@ -920,6 +920,7 @@ func TestStatusBar_SetContext(t *testing.T) {
 	}
 }
 
+
 func TestStatusBar_SetToolCount(t *testing.T) {
 	t.Parallel()
 

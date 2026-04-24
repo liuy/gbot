@@ -74,7 +74,9 @@ func main() {
 	}
 	var provider llm.Provider
 	var model string
-	for _, p := range cfg.Providers {
+	var primaryProviderCfg *config.Provider
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
 		if prov, ok := providerMap[p.Name]; ok {
 			if defaultProvider != "" && p.Name != defaultProvider {
 				continue
@@ -84,6 +86,7 @@ func main() {
 			if model == "" {
 				model = p.Models[config.TierPro]
 			}
+			primaryProviderCfg = p
 			break
 		}
 	}
@@ -112,12 +115,14 @@ func main() {
 		slog.Warn("main: MCP initialization failed", "error", err)
 	}
 
+	contextWindow, maxTokens := primaryProviderCfg.ResolveCapabilities(model)
+
 	eng := engine.New(&engine.Params{
 		Provider:      provider,
 		ToolsProvider: reg.ToolMapFn(),
 		Model:         model,
-		MaxTokens:     16000,
-		TokenBudget:   200000,
+		MaxTokens:     maxTokens,
+		TokenBudget:   contextWindow, // preserved for future +500k feature
 		Logger:        logger,
 		Dispatcher:    h,
 		MCPRegistry:   mcpRegistry,
@@ -228,8 +233,7 @@ func main() {
 		if store != nil && sessionID != "" {
 			compactor := engine.NewAutoCompactor(store, sessionID, model, provider)
 			eng.SetCompactor(compactor, engine.AutoCompactConfig{
-				Threshold:              0.935,
-				ContextWindow:          200000,
+				ContextWindow:          contextWindow,
 				MaxConsecutiveFailures: 3,
 			})
 		}
@@ -237,6 +241,16 @@ func main() {
 		app := tui.NewApp(eng, systemPrompt, h)
 		app.SetProviders(providerMap, cfg)
 		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
+
+		// 8.5 Estimate initial context usage from system prompt + tools.
+		// Rough heuristic: ~4 chars per token. Corrected after first API response.
+		initialTokens := len(systemPrompt) / 4
+		for _, t := range reg.EnabledTools() {
+			if b, err := json.Marshal(t.InputSchema()); err == nil {
+				initialTokens += len(b) / 4
+			}
+		}
+		app.SetInitialContext(initialTokens, contextWindow)
 
 	// 9. Run bubbletea program
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())

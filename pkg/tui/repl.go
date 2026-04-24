@@ -449,9 +449,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.status.usage.OutputTokens += m.OutputTokens
 		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
 		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
-		a.inputTokenTarget = a.status.usage.TotalInputTokens()
+		totalIn := a.status.usage.TotalInputTokens()
+		a.displayedInputTokens = totalIn
+		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
-		a.displayedInputTokens = a.status.usage.TotalInputTokens()
+		a.status.SetContext(totalIn, a.engine.ContextWindow())
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
 		return true, a.readEvents()
 
@@ -523,10 +526,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens
 		}
 		// Input tokens arrive all at once — snap immediately
-		a.displayedInputTokens = a.status.usage.TotalInputTokens()
-		a.inputTokenTarget = a.status.usage.TotalInputTokens()
+		totalIn := a.status.usage.TotalInputTokens()
+		a.displayedInputTokens = totalIn
+		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
-		a.status.SetContext(a.status.usage.TotalInputTokens(), a.engine.ContextWindow())
+		a.status.SetContext(totalIn, a.engine.ContextWindow())
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		return true, a.readEvents()
 

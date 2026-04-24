@@ -53,6 +53,13 @@ type Provider struct {
 	Keys   []string        `json:"keys"`             // env var references like "$ANTHROPIC_API_KEY"
 	Models map[Tier]string `json:"models"`           // per-tier model names
 	Type   string          `json:"type,omitempty"`   // "auto" (default) | "openai" | "anthropic"
+
+	// ContextWindow is the model's maximum context window in tokens.
+	// If 0, DefaultCapabilities provides a fallback based on model name.
+	ContextWindow int `json:"context_window,omitempty"`
+	// MaxTokens is the model's maximum output tokens per request.
+	// If 0, DefaultCapabilities provides a fallback based on model name.
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 const (

@@ -33,12 +33,17 @@ type Compactor interface {
 	Compact(ctx context.Context, messages []types.Message) ([]types.Message, error)
 }
 
+// TS auto-compact constants.
+// Source: services/compact/autoCompact.ts
+const (
+	maxOutputTokensForSummary = 20_000 // MAX_OUTPUT_TOKENS_FOR_SUMMARY: reserve for compact output
+	autocompactBufferTokens   = 13_000 // AUTOCOMPACT_BUFFER_TOKENS: buffer below effective window
+	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: blocking limit buffer
+)
+
 // AutoCompactConfig configures auto-compact behavior.
 // TS align: autoCompact.ts configuration
 type AutoCompactConfig struct {
-	// Threshold is the ratio (0.0-1.0) of estimated context usage that triggers
-	// proactive auto-compact. Default: 0.9 (90% of context window).
-	Threshold float64
 	// ContextWindow is the model's maximum context window in tokens.
 	// If 0, proactive auto-compact is disabled.
 	ContextWindow int
@@ -85,7 +90,10 @@ type Engine struct {
 	autoCompactConfig          AutoCompactConfig
 	consecutiveCompactFailures int
 
-	// lastInputTokens stores the exact input token count from the last API call.
+	// lastInputTokens stores the estimated context size from the last API response.
+	// Value = TotalInputTokens() + OutputTokens (input + cache + output of last turn).
+	// This approximates the context size for the NEXT API call, aligning with TS
+	// tokenCountWithEstimation. Reset to 0 after compact to prevent stale values.
 	// Used by currentInputTokens() to avoid re-walking all messages when available.
 	lastInputTokens int
 
@@ -350,8 +358,32 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.consecutiveCompactFailures = 0
 				e.mu.Unlock()
 				e.setMessages(compacted)
+				e.mu.Lock()
+				e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
+				e.mu.Unlock()
 				e.logger.Info("proactive auto-compact succeeded",
 					"messages", len(compacted))
+			}
+		}
+
+		// Blocking limit: refuse API call if context exceeds safe threshold.
+		// TS align: query.ts blocking limit check — effectiveWindow - 3000.
+		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
+		if !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
+			reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
+			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
+			blockingLimit := effectiveWindow - manualCompactBufferTokens
+			if blockingLimit > 0 && e.currentInputTokens() >= blockingLimit {
+				e.logger.Warn("blocking limit exceeded, refusing API call",
+					"tokens", e.currentInputTokens(),
+					"limit", blockingLimit)
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+				return QueryResult{
+					Messages:   e.messages,
+					TurnCount:  e.turnCount,
+					TotalUsage: totalUsage,
+					Terminal:   types.TerminalPromptTooLong,
+				}
 			}
 		}
 
@@ -370,6 +402,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
 					if compactErr == nil {
 						e.setMessages(compacted)
+						e.mu.Lock()
+						e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
+						e.mu.Unlock()
 						reactiveCompactDone = true
 						e.logger.Info("reactive auto-compact succeeded, retrying")
 						continue
@@ -398,9 +433,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			totalUsage.OutputTokens += resp.Usage.OutputTokens
 			totalUsage.CacheReadInputTokens += resp.Usage.CacheReadInputTokens
 			totalUsage.CacheCreationInputTokens += resp.Usage.CacheCreationInputTokens
-			// Store exact input tokens for currentInputTokens() optimization.
+			// Store context size estimate for currentInputTokens().
+			// API InputTokens is non-cached input only; TotalInputTokens()
+			// adds cache read/creation. OutputTokens included because the
+			// response will be part of the next request context.
+			// Aligns with TS tokenCountWithEstimation (input + output).
 			e.mu.Lock()
-			e.lastInputTokens = totalUsage.InputTokens
+			e.lastInputTokens = resp.Usage.TotalInputTokens() + resp.Usage.OutputTokens
 			e.mu.Unlock()
 		}
 
@@ -451,21 +490,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// End of this streaming round
 		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 
-		// Stage 25-26: Turn counting and state transition
+		// Stage 25-26: Turn counting
 		e.turnCount++
-		e.tokenBudget -= totalUsage.InputTokens + totalUsage.OutputTokens
-
-		if e.tokenBudget <= 0 && !e.isSubagent {
-			e.logger.Warn("token budget exhausted")
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
-			return QueryResult{
-				Messages:   e.messages,
-				TurnCount:  e.turnCount,
-				TotalUsage: totalUsage,
-				Terminal:   types.TerminalPromptTooLong,
-			}
-		}
 	}
 
 	return QueryResult{
@@ -911,7 +937,7 @@ func (e *Engine) shouldAutoCompact() bool {
 		return false
 	}
 	cfg := e.autoCompactConfig
-	if cfg.ContextWindow <= 0 || cfg.Threshold <= 0 {
+	if cfg.ContextWindow <= 0 {
 		return false
 	}
 	// Recursion guard: compact and session_memory are forked agents
@@ -929,8 +955,12 @@ func (e *Engine) shouldAutoCompact() bool {
 	if e.consecutiveCompactFailures >= maxFail {
 		return false
 	}
-	threshold := float64(cfg.ContextWindow) * cfg.Threshold
-	return float64(tokens) > threshold
+	// TS formula: effectiveWindow = contextWindow - min(maxTokens, 20K)
+	// threshold = effectiveWindow - 13K
+	reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
+	effectiveWindow := cfg.ContextWindow - reservedTokens
+	threshold := effectiveWindow - autocompactBufferTokens
+	return tokens > threshold
 }
 
 // marshalMessages converts internal messages to API format.
@@ -1119,11 +1149,28 @@ func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {
 	e.mu.Unlock()
 }
 
+// UpdateAutoCompactConfig updates only the auto-compact configuration
+// without replacing the compactor. Used during model switch to update
+// context window and max tokens.
+func (e *Engine) UpdateAutoCompactConfig(cfg AutoCompactConfig) {
+	e.mu.Lock()
+	e.autoCompactConfig = cfg
+	e.mu.Unlock()
+}
+
 // ContextWindow returns the configured context window size in tokens.
 func (e *Engine) ContextWindow() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.autoCompactConfig.ContextWindow
+}
+
+// SetMaxTokens updates the max output tokens for the current model.
+// Called during model switch to reflect the new model's capabilities.
+func (e *Engine) SetMaxTokens(n int) {
+	e.mu.Lock()
+	e.maxTokens = n
+	e.mu.Unlock()
 }
 
 // SessionID returns the current session ID.

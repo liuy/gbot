@@ -436,19 +436,16 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestQuery_TokenBudgetExhaustion(t *testing.T) {
+func TestQuery_BlockingLimit(t *testing.T) {
 	t.Parallel()
 
+	// Verify that the blocking limit refuses API calls when context exceeds threshold.
+	// Blocking limit = contextWindow - min(maxTokens, 20000) - 3000
+	// With ContextWindow=1000, maxTokens=16000: limit = 1000 - 16000 - 3000 = negative (skip)
+	// With ContextWindow=50000, maxTokens=16000: limit = 50000 - 16000 - 3000 = 31000
+	// We pre-load messages that estimate to > 31000 tokens and verify blocking.
+
 	mp := &mockProvider{}
-	events := []llm.StreamEvent{
-		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 99999}}},
-		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "my_tool"}},
-		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
-		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 99999}},
-		{Type: "message_stop"},
-	}
-	mp.addResponse(events, nil)
 
 	mt := &mockTool{
 		name:    "my_tool",
@@ -459,12 +456,29 @@ func TestQuery_TokenBudgetExhaustion(t *testing.T) {
 	}
 
 	eng := engine.New(&engine.Params{
-		Provider:    mp,
-		Tools:       []tool.Tool{mt},
-		Model:       "test-model",
-		TokenBudget: 100,
-		Logger:      slog.Default(),
+		Provider:  mp,
+		Tools:     []tool.Tool{mt},
+		Model:     "test-model",
+		MaxTokens: 16000,
+		Logger:    slog.Default(),
 	})
+	// Set auto-compact config without compactor so auto-compact won't fire.
+	// Only the blocking limit should guard against oversized context.
+	eng.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-load enough messages to exceed blocking limit (31000 tokens).
+	// Each message has ~4000 tokens (16000 chars / 4).
+	bigText := strings.Repeat("x", 16000)
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(bigText)},
+		}))
+	}
+	// ~32000 estimated tokens > 31000 blocking limit
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -477,6 +491,45 @@ func TestQuery_TokenBudgetExhaustion(t *testing.T) {
 	if result.Terminal != types.TerminalPromptTooLong {
 		t.Fatalf("expected TerminalPromptTooLong, got %s", result.Terminal)
 	}
+
+	// Negative blocking limit: when contextWindow < maxTokens + 3000,
+	// the formula produces a negative blockingLimit which is skipped.
+	// The query should proceed normally without blocking.
+	t.Run("NegativeLimit_SkipsBlocking", func(t *testing.T) {
+		mp := &mockProvider{}
+		events := []llm.StreamEvent{
+			{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+			{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
+			{Type: "content_block_stop", Index: 0},
+			{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+			{Type: "message_stop"},
+		}
+		mp.addResponse(events, nil)
+
+		eng := engine.New(&engine.Params{
+			Provider:  mp,
+			Model:     "test-model",
+			MaxTokens: 16000,
+			Logger:    slog.Default(),
+		})
+		// ContextWindow=1000, maxTokens=16000 -> blockingLimit = 1000 - 16000 - 3000 = -18000 (skipped)
+		eng.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+			ContextWindow:          1000,
+			MaxConsecutiveFailures: 3,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		eventCh, resultCh := eng.Query(ctx, "hello", nil)
+		for range eventCh {
+		}
+
+		result := <-resultCh
+		if result.Terminal != types.TerminalCompleted {
+			t.Fatalf("negative blockingLimit should be skipped, got %s", result.Terminal)
+		}
+	})
 }
 
 func TestQuery_UnknownTool(t *testing.T) {
@@ -3074,7 +3127,6 @@ func TestSetCompactor(t *testing.T) {
 	eng.SetCompactor(
 		&mockCompactor{},
 		engine.AutoCompactConfig{
-			Threshold:              0.9,
 			ContextWindow:          100000,
 			MaxConsecutiveFailures: 3,
 		},
@@ -3084,7 +3136,7 @@ func TestSetCompactor(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 10 {
 		wg.Go(func() {
-			eng.SetCompactor(&mockCompactor{}, engine.AutoCompactConfig{Threshold: 0.5})
+			eng.SetCompactor(&mockCompactor{}, engine.AutoCompactConfig{ContextWindow: 100000})
 		})
 	}
 	wg.Wait()

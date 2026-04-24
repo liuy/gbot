@@ -143,7 +143,6 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: AutoCompactConfig{
-			Threshold:     0.5,
 			ContextWindow: 500,
 		},
 		Logger: slog.Default(),
@@ -281,7 +280,6 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000, // high threshold → auto-compact won't trigger
 		},
 		Logger: slog.Default(),

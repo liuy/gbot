@@ -176,7 +176,6 @@ func TestAutoCompact_Proactive_TriggersWhenOverThreshold(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -214,7 +213,6 @@ func TestAutoCompact_Proactive_DoesNotTriggerWhenUnderThreshold(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -260,7 +258,6 @@ func TestAutoCompact_Proactive_CompactedMessagesReplaced(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100,
 		},
 		Logger: slog.Default(),
@@ -318,7 +315,6 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -367,7 +363,6 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -453,7 +448,6 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 		Model:     "test-model",
 		Compactor: mc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:              0.9,
 			ContextWindow:          100,
 			MaxConsecutiveFailures: 2,
 		},
@@ -703,7 +697,6 @@ func TestCompactor_EngineIntegration_ProactiveCompact(t *testing.T) {
 		Model:     "test-model",
 		Compactor: sc,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000,
 		},
 	})

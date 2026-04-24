@@ -113,7 +113,6 @@ func TestAutoCompact_Proactive_E2E(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -193,7 +192,6 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 100000, // high threshold so proactive doesn't fire first
 		},
 		Logger: slog.Default(),
@@ -265,7 +263,6 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.5,
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -332,7 +329,6 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 500,
 		},
 		Logger: slog.Default(),
@@ -433,7 +429,6 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.9,
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -559,7 +554,6 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.5,
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -649,7 +643,6 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 		Model:     "test-model",
 		Compactor: compactor,
 		AutoCompact: engine.AutoCompactConfig{
-			Threshold:     0.5,
 			ContextWindow: 100000, // high threshold so proactive doesn't fire first
 		},
 		Logger: slog.Default(),

@@ -1933,7 +1933,6 @@ func TestShouldAutoCompact(t *testing.T) {
 
 	// Set compactor with valid config
 	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.9,
 		ContextWindow: 100000,
 	})
 	// No messages → tokens=0 → below threshold → false
@@ -1941,17 +1940,9 @@ func TestShouldAutoCompact(t *testing.T) {
 		t.Error("should be false with 0 tokens")
 	}
 
-	// Invalid config (zero values) → false
+	// ContextWindow=0 → auto-compact disabled → false
 	eng2 := New(&Params{Model: "test"})
 	eng2.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0,
-		ContextWindow: 100000,
-	})
-	if eng2.shouldAutoCompact() {
-		t.Error("should be false with Threshold=0")
-	}
-	eng2.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.9,
 		ContextWindow: 0,
 	})
 	if eng2.shouldAutoCompact() {
@@ -1961,7 +1952,6 @@ func TestShouldAutoCompact(t *testing.T) {
 	// Circuit breaker: too many failures → false
 	eng3 := New(&Params{Model: "test"})
 	eng3.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:              0.5,
 		ContextWindow:          100,
 		MaxConsecutiveFailures: 2,
 	})
@@ -1977,7 +1967,6 @@ func TestShouldAutoCompact(t *testing.T) {
 	// Default MaxConsecutiveFailures (0 → defaults to 3)
 	eng4 := New(&Params{Model: "test"})
 	eng4.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.5,
 		ContextWindow: 100,
 	})
 	eng4.consecutiveCompactFailures = 3
@@ -1998,7 +1987,6 @@ func TestShouldAutoCompact_SubAgentCanCompact(t *testing.T) {
 
 	parent := New(&Params{Model: "test"})
 	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.5,
 		ContextWindow: 100,
 	})
 
@@ -2029,7 +2017,6 @@ func TestNewSubEngine_SharesCompactor(t *testing.T) {
 
 	parent := New(&Params{Model: "test"})
 	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-		Threshold:     0.8,
 		ContextWindow: 200000,
 	})
 
@@ -2041,9 +2028,7 @@ func TestNewSubEngine_SharesCompactor(t *testing.T) {
 	if sub.compactor == nil {
 		t.Fatal("sub-engine should inherit compactor from parent")
 	}
-	if sub.autoCompactConfig.Threshold != 0.8 {
-		t.Errorf("sub.autoCompactConfig.Threshold = %v, want 0.8", sub.autoCompactConfig.Threshold)
-	}
+	// Threshold removed: verify ContextWindow is inherited instead
 	if sub.autoCompactConfig.ContextWindow != 200000 {
 		t.Errorf("sub.autoCompactConfig.ContextWindow = %d, want 200000", sub.autoCompactConfig.ContextWindow)
 	}
@@ -2070,7 +2055,6 @@ func TestShouldAutoCompact_QuerySourceGuard(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			parent := New(&Params{Model: "test"})
 			parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
-				Threshold:     0.5,
 				ContextWindow: 100,
 			})
 
@@ -2094,5 +2078,53 @@ func TestShouldAutoCompact_QuerySourceGuard(t *testing.T) {
 				t.Errorf("%s should trigger auto-compact with compactor and high tokens", tt.name)
 			}
 		})
+	}
+}
+
+// TestQuery_BlockingLimit_SubAgentExempt verifies sub-agents bypass the blocking limit.
+// Without this exemption, compact/session_memory sub-agents would deadlock.
+func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	eng := New(&Params{
+		Provider:  mp,
+		Model:     "test-model",
+		MaxTokens: 16000,
+	})
+	eng.isSubagent = true
+	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-load messages that would exceed blocking limit (~31000 tokens).
+	bigText := strings.Repeat("x", 16000)
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(bigText)},
+		}))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "do something", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Terminal != types.TerminalCompleted {
+		t.Fatalf("sub-agent should complete despite blocking limit, got %s", result.Terminal)
 	}
 }

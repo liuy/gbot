@@ -171,6 +171,13 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 	a.currentTier = tier
 }
 
+// SetInitialContext sets the initial context usage estimate on the StatusBar.
+// Called from main.go after system prompt and tools are loaded.
+// The estimate is a heuristic (len/4) and will be corrected after the first API response.
+func (a *App) SetInitialContext(usedTokens, contextWindow int) {
+	a.status.SetContext(usedTokens, contextWindow)
+}
+
 // persistModelSelection writes the current provider/tier back to settings.json.
 func (a *App) persistModelSelection() {
 	if a.cfg == nil {

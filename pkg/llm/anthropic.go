@@ -314,7 +314,7 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		}
 		if err := json.Unmarshal([]byte(data), &msg); err == nil {
 			event.Message = &msg.Message
-			slog.Info("llm:message_start_raw", "id", msg.Message.ID, "usage", msg.Message.Usage)
+			slog.Info("llm:message_start_raw", "id", msg.Message.ID, "usage", msg.Message.Usage, "raw", truncateForLog(data, 500))
 		} else {
 			slog.Warn("parse message_start failed", "error", err, "data", truncateForLog(data, 200))
 		}
