@@ -1450,3 +1450,327 @@ func TestCall_SkillPreloading_EmptySkills(t *testing.T) {
 		}
 	}
 }
+
+func TestEnhanceSystemPrompt_FallbackOnEmpty(t *testing.T) {
+	result := enhanceSystemPrompt("", nil, "/tmp", false, "")
+	if !strings.Contains(result, defaultAgentPrompt) {
+		t.Error("expected defaultAgentPrompt fallback when basePrompt is empty")
+	}
+}
+
+func TestEnhanceSystemPrompt_UsesCustomPrompt(t *testing.T) {
+	result := enhanceSystemPrompt("Custom agent prompt", nil, "/tmp", false, "")
+	if !strings.Contains(result, "Custom agent prompt") {
+		t.Error("expected custom prompt to be used")
+	}
+	if strings.Contains(result, defaultAgentPrompt) {
+		t.Error("default prompt should NOT appear when custom is provided")
+	}
+}
+
+func TestEnhanceSystemPrompt_ContainsNotes(t *testing.T) {
+	result := enhanceSystemPrompt("test", nil, "/tmp", false, "")
+	if !strings.Contains(result, "absolute file paths") {
+		t.Error("expected notes about absolute paths")
+	}
+	if !strings.Contains(result, "avoid using emojis") {
+		t.Error("expected notes about emojis")
+	}
+	if !strings.Contains(result, "Do not use a colon before tool calls") {
+		t.Error("expected notes about colons")
+	}
+}
+
+func TestEnhanceSystemPrompt_ContainsEnvBlock(t *testing.T) {
+	result := enhanceSystemPrompt("test", nil, "/home/user/project", true, "sonnet")
+	if !strings.Contains(result, "<env>") {
+		t.Error("expected <env> block")
+	}
+	if !strings.Contains(result, "Working directory: /home/user/project") {
+		t.Error("expected working directory in env block")
+	}
+	if !strings.Contains(result, "Is directory a git repo: Yes") {
+		t.Error("expected isGit=Yes")
+	}
+	if !strings.Contains(result, "You are powered by the model sonnet") {
+		t.Error("expected model name")
+	}
+}
+
+func TestEnhanceSystemPrompt_NotGitRepo(t *testing.T) {
+	result := enhanceSystemPrompt("test", nil, "/tmp", false, "")
+	if !strings.Contains(result, "Is directory a git repo: No") {
+		t.Error("expected isGit=No")
+	}
+}
+
+func TestEnhanceSystemPrompt_NoModel(t *testing.T) {
+	result := enhanceSystemPrompt("test", nil, "/tmp", false, "")
+	if strings.Contains(result, "You are powered by the model") {
+		t.Error("model line should not appear when model is empty")
+	}
+}
+
+func TestEnhanceSystemPrompt_ToolNames(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"Grep": &mockTool{name: "Grep"},
+		"Read": &mockTool{name: "Read"},
+		"Bash": &mockTool{name: "Bash"},
+	}
+	result := enhanceSystemPrompt("test", tools, "/tmp", false, "")
+	if !strings.Contains(result, "Enabled tools:") {
+		t.Error("expected Enabled tools section")
+	}
+	if !strings.Contains(result, "- Bash") {
+		t.Error("expected Bash in tool list")
+	}
+	if !strings.Contains(result, "- Grep") {
+		t.Error("expected Grep in tool list")
+	}
+	if !strings.Contains(result, "- Read") {
+		t.Error("expected Read in tool list")
+	}
+}
+
+func TestFormatToolNamesList_Empty(t *testing.T) {
+	if got := formatToolNamesList(nil); got != "" {
+		t.Errorf("expected empty string for nil tools, got %q", got)
+	}
+}
+
+func TestFormatToolNamesList_Sorted(t *testing.T) {
+	tools := map[string]tool.Tool{
+		"Zebra":  &mockTool{name: "Zebra"},
+		"Alpha":  &mockTool{name: "Alpha"},
+		"Middle": &mockTool{name: "Middle"},
+	}
+	got := formatToolNamesList(tools)
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+	if lines[0] != "- Alpha" {
+		t.Errorf("expected first tool Alpha, got %q", lines[0])
+	}
+	if lines[1] != "- Middle" {
+		t.Errorf("expected second tool Middle, got %q", lines[1])
+	}
+	if lines[2] != "- Zebra" {
+		t.Errorf("expected third tool Zebra, got %q", lines[2])
+	}
+}
+
+func TestExtractPartialResult_LastAssistantWithText(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("I found the issue")}},
+	}
+	got := ExtractPartialResult(messages)
+	if got != "I found the issue" {
+		t.Errorf("expected %q, got %q", "I found the issue", got)
+	}
+}
+
+func TestExtractPartialResult_MultipleAssistants(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("first")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("second")}},
+	}
+	got := ExtractPartialResult(messages)
+	if got != "second" {
+		t.Errorf("expected last assistant text %q, got %q", "second", got)
+	}
+}
+
+func TestExtractPartialResult_OnlyToolUseSkipsToEarlier(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("earlier text"),
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("id1", "Read", nil),
+		}},
+	}
+	got := ExtractPartialResult(messages)
+	if got != "earlier text" {
+		t.Errorf("expected %q (skipped tool_use-only assistant), got %q", "earlier text", got)
+	}
+}
+
+func TestExtractPartialResult_EmptySlice(t *testing.T) {
+	got := ExtractPartialResult(nil)
+	if got != "" {
+		t.Errorf("expected empty string for nil slice, got %q", got)
+	}
+	got = ExtractPartialResult([]types.Message{})
+	if got != "" {
+		t.Errorf("expected empty string for empty slice, got %q", got)
+	}
+}
+
+func TestExtractPartialResult_AllNonAssistant(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("sys")}},
+	}
+	got := ExtractPartialResult(messages)
+	if got != "" {
+		t.Errorf("expected empty string (no assistant messages), got %q", got)
+	}
+}
+
+func TestExtractPartialResult_EmptyTextBlockSkipped(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: ""},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("actual content"),
+		}},
+	}
+	got := ExtractPartialResult(messages)
+	if got != "actual content" {
+		t.Errorf("expected %q (skipped empty text), got %q", "actual content", got)
+	}
+}
+
+func TestExtractPartialResult_MultipleTextBlocksJoined(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("part one"),
+			types.NewToolUseBlock("id1", "Read", nil),
+			types.NewTextBlock("part two"),
+		}},
+	}
+	got := ExtractPartialResult(messages)
+	want := "part one\npart two"
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CountToolUses
+// ---------------------------------------------------------------------------
+
+func TestCountToolUses_EmptySlice(t *testing.T) {
+	if got, want := CountToolUses(nil), 0; got != want {
+		t.Fatalf("nil: got %d, want %d", got, want)
+	}
+	if got, want := CountToolUses([]types.Message{}), 0; got != want {
+		t.Fatalf("empty: got %d, want %d", got, want)
+	}
+}
+
+func TestCountToolUses_OnlyUserMessages(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("there")}},
+	}
+	got := CountToolUses(messages)
+	if got, want := got, 0; got != want {
+		t.Fatalf("got %d, want %d (no assistant messages)", got, want)
+	}
+}
+
+func TestCountToolUses_MultipleAssistants(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("1", "Read", nil),
+			types.NewToolUseBlock("2", "Grep", nil),
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("3", "Bash", nil),
+		}},
+	}
+	if got := CountToolUses(messages); got != 3 {
+		t.Errorf("expected 3 tool_use blocks, got %d", got)
+	}
+}
+
+func TestCountToolUses_MixedTextAndToolUse(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("let me check"),
+			types.NewToolUseBlock("1", "Read", nil),
+			types.NewTextBlock("now searching"),
+			types.NewToolUseBlock("2", "Grep", nil),
+		}},
+	}
+	if got := CountToolUses(messages); got != 2 {
+		t.Errorf("expected 2 (text blocks ignored), got %d", got)
+	}
+}
+
+func TestCountToolUses_AssistantWithNoToolUse(t *testing.T) {
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("just text, no tools"),
+		}},
+	}
+	if got := CountToolUses(messages); got != 0 {
+		t.Errorf("expected 0 (no tool_use), got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetLastToolUseName
+// ---------------------------------------------------------------------------
+
+func TestGetLastToolUseName_NonAssistant(t *testing.T) {
+	msg := types.Message{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}}
+	if got := GetLastToolUseName(msg); got != "" {
+		t.Errorf("expected empty string for non-assistant, got %q", got)
+	}
+}
+
+func TestGetLastToolUseName_AssistantNoToolUse(t *testing.T) {
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		types.NewTextBlock("just text"),
+	}}
+	if got := GetLastToolUseName(msg); got != "" {
+		t.Errorf("expected empty string (no tool_use), got %q", got)
+	}
+}
+
+func TestGetLastToolUseName_MultipleToolUses(t *testing.T) {
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		types.NewToolUseBlock("1", "Read", nil),
+		types.NewTextBlock("checking"),
+		types.NewToolUseBlock("2", "Grep", nil),
+	}}
+	got := GetLastToolUseName(msg)
+	if got != "Grep" {
+		t.Errorf("expected last tool_use name %q, got %q", "Grep", got)
+	}
+}
+
+func TestGetLastToolUseName_TextAndToolUse(t *testing.T) {
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		types.NewTextBlock("let me read"),
+		types.NewToolUseBlock("1", "Read", nil),
+	}}
+	got := GetLastToolUseName(msg)
+	if got != "Read" {
+		t.Errorf("expected %q, got %q", "Read", got)
+	}
+}
+
+func TestGetLastToolUseName_EmptyContent(t *testing.T) {
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{}}
+	if got := GetLastToolUseName(msg); got != "" {
+		t.Errorf("expected empty string for empty content, got %q", got)
+	}
+}
+
+func TestGetLastToolUseName_ToolUseAtStart(t *testing.T) {
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		types.NewToolUseBlock("1", "Bash", nil),
+		types.NewTextBlock("done"),
+	}}
+	got := GetLastToolUseName(msg)
+	if got != "Bash" {
+		t.Errorf("expected %q (only tool_use, found via backward walk), got %q", "Bash", got)
+	}
+}

@@ -558,6 +558,85 @@ var getOSVersion = sync.OnceValue(func() string {
 })
 
 // ---------------------------------------------------------------------------
+// Partial result extraction on cancellation
+// Source: agentToolUtils.ts:488-500 — extractPartialResult
+// ---------------------------------------------------------------------------
+
+// ExtractPartialResult walks messages backward to find the last assistant
+// message with non-empty text content. Returns joined text or empty string.
+// Only called on cancellation (context.Canceled / user kill), not general errors.
+//
+// Source: agentToolUtils.ts:488-500 — extractPartialResult.
+// Called on user_cancel_background (AgentTool.tsx:1006) and user_kill_async
+// (agentToolUtils.ts:658) to preserve what the agent accomplished before being killed.
+func ExtractPartialResult(messages []types.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		// Extract text content blocks, joining with newline.
+		// Source: agentToolUtils.ts:494 — extractTextContent(content, '\n')
+		var textParts []string
+		for _, blk := range msg.Content {
+			if blk.Type == types.ContentTypeText && blk.Text != "" {
+				textParts = append(textParts, blk.Text)
+			}
+		}
+		if len(textParts) > 0 {
+			return strings.Join(textParts, "\n")
+		}
+		// This assistant message has no text (pure tool_use) — continue backward.
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Progress tracking helpers
+// Source: agentToolUtils.ts:262-274 — countToolUses, getLastToolUseName
+// ---------------------------------------------------------------------------
+
+// CountToolUses counts tool_use blocks across all assistant messages.
+//
+// Source: agentToolUtils.ts:262-274 — countToolUses.
+// Iterates forward through all messages, counting each tool_use block
+// in assistant messages. Used to report tool use count in FinalizeResult.
+func CountToolUses(messages []types.Message) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, blk := range msg.Content {
+			if blk.Type == types.ContentTypeToolUse {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+// GetLastToolUseName returns the name of the last tool_use block in a single
+// assistant message. Returns empty string for non-assistant or no tool_use.
+//
+// Source: agentToolUtils.ts:363-367 — getLastToolUseName.
+// Takes a SINGLE message (not array). Called per-message during streaming
+// to emit task progress (AgentTool.tsx:946,1070).
+func GetLastToolUseName(msg types.Message) string {
+	if msg.Role != types.RoleAssistant {
+		return ""
+	}
+	// Walk backward to find the last tool_use block.
+	// Source: TS uses Array.findLast() — Go equivalent is reverse iteration.
+	for i := len(msg.Content) - 1; i >= 0; i-- {
+		if msg.Content[i].Type == types.ContentTypeToolUse {
+			return msg.Content[i].Name
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
