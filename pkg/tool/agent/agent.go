@@ -61,6 +61,11 @@ type AgentTool struct {
 	workingDir    string
 	gbotMdContent string
 	gitStatus     *ctxbuild.GitStatusInfo
+
+	// Cached skills — loaded once on first agent Call(), never expires.
+	// Skills files rarely change during a session, so process-lifetime cache is appropriate.
+	skillsOnce  sync.Once
+	skillsCache []SkillInfo
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -236,7 +241,10 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	// Step 6.5: Skill preloading
 	// Source: runAgent.ts:578-646 â resolveSkillName + load + inject
 	if len(agentDef.Skills) > 0 {
-		allSkills := LoadSkills(t.workingDir)
+		t.skillsOnce.Do(func() {
+			t.skillsCache = LoadSkills(t.workingDir)
+		})
+	allSkills := t.skillsCache
 		resolved := ResolveSkillNames(agentDef.Skills, allSkills, agentType)
 		skillMsgs := BuildSkillMessages(resolved)
 		userCtxMsgs = append(userCtxMsgs, skillMsgs...)

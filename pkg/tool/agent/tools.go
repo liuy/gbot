@@ -84,6 +84,11 @@ func FilterMCPToolsForAgent(tools map[string]tool.Tool, requiredServers []string
 	if len(requiredServers) == 0 {
 		return tools
 	}
+	// Build set for O(1) lookup instead of linear scan per tool.
+	serverSet := make(map[string]bool, len(requiredServers))
+	for _, s := range requiredServers {
+		serverSet[s] = true
+	}
 	filtered := make(map[string]tool.Tool, len(tools))
 	for name, t := range tools {
 		serverName := extractMCPServerName(name)
@@ -92,8 +97,8 @@ func FilterMCPToolsForAgent(tools map[string]tool.Tool, requiredServers []string
 			filtered[name] = t
 			continue
 		}
-		// MCP tool — only keep if server is in required list
-		if slices.Contains(requiredServers, serverName) {
+		// MCP tool — only keep if server is in required set
+		if serverSet[serverName] {
 			filtered[name] = t
 		}
 	}

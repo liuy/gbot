@@ -436,6 +436,15 @@ func (i *Input) renderLineSingle(lines []wrappedLine) string {
 // StatusBar — source: components/StatusBar.tsx
 // ---------------------------------------------------------------------------
 
+// Pre-cached lipgloss styles for StatusBar rendering — avoids per-frame allocations.
+var (
+	statusGreenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("120;200;120"))
+	statusDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("100;100;100"))
+	statusYellowCtx  = lipgloss.NewStyle().Foreground(lipgloss.Color("230;200;50"))
+	statusRedCtx     = lipgloss.NewStyle().Foreground(lipgloss.Color("230;70;70"))
+	statusSep        = statusDimStyle.Render(" • ")
+)
+
 // StatusBar shows model info, context usage, and tool count below the input.
 // Design: " sonnet-4 │ 84K/200K │ tools 13" — no background, green model,
 // context default→yellow(≥80%)→red(≥90%), gray separators.
@@ -501,26 +510,22 @@ func (s *StatusBar) SetToolCount(n int) {
 // Format: " model • usedK/totalK • N tools"
 // Model: green. Context: default color, yellow ≥80%, red ≥90%. Separators: gray.
 func (s StatusBar) View() string {
-	green := lipgloss.Color("120;200;120")
-	dim := lipgloss.Color("100;100;100")
-
 	modelStr := s.model
 	if modelStr == "" {
 		modelStr = "gbot"
 	}
-	left := lipgloss.NewStyle().Foreground(green).Render(modelStr)
+	left := statusGreenStyle.Render(modelStr)
 
 	ctxStr := formatContextSize(s.contextUsed, s.contextTotal)
-	mid := lipgloss.NewStyle().Foreground(ctxColor(s.contextUsed, s.contextTotal)).Render(ctxStr)
+	mid := ctxStyle(s.contextUsed, s.contextTotal).Render(ctxStr)
 
 	right := fmt.Sprintf("%d tools", s.toolCount)
-	sep := lipgloss.NewStyle().Foreground(dim).Render(" • ")
 
 	parts := []string{left, mid}
 	if s.toolCount > 0 {
 		parts = append(parts, right)
 	}
-	return " " + strings.Join(parts, sep) + " "
+	return " " + strings.Join(parts, statusSep) + " "
 }
 
 // ctxColor returns the lipgloss color for the context usage based on percentage.
@@ -536,6 +541,18 @@ func ctxColor(used, total int) lipgloss.Color {
 		return lipgloss.Color("230;200;50")
 	}
 	return ""
+}
+
+// ctxStyle returns a pre-cached lipgloss style for the context color.
+// Avoids allocating new Style objects on every View() call.
+func ctxStyle(used, total int) lipgloss.Style {
+	switch string(ctxColor(used, total)) {
+	case "230;200;50":
+		return statusYellowCtx
+	case "230;70;70":
+		return statusRedCtx
+	}
+	return lipgloss.NewStyle()
 }
 
 // formatContextSize formats context usage as "usedK/totalK" or "used/total".

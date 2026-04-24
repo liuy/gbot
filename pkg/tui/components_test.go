@@ -936,10 +936,10 @@ func TestCtxColor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		used      int
-		total     int
-		wantEmpty bool // true = default color (empty string)
+		name       string
+		used       int
+		total      int
+		wantEmpty  bool
 		wantYellow bool
 		wantRed    bool
 	}{
