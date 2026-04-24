@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
@@ -35,6 +36,7 @@ type AgentOpts struct {
 	ParentToolUseID    string               // parent Agent tool call ID for TUI progress display
 	ForkMessages       []types.Message      // non-nil: use pre-built fork messages instead of Prompt
 	ParentSystemPrompt json.RawMessage      // fork: parent engine's rendered system prompt bytes
+	UserContextMessages []types.Message     // [currentDate, claudeMd?, skill?...] injected before userPrompt
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,11 @@ type AgentTool struct {
 	forkReg     *ForkAgentRegistry          // nil = fork disabled
 	notifyFn    func(xml string)            // injects notification into parent conversation
 	sysPromptFn func() json.RawMessage      // returns parent engine's rendered system prompt
+
+	// Sub-agent environment context — loaded once at startup, read-only during execution
+	workingDir    string
+	gbotMdContent string
+	gitStatus     *ctxbuild.GitStatusInfo
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -70,6 +77,15 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() js
 	t.sysPromptFn = sysPromptFn
 	t.forkReg = NewForkAgentRegistry()
 }
+
+// SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
+func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
+
+// SetGBOTMDContent sets the GBOT.md content for sub-agent injection.
+func (t *AgentTool) SetGBOTMDContent(content string) { t.gbotMdContent = content }
+
+// SetGitStatus sets the git status for sub-agent system prompt injection.
+func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
 
 // TaskAdapter returns a task.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -162,12 +178,11 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	parentTools := t.parentTools()
 	filteredTools := ResolveAgentTools(parentTools, agentDef)
 
-	// Step 5: Build system prompt (JSON string, matching context.Builder.Build() format)
-	systemPromptStr := agentDef.SystemPrompt()
-	encoded, _ := json.Marshal(systemPromptStr)
-	systemPrompt := json.RawMessage(encoded)
+	// Step 4.5: Filter MCP tools by RequiredMcpServers
+	// Source: runAgent.ts:95-218 — initializeAgentMcpServers
+	filteredTools = FilterMCPToolsForAgent(filteredTools, agentDef.RequiredMcpServers)
 
-	// Step 6: Resolve model
+	// Step 5.5: Resolve model (needed for enhanceSystemPrompt)
 	// Source: AgentTool.tsx:579-583 — model resolution
 	model := agentInput.Model
 	if model == "" {
@@ -179,19 +194,63 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 		model = ""
 	}
 
-	// Step 7: Call factory to create sub-engine and execute
+	// Step 5: Build enhanced system prompt
+	// Source: runAgent.ts:906-932 — getAgentSystemPrompt()
+	basePrompt := agentDef.SystemPrompt()
+	isGit := t.gitStatus != nil && t.gitStatus.IsGit
+	systemPromptStr := enhanceSystemPrompt(basePrompt, filteredTools, t.workingDir, isGit, model)
+
+	// Append gitStatus to system prompt for non-Explore/Plan agents.
+	// Source: runAgent.ts:403-410 — appendSystemContext()
+	if t.gitStatus != nil && agentDef.AgentType != "Explore" && agentDef.AgentType != "Plan" {
+		section := formatGitStatusForSystemPrompt(t.gitStatus)
+		if section != "" {
+			systemPromptStr += section
+		}
+	}
+
+	encoded, _ := json.Marshal(systemPromptStr)
+	systemPrompt := json.RawMessage(encoded)
+
+	// Step 6: Build user context messages
+	// Source: runAgent.ts:380-398 — getUserContext() + prependUserContext()
+	var userCtxMsgs []types.Message
+	// currentDate — Source: context.ts getUserContext().currentDate
+	userCtxMsgs = append(userCtxMsgs, types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02")))},
+	})
+	// claudeMd — Source: context.ts getUserContext().claudeMd, omitted for Explore/Plan
+	if !agentDef.OmitClaudeMd && t.gbotMdContent != "" {
+		userCtxMsgs = append(userCtxMsgs, types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(t.gbotMdContent)},
+		})
+	}
+
+	// Step 6.5: Skill preloading
+	// Source: runAgent.ts:578-646 â resolveSkillName + load + inject
+	if len(agentDef.Skills) > 0 {
+		allSkills := LoadSkills(t.workingDir)
+		resolved := ResolveSkillNames(agentDef.Skills, allSkills, agentType)
+		skillMsgs := BuildSkillMessages(resolved)
+		userCtxMsgs = append(userCtxMsgs, skillMsgs...)
+	}
+
+		// Step 7: Call factory to create sub-engine and execute
 	var parentToolUseID string
 	if tctx != nil {
 		parentToolUseID = tctx.ToolUseID
 	}
 	opts := AgentOpts{
-		Prompt:          agentInput.Prompt,
-		SystemPrompt:    systemPrompt,
-		Tools:           filteredTools,
-		MaxTurns:        agentDef.MaxTurns,
-		Model:           model,
-		AgentType:       agentType,
-		ParentToolUseID: parentToolUseID,
+		Prompt:             agentInput.Prompt,
+		SystemPrompt:       systemPrompt,
+		Tools:              filteredTools,
+		MaxTurns:           agentDef.MaxTurns,
+		Model:              model,
+		AgentType:          agentType,
+		ParentToolUseID:    parentToolUseID,
+		UserContextMessages: userCtxMsgs,
 	}
 
 	result, err := t.factory(ctx, opts)
@@ -336,11 +395,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		if input.SubagentType != "" {
 			opts.AgentType = input.SubagentType
 		}
-		result, err := t.factory(runCtx, opts)
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
+		return t.factory(runCtx, opts)
 	}
 
 	// Build the notifyFn closure
@@ -373,6 +428,26 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 			AsyncLaunched: true,
 		},
 	}, nil
+}
+
+// formatGitStatusForSystemPrompt formats git status for the agent system prompt.
+// Mirrors Builder.GitStatusSection() but works without a Builder instance.
+// Source: runAgent.ts:403-410 — appendSystemContext()
+func formatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
+	if !gs.IsGit {
+		return ""
+	}
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "\n\nGit branch: %s", gs.Branch)
+	if gs.DefaultBranch != "" {
+		fmt.Fprintf(&buf, "\nDefault branch: %s", gs.DefaultBranch)
+	}
+	if gs.IsDirty {
+		buf.WriteString("\nWorking tree: dirty (uncommitted changes)")
+	} else {
+		buf.WriteString("\nWorking tree: clean")
+	}
+	return buf.String()
 }
 
 // ---------------------------------------------------------------------------

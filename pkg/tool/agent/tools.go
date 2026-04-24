@@ -2,6 +2,7 @@ package agent
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -69,8 +70,48 @@ func isDisallowed(name string, disallowed []string) bool {
 
 // isWildcard checks if the tools list is ["*"].
 func isWildcard(tools []string) bool {
-	if len(tools) == 1 && tools[0] == "*" {
-		return true
+	return len(tools) == 1 && tools[0] == "*"
+}
+
+// FilterMCPToolsForAgent filters MCP tools by RequiredMcpServers.
+// If requiredServers is empty, returns all tools unchanged (inherit parent).
+// If specified, only MCP tools from the listed servers are kept.
+// Non-MCP tools (no "mcp__" prefix) always pass through.
+//
+// Source: runAgent.ts:95-218 — initializeAgentMcpServers (simplified version).
+// TS actually connects new MCP servers; gbot only filters existing tools.
+func FilterMCPToolsForAgent(tools map[string]tool.Tool, requiredServers []string) map[string]tool.Tool {
+	if len(requiredServers) == 0 {
+		return tools
 	}
-	return false
+	filtered := make(map[string]tool.Tool, len(tools))
+	for name, t := range tools {
+		serverName := extractMCPServerName(name)
+		if serverName == "" {
+			// Non-MCP tool — always pass through
+			filtered[name] = t
+			continue
+		}
+		// MCP tool — only keep if server is in required list
+		if slices.Contains(requiredServers, serverName) {
+			filtered[name] = t
+		}
+	}
+	return filtered
+}
+
+// extractMCPServerName extracts server name from "mcp__server__tool" format.
+// Returns empty string for non-MCP tool names.
+// Edge case: "mcp__server__sub__tool" → "server" (first segment after "mcp").
+func extractMCPServerName(toolName string) string {
+	if !strings.HasPrefix(toolName, "mcp__") {
+		return ""
+	}
+	// Remove "mcp__" prefix, then take the first segment before the next "__"
+	rest := toolName[5:]
+	before, _, found := strings.Cut(rest, "__")
+	if !found {
+		return rest // "mcp__server" → "server"
+	}
+	return before // "mcp__server__tool" → "server"
 }

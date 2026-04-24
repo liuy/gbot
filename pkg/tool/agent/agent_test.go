@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 )
 
 // mockTool implements tool.Tool for testing.
@@ -990,5 +994,459 @@ func TestFormatWireResult_NonSubQueryResult(t *testing.T) {
 	// Should fallback to JSON marshaling
 	if !strings.Contains(got, "plain string") {
 		t.Errorf("non-SubQueryResult should be JSON-marshaled, got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: User context injection + gitStatus system prompt tests
+// ---------------------------------------------------------------------------
+
+func TestCall_UserContextMessages_CurrentDate(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// UserContextMessages must contain currentDate
+	if len(capturedOpts.UserContextMessages) < 1 {
+		t.Fatalf("expected at least 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
+	}
+	firstMsg := capturedOpts.UserContextMessages[0]
+	if firstMsg.Role != types.RoleUser {
+		t.Errorf("first UserContextMessage Role = %q, want %q", firstMsg.Role, types.RoleUser)
+	}
+	if len(firstMsg.Content) == 0 {
+		t.Fatal("first UserContextMessage has no content")
+	}
+	if !strings.Contains(firstMsg.Content[0].Text, "Today's date is") {
+		t.Errorf("first UserContextMessage should contain currentDate, got %q", firstMsg.Content[0].Text)
+	}
+}
+
+func TestCall_UserContextMessages_ClaudeMd(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGBOTMDContent("# My Project\nBuild with make")
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// General agent should have 2 UserContextMessages: currentDate + claudeMd
+	if len(capturedOpts.UserContextMessages) != 2 {
+		t.Fatalf("expected 2 UserContextMessages, got %d", len(capturedOpts.UserContextMessages))
+	}
+	secondMsg := capturedOpts.UserContextMessages[1]
+	if !strings.Contains(secondMsg.Content[0].Text, "My Project") {
+		t.Errorf("second UserContextMessage should contain claudeMd content, got %q", secondMsg.Content[0].Text)
+	}
+}
+
+func TestCall_UserContextMessages_ExploreOmitsClaudeMd(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGBOTMDContent("# Project rules")
+
+	input := json.RawMessage(`{"description":"test","prompt":"search","subagent_type":"Explore"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// Explore should omit claudeMd — only currentDate
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("Explore should have 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+	}
+	if strings.Contains(capturedOpts.UserContextMessages[0].Content[0].Text, "Project rules") {
+		t.Error("Explore should NOT receive claudeMd content")
+	}
+}
+
+func TestCall_UserContextMessages_PlanOmitsClaudeMd(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGBOTMDContent("# Project rules")
+
+	input := json.RawMessage(`{"description":"test","prompt":"plan","subagent_type":"Plan"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// Plan should omit claudeMd — only currentDate
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("Plan should have 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+	}
+}
+
+func TestCall_UserContextMessages_EmptyClaudeMd(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	// No SetGBOTMDContent — empty by default
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// Only currentDate — no claudeMd message for empty content
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("expected 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+	}
+}
+
+func TestCall_GitStatusAppendedToSystemPrompt(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGitStatus(&ctxbuild.GitStatusInfo{IsGit: true, Branch: "feature-branch", DefaultBranch: "main", IsDirty: true})
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// System prompt should contain gitStatus for General agent
+	sp := string(capturedOpts.SystemPrompt)
+	if !strings.Contains(sp, "Git branch: feature-branch") {
+		t.Errorf("system prompt should contain git branch, got: %s", sp)
+	}
+	if !strings.Contains(sp, "Default branch: main") {
+		t.Errorf("system prompt should contain default branch, got: %s", sp)
+	}
+	if !strings.Contains(sp, "dirty") {
+		t.Errorf("system prompt should contain dirty status, got: %s", sp)
+	}
+}
+
+func TestCall_GitStatus_OmittedForExplore(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGitStatus(&ctxbuild.GitStatusInfo{IsGit: true, Branch: "feature-branch"})
+
+	input := json.RawMessage(`{"description":"test","prompt":"search","subagent_type":"Explore"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// System prompt should NOT contain gitStatus for Explore
+	sp := string(capturedOpts.SystemPrompt)
+	if strings.Contains(sp, "Git branch: feature-branch") {
+		t.Errorf("Explore system prompt should NOT contain git status, got: %s", sp)
+	}
+}
+
+func TestCall_GitStatus_OmittedForPlan(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGitStatus(&ctxbuild.GitStatusInfo{IsGit: true, Branch: "feature-branch"})
+
+	input := json.RawMessage(`{"description":"test","prompt":"plan","subagent_type":"Plan"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sp := string(capturedOpts.SystemPrompt)
+	if strings.Contains(sp, "Git branch: feature-branch") {
+		t.Errorf("Plan system prompt should NOT contain git status, got: %s", sp)
+	}
+}
+
+func TestCall_NilGitStatus_NoAppend(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	// No SetGitStatus — nil by default
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sp := string(capturedOpts.SystemPrompt)
+	if strings.Contains(sp, "Git branch:") {
+		t.Errorf("nil gitStatus should not append git section, got: %s", sp)
+	}
+	// But env block should say "Is directory a git repo: No"
+	if !strings.Contains(sp, "Is directory a git repo: No") {
+		t.Errorf("env block should say No for nil gitStatus, got: %s", sp)
+	}
+}
+
+func TestCall_UserContextMessages_Ordering(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/tmp")
+	at.SetGBOTMDContent("# CLAUDE.md content")
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// Verify ordering: currentDate first, claudeMd second
+	if len(capturedOpts.UserContextMessages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(capturedOpts.UserContextMessages))
+	}
+	if !strings.Contains(capturedOpts.UserContextMessages[0].Content[0].Text, "Today's date is") {
+		t.Error("first message should be currentDate")
+	}
+	if !strings.Contains(capturedOpts.UserContextMessages[1].Content[0].Text, "CLAUDE.md") {
+		t.Error("second message should be claudeMd")
+	}
+}
+
+func TestCall_EnhancedSystemPrompt_ContainsEnvBlock(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir("/home/user/project")
+	at.SetGitStatus(&ctxbuild.GitStatusInfo{IsGit: true, Branch: "main"})
+
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// Unmarshal system prompt from json.RawMessage to get actual string content.
+	// json.Marshal escapes < and > to \u003c/\u003e for HTML safety.
+	var sp string
+	if err := json.Unmarshal(capturedOpts.SystemPrompt, &sp); err != nil {
+		t.Fatalf("failed to unmarshal system prompt: %v", err)
+	}
+	if !strings.Contains(sp, "<env>") {
+		t.Error("system prompt should contain <env> block")
+	}
+	if !strings.Contains(sp, "Working directory: /home/user/project") {
+		t.Error("system prompt should contain working directory")
+	}
+	if !strings.Contains(sp, "Is directory a git repo: Yes") {
+		t.Error("system prompt should say isGit=Yes")
+	}
+	if !strings.Contains(sp, "Enabled tools:") {
+		t.Error("system prompt should contain enabled tools")
+	}
+	if !strings.Contains(sp, "avoid using emojis") {
+		t.Error("system prompt should contain agent notes")
+	}
+	// Git status appended for General agent
+	if !strings.Contains(sp, "Git branch: main") {
+		t.Error("system prompt should contain git branch for General agent")
+	}
+}
+
+func TestFormatGitStatusForSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name string
+		gs   *ctxbuild.GitStatusInfo
+		want []string // substrings that must appear
+		skip []string // substrings that must NOT appear
+	}{
+		{
+			name: "clean repo",
+			gs:   &ctxbuild.GitStatusInfo{IsGit: true, Branch: "main", DefaultBranch: "main", IsDirty: false},
+			want: []string{"Git branch: main", "Default branch: main", "clean"},
+		},
+		{
+			name: "dirty repo",
+			gs:   &ctxbuild.GitStatusInfo{IsGit: true, Branch: "feat", DefaultBranch: "", IsDirty: true},
+			want: []string{"Git branch: feat", "dirty (uncommitted changes)"},
+			skip: []string{"Default branch:"},
+		},
+		{
+			name: "non-git",
+			gs:   &ctxbuild.GitStatusInfo{IsGit: false},
+			want: []string{},
+			skip: []string{"Git branch:"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatGitStatusForSystemPrompt(tt.gs)
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("expected %q in result, got %q", w, got)
+				}
+			}
+			for _, s := range tt.skip {
+				if strings.Contains(got, s) {
+					t.Errorf("should NOT contain %q, got %q", s, got)
+				}
+			}
+		})
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Step 6: Skill preloading integration tests
+// ---------------------------------------------------------------------------
+
+func TestCall_SkillPreloading_Integration(t *testing.T) {
+	// Create a temp skills dir
+	skillsDir := t.TempDir()
+	localSkills := filepath.Join(skillsDir, ".gbot", "skills")
+	if err := os.MkdirAll(localSkills, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localSkills, "commit.md"), []byte("# Commit Skill\nCreate atomic commits"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localSkills, "review.md"), []byte("# Review Skill\nReview code quality"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test the full skill loading pipeline directly
+	// (Call() integration tested separately via TestCall_SkillPreloading_EmptySkills)
+	allSkills := LoadSkills(skillsDir)
+	if len(allSkills) < 2 {
+		t.Fatalf("LoadSkills should find at least 2 skills, got %d", len(allSkills))
+	}
+
+	resolved := ResolveSkillNames([]string{"commit", "review"}, allSkills, "General")
+	if len(resolved) != 2 {
+		t.Fatalf("ResolveSkillNames should resolve 2, got %d", len(resolved))
+	}
+
+	msgs := BuildSkillMessages(resolved)
+	if len(msgs) != 2 {
+		t.Fatalf("BuildSkillMessages should produce 2 messages, got %d", len(msgs))
+	}
+
+	// Verify message structure
+	for i, msg := range msgs {
+		if msg.Role != types.RoleUser {
+			t.Errorf("msg[%d].Role = %q, want %q", i, msg.Role, types.RoleUser)
+		}
+		text := msg.Content[0].Text
+		if !strings.Contains(text, "<command-message>") {
+			t.Errorf("msg[%d] should contain command-message tag", i)
+		}
+		if !strings.Contains(text, "<skill-format>true</skill-format>") {
+			t.Errorf("msg[%d] should contain skill-format tag", i)
+		}
+	}
+}
+
+func TestCall_SkillPreloading_EmptySkills(t *testing.T) {
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "done"}, nil
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetWorkingDir(t.TempDir())
+
+	// General agent has no Skills defined — no skill messages
+	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	// UserContextMessages should be exactly 1 (currentDate only, no claudeMd set)
+	for _, msg := range capturedOpts.UserContextMessages {
+		if strings.Contains(msg.Content[0].Text, "<command-message>") {
+			t.Error("no skill messages expected when agent has no Skills defined")
+		}
 	}
 }

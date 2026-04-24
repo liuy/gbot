@@ -130,6 +130,81 @@ func TestIsWildcard(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// FilterMCPToolsForAgent
+// ---------------------------------------------------------------------------
+
+func TestFilterMCPTools_EmptyRequired(t *testing.T) {
+	tools := makeTestTools("Bash", "mcp__server__tool")
+	result := FilterMCPToolsForAgent(tools, nil)
+	if len(result) != 2 {
+		t.Errorf("empty requiredServers should return all, got %d", len(result))
+	}
+}
+
+func TestFilterMCPTools_NonMCPAlwaysPasses(t *testing.T) {
+	tools := makeTestTools("Bash", "Read", "mcp__server__tool")
+	result := FilterMCPToolsForAgent(tools, []string{"other"})
+	if _, ok := result["Bash"]; !ok {
+		t.Error("non-MCP tool Bash should always pass through")
+	}
+	if _, ok := result["Read"]; !ok {
+		t.Error("non-MCP tool Read should always pass through")
+	}
+	if _, ok := result["mcp__server__tool"]; ok {
+		t.Error("MCP tool from non-matching server should be filtered out")
+	}
+}
+
+func TestFilterMCPTools_KeepsMatchingServer(t *testing.T) {
+	tools := makeTestTools("Bash", "mcp__github__list_repos", "mcp__slack__send")
+	result := FilterMCPToolsForAgent(tools, []string{"github"})
+	if _, ok := result["Bash"]; !ok {
+		t.Error("non-MCP tool should pass through")
+	}
+	if _, ok := result["mcp__github__list_repos"]; !ok {
+		t.Error("github MCP tool should be kept")
+	}
+	if _, ok := result["mcp__slack__send"]; ok {
+		t.Error("slack MCP tool should be filtered out")
+	}
+}
+
+func TestFilterMCPTools_MultiSegmentToolName(t *testing.T) {
+	tools := makeTestTools("mcp__github__repos__list")
+	result := FilterMCPToolsForAgent(tools, []string{"github"})
+	if _, ok := result["mcp__github__repos__list"]; !ok {
+		t.Error("multi-segment tool name should match first segment")
+	}
+}
+
+func TestFilterMCPTools_EmptyTools(t *testing.T) {
+	result := FilterMCPToolsForAgent(map[string]tool.Tool{}, []string{"github"})
+	if len(result) != 0 {
+		t.Errorf("empty tools should return empty, got %d", len(result))
+	}
+}
+
+func TestExtractMCPServerName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"mcp__server__tool", "server"},
+		{"mcp__server__sub__tool", "server"},
+		{"mcp__server", "server"},
+		{"Bash", ""},
+		{"Read", ""},
+		{"mcp__", ""},
+	}
+	for _, tt := range tests {
+		got := extractMCPServerName(tt.input)
+		if got != tt.want {
+			t.Errorf("extractMCPServerName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func mapKeys(m map[string]tool.Tool) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

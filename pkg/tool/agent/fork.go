@@ -89,6 +89,12 @@ func (r *ForkAgentRegistry) Spawn(
 		if err != nil {
 			if childCtx.Err() != nil {
 				state.Status = ForkCancelled
+				// Preserve partial result on cancellation so the notification
+				// can include what the agent accomplished before being killed.
+				// Source: AgentTool.tsx:1006 + agentToolUtils.ts:658
+				if result != nil {
+					state.Result = result
+				}
 			} else {
 				state.Status = ForkFailed
 			}
@@ -202,9 +208,11 @@ func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryR
 
 	var durationMs int64
 	var tokens int
+	var toolUses int
 	if result != nil {
 		durationMs = result.TotalDurationMs
 		tokens = result.TotalTokens
+		toolUses = result.TotalToolUseCount
 	}
 
 	agentType := "fork"
@@ -218,11 +226,12 @@ func buildForkNotificationXML(agentID, toolUseID string, result *types.SubQueryR
 <agent-type>%s</agent-type>
 <duration-ms>%d</duration-ms>
 <tokens>%d</tokens>
+<tool-uses>%d</tool-uses>
 <summary>Fork agent %s %s</summary>
 <result>
 %s
 </result>
-</task-notification>`, xe(agentID), xe(toolUseID), status, xe(agentType), durationMs, tokens, xe(description), status, xe(content))
+</task-notification>`, xe(agentID), xe(toolUseID), status, xe(agentType), durationMs, tokens, toolUses, xe(description), status, xe(content))
 }
 
 // xe escapes a string for safe inclusion in XML element content.

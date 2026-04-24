@@ -141,6 +141,9 @@ func main() {
 
 	// Register Agent tool (needs engine for sub-engine factory)
 	agentTool := createAgentTool(eng)
+	agentTool.SetWorkingDir(workingDir)
+	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
+	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
 	reg.MustRegister(agentTool)
 
 	// 5. Build system prompt using context builder
@@ -353,16 +356,32 @@ func createAgentTool(eng *engine.Engine) *agenttool.AgentTool {
 				AgentType:       opts.AgentType,
 			})
 
-			var result engine.QueryResult
+			// Unified message construction: always use QueryWithExistingMessages.
+			// Source: runAgent.ts â consensus correction #4
+			messages := opts.UserContextMessages // [currentDate, claudeMd?, skill?...]
+			messages = append(messages, types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+			})
 			if len(opts.ForkMessages) > 0 {
-				result = subEng.QueryWithExistingMessages(ctx, opts.ForkMessages, opts.SystemPrompt)
+				messages = append(opts.ForkMessages, messages...)
+			}
+			var result engine.QueryResult
+			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
+				result = subEng.QueryWithExistingMessages(ctx, messages, opts.SystemPrompt)
 			} else {
 				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
 			}
 			if result.Error != nil {
+				// Cancellation: extract partial result for fork notification.
+				// Source: agentToolUtils.ts:488 + AgentTool.tsx:1006 + agentToolUtils.ts:658
+				if ctx.Err() != nil && len(result.Messages) > 0 {
+					return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
+				}
 				return nil, result.Error
 			}
-			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
+			toolUseCount := agenttool.CountToolUses(result.Messages)
+			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
 		},
 		eng.Tools,
 	)
