@@ -7,7 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	ctxbuild "github.com/liuy/gbot/pkg/context"
@@ -449,6 +454,108 @@ func formatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
 	}
 	return buf.String()
 }
+
+// ---------------------------------------------------------------------------
+// System prompt enhancement for sub-agents
+// Source: prompts.ts:606-791 — computeEnvInfo + enhanceSystemPromptWithEnvDetails
+// ---------------------------------------------------------------------------
+
+// defaultAgentPrompt is the fallback when an agent's SystemPrompt() returns "".
+// Source: prompts.ts:758 — DEFAULT_AGENT_PROMPT
+const defaultAgentPrompt = `You are an agent for gbot, an interactive AI coding assistant. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`
+
+// agentNotes are appended to every agent's system prompt.
+// Source: prompts.ts:766-770 — notes in enhanceSystemPromptWithEnvDetails
+const agentNotes = `Notes:
+- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
+- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
+- For clear communication with the user the assistant MUST avoid using emojis.
+- Do not use a colon before tool calls. Text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
+
+// enhanceSystemPrompt appends environment details and tool names to the agent's
+// base system prompt, aligning with TS enhanceSystemPromptWithEnvDetails().
+//
+// Source: runAgent.ts:906 — getAgentSystemPrompt()
+// Source: prompts.ts:760-791 — enhanceSystemPromptWithEnvDetails()
+func enhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingDir string, isGit bool, model string) string {
+	var parts []string
+
+	// Base prompt (or fallback to DEFAULT_AGENT_PROMPT)
+	// Source: runAgent.ts:914-931 — try/catch with DEFAULT_AGENT_PROMPT fallback
+	if basePrompt == "" {
+		basePrompt = defaultAgentPrompt
+	}
+	parts = append(parts, basePrompt)
+
+	// Notes — Source: prompts.ts:766-770
+	parts = append(parts, agentNotes)
+
+	// Enabled tool names
+	toolList := formatToolNamesList(tools)
+	if toolList != "" {
+		parts = append(parts, "\nEnabled tools:\n"+toolList)
+	}
+
+	// Environment info — Source: prompts.ts:606-649 — computeEnvInfo
+	parts = append(parts, buildEnvBlock(workingDir, isGit, model))
+
+	return strings.Join(parts, "\n\n")
+}
+
+// buildEnvBlock generates the <env> block for the agent system prompt.
+// Source: prompts.ts:606-649 — computeEnvInfo
+func buildEnvBlock(workingDir string, isGit bool, model string) string {
+	var buf strings.Builder
+	buf.WriteString("Here is useful information about the environment you are running in:\n<env>")
+	fmt.Fprintf(&buf, "\nWorking directory: %s", workingDir)
+	if isGit {
+		buf.WriteString("\nIs directory a git repo: Yes")
+	} else {
+		buf.WriteString("\nIs directory a git repo: No")
+	}
+	fmt.Fprintf(&buf, "\nPlatform: %s", runtime.GOOS)
+	if shell := os.Getenv("SHELL"); shell != "" {
+		fmt.Fprintf(&buf, "\nShell: %s", shell)
+	} else {
+		buf.WriteString("\nShell: /bin/bash")
+	}
+	if osVersion := getOSVersion(); osVersion != "" {
+		fmt.Fprintf(&buf, "\nOS Version: %s", osVersion)
+	}
+	buf.WriteString("\n</env>")
+	if model != "" {
+		fmt.Fprintf(&buf, "\nYou are powered by the model %s.", model)
+	}
+	return buf.String()
+}
+
+// formatToolNamesList formats the tool names as a sorted bullet list.
+func formatToolNamesList(tools map[string]tool.Tool) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var buf strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&buf, "- %s\n", name)
+	}
+	return buf.String()
+}
+
+// getOSVersion returns the OS version string.
+// Source: prompts.ts:610 — getUnameSR() returns "Linux 6.6.4" etc.
+// Cached with sync.OnceValue since OS version never changes during process lifetime.
+var getOSVersion = sync.OnceValue(func() string {
+	out, err := exec.Command("uname", "-sr").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
