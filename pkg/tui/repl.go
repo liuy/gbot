@@ -526,6 +526,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.displayedInputTokens = a.status.usage.TotalInputTokens()
 		a.inputTokenTarget = a.status.usage.TotalInputTokens()
 		a.outputTokenTarget = a.status.usage.OutputTokens
+		a.status.SetContext(a.status.usage.TotalInputTokens(), a.engine.ContextWindow())
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		return true, a.readEvents()
 

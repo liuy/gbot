@@ -141,6 +141,11 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 		a.tuiHandler = NewTUIHandler()
 		h.Subscribe(a.tuiHandler)
 	}
+	if eng != nil {
+		a.status.SetToolCount(len(eng.AllTools()))
+		a.status.SetContext(0, eng.ContextWindow())
+		a.status.SetModel(eng.Model())
+	}
 	return a
 }
 
@@ -327,8 +332,8 @@ func (a *App) View() string {
 	}
 
 	// Apply scroll window: limit visible content to what fits in terminal.
-	// Reserve 3 lines for: progress (1) + input (1) + margin (1).
-	maxContentLines := max(a.height-3, 1)
+	// Reserve 5 lines for: progress (1) + input (1) + separator (1) + status bar (1) + margin (1).
+	maxContentLines := max(a.height-5, 1)
 
 	var visibleContent string
 	var showScrollIndicator bool
@@ -431,6 +436,13 @@ func (a *App) View() string {
 
 	// Input
 	sb.WriteString(a.input.View())
+
+	// Horizontal line separator + Status bar below input
+	sb.WriteString("\n")
+	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	sb.WriteString(sepStyle.Render(strings.Repeat("─", max(a.width, 1))))
+	sb.WriteString("\n")
+	sb.WriteString(a.status.View())
 
 	return sb.String()
 }
@@ -688,7 +700,7 @@ func (a *App) handleKillWord() {
 // calcViewLines returns the number of visible content lines when content overflows.
 // Matches View()'s viewLines calculation: maxContentLines-1 (reserve 1 for indicator).
 func (a *App) calcViewLines() int {
-	maxContentLines := max(a.height-3, 1)
+	maxContentLines := max(a.height-5, 1)
 	if a.scrollTotal > maxContentLines {
 		return max(1, maxContentLines-1) // reserve 1 for scroll indicator
 	}

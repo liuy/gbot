@@ -93,6 +93,8 @@ func (a *App) handleModelPickerDone(p *ListPicker, items []ModelItem) (tea.Model
 	a.engine.SetModel(selected.Model)
 	a.currentProvider = selected.Provider
 	a.currentTier = selected.Tier
+	a.status.SetModel(a.engine.Model())
+	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", selected.Provider, "tier", selected.Tier, "model", selected.Model)
@@ -121,6 +123,8 @@ func (a *App) switchProviderTier(providerName, tierName string, commitCmd tea.Cm
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
 	a.currentTier = tier
+	a.status.SetModel(a.engine.Model())
+	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched", "provider", providerName, "tier", tier, "model", model)
@@ -141,6 +145,8 @@ func (a *App) switchTier(tierName string, commitCmd tea.Cmd) tea.Cmd {
 
 	a.engine.SetModel(model)
 	a.currentTier = tier
+	a.status.SetModel(a.engine.Model())
+	a.status.SetContext(0, a.engine.ContextWindow())
 	a.persistModelSelection()
 
 	slog.Info("model: switched tier", "provider", a.currentProvider, "tier", tier, "model", model)

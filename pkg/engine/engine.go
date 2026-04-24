@@ -1119,6 +1119,13 @@ func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {
 	e.mu.Unlock()
 }
 
+// ContextWindow returns the configured context window size in tokens.
+func (e *Engine) ContextWindow() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.autoCompactConfig.ContextWindow
+}
+
 // SessionID returns the current session ID.
 func (e *Engine) SessionID() string {
 	e.mu.RLock()

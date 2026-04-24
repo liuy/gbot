@@ -328,12 +328,11 @@ func TestStatusBar_SetUsage(t *testing.T) {
 
 	s := NewStatusBar()
 	s.SetUsage(types.Usage{InputTokens: 100, OutputTokens: 50})
+	// SetUsage still stores usage data internally for context tracking.
+	s.SetContext(84000, 200000)
 	v := s.View()
-	if !strings.Contains(v, "in:100") {
-		t.Errorf("View() = %q, should contain input tokens", v)
-	}
-	if !strings.Contains(v, "out:50") {
-		t.Errorf("View() = %q, should contain output tokens", v)
+	if !strings.Contains(v, "84.0k/200.0k") {
+		t.Errorf("View() = %q, should contain context size", v)
 	}
 }
 
@@ -342,12 +341,13 @@ func TestStatusBar_SetError(t *testing.T) {
 
 	s := NewStatusBar()
 	s.SetError("rate limit")
-	v := s.View()
-	if !strings.Contains(v, "err:") {
-		t.Errorf("View() = %q, should contain error", v)
+	// Error is stored but not rendered in the new minimal status bar design.
+	if s.err != "rate limit" {
+		t.Errorf("err = %q, want %q", s.err, "rate limit")
 	}
-	if !strings.Contains(v, "rate limit") {
-		t.Errorf("View() = %q, should contain error message", v)
+	v := s.View()
+	if strings.Contains(v, "err:") {
+		t.Errorf("View() = %q, should not contain error in status bar", v)
 	}
 }
 
@@ -896,6 +896,124 @@ func TestStringWidth_TextEmojiWithVS16(t *testing.T) {
 		if w != tt.wantWidth {
 			t.Errorf("stringWidth(stripRedundantVS16(%q)) = %d, want %d", tt.input, w, tt.wantWidth)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StatusBar — new fields (SetContext, SetToolCount, ctxColor, formatContextSize)
+// ---------------------------------------------------------------------------
+
+func TestStatusBar_SetContext(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatusBar()
+	s.SetContext(84000, 200000)
+	v := s.View()
+	if !strings.Contains(v, "84.0k/200.0k") {
+		t.Errorf("View() = %q, should contain 84.0k/200.0k", v)
+	}
+	if s.contextUsed != 84000 {
+		t.Errorf("contextUsed = %d, want 84000", s.contextUsed)
+	}
+	if s.contextTotal != 200000 {
+		t.Errorf("contextTotal = %d, want 200000", s.contextTotal)
+	}
+}
+
+func TestStatusBar_SetToolCount(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatusBar()
+	s.SetToolCount(13)
+	v := s.View()
+	if !strings.Contains(v, "13 tools") {
+		t.Errorf("View() = %q, should contain '13 tools'", v)
+	}
+}
+
+func TestCtxColor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		used      int
+		total     int
+		wantEmpty bool // true = default color (empty string)
+		wantYellow bool
+		wantRed    bool
+	}{
+		{"zero_total", 100, 0, true, false, false},
+		{"low_usage", 50000, 200000, true, false, false},
+		{"at_79_pct", 158000, 200000, true, false, false},
+		{"at_80_pct", 160000, 200000, false, true, false},
+		{"at_89_pct", 178000, 200000, false, true, false},
+		{"at_90_pct", 180000, 200000, false, false, true},
+		{"at_99_pct", 198000, 200000, false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ctxColor(tt.used, tt.total)
+			gotStr := string(got)
+			if tt.wantEmpty && gotStr != "" {
+				t.Errorf("ctxColor(%d, %d) = %q, want empty (default)", tt.used, tt.total, gotStr)
+			}
+			if tt.wantYellow && gotStr != "230;200;50" {
+				t.Errorf("ctxColor(%d, %d) = %q, want yellow", tt.used, tt.total, gotStr)
+			}
+			if tt.wantRed && gotStr != "230;70;70" {
+				t.Errorf("ctxColor(%d, %d) = %q, want red", tt.used, tt.total, gotStr)
+			}
+		})
+	}
+}
+
+func TestFormatContextSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		used, total int
+		want        string
+	}{
+		{0, 200000, "0/200.0k"},
+		{500, 200000, "500/200.0k"},
+		{84000, 200000, "84.0k/200.0k"},
+		{1500, 3000, "1.5k/3.0k"},
+		{999, 1000, "999/1.0k"},
+	}
+	for _, tt := range tests {
+		got := formatContextSize(tt.used, tt.total)
+		if got != tt.want {
+			t.Errorf("formatContextSize(%d, %d) = %q, want %q", tt.used, tt.total, got, tt.want)
+		}
+	}
+}
+
+func TestStatusBar_View_FullLayout(t *testing.T) {
+	t.Parallel()
+
+	s := NewStatusBar()
+	s.SetModel("sonnet-4")
+	s.SetContext(84000, 200000)
+	s.SetToolCount(13)
+	v := s.View()
+
+	// Should contain all three sections with separators
+	if !strings.Contains(v, "sonnet-4") {
+		t.Errorf("View() = %q, should contain model name", v)
+	}
+	if !strings.Contains(v, "84.0k/200.0k") {
+		t.Errorf("View() = %q, should contain context size", v)
+	}
+	if !strings.Contains(v, "13 tools") {
+		t.Errorf("View() = %q, should contain tool count", v)
+	}
+	// Should have bullet separators
+	if strings.Count(v, "•") != 2 {
+		t.Errorf("View() = %q, should have exactly 2 bullet separators", v)
+	}
+	// No background color (no ANSI bg sequences)
+	if strings.Contains(v, "\x1b[48") {
+		t.Errorf("View() = %q, should not contain background color", v)
 	}
 }
 

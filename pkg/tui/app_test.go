@@ -3952,7 +3952,7 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
-	app.height = 10 // maxContentLines=7, viewLines=6
+	app.height = 12 // maxContentLines=7, viewLines=6
 
 	// Create content where scrollTotal is just over maxContentLines.
 	app.repl.StartQuery(nil)
@@ -3983,7 +3983,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
-	app.height = 10 // maxContentLines=7, viewLines=6
+	app.height = 12 // maxContentLines=7, viewLines=6
 
 	// 19 lines of content → totalPages=4, maxOff=13
 	// At bottom (offset=13): midLine=16, old formula 16/6+1=3 (wrong, should be 4)
@@ -4002,7 +4002,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	// Also test 13 lines → totalPages=3, maxOff=7
 	app2 := newTestApp(&tuiMockProvider{})
 	app2.width = 80
-	app2.height = 10
+	app2.height = 12
 	app2.repl.StartQuery(nil)
 	app2.spinner.Start()
 	app2.progressStart = time.Now()
@@ -4024,7 +4024,7 @@ func TestApp_Scroll_HalfPageScroll(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
-	app.height = 10 // maxContentLines=7, viewLines=6, halfPage=3
+	app.height = 12 // maxContentLines=7, viewLines=6, halfPage=3
 
 	// 30 lines → 5 pages (viewLines=6)
 	app.repl.StartQuery(nil)
@@ -4105,7 +4105,7 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
-	app.height = 10 // maxContentLines=7, viewLines=6
+	app.height = 12 // maxContentLines=7, viewLines=6
 
 	// Create content where half-page scroll exactly reaches offset 0.
 	// 9 lines: scrollTotal=9, maxOff=9-6=3, halfPage=3.
@@ -4450,8 +4450,8 @@ func TestApp_CalcViewLines(t *testing.T) {
 		wantMin     int
 		wantMax     int
 	}{
-		{"short content", 10, 5, 7, 7},     // content < maxContentLines → use maxContentLines
-		{"overflow content", 10, 20, 1, 6}, // content > maxContentLines → reserve 1 line
+		{"short content", 10, 5, 5, 5},     // content < maxContentLines → use maxContentLines
+		{"overflow content", 10, 20, 4, 4}, // content > maxContentLines → reserve 1 line
 		{"minimal height", 2, 20, 1, 1},    // very small terminal
 	}
 

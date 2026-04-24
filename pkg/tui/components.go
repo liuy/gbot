@@ -436,14 +436,19 @@ func (i *Input) renderLineSingle(lines []wrappedLine) string {
 // StatusBar — source: components/StatusBar.tsx
 // ---------------------------------------------------------------------------
 
-// StatusBar shows model info, token usage, and streaming status.
+// StatusBar shows model info, context usage, and tool count below the input.
+// Design: " sonnet-4 │ 84K/200K │ tools 13" — no background, green model,
+// context default→yellow(≥80%)→red(≥90%), gray separators.
 type StatusBar struct {
-	model     string
-	streaming bool
-	usage     types.Usage
-	width     int
-	err       string
-	info      string
+	model        string
+	streaming    bool
+	usage        types.Usage
+	width        int
+	err          string
+	info         string
+	contextUsed  int // current context input tokens
+	contextTotal int // model context window size
+	toolCount    int
 }
 
 // NewStatusBar creates a new status bar.
@@ -481,35 +486,61 @@ func (s *StatusBar) SetInfo(msg string) {
 	s.info = msg
 }
 
-// View renders the status bar.
+// SetContext sets the context window usage for the status bar.
+func (s *StatusBar) SetContext(used, total int) {
+	s.contextUsed = used
+	s.contextTotal = total
+}
+
+// SetToolCount sets the number of registered tools.
+func (s *StatusBar) SetToolCount(n int) {
+	s.toolCount = n
+}
+
+// View renders the status bar below the input field.
+// Format: " model • usedK/totalK • N tools"
+// Model: green. Context: default color, yellow ≥80%, red ≥90%. Separators: gray.
 func (s StatusBar) View() string {
-	barStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("252")).
-		Padding(0, 1)
+	green := lipgloss.Color("120;200;120")
+	dim := lipgloss.Color("100;100;100")
 
 	modelStr := s.model
 	if modelStr == "" {
 		modelStr = "gbot"
 	}
+	left := lipgloss.NewStyle().Foreground(green).Render(modelStr)
 
-	left := fmt.Sprintf(" %s", modelStr)
+	ctxStr := formatContextSize(s.contextUsed, s.contextTotal)
+	mid := lipgloss.NewStyle().Foreground(ctxColor(s.contextUsed, s.contextTotal)).Render(ctxStr)
 
-	if s.err != "" {
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-		left += errStyle.Render(fmt.Sprintf(" err: %s", s.err))
+	right := fmt.Sprintf("%d tools", s.toolCount)
+	sep := lipgloss.NewStyle().Foreground(dim).Render(" • ")
+
+	parts := []string{left, mid}
+	if s.toolCount > 0 {
+		parts = append(parts, right)
 	}
+	return " " + strings.Join(parts, sep) + " "
+}
 
-	right := fmt.Sprintf("in:%d out:%d ", s.usage.InputTokens, s.usage.OutputTokens)
-
-	// Pad to fill width
-	content := left + right
-	avail := s.width - len(stripANSI(content))
-	if avail > 0 {
-		content = left + strings.Repeat(" ", avail) + right
+// ctxColor returns the lipgloss color for the context usage based on percentage.
+func ctxColor(used, total int) lipgloss.Color {
+	if total <= 0 {
+		return ""
 	}
+	pct := used * 100 / total
+	if pct >= 90 {
+		return lipgloss.Color("230;70;70")
+	}
+	if pct >= 80 {
+		return lipgloss.Color("230;200;50")
+	}
+	return ""
+}
 
-	return barStyle.Render(content)
+// formatContextSize formats context usage as "usedK/totalK" or "used/total".
+func formatContextSize(used, total int) string {
+	return fmt.Sprintf("%s/%s", formatTokenCount(used), formatTokenCount(total))
 }
 
 // ---------------------------------------------------------------------------
