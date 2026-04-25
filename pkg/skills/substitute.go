@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// Pre-compiled regexes for argument substitution.
+// Source: argumentSubstitution.ts:123-133
+var (
+	reArgumentsIndexed = regexp.MustCompile(`\$ARGUMENTS\[(\d+)\]`)
+	reShorthandIndexed = regexp.MustCompile(`\$(\d+)`)
+)
+
 // ---------------------------------------------------------------------------
 // Argument substitution
 // Source: src/utils/argumentSubstitution.ts
@@ -51,9 +58,8 @@ func SubstituteArguments(content, args string, argumentNames []string, appendIfN
 
 	// Replace indexed arguments: $ARGUMENTS[N]
 	// Source: argumentSubstitution.ts:123-127
-	reIndexed := regexp.MustCompile(`\$ARGUMENTS\[(\d+)\]`)
-	content = reIndexed.ReplaceAllStringFunc(content, func(match string) string {
-		sub := reIndexed.FindStringSubmatch(match)
+	content = reArgumentsIndexed.ReplaceAllStringFunc(content, func(match string) string {
+		sub := reArgumentsIndexed.FindStringSubmatch(match)
 		if len(sub) < 2 {
 			return ""
 		}
@@ -119,8 +125,7 @@ func replaceNamedArg(content, name, value string) string {
 // replaceShorthandIndexed replaces $0, $1, etc. NOT followed by word chars.
 // Simulates TS: \$(\d+)(?!\w)
 func replaceShorthandIndexed(content string, parsedArgs []string) string {
-	re := regexp.MustCompile(`\$(\d+)`)
-	matches := re.FindAllStringSubmatchIndex(content, -1)
+	matches := reShorthandIndexed.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
 		return content
 	}
