@@ -45,6 +45,7 @@ How to invoke:
   - skill: "pdf" - invoke the pdf skill
   - skill: "commit", args: "-m 'Fix bug'" - invoke with arguments
   - skill: "review-pr", args: "123" - invoke with arguments
+  - skill: "ms-office-suite:pdf" - invoke using fully qualified name
 
 Important:
 - Available skills are listed in system-reminder messages in the conversation
