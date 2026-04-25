@@ -641,7 +641,7 @@ func ConcurrentToolLoop(
 }
 
 // ---------------------------------------------------------------------------
-// SequentialToolLoop — Phase 1 fallback (no concurrency)
+// SequentialToolLoop is a deprecated stub.
 // DEPRECATED: use ConcurrentToolLoop instead. Kept as stub for test compilation.
 // ---------------------------------------------------------------------------
 

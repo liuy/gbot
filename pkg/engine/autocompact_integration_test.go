@@ -527,7 +527,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 // TestAutoCompact_SubEngine_ProactiveCompact verifies that a sub-engine created
 // via NewSubEngine triggers proactive auto-compact when it inherits a compactor
 // from its parent and its messages exceed the threshold.
-// Source: plan steady-dreaming-sunrise.md — sub-agents should auto-compact.
+// Sub-agents should auto-compact.
 func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	t.Parallel()
 
@@ -560,7 +560,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	})
 
 	// Sub-engine inherits compactor + config from parent.
-	// Source: plan Step 4 — NewSubEngine passes compactor + autoCompactConfig.
+	// NewSubEngine passes compactor + autoCompactConfig.
 	subEng := parent.NewSubEngine(engine.SubEngineOptions{
 		AgentType: "Explore",
 		MaxTurns:  5,
@@ -609,7 +609,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 // TestAutoCompact_SubEngine_ReactiveCompact verifies that a sub-engine triggers
 // reactive auto-compact when the API returns a prompt_too_long error, then
 // retries successfully with compacted messages.
-// Source: plan steady-dreaming-sunrise.md — reactive compact with querySource guard.
+// Reactive compact with querySource guard.
 func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	t.Parallel()
 

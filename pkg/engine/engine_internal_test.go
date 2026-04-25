@@ -1165,7 +1165,7 @@ func (t *testTool) RenderResult(any) string                   { return "" }
 func (t *testTool) MaxResultSize() int { return 50000 }
 
 // ---------------------------------------------------------------------------
-// Sub-engine tests — source: plan steady-dreaming-sunrise.md
+// Sub-engine tests
 // ---------------------------------------------------------------------------
 
 // subTextEvents creates streaming events for a simple text response (internal helper).

@@ -16,7 +16,7 @@ type entry[K comparable, V any] struct {
 }
 
 // LRUCache is a thread-safe LRU cache with generic key/value types.
-// No onEvict callback — removed in plan v4 as over-engineering (no callers).
+// No onEvict callback.
 type LRUCache[K comparable, V any] struct {
 	capacity int
 	mu       sync.Mutex

@@ -40,7 +40,7 @@ type SearchReadKind struct {
 // ---------------------------------------------------------------------------
 
 // Tool is the complete tool interface used by the engine.
-// Source: Tool.ts:362-695 — 30+ methods. Phase 1 uses a subset.
+// Source: Tool.ts:362-695
 //
 // Deliberately excluded (React JSX → TUI ToolRenderer):
 //   - renderToolUseProgressMessage (Tool.ts:625)
@@ -175,7 +175,7 @@ type ToolWithWireFormat interface {
 // ---------------------------------------------------------------------------
 
 // ToolDef is a partial definition with optional fields filled by BuildTool.
-// Source: Tool.ts:707-726 — Omit<Tool, DefaultableToolKeys> & Partial<Pick<Tool, DefaultableToolKeys>>
+// Source: Tool.ts:707-726
 type ToolDef struct {
 	// Required fields (no defaults)
 	Name_       string

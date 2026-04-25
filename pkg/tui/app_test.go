@@ -3219,7 +3219,7 @@ func TestPrettyJSON_InvalidJSON(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // PendingToolOutput — toolOutputDeltaMsg handler in App.Update
-// Source: Phase 2 — streaming tool output display
+// streaming tool output display
 // ---------------------------------------------------------------------------
 
 func TestApp_Update_StreamToolOutput(t *testing.T) {

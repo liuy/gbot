@@ -222,7 +222,7 @@ type ServerInfo struct {
 	Version string `json:"version"`
 }
 
-// Close idempotently calls Cleanup. Source: plan v4 — sync.Once, no IsClosed/closeMu.
+// Close idempotently calls Cleanup via sync.Once.
 // If Cleanup is nil, Close is a no-op.
 func (s *ConnectedServer) Close() error {
 	var err error

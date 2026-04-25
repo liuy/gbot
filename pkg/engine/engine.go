@@ -1,11 +1,7 @@
 // Package engine implements the core agentic loop for gbot.
 //
 // Source reference: query.ts (~1730 lines), QueryEngine.ts
-// Phase 1 simplifications:
-//   - No context compression (hard token limit, oldest messages dropped)
-//   - No session persistence across restarts
-//   - Simple permission model (allow/deny/ask, no passthrough or classifier)
-//   - No tool grouping or deferral (sequential execution only)
+//
 package engine
 
 import (
@@ -978,8 +974,7 @@ func (e *Engine) shouldAutoCompact() bool {
 // marshalMessages converts internal messages to API format.
 // Strips response-only fields (Timestamp, Model, StopReason, Usage) that
 // the Anthropic Messages API does not accept in request messages.
-// Source: TS normalizeMessagesForAPI — simplified for Phase 1 (no attachments,
-// tool references, or virtual messages).
+// Source: TS normalizeMessagesForAPI (no attachments, tool references, or virtual messages).
 func (e *Engine) marshalMessages() []types.Message {
 	result := make([]types.Message, len(e.messages))
 	for i, msg := range e.messages {

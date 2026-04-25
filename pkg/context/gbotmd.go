@@ -7,8 +7,8 @@ import (
 )
 
 // LoadGBOTMD loads GBOT.md instructions.
-// Source: utils/claudemd.ts — simplified Phase 1 version.
-// Phase 1: Load single GBOT.md file (no @include, frontmatter, dedup, or rules glob).
+// Source: utils/claudemd.ts.
+// Load single GBOT.md file (no @include, frontmatter, dedup, or rules glob).
 func LoadGBOTMD(workingDir string) string {
 	// Try GBOT.md at working directory root
 	candidates := []string{

@@ -10,15 +10,15 @@ import (
 )
 
 // MemoryFile holds a loaded memory file with metadata.
-// Source: utils/claudemd.ts MemoryFileInfo — simplified Phase 1 version.
+// Source: utils/claudemd.ts MemoryFileInfo.
 type MemoryFile struct {
 	Path    string
 	Content string
 }
 
 // LoadMemoryFiles loads memory files from the gbot memory directory.
-// Source: memdir/memdir.ts loadMemoryPrompt — simplified Phase 1 version.
-// Phase 1: Load all .md files from ~/.gbot/memory/ (no @include, no team memory, no frontmatter).
+// Source: memdir/memdir.ts loadMemoryPrompt.
+// Load all .md files from ~/.gbot/memory/ (no @include, no team memory, no frontmatter).
 func LoadMemoryFiles(workingDir string) []MemoryFile {
 	dirs := memoryDirs(workingDir)
 	seen := make(map[string]bool)
@@ -73,7 +73,7 @@ func LoadMemoryFiles(workingDir string) []MemoryFile {
 }
 
 // FormatMemorySection formats memory files for inclusion in the system prompt.
-// Source: utils/claudemd.ts getClaudeMds — simplified Phase 1 version.
+// Source: utils/claudemd.ts getClaudeMds.
 func FormatMemorySection(files []MemoryFile) string {
 	if len(files) == 0 {
 		return ""

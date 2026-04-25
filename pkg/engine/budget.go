@@ -14,10 +14,7 @@ import (
 //   - Cumulative usage across turns
 //   - Budget exhaustion triggers TerminalPromptTooLong
 //
-// Phase 1 uses simple token counting. Phase 2 adds:
-//   - Context compression when approaching limit
-//   - Message trimming (oldest first)
-//   - Proactive compaction
+// The TS source maintains:
 type BudgetTracker struct {
 	budget int
 	used   int
@@ -75,8 +72,7 @@ func (bt *BudgetTracker) Usage() types.Usage {
 
 // TrimMessages removes oldest messages to free budget space.
 // Source: query.ts — Stage 8 applyToolResultBudget.
-// Phase 1 simple strategy: drop oldest messages until under budget.
-// Phase 2 will use context compression instead.
+// Drop oldest messages until under budget.
 func TrimMessages(messages []types.Message, maxMessages int) []types.Message {
 	if maxMessages <= 0 || len(messages) <= maxMessages {
 		return messages

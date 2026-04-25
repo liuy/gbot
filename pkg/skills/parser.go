@@ -252,7 +252,7 @@ func parseModel(v any) string {
 
 // parseContext parses the context field.
 // Source: loadSkillsDir.ts:260 — 'fork' if context === 'fork', else undefined
-// Correction 25: empty string = inline (default), "fork" = fork
+// empty string = inline (default), "fork" = fork
 func parseContext(v any) string {
 	s := stringFieldFromAny(v)
 	if s == "fork" {

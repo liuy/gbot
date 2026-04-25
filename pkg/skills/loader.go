@@ -392,11 +392,11 @@ func (r *Registry) RegisterBundledSkill(cmd types.SkillCommand) {
 }
 
 // ---------------------------------------------------------------------------
-// OnSkillsLoaded callback (correction 5 + 14)
+// OnSkillsLoaded callback
 // ---------------------------------------------------------------------------
 
 // OnSkillsLoaded registers a callback for skill changes.
-// Callbacks are invoked OUTSIDE the write lock (correction 14: no deadlock).
+// Callbacks are invoked OUTSIDE the write lock to prevent deadlock.
 // Returns an unsubscribe function.
 func (r *Registry) OnSkillsLoaded(cb func()) func() {
 	r.mu.Lock()
@@ -415,8 +415,7 @@ func (r *Registry) OnSkillsLoaded(cb func()) func() {
 	}
 }
 
-// fireOnSkillsLoaded invokes callbacks outside the lock.
-// Source: correction 14 — release lock before callbacks
+// fireOnSkillsLoaded invokes callbacks outside the lock to prevent deadlock.
 func (r *Registry) fireOnSkillsLoaded() {
 	r.mu.Lock()
 	callbacks := make([]func(), len(r.onSkillsLoadedCallbacks))

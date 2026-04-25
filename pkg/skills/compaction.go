@@ -64,7 +64,7 @@ func (r *Registry) GetInvokedSkillsForAgent(agentID string) []types.InvokedSkill
 }
 
 // ClearInvokedSkillsForAgent removes invoked skills for a completed fork agent.
-// Source: executeForkedSkill finally block (correction 26)
+// Source: executeForkedSkill finally block
 func (r *Registry) ClearInvokedSkillsForAgent(agentID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -119,7 +119,7 @@ func (r *Registry) CreateSkillAttachment(agentID string, maxTokensPerSkill, tota
 }
 
 // CleanupActivatedSkills removes expired activation records.
-// Source: correction 15 — prevent unbounded growth in long sessions.
+// Prevent unbounded growth in long sessions.
 func (r *Registry) CleanupActivatedSkills(maxAge time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -216,7 +216,7 @@ func TestParseSkill_ContextInline(t *testing.T) {
 
 	input := "---\ncontext: inline\n---\nBody."
 	cmd := ParseSkill("test", "/test/SKILL.md", input, types.SkillSourceUser)
-	// Correction 25: only "fork" maps to fork, everything else is empty (inline)
+	// only "fork" maps to fork, everything else is empty (inline)
 	if cmd.Context != "" {
 		t.Errorf("context: inline should map to empty (not store 'inline'), got %q", cmd.Context)
 	}

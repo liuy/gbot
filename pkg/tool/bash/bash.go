@@ -203,7 +203,7 @@ func execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	}
 
 	// Try PTY mode first, fallback to non-PTY
-	// Source: Plan Step 1.9 — graceful degradation
+	// graceful degradation
 	if isPTYAvailable() {
 		return executePTY(ctx, in, cwd, timeout)
 	}

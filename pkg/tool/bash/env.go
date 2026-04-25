@@ -82,10 +82,10 @@ func (s *EnvSnapshot) Cleanup() {
 // ---------------------------------------------------------------------------
 
 // sessionEnvScript is the testable hook for SessionEnvScript.
-// Returns "" because hooks are not yet implemented in gbot.
+// Hooks not implemented.
 // Override in tests to exercise the buildCommand session env branch.
 var sessionEnvScript = func() string {
-	return "" // hooks not yet implemented
+	return ""
 }
 
 // SessionEnvScript returns the session env script from hooks.

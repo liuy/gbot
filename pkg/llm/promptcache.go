@@ -330,7 +330,7 @@ func extractCacheControlHash(system []map[string]any) uint32 {
 }
 
 // RecordPromptState records the current prompt/tool state and detects changes.
-// Phase 1 (pre-call). Does NOT fire events — stores pending changes for phase 2.
+// Pre-call analysis. Stores pending changes for post-call processing.
 // Source: promptCacheBreakDetection.ts:247-430
 func RecordPromptState(system []map[string]any, tools []map[string]any, key PromptStateKey, model string, betas []string, globalCacheStrategy string, fastMode bool, autoModeActive bool, isUsingOverage bool, cachedMCEnabled bool, effortValue string, extraBodyHash uint32) {
 
@@ -562,7 +562,7 @@ func RecordPromptState(system []map[string]any, tools []map[string]any, key Prom
 }
 
 // CheckResponseForCacheBreak checks API response cache tokens for a break.
-// Phase 2 (post-call).
+// Post-call processing.
 // Source: promptCacheBreakDetection.ts:437-666
 //
 // Locking: fine-grained lock/unlock cycles are intentional. The function

@@ -65,7 +65,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Record prompt state for cache break detection (pre-call, Phase 1).
+	// Record prompt state for cache break detection (pre-call).
 	// Source: promptCacheBreakDetection.ts:247-430
 	if req.PromptStateKey != nil {
 		system := RequestToSystemMaps(req)
@@ -103,7 +103,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
-	// Check for cache break (post-call, Phase 2).
+	// Check for cache break (post-call).
 	// Source: promptCacheBreakDetection.ts:437-666
 	if req.PromptStateKey != nil {
 		CheckResponseForCacheBreak(*req.PromptStateKey,
@@ -127,7 +127,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Record prompt state for cache break detection (pre-call, Phase 1).
+	// Record prompt state for cache break detection (pre-call).
 	if req.PromptStateKey != nil {
 		system := RequestToSystemMaps(req)
 		tools := RequestToToolMaps(req)
@@ -234,7 +234,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 			}
 		}
 
-		// Stream complete — check for cache break (Phase 2, post-call).
+		// Stream complete — check for cache break (post-call).
 		// Source: promptCacheBreakDetection.ts:437-666
 		if req.PromptStateKey != nil {
 			CheckResponseForCacheBreak(*req.PromptStateKey, cacheRead, cacheCreation, nil)

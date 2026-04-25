@@ -321,7 +321,7 @@ func EstimateMessagesTokens(messages []types.Message) int {
 // nowFunc — injectable clock for testing
 // ---------------------------------------------------------------------------
 
-// nowFunc can be overridden in tests to mock time. Source: plan v2 Step 6.
+// nowFunc can be overridden in tests to mock time.
 var nowFunc = time.Now
 
 // ---------------------------------------------------------------------------

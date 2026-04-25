@@ -91,7 +91,7 @@ var skillInputSchema = json.RawMessage(`{
 
 // New creates a new SkillTool using the BuildTool factory pattern.
 // Source: SkillTool.ts:331 — buildTool({...})
-// Correction 17: must use BuildTool factory, matching pkg/tool/bash/ etc.
+// Uses BuildTool factory, matching pkg/tool/bash/ etc.
 func New(registry *skills.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        skillToolName,
@@ -199,9 +199,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 
 	// 3. Shell block execution (skip for MCP skills)
 	// Source: loadSkillsDir.ts:371-396
-	// Note: shell execution requires a bash tool reference; for now we skip
-	// actual shell execution and leave it for future integration.
-	// The API is ready — ExecuteShellBlocks will be called when bash tool is wired.
+	// Shell execution skipped; wired when bash tool integration is complete.
 
 	// 4. Compaction protection — record invoked skill
 	// Source: state.ts:1510 — addInvokedSkill
@@ -218,8 +216,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 
 	// 5. Build messages
 	// Source: processSlashCommand.tsx:902-912 — message sequence
-	// Correction 7: two metadata formats
-	// Correction 8: metadata + content + permissions messages
+	// Two metadata formats (user-invocable vs skill); metadata + content + permissions messages.
 	var newMessages []types.Message
 
 	// 5a. Metadata message
@@ -240,7 +237,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	})
 
 	// 5c. Command permissions attachment
-	// Correction 9: allowedTools + model as XML message
+	// allowedTools + model as XML message
 	if len(cmd.AllowedTools) > 0 || cmd.Model != "" {
 		perms := formatCommandPermissions(cmd.AllowedTools, cmd.Model)
 		newMessages = append(newMessages, types.Message{
@@ -265,8 +262,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 
 // executeForkedSkill runs a skill in a sub-agent.
 // Source: SkillTool.ts:122-289 — executeForkedSkill
-// Correction 21: skill content as user message, NOT system prompt
-// Correction 26: finally block clears invoked skills
+// Skill content as user message, NOT system prompt; finally block clears invoked skills.
 func executeForkedSkill(commandName string) (*tool.ToolResult, error) {
 	// Fork execution requires agent infrastructure not yet wired.
 	// Return explicit error so caller knows it's unimplemented,
@@ -276,7 +272,7 @@ func executeForkedSkill(commandName string) (*tool.ToolResult, error) {
 
 // formatCommandLoadingMetadata returns the metadata string for a skill invocation.
 // Source: processSlashCommand.tsx:786-816 — formatCommandLoadingMetadata
-// Correction 7: two different formats based on user-invocable flag
+// Two different formats based on user-invocable flag
 func formatCommandLoadingMetadata(cmd *types.SkillCommand, args string) string {
 	if cmd.IsUserInvocable {
 		// Slash command format
@@ -312,7 +308,7 @@ func formatCommandLoadingMetadata(cmd *types.SkillCommand, args string) string {
 
 // formatCommandPermissions builds the XML permissions message.
 // Returns empty string if no tools or model specified.
-// Correction 9: command_permissions as XML user message
+// command_permissions as XML user message
 func formatCommandPermissions(allowedTools []string, model string) string {
 	if len(allowedTools) == 0 && model == "" {
 		return ""

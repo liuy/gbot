@@ -16,8 +16,7 @@ import (
 //   3. Per-tool controller — individual tool abort
 //
 // In Go, context.Context provides the same capability natively.
-// Phase 1 uses a simplified single-layer: context.Context for user interrupt.
-// Phase 2 will add the full hierarchy via child contexts.
+// Current implementation uses a single-layer: context.Context for user interrupt.
 type AbortController struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -59,8 +58,7 @@ func ShouldInterruptTool(behavior tool.InterruptBehavior, ctx context.Context) b
 	if ctx.Err() == nil {
 		return false
 	}
-	// In Phase 1, all tools are interrupted on context cancellation.
-	// Phase 2 will respect InterruptBlock behavior.
+	// All tools are interrupted on context cancellation.
 	return behavior == tool.InterruptCancel
 }
 
