@@ -3141,3 +3141,156 @@ func TestSetCompactor(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestQuery_NewMessagesAfterToolResult verifies that when a tool returns
+// NewMessages alongside its result, the tool_result user message appears
+// BEFORE the NewMessages user messages in the conversation history.
+//
+// The Anthropic API requires that tool_result directly follows the assistant's
+// tool_use block without any intermediate user messages. Inserting NewMessages
+// before tool_result causes API error 2013: "tool call result does not follow
+// tool call".
+//
+// TS reference: toolExecution.ts — addToolResult() pushes tool_result FIRST
+// (line 1456), then newMessages AFTER (line 1566).
+func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
+	t.Parallel()
+
+	toolID := "tool_skill_1"
+	toolName := "Skill"
+	toolInput := `{"skill":"roast"}`
+
+	mp := &mockProvider{}
+	// Round 1: assistant responds with tool_use
+	mp.addResponse(toolUseStreamEvents("test-model", toolID, toolName, toolInput), nil)
+	// Round 2: assistant responds with text (after seeing tool result + new messages)
+	mp.addResponse(textStreamEvents("test-model", "Roast complete!"), nil)
+
+	mt := &mockTool{
+		name:    toolName,
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			return &tool.ToolResult{
+				Data: skillOutputData("roast", "inline"),
+				NewMessages: []types.Message{
+					{Role: types.RoleUser, Content: []types.ContentBlock{
+						types.NewTextBlock("<command-message>roast</command-message>"),
+					}},
+					{Role: types.RoleUser, Content: []types.ContentBlock{
+						types.NewTextBlock("You are a ruthless roaster..."),
+					}},
+				},
+			}, nil
+		},
+	}
+
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "/roast", nil)
+
+	// Drain events
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Verify message ordering: tool_result must appear BEFORE NewMessages
+	msgs := eng.Messages()
+
+	// Find the assistant message with tool_use
+	var assistantIdx = -1
+	for i, msg := range msgs {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse && block.Name == "Skill" {
+				assistantIdx = i
+				break
+			}
+		}
+		if assistantIdx >= 0 {
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		t.Fatal("no assistant message with tool_use found")
+	}
+
+	// The message immediately after assistant must contain tool_result
+	if assistantIdx+1 >= len(msgs) {
+		t.Fatal("no message after assistant tool_use")
+	}
+	firstAfterAssistant := msgs[assistantIdx+1]
+	if firstAfterAssistant.Role != types.RoleUser {
+		t.Fatalf("message after assistant should be user, got %s", firstAfterAssistant.Role)
+	}
+
+	// Verify first user message after assistant contains a tool_result block
+	hasToolResult := false
+	for _, block := range firstAfterAssistant.Content {
+		if block.Type == types.ContentTypeToolResult {
+			hasToolResult = true
+			break
+		}
+	}
+	if !hasToolResult {
+		t.Errorf("first user message after assistant should contain tool_result, got blocks: %v",
+			contentBlockTypes(firstAfterAssistant.Content))
+	}
+
+	// Verify subsequent messages (NewMessages) come AFTER tool_result
+	// and do NOT contain tool_result blocks
+	if assistantIdx+2 < len(msgs) {
+		for i := assistantIdx + 2; i < len(msgs); i++ {
+			for _, block := range msgs[i].Content {
+				if block.Type == types.ContentTypeToolResult {
+					t.Errorf("message at index %d (after tool_result message) should not contain tool_result", i)
+				}
+			}
+		}
+	}
+
+	// Verify NewMessages content is present somewhere after tool_result
+	foundSkillContent := false
+	for i := assistantIdx + 2; i < len(msgs); i++ {
+		for _, block := range msgs[i].Content {
+			if block.Type == types.ContentTypeText && strings.Contains(block.Text, "ruthless roaster") {
+				foundSkillContent = true
+			}
+		}
+	}
+	if !foundSkillContent {
+		t.Error("NewMessages content (ruthless roaster) not found after tool_result message")
+	}
+}
+
+// skillOutputData returns a JSON tool result data for a skill invocation.
+func skillOutputData(name, status string) json.RawMessage {
+	data, _ := json.Marshal(map[string]any{
+		"success":     true,
+		"commandName": name,
+		"status":      status,
+	})
+	return data
+}
+
+// contentBlockTypes returns the types of content blocks for error messages.
+func contentBlockTypes(blocks []types.ContentBlock) []string {
+	names := make([]string, len(blocks))
+	for i, b := range blocks {
+		names[i] = string(b.Type)
+	}
+	return names
+}

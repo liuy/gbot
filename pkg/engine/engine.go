@@ -481,17 +481,22 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Source: query.ts:1381 — getRemainingResults().
 		execResult := streamingExecutor.ExecuteAll(nil)
 
-		// Prepend NewMessages BEFORE tool_result (skill content must come first).
-		if len(execResult.NewMessages) > 0 {
-			e.appendMessages(execResult.NewMessages)
-		}
-
-		// Add tool results as user message
+		// Add tool results as user message (MUST come before NewMessages).
+		// The Anthropic API requires tool_result to directly follow the
+		// assistant's tool_use block without intermediate user messages.
+		// TS reference: toolExecution.ts — addToolResult() line 1456 first,
+		// then newMessages line 1566 after.
 		if len(execResult.ToolResultBlocks) > 0 {
 			e.appendMessage(types.Message{
 				Role:    types.RoleUser,
 				Content: execResult.ToolResultBlocks,
 			})
+		}
+
+		// Append NewMessages AFTER tool_result.
+		// Tool-provided messages (e.g., skill content) follow the tool_result.
+		if len(execResult.NewMessages) > 0 {
+			e.appendMessages(execResult.NewMessages)
 		}
 
 		// End of this streaming round
