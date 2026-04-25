@@ -151,8 +151,10 @@ func TestMCPTool_Call_ServerNotConnected(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
 	defer registry.Close()
 
-	// Register a config but don't connect (connection map empty)
-	cfg := mcp.ScopedMcpServerConfig{
+	// A config could be created but is intentionally not registered —
+	// the test verifies that an unregistered server name produces
+	// "server not found" via GetConnection.
+	_ = mcp.ScopedMcpServerConfig{
 		Config: &mcp.StdioConfig{Command: "echo"},
 		Scope:  mcp.ScopeUser,
 	}
@@ -171,9 +173,6 @@ func TestMCPTool_Call_ServerNotConnected(t *testing.T) {
 	if err.Error() != `mcp: server "test" not found` {
 		t.Errorf("unexpected error: %v", err)
 	}
-
-	// Register config but store a FailedServer
-	_ = cfg
 }
 
 // ---------------------------------------------------------------------------

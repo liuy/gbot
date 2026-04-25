@@ -654,8 +654,9 @@ func TestRecoverOrphanedParallelToolResults_NonToolResultWithToolUseID(t *testin
 	}
 
 	result := recoverOrphanedParallelToolResults(msgs, msgs)
-	// Should process without panic
-	_ = result
+	if len(result) != 3 {
+		t.Errorf("got %d messages, want 3 (all messages returned unchanged)", len(result))
+	}
 }
 
 // TestRecoverOrphaned_GroupNil tests the branch where a chain assistant's

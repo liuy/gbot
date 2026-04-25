@@ -115,8 +115,7 @@ func TestIntegration_ForkCarriesHistory(t *testing.T) {
 
 	// Fork
 	forkedSessionID := a.sessionID
-	cmd := a.handleSession("history-fork", nil)
-	_ = cmd
+	_ = a.handleSession("history-fork", nil)
 	newSessionID := a.sessionID
 
 	if forkedSessionID == newSessionID {
@@ -167,8 +166,7 @@ func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 	}
 
 	// /session -n
-	cmd := a.handleSession("-n", nil)
-	_ = cmd
+	_ = a.handleSession("-n", nil)
 
 	// Engine should be empty
 	engMsgs := a.engine.Messages()
@@ -203,8 +201,7 @@ func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 func TestIntegration_NewSessionWithTitle(t *testing.T) {
 	a, store, projectDir := newIntegrationApp(t)
 
-	cmd := a.handleSession("-n My Project", nil)
-	_ = cmd
+	_ = a.handleSession("-n My Project", nil)
 
 	sessions, err := store.ListSessions(projectDir, 100)
 	if err != nil {
@@ -345,8 +342,7 @@ func TestIntegration_ForkPreservesToolUseMessages(t *testing.T) {
 	}
 
 	// Fork
-	cmd := a.handleSession("tool-fork", nil)
-	_ = cmd
+	_ = a.handleSession("tool-fork", nil)
 
 	// Load forked messages
 	forkedMsgs, err := store.LoadMessages(a.sessionID)
@@ -646,9 +642,10 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	persistTestMessages(t, a)
 
 	// First fork succeeds
-	cmd := a.handleSession("unique-title", nil)
-	_ = cmd
-	_ = a.sessionID
+	_ = a.handleSession("unique-title", nil)
+	if a.sessionID == "" {
+		t.Fatal("expected session ID after first fork")
+	}
 
 	// Switch back to original — not needed, the test continues with a2 below
 	// Then try to fork with the same title
@@ -663,7 +660,7 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 	}
 
 	// Now try to fork with same title
-	cmd = a2.handleSession("taken-title", nil)
+	cmd := a2.handleSession("taken-title", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -695,7 +692,6 @@ func TestIntegration_PickerCancelAborts(t *testing.T) {
 	if a.listPicker != nil {
 		t.Error("listPicker should be nil feeling after cancel")
 	}
-	_ = originalID
 	if a.sessionID != originalID {
 		t.Errorf("sessionID should not change on cancel, got %q want %q", a.sessionID, originalID)
 	}
@@ -711,8 +707,7 @@ func TestIntegration_PickerSameSessionNoop(t *testing.T) {
 		{SessionID: originalID, Title: "current"},
 	}, 0)
 
-	model, cmd := a.handleSessionPickerDone(a.listPicker, cap5)
-	_ = model
+	_, cmd := a.handleSessionPickerDone(a.listPicker, cap5)
 
 	if a.sessionID != originalID {
 		t.Error("same session should be no-op")

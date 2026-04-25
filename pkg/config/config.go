@@ -32,6 +32,10 @@ type Config struct {
 
 	// API timeout in milliseconds
 	APITimeoutMS int `json:"api_timeout_ms,omitempty"`
+
+	// Hooks — user-configurable lifecycle hooks
+	// Stored as raw JSON; parsed by pkg/hooks.LoadHooks() from settings files.
+	Hooks json.RawMessage `json:"hooks,omitempty"`
 }
 
 // Tier represents a model capability tier.

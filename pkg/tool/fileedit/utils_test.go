@@ -117,9 +117,7 @@ func TestPreserveQuoteStyle_CurlyDouble(t *testing.T) {
 	t.Parallel()
 	// oldString has straight quotes, actualOldString has curly double quotes
 	got := PreserveQuoteStyle(`say "hello"`, "\u201Csay \u201Chello\u201D\u201D", `say "goodbye"`)
-	want := "\u201Csay \u201Dgoodbye\u201D" // note: opening context determines curly direction
-	_ = want
-	// Just check it produces curly quotes
+	// Verify the result contains curly double quotes (opening context determines direction)
 	if !strings.ContainsRune(got, LeftDoubleCurlyQuote) && !strings.ContainsRune(got, RightDoubleCurlyQuote) {
 		t.Errorf("PreserveQuoteStyle = %q, should contain curly double quotes", got)
 	}

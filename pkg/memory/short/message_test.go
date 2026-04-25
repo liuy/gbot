@@ -1139,9 +1139,12 @@ func TestScanMessage_Error(t *testing.T) {
 	if !rows.Next() {
 		t.Fatal("expected one row")
 	}
-	// Scan with wrong types to force error
+	// Scan with correct column order — SQLite is type-loose so "wrong types"
+	// don't actually cause errors. Just verify scanMessage doesn't panic.
 	_, scanErr := store.scanMessage(rows)
-	_ = scanErr // scanMessage works fine with correct columns; error path covered by LoadMessages closed-store test
+	if scanErr != nil {
+		t.Fatalf("scanMessage: %v", scanErr)
+	}
 	_ = rows.Close()
 }
 

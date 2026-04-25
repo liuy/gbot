@@ -656,8 +656,10 @@ func TestLoadUserSkills_HomeDirExists(t *testing.T) {
 	reg := NewRegistry(t.TempDir())
 	// This should succeed or return nil — either is fine
 	skills := reg.loadUserSkills()
-	// Just verify it doesn't panic
-	_ = skills
+	if skills == nil {
+		// No user skills directory in temp dir — expected.
+		return
+	}
 }
 
 func TestLoadBundledSkills(t *testing.T) {

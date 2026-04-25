@@ -189,8 +189,12 @@ func TestRecordCompact_WriteVerification(t *testing.T) {
 	}
 
 	err := store.RecordCompact(sessionID, result)
-	// If session doesn't exist, that's expected (session.go is separate)
-	_ = err
+	// Session does not exist in this test, so RecordCompact should fail.
+	if err == nil {
+	if !strings.Contains(err.Error(), "session") && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "exist") {
+		t.Errorf("error should mention session issue, got: %v", err)
+	}
+	}
 }
 
 func TestApplyPreservedSegmentRelinks_ValidSegment(t *testing.T) {
@@ -1868,7 +1872,9 @@ func TestRecordCompact_InsertSummaryError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert boundary: %v", err)
 	}
-	_ = seq
+	if seq < 1 {
+		t.Errorf("inserted boundary seq = %d, want >= 1", seq)
+	}
 
 	// Now close store to cause summary insert failure
 	if err := store.Close(); err != nil {
@@ -2037,8 +2043,10 @@ func TestApplyPreservedSegmentRelinks_EntryNotFound(t *testing.T) {
 	result := ApplyPreservedSegmentRelinks(boundary, chain)
 
 	// The orphan's UUID won't be in entryIndex (actually it will since we build from chain)
-	// Let's test a different path: a message that isn't in the entryIndex
-	_ = result
+	// Verify all 4 messages are returned.
+	if len(result) != 4 {
+		t.Errorf("got %d messages, want 4", len(result))
+	}
 }
 
 // Lines 476-485: applyPreservedSegmentRelinksOnLoad — various JSON parse failures

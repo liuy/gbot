@@ -1085,14 +1085,13 @@ func TestBatchDiscovery_ConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var errors atomic.Int32
-	for i := range 5 {
+	for range 5 {
 		wg.Go(func() {
 			results := BatchDiscovery(context.Background(), connections, toolCache, resourceCache, commandCache)
 			if len(results) != 20 {
 				errors.Add(1)
 			}
 		})
-		_ = i
 	}
 	wg.Wait()
 

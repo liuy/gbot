@@ -151,7 +151,7 @@ func TestCollectCompactableToolIds_Basic(t *testing.T) {
 	messages := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
 			types.NewToolUseBlock("id1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("id2", "Search", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("id2", "Grep", json.RawMessage(`{}`)),
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			types.NewToolResultBlock("id1", json.RawMessage(`"result1"`), false),
@@ -823,7 +823,7 @@ func TestCollectCompactableToolIds_Order(t *testing.T) {
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
 			types.NewToolUseBlock("b", "Bash", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("c", "Search", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("c", "Grep", json.RawMessage(`{}`)),
 		}},
 	}
 	ids := collectCompactableToolIds(messages)

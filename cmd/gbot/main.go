@@ -19,6 +19,7 @@ import (
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -126,6 +127,21 @@ func main() {
 
 	contextWindow, maxTokens := primaryProviderCfg.ResolveCapabilities(model)
 
+	// 3.6 Initialize hooks system
+	var hooksConfig hooks.HooksConfig
+	if len(cfg.Hooks) > 0 {
+		if err := json.Unmarshal(cfg.Hooks, &hooksConfig); err != nil {
+			slog.Warn("main: failed to parse hooks config", "error", err)
+		}
+	}
+	hookExecutor := &hooks.CommandExecutor{
+		Env: []string{
+			hooks.FormatEnvVar("GBOT_PROJECT_DIR", workingDir),
+		},
+	}
+	hookSystem := hooks.NewHooks(hooksConfig, hookExecutor)
+
+
 	eng := engine.New(&engine.Params{
 		Provider:      provider,
 		ToolsProvider: reg.ToolMapFn(),
@@ -135,6 +151,7 @@ func main() {
 		Logger:        logger,
 		Dispatcher:    h,
 		MCPRegistry:   mcpRegistry,
+		Hooks:         hookSystem,
 	})
 
 	// Wire background task notifications into the engine's notification queue.
@@ -250,6 +267,16 @@ func main() {
 				MaxConsecutiveFailures: 3,
 			})
 		}
+
+			// 7.6 Fire SessionStart hook
+			if sessionID != "" {
+				hookSystem.SessionStart(context.Background(), &hooks.HookInput{
+					HookEventName: string(hooks.HookSessionStart),
+					SessionID:     sessionID,
+					Cwd:           workingDir,
+					Source:        "startup",
+				})
+			}
 		// 8. Create TUI App
 		app := tui.NewApp(eng, systemPrompt, h)
 		app.SetProviders(providerMap, cfg)

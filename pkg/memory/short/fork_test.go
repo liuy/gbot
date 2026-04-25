@@ -704,10 +704,15 @@ func TestGetForkChildren_ScanError(t *testing.T) {
 	}
 
 	// The scan error happens because created_at is invalid timestamp
-	_, err = store.GetForkChildren(parentID)
-	// GetForkChildren queries by parent_session_id, not session_id directly
-	// Let's insert properly but with correct parent_session_id
-	_ = err
+	children, err := store.GetForkChildren(parentID)
+	// The child was inserted with session_id, not parent_session_id, so
+	// GetForkChildren returns empty (no match on parent_session_id column).
+	if err != nil {
+		t.Fatalf("GetForkChildren: %v", err)
+	}
+	if len(children) != 0 {
+		t.Errorf("got %d children, want 0 (child has no parent_session_id)", len(children))
+	}
 }
 
 // Lines 170-172: MergeForkBack — begin tx error
@@ -1216,10 +1221,9 @@ func TestMergeForkBack_ScanChildMessage_CorruptTimestamp(t *testing.T) {
 	err = store.MergeForkBack(childID)
 	// SQLite stores timestamps as TEXT, so 'not-a-timestamp' is just a string.
 	// The scan into time.Time may or may not fail depending on the driver.
-	// If it succeeds, MergeForkBack completes normally (the message is merged).
-	// If it fails, we get a scan child message error.
-	// Either outcome is acceptable for coverage.
-	_ = err
+	// Both outcomes are acceptable; just verify it didn't panic and we got a
+	// definitive result (error or nil).
+	t.Logf("MergeForkBack with corrupt timestamp: err=%v (both outcomes acceptable)", err)
 }
 
 func TestMergeForkBack_InsertMergedError_CorruptParent(t *testing.T) {

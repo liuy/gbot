@@ -215,11 +215,12 @@ func TestTool_CheckPermissions_SafeSkill(t *testing.T) {
 	input := json.RawMessage(`{"skill": "commit"}`)
 	result := tool.CheckPermissions(input, nil)
 
-	allow, ok := result.(types.PermissionAllowDecision)
+	_, ok := result.(types.PermissionAllowDecision)
 	if !ok {
-		t.Errorf("safe skill should be auto-allowed, got %T: %+v", result, result)
+		t.Fatalf("safe skill should be auto-allowed, got %T: %+v", result, result)
 	}
-	_ = allow
+	// PermissionAllowDecision is an empty struct; the type assertion above
+	// already proves the correct decision was made.
 }
 
 func TestTool_CheckPermissions_UnsafeSkill(t *testing.T) {
@@ -244,7 +245,10 @@ func TestTool_CheckPermissions_UnsafeSkill(t *testing.T) {
 	if !ok {
 		t.Errorf("unsafe skill should require permission, got %T", result)
 	}
-	_ = ask
+	// Verify the ask decision carries context about the skill
+	if ask.Message == "" {
+		t.Error("PermissionAskDecision.Message should not be empty")
+	}
 }
 
 func TestFormatCommandLoadingMetadata_UserInvocable(t *testing.T) {

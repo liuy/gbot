@@ -166,8 +166,7 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 func TestHandleModel_ProviderTier_Success(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("anthropic/pro", nil)
-	_ = cmd // tea.Batch cmd
+	_ = a.handleModel("anthropic/pro", nil)
 
 	if a.currentProvider != "anthropic" {
 		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
@@ -226,8 +225,7 @@ func TestHandleModel_ProviderTier_MissingTier(t *testing.T) {
 func TestHandleModel_SwitchTier_Success(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("lite", nil)
-	_ = cmd
+	_ = a.handleModel("lite", nil)
 
 	if a.currentTier != config.TierLite {
 		t.Errorf("currentTier = %q, want %q", a.currentTier, config.TierLite)
@@ -267,8 +265,7 @@ func TestHandleModel_SwitchTier_MissingTier(t *testing.T) {
 func TestHandleModel_SwitchProvider_Success(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("anthropic", nil)
-	_ = cmd
+	_ = a.handleModel("anthropic", nil)
 
 	if a.currentProvider != "anthropic" {
 		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
@@ -352,7 +349,9 @@ func TestIsValidTier(t *testing.T) {
 func TestHandleModelPickerDone_Cancel(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	captured := helperSetupModelPicker(a)
-	_ = captured
+	if len(captured) == 0 {
+		t.Fatal("expected at least one model item from helperSetupModelPicker")
+	}
 
 	// Simulate abort
 	p := a.listPicker
@@ -382,8 +381,7 @@ func TestHandleModelPickerDone_Select(t *testing.T) {
 	p := a.listPicker
 	p.selected = 1
 
-	model, cmd := a.handleModelPickerDone(p, captured)
-	_ = model
+	_, cmd := a.handleModelPickerDone(p, captured)
 
 	if a.currentProvider != wantProvider || a.currentTier != wantTier {
 		t.Errorf("provider=%q tier=%q, want provider=%q tier=%q",

@@ -1172,6 +1172,7 @@ func TestFileIdentity_ProcFile(t *testing.T) {
 	// /dev/null should have valid stat but may have unusual device/inode
 	id := fileIdentity("/dev/null")
 	// On most Linux systems, /dev/null has valid stat
-	// Just verify it doesn't crash
-	_ = id
+	if id == "" {
+		t.Error("fileIdentity(/dev/null) returned empty string, expected non-empty identity")
+	}
 }

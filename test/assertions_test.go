@@ -97,6 +97,23 @@ type checkPattern struct {
 }
 
 var checkPatterns = []checkPattern{
+		{
+			Name:     "discarded variable in test (_ = identifier)",
+			Regex:    regexp.MustCompile(`^\s*_ = [a-zA-Z_][a-zA-Z0-9_]*\s*(//.*)?$`),
+			Level:    "P1",
+			TestOnly: true,
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				// Exempt: defer cleanup
+				if isInDefer(lines, lineIdx) || isInCleanup(lines, lineIdx) {
+					return true
+				}
+				// Exempt: goroutine cleanup
+				if isInGoroutine(lines, lineIdx) {
+					return true
+				}
+				return false
+			},
+		},
 	{
 		Name:  "discarded setup error (_ = xxx.Method())",
 		Regex: regexp.MustCompile(`^\s*_ = .*\.(Scan|Exec|Close|Unmarshal|Marshal|Query|Open|Begin|Commit|Write|Read|Insert|Delete|Update|WriteTokens|ReadTokens|WriteClientConfig|ReadClientConfig|SaveTokens|Release|Wait)\(`),

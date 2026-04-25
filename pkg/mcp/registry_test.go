@@ -71,7 +71,7 @@ func TestRegistry_ConnectAll_Empty(t *testing.T) {
 }
 
 func TestRegistry_ConnectAll_Disabled(t *testing.T) {
-	r, p := newTestRegistry(ChangeCallbacks{})
+	r, _ := newTestRegistry(ChangeCallbacks{})
 	defer r.Close()
 
 	cfg := ScopedMcpServerConfig{
@@ -95,7 +95,6 @@ func TestRegistry_ConnectAll_Disabled(t *testing.T) {
 	if conn.ConnType() != "disabled" {
 		t.Errorf("expected disabled, got %s", conn.ConnType())
 	}
-	_ = p // suppress unused warning
 }
 
 func TestRegistry_ConnectAll_WithEnabledDisabled(t *testing.T) {
@@ -255,7 +254,7 @@ func TestRegistry_ConnectAll_ReconnectExisting(t *testing.T) {
 }
 
 func TestRegistry_ConnectAll_RemovesStaleConfigs(t *testing.T) {
-	r, p := newTestRegistry(ChangeCallbacks{})
+	r, _ := newTestRegistry(ChangeCallbacks{})
 	defer r.Close()
 
 	cfg1 := ScopedMcpServerConfig{
@@ -305,7 +304,6 @@ func TestRegistry_ConnectAll_RemovesStaleConfigs(t *testing.T) {
 	if _, ok := configs["new"]; !ok {
 		t.Error("expected 'new' config")
 	}
-	_ = p // suppress unused warning
 }
 
 // ---------------------------------------------------------------------------
@@ -487,11 +485,11 @@ func TestRegistry_ToggleServer_Enable(t *testing.T) {
 
 	// Toggle to enable - will try to reconnect and fail
 	err := r.ToggleServer(context.Background(), "test")
-	// Reconnect fails because provider fails, but that's OK
-	// The important part is that disabled flag is cleared
-	// err may be nil (reconnect succeeded) or non-nil (provider fails).
-	// Either way, the disabled flag should be cleared.
-	_ = err
+	// Reconnect may fail because provider is configured to fail.
+	// The key invariant is tested below: the disabled flag must be cleared.
+	if err != nil {
+		t.Logf("ToggleServer returned error (acceptable, provider fails): %v", err)
+	}
 
 	r.mu.RLock()
 	disabled := r.disabled["test"]
@@ -814,7 +812,7 @@ func TestRegistry_ScheduleReconnect_CancelsExistingTimer(t *testing.T) {
 }
 
 func TestRegistry_ScheduleReconnect_AfterClose(t *testing.T) {
-	r, p := newTestRegistry(ChangeCallbacks{})
+	r, _ := newTestRegistry(ChangeCallbacks{})
 
 	r.mu.Lock()
 	r.configs["remote"] = ScopedMcpServerConfig{
@@ -834,7 +832,6 @@ func TestRegistry_ScheduleReconnect_AfterClose(t *testing.T) {
 	if hasTimer {
 		t.Error("expected no timer after close")
 	}
-	_ = p // suppress unused warning
 }
 
 // ---------------------------------------------------------------------------

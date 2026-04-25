@@ -164,7 +164,6 @@ func TestFileTokenStore_DirectoryPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileTokenStore: %v", err)
 	}
-	_ = store
 
 	info, err := os.Stat(storeDir)
 	if err != nil {
@@ -4402,8 +4401,7 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 	// Expect state mismatch error
 	select {
 	case result := <-resultChan:
-		// Unexpected success
-		_ = result
+		t.Errorf("expected state mismatch error, got unexpected success: %+v", result)
 	case err := <-errChan:
 		if !strings.Contains(err.Error(), "state mismatch") {
 			t.Errorf("expected state mismatch error, got: %v", err)

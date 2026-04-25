@@ -1009,9 +1009,14 @@ func TestBackgroundTask_StartStallWatchdog_WithNotification(t *testing.T) {
 		t.Fatal("cancelStall should be set")
 	}
 	task.cancelStall()
-	_ = received
-}
+	// After immediate cancel, the watchdog goroutine exits before the
+	// stall interval elapses, so onNotify is never called and received
+	// stays zero-valued — that is the expected outcome.
+	if received != (TaskNotification{}) {
+		t.Errorf("received = %+v, want zero-value (watchdog cancelled before stall)", received)
+	}
 
+}
 // ---------------------------------------------------------------------------
 // IsTerminalTaskStatus
 // ---------------------------------------------------------------------------

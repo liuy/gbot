@@ -58,8 +58,7 @@ func TestHandleSwitch_NewSessionNoTitle(t *testing.T) {
 	a, _ := newSessionTestApp(t)
 	oldSessionID := a.sessionID
 
-	cmd := a.handleSession("-n", nil)
-	_ = cmd
+	_ = a.handleSession("-n", nil)
 
 	if a.sessionID == oldSessionID {
 		t.Error("expected session ID to change")
@@ -79,8 +78,7 @@ func TestHandleSwitch_NewSessionNoTitle(t *testing.T) {
 func TestHandleSwitch_NewSessionWithTitle(t *testing.T) {
 	a, store := newSessionTestApp(t)
 
-	cmd := a.handleSession("-n My New Session", nil)
-	_ = cmd
+	_ = a.handleSession("-n My New Session", nil)
 
 	// Verify session was created with title
 	sessions, err := store.ListSessions(a.projectDir, 100)
@@ -138,8 +136,7 @@ func TestHandleSwitch_ForkSuccess(t *testing.T) {
 	}
 
 	// Fork
-	cmd := a.handleSession("fork-title", nil)
-	_ = cmd
+	_ = a.handleSession("fork-title", nil)
 
 	if a.sessionID == "" {
 		t.Error("expected session ID after fork")
@@ -232,8 +229,7 @@ func TestHandleClear_Success(t *testing.T) {
 	a.scrollOffset = 42
 	a.committedCount = 1
 
-	cmd := a.handleClear(nil)
-	_ = cmd
+	_ = a.handleClear(nil)
 
 	// Session ID should change
 	if a.sessionID == oldSessionID {

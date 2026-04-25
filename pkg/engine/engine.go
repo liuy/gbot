@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
@@ -95,6 +96,10 @@ type Engine struct {
 
 	// mcpRegistry manages MCP server connections and tool discovery.
 	mcpRegistry *mcp.Registry
+
+	// hooks is the user-configurable lifecycle hooks system.
+	// Nil when no hooks are configured.
+	hooks *hooks.Hooks
 }
 
 // Params holds the constructor arguments for Engine.
@@ -110,6 +115,7 @@ type Params struct {
 	Compactor     Compactor
 	AutoCompact   AutoCompactConfig
 	MCPRegistry   *mcp.Registry
+	Hooks         *hooks.Hooks
 }
 
 // QueryResult is the final result of a query.
@@ -184,6 +190,7 @@ func New(p *Params) *Engine {
 		compactor:         p.Compactor,
 		autoCompactConfig: p.AutoCompact,
 		mcpRegistry:       p.MCPRegistry,
+		hooks:             p.Hooks,
 	}
 }
 
@@ -212,6 +219,7 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt jso
 	go func() {
 		defer close(eventCh)
 		defer close(resultCh)
+
 		result := e.queryLoop(ctx, userMessage, systemPrompt, eventCh)
 		resultCh <- result
 	}()
@@ -340,6 +348,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Proactive auto-compact: check before API call.
 		// TS align: query.ts:453-468 — deps.autocompact() before API.
 		if e.shouldAutoCompact() {
+				e.fireCompactHooks(ctx, "auto", "pre")
 			compacted, err := e.compactor.Compact(ctx, e.Messages())
 			if err != nil {
 				e.mu.Lock()
@@ -395,9 +404,11 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				// must not retry on overflow — they'd deadlock.
 				src := e.querySource()
 				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
+					e.fireCompactHooks(ctx, "auto", "pre")
 					compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
 					if compactErr == nil {
 						e.setMessages(compacted)
+					e.fireCompactHooks(ctx, "auto", "post")
 						e.mu.Lock()
 						e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
 						e.mu.Unlock()
@@ -463,6 +474,21 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 				continue
 			}
+
+			// Stop/SubagentStop hook — blocking result gives LLM another turn.
+			// Source: stopHooks.ts — handleStopHooks.
+			if blockResult := e.runStopHook(ctx); blockResult != nil {
+				e.logger.Info("stop hook blocked, continuing turn")
+				e.appendMessage(types.Message{
+					Role: types.RoleUser,
+					Content: []types.ContentBlock{
+						types.NewTextBlock("[hook] " + blockResult.Stderr),
+					},
+				})
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+				e.turnCount++
+				continue
+			}
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
@@ -510,8 +536,47 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	}
 }
 
+// runStopHook calls the Stop or SubagentStop hook.
+// Returns non-nil if any hook blocks (exit 2), giving the LLM another turn.
+// Source: stopHooks.ts — handleStopHooks.
+func (e *Engine) runStopHook(ctx context.Context) *hooks.HookResult {
+	if e.hooks == nil {
+		return nil
+	}
+	input := &hooks.HookInput{
+		HookEventName: string(hooks.HookStop),
+		SessionID:     e.sessionID,
+	}
+	if e.isSubagent {
+		input.HookEventName = string(hooks.HookSubagentStop)
+		input.AgentType = e.agentType
+		return e.hooks.SubagentStop(ctx, input)
+	}
+	return e.hooks.Stop(ctx, input)
+}
+
 // callLLM sends the messages to the LLM and collects the full response.
 // Source: query.ts — streaming API call accumulation.
+
+// fireCompactHooks fires PreCompact and PostCompact hooks around compaction.
+// Hooks are best-effort — errors are logged but don't prevent compact.
+func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase string) {
+	if e.hooks == nil {
+		return
+	}
+	input := &hooks.HookInput{
+		SessionID: e.sessionID,
+		Trigger:   trigger,
+	}
+	switch phase {
+	case "pre":
+		input.HookEventName = string(hooks.HookPreCompact)
+		e.hooks.PreCompact(ctx, input)
+	case "post":
+		input.HookEventName = string(hooks.HookPostCompact)
+		e.hooks.PostCompact(ctx, input)
+	}
+}
 func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 	// Build tool definitions for API
@@ -741,6 +806,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							func(evt types.QueryEvent) { e.emitEvent(eventCh, evt) },
 							ctx,
 						)
+					streamingExecutor.SetHooks(e.hooks, e.sessionID)
 					}
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolRun,
@@ -1076,6 +1142,13 @@ func (e *Engine) AllTools() map[string]tool.Tool {
 
 // Close shuts down the engine and its MCP registry.
 func (e *Engine) Close() {
+	// SessionEnd hook — runs before MCP shutdown.
+	if e.hooks != nil {
+		_ = e.hooks.SessionEnd(context.Background(), &hooks.HookInput{
+			HookEventName: string(hooks.HookSessionEnd),
+			SessionID:     e.sessionID,
+		})
+	}
 	if e.mcpRegistry != nil {
 		_ = e.mcpRegistry.Close()
 	}
@@ -1265,6 +1338,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		compactor:         e.compactor,
 		autoCompactConfig: e.autoCompactConfig,
 		mcpRegistry:       e.mcpRegistry,
+		hooks:             e.hooks,
 	}
 }
 

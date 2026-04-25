@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -80,6 +81,10 @@ type StreamingToolExecutor struct {
 	hasErrored  bool
 	errToolDesc string
 	discarded   bool
+
+	// hooks is the lifecycle hooks system for PreToolUse/PostToolUse.
+	hooks     *hooks.Hooks
+	sessionID string // session ID for hook input construction
 }
 
 // NewStreamingToolExecutor creates a new concurrent tool executor.
@@ -111,6 +116,13 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.messages = messages
+}
+
+// SetHooks injects the hooks system into the executor.
+// Called from engine.go after construction.
+func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
+	e.hooks = h
+	e.sessionID = sessionID
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +447,33 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// so we always create a fresh copy with tt.ID set.
 	toolCtx := e.buildToolCtx(tt.ID)
 
+		// PreToolUse hook — blocking result prevents tool execution.
+		// Source: toolHooks.ts:435 — runPreToolUseHooks.
+		if e.hooks != nil {
+			hookInput := &hooks.HookInput{
+				HookEventName: string(hooks.HookPreToolUse),
+				SessionID:     e.sessionID,
+				ToolName:      tt.Name,
+				ToolInput:     tt.Input,
+				ToolUseID:     tt.ID,
+			}
+			decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
+			if decision == hooks.HookDecisionBlock {
+				errMsg := "blocked by hook"
+				e.doEmit(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     tt.ID,
+						Output:        []byte(errMsg),
+						DisplayOutput: errMsg,
+						IsError:       true,
+					},
+				})
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+				return
+			}
+		}
+
 	// Try streaming execution first (ToolWithStreaming interface).
 	// Source: StreamingToolExecutor.ts:320-382 — runToolUse generator.
 	if streamer, ok := t.(tool.ToolWithStreaming); ok {
@@ -482,6 +521,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			tt.newMessages = result.NewMessages
 		}
 		e.applyContextModifier(tt, result)
+		e.firePostToolUseHook(tt, false)
 		return
 	}
 
@@ -519,6 +559,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		tt.newMessages = result.NewMessages
 	}
 	e.applyContextModifier(tt, result)
+	e.firePostToolUseHook(tt, false)
 }
 
 // truncateToolOutput truncates tool output if it exceeds maxChars.
@@ -553,6 +594,7 @@ func marshalToolOutput(t tool.Tool, data any, doubleWrap bool) []byte {
 // emitToolError emits error events and result blocks for a failed tool.
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
 func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapsed time.Duration) {
+	e.firePostToolUseHook(tt, true)
 	errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
@@ -582,6 +624,26 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 // The executor-level tctx is shared and may be nil (created inline during callLLM).
 // Each tool needs its own context with its specific ID for identity-aware operations
 // (e.g., Agent tool needs ToolUseID to tag sub-agent events via ParentToolUseID).
+
+// firePostToolUseHook fires PostToolUse or PostToolUseFailure hook.
+func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError bool) {
+	if e.hooks == nil {
+		return
+	}
+	hookInput := &hooks.HookInput{
+		SessionID: e.sessionID,
+		ToolName:  tt.Name,
+		ToolInput: tt.Input,
+		ToolUseID: tt.ID,
+	}
+	if isError {
+		hookInput.HookEventName = string(hooks.HookPostToolUseFailure)
+		e.hooks.PostToolUseFailure(e.siblingCtx, hookInput)
+	} else {
+		hookInput.HookEventName = string(hooks.HookPostToolUse)
+		e.hooks.PostToolUse(e.siblingCtx, hookInput)
+	}
+}
 func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *types.ToolUseContext {
 	e.mu.Lock()
 	msgs := e.messages
