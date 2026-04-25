@@ -16,9 +16,6 @@ func TestDefaultConfig(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 
-	if cfg.BaseURL != "https://api.anthropic.com" {
-		t.Errorf("expected BaseURL 'https://api.anthropic.com', got %s", cfg.BaseURL)
-	}
 	if cfg.PermissionMode != types.PermissionModeDefault {
 		t.Errorf("expected PermissionModeDefault, got %s", cfg.PermissionMode)
 	}
@@ -404,12 +401,6 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 	}
 
 	defaults := config.DefaultConfig()
-	if cfg.APIKey != defaults.APIKey {
-		t.Errorf("expected default APIKey, got %s", cfg.APIKey)
-	}
-	if cfg.BaseURL != defaults.BaseURL {
-		t.Errorf("expected default BaseURL, got %s", cfg.BaseURL)
-	}
 	if cfg.Model != "pro" {
 		t.Errorf("expected Model pro, got %s", cfg.Model)
 	}

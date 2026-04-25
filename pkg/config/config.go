@@ -16,9 +16,6 @@ import (
 
 // Config holds the full application configuration.
 type Config struct {
-	APIKey     string `json:"api_key,omitempty"`
-	BaseURL    string `json:"base_url,omitempty"`
-
 	// Multi-provider configuration
 	Model     string     `json:"model,omitempty"`      // "provider/tier" e.g. "zhipu/pro", empty → providers[0]/pro
 	Providers []Provider `json:"providers,omitempty"`  // ordered by priority, providers[0] is primary
@@ -113,7 +110,6 @@ func (p *Provider) ModelFor(tier Tier) string {
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		BaseURL:        "https://api.anthropic.com",
 		PermissionMode: types.PermissionModeDefault,
 		APITimeoutMS:   300000,
 	}
