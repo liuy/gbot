@@ -11,14 +11,13 @@ func TestDefaultCapabilities(t *testing.T) {
 		model                 string
 		wantContext, wantMax  int
 	}{
-		{"glm-5", 128000, 4096},
-		{"glm-5.1", 128000, 4096},
-		{"glm-5-turbo", 128000, 4096},
-		{"glm-4.5", 128000, 4096},
-		{"glm-4.6", 128000, 4096},
-		{"minimax-2.7", 128000, 4096},
-		{"unknown-model", 200000, 16000},
-		{"claude-sonnet-4-6", 200000, 16000},
+		{"glm-5", 200 * 1024, 128 * 1024},
+		{"glm-5.1", 200 * 1024, 128 * 1024},
+		{"glm-5-turbo", 200 * 1024, 128 * 1024},
+		{"glm-4.7", 200 * 1024, 128 * 1024},
+		{"minimax-2.7", 200 * 1024, 128 * 1024},
+		{"unknown-model", 200 * 1024, 16 * 1024},
+		{"claude-sonnet-4-6", 200 * 1024, 16 * 1024},
 	}
 
 	for _, tc := range tests {
@@ -56,11 +55,11 @@ func TestResolveCapabilities_FallbackToDefault(t *testing.T) {
 
 	p := &Provider{} // no config values
 	cw, mt := p.ResolveCapabilities("glm-5")
-	if cw != 128000 {
-		t.Errorf("fallback contextWindow = %d, want 128000", cw)
+	if cw != 200*1024 {
+		t.Errorf("fallback contextWindow = %d, want %d", cw, 200*1024)
 	}
-	if mt != 4096 {
-		t.Errorf("fallback maxTokens = %d, want 4096", mt)
+	if mt != 128*1024 {
+		t.Errorf("fallback maxTokens = %d, want %d", mt, 128*1024)
 	}
 }
 
@@ -72,7 +71,7 @@ func TestResolveCapabilities_PartialOverride(t *testing.T) {
 	if cw != 64000 {
 		t.Errorf("partial override contextWindow = %d, want 64000", cw)
 	}
-	if mt != 4096 {
-		t.Errorf("fallback maxTokens = %d, want 4096", mt)
+	if mt != 128*1024 {
+		t.Errorf("fallback maxTokens = %d, want %d", mt, 128*1024)
 	}
 }

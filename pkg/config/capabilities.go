@@ -9,17 +9,17 @@ import "strings"
 func DefaultCapabilities(model string) (contextWindow, maxTokens int) {
 	switch {
 	case strings.HasPrefix(model, "glm-5.1"):
-		return 128000, 4096
+		return 200 * 1024, 128 * 1024
 	case strings.HasPrefix(model, "glm-5-turbo"):
-		return 128000, 4096
+		return 200 * 1024, 128 * 1024
 	case strings.HasPrefix(model, "glm-5"):
-		return 128000, 4096
+		return 200 * 1024, 128 * 1024
 	case strings.HasPrefix(model, "glm-4"):
-		return 128000, 4096
+		return 200 * 1024, 128 * 1024
 	case strings.HasPrefix(model, "minimax-2"):
-		return 128000, 4096
+		return 200 * 1024, 128 * 1024
 	default:
-		return 200000, 16000
+		return 200 * 1024, 16 * 1024
 	}
 }
 
