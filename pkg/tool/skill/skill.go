@@ -103,12 +103,49 @@ func New(registry *skills.Registry) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Execute skill", nil
 			}
-			return "Execute skill: " + in.Skill, nil
+			// Show just the skill name (TS: UI.tsx:47-61 — renderToolUseMessage)
+			return in.Skill, nil
 		},
 		Call_: makeSkillCallFn(registry),
 		CheckPermissions_: makeSkillPermissionsFn(registry),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
+		// Wire format: what the LLM sees as tool_result content.
+		// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
+		FormatWireResult_: func(data any) string {
+			out, ok := data.(skillOutput)
+			if !ok {
+				return fmt.Sprintf("%v", data)
+			}
+			if out.Status == "forked" {
+				return fmt.Sprintf("Skill \"%s\" completed (forked execution).\n\nResult:\n%s", out.CommandName, out.Result)
+			}
+			return "Launching skill: " + out.CommandName
+		},
+		// TUI render: what the user sees in the terminal.
+		// Source: UI.tsx:20-46 — renderToolResultMessage
+		RenderResult_: func(data any) string {
+			out, ok := data.(skillOutput)
+			if !ok {
+				return fmt.Sprintf("%v", data)
+			}
+			if out.Status == "forked" {
+				return "Done"
+			}
+			parts := []string{"Successfully loaded skill"}
+			if len(out.AllowedTools) > 0 {
+				n := len(out.AllowedTools)
+				t := "tool"
+				if n != 1 {
+					t = "tools"
+				}
+				parts = append(parts, fmt.Sprintf("%d %s allowed", n, t))
+			}
+			if out.Model != "" {
+				parts = append(parts, out.Model)
+			}
+			return strings.Join(parts, " · ")
+		},
 	})
 }
 

@@ -599,3 +599,117 @@ func TestFormatCommandLoadingMetadata_FallbackWithArgs(t *testing.T) {
 		t.Errorf("fallback should include args, got %q", result)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FormatWireResult + RenderResult tests
+// Source: SkillTool.ts:843-861 (mapToolResultToToolResultBlockParam)
+// Source: UI.tsx:20-46 (renderToolResultMessage)
+// ---------------------------------------------------------------------------
+
+func TestTool_FormatWireResult_Inline(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+	wf, ok := tk.(interface{ FormatWireResult(data any) string })
+	if !ok {
+		t.Fatal("SkillTool should implement ToolWithWireFormat")
+	}
+
+	out := skillOutput{
+		Success:     true,
+		CommandName: "roast",
+		Status:      "inline",
+	}
+	got := wf.FormatWireResult(out)
+	want := "Launching skill: roast"
+	if got != want {
+		t.Errorf("FormatWireResult(inline) = %q, want %q", got, want)
+	}
+}
+
+func TestTool_FormatWireResult_Forked(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+	wf, ok := tk.(interface{ FormatWireResult(data any) string })
+	if !ok {
+		t.Fatal("SkillTool should implement ToolWithWireFormat")
+	}
+
+	out := skillOutput{
+		Success:     true,
+		CommandName: "review",
+		Status:      "forked",
+		Result:      "LGTM",
+	}
+	got := wf.FormatWireResult(out)
+	if !strings.Contains(got, `Skill "review" completed (forked execution)`) {
+		t.Errorf("FormatWireResult(forked) should contain forked message, got %q", got)
+	}
+	if !strings.Contains(got, "LGTM") {
+		t.Errorf("FormatWireResult(forked) should contain result, got %q", got)
+	}
+}
+
+func TestTool_RenderResult_Inline(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+
+	got := tk.RenderResult(skillOutput{
+		Success:     true,
+		CommandName: "commit",
+		Status:      "inline",
+	})
+	if !strings.Contains(got, "Successfully loaded skill") {
+		t.Errorf("RenderResult should contain 'Successfully loaded skill', got %q", got)
+	}
+}
+
+func TestTool_RenderResult_WithToolsAndModel(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+
+	got := tk.RenderResult(skillOutput{
+		Success:      true,
+		CommandName:  "danger",
+		Status:       "inline",
+		AllowedTools: []string{"Bash", "Read", "Write"},
+		Model:        "haiku",
+	})
+	if !strings.Contains(got, "Successfully loaded skill") {
+		t.Errorf("should contain base message, got %q", got)
+	}
+	if !strings.Contains(got, "3 tools allowed") {
+		t.Errorf("should contain tool count, got %q", got)
+	}
+	if !strings.Contains(got, "haiku") {
+		t.Errorf("should contain model, got %q", got)
+	}
+}
+
+func TestTool_RenderResult_SingleTool(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+
+	got := tk.RenderResult(skillOutput{
+		Success:      true,
+		CommandName:  "limited",
+		Status:       "inline",
+		AllowedTools: []string{"Read"},
+	})
+	if !strings.Contains(got, "1 tool allowed") {
+		t.Errorf("should say '1 tool allowed', got %q", got)
+	}
+}
+
+func TestTool_RenderResult_Forked(t *testing.T) {
+	reg := setupRegistry(t)
+	tk := New(reg)
+
+	got := tk.RenderResult(skillOutput{
+		Success:     true,
+		CommandName: "review",
+		Status:      "forked",
+	})
+	if got != "Done" {
+		t.Errorf("RenderResult(forked) = %q, want %q", got, "Done")
+	}
+}

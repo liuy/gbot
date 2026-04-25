@@ -202,6 +202,11 @@ type ToolDef struct {
 	// Optional streaming support
 	// If set, BuildTool returns a tool that also implements ToolWithStreaming.
 	ExecuteStream_ func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
+
+	// Optional wire format override for tool_result content sent to the LLM.
+	// If set, BuildTool returns a tool that also implements ToolWithWireFormat.
+	// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
+	FormatWireResult_ func(data any) string
 }
 
 // builtTool wraps a ToolDef with defaults applied.
@@ -214,8 +219,17 @@ type builtStreamingTool struct {
 	builtTool
 }
 
+// builtWireFormatTool wraps a ToolDef and implements ToolWithWireFormat.
+type builtWireFormatTool struct {
+	builtTool
+}
+
 func (t *builtStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 	return t.def.ExecuteStream_(ctx, input, tctx, onProgress)
+}
+
+func (t *builtWireFormatTool) FormatWireResult(data any) string {
+	return t.def.FormatWireResult_(data)
 }
 
 // BuildTool fills defaults and returns a Tool interface.
@@ -250,6 +264,9 @@ func BuildTool(def ToolDef) Tool {
 	}
 	if def.ExecuteStream_ != nil {
 		return &builtStreamingTool{builtTool{def: def}}
+	}
+	if def.FormatWireResult_ != nil {
+		return &builtWireFormatTool{builtTool{def: def}}
 	}
 	return &builtTool{def: def}
 }

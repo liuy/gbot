@@ -2128,3 +2128,76 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 		t.Fatalf("sub-agent should complete despite blocking limit, got %s", result.Terminal)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// BuildTool with FormatWireResult_ — verifies ToolWithWireFormat via BuildTool factory
+// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
+// ---------------------------------------------------------------------------
+
+func TestMarshalToolOutput_BuildToolWithWireFormat(t *testing.T) {
+	t.Parallel()
+
+	tk := tool.BuildTool(tool.ToolDef{
+		Name_:        "WireFactory",
+		Call_:        func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return nil },
+		Description_: func(json.RawMessage) (string, error) { return "", nil },
+		FormatWireResult_: func(data any) string {
+			return "wire: " + fmt.Sprint(data)
+		},
+	})
+
+	// Verify the tool implements ToolWithWireFormat
+	wf, ok := tk.(tool.ToolWithWireFormat)
+	if !ok {
+		t.Fatal("BuildTool with FormatWireResult_ should implement ToolWithWireFormat")
+	}
+
+	// Verify FormatWireResult works
+	got := wf.FormatWireResult("test")
+	if got != "wire: test" {
+		t.Errorf("FormatWireResult = %q, want %q", got, "wire: test")
+	}
+
+	// Verify marshalToolOutput uses it
+	output := marshalToolOutput(tk, "test-data", true)
+	var decoded string
+	if err := json.Unmarshal(output, &decoded); err != nil {
+		t.Fatalf("wire format output should be a JSON string, got %q: %v", string(output), err)
+	}
+	if decoded != "wire: test-data" {
+		t.Errorf("decoded = %q, want %q", decoded, "wire: test-data")
+	}
+}
+
+func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
+	t.Parallel()
+
+	// Standard tool without FormatWireResult_ uses double-wrapped JSON
+	tk := tool.BuildTool(tool.ToolDef{
+		Name_:        "DefaultFactory",
+		Call_:        func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return nil },
+		Description_: func(json.RawMessage) (string, error) { return "", nil },
+	})
+
+	// Should NOT implement ToolWithWireFormat
+	if _, ok := tk.(tool.ToolWithWireFormat); ok {
+		t.Error("BuildTool without FormatWireResult_ should NOT implement ToolWithWireFormat")
+	}
+
+	// Default double-wrapped JSON
+	data := map[string]string{"key": "value"}
+	output := marshalToolOutput(tk, data, true)
+	var outer string
+	if err := json.Unmarshal(output, &outer); err != nil {
+		t.Fatalf("default output should be a JSON string, got %q: %v", string(output), err)
+	}
+	var inner map[string]string
+	if err := json.Unmarshal([]byte(outer), &inner); err != nil {
+		t.Fatalf("inner should be a JSON object, got %q: %v", outer, err)
+	}
+	if inner["key"] != "value" {
+		t.Errorf("inner[key] = %q, want %q", inner["key"], "value")
+	}
+}
