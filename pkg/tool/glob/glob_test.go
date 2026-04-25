@@ -24,8 +24,8 @@ func TestNew(t *testing.T) {
 
 	tt := glob.New()
 
-	if tt.Name() != "Find" {
-		t.Errorf("Name() = %q, want %q", tt.Name(), "Find")
+	if tt.Name() != "Glob" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Glob")
 	}
 	if !tt.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = false, want true")

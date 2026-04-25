@@ -38,8 +38,8 @@ func TestCompactableTools(t *testing.T) {
 	expected := map[string]bool{
 		"Read":   true,
 		"Bash":   true,
-		"Search": true,
-		"Find":   true,
+		"Grep": true,
+		"Glob": true,
 		"Edit":   true,
 		"Write":  true,
 	}
@@ -48,8 +48,8 @@ func TestCompactableTools(t *testing.T) {
 			t.Errorf("compactableTools missing %q", name)
 		}
 	}
-	// Must NOT contain TS names that differ in gbot
-	notExpected := []string{"Grep", "Glob", "WebSearch", "WebFetch"}
+	// Must NOT contain tools that gbot does not implement
+	notExpected := []string{"WebSearch", "WebFetch"}
 	for _, name := range notExpected {
 		if compactableTools[name] {
 			t.Errorf("compactableTools should not contain %q", name)

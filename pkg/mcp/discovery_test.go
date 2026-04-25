@@ -827,7 +827,7 @@ func TestClassifyMcpToolForCollapse(t *testing.T) {
 		isRead     bool
 	}{
 		{"server", "search", true, false},
-		{"server", "Search", true, false},
+		{"server", "Grep", true, false},
 		{"server", "search_files", true, false},
 		{"server", "grep", true, false},
 		{"server", "find", true, false},

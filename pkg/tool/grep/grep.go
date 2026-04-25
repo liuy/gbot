@@ -144,7 +144,7 @@ func New() tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "Search",
+		Name_:        "Grep",
 		Aliases_:     []string{"grep"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {

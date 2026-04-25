@@ -213,8 +213,8 @@ func TestNew_ReturnsValidTool(t *testing.T) {
 	if g == nil {
 		t.Fatal("New() returned nil")
 	}
-	if g.Name() != "Search" {
-		t.Errorf("Name() = %q, want %q", g.Name(), "Search")
+	if g.Name() != "Grep" {
+		t.Errorf("Name() = %q, want %q", g.Name(), "Grep")
 	}
 	aliases := g.Aliases()
 	if len(aliases) != 1 || aliases[0] != "grep" {
