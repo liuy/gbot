@@ -383,3 +383,219 @@ func TestTool_Prompt(t *testing.T) {
 		t.Errorf("prompt should contain blocking requirement, got first 100 chars: %q", prompt[:100])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional skill.go coverage
+// ---------------------------------------------------------------------------
+
+func TestArgNames_WithArgs(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{
+		Arguments: []types.SkillArgument{
+			{Name: "file"},
+			{Name: "pattern"},
+		},
+	}
+	names := argNames(cmd)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(names))
+	}
+	if names[0] != "file" {
+		t.Errorf("names[0] = %q, want %q", names[0], "file")
+	}
+	if names[1] != "pattern" {
+		t.Errorf("names[1] = %q, want %q", names[1], "pattern")
+	}
+}
+
+func TestArgNames_Empty(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{}
+	names := argNames(cmd)
+	if names != nil {
+		t.Errorf("empty args should return nil, got %v", names)
+	}
+}
+
+func TestSkillHasOnlySafeProperties_WithShell(t *testing.T) {
+	t.Parallel()
+
+	shell := "bash"
+	cmd := &types.SkillCommand{Shell: &shell}
+	if skillHasOnlySafeProperties(cmd) {
+		t.Error("skill with Shell should be unsafe")
+	}
+}
+
+func TestFormatCommandLoadingMetadata_SkillFormat(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{
+		Name:            "internal-skill",
+		IsUserInvocable: false,
+		LoadedFrom:      "skills",
+	}
+	result := formatCommandLoadingMetadata(cmd, "")
+	if !strings.Contains(result, "<skill-format>true</skill-format>") {
+		t.Errorf("model-only skill should have skill-format tag, got %q", result)
+	}
+	if !strings.Contains(result, "<command-name>internal-skill</command-name>") {
+		t.Errorf("should contain command-name without slash, got %q", result)
+	}
+	if strings.Contains(result, "<command-name>/") {
+		t.Errorf("model-only skill should not have slash in command-name, got %q", result)
+	}
+}
+
+func TestFormatCommandLoadingMetadata_FallbackSlashFormat(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{
+		Name:            "fallback",
+		IsUserInvocable: false,
+		LoadedFrom:      "other",
+	}
+	result := formatCommandLoadingMetadata(cmd, "")
+	if !strings.Contains(result, "<command-name>/fallback</command-name>") {
+		t.Errorf("fallback should use slash format, got %q", result)
+	}
+}
+
+func TestMakeSkillCallFn_InvalidJSON(t *testing.T) {
+	reg := skills.NewRegistry(t.TempDir())
+	callFn := makeSkillCallFn(reg)
+
+	_, err := callFn(context.TODO(), json.RawMessage(`{invalid`), nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid input") {
+		t.Errorf("error should mention invalid input, got %q", err.Error())
+	}
+}
+
+func TestMakeSkillCallFn_StripLeadingSlash(t *testing.T) {
+	reg := setupRegistry(t)
+	callFn := makeSkillCallFn(reg)
+
+	input := json.RawMessage(`{"skill": "/commit"}`)
+	result, err := callFn(context.TODO(), input, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data := result.Data.(skillOutput)
+	if data.CommandName != "commit" {
+		t.Errorf("should strip leading slash, got %q", data.CommandName)
+	}
+}
+
+func TestExecuteInlineSkill_WithPermissions(t *testing.T) {
+	reg := skills.NewRegistry(t.TempDir())
+	cmd := &types.SkillCommand{
+		Name:            "danger",
+		Description:     "Dangerous skill",
+		Type:            "prompt",
+		Source:          types.SkillSourceUser,
+		LoadedFrom:      "skills",
+		IsUserInvocable: true,
+		AllowedTools:    []string{"Bash", "Read"},
+		Model:           "haiku",
+		Content:         "Do something dangerous.",
+	}
+
+	result, err := executeInlineSkill(cmd, "danger", "", reg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data := result.Data.(skillOutput)
+	if !data.Success {
+		t.Error("expected success")
+	}
+	if len(data.AllowedTools) != 2 {
+		t.Errorf("AllowedTools = %v, want 2 items", data.AllowedTools)
+	}
+	if data.Model != "haiku" {
+		t.Errorf("Model = %q, want %q", data.Model, "haiku")
+	}
+
+	// Should have 3 messages: metadata + content + permissions
+	if len(result.NewMessages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result.NewMessages))
+	}
+
+	// Third message should contain permissions XML
+	permsMsg := result.NewMessages[2]
+	if !strings.Contains(permsMsg.Content[0].Text, "<command-permissions>") {
+		t.Errorf("third message should contain permissions, got %q", permsMsg.Content[0].Text)
+	}
+}
+
+func TestMakeSkillPermissionsFn_InvalidJSON(t *testing.T) {
+	reg := skills.NewRegistry(t.TempDir())
+	permFn := makeSkillPermissionsFn(reg)
+
+	result := permFn(json.RawMessage(`{invalid`), nil)
+	_, ok := result.(types.PermissionAllowDecision)
+	if !ok {
+		t.Errorf("invalid JSON should auto-allow, got %T", result)
+	}
+}
+
+func TestMakeSkillPermissionsFn_SkillNotFound(t *testing.T) {
+	reg := skills.NewRegistry(t.TempDir())
+	permFn := makeSkillPermissionsFn(reg)
+
+	result := permFn(json.RawMessage(`{"skill": "nonexistent"}`), nil)
+	_, ok := result.(types.PermissionAskDecision)
+	if !ok {
+		t.Errorf("unknown skill should ask permission, got %T", result)
+	}
+}
+
+func TestNew_DescriptionInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry(t.TempDir())
+	tool := New(reg)
+
+	// Description with invalid JSON should return fallback
+	desc, err := tool.Description(json.RawMessage(`{invalid`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc != "Execute skill" {
+		t.Errorf("fallback description = %q, want %q", desc, "Execute skill")
+	}
+}
+
+func TestNew_IsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry(t.TempDir())
+	tool := New(reg)
+
+	if !tool.IsReadOnly(json.RawMessage(`{}`)) {
+		t.Error("SkillTool should be read-only")
+	}
+}
+
+func TestFormatCommandLoadingMetadata_FallbackWithArgs(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{
+		Name:            "fallback",
+		IsUserInvocable: false,
+		LoadedFrom:      "other",
+	}
+	result := formatCommandLoadingMetadata(cmd, "some args")
+	if !strings.Contains(result, "<command-name>/fallback</command-name>") {
+		t.Errorf("fallback should use slash format, got %q", result)
+	}
+	if !strings.Contains(result, "<command-args>some args</command-args>") {
+		t.Errorf("fallback should include args, got %q", result)
+	}
+}

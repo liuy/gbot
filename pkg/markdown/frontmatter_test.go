@@ -205,3 +205,36 @@ func TestParseFrontmatter_FailOpenOnCompletelyBrokenYAML(t *testing.T) {
 		t.Errorf("expected empty frontmatter on broken YAML, got %v", result.Frontmatter)
 	}
 }
+
+func TestParseYAML_EmptyInput(t *testing.T) {
+	result, err := parseYAML("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result should not be nil for empty YAML")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty map for empty YAML, got %v", result)
+	}
+}
+
+func TestParseYAML_ValidInput(t *testing.T) {
+	result, err := parseYAML("name: test\nvalue: 42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result["name"] != "test" {
+		t.Errorf("name = %v, want 'test'", result["name"])
+	}
+}
+
+func TestParseYAML_InvalidInput(t *testing.T) {
+	_, err := parseYAML(": [broken: {")
+	if err == nil {
+		t.Fatal("expected error for invalid YAML")
+	}
+	if !strings.Contains(err.Error(), "yaml") {
+		t.Errorf("error should mention yaml, got %v", err)
+	}
+}

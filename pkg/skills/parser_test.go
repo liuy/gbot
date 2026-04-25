@@ -348,3 +348,262 @@ func TestParseSkill_SourceToLoadedFrom(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Helper function coverage
+// ---------------------------------------------------------------------------
+
+func TestStringField_NonStringTypes(t *testing.T) {
+	t.Parallel()
+
+	fm := map[string]any{
+		"str":   "hello",
+		"int":   42,
+		"float": 3.14,
+		"other": []string{"a", "b"},
+	}
+
+	if got := stringField(fm, "str"); got != "hello" {
+		t.Errorf("string: got %q, want %q", got, "hello")
+	}
+	if got := stringField(fm, "int"); got != "42" {
+		t.Errorf("int: got %q, want %q", got, "42")
+	}
+	if got := stringField(fm, "float"); got != "3.14" {
+		t.Errorf("float: got %q, want %q", got, "3.14")
+	}
+	// default case: fmt.Sprintf("%v", ...)
+	if got := stringField(fm, "other"); got == "" {
+		t.Error("other: expected non-empty from fmt.Sprintf")
+	}
+	if got := stringField(fm, "missing"); got != "" {
+		t.Errorf("missing: got %q, want empty", got)
+	}
+}
+
+func TestStringField_Nil(t *testing.T) {
+	t.Parallel()
+
+	fm := map[string]any{"nil_val": nil}
+	if got := stringField(fm, "nil_val"); got != "" {
+		t.Errorf("nil value: got %q, want empty", got)
+	}
+}
+
+func TestBoolField_StringTrue(t *testing.T) {
+	t.Parallel()
+
+	fm := map[string]any{
+		"str_true":   "true",
+		"str_false":  "false",
+		"str_True":   "True",
+		"bool_true":  true,
+		"bool_false": false,
+		"missing":    nil,
+	}
+
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"str_true", true},
+		{"str_false", false},
+		{"str_True", true},
+		{"bool_true", true},
+		{"bool_false", false},
+	}
+	for _, tt := range tests {
+		if got := boolField(fm, tt.key, false); got != tt.want {
+			t.Errorf("boolField(%q) = %v, want %v", tt.key, got, tt.want)
+		}
+	}
+
+	// Missing key should return default
+	if got := boolField(fm, "nonexistent", true); got != true {
+		t.Errorf("missing with default true: got %v, want true", got)
+	}
+	if got := boolField(fm, "nil_val", false); got != false {
+		t.Errorf("nil with default false: got %v, want false", got)
+	}
+
+	// Non-bool non-string should return default
+	fm2 := map[string]any{"int_val": 42}
+	if got := boolField(fm2, "int_val", true); got != true {
+		t.Errorf("int value with default true: got %v, want true", got)
+	}
+}
+
+func TestCoerceDescription_NonString(t *testing.T) {
+	t.Parallel()
+
+	// Non-string description
+	fm := map[string]any{"description": 42}
+	got := coerceDescription(fm, "fallback", "")
+	if got != "42" {
+		t.Errorf("int description: got %q, want %q", got, "42")
+	}
+
+	// Nil description — should fall back to markdown extraction
+	fm2 := map[string]any{}
+	got2 := coerceDescription(fm2, "fallback", "# My Title")
+	if !strings.Contains(got2, "My Title") {
+		t.Errorf("nil description with markdown: got %q", got2)
+	}
+}
+
+func TestExtractDescriptionFromMarkdown_BlankLines(t *testing.T) {
+	t.Parallel()
+
+	// Content with leading blank lines before first heading
+	content := "\n\n\n  \n# My Skill\nBody text."
+	got := extractDescriptionFromMarkdown(content, "fallback")
+	if got != "My Skill" {
+		t.Errorf("got %q, want %q", got, "My Skill")
+	}
+
+	// Empty content
+	got2 := extractDescriptionFromMarkdown("", "fallback")
+	if got2 != "fallback" {
+		t.Errorf("empty content: got %q, want %q", got2, "fallback")
+	}
+
+	// Only blank lines
+	got3 := extractDescriptionFromMarkdown("  \n  \n", "fallback")
+	if got3 != "fallback" {
+		t.Errorf("only blanks: got %q, want %q", got3, "fallback")
+	}
+}
+
+func TestParseStringOrArray_NilSplitFn(t *testing.T) {
+	t.Parallel()
+
+	// nil splitFn — single string returned as-is
+	got := parseStringOrArray("hello", nil)
+	if len(got) != 1 || got[0] != "hello" {
+		t.Errorf("single string: got %v, want [hello]", got)
+	}
+
+	// nil splitFn — empty string returns nil
+	got2 := parseStringOrArray("", nil)
+	if got2 != nil {
+		t.Errorf("empty string: got %v, want nil", got2)
+	}
+
+	// nil splitFn — nil input
+	got3 := parseStringOrArray(nil, nil)
+	if got3 != nil {
+		t.Errorf("nil input: got %v, want nil", got3)
+	}
+}
+
+func TestParseStringOrArray_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	got := parseStringOrArray([]any{}, nil)
+	if got != nil {
+		t.Errorf("empty array: got %v, want nil", got)
+	}
+
+	// Array with non-string items
+	got2 := parseStringOrArray([]any{42, true}, nil)
+	if got2 != nil {
+		t.Errorf("non-string array: got %v, want nil", got2)
+	}
+
+	// Array with mixed items
+	got3 := parseStringOrArray([]any{"valid", 42, ""}, nil)
+	if len(got3) != 1 || got3[0] != "valid" {
+		t.Errorf("mixed array: got %v, want [valid]", got3)
+	}
+}
+
+func TestParseStringOrArray_DefaultType(t *testing.T) {
+	t.Parallel()
+
+	got := parseStringOrArray(42, nil)
+	if got != nil {
+		t.Errorf("int input: got %v, want nil", got)
+	}
+}
+
+func TestParseShell_InvalidValue(t *testing.T) {
+	t.Parallel()
+
+	// Invalid shell value — should warn and return nil
+	result := parseShell("zsh")
+	if result != nil {
+		t.Errorf("invalid shell: got %v, want nil", result)
+	}
+
+	// nil input
+	result2 := parseShell(nil)
+	if result2 != nil {
+		t.Errorf("nil shell: got %v, want nil", result2)
+	}
+
+	// Empty string — should return nil without warning
+	result3 := parseShell("")
+	if result3 != nil {
+		t.Errorf("empty shell: got %v, want nil", result3)
+	}
+}
+
+func TestParseSkillPaths_InvalidType(t *testing.T) {
+	t.Parallel()
+
+	// Non-string non-array
+	got := parseSkillPaths(42)
+	if got != nil {
+		t.Errorf("int input: got %v, want nil", got)
+	}
+
+	// nil input
+	got2 := parseSkillPaths(nil)
+	if got2 != nil {
+		t.Errorf("nil input: got %v, want nil", got2)
+	}
+
+	// String with commas
+	got3 := parseSkillPaths("src,lib")
+	if len(got3) != 2 {
+		t.Fatalf("comma-separated: got %d, want 2", len(got3))
+	}
+	if got3[0] != "src" {
+		t.Errorf("got3[0] = %q, want %q", got3[0], "src")
+	}
+
+	// Array with non-string items
+	got4 := parseSkillPaths([]any{42, "valid"})
+	if len(got4) != 1 || got4[0] != "valid" {
+		t.Errorf("mixed array: got %v, want [valid]", got4)
+	}
+
+	// Empty string entries
+	got5 := parseSkillPaths([]any{"", "   "})
+	if got5 != nil {
+		t.Errorf("empty entries: got %v, want nil", got5)
+	}
+}
+
+func TestStringFieldFromAny(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input any
+		want  string
+	}{
+		{nil, ""},
+		{"hello", "hello"},
+		{42, "42"},
+		{3.14, "3.14"},
+		{true, "true"},
+		{false, "false"},
+		{[]string{"a"}, "[a]"}, // default: fmt.Sprintf
+	}
+	for _, tt := range tests {
+		got := stringFieldFromAny(tt.input)
+		if got != tt.want {
+			t.Errorf("stringFieldFromAny(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

@@ -251,6 +251,38 @@ func TestCleanupActivatedSkills_KeepsRecent(t *testing.T) {
 	}
 }
 
+func TestCleanupActivatedSkills_ClearsActivatedNames(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.activatedNames["test-skill"] = true
+	reg.mu.Unlock()
+
+	reg.CleanupActivatedSkills(0)
+
+	reg.mu.RLock()
+	names := reg.activatedNames
+	reg.mu.RUnlock()
+
+	if len(names) != 0 {
+		t.Errorf("activatedNames should be cleared, got %d entries", len(names))
+	}
+}
+
+func TestCreateSkillAttachment_ZeroBudget(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.AddInvokedSkill("big", "p:big", "content", "agent-1")
+
+	// Zero total budget — sections should be empty
+	result := reg.CreateSkillAttachment("agent-1", 5000, 0)
+	if result != "" {
+		t.Errorf("zero budget should return empty, got %q", result)
+	}
+}
+
 func TestCompactionConstants(t *testing.T) {
 	t.Parallel()
 

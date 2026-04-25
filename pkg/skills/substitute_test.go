@@ -261,3 +261,145 @@ func TestGenerateProgressiveArgumentHint_NoneTyped(t *testing.T) {
 		t.Errorf("hint = %q, want %q", hint, "[file] [pattern]")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional substitute coverage
+// ---------------------------------------------------------------------------
+
+func TestReplaceNamedArg_FollowedByBracket(t *testing.T) {
+	t.Parallel()
+
+	// $name[...] should NOT be replaced (it's for $ARGUMENTS[N])
+	content := "test $file[0] end"
+	result := replaceNamedArg(content, "file", "value.go")
+	if result != content {
+		t.Errorf("$file[0] should not be replaced, got %q", result)
+	}
+}
+
+func TestReplaceNamedArg_FollowedByWordChar(t *testing.T) {
+	t.Parallel()
+
+	// $fileXxx should NOT be replaced
+	content := "test $filename end"
+	result := replaceNamedArg(content, "file", "value.go")
+	if result != content {
+		t.Errorf("$filename should not be replaced, got %q", result)
+	}
+}
+
+func TestReplaceNamedArg_AtEndOfString(t *testing.T) {
+	t.Parallel()
+
+	content := "prefix $file"
+	result := replaceNamedArg(content, "file", "value.go")
+	if result != "prefix value.go" {
+		t.Errorf("at end: got %q, want %q", result, "prefix value.go")
+	}
+}
+
+func TestReplaceNamedArg_EmptyValue(t *testing.T) {
+	t.Parallel()
+
+	content := "prefix $file suffix"
+	result := replaceNamedArg(content, "file", "")
+	if result != "prefix  suffix" {
+		t.Errorf("empty value: got %q, want %q", result, "prefix  suffix")
+	}
+}
+
+func TestParseIndex_InvalidChars(t *testing.T) {
+	if parseIndex("12abc") != -1 {
+		t.Error("expected -1 for non-digit chars")
+	}
+	if parseIndex("") != 0 {
+		t.Error("expected 0 for empty string")
+	}
+	if parseIndex("0") != 0 {
+		t.Error("expected 0 for '0'")
+	}
+	if parseIndex("42") != 42 {
+		t.Error("expected 42 for '42'")
+	}
+}
+
+func TestSubstituteArguments_NamedArgNotEnoughParsed(t *testing.T) {
+	t.Parallel()
+
+	// 2 arg names but only 1 parsed arg — second should be empty
+	content := "${file} ${pattern}"
+	result := SubstituteArguments(content, "only_one.go", []string{"file", "pattern"}, true)
+	if result != "only_one.go " {
+		t.Errorf("got %q, want %q", result, "only_one.go ")
+	}
+}
+
+func TestSubstituteArguments_ShorthandOutOfBounds(t *testing.T) {
+	t.Parallel()
+
+	content := "$0 $5"
+	result := SubstituteArguments(content, "one two", nil, true)
+	// $0 = "one", $5 = "" (out of bounds, written as original "$5"? no — replaceShorthandIndexed writes original)
+	// Actually for out of bounds it writes the original match
+	if !strings.Contains(result, "one") {
+		t.Errorf("expected 'one' in %q", result)
+	}
+}
+
+func TestParseArgumentNames_EmptyString(t *testing.T) {
+	t.Parallel()
+
+	names := ParseArgumentNames("")
+	if names != nil {
+		t.Errorf("empty string: got %v, want nil", names)
+	}
+}
+
+func TestParseArgumentNames_EmptyArray(t *testing.T) {
+	t.Parallel()
+
+	names := ParseArgumentNames([]any{})
+	if names != nil {
+		t.Errorf("empty array: got %v, want nil", names)
+	}
+}
+
+func TestParseArgumentNames_NonStringArray(t *testing.T) {
+	t.Parallel()
+
+	names := ParseArgumentNames([]any{42, true})
+	if names != nil {
+		t.Errorf("non-string array: got %v, want nil", names)
+	}
+}
+
+func TestParseArgumentNames_DefaultType(t *testing.T) {
+	t.Parallel()
+
+	names := ParseArgumentNames(42)
+	if names != nil {
+		t.Errorf("int input: got %v, want nil", names)
+	}
+}
+
+func TestSubstituteArguments_DollarNameNotFollowedByBracket(t *testing.T) {
+	t.Parallel()
+
+	// $file/ — '/' is not a word char, so $file should be replaced
+	content := "path: $file/extra"
+	result := SubstituteArguments(content, "main.go", []string{"file"}, true)
+	if result != "path: main.go/extra" {
+		t.Errorf("got %q, want %q", result, "path: main.go/extra")
+	}
+}
+
+func TestReplaceShorthandIndexed_FollowedByWord(t *testing.T) {
+	t.Parallel()
+
+	// $1abc — should not be replaced
+	content := "test $1abc end"
+	result := SubstituteArguments(content, "foo bar", nil, true)
+	if !strings.Contains(result, "$1abc") {
+		t.Errorf("$1abc should not be replaced, got %q", result)
+	}
+}

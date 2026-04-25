@@ -2,6 +2,7 @@ package skills
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -238,4 +239,433 @@ func skillNames(skills []types.SkillCommand) []string {
 		names[i] = s.Name
 	}
 	return names
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests
+// ---------------------------------------------------------------------------
+
+func TestLoad_Integration(t *testing.T) {
+	// Create project skill dirs
+	projectDir := t.TempDir()
+	skillDir := filepath.Join(projectDir, ".gbot", "skills", "proj-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: Project skill\nuser-invocable: true\n---\nProject content."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(projectDir)
+	if err := reg.Load(); err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	all := reg.GetAllSkills()
+	found := false
+	for _, s := range all {
+		if s.Name == "proj-skill" {
+			found = true
+			if s.Description != "Project skill" {
+				t.Errorf("proj-skill description = %q, want %q", s.Description, "Project skill")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("proj-skill not found in loaded skills: %v", skillNames(all))
+	}
+}
+
+func TestLoad_SeparatesConditional(t *testing.T) {
+	projectDir := t.TempDir()
+	skillDir := filepath.Join(projectDir, ".gbot", "skills", "cond-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: Conditional\npaths:\n  - \"*.go\"\n---\nConditional content."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(projectDir)
+	if err := reg.Load(); err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Conditional skill should NOT be in GetAllSkills
+	all := reg.GetAllSkills()
+	for _, s := range all {
+		if s.Name == "cond-skill" {
+			t.Error("conditional skill should not appear in GetAllSkills")
+		}
+	}
+
+	// Should be in conditional map
+	reg.mu.RLock()
+	cond, ok := reg.conditional["cond-skill"]
+	reg.mu.RUnlock()
+	if !ok {
+		t.Fatal("cond-skill should be in conditional map")
+	}
+	if len(cond.Paths) != 1 || cond.Paths[0] != "*.go" {
+		t.Errorf("cond-skill paths = %v, want [*.go]", cond.Paths)
+	}
+}
+
+func TestRegisterBundledSkill(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name: "bundled-skill",
+		Description: "Bundled skill",
+		Source: types.SkillSourceBundled,
+		LoadedFrom: "bundled",
+	})
+
+	all := reg.GetAllSkills()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(all))
+	}
+	if all[0].Name != "bundled-skill" {
+		t.Errorf("skill name = %q, want %q", all[0].Name, "bundled-skill")
+	}
+}
+
+func TestOnSkillsLoaded_CallbackAndUnsubscribe(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	callCount := 0
+	cb := func() { callCount++ }
+
+	unsub := reg.OnSkillsLoaded(cb)
+
+	// Fire callbacks
+	reg.fireOnSkillsLoaded()
+	if callCount != 1 {
+		t.Errorf("expected 1 callback, got %d", callCount)
+	}
+
+	// Unsubscribe
+	unsub()
+
+	// Fire again — should not call
+	reg.fireOnSkillsLoaded()
+	if callCount != 1 {
+		t.Errorf("expected 1 callback after unsubscribe, got %d", callCount)
+	}
+}
+
+func TestFireOnSkillsLoaded_PanicRecovery(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	panicked := false
+	reg.OnSkillsLoaded(func() { panicked = true; panic("test panic") })
+	called := false
+	reg.OnSkillsLoaded(func() { called = true })
+
+	// Should not panic even if first callback panics
+	reg.fireOnSkillsLoaded()
+
+	if !panicked {
+		t.Error("first callback should have been called")
+	}
+	if !called {
+		t.Error("second callback should still be called after first panics")
+	}
+}
+
+func TestSortDirsDeepestFirst(t *testing.T) {
+	t.Parallel()
+
+	dirs := []string{
+		"/a/b",
+		"/a/b/c/d/e",
+		"/a/b/c",
+		"/a",
+	}
+	sortDirsDeepestFirst(dirs)
+
+	if dirs[0] != "/a/b/c/d/e" {
+		t.Errorf("first should be deepest, got %q", dirs[0])
+	}
+	if dirs[len(dirs)-1] != "/a" {
+		t.Errorf("last should be shallowest, got %q", dirs[len(dirs)-1])
+	}
+}
+
+func TestIsPathGitignored(t *testing.T) {
+	// Create a git repo with a .gitignore
+	repoDir := t.TempDir()
+	runGit(t, repoDir, "init")
+	runGit(t, repoDir, "config", "user.email", "test@test.com")
+	runGit(t, repoDir, "config", "user.name", "Test")
+
+	// Create .gitignore
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("ignored_file.txt\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create the ignored file so git check-ignore can match it
+	if err := os.WriteFile(filepath.Join(repoDir, "ignored_file.txt"), []byte("ignored"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repoDir, "add", ".gitignore")
+	runGit(t, repoDir, "commit", "-m", "init")
+
+	if !isPathGitignored("ignored_file.txt", repoDir) {
+		t.Error("ignored_file.txt should be gitignored")
+	}
+	if isPathGitignored("not_ignored.txt", repoDir) {
+		t.Error("not_ignored.txt should not be gitignored")
+	}
+}
+
+func TestIsPathGitignored_NotGitRepo(t *testing.T) {
+	// Not a git repo — should return false (fail open)
+	if isPathGitignored("anything", t.TempDir()) {
+		t.Error("non-git repo should return false (fail open)")
+	}
+}
+
+func TestLoadManagedSkills_DisabledEnv(t *testing.T) {
+	t.Setenv("GBOT_DISABLE_POLICY_SKILLS", "1")
+
+	reg := NewRegistry(t.TempDir())
+	skills := reg.loadManagedSkills()
+	if len(skills) != 0 {
+		t.Errorf("should return empty when disabled, got %d", len(skills))
+	}
+}
+
+func TestLoadManagedSkills_WithDir(t *testing.T) {
+	managedDir := t.TempDir()
+	t.Setenv("GBOT_MANAGED_SETTINGS_PATH", managedDir)
+
+	// Create a managed skill
+	skillDir := filepath.Join(managedDir, ".gbot", "skills", "admin-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: Admin skill\n---\nAdmin content."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(t.TempDir())
+	skills := reg.loadManagedSkills()
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 managed skill, got %d", len(skills))
+	}
+	if skills[0].Name != "admin-skill" {
+		t.Errorf("skill name = %q, want %q", skills[0].Name, "admin-skill")
+	}
+	if skills[0].Source != types.SkillSourceManaged {
+		t.Errorf("source = %v, want %v", skills[0].Source, types.SkillSourceManaged)
+	}
+}
+
+func TestCollectProjectSkillDirs(t *testing.T) {
+	cwd := t.TempDir()
+
+	// Create .gbot/skills/ at cwd level
+	cwdSkillDir := filepath.Join(cwd, ".gbot", "skills")
+	if err := os.MkdirAll(cwdSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(cwd)
+	dirs := reg.collectProjectSkillDirs()
+
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 dir, got %d: %v", len(dirs), dirs)
+	}
+	if dirs[0] != cwdSkillDir {
+		t.Errorf("dir = %q, want %q", dirs[0], cwdSkillDir)
+	}
+}
+
+func TestManagedSkillsPath_DefaultLinux(t *testing.T) {
+	// Clear override to test default
+	t.Setenv("GBOT_MANAGED_SETTINGS_PATH", "")
+	got := managedSkillsPath()
+	// On Linux (test runner), should return /etc/gbot/skills
+	want := "/etc/gbot/skills"
+	if got != want {
+		t.Errorf("managedSkillsPath() = %q, want %q", got, want)
+	}
+}
+
+func TestFindSkill_ByAlias(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "commit", Aliases: []string{"ci"}, Description: "Commit", LoadedFrom: "skills", Type: "prompt"},
+	}
+	reg.mu.Unlock()
+
+	found := reg.FindSkill("ci")
+	if found == nil {
+		t.Fatal("FindSkill(ci) should find commit via alias")
+	}
+	if found.Name != "commit" {
+		t.Errorf("found.Name = %q, want %q", found.Name, "commit")
+	}
+}
+
+func TestFindSkill_ByDisplayName(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "commit", DisplayName: "Git Commit", Description: "Commit", LoadedFrom: "skills", Type: "prompt"},
+	}
+	reg.mu.Unlock()
+
+	found := reg.FindSkill("Git Commit")
+	if found == nil {
+		t.Fatal("FindSkill(Git Commit) should find skill by display name")
+	}
+}
+
+func TestGetSkillToolSkills_FiltersDisableModelInvocation(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "visible", Description: "Visible", Type: "prompt", LoadedFrom: "skills"},
+		{Name: "hidden", Description: "Hidden", Type: "prompt", LoadedFrom: "skills", DisableModelInvocation: true},
+	}
+	reg.mu.Unlock()
+
+	filtered := reg.GetSkillToolSkills()
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 (disabled filtered), got %d", len(filtered))
+	}
+	if filtered[0].Name != "visible" {
+		t.Errorf("filtered[0].Name = %q, want %q", filtered[0].Name, "visible")
+	}
+}
+
+func TestGetSkillToolSkills_FiltersNonPromptType(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "prompt-skill", Description: "Prompt", Type: "prompt", LoadedFrom: "skills"},
+		{Name: "other-skill", Description: "Other", Type: "other", LoadedFrom: "skills"},
+	}
+	reg.mu.Unlock()
+
+	filtered := reg.GetSkillToolSkills()
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 (non-prompt filtered), got %d", len(filtered))
+	}
+	if filtered[0].Name != "prompt-skill" {
+		t.Errorf("filtered[0].Name = %q, want %q", filtered[0].Name, "prompt-skill")
+	}
+}
+
+func TestGetSkillToolSkills_RequiresDescOrWhenToUse(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	reg.mu.Lock()
+	reg.skills = []types.SkillCommand{
+		{Name: "no-desc-no-when", Type: "prompt", LoadedFrom: "other"},
+		{Name: "has-when", Type: "prompt", LoadedFrom: "other", WhenToUse: "Use when needed"},
+		{Name: "has-desc", Type: "prompt", LoadedFrom: "other", HasUserSpecifiedDesc: true},
+	}
+	reg.mu.Unlock()
+
+	filtered := reg.GetSkillToolSkills()
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 (has-when + has-desc), got %d: %v", len(filtered), skillNames(filtered))
+	}
+}
+
+// runGit executes a git command in the given directory.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+}
+
+func TestCollectProjectSkillDirs_WalksUpToParent(t *testing.T) {
+	// Create nested structure: root/.gbot/skills/ at parent level
+	root := t.TempDir()
+	nested := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cwdSkillDir := filepath.Join(root, ".gbot", "skills")
+	if err := os.MkdirAll(cwdSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Registry cwd is deep inside the tree
+	reg := NewRegistry(nested)
+	dirs := reg.collectProjectSkillDirs()
+	if len(dirs) != 1 {
+		t.Fatalf("expected 1 dir from parent, got %d: %v", len(dirs), dirs)
+	}
+	if dirs[0] != cwdSkillDir {
+		t.Errorf("dir = %q, want %q", dirs[0], cwdSkillDir)
+	}
+}
+
+func TestCollectProjectSkillDirs_NoSkillDirs(t *testing.T) {
+	cwd := t.TempDir()
+	reg := NewRegistry(cwd)
+	dirs := reg.collectProjectSkillDirs()
+	if len(dirs) != 0 {
+		t.Errorf("expected no dirs when none exist, got %d: %v", len(dirs), dirs)
+	}
+}
+
+func TestLoadSkillsFromDir_SkillMDReadError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "unreadable")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create SKILL.md as a directory (not a file) — ReadFile will fail
+	skillMD := filepath.Join(skillDir, "SKILL.md")
+	if err := os.MkdirAll(skillMD, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(t.TempDir())
+	skills := reg.loadSkillsFromDir(dir, types.SkillSourceUser)
+	if len(skills) != 0 {
+		t.Errorf("unreadable SKILL.md should be skipped, got %d", len(skills))
+	}
+}
+
+func TestLoadUserSkills_HomeDirExists(t *testing.T) {
+	// Test that loadUserSkills doesn't panic when home dir exists
+	reg := NewRegistry(t.TempDir())
+	// This should succeed or return nil — either is fine
+	skills := reg.loadUserSkills()
+	// Just verify it doesn't panic
+	_ = skills
+}
+
+func TestLoadBundledSkills(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	skills := reg.loadBundledSkills()
+	if skills != nil {
+		t.Errorf("loadBundledSkills should return nil, got %d", len(skills))
+	}
 }

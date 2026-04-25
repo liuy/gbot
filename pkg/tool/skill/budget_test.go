@@ -174,6 +174,82 @@ func TestFormatCommandDescription(t *testing.T) {
 	}
 }
 
+func TestBuildSkillListing_TruncatedDescriptions(t *testing.T) {
+	// Set exact char budget to force truncation of non-bundled skills
+	t.Setenv("SLASH_COMMAND_TOOL_CHAR_BUDGET", "260")
+
+	longDesc := strings.Repeat("x", 200)
+	skills := []types.SkillCommand{
+		{Name: "bundled", Description: longDesc, Source: types.SkillSourceBundled},
+		{Name: "user1", Description: longDesc, Source: types.SkillSourceUser},
+	}
+	result := BuildSkillListing(skills, 0)
+
+	if !strings.Contains(result, "bundled: "+longDesc) {
+		t.Errorf("bundled should keep full description")
+	}
+	if !strings.Contains(result, "user1:") {
+		t.Errorf("user1 should appear with truncated description, got %q", result)
+	}
+	// user1 description should be shorter than 200 chars (truncated)
+	lines := strings.SplitSeq(result, "\n")
+	for line := range lines {
+		if strings.HasPrefix(line, "- user1:") {
+			descPart := strings.TrimPrefix(line, "- user1: ")
+			if len(descPart) >= 200 {
+				t.Errorf("user1 description should be truncated, got %d chars", len(descPart))
+			}
+			break
+		}
+	}
+}
+
+func TestBuildSkillListing_MixedBundledAndNonBundled(t *testing.T) {
+	t.Parallel()
+
+	skills := []types.SkillCommand{
+		{Name: "a", Description: "Short A", Source: types.SkillSourceBundled},
+		{Name: "b", Description: "Short B", Source: types.SkillSourceUser},
+	}
+	// Generous budget — both should fit
+	result := BuildSkillListing(skills, 200000)
+	if !strings.Contains(result, "a: Short A") {
+		t.Errorf("bundled should fit, got %q", result)
+	}
+	if !strings.Contains(result, "b: Short B") {
+		t.Errorf("user should fit, got %q", result)
+	}
+}
+
+func TestBuildSkillListing_AllBundled(t *testing.T) {
+	t.Parallel()
+
+	skills := []types.SkillCommand{
+		{Name: "a", Description: "Skill A", Source: types.SkillSourceBundled},
+		{Name: "b", Description: "Skill B", Source: types.SkillSourceBundled},
+	}
+	// Even with tiny budget, all bundled should be returned
+	result := BuildSkillListing(skills, 10)
+	if !strings.Contains(result, "a: Skill A") {
+		t.Errorf("bundled skill 'a' should have full description, got %q", result)
+	}
+	if !strings.Contains(result, "b: Skill B") {
+		t.Errorf("bundled skill 'b' should have full description, got %q", result)
+	}
+}
+
+func TestBuildSkillListing_SingleSkillFits(t *testing.T) {
+	t.Parallel()
+
+	skills := []types.SkillCommand{
+		{Name: "only", Description: "Only skill"},
+	}
+	result := BuildSkillListing(skills, 200000)
+	if result != "- only: Only skill" {
+		t.Errorf("got %q, want %q", result, "- only: Only skill")
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }

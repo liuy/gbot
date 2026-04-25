@@ -261,8 +261,15 @@ func formatCommandLoadingMetadata(cmd *types.SkillCommand, args string) string {
 			"<skill-format>true</skill-format>",
 		}, "\n")
 	}
-	// Fallback: slash command format
-	return formatCommandLoadingMetadata(cmd, args)
+	// Fallback: slash command format (same as user-invocable but reached for edge cases)
+	parts := []string{
+		fmt.Sprintf("<%s>%s</%s>", commandMessageTag, cmd.Name, commandMessageTag),
+		fmt.Sprintf("<%s>/%s</%s>", commandNameTag, cmd.Name, commandNameTag),
+	}
+	if args != "" {
+		parts = append(parts, fmt.Sprintf("<command-args>%s</command-args>", args))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // formatCommandPermissions builds the XML permissions message.
