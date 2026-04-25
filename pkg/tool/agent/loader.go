@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/liuy/gbot/pkg/markdown"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -270,7 +271,7 @@ func loadMarkdownFiles(dir string, source types.AgentSource) []markdownFileEntry
 		if err != nil {
 			continue
 		}
-		if info.Size() > maxFrontmatterFileSize {
+		if info.Size() > markdown.MaxFrontmatterFileSize {
 			slog.Warn("agent: skipping file: too large", "path", filePath, "size", info.Size())
 			continue
 		}
@@ -281,7 +282,7 @@ func loadMarkdownFiles(dir string, source types.AgentSource) []markdownFileEntry
 			continue
 		}
 
-		parsed := ParseFrontmatter(string(rawContent), filePath)
+		parsed := markdown.ParseFrontmatter(string(rawContent), filePath)
 
 		results = append(results, markdownFileEntry{
 			filePath:    filePath,

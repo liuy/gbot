@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/markdown"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -511,7 +512,7 @@ func TestLoadMarkdownFiles_SkipsOversizedFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a file larger than maxFrontmatterFileSize
-	bigContent := "---\nname: big\n---\n" + strings.Repeat("x", maxFrontmatterFileSize+1)
+	bigContent := "---\nname: big\n---\n" + strings.Repeat("x", markdown.MaxFrontmatterFileSize+1)
 	if err := os.WriteFile(filepath.Join(dir, "big.md"), []byte(bigContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1053,19 +1054,6 @@ func TestListAgentDefinitions_WithGlobalLoader(t *testing.T) {
 	defs := ListAgentDefinitions()
 	if len(defs) < 3 {
 		t.Errorf("expected at least 3 definitions via globalLoader, got %d", len(defs))
-	}
-}
-
-func TestParseYAML_EmptyInput(t *testing.T) {
-	result, err := parseYAML("")
-	if err != nil {
-		t.Fatalf("parseYAML('') error: %v", err)
-	}
-	if result == nil {
-		t.Error("result should not be nil")
-	}
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %v", result)
 	}
 }
 

@@ -1,7 +1,5 @@
-// Package agent provides built-in agent definitions and tool filtering for the Agent tool.
-//
-// Source reference: utils/frontmatterParser.ts
-package agent
+// Package markdown provides shared markdown parsing utilities.
+package markdown
 
 import (
 	"fmt"
@@ -21,7 +19,7 @@ import (
 // Source: frontmatterParser.ts:61-64 — ParsedMarkdown
 type ParsedMarkdown struct {
 	Frontmatter map[string]any // parsed YAML key-value pairs
-	Content     string                 // body after the --- delimiter
+	Content     string         // body after the --- delimiter
 }
 
 // frontmatterRegex matches YAML frontmatter between --- delimiters.
@@ -33,7 +31,7 @@ var frontmatterRegex = regexp.MustCompile(`(?s)^---\s*\n(.*?)\n---\s*\n?`)
 var yamlSpecialChars = regexp.MustCompile(`[{}[\]*&#!|>%@` + "`" + `]|: `)
 
 // maxFrontmatterFileSize is the maximum size of an agent .md file (1MB).
-const maxFrontmatterFileSize = 1 << 20
+const MaxFrontmatterFileSize = 1 << 20
 
 // ParseFrontmatter extracts YAML frontmatter from markdown content.
 // Source: frontmatterParser.ts:130-175 — parseFrontmatter

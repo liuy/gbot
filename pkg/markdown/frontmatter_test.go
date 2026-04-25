@@ -1,4 +1,4 @@
-package agent
+package markdown
 
 import (
 	"strings"
@@ -112,10 +112,10 @@ func TestParseFrontmatter_BOMStripped(t *testing.T) {
 func TestParseFrontmatter_OversizedFile(t *testing.T) {
 	// This tests that the caller is responsible for size checks;
 	// ParseFrontmatter itself parses whatever it receives.
-	// The maxFrontmatterFileSize constant is used by the loader.
+	// The MaxFrontmatterFileSize constant is used by the loader.
 	input := "---\nname: test\n---\n" + strings.Repeat("x", 2*1024*1024)
-	if len(input) <= maxFrontmatterFileSize {
-		t.Fatal("test input should be larger than maxFrontmatterFileSize")
+	if len(input) <= MaxFrontmatterFileSize {
+		t.Fatal("test input should be larger than MaxFrontmatterFileSize")
 	}
 	// ParseFrontmatter still works — the loader checks size before calling
 	result := ParseFrontmatter(input, "")

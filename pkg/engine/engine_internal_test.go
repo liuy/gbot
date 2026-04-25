@@ -729,13 +729,13 @@ func TestExecuteTool_NonStreamingSuccess(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "t1", Name: "ns_tool", Input: json.RawMessage(`{}`)},
 	}
-	results := executor.ExecuteAll(blocks)
+	result := executor.ExecuteAll(blocks)
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
 	}
-	if results[0].Type != types.ContentTypeToolResult {
-		t.Errorf("expected ToolResult block, got %s", results[0].Type)
+	if result.ToolResultBlocks[0].Type != types.ContentTypeToolResult {
+		t.Errorf("expected ToolResult block, got %s", result.ToolResultBlocks[0].Type)
 	}
 
 	// Should have emitted EventToolStart + EventToolEnd (non-error)
@@ -1612,13 +1612,13 @@ func TestStreamingToolExecutor_SetMessages_NilTctx(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "capture", Input: json.RawMessage(`{}`)},
 	}
-	results := executor.ExecuteAll(blocks)
+	result := executor.ExecuteAll(blocks)
 
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
 	}
-	if results[0].IsError {
-		t.Fatalf("expected no error, got error content: %s", string(results[0].Content))
+	if result.ToolResultBlocks[0].IsError {
+		t.Fatalf("expected no error, got error content: %s", string(result.ToolResultBlocks[0].Content))
 	}
 
 	captured := captureTool.Captured()

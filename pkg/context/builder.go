@@ -24,6 +24,9 @@ type Builder struct {
 	// ToolPrompts are system prompt contributions from tools.
 	ToolPrompts []string
 
+	// SkillListing is the formatted skill listing within context window budget.
+	SkillListing string
+
 	// MemoryFiles are loaded memory files for the system prompt.
 	MemoryFiles []MemoryFile
 
@@ -72,6 +75,12 @@ func (b *Builder) Build() (json.RawMessage, error) {
 			buf.WriteString("\n\n")
 			buf.WriteString(prompt)
 		}
+	}
+
+	// 7. Skill listing
+	if b.SkillListing != "" {
+		buf.WriteString("\n\n## Available Skills\n\n")
+		buf.WriteString(b.SkillListing)
 	}
 
 	encoded, err := json.Marshal(buf.String())

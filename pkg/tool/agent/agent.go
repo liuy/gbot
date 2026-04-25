@@ -29,6 +29,12 @@ import (
 // Injected by main.go after engine construction to avoid agent → engine import cycle.
 type SubEngineFactory func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error)
 
+// SkillRegistry provides skill lookup for agent skill preloading.
+// Interface avoids circular import (agent → skills → types).
+type SkillRegistry interface {
+	GetAllSkills() []types.SkillCommand
+}
+
 // AgentOpts passes parameters to the sub-engine factory.
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
@@ -62,10 +68,10 @@ type AgentTool struct {
 	gbotMdContent string
 	gitStatus     *ctxbuild.GitStatusInfo
 
-	// Cached skills — loaded once on first agent Call(), never expires.
-	// Skills files rarely change during a session, so process-lifetime cache is appropriate.
+	// Skill registry — injected from main.go, provides all loaded skills.
+	skillReg    SkillRegistry
 	skillsOnce  sync.Once
-	skillsCache []SkillInfo
+	skillsCache []types.SkillCommand
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -96,6 +102,9 @@ func (t *AgentTool) SetGBOTMDContent(content string) { t.gbotMdContent = content
 
 // SetGitStatus sets the git status for sub-agent system prompt injection.
 func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
+
+// SetSkillRegistry sets the skill registry for agent skill preloading.
+func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
 
 // TaskAdapter returns a task.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -240,9 +249,9 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 
 	// Step 6.5: Skill preloading
 	// Source: runAgent.ts:578-646 â resolveSkillName + load + inject
-	if len(agentDef.Skills) > 0 {
+	if len(agentDef.Skills) > 0 && t.skillReg != nil {
 		t.skillsOnce.Do(func() {
-			t.skillsCache = LoadSkills(t.workingDir)
+			t.skillsCache = t.skillReg.GetAllSkills()
 		})
 	allSkills := t.skillsCache
 		resolved := ResolveSkillNames(agentDef.Skills, allSkills, agentType)

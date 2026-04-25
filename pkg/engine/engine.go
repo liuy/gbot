@@ -479,13 +479,20 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 
 		// Stage 21: Wait for stream-started tools to complete, collect results.
 		// Source: query.ts:1381 — getRemainingResults().
-		toolResultBlocks := streamingExecutor.ExecuteAll(nil)
+		execResult := streamingExecutor.ExecuteAll(nil)
+
+		// Prepend NewMessages BEFORE tool_result (skill content must come first).
+		if len(execResult.NewMessages) > 0 {
+			e.appendMessages(execResult.NewMessages)
+		}
 
 		// Add tool results as user message
-		e.appendMessage(types.Message{
-			Role:    types.RoleUser,
-			Content: toolResultBlocks,
-		})
+		if len(execResult.ToolResultBlocks) > 0 {
+			e.appendMessage(types.Message{
+				Role:    types.RoleUser,
+				Content: execResult.ToolResultBlocks,
+			})
+		}
 
 		// End of this streaming round
 		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})

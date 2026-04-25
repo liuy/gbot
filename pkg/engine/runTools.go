@@ -45,6 +45,10 @@ type TrackedTool struct {
 
 	// resultBlocks holds the content blocks produced by this tool.
 	resultBlocks []types.ContentBlock
+
+	// newMessages holds messages injected by the tool (e.g., SkillTool content).
+	// These are prepended before the tool_result message in the conversation.
+	newMessages []types.Message
 }
 
 // ---------------------------------------------------------------------------
@@ -196,10 +200,16 @@ func (e *StreamingToolExecutor) doEmit(evt types.QueryEvent) {
 	}
 }
 
+// ExecuteAllResult holds the results from executing all tool blocks.
+type ExecuteAllResult struct {
+	ToolResultBlocks []types.ContentBlock
+	NewMessages      []types.Message // all newMessages from all tools, in order
+}
+
 // ExecuteAll adds all tool blocks, runs them with concurrency, and returns
 // results in insertion order. This is the main public API for the executor.
 // Source: StreamingToolExecutor.ts — addTool + getRemainingResults combined.
-func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) []types.ContentBlock {
+func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *ExecuteAllResult {
 	// Phase 1: Add all tool blocks (starts goroutines via processQueue).
 	for _, block := range blocks {
 		if block.Type != types.ContentTypeToolUse {
@@ -209,7 +219,7 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) []types.
 	}
 
 	if len(e.tools) == 0 {
-		return nil
+		return &ExecuteAllResult{}
 	}
 
 	// Phase 2: Wait for all tools to complete.
@@ -238,12 +248,19 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) []types.
 	defer e.mu.Unlock()
 
 	var results []types.ContentBlock
+	var allNewMessages []types.Message
 	for _, tt := range e.tools {
 		if len(tt.resultBlocks) > 0 {
 			results = append(results, tt.resultBlocks...)
 		}
+		if len(tt.newMessages) > 0 {
+			allNewMessages = append(allNewMessages, tt.newMessages...)
+		}
 	}
-	return results
+	return &ExecuteAllResult{
+		ToolResultBlocks: results,
+		NewMessages:      allNewMessages,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +478,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		})
 		tt.Result = result
 		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
+		if len(result.NewMessages) > 0 {
+			tt.newMessages = result.NewMessages
+		}
 		e.applyContextModifier(tt, result)
 		return
 	}
@@ -472,6 +492,12 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 	if err != nil {
 		e.emitToolError(tt, err, elapsed)
+		return
+	}
+
+	if result == nil {
+		// Tool returned nil result without error — treat as empty.
+		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte("null"), false)}
 		return
 	}
 
@@ -489,6 +515,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	})
 	tt.Result = result
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
+	if len(result.NewMessages) > 0 {
+		tt.newMessages = result.NewMessages
+	}
 	e.applyContextModifier(tt, result)
 }
 
@@ -606,7 +635,7 @@ func ConcurrentToolLoop(
 	blocks []types.ContentBlock,
 	tctx *types.ToolUseContext,
 	emitEvent func(types.QueryEvent),
-) []types.ContentBlock {
+) *ExecuteAllResult {
 	executor := NewStreamingToolExecutor(tools, tctx, emitEvent, ctx)
 	return executor.ExecuteAll(blocks)
 }

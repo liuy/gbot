@@ -25,6 +25,8 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	skilltool "github.com/liuy/gbot/pkg/tool/skill"
+	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
@@ -98,6 +100,16 @@ func main() {
 	// 3. Create tools
 	reg := createTools()
 
+	// Resolve working directory early (needed for skill registry, MCP, and system prompt)
+	workingDir, _ := os.Getwd()
+
+	// 3.1 Initialize skill registry
+	skillReg := skills.NewRegistry(workingDir)
+	if err := skillReg.Load(); err != nil {
+		slog.Warn("main: skill registry load failed", "error", err)
+	}
+	reg.MustRegister(skilltool.New(skillReg))
+
 	// 4. Create engine
 	logger := slog.Default()
 	if cfg.Verbose {
@@ -105,9 +117,6 @@ func main() {
 	}
 
 	h := hub.NewHub()
-
-	// Resolve working directory early (needed for MCP and system prompt)
-	workingDir, _ := os.Getwd()
 
 	// 3.5 Initialize MCP registry from .mcp.json
 	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{})
@@ -144,6 +153,7 @@ func main() {
 	agentTool.SetWorkingDir(workingDir)
 	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
 	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
+	agentTool.SetSkillRegistry(skillReg)
 	reg.MustRegister(agentTool)
 
 	// 5. Build system prompt using context builder
@@ -152,7 +162,7 @@ func main() {
 		// Initialize agent loader (lazy — discovers ~/.gbot/agents/ and .gbot/agents/)
 		agenttool.InitLoader(workingDir)
 
-		systemPrompt := buildSystemPrompt(workingDir, reg)
+		systemPrompt := buildSystemPrompt(workingDir, reg, skillReg, contextWindow)
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
@@ -389,7 +399,7 @@ func createAgentTool(eng *engine.Engine) *agenttool.AgentTool {
 }
 
 // buildSystemPrompt builds the system prompt using the context builder.
-func buildSystemPrompt(workingDir string, reg *tool.Registry) json.RawMessage {
+func buildSystemPrompt(workingDir string, reg *tool.Registry, skillReg *skills.Registry, contextWindow int) json.RawMessage {
 	builder := ctxbuild.NewBuilder(workingDir)
 
 	// Load git status
@@ -407,6 +417,9 @@ func buildSystemPrompt(workingDir string, reg *tool.Registry) json.RawMessage {
 			builder.ToolPrompts = append(builder.ToolPrompts, p)
 		}
 	}
+
+	// Build skill listing within context window budget
+	builder.SkillListing = skilltool.BuildSkillListing(skillReg.GetSkillToolSkills(), contextWindow)
 
 	prompt, err := builder.Build()
 	if err != nil {

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -1379,24 +1377,12 @@ func TestFormatGitStatusForSystemPrompt(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCall_SkillPreloading_Integration(t *testing.T) {
-	// Create a temp skills dir
-	skillsDir := t.TempDir()
-	localSkills := filepath.Join(skillsDir, ".gbot", "skills")
-	if err := os.MkdirAll(localSkills, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(localSkills, "commit.md"), []byte("# Commit Skill\nCreate atomic commits"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(localSkills, "review.md"), []byte("# Review Skill\nReview code quality"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Test the full skill loading pipeline directly
+	// Test the full skill loading pipeline with types.SkillCommand directly.
+	// File loading is handled by skills.Registry, tested in pkg/skills/.
 	// (Call() integration tested separately via TestCall_SkillPreloading_EmptySkills)
-	allSkills := LoadSkills(skillsDir)
-	if len(allSkills) < 2 {
-		t.Fatalf("LoadSkills should find at least 2 skills, got %d", len(allSkills))
+	allSkills := []types.SkillCommand{
+		{Name: "commit", Content: "# Commit Skill\nCreate atomic commits"},
+		{Name: "review", Content: "# Review Skill\nReview code quality"},
 	}
 
 	resolved := ResolveSkillNames([]string{"commit", "review"}, allSkills, "General")
