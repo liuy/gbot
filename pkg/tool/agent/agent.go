@@ -91,7 +91,9 @@ func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[stri
 func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() json.RawMessage) {
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
-	t.forkReg = NewForkAgentRegistry()
+	if t.forkReg == nil {
+		t.forkReg = NewForkAgentRegistry()
+	}
 }
 
 // SetWorkingDir sets the working directory for sub-agent system prompt enhancement.

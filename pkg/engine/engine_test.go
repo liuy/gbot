@@ -3294,3 +3294,34 @@ func contentBlockTypes(blocks []types.ContentBlock) []string {
 	}
 	return names
 }
+
+// TestAllTools_AllToolsRegisteredBeforeEngine verifies that when all tools
+// are registered before engine.New(), AllTools() returns the correct count.
+// Root cause of "11 tools vs 14 tools" bug: main.go used to register
+// Agent/TaskOutput/TaskStop after engine.New(). Fix: register all tools first.
+func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
+	t.Parallel()
+
+	// Correct registration order: ALL tools before engine.New()
+	reg := tool.NewRegistry()
+	for _, name := range []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep"} {
+		reg.MustRegister(&mockTool{name: name, enabled: true})
+	}
+	reg.MustRegister(&mockTool{name: "Skill", enabled: true})
+	reg.MustRegister(&mockTool{name: "Agent", enabled: true})
+	reg.MustRegister(&mockTool{name: "TaskOutput", enabled: true})
+	reg.MustRegister(&mockTool{name: "TaskStop", enabled: true})
+
+	// engine.New() — ToolsProvider snapshots all 10 tools
+	eng := engine.New(&engine.Params{
+		Provider:      &mockProvider{},
+		ToolsProvider: reg.ToolMapFn(),
+		Model:         "test-model",
+	})
+
+	got := len(eng.AllTools())
+	if got != 10 {
+		t.Errorf("AllTools() = %d tools, want 10. "+
+			"All tools registered before engine.New() but count is wrong.", got)
+	}
+}

@@ -476,3 +476,78 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.Exit(code)
 }
+
+// TestToolRegistrationOrder verifies that all MustRegister calls in cmd/gbot/main.go
+// appear BEFORE the engine.New() call. This prevents the "11 tools vs 14 tools" bug
+// where tools registered after engine.New() are invisible to AllTools().
+func TestToolRegistrationOrder(t *testing.T) {
+	projectRoot := findProjectRoot(t)
+	if projectRoot == "" {
+		t.Fatal("cannot find project root (go.mod)")
+	}
+
+	mainPath := filepath.Join(projectRoot, "cmd", "gbot", "main.go")
+	src, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", mainPath, err)
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, mainPath, src, 0)
+	if err != nil {
+		t.Fatalf("cannot parse %s: %v", mainPath, err)
+	}
+
+	// Walk the AST to find line numbers of:
+	//   - reg.MustRegister(...) calls in main() only
+	//   - engine.New(...) call in main() only
+	type callInfo struct {
+		name string
+		line int
+	}
+	var registers []callInfo
+	var engineNewLine int
+
+	// Scope to main() function only — ignore createTools() and other helpers.
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "main" {
+			continue
+		}
+		ast.Inspect(fn, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if id, ok := sel.X.(*ast.Ident); ok {
+					if id.Name == "reg" && sel.Sel.Name == "MustRegister" {
+						registers = append(registers, callInfo{
+							name: "reg.MustRegister",
+							line: fset.Position(call.Lparen).Line,
+						})
+					}
+					if id.Name == "engine" && sel.Sel.Name == "New" {
+						engineNewLine = fset.Position(call.Lparen).Line
+					}
+				}
+			}
+			return true
+		})
+		break
+	}
+
+	if engineNewLine == 0 {
+		t.Fatal("engine.New() not found in main.go")
+	}
+
+	for _, r := range registers {
+		if r.line > engineNewLine {
+			t.Errorf("%s at line %d is AFTER engine.New() at line %d. "+
+				"All tools must be registered before engine.New() to ensure "+
+				"ToolsProvider captures the full tool set.",
+				r.name, r.line, engineNewLine)
+		}
+	}
+}

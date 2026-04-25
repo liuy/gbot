@@ -98,6 +98,7 @@ func main() {
 		os.Exit(1)
 	}
 
+
 	// 3. Create tools
 	reg := createTools()
 
@@ -111,7 +112,28 @@ func main() {
 	}
 	reg.MustRegister(skilltool.New(skillReg))
 
-	// 4. Create engine
+	// 3.2 Register Agent tool early (factory wired after engine creation).
+	// SetNotifyFn with stubs creates forkReg so TaskAdapter() works.
+	agentTool := agenttool.New()
+	agentTool.SetWorkingDir(workingDir)
+	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
+	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
+	agentTool.SetSkillRegistry(skillReg)
+	agentTool.SetNotifyFn(
+		func(xml string) {},                   // stub — replaced after engine creation
+		func() json.RawMessage { return nil }, // stub — replaced after engine creation
+	)
+	reg.MustRegister(agentTool)
+
+	// 3.3 Register task management tools (needs agentTool.TaskAdapter from SetNotifyFn).
+	agenttool.InitLoader(workingDir)
+	bashTaskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
+	forkTaskReg := agentTool.TaskAdapter()
+	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
+	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
+	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
+
+	// 4. Create engine — all 10 tools registered, ToolsProvider captures full set.
 	logger := slog.Default()
 	if cfg.Verbose {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -119,7 +141,7 @@ func main() {
 
 	h := hub.NewHub()
 
-	// 3.5 Initialize MCP registry from .mcp.json
+	// 4.1 Initialize MCP registry from .mcp.json
 	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{})
 	if err != nil {
 		slog.Warn("main: MCP initialization failed", "error", err)
@@ -127,7 +149,7 @@ func main() {
 
 	contextWindow, maxTokens := primaryProviderCfg.ResolveCapabilities(model)
 
-	// 3.6 Initialize hooks system
+	// 4.2 Initialize hooks system
 	var hooksConfig hooks.HooksConfig
 	if len(cfg.Hooks) > 0 {
 		if err := json.Unmarshal(cfg.Hooks, &hooksConfig); err != nil {
@@ -141,18 +163,67 @@ func main() {
 	}
 	hookSystem := hooks.NewHooks(hooksConfig, hookExecutor)
 
-
 	eng := engine.New(&engine.Params{
 		Provider:      provider,
 		ToolsProvider: reg.ToolMapFn(),
 		Model:         model,
 		MaxTokens:     maxTokens,
-		TokenBudget:   contextWindow, // preserved for future +500k feature
+		TokenBudget:   contextWindow,
 		Logger:        logger,
 		Dispatcher:    h,
 		MCPRegistry:   mcpRegistry,
 		Hooks:         hookSystem,
 	})
+
+	// 4.3 Wire Agent factory (breaks circular dependency: tools → engine → tools).
+	agentTool.SetFactory(
+		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+			startTime := time.Now()
+			subEng := eng.NewSubEngine(engine.SubEngineOptions{
+				SystemPrompt:    string(opts.SystemPrompt),
+				Tools:           opts.Tools,
+				MaxTurns:        opts.MaxTurns,
+				Model:           opts.Model,
+				ParentToolUseID: opts.ParentToolUseID,
+				AgentType:       opts.AgentType,
+			})
+			messages := opts.UserContextMessages
+			messages = append(messages, types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+			})
+			if len(opts.ForkMessages) > 0 {
+				messages = append(opts.ForkMessages, messages...)
+			}
+			var result engine.QueryResult
+			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
+				result = subEng.QueryWithExistingMessages(ctx, messages, opts.SystemPrompt)
+			} else {
+				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+			}
+			if result.Error != nil {
+				if ctx.Err() != nil && len(result.Messages) > 0 {
+					return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
+				}
+				return nil, result.Error
+			}
+			toolUseCount := agenttool.CountToolUses(result.Messages)
+			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
+		},
+		eng.Tools,
+	)
+
+	// 4.4 Replace stub SetNotifyFn with real callbacks.
+	agentTool.SetNotifyFn(
+		func(xml string) {
+			eng.EnqueueNotification(types.Message{
+				Role:      types.RoleUser,
+				Content:   []types.ContentBlock{types.NewTextBlock(xml)},
+				Timestamp: time.Now(),
+			})
+		},
+		func() json.RawMessage { return eng.SystemPrompt() },
+	)
 
 	// Wire background task notifications into the engine's notification queue.
 	registry := bash.DefaultRegistry()
@@ -165,45 +236,11 @@ func main() {
 		})
 	}
 
-	// Register Agent tool (needs engine for sub-engine factory)
-	agentTool := createAgentTool(eng)
-	agentTool.SetWorkingDir(workingDir)
-	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
-	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
-	agentTool.SetSkillRegistry(skillReg)
-	reg.MustRegister(agentTool)
-
 	// 5. Build system prompt using context builder
-	// workingDir already resolved above for MCP init
-
-		// Initialize agent loader (lazy — discovers ~/.gbot/agents/ and .gbot/agents/)
-		agenttool.InitLoader(workingDir)
-
-		systemPrompt := buildSystemPrompt(workingDir, reg, skillReg, contextWindow)
+	systemPrompt := buildSystemPrompt(workingDir, reg, skillReg, contextWindow)
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
-
-	// Wire fork agent notification callback — delivers fork results
-	// into the parent conversation as user messages (same pattern as bash background tasks).
-	agentTool.SetNotifyFn(
-		func(xml string) {
-			eng.EnqueueNotification(types.Message{
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock(xml)},
-				Timestamp: time.Now(),
-			})
-		},
-		func() json.RawMessage { return eng.SystemPrompt() },
-	)
-
-	// Register task management tools with unified registry (bash + fork agents).
-	bashTaskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
-	forkTaskReg := agentTool.TaskAdapter()
-	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
-	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
-	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
-
 	// 6. Initialize short-term memory store
 	configDir, _ := config.ConfigDir()
 	var store *short.Store
@@ -376,54 +413,6 @@ func createTools() *tool.Registry {
 	return reg
 }
 
-// createAgentTool creates the Agent tool and wires the sub-engine factory.
-// Called after engine construction to break the circular dependency:
-// tools → engine → tools (Agent needs engine to create sub-engines).
-func createAgentTool(eng *engine.Engine) *agenttool.AgentTool {
-	at := agenttool.New()
-	at.SetFactory(
-		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
-			startTime := time.Now()
-			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				SystemPrompt:    string(opts.SystemPrompt),
-				Tools:           opts.Tools,
-				MaxTurns:        opts.MaxTurns,
-				Model:           opts.Model,
-				ParentToolUseID: opts.ParentToolUseID,
-				AgentType:       opts.AgentType,
-			})
-
-			// Unified message construction: always use QueryWithExistingMessages.
-			// Source: runAgent.ts â consensus correction #4
-			messages := opts.UserContextMessages // [currentDate, claudeMd?, skill?...]
-			messages = append(messages, types.Message{
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
-			})
-			if len(opts.ForkMessages) > 0 {
-				messages = append(opts.ForkMessages, messages...)
-			}
-			var result engine.QueryResult
-			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
-				result = subEng.QueryWithExistingMessages(ctx, messages, opts.SystemPrompt)
-			} else {
-				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
-			}
-			if result.Error != nil {
-				// Cancellation: extract partial result for fork notification.
-				// Source: agentToolUtils.ts:488 + AgentTool.tsx:1006 + agentToolUtils.ts:658
-				if ctx.Err() != nil && len(result.Messages) > 0 {
-					return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
-				}
-				return nil, result.Error
-			}
-			toolUseCount := agenttool.CountToolUses(result.Messages)
-			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
-		},
-		eng.Tools,
-	)
-	return at
-}
 
 // buildSystemPrompt builds the system prompt using the context builder.
 func buildSystemPrompt(workingDir string, reg *tool.Registry, skillReg *skills.Registry, contextWindow int) json.RawMessage {
