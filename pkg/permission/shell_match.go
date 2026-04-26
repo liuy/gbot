@@ -90,26 +90,40 @@ func HasWildcards(pattern string) bool {
 // wildcard is the ONLY unescaped wildcard, make the trailing space-and-args
 // optional so 'git *' matches both 'git add' and bare 'git'.
 func MatchWildcardPattern(pattern, command string) bool {
+	regexPattern := buildWildcardRegex(pattern)
+	return regexp.MustCompile("(?s)^" + regexPattern + "$").MatchString(command)
+}
+
+// compileWildcardPattern pre-compiles a wildcard pattern into a *regexp.Regexp.
+// Used at rule load time so hot-path matching uses pre-compiled regex.
+func compileWildcardPattern(pattern string) *regexp.Regexp {
+	regexPattern := buildWildcardRegex(pattern)
+	return regexp.MustCompile("(?s)^" + regexPattern + "$")
+}
+
+// buildWildcardRegex converts a wildcard pattern into a regex pattern string.
+// Shared by MatchWildcardPattern and compileWildcardPattern.
+//
+// Source: shellRuleMatching.ts:90-154 — matchWildcardPattern
+func buildWildcardRegex(pattern string) string {
 	trimmedPattern := strings.TrimSpace(pattern)
 
 	// Phase 1: Process escape sequences — \* and \\
 	var processed strings.Builder
-	i := 0
-	for i < len(trimmedPattern) {
+	for i := 0; i < len(trimmedPattern); i++ {
 		if trimmedPattern[i] == '\\' && i+1 < len(trimmedPattern) {
 			next := trimmedPattern[i+1]
 			if next == '*' {
 				processed.WriteString(escapedStarPlaceholder)
-				i += 2
+				i++
 				continue
 			} else if next == '\\' {
 				processed.WriteString(escapedBackslashPlaceholder)
-				i += 2
+				i++
 				continue
 			}
 		}
 		processed.WriteByte(trimmedPattern[i])
-		i++
 	}
 	proc := processed.String()
 
@@ -132,46 +146,7 @@ func MatchWildcardPattern(pattern, command string) bool {
 		regexPattern = regexPattern[:len(regexPattern)-3] + "( .*)?"
 	}
 
-	return regexp.MustCompile("(?s)^" + regexPattern + "$").MatchString(command)
-}
-
-// compileWildcardPattern pre-compiles a wildcard pattern into a *regexp.Regexp.
-// Used at rule load time so hot-path matching uses pre-compiled regex.
-func compileWildcardPattern(pattern string) *regexp.Regexp {
-	trimmedPattern := strings.TrimSpace(pattern)
-
-	var processed strings.Builder
-	i := 0
-	for i < len(trimmedPattern) {
-		if trimmedPattern[i] == '\\' && i+1 < len(trimmedPattern) {
-			next := trimmedPattern[i+1]
-			if next == '*' {
-				processed.WriteString(escapedStarPlaceholder)
-				i += 2
-				continue
-			} else if next == '\\' {
-				processed.WriteString(escapedBackslashPlaceholder)
-				i += 2
-				continue
-			}
-		}
-		processed.WriteByte(trimmedPattern[i])
-		i++
-	}
-	proc := processed.String()
-
-	escaped := escapeRegexExceptStar(proc)
-	withWildcards := strings.ReplaceAll(escaped, "*", ".*")
-
-	regexPattern := escapedStarRe.ReplaceAllString(withWildcards, `\*`)
-	regexPattern = escapedBackslashRe.ReplaceAllString(regexPattern, `\\`)
-
-	unescapedStarCount := strings.Count(proc, "*")
-	if strings.HasSuffix(regexPattern, " .*") && unescapedStarCount == 1 {
-		regexPattern = regexPattern[:len(regexPattern)-3] + "( .*)?"
-	}
-
-	return regexp.MustCompile("(?s)^" + regexPattern + "$")
+	return regexPattern
 }
 
 // escapeRegexExceptStar escapes regex special characters except *.

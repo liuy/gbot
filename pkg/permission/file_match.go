@@ -3,6 +3,7 @@ package permission
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -128,20 +129,16 @@ func IsDangerousFilePath(path string) bool {
 	// Check dangerous directories (case-insensitive)
 	for _, seg := range segments {
 		lowerSeg := strings.ToLower(seg)
-		for _, dir := range dangerousDirectories {
-			if lowerSeg == dir {
-				return true
-			}
+		if slices.Contains(dangerousDirectories, lowerSeg) {
+			return true
 		}
 	}
 
 	// Check dangerous files (case-insensitive)
 	if fileName != "" {
 		lowerName := strings.ToLower(fileName)
-		for _, df := range dangerousFiles {
-			if lowerName == df {
-				return true
-			}
+		if slices.Contains(dangerousFiles, lowerName) {
+			return true
 		}
 	}
 
@@ -154,7 +151,7 @@ func ValidateFilePattern(pattern string) error {
 	normalized := normalizePath(pattern)
 	// Try matching against empty string — validates pattern syntax
 	_, err := doublestar.Match(normalized, "")
-	if err != nil && !isNoMatchError(err) {
+	if err != nil {
 		return fmt.Errorf("invalid file pattern %q: %w", pattern, err)
 	}
 	return nil
@@ -200,8 +197,7 @@ func normalizePath(p string) string {
 
 // containsPathTraversal checks for .. in path segments.
 func containsPathTraversal(p string) bool {
-	parts := strings.Split(p, "/")
-	for _, part := range parts {
+	for part := range strings.SplitSeq(p, "/") {
 		if part == ".." {
 			return true
 		}
@@ -219,9 +215,3 @@ func splitPathSegments(p string) []string {
 	return strings.Split(p, "/")
 }
 
-// isNoMatchError checks if the error is just "no match" — not a pattern error.
-func isNoMatchError(err error) bool {
-	// doublestar returns pattern errors with specific messages
-	// but an empty string not matching is not a pattern error
-	return false
-}

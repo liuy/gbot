@@ -253,13 +253,6 @@ func TestSplitPathSegmentsEmpty(t *testing.T) {
 	}
 }
 
-func TestIsNoMatchError(t *testing.T) {
-	got := isNoMatchError(nil)
-	if got {
-		t.Error("isNoMatchError(nil) should be false")
-	}
-}
-
 func TestMatchFilePathNoConfigRootPatternError(t *testing.T) {
 	badContent := "[invalid"
 	rule := Rule{

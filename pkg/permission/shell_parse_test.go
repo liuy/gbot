@@ -2,6 +2,7 @@ package permission
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -131,7 +132,7 @@ func TestStripAllLeadingEnvVars(t *testing.T) {
 	}
 }
 
-func TestNeedsShellParsing(t *testing.T) {
+func TestNeedsShellMatching(t *testing.T) {
 	tests := []struct {
 		cmd  string
 		want bool
@@ -145,7 +146,7 @@ func TestNeedsShellParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
-			got := needsShellParsing(tt.cmd)
+			got := needsShellMatching(tt.cmd)
 			if got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
@@ -168,14 +169,7 @@ func TestParseShellCommandCmdSubst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	found := false
-	for _, c := range cmds {
-		if c == "git status" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(cmds, "git status") {
 		t.Errorf("expected 'git status' in extracted commands, got %v", cmds)
 	}
 }

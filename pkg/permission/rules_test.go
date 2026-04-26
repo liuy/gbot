@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func ptr(s string) *string { return &s }
+func ptr(s string) *string { return new(s) }
 
 func TestParseRuleValue(t *testing.T) {
 	tests := []struct {

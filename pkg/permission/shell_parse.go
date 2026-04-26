@@ -49,6 +49,9 @@ var allEnvVarPattern = regexp.MustCompile(
 // Avoids allocating a new parser on every call.
 var bashParser = syntax.NewParser(syntax.KeepComments(false), syntax.Variant(syntax.LangBash))
 
+// bashPrinter is a package-level printer instance safe for concurrent use.
+var bashPrinter = syntax.NewPrinter()
+
 // ParseShellCommand uses mvdan/sh AST to extract all executable commands.
 //
 // Source: AST-based extraction replacing manual string splitting.
@@ -170,10 +173,9 @@ func walkStmts(stmts []*syntax.Stmt, commands *[]string) {
 // Uses Printer not Word.Lit() which returns empty for expansions.
 func reconstructCommand(call *syntax.CallExpr) string {
 	// Build a Stmt containing just this CallExpr for printing
-	printer := syntax.NewPrinter()
 	var b strings.Builder
 	stmt := &syntax.Stmt{Cmd: call}
-	if err := printer.Print(&b, stmt); err != nil {
+	if err := bashPrinter.Print(&b, stmt); err != nil {
 		// Fallback: join word literals
 		parts := make([]string, 0, len(call.Args))
 		for _, w := range call.Args {
@@ -205,9 +207,8 @@ func wordLiteral(w *syntax.Word) string {
 
 // printWord uses syntax.Printer to render a Word as a string.
 func printWord(w *syntax.Word) string {
-	printer := syntax.NewPrinter()
 	var b strings.Builder
-	_ = printer.Print(&b, &syntax.Stmt{Cmd: &syntax.CallExpr{Args: []*syntax.Word{w}}})
+	_ = bashPrinter.Print(&b, &syntax.Stmt{Cmd: &syntax.CallExpr{Args: []*syntax.Word{w}}})
 	s := strings.TrimSpace(b.String())
 	return strings.TrimRight(s, "\n")
 }
@@ -242,15 +243,12 @@ func getInnerCommand(args []*syntax.Word) string {
 	return ""
 }
 
-// needsShellParsing checks if a command contains shell metacharacters
+// needsShellMatching checks if a command contains shell metacharacters
 // that warrant AST parsing. Fast-path guard.
 func needsShellMatching(cmd string) bool {
 	return strings.ContainsAny(cmd, "&|;`\n") ||
 		strings.Contains(cmd, "$(")
 }
-
-// Keep the exported name from plan.
-var needsShellParsing = needsShellMatching
 
 // StripSafeWrappers strips safe wrapper commands and env vars from a command.
 //

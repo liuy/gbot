@@ -70,102 +70,14 @@ func NewChecker(rules []Rule) *Checker {
 // Returns ContentRules for tool-level content matching when ActionAllow.
 // Early return: ~40ns when no rules configured.
 func (c *Checker) Check(toolName string, input json.RawMessage) Decision {
-	// Phase 1: deny bare-tool-name check
-	if denyRules := c.denyByTool[toolName]; len(denyRules) > 0 {
-		for i := range denyRules {
-			r := denyRules[i]
-			if r.Value.RuleContent == nil {
-				// Bare tool name — matches all invocations
-				auditLog("deny", toolName, "", &r)
-				return Decision{
-					Action:  ActionDeny,
-					Message: fmt.Sprintf("tool %s is denied by rule from %s", toolName, r.Source),
-					Rule:    &r,
-				}
-			}
-		}
+	// Phase 1: deny
+	if d := c.checkPhase(toolName, c.denyByTool, c.denyWildcards, ActionDeny, "is denied"); d != nil {
+		return *d
 	}
 
-	// Phase 1b: deny wildcard tool names (MCP wildcards)
-	for i := range c.denyWildcards {
-		r := c.denyWildcards[i]
-		if matchToolWildcard(r.Value.ToolName, toolName) {
-			if r.Value.RuleContent == nil {
-				auditLog("deny", toolName, "", &r)
-				return Decision{
-					Action:  ActionDeny,
-					Message: fmt.Sprintf("tool %s is denied by wildcard rule from %s", toolName, r.Source),
-					Rule:    &r,
-				}
-			}
-		}
-	}
-
-	// Phase 1c: MCP server-level deny
-	// Source: permissions.ts:258-268 — bare "mcp__server" matches all tools from that server.
-	if mcpInfo := MCPInfoFromString(toolName); mcpInfo != nil {
-		bareServer := "mcp__" + mcpInfo.Server
-		if denyRules := c.denyByTool[bareServer]; len(denyRules) > 0 {
-			for i := range denyRules {
-				r := denyRules[i]
-				if r.Value.RuleContent == nil {
-					auditLog("deny", toolName, "", &r)
-					return Decision{
-						Action:  ActionDeny,
-						Message: fmt.Sprintf("tool %s is denied by server-level rule from %s", toolName, r.Source),
-						Rule:    &r,
-					}
-				}
-			}
-		}
-	}
-
-	// Phase 2: ask bare-tool-name check
-	if askRules := c.askByTool[toolName]; len(askRules) > 0 {
-		for i := range askRules {
-			r := askRules[i]
-			if r.Value.RuleContent == nil {
-				auditLog("ask", toolName, "", &r)
-				return Decision{
-					Action:  ActionAsk,
-					Message: fmt.Sprintf("tool %s requires permission by rule from %s", toolName, r.Source),
-					Rule:    &r,
-				}
-			}
-		}
-	}
-
-	// Phase 2b: ask wildcard tool names
-	for i := range c.askWildcards {
-		r := c.askWildcards[i]
-		if matchToolWildcard(r.Value.ToolName, toolName) {
-			if r.Value.RuleContent == nil {
-				auditLog("ask", toolName, "", &r)
-				return Decision{
-					Action:  ActionAsk,
-					Message: fmt.Sprintf("tool %s requires permission by wildcard rule from %s", toolName, r.Source),
-					Rule:    &r,
-				}
-			}
-		}
-	}
-
-	// Phase 2c: MCP server-level ask
-	if mcpInfo := MCPInfoFromString(toolName); mcpInfo != nil {
-		bareServer := "mcp__" + mcpInfo.Server
-		if askRules := c.askByTool[bareServer]; len(askRules) > 0 {
-			for i := range askRules {
-				r := askRules[i]
-				if r.Value.RuleContent == nil {
-					auditLog("ask", toolName, "", &r)
-					return Decision{
-						Action:  ActionAsk,
-						Message: fmt.Sprintf("tool %s requires permission by server-level rule from %s", toolName, r.Source),
-						Rule:    &r,
-					}
-				}
-			}
-		}
+	// Phase 2: ask
+	if d := c.checkPhase(toolName, c.askByTool, c.askWildcards, ActionAsk, "requires permission"); d != nil {
+		return *d
 	}
 
 	// Phase 3: passthrough — return ContentRules for tool-level matching
@@ -176,40 +88,88 @@ func (c *Checker) Check(toolName string, input json.RawMessage) Decision {
 	}
 }
 
+// checkPhase checks one phase (deny or ask) across three rule types:
+// exact tool name, wildcard tool name, and MCP server-level.
+// Returns nil if no bare-tool-name rule matches.
+func (c *Checker) checkPhase(toolName string, byTool map[string][]Rule, wildcards []Rule, action RuleAction, verb string) *Decision {
+	// 1. Exact tool name match
+	if d := checkBareRules(byTool[toolName], toolName, action, verb, ""); d != nil {
+		return d
+	}
+
+	// 2. Wildcard tool name match
+	for i := range wildcards {
+		r := wildcards[i]
+		if matchToolWildcard(r.Value.ToolName, toolName) && r.Value.RuleContent == nil {
+			return bareMatch(toolName, &r, action, verb, "wildcard ")
+		}
+	}
+
+	// 3. MCP server-level match
+	// Source: permissions.ts:258-268 — bare "mcp__server" matches all tools from that server.
+	if mcpInfo := MCPInfoFromString(toolName); mcpInfo != nil {
+		bareServer := "mcp__" + mcpInfo.Server
+		if d := checkBareRules(byTool[bareServer], toolName, action, verb, "server-level "); d != nil {
+			return d
+		}
+	}
+
+	return nil
+}
+
+// checkBareRules scans rules for a bare-tool-name match (RuleContent == nil).
+func checkBareRules(rules []Rule, toolName string, action RuleAction, verb, qualifier string) *Decision {
+	for i := range rules {
+		r := rules[i]
+		if r.Value.RuleContent == nil {
+			return bareMatch(toolName, &r, action, verb, qualifier)
+		}
+	}
+	return nil
+}
+
+// bareMatch constructs a Decision for a matched bare-tool-name rule.
+func bareMatch(toolName string, r *Rule, action RuleAction, verb, qualifier string) *Decision {
+	actionStr := "deny"
+	if action == ActionAsk {
+		actionStr = "ask"
+	}
+	auditLog(actionStr, toolName, "", r)
+	return &Decision{
+		Action:  action,
+		Message: fmt.Sprintf("tool %s %s by %srule from %s", toolName, verb, qualifier, r.Source),
+		Rule:    r,
+	}
+}
+
 // ContentRulesForTool returns content-specific rules for a tool name.
 // Used by tool.CheckPermissions() to evaluate content-level matching.
 func (c *Checker) ContentRulesForTool(toolName string) []Rule {
 	var result []Rule
-
-	// Exact match rules
-	for i := range c.denyByTool[toolName] {
-		r := c.denyByTool[toolName][i]
-		if r.Value.RuleContent != nil {
-			result = append(result, r)
-		}
-	}
-	for i := range c.askByTool[toolName] {
-		r := c.askByTool[toolName][i]
-		if r.Value.RuleContent != nil {
-			result = append(result, r)
-		}
-	}
-
-	// Wildcard tool name rules
-	for i := range c.denyWildcards {
-		r := c.denyWildcards[i]
-		if matchToolWildcard(r.Value.ToolName, toolName) && r.Value.RuleContent != nil {
-			result = append(result, r)
-		}
-	}
-	for i := range c.askWildcards {
-		r := c.askWildcards[i]
-		if matchToolWildcard(r.Value.ToolName, toolName) && r.Value.RuleContent != nil {
-			result = append(result, r)
-		}
-	}
-
+	collectContentRules(c.denyByTool[toolName], &result)
+	collectContentRules(c.askByTool[toolName], &result)
+	collectWildcardContentRules(c.denyWildcards, toolName, &result)
+	collectWildcardContentRules(c.askWildcards, toolName, &result)
 	return result
+}
+
+// collectContentRules appends rules with non-nil RuleContent from a slice.
+func collectContentRules(rules []Rule, result *[]Rule) {
+	for i := range rules {
+		if rules[i].Value.RuleContent != nil {
+			*result = append(*result, rules[i])
+		}
+	}
+}
+
+// collectWildcardContentRules appends matching wildcard rules with non-nil RuleContent.
+func collectWildcardContentRules(wildcards []Rule, toolName string, result *[]Rule) {
+	for i := range wildcards {
+		r := wildcards[i]
+		if matchToolWildcard(r.Value.ToolName, toolName) && r.Value.RuleContent != nil {
+			*result = append(*result, r)
+		}
+	}
 }
 
 // HasRules returns true if any rules are configured.
@@ -404,17 +364,7 @@ func MCPInfoFromString(toolName string) *MCPInfo {
 	return &MCPInfo{Server: parts[1], Tool: parts[2]}
 }
 
-// MatchesTool checks if this MCP info matches the given tool name.
-func (m *MCPInfo) MatchesTool(toolName string) bool {
-	info := MCPInfoFromString(toolName)
-	if info == nil {
-		return false
-	}
-	return info.Server == m.Server
-}
-
 // auditLog logs permission decisions.
-// auditLog logs permission decisions with sanitization.
 func auditLog(action, toolName, detail string, rule *Rule) {
 	// Sanitize for log injection
 	toolName = sanitizeForLog(toolName)
@@ -437,7 +387,6 @@ func auditLog(action, toolName, detail string, rule *Rule) {
 	}
 }
 
-// sanitizeForLog replaces control characters to prevent log injection.
 // sanitizeForLog replaces control characters to prevent log injection.
 func sanitizeForLog(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")

@@ -424,26 +424,6 @@ func TestMatchToolWildcard(t *testing.T) {
 	}
 }
 
-func TestMCPInfoMatchesTool(t *testing.T) {
-	m := &MCPInfo{Server: "myserver"}
-	tests := []struct {
-		toolName string
-		want     bool
-	}{
-		{toolName: "mcp__myserver__tool", want: true},
-		{toolName: "mcp__other__tool", want: false},
-		{toolName: "Bash", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.toolName, func(t *testing.T) {
-			got := m.MatchesTool(tt.toolName)
-			if got != tt.want {
-				t.Errorf("MatchesTool(%q) = %v, want %v", tt.toolName, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRegisterContentChecker(t *testing.T) {
 	var called bool
 	RegisterContentChecker("TestTool_content", func(input json.RawMessage, contentRules []Rule) RuleAction {
