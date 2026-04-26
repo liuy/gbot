@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1815,39 +1817,68 @@ func TestNewSubEngine_SetsAgentType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// truncateToolOutput tests
+// toolresult.MaybePersistLargeToolResult tests
 // ---------------------------------------------------------------------------
 
-func TestTruncateToolOutput(t *testing.T) {
+func TestPersistLargeToolResult_BelowThreshold(t *testing.T) {
 	t.Parallel()
 
-	// maxChars <= 0: pass through
+	// Short output: pass through unchanged
 	input := []byte("hello world")
-	got := truncateToolOutput(input, 0)
-	if string(got) != "hello world" {
-		t.Errorf("maxChars=0: got %q, want %q", string(got), "hello world")
+	pr := toolresult.MaybePersistLargeToolResult(input, "Test", 0, "test-id", "session-1")
+	if string(pr.Output) != "hello world" {
+		t.Errorf("short output: got %q, want %q", string(pr.Output), "hello world")
 	}
-	got = truncateToolOutput(input, -1)
-	if string(got) != "hello world" {
-		t.Errorf("maxChars=-1: got %q, want %q", string(got), "hello world")
-	}
-
-	// Short output: pass through
-	got = truncateToolOutput(input, 100)
-	if string(got) != "hello world" {
-		t.Errorf("short output: got %q, want %q", string(got), "hello world")
+	if pr.Persisted {
+		t.Error("short output should not be persisted")
 	}
 
-	// Exact length: no truncation
-	got = truncateToolOutput(input, 11)
-	if string(got) != "hello world" {
-		t.Errorf("exact length: got %q, want %q", string(got), "hello world")
+	// Negative threshold (Read tool): pass through
+	pr = toolresult.MaybePersistLargeToolResult(input, "Read", -1, "test-id", "session-1")
+	if string(pr.Output) != "hello world" {
+		t.Errorf("negative threshold: got %q, want %q", string(pr.Output), "hello world")
+	}
+}
+
+func TestPersistLargeToolResult_OverThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	defer toolresult.ResetDirCache()
+
+	// Create large JSON output (double-wrapped string)
+	data := strings.Repeat("hello world ", 10000) // ~120K bytes
+	validJSON, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
 	}
 
-	// Truncation: output cut at maxChars + suffix
-	got = truncateToolOutput(input, 5)
-	if string(got) != "hello\n\n[Output truncated]" {
-		t.Errorf("truncated: got %q, want %q", string(got), "hello\n\n[Output truncated]")
+	pr := toolresult.MaybePersistLargeToolResult(validJSON, "Bash", 30000, "test-tool-use-id", "session-abc")
+
+	// Output must be valid JSON
+	if !json.Valid(pr.Output) {
+		t.Errorf("persisted output is not valid JSON: %q", pr.Output[:200])
+	}
+
+	// Must be persisted
+	if !pr.Persisted {
+		t.Error("large output should be persisted")
+	}
+	if pr.FilePath == "" {
+		t.Error("FilePath should be set when persisted")
+	}
+
+	// Preview should contain the tag
+	var preview string
+	if err := json.Unmarshal(pr.Output, &preview); err != nil {
+		t.Fatalf("unmarshal preview: %v", err)
+	}
+	if !strings.Contains(preview, "<persisted-output>") {
+		t.Error("preview should contain <persisted-output> tag")
+	}
+
+	// File should exist on disk
+	if _, err := os.Stat(pr.FilePath); os.IsNotExist(err) {
+		t.Errorf("persisted file should exist at %s", pr.FilePath)
 	}
 }
 

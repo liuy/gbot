@@ -9,6 +9,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -836,3 +837,33 @@ func (d *denyTestTool) InterruptBehavior() tool.InterruptBehavior { return tool.
 func (d *denyTestTool) Prompt() string                            { return "" }
 func (d *denyTestTool) RenderResult(any) string                     { return "" }
 func (d *denyTestTool) MaxResultSize() int                         { return 50000 }
+
+// ---------------------------------------------------------------------------
+// Regression: persisted output must be valid JSON
+// ---------------------------------------------------------------------------
+
+func TestPersistedOutput_ValidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	defer toolresult.ResetDirCache()
+
+	// Simulate what marshalToolOutput produces: a valid JSON string
+	data := strings.Repeat("hello world ", 1000)
+	validJSON, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal setup data: %v", err)
+	}
+	if !json.Valid(validJSON) {
+		t.Fatal("setup: marshal output should be valid JSON")
+	}
+
+	// Persist — output must remain valid JSON
+	pr := toolresult.MaybePersistLargeToolResult(validJSON, "Bash", 100, "test-id", "session-1")
+
+	if !json.Valid(pr.Output) {
+		t.Errorf("persisted output is not valid JSON: %q", pr.Output[:200])
+	}
+	if !pr.Persisted {
+		t.Error("large output should be persisted")
+	}
+}

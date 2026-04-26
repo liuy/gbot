@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -107,6 +109,15 @@ type Engine struct {
 	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
 	permissionChecker permission.PermissionChecker
 
+	// contentReplacementState tracks per-message tool result budget decisions
+	// across turns for prompt cache stability.
+	// TS: ContentReplacementState (toolResultStorage.ts:390-393)
+	contentReplacementState *toolresult.ContentReplacementState
+
+	// recordWriter persists ContentReplacementRecords to transcript storage.
+	// Set via SetRecordWriter after engine construction when the store is available.
+	// TS: writeToTranscript callback in applyToolResultBudget (toolResultStorage.ts:924-936).
+	recordWriter func([]toolresult.ContentReplacementRecord)
 }
 
 // Params holds the constructor arguments for Engine.
@@ -184,22 +195,23 @@ func New(p *Params) *Engine {
 	toolOrder := slices.Sorted(maps.Keys(toolMap))
 
 	return &Engine{
-		provider:          p.Provider,
-		tools:             toolMap,
-		toolOrder:         toolOrder,
-		toolsProvider:     toolsProvider,
-		model:             p.Model,
-		maxTokens:         p.MaxTokens,
-		logger:            p.Logger,
-		tokenBudget:       p.TokenBudget,
-		dispatcher:        p.Dispatcher,
-		notifications:     &notificationQueue{},
-		maxTurns:          50,
-		compactor:         p.Compactor,
-		autoCompactConfig: p.AutoCompact,
-		mcpRegistry:       p.MCPRegistry,
-		hooks:             p.Hooks,
-		permissionChecker: p.PermissionChecker,
+		provider:                p.Provider,
+		tools:                   toolMap,
+		toolOrder:               toolOrder,
+		toolsProvider:           toolsProvider,
+		model:                   p.Model,
+		maxTokens:               p.MaxTokens,
+		logger:                  p.Logger,
+		tokenBudget:             p.TokenBudget,
+		dispatcher:              p.Dispatcher,
+		notifications:           &notificationQueue{},
+		maxTurns:                50,
+		compactor:               p.Compactor,
+		autoCompactConfig:       p.AutoCompact,
+		mcpRegistry:             p.MCPRegistry,
+		hooks:                   p.Hooks,
+		permissionChecker:       p.PermissionChecker,
+		contentReplacementState: toolresult.NewContentReplacementState(),
 	}
 }
 
@@ -617,6 +629,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 	// Marshal messages for the API request
 	apiMessages := e.marshalMessages()
+
+	// Apply per-message tool result budget (TS: applyToolResultBudget).
+	// Replaces large tool results with previews when aggregate per-message
+	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
+	apiMessages = e.applyBudget(apiMessages)
 
 	// Enable prompt caching: wrap system prompt into structured blocks
 	// so applyCacheControlToSystem can inject cache_control markers.
@@ -1080,7 +1097,64 @@ func (e *Engine) marshalMessages() []types.Message {
 	return result
 }
 
-// AddSystemMessage adds a system message to the conversation.
+// applyBudget applies the per-message tool result budget to API messages.
+// Converts types.Message → toolresult.BudgetMessage, runs the budget algorithm,
+// then copies modified tool_result content back to the types.Message slice.
+func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
+	if e.contentReplacementState == nil {
+		return msgs
+	}
+
+	// Convert to budget messages.
+	budgetMsgs := make([]toolresult.BudgetMessage, len(msgs))
+	for i, msg := range msgs {
+		blocks := make([]toolresult.BudgetBlock, len(msg.Content))
+		for j, b := range msg.Content {
+			blocks[j] = toolresult.BudgetBlock{
+				Type:      string(b.Type),
+				ID:        b.ID,
+				Name:      b.Name,
+				ToolUseID: b.ToolUseID,
+				Content:   b.Content,
+			}
+		}
+		budgetMsgs[i] = toolresult.BudgetMessage{
+			ID:      msg.ID,
+			Role:    string(msg.Role),
+			Content: blocks,
+		}
+	}
+
+	// Apply budget.
+	skipNames := map[string]bool{"Read": true} // Read has Infinity limit — never budget
+	result, records := toolresult.EnforceToolResultBudget(budgetMsgs, e.contentReplacementState, e.sessionID, skipNames)
+
+	// Persist records to transcript for session resume stability.
+	if len(records) > 0 && e.recordWriter != nil {
+		e.recordWriter(records)
+	}
+
+	// Copy modified content back.
+	changed := false
+	for i := range msgs {
+		if result[i].Role != "user" {
+			continue
+		}
+		for j := range result[i].Content {
+			b := &result[i].Content[j]
+			if b.Type == "tool_result" && !bytes.Equal(b.Content, msgs[i].Content[j].Content) {
+				msgs[i].Content[j].Content = b.Content
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		e.logger.Debug("applyBudget: modified tool result content")
+	}
+
+	return msgs
+}
 func (e *Engine) AddSystemMessage(content string) {
 	e.appendMessage(types.Message{
 		Role: types.RoleSystem,
@@ -1242,6 +1316,14 @@ func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {
 	e.mu.Unlock()
 }
 
+// SetRecordWriter configures the callback for persisting ContentReplacementRecords.
+// TS: writeToTranscript callback (toolResultStorage.ts:924-936).
+func (e *Engine) SetRecordWriter(fn func([]toolresult.ContentReplacementRecord)) {
+	e.mu.Lock()
+	e.recordWriter = fn
+	e.mu.Unlock()
+}
+
 // UpdateAutoCompactConfig updates only the auto-compact configuration
 // without replacing the compactor. Used during model switch to update
 // context window and max tokens.
@@ -1334,25 +1416,26 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 
 	return &Engine{
-		provider:          e.provider,
-		tools:             opts.Tools,
-		toolOrder:         toolOrder,
-		model:             model,
-		maxTokens:         e.maxTokens,
-		logger:            e.logger,
-		messages:          []types.Message{},
-		tokenBudget:       0, // sub-agents bypass budget checks via isSubagent
-		turnCount:         0,
-		dispatcher:        dispatcher,
-		notifications:     &notificationQueue{},
-		isSubagent:        true,
-		agentType:         opts.AgentType,
-		maxTurns:          subMaxTurns(opts.MaxTurns),
-		compactor:         e.compactor,
-		autoCompactConfig: e.autoCompactConfig,
-		mcpRegistry:       e.mcpRegistry,
-		hooks:             e.hooks,
-		permissionChecker: e.permissionChecker,
+		provider:                e.provider,
+		tools:                   opts.Tools,
+		toolOrder:               toolOrder,
+		model:                   model,
+		maxTokens:               e.maxTokens,
+		logger:                  e.logger,
+		messages:                []types.Message{},
+		tokenBudget:             0, // sub-agents bypass budget checks via isSubagent
+		turnCount:               0,
+		dispatcher:              dispatcher,
+		notifications:           &notificationQueue{},
+		isSubagent:              true,
+		agentType:               opts.AgentType,
+		maxTurns:                subMaxTurns(opts.MaxTurns),
+		compactor:               e.compactor,
+		autoCompactConfig:       e.autoCompactConfig,
+		mcpRegistry:             e.mcpRegistry,
+		hooks:                   e.hooks,
+		permissionChecker:       e.permissionChecker,
+		contentReplacementState: toolresult.CloneContentReplacementState(e.contentReplacementState),
 	}
 }
 

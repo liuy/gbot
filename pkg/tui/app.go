@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -199,6 +200,13 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 	a.sessionID = sessionID
 	a.projectDir = projectDir
 	a.lastPersistedIdx = lastPersistedIdx
+
+	// Wire record writer: persist ContentReplacementRecords to transcript.
+	a.engine.SetRecordWriter(func(records []toolresult.ContentReplacementRecord) {
+		if err := store.SaveContentReplacementRecords(sessionID, records); err != nil {
+			slog.Warn("failed to save content replacement records", "error", err)
+		}
+	})
 }
 
 // resetDisplayState zeros all App-level display fields for a clean session.

@@ -11,6 +11,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/permission"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -726,7 +727,8 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		}
 
 		outputJSON := marshalToolOutput(t, result.Data, true)
-		outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
+		pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
+		outputJSON = pr.Output
 		displayOutput := t.RenderResult(result.Data)
 		if displayOutput == "" && lastDisplayOutput != "" {
 			displayOutput = lastDisplayOutput
@@ -767,7 +769,8 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 
 	outputJSON := marshalToolOutput(t, result.Data, true)
-	outputJSON = truncateToolOutput(outputJSON, t.MaxResultSize())
+	pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
+	outputJSON = pr.Output
 	displayOutput := t.RenderResult(result.Data)
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
@@ -785,16 +788,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 	e.applyContextModifier(tt, result)
 	e.firePostToolUseHook(tt, false)
-}
-
-// truncateToolOutput truncates tool output if it exceeds maxChars.
-// Source: TS applyToolResultBudget.
-func truncateToolOutput(output []byte, maxChars int) []byte {
-	if maxChars <= 0 || len(output) <= maxChars {
-		return output
-	}
-	truncated := output[:maxChars]
-	return append(truncated, []byte("\n\n[Output truncated]")...)
 }
 
 

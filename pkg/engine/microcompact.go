@@ -14,6 +14,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"math"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -412,6 +414,12 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 		newContent := make([]types.ContentBlock, len(messages[i].Content))
 		for j, block := range messages[i].Content {
 			newContent[j] = block
+			if block.Type == types.ContentTypeToolResult &&
+				bytes.Contains(block.Content, toolresult.PersistedOutputTagBytes) {
+				// Skip already-persisted tool results — they contain compact
+				// previews that must not be cleared (TS alignment).
+				continue
+			}
 			if block.Type == types.ContentTypeToolResult &&
 				clearSet[block.ToolUseID] &&
 				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` {

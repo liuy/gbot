@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -368,6 +369,16 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: -1, // -1 = no truncation (TS: Infinity)
+		CheckPermissions_: func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+			var in Input
+			if json.Unmarshal(input, &in) != nil {
+				return types.PermissionAllowDecision{}
+			}
+			if toolresult.IsToolResultPath(in.FilePath) {
+				return types.PermissionAllowDecision{}
+			}
+			return types.PermissionAllowDecision{}
+		},
 		Prompt_:            fileReadPrompt(),
 		RenderResult_:      renderResult,
 	})

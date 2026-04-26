@@ -636,16 +636,16 @@ type AgentLogEntry struct {
 
 // ToolCallView renders a tool invocation within a message.
 type ToolCallView struct {
-	ID        string
-	Name      string // raw tool name (e.g., "Bash", "Grep")
-	Summary   string // context-aware display name (e.g., "Listing 1 directory", "Found 5 matches")
-	Input     string
-	Output    string
-	IsError   bool
-	Done      bool
-	Elapsed   time.Duration
-	AgentLogs []AgentLogEntry // sub-agent tool call progress (nil for non-Agent tools)
-	ToolCount int             // total sub-agent tool calls (for summary line when done)
+	ID            string
+	Name          string // raw tool name (e.g., "Bash", "Grep")
+	Summary       string // context-aware display name (e.g., "Listing 1 directory", "Found 5 matches")
+	Input         string
+	Output        string
+	IsError       bool
+	Done          bool
+	Elapsed       time.Duration
+	AgentLogs     []AgentLogEntry // sub-agent tool call progress (nil for non-Agent tools)
+	ToolCount     int             // total sub-agent tool calls (for summary line when done)
 	TokensIn  int             // sub-agent input tokens (for summary line when done)
 	TokensOut int             // sub-agent output tokens (for summary line when done)
 }
