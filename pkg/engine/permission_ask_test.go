@@ -711,3 +711,56 @@ func TestSetSubEngine_Integration(t *testing.T) {
 		t.Error("SetSubEngine(false) should clear isSubEngine flag")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regression: json.RawMessage with literal \n breaks Marshal
+// ---------------------------------------------------------------------------
+
+func TestPermissionDeny_ResultBlock_MarshalsWithNewline(t *testing.T) {
+	// RED: executeTool deny path produces result blocks that must marshal.
+	// Bug: []byte(errMsg) with literal \n fails json.Marshal.
+	permChecker := permission.NewChecker([]permission.Rule{{
+		Value:  permission.RuleValue{ToolName: "TestTool"},
+		Action: permission.ActionDeny,
+		Source: "user",
+	}})
+	executor := NewStreamingToolExecutor(
+		map[string]tool.Tool{"TestTool": &denyTestTool{}},
+		nil,
+		func(evt types.QueryEvent) {},
+		context.Background(),
+	)
+	executor.SetPermissionChecker(permChecker)
+
+	result := executor.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "TestTool", Input: json.RawMessage(`{}`)},
+	})
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result block, got %d", len(result.ToolResultBlocks))
+	}
+	_, err := json.Marshal(result.ToolResultBlocks)
+	if err != nil {
+		t.Errorf("result block with newline message failed to marshal: %v", err)
+	}
+}
+
+type denyTestTool struct{}
+
+func (d *denyTestTool) Name() string                        { return "TestTool" }
+func (d *denyTestTool) Aliases() []string                   { return nil }
+func (d *denyTestTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (d *denyTestTool) InputSchema() json.RawMessage        { return json.RawMessage(`{}`) }
+func (d *denyTestTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (d *denyTestTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (d *denyTestTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (d *denyTestTool) IsDestructive(json.RawMessage) bool        { return true }
+func (d *denyTestTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (d *denyTestTool) IsEnabled() bool                           { return true }
+func (d *denyTestTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (d *denyTestTool) Prompt() string                            { return "" }
+func (d *denyTestTool) RenderResult(any) string                     { return "" }
+func (d *denyTestTool) MaxResultSize() int                         { return 50000 }

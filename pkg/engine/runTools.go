@@ -560,16 +560,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			// Phase 1: bare-tool deny
 			if decision.Action == permission.ActionDeny {
 				errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+				errBytes, _ := json.Marshal(errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     tt.ID,
-						Output:        []byte(errMsg),
+						Output:        errBytes,
 						DisplayOutput: errMsg,
 						IsError:       true,
 					},
 				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
 				return
 			}
 
@@ -578,16 +579,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					userDecision := e.askUser(tt, decision, "")
 					if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
 						errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+						errBytes, _ := json.Marshal(errMsg)
 						e.doEmit(types.QueryEvent{
 							Type: types.EventToolEnd,
 							ToolResult: &types.ToolResultEvent{
 								ToolUseID:     tt.ID,
-								Output:        []byte(errMsg),
+								Output:        errBytes,
 								DisplayOutput: errMsg,
 								IsError:       true,
 							},
 						})
-						tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+						tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
 						return
 					}
 				}
@@ -597,16 +599,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
 				if action == permission.ActionDeny {
 					errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+					errBytes, _ := json.Marshal(errMsg)
 					e.doEmit(types.QueryEvent{
 						Type: types.EventToolEnd,
 						ToolResult: &types.ToolResultEvent{
 							ToolUseID:     tt.ID,
-							Output:        []byte(errMsg),
+							Output:        errBytes,
 							DisplayOutput: errMsg,
 							IsError:       true,
 						},
 					})
-					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
 					return
 				}
 					if action == permission.ActionAsk {
@@ -619,16 +622,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 						}, matchedContent)
 						if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
 							errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+							errBytes, _ := json.Marshal(errMsg)
 							e.doEmit(types.QueryEvent{
 								Type: types.EventToolEnd,
 								ToolResult: &types.ToolResultEvent{
 									ToolUseID:     tt.ID,
-									Output:        []byte(errMsg),
+									Output:        errBytes,
 									DisplayOutput: errMsg,
 									IsError:       true,
 								},
 							})
-							tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+							tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
 							return
 						}
 					}
@@ -648,16 +652,17 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
 			if decision == hooks.HookDecisionBlock {
 				errMsg := "blocked by hook"
+				errBytes, _ := json.Marshal(errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     tt.ID,
-						Output:        []byte(errMsg),
+						Output:        errBytes,
 						DisplayOutput: errMsg,
 						IsError:       true,
 					},
 				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
 				return
 			}
 		}
