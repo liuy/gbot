@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -741,6 +742,77 @@ func TestPermissionDeny_ResultBlock_MarshalsWithNewline(t *testing.T) {
 	_, err := json.Marshal(result.ToolResultBlocks)
 	if err != nil {
 		t.Errorf("result block with newline message failed to marshal: %v", err)
+		// Verify rule-based deny message contains TS-aligned text
+		var msg string
+		if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &msg); err != nil {
+			t.Fatalf("unmarshal content: %v", err)
+		}
+		if !strings.Contains(msg, "Permission to use TestTool has been denied") {
+			t.Errorf("rule deny message should mention tool name, got: %q", msg)
+		}
+		if !strings.Contains(msg, "IMPORTANT") {
+			t.Errorf("rule deny message should contain workaround guidance, got: %q", msg)
+		}
+	}
+}
+
+
+func TestPermissionDeny_UserRejectMessage(t *testing.T) {
+	// Ask rule -> user denies -> message should be user-reject, not rule-deny.
+	permChecker := permission.NewChecker([]permission.Rule{{
+		Value:  permission.RuleValue{ToolName: "AskTool"},
+		Action: permission.ActionAsk,
+		Source: "user",
+	}})
+
+	askCh := make(chan *types.PermissionAskEvent, 1)
+	executor := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": &denyTestTool{}},
+		nil,
+		func(evt types.QueryEvent) {
+			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+				askCh <- evt.PermissionAsk
+			}
+		},
+		context.Background(),
+	)
+	executor.SetPermissionChecker(permChecker)
+
+	resultCh := make(chan *ExecuteAllResult, 1)
+	go func() {
+		resultCh <- executor.ExecuteAll([]types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "AskTool", Input: json.RawMessage(`{}`)},
+		})
+	}()
+
+	// Wait for ask event, then deny
+	select {
+	case ask := <-askCh:
+		ask.ResponseCh <- types.UserDecisionDeny
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for permission ask")
+	}
+
+	var result *ExecuteAllResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ExecuteAll result")
+	}
+
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result block, got %d", len(result.ToolResultBlocks))
+	}
+
+	var content string
+	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &content); err != nil {
+		t.Fatalf("unmarshal content: %v", err)
+	}
+	if !strings.Contains(content, "The user doesn't want to proceed") {
+		t.Errorf("user reject should contain user-facing message, got: %q", content)
+	}
+	if strings.Contains(content, "IMPORTANT") {
+		t.Errorf("user reject should NOT contain workaround guidance, got: %q", content)
 	}
 }
 

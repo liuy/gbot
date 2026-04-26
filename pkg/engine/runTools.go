@@ -15,6 +15,38 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Permission deny messages — source: src/utils/messages.ts:210-232
+// ---------------------------------------------------------------------------
+
+// userRejectMessage is returned when the user actively rejects a tool via the
+// permission dialog. Instructs the LLM to STOP and wait.
+// Source: messages.ts:212 — REJECT_MESSAGE
+const userRejectMessage = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+
+// subAgentRejectMessage is returned when a sub-engine's tool is denied.
+// Source: messages.ts:216 — SUBAGENT_REJECT_MESSAGE
+const subAgentRejectMessage = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task."
+
+// denialWorkaroundGuidance is appended to rule-based deny messages.
+// Source: messages.ts:226 — DENIAL_WORKAROUND_GUIDANCE
+const denialWorkaroundGuidance = "IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request, STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed."
+
+// ruleDenyMessage returns the error message for a rule-based tool deny.
+// Source: messages.ts:234 — AUTO_REJECT_MESSAGE
+func ruleDenyMessage(toolName string) string {
+	return fmt.Sprintf("Permission to use %s has been denied. %s", toolName, denialWorkaroundGuidance)
+}
+
+// userOrSubRejectMessage returns the appropriate rejection message based on
+// whether the executor is a sub-engine.
+func (e *StreamingToolExecutor) userOrSubRejectMessage() string {
+	if e.isSubEngine {
+		return subAgentRejectMessage
+	}
+	return userRejectMessage
+}
+
+// ---------------------------------------------------------------------------
 // Tool tracking types — source: StreamingToolExecutor.ts:19-32
 // ---------------------------------------------------------------------------
 
@@ -557,9 +589,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		if e.permChecker != nil {
 			decision := e.permChecker.Check(tt.Name, tt.Input)
 
-			// Phase 1: bare-tool deny
+			// Phase 1: bare-tool deny (rule-based, no user interaction)
 			if decision.Action == permission.ActionDeny {
-				errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+				errMsg := ruleDenyMessage(tt.Name)
 				errBytes, _ := json.Marshal(errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
@@ -578,7 +610,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				if decision.Action == permission.ActionAsk {
 					userDecision := e.askUser(tt, decision, "")
 					if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
-						errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+						errMsg := e.userOrSubRejectMessage()
 						errBytes, _ := json.Marshal(errMsg)
 						e.doEmit(types.QueryEvent{
 							Type: types.EventToolEnd,
@@ -598,7 +630,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			if len(decision.ContentRules) > 0 {
 				action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
 				if action == permission.ActionDeny {
-					errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+					errMsg := ruleDenyMessage(tt.Name)
 					errBytes, _ := json.Marshal(errMsg)
 					e.doEmit(types.QueryEvent{
 						Type: types.EventToolEnd,
@@ -621,7 +653,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 							Message: fmt.Sprintf("tool %s requires permission by content rule", tt.Name),
 						}, matchedContent)
 						if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
-							errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+							errMsg := e.userOrSubRejectMessage()
 							errBytes, _ := json.Marshal(errMsg)
 							e.doEmit(types.QueryEvent{
 								Type: types.EventToolEnd,
@@ -651,7 +683,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			}
 			decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
 			if decision == hooks.HookDecisionBlock {
-				errMsg := "blocked by hook"
+				errMsg := fmt.Sprintf("Execution stopped by PreToolUse hook for tool %s", tt.Name)
 				errBytes, _ := json.Marshal(errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
