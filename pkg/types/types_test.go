@@ -423,6 +423,7 @@ func TestQueryEventTypeConstants(t *testing.T) {
 		{"tool_end", types.EventToolEnd, "tool_end"},
 		{"usage", types.EventUsage, "usage"},
 		{"error", types.EventError, "error"},
+		{"permission_ask", types.EventPermissionAsk, "permission_ask"},
 	}
 
 	for _, tc := range tests {
@@ -831,5 +832,141 @@ func TestInvokedSkillInfo(t *testing.T) {
 	}
 	if info.AgentID != "agent-1" {
 		t.Errorf("AgentID = %q, want %q", info.AgentID, "agent-1")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Permission ask dialog types
+// ---------------------------------------------------------------------------
+
+func TestPermissionUserDecisionConstants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		d    types.PermissionUserDecision
+		want string
+	}{
+		{"allow", types.UserDecisionAllow, "allow"},
+		{"deny", types.UserDecisionDeny, "deny"},
+		{"allow_always", types.UserDecisionAllowAlways, "allow_always"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if string(tc.d) != tc.want {
+				t.Errorf("PermissionUserDecision %s = %q, want %q", tc.name, tc.d, tc.want)
+			}
+		})
+	}
+}
+
+func TestPermissionAskEventFields(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan types.PermissionUserDecision, 1)
+	evt := types.PermissionAskEvent{
+		ToolName:   "Bash",
+		Input:      json.RawMessage(`{"command":"rm -rf /tmp"}`),
+		Message:    "permission required",
+		RuleDetail: "Bash(rm -rf *) from project",
+		AgentType:  "",
+		ResponseCh: ch,
+	}
+
+	if evt.ToolName != "Bash" {
+		t.Errorf("ToolName = %q, want %q", evt.ToolName, "Bash")
+	}
+	if evt.Message != "permission required" {
+		t.Errorf("Message = %q, want %q", evt.Message, "permission required")
+	}
+	if evt.RuleDetail != "Bash(rm -rf *) from project" {
+		t.Errorf("RuleDetail = %q, want %q", evt.RuleDetail, "Bash(rm -rf *) from project")
+	}
+	if evt.AgentType != "" {
+		t.Errorf("AgentType = %q, want empty", evt.AgentType)
+	}
+	if evt.ResponseCh == nil {
+		t.Error("ResponseCh should not be nil")
+	}
+}
+
+func TestPermissionAskEventResponseChRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan types.PermissionUserDecision, 1)
+	evt := types.PermissionAskEvent{
+		ToolName:   "Bash",
+		Input:      json.RawMessage(`{"command":"ls"}`),
+		Message:    "test",
+		ResponseCh: ch,
+	}
+
+	// Simulate TUI writing a decision
+	evt.ResponseCh <- types.UserDecisionAllow
+
+	// Engine reads the decision
+	select {
+	case d := <-evt.ResponseCh:
+		if d != types.UserDecisionAllow {
+			t.Errorf("got %q, want %q", d, types.UserDecisionAllow)
+		}
+	default:
+		t.Fatal("expected decision on ResponseCh but got nothing")
+	}
+}
+
+func TestPermissionAskEventWithAgentType(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan types.PermissionUserDecision, 1)
+	evt := types.PermissionAskEvent{
+		ToolName:   "Bash",
+		Input:      json.RawMessage(`{"command":"ls"}`),
+		Message:    "agent permission",
+		AgentType:  "Explore",
+		ResponseCh: ch,
+	}
+
+	if evt.AgentType != "Explore" {
+		t.Errorf("AgentType = %q, want %q", evt.AgentType, "Explore")
+	}
+}
+
+func TestEventPermissionAskConstant(t *testing.T) {
+	t.Parallel()
+
+	if string(types.EventPermissionAsk) != "permission_ask" {
+		t.Errorf("EventPermissionAsk = %q, want %q", types.EventPermissionAsk, "permission_ask")
+	}
+}
+
+func TestQueryEventPermissionAskField(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan types.PermissionUserDecision, 1)
+	evt := types.QueryEvent{
+		Type: types.EventPermissionAsk,
+		PermissionAsk: &types.PermissionAskEvent{
+			ToolName:   "Write",
+			Input:      json.RawMessage(`{"file_path":"test.go"}`),
+			Message:    "write permission required",
+			RuleDetail: "Write(*.go) from user settings",
+			ResponseCh: ch,
+		},
+	}
+
+	if evt.Type != types.EventPermissionAsk {
+		t.Errorf("Type = %q, want %q", evt.Type, types.EventPermissionAsk)
+	}
+	if evt.PermissionAsk == nil {
+		t.Fatal("PermissionAsk should not be nil")
+	}
+	if evt.PermissionAsk.ToolName != "Write" {
+		t.Errorf("ToolName = %q, want %q", evt.PermissionAsk.ToolName, "Write")
+	}
+	if evt.PermissionAsk.RuleDetail != "Write(*.go) from user settings" {
+		t.Errorf("RuleDetail = %q, want %q", evt.PermissionAsk.RuleDetail, "Write(*.go) from user settings")
 	}
 }

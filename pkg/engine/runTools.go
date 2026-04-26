@@ -90,6 +90,21 @@ type StreamingToolExecutor struct {
 	// permChecker is the permission rules checker. Nil = default allow.
 	// Set by engine before tool execution. Inherited by sub-engines.
 	permChecker permission.PermissionChecker
+
+	// sessionAllowed caches "Allow always" decisions for the current session.
+	// Key format: "ToolName" or "ToolName:contentPattern".
+	// 修正 3: session-scoped allow cache
+	sessionAllowed map[string]bool
+
+	// askMu serializes concurrent ask dialogs. Only one ask at a time.
+	// 修正 4: concurrent ask serialization
+	askMu sync.Mutex
+
+	// isSubEngine is true for sub-engine executors. Sub-engines auto-deny asks
+	// since they run in the background and can't show interactive dialogs.
+	// 修正 6: sub-engine ask strategy
+	isSubEngine bool
+
 }
 
 // NewStreamingToolExecutor creates a new concurrent tool executor.
@@ -134,6 +149,84 @@ func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
 // Called from engine.go when creating the streaming executor.
 func (e *StreamingToolExecutor) SetPermissionChecker(pc permission.PermissionChecker) {
 	e.permChecker = pc
+}
+
+// SetSubEngine marks this executor as running inside a sub-engine.
+// 修正 6: sub-engine ask strategy
+func (e *StreamingToolExecutor) SetSubEngine(v bool) {
+	e.isSubEngine = v
+}
+
+// askUser asks the user for permission via TUI dialog.
+// Blocks until the user responds, a context is cancelled, or the executor is discarded.
+// 修正 2: uses doEmit. 修正 3: sessionAllowed cache. 修正 4: askMu serialization.
+// 修正 6: sub-engine auto-deny. 修正 7: three-way select.
+func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Decision, matchedContent string) types.PermissionUserDecision {
+	// 修正 6: sub-engine directly deny
+	if e.isSubEngine {
+		return types.UserDecisionDeny
+	}
+
+	// 修正 3: check session-scoped cache
+	cacheKey := tt.Name
+	if matchedContent != "" {
+		cacheKey = tt.Name + ":" + matchedContent
+	}
+	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
+		return types.UserDecisionAllow
+	}
+
+	// 修正 4: serialize concurrent asks
+	e.askMu.Lock()
+	defer e.askMu.Unlock()
+
+	// Double-check: cache may have been updated while waiting for lock
+	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
+		return types.UserDecisionAllow
+	}
+
+	decisionCh := make(chan types.PermissionUserDecision, 1)
+
+	// Build RuleDetail string from matched rule
+	ruleDetail := ""
+	if decision.Rule != nil {
+		ruleDetail = decision.Rule.Value.ToolName
+		if decision.Rule.Value.RuleContent != nil {
+			ruleDetail += "(" + *decision.Rule.Value.RuleContent + ")"
+		}
+		ruleDetail += " from " + decision.Rule.Source + " settings"
+	}
+
+	e.doEmit(types.QueryEvent{ // 修正 2: use doEmit
+		Type: types.EventPermissionAsk,
+		PermissionAsk: &types.PermissionAskEvent{
+			ToolName:   tt.Name,
+			Input:      tt.Input,
+			Message:    decision.Message,
+			RuleDetail: ruleDetail,
+			ResponseCh: decisionCh,
+		},
+	})
+
+	// 修正 7: three-way select
+	select {
+	case d, ok := <-decisionCh:
+		if !ok {
+			return types.UserDecisionDeny
+		}
+		if d == types.UserDecisionAllowAlways {
+			// 修正 3: write to session cache
+			if e.sessionAllowed == nil {
+				e.sessionAllowed = make(map[string]bool)
+			}
+			e.sessionAllowed[cacheKey] = true
+		}
+		return d
+	case <-e.rootCtx.Done():
+		return types.UserDecisionDeny
+	case <-e.siblingCtx.Done():
+		return types.UserDecisionDeny
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -480,25 +573,28 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				return
 			}
 
-			// Phase 2: bare-tool ask (Phase 1: treat as deny)
-			if decision.Action == permission.ActionAsk {
-				errMsg := fmt.Sprintf("permission required: %s", decision.Message)
-				e.doEmit(types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     tt.ID,
-						Output:        []byte(errMsg),
-						DisplayOutput: errMsg,
-						IsError:       true,
-					},
-				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
-				return
-			}
+				// Phase 2: bare-tool ask
+				if decision.Action == permission.ActionAsk {
+					userDecision := e.askUser(tt, decision, "")
+					if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
+						errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+						e.doEmit(types.QueryEvent{
+							Type: types.EventToolEnd,
+							ToolResult: &types.ToolResultEvent{
+								ToolUseID:     tt.ID,
+								Output:        []byte(errMsg),
+								DisplayOutput: errMsg,
+								IsError:       true,
+							},
+						})
+						tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+						return
+					}
+				}
 
 			// Phase 3: content-level matching
 			if len(decision.ContentRules) > 0 {
-				action := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
+				action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
 				if action == permission.ActionDeny {
 					errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
 					e.doEmit(types.QueryEvent{
@@ -513,20 +609,29 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
 					return
 				}
-				if action == permission.ActionAsk {
-					errMsg := fmt.Sprintf("permission required: %s content rule matched", tt.Name)
-					e.doEmit(types.QueryEvent{
-						Type: types.EventToolEnd,
-						ToolResult: &types.ToolResultEvent{
-							ToolUseID:     tt.ID,
-							Output:        []byte(errMsg),
-							DisplayOutput: errMsg,
-							IsError:       true,
-						},
-					})
-					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
-					return
-				}
+					if action == permission.ActionAsk {
+						// 修正 9: use pattern from checkContentPermissions (avoids double check)
+						matchedContent := matchedPattern
+
+						userDecision := e.askUser(tt, permission.Decision{
+							Action:  permission.ActionAsk,
+							Message: fmt.Sprintf("tool %s requires permission by content rule", tt.Name),
+						}, matchedContent)
+						if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
+							errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+							e.doEmit(types.QueryEvent{
+								Type: types.EventToolEnd,
+								ToolResult: &types.ToolResultEvent{
+									ToolUseID:     tt.ID,
+									Output:        []byte(errMsg),
+									DisplayOutput: errMsg,
+									IsError:       true,
+								},
+							})
+							tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+							return
+						}
+					}
 			}
 		}
 
@@ -759,8 +864,12 @@ func (e *StreamingToolExecutor) applyContextModifier(tt *TrackedTool, result *to
 // checkContentPermissions performs content-level permission matching for a tool.
 // Source: 修正 15 — Checker does bare-tool matching; content matching is tool-specific.
 // P2-5: dispatches to registered content checkers instead of hardcoded switch.
-func (e *StreamingToolExecutor) checkContentPermissions(toolName string, input json.RawMessage, contentRules []permission.Rule) permission.RuleAction {
-	return permission.CheckContent(toolName, input, contentRules)
+func (e *StreamingToolExecutor) checkContentPermissions(toolName string, input json.RawMessage, contentRules []permission.Rule) (permission.RuleAction, string) {
+	action := permission.CheckContent(toolName, input, contentRules)
+	if action == permission.ActionAsk {
+		return action, permission.ExtractContentPattern(toolName, input, contentRules)
+	}
+	return action, ""
 }
 
 // extractErrMsg extracts the human-readable error message from a tool result

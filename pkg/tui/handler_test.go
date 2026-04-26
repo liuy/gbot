@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -546,4 +547,114 @@ func TestConvertEventToMsg_ToolRun(t *testing.T) {
 	if trm.Name != "Bash" {
 		t.Errorf("Name = %q, want Bash", trm.Name)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Permission ask event conversion and delivery
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_PermissionAsk(t *testing.T) {
+	h := NewTUIHandler()
+	ch := make(chan types.PermissionUserDecision, 1)
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventPermissionAsk,
+		PermissionAsk: &types.PermissionAskEvent{
+			ToolName:   "Bash",
+			Input:      json.RawMessage(`{"command":"rm -rf /tmp"}`),
+			Message:    "permission required",
+			RuleDetail: "Bash(rm -rf *)",
+			ResponseCh: ch,
+		},
+	})
+	pm, ok := msg.(permissionAskMsg)
+	if !ok {
+		t.Fatalf("expected permissionAskMsg, got %T", msg)
+	}
+	if pm.event == nil {
+		t.Fatal("event should not be nil")
+	}
+	if pm.event.ToolName != "Bash" {
+		t.Errorf("ToolName = %q, want Bash", pm.event.ToolName)
+	}
+	if pm.event.RuleDetail != "Bash(rm -rf *)" {
+		t.Errorf("RuleDetail = %q, want Bash(rm -rf *)", pm.event.RuleDetail)
+	}
+}
+
+func TestConvertEventToMsg_PermissionAsk_NilPermissionAsk(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:         types.EventPermissionAsk,
+		PermissionAsk: nil,
+	})
+	if msg != nil {
+		t.Errorf("nil PermissionAsk should return nil, got %T", msg)
+	}
+}
+
+func TestTUIHandler_PermissionAsk_DeliveredToChannel(t *testing.T) {
+	h := NewTUIHandler()
+	ch := make(chan types.PermissionUserDecision, 1)
+	h.Handle(types.QueryEvent{
+		Type: types.EventPermissionAsk,
+		PermissionAsk: &types.PermissionAskEvent{
+			ToolName:   "Write",
+			Input:      json.RawMessage(`{"file_path":"test.go"}`),
+			Message:    "write permission",
+			ResponseCh: ch,
+		},
+	})
+
+	// Should be delivered immediately (buffer has room)
+	select {
+	case msg := <-h.appCh:
+		pm, ok := msg.(permissionAskMsg)
+		if !ok {
+			t.Fatalf("expected permissionAskMsg, got %T", msg)
+		}
+		if pm.event.ToolName != "Write" {
+			t.Errorf("ToolName = %q, want Write", pm.event.ToolName)
+		}
+	default:
+		t.Fatal("permission ask event should be delivered to appCh")
+	}
+
+	// Should NOT be counted as dropped
+	if h.Dropped() != 0 {
+		t.Errorf("Dropped = %d, want 0", h.Dropped())
+	}
+}
+
+func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
+	h := NewTUIHandler()
+	// Fill the buffer completely so the blocking write cannot succeed
+	for range 256 {
+		h.appCh <- textDeltaMsg{Text: "fill"}
+	}
+
+	ch := make(chan types.PermissionUserDecision, 1)
+	done := make(chan struct{})
+	go func() {
+		h.Handle(types.QueryEvent{
+			Type: types.EventPermissionAsk,
+			PermissionAsk: &types.PermissionAskEvent{
+				ToolName:   "Bash",
+				Input:      json.RawMessage(`{"command":"ls"}`),
+				Message:    "test",
+				ResponseCh: ch,
+			},
+		})
+		close(done)
+	}()
+
+	// Wait for timeout + auto-deny (5s timeout)
+	select {
+	case d := <-ch:
+		if d != types.UserDecisionDeny {
+			t.Errorf("auto-deny decision = %q, want deny", d)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for auto-deny")
+	}
+	<-done // ensure Handle returns
 }

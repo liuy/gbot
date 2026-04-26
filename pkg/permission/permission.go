@@ -328,6 +328,27 @@ func ExtractFilePath(input json.RawMessage) string {
 	return v.FilePath
 }
 
+// ExtractContentPattern returns a human-readable description of the first matching
+// content rule for display in the permission dialog. Returns "" if no ask rule matches.
+func ExtractContentPattern(toolName string, input json.RawMessage, contentRules []Rule) string {
+	// Re-use CheckContent to find the action; if it's not ActionAsk, return "".
+	if action := CheckContent(toolName, input, contentRules); action != ActionAsk {
+		return ""
+	}
+	// Find the first ask rule that matches for display purposes.
+	for _, r := range contentRules {
+		if r.Action != ActionAsk {
+			continue
+		}
+		pattern := r.Value.ToolName
+		if r.Value.RuleContent != nil {
+			pattern += "(" + *r.Value.RuleContent + ")"
+		}
+		return pattern
+	}
+	return ""
+}
+
 // containsWildcard checks if a tool name contains glob wildcard characters.
 func containsWildcard(name string) bool {
 	return strings.Contains(name, "*")

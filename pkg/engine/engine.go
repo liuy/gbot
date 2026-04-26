@@ -106,6 +106,7 @@ type Engine struct {
 	// Nil when no permission rules are configured (default allow).
 	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
 	permissionChecker permission.PermissionChecker
+
 }
 
 // Params holds the constructor arguments for Engine.
@@ -816,6 +817,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						)
 					streamingExecutor.SetHooks(e.hooks, e.sessionID)
 					streamingExecutor.SetPermissionChecker(e.permissionChecker)
+					if e.isSubagent {
+						streamingExecutor.SetSubEngine(true)
+					}
 					}
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolRun,

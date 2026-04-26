@@ -3,6 +3,7 @@ package tui
 import (
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -28,11 +29,31 @@ func NewTUIHandler() *TUIHandler {
 
 // Handle converts a Hub event to a bubbletea message and sends to appCh.
 // Non-blocking: drops events if the buffer is full, incrementing the dropped counter.
+// Exception: permission ask events use a blocking write with timeout (修正 12),
+// because dropping them would leave the engine goroutine blocked forever.
 func (h *TUIHandler) Handle(event hub.Event) {
 	msg := h.convertEventToMsg(event)
 	if msg == nil {
 		return
 	}
+
+	// 修正 12: Permission ask events MUST be delivered.
+	// Block with timeout; if TUI is unresponsive, auto-deny to unblock engine.
+	if permMsg, ok := msg.(permissionAskMsg); ok {
+		select {
+		case h.appCh <- permMsg:
+		case <-time.After(5 * time.Second):
+			slog.Warn("TUIHandler: permission ask timed out, auto-denying")
+			if permMsg.event != nil && permMsg.event.ResponseCh != nil {
+				select {
+				case permMsg.event.ResponseCh <- types.UserDecisionDeny:
+				default:
+				}
+			}
+		}
+		return
+	}
+
 	select {
 	case h.appCh <- msg:
 	default:
@@ -228,6 +249,13 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 
 	case types.EventTurnEnd:
 		// Per-round end; TUI doesn't need to act on this currently.
+		return nil
+
+	case types.EventPermissionAsk:
+		// 修正 15: Convert to permissionAskMsg for TUI dialog overlay.
+		if evt.PermissionAsk != nil {
+			return permissionAskMsg{event: evt.PermissionAsk}
+		}
 		return nil
 	}
 

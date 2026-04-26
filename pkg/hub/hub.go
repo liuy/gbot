@@ -172,6 +172,11 @@ func logEngineEvent(event Event) {
 		errMsg := fmt.Sprintf("%v", event.Error)
 		slog.Info("engine:error", "error", errMsg)
 
+	case types.EventPermissionAsk:
+		if event.PermissionAsk != nil {
+			slog.Info("engine:permission_ask", "tool", event.PermissionAsk.ToolName)
+		}
+
 	default:
 		slog.Info("engine:unknown", "type", event.Type)
 	}

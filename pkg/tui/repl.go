@@ -553,6 +553,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.repl.PendingThinkingDone(m.Duration)
 		return true, a.readEvents()
 
+	case permissionAskMsg:
+		if m.event != nil {
+			detail := extractDetail(m.event.ToolName, m.event.Input)
+			a.permissionDialog = NewPermissionDialog(m.event, detail)
+		}
+		return true, a.readEvents()
+
 	case notificationPendingMsg:
 		if a.repl.IsStreaming() {
 			// Path A handles it — runTurns drains queue each iteration

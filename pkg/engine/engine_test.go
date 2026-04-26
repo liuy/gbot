@@ -15,7 +15,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
+"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -3325,3 +3325,4 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 			"All tools registered before engine.New() but count is wrong.", got)
 	}
 }
+

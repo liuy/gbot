@@ -501,3 +501,100 @@ func TestCheckBashPermissionBothStripped(t *testing.T) {
 		t.Errorf("got %v, want Deny for env+wrapper stripped command", action)
 	}
 }
+
+func TestExtractContentPatternNoAskRules(t *testing.T) {
+	// Register a mock content checker that returns deny
+	RegisterContentChecker("TestTool_Deny", func(input json.RawMessage, contentRules []Rule) RuleAction {
+		return ActionDeny
+	})
+	defer func() {
+		delete(contentCheckers, "TestTool_Deny")
+	}()
+
+	denyContent := "rm -rf *"
+	contentRules := []Rule{
+		{Value: RuleValue{ToolName: "TestTool_Deny", RuleContent: &denyContent}, Action: ActionDeny, Source: "user"},
+	}
+	got := ExtractContentPattern("TestTool_Deny", json.RawMessage(`{}`), contentRules)
+	if got != "" {
+		t.Errorf("got %q, want empty string when CheckContent returns non-ask", got)
+	}
+}
+
+func TestExtractContentPatternAskRuleMatches(t *testing.T) {
+	// Register a mock content checker that returns ask
+	RegisterContentChecker("TestTool_Ask", func(input json.RawMessage, contentRules []Rule) RuleAction {
+		return ActionAsk
+	})
+	defer func() {
+		delete(contentCheckers, "TestTool_Ask")
+	}()
+
+	askContent := "rm -rf *"
+	contentRules := []Rule{
+		{Value: RuleValue{ToolName: "TestTool_Ask", RuleContent: &askContent}, Action: ActionAsk, Source: "user"},
+	}
+	got := ExtractContentPattern("TestTool_Ask", json.RawMessage(`{}`), contentRules)
+	want := "TestTool_Ask(rm -rf *)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractContentPatternAskRuleWithoutRuleContent(t *testing.T) {
+	// Register a mock content checker that returns ask
+	RegisterContentChecker("TestTool_BareAsk", func(input json.RawMessage, contentRules []Rule) RuleAction {
+		return ActionAsk
+	})
+	defer func() {
+		delete(contentCheckers, "TestTool_BareAsk")
+	}()
+
+	contentRules := []Rule{
+		{Value: RuleValue{ToolName: "TestTool_BareAsk", RuleContent: nil}, Action: ActionAsk, Source: "user"},
+	}
+	got := ExtractContentPattern("TestTool_BareAsk", json.RawMessage(`{}`), contentRules)
+	want := "TestTool_BareAsk"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractContentPatternMultipleAskRules(t *testing.T) {
+	// Register a mock content checker that returns ask
+	RegisterContentChecker("TestTool_MultiAsk", func(input json.RawMessage, contentRules []Rule) RuleAction {
+		return ActionAsk
+	})
+	defer func() {
+		delete(contentCheckers, "TestTool_MultiAsk")
+	}()
+
+	askContent1 := "rm -rf *"
+	askContent2 := "git push *"
+	contentRules := []Rule{
+		{Value: RuleValue{ToolName: "TestTool_MultiAsk", RuleContent: &askContent1}, Action: ActionAsk, Source: "user"},
+		{Value: RuleValue{ToolName: "TestTool_MultiAsk", RuleContent: &askContent2}, Action: ActionAsk, Source: "user"},
+	}
+	got := ExtractContentPattern("TestTool_MultiAsk", json.RawMessage(`{}`), contentRules)
+	want := "TestTool_MultiAsk(rm -rf *)"
+	if got != want {
+		t.Errorf("got %q, want %q (first match should be returned)", got, want)
+	}
+}
+
+func TestExtractContentPatternCheckContentAskButNoAskRules(t *testing.T) {
+	// Register a mock content checker that returns ask
+	RegisterContentChecker("TestTool_AskNoRules", func(input json.RawMessage, contentRules []Rule) RuleAction {
+		return ActionAsk
+	})
+	defer func() {
+		delete(contentCheckers, "TestTool_AskNoRules")
+	}()
+
+	// Empty rules - CheckContent returns ask but no ask rules exist
+	contentRules := []Rule{}
+	got := ExtractContentPattern("TestTool_AskNoRules", json.RawMessage(`{}`), contentRules)
+	if got != "" {
+		t.Errorf("got %q, want empty string when CheckContent returns ask but no ask rules exist", got)
+	}
+}

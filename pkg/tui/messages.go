@@ -4,7 +4,11 @@
 // messages.go defines the internal tea.Msg types used by the bubbletea Model.
 package tui
 
-import "time"
+import (
+	"time"
+
+	"github.com/liuy/gbot/pkg/types"
+)
 
 // ---------------------------------------------------------------------------
 // tea.Msg types — source: React state dispatch → bubbletea messages
@@ -144,4 +148,11 @@ type textEndMsg struct{}
 type toolRunMsg struct {
 	ID   string
 	Name string
+}
+
+// permissionAskMsg carries a permission confirmation request from the engine.
+// The TUI creates a PermissionDialog overlay; user response is written to
+// the event's ResponseCh, unblocking the waiting engine goroutine.
+type permissionAskMsg struct {
+	event *types.PermissionAskEvent
 }

@@ -57,6 +57,9 @@ type App struct {
 	listPicker   *ListPicker
 	onPickerDone func(*ListPicker) (tea.Model, tea.Cmd)
 
+	// Permission dialog overlay (修正 5: intercepts all keys including Ctrl+C)
+	permissionDialog *PermissionDialog
+
 	// Multi-provider model switching
 	providers       map[string]llm.Provider
 	cfg             *config.Config
@@ -262,6 +265,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// 修正 5: Permission dialog intercepts ALL keys (including Ctrl+C) before handleKey.
+	if a.permissionDialog != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			if a.permissionDialog.HandleKey(msg) && a.permissionDialog.Done() {
+				a.permissionDialog = nil
+			}
+			return a, a.readEvents()
+		case tea.WindowSizeMsg:
+			a.width = msg.Width
+			a.height = msg.Height
+			return a, nil
+		default:
+			return a, nil
+		}
+	}
+
 	switch m := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -283,7 +303,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		agentToolMsg, agentUsageMsg,
 		notificationPendingMsg, idleAbortedMsg,
-		infoMsg, errMsg, submitMsg, spinnerTickMsg:
+		infoMsg, errMsg, submitMsg, spinnerTickMsg,
+		permissionAskMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
@@ -308,6 +329,11 @@ func (a *App) View() string {
 	// Picker overlay
 	if a.listPicker != nil {
 		return a.listPicker.View()
+	}
+
+	// Permission dialog overlay
+	if a.permissionDialog != nil {
+		return a.permissionDialog.View()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]

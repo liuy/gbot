@@ -207,6 +207,11 @@ func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 		return a.showInfo("A picker is already open")
 	}
 
+	// 修正 8: Block session switch while permission dialog is active.
+	if a.permissionDialog != nil {
+		return a.showInfo("Cannot switch sessions while permission dialog is active")
+	}
+
 	pickerItems := make([]PickerItem, len(items))
 	for i := range items {
 		pickerItems[i] = &items[i]
