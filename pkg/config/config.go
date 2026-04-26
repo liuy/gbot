@@ -23,6 +23,10 @@ type Config struct {
 	// Permissions
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
 
+	// Permissions raw JSON — parsed by pkg/permission.LoadConfig().
+	// Stored as raw JSON; format: {"permissions":{"deny":["..."],"ask":["..."]}}.
+	Permissions json.RawMessage `json:"permissions,omitempty"`
+
 	// UI
 	Theme string `json:"theme,omitempty"`
 

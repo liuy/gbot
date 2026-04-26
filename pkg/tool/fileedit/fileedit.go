@@ -9,10 +9,19 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
+
+func init() {
+	permission.RegisterContentChecker("Edit", func(input json.RawMessage, contentRules []permission.Rule) permission.RuleAction {
+		path := permission.ExtractFilePath(input)
+		action, _, _ := permission.CheckFilePermission(path, contentRules)
+		return action
+	})
+}
 
 var MaxEditFileSize int64 = 1024 * 1024 * 1024
 

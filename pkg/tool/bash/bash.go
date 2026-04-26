@@ -18,9 +18,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
+
+func init() {
+	permission.RegisterContentChecker("Bash", func(input json.RawMessage, contentRules []permission.Rule) permission.RuleAction {
+		cmd := permission.ExtractBashCommand(input)
+		action, _, _ := permission.CheckBashPermission(cmd, contentRules)
+		return action
+	})
+}
 
 // Input is the bash tool input schema.
 // Source: BashTool.ts — Zod schema for bash input.

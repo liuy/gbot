@@ -22,6 +22,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -163,16 +164,26 @@ func main() {
 	}
 	hookSystem := hooks.NewHooks(hooksConfig, hookExecutor)
 
+	// 4.2b Load permission rules from user/project/local settings
+	configDir, _ := config.ConfigDir()
+	permRules := permission.LoadConfig(configDir, workingDir)
+	var permChecker *permission.Checker
+	if len(permRules) > 0 {
+		permChecker = permission.NewChecker(permRules)
+		slog.Info("main: permission rules loaded", "count", len(permRules))
+	}
+
 	eng := engine.New(&engine.Params{
-		Provider:      provider,
-		ToolsProvider: reg.ToolMapFn(),
-		Model:         model,
-		MaxTokens:     maxTokens,
-		TokenBudget:   contextWindow,
-		Logger:        logger,
-		Dispatcher:    h,
-		MCPRegistry:   mcpRegistry,
-		Hooks:         hookSystem,
+		Provider:         provider,
+		ToolsProvider:    reg.ToolMapFn(),
+		Model:            model,
+		MaxTokens:        maxTokens,
+		TokenBudget:      contextWindow,
+		Logger:           logger,
+		Dispatcher:       h,
+		MCPRegistry:      mcpRegistry,
+		Hooks:            hookSystem,
+		PermissionChecker: permChecker,
 	})
 
 	// 4.3 Wire Agent factory (breaks circular dependency: tools → engine → tools).
@@ -242,7 +253,7 @@ func main() {
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
 	// 6. Initialize short-term memory store
-	configDir, _ := config.ConfigDir()
+	configDir, _ = config.ConfigDir()
 	var store *short.Store
 	if configDir != "" {
 		dbPath := filepath.Join(configDir, "memory", "short-term.db")

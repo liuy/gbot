@@ -10,6 +10,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -85,6 +86,10 @@ type StreamingToolExecutor struct {
 	// hooks is the lifecycle hooks system for PreToolUse/PostToolUse.
 	hooks     *hooks.Hooks
 	sessionID string // session ID for hook input construction
+
+	// permChecker is the permission rules checker. Nil = default allow.
+	// Set by engine before tool execution. Inherited by sub-engines.
+	permChecker permission.PermissionChecker
 }
 
 // NewStreamingToolExecutor creates a new concurrent tool executor.
@@ -123,6 +128,12 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
 	e.hooks = h
 	e.sessionID = sessionID
+}
+
+// SetPermissionChecker injects the permission checker into the executor.
+// Called from engine.go when creating the streaming executor.
+func (e *StreamingToolExecutor) SetPermissionChecker(pc permission.PermissionChecker) {
+	e.permChecker = pc
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +458,78 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// so we always create a fresh copy with tt.ID set.
 	toolCtx := e.buildToolCtx(tt.ID)
 
+		// ── Permission check (before hooks) ──
+		// Source: toolExecution.ts — hasPermissionsToUseTool runs before hooks.
+		// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
+		if e.permChecker != nil {
+			decision := e.permChecker.Check(tt.Name, tt.Input)
+
+			// Phase 1: bare-tool deny
+			if decision.Action == permission.ActionDeny {
+				errMsg := fmt.Sprintf("permission denied: %s", decision.Message)
+				e.doEmit(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     tt.ID,
+						Output:        []byte(errMsg),
+						DisplayOutput: errMsg,
+						IsError:       true,
+					},
+				})
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+				return
+			}
+
+			// Phase 2: bare-tool ask (Phase 1: treat as deny)
+			if decision.Action == permission.ActionAsk {
+				errMsg := fmt.Sprintf("permission required: %s", decision.Message)
+				e.doEmit(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     tt.ID,
+						Output:        []byte(errMsg),
+						DisplayOutput: errMsg,
+						IsError:       true,
+					},
+				})
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+				return
+			}
+
+			// Phase 3: content-level matching
+			if len(decision.ContentRules) > 0 {
+				action := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
+				if action == permission.ActionDeny {
+					errMsg := fmt.Sprintf("permission denied: %s content rule matched", tt.Name)
+					e.doEmit(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     tt.ID,
+							Output:        []byte(errMsg),
+							DisplayOutput: errMsg,
+							IsError:       true,
+						},
+					})
+					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+					return
+				}
+				if action == permission.ActionAsk {
+					errMsg := fmt.Sprintf("permission required: %s content rule matched", tt.Name)
+					e.doEmit(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     tt.ID,
+							Output:        []byte(errMsg),
+							DisplayOutput: errMsg,
+							IsError:       true,
+						},
+					})
+					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, []byte(errMsg), true)}
+					return
+				}
+			}
+		}
+
 		// PreToolUse hook — blocking result prevents tool execution.
 		// Source: toolHooks.ts:435 — runPreToolUseHooks.
 		if e.hooks != nil {
@@ -671,6 +754,13 @@ func (e *StreamingToolExecutor) applyContextModifier(tt *TrackedTool, result *to
 		e.tctx = result.ContextModifier(e.tctx)
 		e.mu.Unlock()
 	}
+}
+
+// checkContentPermissions performs content-level permission matching for a tool.
+// Source: 修正 15 — Checker does bare-tool matching; content matching is tool-specific.
+// P2-5: dispatches to registered content checkers instead of hardcoded switch.
+func (e *StreamingToolExecutor) checkContentPermissions(toolName string, input json.RawMessage, contentRules []permission.Rule) permission.RuleAction {
+	return permission.CheckContent(toolName, input, contentRules)
 }
 
 // extractErrMsg extracts the human-readable error message from a tool result

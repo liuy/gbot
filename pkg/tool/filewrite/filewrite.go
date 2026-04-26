@@ -16,10 +16,19 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
+
+func init() {
+	permission.RegisterContentChecker("Write", func(input json.RawMessage, contentRules []permission.Rule) permission.RuleAction {
+		path := permission.ExtractFilePath(input)
+		action, _, _ := permission.CheckFilePermission(path, contentRules)
+		return action
+	})
+}
 
 // Source: FileWriteTool.ts — Zod schema for file write input.
 type Input struct {

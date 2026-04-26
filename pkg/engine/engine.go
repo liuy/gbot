@@ -18,6 +18,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -100,6 +101,11 @@ type Engine struct {
 	// hooks is the user-configurable lifecycle hooks system.
 	// Nil when no hooks are configured.
 	hooks *hooks.Hooks
+
+	// permissionChecker evaluates permission rules for tool invocations.
+	// Nil when no permission rules are configured (default allow).
+	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
+	permissionChecker permission.PermissionChecker
 }
 
 // Params holds the constructor arguments for Engine.
@@ -114,8 +120,9 @@ type Params struct {
 	Dispatcher    types.EventDispatcher
 	Compactor     Compactor
 	AutoCompact   AutoCompactConfig
-	MCPRegistry   *mcp.Registry
-	Hooks         *hooks.Hooks
+	MCPRegistry        *mcp.Registry
+	Hooks              *hooks.Hooks
+	PermissionChecker  permission.PermissionChecker
 }
 
 // QueryResult is the final result of a query.
@@ -191,6 +198,7 @@ func New(p *Params) *Engine {
 		autoCompactConfig: p.AutoCompact,
 		mcpRegistry:       p.MCPRegistry,
 		hooks:             p.Hooks,
+		permissionChecker: p.PermissionChecker,
 	}
 }
 
@@ -807,6 +815,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							ctx,
 						)
 					streamingExecutor.SetHooks(e.hooks, e.sessionID)
+					streamingExecutor.SetPermissionChecker(e.permissionChecker)
 					}
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolRun,
@@ -1339,6 +1348,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		autoCompactConfig: e.autoCompactConfig,
 		mcpRegistry:       e.mcpRegistry,
 		hooks:             e.hooks,
+		permissionChecker: e.permissionChecker,
 	}
 }
 
