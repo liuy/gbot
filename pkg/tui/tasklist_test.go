@@ -27,11 +27,8 @@ func TestRenderTaskList_Pending(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "[ ]") {
-		t.Errorf("pending task should use [ ], got: %q", result)
-	}
-	if !strings.Contains(result, "1") {
-		t.Errorf("should show task ID, got: %q", result)
+	if !strings.Contains(result, "[ ]") { // ◻
+		t.Errorf("pending task should use ◻, got: %q", result)
 	}
 	if !strings.Contains(result, "Fix auth") {
 		t.Errorf("should show subject, got: %q", result)
@@ -45,8 +42,11 @@ func TestRenderTaskList_InProgress(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "[▶]") {
-		t.Errorf("in_progress task should use [▶], got: %q", result)
+	if !strings.Contains(result, "[▶]") { // ◼
+		t.Errorf("in_progress task should use ◼, got: %q", result)
+	}
+	if !strings.Contains(result, "Writing tests") {
+		t.Errorf("should show subject, got: %q", result)
 	}
 }
 
@@ -57,8 +57,11 @@ func TestRenderTaskList_Completed(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "[✓]") {
-		t.Errorf("completed task should use [✓], got: %q", result)
+	if !strings.Contains(result, "[✓]") { // ✔
+		t.Errorf("completed task should use ✔, got: %q", result)
+	}
+	if !strings.Contains(result, "Done") {
+		t.Errorf("should show subject, got: %q", result)
 	}
 }
 
@@ -69,8 +72,8 @@ func TestRenderTaskList_WithOwner(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "(agent-1)") {
-		t.Errorf("should show owner, got: %q", result)
+	if !strings.Contains(result, "(@agent-1)") {
+		t.Errorf("should show @owner, got: %q", result)
 	}
 }
 

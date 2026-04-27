@@ -1237,33 +1237,49 @@ func (a *App) renderTaskList() string {
 
 	var b strings.Builder
 	for _, t := range tasks {
+		isCompleted := t.Status == "completed"
+		isBlocked := len(t.BlockedBy) > 0
+
+		// Icon + color (Source: TaskListV2.tsx getTaskIcon)
 		var icon string
-		var style lipgloss.Style
+		var iconStyle lipgloss.Style
 		switch t.Status {
 		case "in_progress":
 			icon = "[▶]"
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color("111")) // soft blue
+			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("111")) // soft blue
 		case "completed":
 			icon = "[✓]"
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // emerald
+			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // emerald
 		default: // pending
 			icon = "[ ]"
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color("246")) // cool gray
+			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("246")) // cool gray
 		}
 
-		line := fmt.Sprintf(" %s %s %s", style.Render(icon), t.ID, t.Subject)
-		if t.Owner != "" {
-			line += fmt.Sprintf(" (%s)", t.Owner)
+		// Subject style (Source: TaskListV2.tsx TaskItem)
+		subjectStyle := lipgloss.NewStyle()
+		if t.Status == "in_progress" {
+			subjectStyle = subjectStyle.Bold(true)
 		}
-		if len(t.BlockedBy) > 0 {
+		if isCompleted {
+			subjectStyle = subjectStyle.Strikethrough(true)
+		}
+		if isBlocked {
+			subjectStyle = subjectStyle.Faint(true)
+		}
+
+		line := fmt.Sprintf(" %s %s", iconStyle.Render(icon), subjectStyle.Render(t.Subject))
+		if t.Owner != "" {
+			line += lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" (@%s)", t.Owner))
+		}
+		if isBlocked {
 			ids := make([]string, len(t.BlockedBy))
 			for i, id := range t.BlockedBy {
 				ids[i] = "#" + id
 			}
-			line += fmt.Sprintf(" [blocked by %s]", strings.Join(ids, ", "))
+			line += lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" [blocked by %s]", strings.Join(ids, ", ")))
 		}
 
-		b.WriteString(style.Render(line))
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
