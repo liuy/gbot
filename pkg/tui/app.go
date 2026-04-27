@@ -25,6 +25,11 @@ import (
 // App — bubbletea root Model
 // ---------------------------------------------------------------------------
 
+const (
+	modalPeekRows  = 2 // fixed peek rows when content is abundant
+	minModalHeight = 5 // minimum modal height to keep dialog usable
+)
+
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
 type App struct {
@@ -249,10 +254,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.activeDialog != nil {
 		switch msg := msg.(type) {
 		case tea.WindowSizeMsg:
-			a.activeDialog.width = msg.Width
-			a.activeDialog.height = msg.Height
 			a.width = msg.Width
 			a.height = msg.Height
+			a.activeDialog.width = msg.Width
+			// height recalculated dynamically in renderModalView()
 			return a, nil
 		case tea.KeyMsg:
 			a.activeDialog.HandleKey(msg)
@@ -318,7 +323,7 @@ func (a *App) View() string {
 
 	// Dialog overlay (unified for list picking and permission asking)
 	if a.activeDialog != nil {
-		return a.activeDialog.View()
+		return a.renderModalView()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]
@@ -750,6 +755,77 @@ func (a *App) scrollDown(n int) {
 	}
 	// If scrolled to bottom, resume auto-scroll
 	a.userScrolled = a.scrollOffset < maxOff
+}
+
+// ---------------------------------------------------------------------------
+// Modal rendering — bottom-anchored dialog with transcript peek
+// ---------------------------------------------------------------------------
+
+// renderModalView renders the modal overlay: peek content + dialog.
+// The dialog height is computed dynamically from content length.
+func (a *App) renderModalView() string {
+	content := a.getRenderedContent()
+
+	// Adaptive peek: sparse content → expand peek; abundant → cap at modalPeekRows.
+	contentLines := 0
+	if content != "" {
+		contentLines = strings.Count(content, "\n") + 1
+	}
+	maxPeek := max(a.height-minModalHeight, 0)
+	peekRows := contentLines
+	if peekRows > maxPeek {
+		peekRows = modalPeekRows
+	}
+
+	modalHeight := max(a.height-peekRows, minModalHeight)
+	a.activeDialog.height = modalHeight
+	a.activeDialog.width = a.width
+
+	var peek string
+	if peekRows <= 0 || content == "" {
+		peek = ""
+	} else {
+		peek = lastNLines(content, peekRows)
+	}
+
+	dialogView := a.activeDialog.View()
+
+	if peek == "" {
+		return dialogView
+	}
+	return peek + "\n" + dialogView
+}
+
+// getRenderedContent returns cached or freshly built rendered content.
+// Read-only: reads contentCache if available, builds temp string if not.
+// Never writes to contentCache or contentDirty.
+func (a *App) getRenderedContent() string {
+	uncommitted := a.repl.messages[a.committedCount:]
+	if len(uncommitted) == 0 {
+		return ""
+	}
+	if a.contentCache != "" {
+		return a.contentCache
+	}
+	return renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, 0)
+}
+
+// lastNLines returns the last n lines of s without allocating a full slice.
+// Scans backwards for newline boundaries.
+func lastNLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '\n' {
+			count++
+			if count == n {
+				return s[i+1:]
+			}
+		}
+	}
+	return s // fewer than n lines
 }
 
 // handleMouse handles mouse events for scroll wheel support.

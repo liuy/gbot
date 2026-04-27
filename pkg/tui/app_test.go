@@ -4555,8 +4555,10 @@ func TestApp_Update_PickerMode_WindowSize(t *testing.T) {
 	if updated.activeDialog.width != 120 {
 		t.Errorf("picker width = %d, want 120", updated.activeDialog.width)
 	}
-	if updated.activeDialog.height != 40 {
-		t.Errorf("picker height = %d, want 40", updated.activeDialog.height)
+	// height is now dynamic — verify via View() instead of checking directly
+	view := updated.View()
+	if view == "" {
+		t.Error("View() should return non-empty modal content")
 	}
 }
 
@@ -4641,5 +4643,208 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app.handleSlashCommand(SlashCommand{Name: "session"}, nil)
 	if app.activeDialog == nil {
 		t.Error("listPicker should be set after /session")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Modal peek tests
+// ---------------------------------------------------------------------------
+
+// helperModalApp creates an app with a dialog open and the given terminal size.
+func helperModalApp(t *testing.T, termHeight int) *App {
+	t.Helper()
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: termHeight})
+	opts := []DialogOption{
+		{Label: "Option A", Shortcut: "a"},
+		{Label: "Option B", Shortcut: "b"},
+		{Label: "Option C"},
+	}
+	app.activeDialog = NewDialog("Test Dialog", opts)
+	app.activeDialog.width = app.width
+	return app
+}
+
+// helperAddMessages appends n assistant messages with the given text prefix.
+func helperAddMessages(app *App, n int, prefix string) {
+	for i := range n {
+		app.repl.messages = append(app.repl.messages, MessageView{
+			Role:   "assistant",
+			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("%s %d", prefix, i)}},
+		})
+	}
+}
+
+// assertModalContains checks that view contains all expected substrings.
+func assertModalContains(t *testing.T, view string, expected ...string) {
+	t.Helper()
+	for _, e := range expected {
+		if !strings.Contains(view, e) {
+			t.Errorf("view should contain %q, got:\n%s", e, view)
+		}
+	}
+}
+
+func TestApp_ModalPeek_Adaptive_NoContent(t *testing.T) {
+	app := helperModalApp(t, 24)
+	view := app.View()
+	assertModalContains(t, view, "Test Dialog", "Option A")
+	// No content → peek=0, modalHeight = 24
+	if app.activeDialog.height != 24 {
+		t.Errorf("dialog height = %d, want 24 (no content, full modal)", app.activeDialog.height)
+	}
+}
+
+func TestApp_ModalPeek_Adaptive_SparseContent(t *testing.T) {
+	app := helperModalApp(t, 24)
+	helperAddMessages(app, 3, "Line")
+	// Populate cache directly (avoids fragile View()-then-reset pattern)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+
+	view := app.View()
+	// 3 content lines, maxPeek = 19 → peek=3, modalHeight = 24-3 = 21
+	assertModalContains(t, view, "Line 2", "Test Dialog")
+	if app.activeDialog.height != 21 {
+		t.Errorf("dialog height = %d, want 21 (3 peek lines)", app.activeDialog.height)
+	}
+	// Verify layout order: content before dialog title
+	contentIdx := strings.Index(view, "Line 2")
+	dialogIdx := strings.Index(view, "Test Dialog")
+	if contentIdx == -1 || dialogIdx == -1 {
+		t.Fatal("missing content or dialog title")
+	}
+	if dialogIdx < contentIdx {
+		t.Error("dialog title should appear after peek content")
+	}
+}
+
+func TestApp_ModalPeek_Adaptive_AbundantContent(t *testing.T) {
+	app := helperModalApp(t, 24)
+	helperAddMessages(app, 100, "Content line that is reasonably long")
+	// Populate cache directly
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+
+	view := app.View()
+	// 100 lines > maxPeek(19) → peek=2, modalHeight = 24-2 = 22
+	assertModalContains(t, view, "Test Dialog")
+	if app.activeDialog.height != 22 {
+		t.Errorf("dialog height = %d, want 22 (abundant content, 2 peek rows)", app.activeDialog.height)
+	}
+	// Should NOT show "Content line 0" (first items scrolled away)
+	// Peek shows only last 2 lines of rendered content
+}
+
+func TestApp_ModalPeek_DialogShowsTitle(t *testing.T) {
+	app := helperModalApp(t, 24)
+	view := app.View()
+	assertModalContains(t, view, "Test Dialog", "Option A")
+}
+
+func TestApp_ModalPeek_TinyTerminal(t *testing.T) {
+	app := helperModalApp(t, 6)
+	helperAddMessages(app, 5, "Line")
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+	app.activeDialog = NewDialog("Test", []DialogOption{{Label: "A"}, {Label: "B"}})
+	app.activeDialog.width = app.width
+
+	view := app.View()
+	assertModalContains(t, view, "Test")
+	if app.activeDialog.height < minModalHeight {
+		t.Errorf("dialog height = %d, should be >= %d", app.activeDialog.height, minModalHeight)
+	}
+	if app.activeDialog.height > app.height {
+		t.Errorf("dialog height = %d exceeds terminal height %d", app.activeDialog.height, app.height)
+	}
+}
+
+func TestApp_ModalPeek_ResizeRecalculates(t *testing.T) {
+	app := helperModalApp(t, 24)
+	helperAddMessages(app, 5, "Line")
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+	app.activeDialog = NewDialog("Test", []DialogOption{{Label: "A"}, {Label: "B"}})
+	app.activeDialog.width = app.width
+
+	app.View()
+	h1 := app.activeDialog.height
+
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	app.View()
+	h2 := app.activeDialog.height
+
+	if h2 <= h1 {
+		t.Errorf("after resize to larger terminal, height should increase: %d → %d", h1, h2)
+	}
+	// 5 content lines, maxPeek at h=40 is 35, 5<=35 → peek=5, modalHeight = 40-5 = 35
+	if h2 != 35 {
+		t.Errorf("dialog height after resize = %d, want 35", h2)
+	}
+}
+
+func TestApp_ModalPeek_BoundaryContent(t *testing.T) {
+	// Exactly maxPeek lines → show all (not capped)
+	app := helperModalApp(t, 24)
+	maxPeek := 24 - minModalHeight // = 19
+	helperAddMessages(app, maxPeek, "Boundary line")
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+
+	view := app.View()
+	// maxPeek lines == maxPeek → show all → peek=maxPeek=19
+	assertModalContains(t, view, "Test Dialog")
+	if app.activeDialog.height != 24-maxPeek {
+		t.Errorf("dialog height = %d, want %d", app.activeDialog.height, 24-maxPeek)
+	}
+}
+
+func TestApp_ModalPeek_ExtremelyTinyTerminal(t *testing.T) {
+	app := helperModalApp(t, 3)
+	view := app.View()
+	assertModalContains(t, view, "Test Dialog", "Option A")
+	if app.activeDialog.height < minModalHeight {
+		t.Errorf("dialog height = %d, should be >= %d even on tiny terminal", app.activeDialog.height, minModalHeight)
+	}
+}
+
+func TestApp_ModalPeek_GetRenderedContent_NoCache(t *testing.T) {
+	// Covers getRenderedContent branch where contentCache is empty
+	// and it must call renderMessagesFull itself.
+	app := helperModalApp(t, 24)
+	helperAddMessages(app, 3, "CacheMiss")
+	// Deliberately do NOT set contentCache — getRenderedContent must build temp
+	app.contentCache = ""
+	app.contentDirty = true
+
+	view := app.View()
+	assertModalContains(t, view, "Test Dialog", "CacheMiss 2")
+	if app.activeDialog.height != 21 {
+		t.Errorf("dialog height = %d, want 21 (3 peek, no cache)", app.activeDialog.height)
+	}
+}
+
+func TestLastNLines(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"n<=0 returns empty", "hello\nworld", 0, ""},
+		{"negative n returns empty", "hello\nworld", -1, ""},
+		{"fewer lines than n returns all", "one line", 3, "one line"},
+		{"exact n=1 returns last line", "first\nsecond\nthird", 1, "third"},
+		{"n=2 returns last two lines", "first\nsecond\nthird", 2, "second\nthird"},
+		{"empty string", "", 1, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lastNLines(tc.s, tc.n)
+			if got != tc.want {
+				t.Errorf("lastNLines(%q, %d) = %q, want %q", tc.s, tc.n, got, tc.want)
+			}
+		})
 	}
 }

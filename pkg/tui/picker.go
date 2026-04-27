@@ -82,6 +82,7 @@ func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	a.activeDialog = NewDialog("Switch Session", pickerItemsToOptions(pickerItems))
+	a.activeDialog.width = a.width
 
 	captured := items
 	a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {

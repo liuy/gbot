@@ -558,6 +558,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			detail := extractDetail(m.event.ToolName, m.event.Input)
 			ch := m.event.ResponseCh
 			a.activeDialog = NewPermissionDialog(m.event, detail)
+			a.activeDialog.width = a.width
 			a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
 				dialogDonePermission(d, ch)
 				return a, a.readEvents()

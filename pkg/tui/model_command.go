@@ -62,6 +62,7 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 	currentIdx := findCurrentIndex(modelItems)
 	a.activeDialog = NewDialog("Select model", pickerItemsToOptions(items))
 	applyDialogOption(a.activeDialog, WithInitialCursor(currentIdx))
+	a.activeDialog.width = a.width
 
 	captured := modelItems
 	a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
