@@ -2,14 +2,12 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
-// PickerItem is the interface for items displayed in a ListPicker.
+// PickerItem is the interface for items displayed in a list dialog.
 type PickerItem interface {
 	Label() string
 }
@@ -32,144 +30,6 @@ func (s *SessionItem) Label() string {
 	return fmt.Sprintf("%-20s %s", name, relativeTime(s.UpdatedAt))
 }
 
-// ListPickerOption is a functional option for ListPicker.
-type ListPickerOption func(*ListPicker)
-
-// WithInitialCursor sets the initial cursor position.
-// Out-of-range values are clamped to valid bounds.
-func WithInitialCursor(idx int) ListPickerOption {
-	return func(p *ListPicker) {
-		if idx < 0 {
-			p.cursor = 0
-		} else if len(p.items) > 0 && idx >= len(p.items) {
-			p.cursor = len(p.items) - 1
-		} else {
-			p.cursor = idx
-		}
-	}
-}
-
-// ListPicker is a generic Bubble Tea model for selecting from a list of items.
-type ListPicker struct {
-	title    string
-	items    []PickerItem
-	cursor   int
-	selected int   // -1 = none
-	aborted  bool
-	width    int
-	height   int
-}
-
-// NewListPicker creates a picker with the given title and items.
-func NewListPicker(title string, items []PickerItem, opts ...ListPickerOption) *ListPicker {
-	p := &ListPicker{
-		title:    title,
-		items:    items,
-		selected: -1,
-	}
-	for _, opt := range opts {
-		opt(p)
-	}
-	return p
-}
-
-// Init satisfies tea.Model.
-func (p *ListPicker) Init() tea.Cmd { return nil }
-
-// Update handles key events for the picker.
-func (p *ListPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		p.width = msg.Width
-		p.height = msg.Height
-		return p, nil
-
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "up", "k":
-			if len(p.items) > 0 {
-				if p.cursor > 0 {
-					p.cursor--
-				} else {
-					p.cursor = len(p.items) - 1
-				}
-			}
-		case "down", "j":
-			if len(p.items) > 0 {
-				if p.cursor < len(p.items)-1 {
-					p.cursor++
-				} else {
-					p.cursor = 0
-				}
-			}
-		case "enter":
-			if len(p.items) == 0 {
-				p.aborted = true
-				return p, nil
-			}
-			if p.cursor < len(p.items) {
-				p.selected = p.cursor
-			}
-			return p, nil
-		case "esc", "q":
-			p.aborted = true
-			return p, nil
-		}
-	}
-
-	return p, nil
-}
-
-// View renders the picker.
-func (p *ListPicker) View() string {
-	if len(p.items) == 0 {
-		return "No items available.\n\nPress Esc to cancel."
-	}
-
-	highlight := lipgloss.NewStyle().
-		Background(lipgloss.Color("63")).
-		Foreground(lipgloss.Color("230")).
-		Padding(0, 1)
-
-	normal := lipgloss.NewStyle().
-		Padding(0, 1)
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		MarginBottom(1)
-
-	var s strings.Builder
-	s.WriteString(titleStyle.Render(p.title) + "\n")
-
-	for i, item := range p.items {
-		row := "  " + item.Label()
-
-		if i == p.cursor {
-			s.WriteString(highlight.Render(row) + "\n")
-		} else {
-			s.WriteString(normal.Render(row) + "\n")
-		}
-	}
-
-	s.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("↑/k up · ↓/j down · Enter select · Esc/q cancel"))
-	return s.String()
-}
-
-// Done returns true if the picker has finished (selected or aborted).
-func (p *ListPicker) Done() bool {
-	return p.aborted || p.selected >= 0
-}
-
-// Aborted returns true if the user cancelled the picker.
-func (p *ListPicker) Aborted() bool {
-	return p.aborted
-}
-
-// SelectedIndex returns the index of the selected item, or -1 if none/aborted.
-func (p *ListPicker) SelectedIndex() int {
-	return p.selected
-}
-
 // relativeTime returns a human-friendly relative time string.
 func relativeTime(t time.Time) string {
 	d := time.Since(t)
@@ -187,7 +47,16 @@ func relativeTime(t time.Time) string {
 	}
 }
 
-// openPicker loads sessions and opens the session picker overlay.
+// pickerItemsToOptions converts PickerItem slice to DialogOption slice.
+func pickerItemsToOptions(items []PickerItem) []DialogOption {
+	opts := make([]DialogOption, len(items))
+	for i, item := range items {
+		opts[i] = DialogOption{Label: item.Label()}
+	}
+	return opts
+}
+
+// openPicker loads sessions and opens the session picker dialog.
 func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 	sessions, err := a.store.ListSessions(a.projectDir, 100)
 	if err != nil {
@@ -203,38 +72,31 @@ func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
 		}
 	}
 
-	if a.listPicker != nil {
-		return a.showInfo("A picker is already open")
-	}
-
-	// 修正 8: Block session switch while permission dialog is active.
-	if a.permissionDialog != nil {
-		return a.showInfo("Cannot switch sessions while permission dialog is active")
+	if a.activeDialog != nil {
+		return a.showInfo("A dialog is already open")
 	}
 
 	pickerItems := make([]PickerItem, len(items))
 	for i := range items {
 		pickerItems[i] = &items[i]
 	}
-	a.listPicker = NewListPicker("Switch Session", pickerItems)
+
+	a.activeDialog = NewDialog("Switch Session", pickerItemsToOptions(pickerItems))
 
 	captured := items
-	a.onPickerDone = func(p *ListPicker) (tea.Model, tea.Cmd) {
-		return a.handleSessionPickerDone(p, captured)
+	a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
+		return a.handleSessionPickerDone(d, captured)
 	}
 	return commitCmd
 }
 
 // handleSessionPickerDone processes the session picker selection or cancellation.
-func (a *App) handleSessionPickerDone(p *ListPicker, items []SessionItem) (tea.Model, tea.Cmd) {
-	a.listPicker = nil
-	a.onPickerDone = nil
-
-	if p.Aborted() {
+func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model, tea.Cmd) {
+	if d.Aborted() {
 		return a, nil
 	}
 
-	idx := p.SelectedIndex()
+	idx := d.SelectedIndex()
 	if idx < 0 || idx >= len(items) {
 		return a, nil
 	}
@@ -265,4 +127,54 @@ func (a *App) handleSessionPickerDone(p *ListPicker, items []SessionItem) (tea.M
 		title = selected.SessionID[:8]
 	}
 	return a, a.showInfo(fmt.Sprintf("Switched to session: %s", title))
+}
+
+// NewListPicker creates a Dialog from PickerItem slice with optional functional options.
+// Convenience wrapper for test and legacy callers.
+func NewListPicker(title string, items []PickerItem, opts ...func(*Dialog)) *Dialog {
+	d := NewDialog(title, pickerItemsToOptions(items))
+	for _, opt := range opts {
+		if opt != nil {
+			opt(d)
+		}
+	}
+	return d
+}
+
+// WithInitialCursor returns a function that sets the initial cursor on a Dialog.
+func WithInitialCursor(idx int) func(*Dialog) {
+	return func(d *Dialog) {
+		if idx < 0 {
+			d.cursor = 0
+		} else if len(d.options) > 0 && idx >= len(d.options) {
+			d.cursor = len(d.options) - 1
+		} else {
+			d.cursor = idx
+		}
+	}
+}
+
+// ApplyDialogOption applies a functional option to a Dialog.
+func applyDialogOption(d *Dialog, opt func(*Dialog)) {
+	if opt != nil {
+		opt(d)
+	}
+}
+
+// Ensure Dialog satisfies tea.Model.
+var _ tea.Model = (*Dialog)(nil)
+
+// Init satisfies tea.Model.
+func (d *Dialog) Init() tea.Cmd { return nil }
+
+// Update satisfies tea.Model — delegates to HandleKey for KeyMsg.
+func (d *Dialog) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+		d.height = msg.Height
+	case tea.KeyMsg:
+		d.HandleKey(msg)
+	}
+	return d, nil
 }

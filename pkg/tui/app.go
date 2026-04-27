@@ -54,12 +54,9 @@ type App struct {
 	lastPersistedIdx int    // tracks how many engine messages have been persisted
 	projectDir       string // working directory for .gbot/meta.json
 
-	// Picker overlay (generic ListPicker for /session, /model, etc.)
-	listPicker   *ListPicker
-	onPickerDone func(*ListPicker) (tea.Model, tea.Cmd)
-
-	// Permission dialog overlay (修正 5: intercepts all keys including Ctrl+C)
-	permissionDialog *PermissionDialog
+	// Active dialog overlay (unified for list picking and permission asking)
+	activeDialog *Dialog
+	onDialogDone func(*Dialog) (tea.Model, tea.Cmd)
 
 	// Multi-provider model switching
 	providers       map[string]llm.Provider
@@ -247,43 +244,28 @@ func (a *App) Init() tea.Cmd {
 
 // Update handles bubbletea messages.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Route to picker overlay when active
-	if a.listPicker != nil {
+	// Route to active dialog overlay when active.
+	// Dialog intercepts ALL keys (including Ctrl+C) to prevent unwanted actions.
+	if a.activeDialog != nil {
 		switch msg := msg.(type) {
 		case tea.WindowSizeMsg:
-			a.listPicker.width = msg.Width
-			a.listPicker.height = msg.Height
-			return a, nil
-		case tea.KeyMsg:
-			model, cmd := a.listPicker.Update(msg)
-			if p, ok := model.(*ListPicker); ok {
-				a.listPicker = p
-			}
-			if a.listPicker.Done() {
-				handler := a.onPickerDone
-				a.onPickerDone = nil
-				if handler == nil {
-					a.listPicker = nil
-					return a, nil
-				}
-				return handler(a.listPicker)
-			}
-			return a, cmd
-		}
-		return a, nil
-	}
-
-	// 修正 5: Permission dialog intercepts ALL keys (including Ctrl+C) before handleKey.
-	if a.permissionDialog != nil {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			if a.permissionDialog.HandleKey(msg) && a.permissionDialog.Done() {
-				a.permissionDialog = nil
-			}
-			return a, a.readEvents()
-		case tea.WindowSizeMsg:
+			a.activeDialog.width = msg.Width
+			a.activeDialog.height = msg.Height
 			a.width = msg.Width
 			a.height = msg.Height
+			return a, nil
+		case tea.KeyMsg:
+			a.activeDialog.HandleKey(msg)
+			if a.activeDialog.Done() {
+				handler := a.onDialogDone
+				dialog := a.activeDialog
+				a.onDialogDone = nil
+				a.activeDialog = nil
+				if handler == nil {
+					return a, a.readEvents()
+				}
+				return handler(dialog)
+			}
 			return a, nil
 		default:
 			return a, nil
@@ -334,14 +316,9 @@ func (a *App) View() string {
 		return "Loading..."
 	}
 
-	// Picker overlay
-	if a.listPicker != nil {
-		return a.listPicker.View()
-	}
-
-	// Permission dialog overlay
-	if a.permissionDialog != nil {
-		return a.permissionDialog.View()
+	// Dialog overlay (unified for list picking and permission asking)
+	if a.activeDialog != nil {
+		return a.activeDialog.View()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]

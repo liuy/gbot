@@ -4391,7 +4391,7 @@ func TestApp_OpenPicker(t *testing.T) {
 	if cmd == nil {
 		t.Error("openPicker should return a tea.Cmd")
 	}
-	if app.listPicker == nil {
+	if app.activeDialog == nil {
 		t.Error("listPicker should be set after openPicker")
 	}
 }
@@ -4502,7 +4502,7 @@ func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
 	// Send a key message while in picker mode
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated := model.(*App)
-	if updated.listPicker == nil {
+	if updated.activeDialog == nil {
 		t.Error("listPicker should still be set after key event")
 	}
 	if cmd != nil {
@@ -4522,14 +4522,14 @@ func TestApp_Update_PickerMode_SelectClosesPicker(t *testing.T) {
 
 	commitCmd := func() tea.Msg { return nil }
 	app.openPicker(commitCmd)
-	if app.listPicker == nil {
+	if app.activeDialog == nil {
 		t.Fatal("listPicker should be set after openPicker")
 	}
 
 	// Send Esc to cancel picker
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	updated := model.(*App)
-	if updated.listPicker != nil {
+	if updated.activeDialog != nil {
 		t.Error("listPicker should be nil after cancel")
 	}
 }
@@ -4549,14 +4549,14 @@ func TestApp_Update_PickerMode_WindowSize(t *testing.T) {
 	// Send WindowSize while picker active — should update picker dims
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	updated := model.(*App)
-	if updated.listPicker == nil {
+	if updated.activeDialog == nil {
 		t.Fatal("listPicker should still be set after WindowSizeMsg")
 	}
-	if updated.listPicker.width != 120 {
-		t.Errorf("picker width = %d, want 120", updated.listPicker.width)
+	if updated.activeDialog.width != 120 {
+		t.Errorf("picker width = %d, want 120", updated.activeDialog.width)
 	}
-	if updated.listPicker.height != 40 {
-		t.Errorf("picker height = %d, want 40", updated.listPicker.height)
+	if updated.activeDialog.height != 40 {
+		t.Errorf("picker height = %d, want 40", updated.activeDialog.height)
 	}
 }
 
@@ -4639,7 +4639,7 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app.SetStore(store, "existing-session", dir, 0)
 
 	app.handleSlashCommand(SlashCommand{Name: "session"}, nil)
-	if app.listPicker == nil {
+	if app.activeDialog == nil {
 		t.Error("listPicker should be set after /session")
 	}
 }

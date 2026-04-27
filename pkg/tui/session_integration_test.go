@@ -246,7 +246,7 @@ func TestIntegration_SwitchBackViaPickerRestoreMessages(t *testing.T) {
 		{SessionID: originalSessionID, Title: ""},
 	}, 1)
 
-	model, _ := a.handleSessionPickerDone(a.listPicker, captured)
+	model, _ := a.handleSessionPickerDone(a.activeDialog, captured)
 	if _, ok := model.(*App); !ok {
 		t.Fatal("handleSessionPickerDone should return *App")
 	}
@@ -409,7 +409,7 @@ func TestIntegration_MultipleForks(t *testing.T) {
 		captured := helperSelectSession(t, a, []SessionItem{
 			{SessionID: originalID, Title: "original"},
 		}, 0)
-		a.handleSessionPickerDone(a.listPicker, captured)
+		a.handleSessionPickerDone(a.activeDialog, captured)
 
 		if a.sessionID != originalID {
 			t.Fatalf("iteration %d: failed to switch back to original", i)
@@ -477,7 +477,7 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 	cap2 := helperSelectSession(t, a, []SessionItem{
 		{SessionID: originalID, Title: "original"},
 	}, 0)
-	a.handleSessionPickerDone(a.listPicker, cap2)
+	a.handleSessionPickerDone(a.activeDialog, cap2)
 	if a.sessionID != originalID {
 		t.Fatal("should be back on original session")
 	}
@@ -557,8 +557,9 @@ func helperSelectSession(t *testing.T, a *App, sessionItems []SessionItem, selec
 	for i := range sessionItems {
 		pickerItems[i] = &sessionItems[i]
 	}
-	a.listPicker = NewListPicker("Switch Session", pickerItems)
-	a.listPicker.selected = selectIdx
+	a.activeDialog = NewListPicker("Switch Session", pickerItems)
+	a.activeDialog.done = true
+		a.activeDialog.cursor = selectIdx
 	return sessionItems
 }
 
@@ -569,8 +570,8 @@ func helperAbortPicker(t *testing.T, a *App, sessionItems []SessionItem) {
 	for i := range sessionItems {
 		pickerItems[i] = &sessionItems[i]
 	}
-	a.listPicker = NewListPicker("Switch Session", pickerItems)
-	a.listPicker.aborted = true
+	a.activeDialog = NewListPicker("Switch Session", pickerItems)
+	a.activeDialog.aborted = true
 }
 
 // TestIntegration_ForkIsolation_EngineStateAfterSwitch verifies that switching
@@ -597,7 +598,7 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 	cap3 := helperSelectSession(t, a, []SessionItem{
 		{SessionID: originalID, Title: "original"},
 	}, 0)
-	a.handleSessionPickerDone(a.listPicker, cap3)
+	a.handleSessionPickerDone(a.activeDialog, cap3)
 
 	// Engine should have original 4 messages, NOT fork X's 3
 	engMsgs := a.engine.Messages()
@@ -614,7 +615,7 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 	cap4 := helperSelectSession(t, a, []SessionItem{
 		{SessionID: forkXID, Title: "fork-X"},
 	}, 0)
-	a.handleSessionPickerDone(a.listPicker, cap4)
+	a.handleSessionPickerDone(a.activeDialog, cap4)
 
 	// Engine should now have fork X's messages from STORE (4 original, since we didn't persist the extras)
 	engMsgs = a.engine.Messages()
@@ -682,16 +683,14 @@ func TestIntegration_PickerCancelAborts(t *testing.T) {
 		{SessionID: "other-session", Title: "Other"},
 	})
 
-	model, _ := a.handleSessionPickerDone(a.listPicker, []SessionItem{
+	model, _ := a.handleSessionPickerDone(a.activeDialog, []SessionItem{
 		{SessionID: "other-session", Title: "Other"},
 	})
 	if _, ok := model.(*App); !ok {
 		t.Fatal("handleSessionPickerDone should return *App")
 	}
 
-	if a.listPicker != nil {
-		t.Error("listPicker should be nil feeling after cancel")
-	}
+
 	if a.sessionID != originalID {
 		t.Errorf("sessionID should not change on cancel, got %q want %q", a.sessionID, originalID)
 	}
@@ -707,7 +706,7 @@ func TestIntegration_PickerSameSessionNoop(t *testing.T) {
 		{SessionID: originalID, Title: "current"},
 	}, 0)
 
-	_, cmd := a.handleSessionPickerDone(a.listPicker, cap5)
+	_, cmd := a.handleSessionPickerDone(a.activeDialog, cap5)
 
 	if a.sessionID != originalID {
 		t.Error("same session should be no-op")

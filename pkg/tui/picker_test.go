@@ -65,7 +65,7 @@ func TestModelItem_Label(t *testing.T) {
 	}
 }
 
-func TestListPicker_Navigation(t *testing.T) {
+func TestDialog_Navigation(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -79,41 +79,41 @@ func TestListPicker_Navigation(t *testing.T) {
 
 	// Move down (using "j" key)
 	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 1 {
 		t.Errorf("cursor after j = %d, want 1", p.cursor)
 	}
 
 	// Move down again (using arrow down)
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 2 {
 		t.Errorf("cursor after down = %d, want 2", p.cursor)
 	}
 
 	// Wrap around at end
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 0 {
 		t.Errorf("cursor after 3rd down = %d, want 0 (wrap to top)", p.cursor)
 	}
 
 	// Wrap around at top
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyUp})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 2 {
 		t.Errorf("cursor after up-at-top = %d, want 2 (wrap to bottom)", p.cursor)
 	}
 
 	// Move up normally
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyUp})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 1 {
 		t.Errorf("cursor after up = %d, want 1", p.cursor)
 	}
 }
 
-func TestListPicker_Select(t *testing.T) {
+func TestDialog_Select(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -125,7 +125,7 @@ func TestListPicker_Select(t *testing.T) {
 
 	// Select
 	model, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 
 	if p.SelectedIndex() != 1 {
 		t.Errorf("SelectedIndex() = %d, want 1", p.SelectedIndex())
@@ -138,14 +138,14 @@ func TestListPicker_Select(t *testing.T) {
 	}
 }
 
-func TestListPicker_Cancel(t *testing.T) {
+func TestDialog_Cancel(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 	})
 	p := NewListPicker("Test", items)
 
 	model, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 
 	if !p.Aborted() {
 		t.Error("expected Aborted() after Esc")
@@ -158,21 +158,21 @@ func TestListPicker_Cancel(t *testing.T) {
 	}
 }
 
-func TestListPicker_QKeyCancel(t *testing.T) {
+func TestDialog_QKeyCancel(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 	})
 	p := NewListPicker("Test", items)
 
 	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 
 	if !p.Aborted() {
 		t.Error("expected Aborted() after q key")
 	}
 }
 
-func TestListPicker_View(t *testing.T) {
+func TestDialog_View(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "First", UpdatedAt: time.Now()},
 		{SessionID: "s2", Title: "Second", UpdatedAt: time.Now()},
@@ -197,7 +197,7 @@ func TestListPicker_View(t *testing.T) {
 	}
 }
 
-func TestListPicker_EmptyView(t *testing.T) {
+func TestDialog_EmptyView(t *testing.T) {
 	p := NewListPicker("Test", nil)
 	view := p.View()
 	if !strings.Contains(view, "No items available") {
@@ -205,7 +205,7 @@ func TestListPicker_EmptyView(t *testing.T) {
 	}
 }
 
-func TestListPicker_Init(t *testing.T) {
+func TestDialog_Init(t *testing.T) {
 	items := helperSessionItems([]SessionItem{{SessionID: "s1", Title: "Test"}})
 	p := NewListPicker("Test", items)
 	cmd := p.Init()
@@ -237,7 +237,7 @@ func TestRelativeTime(t *testing.T) {
 	}
 }
 
-func TestListPicker_WrapAround(t *testing.T) {
+func TestDialog_WrapAround(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -247,20 +247,20 @@ func TestListPicker_WrapAround(t *testing.T) {
 
 	// At top (cursor=0), press up → should wrap to bottom
 	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyUp})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 2 {
 		t.Errorf("cursor after up-at-top = %d, want 2 (wrap to bottom)", p.cursor)
 	}
 
 	// At bottom (cursor=2), press down → should wrap to top
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyDown})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 0 {
 		t.Errorf("cursor after down-at-bottom = %d, want 0 (wrap to top)", p.cursor)
 	}
 }
 
-func TestListPicker_WithInitialCursor(t *testing.T) {
+func TestDialog_WithInitialCursor(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -272,7 +272,7 @@ func TestListPicker_WithInitialCursor(t *testing.T) {
 	}
 }
 
-func TestListPicker_WithInitialCursor_OutOfBounds(t *testing.T) {
+func TestDialog_WithInitialCursor_OutOfBounds(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -291,7 +291,7 @@ func TestListPicker_WithInitialCursor_OutOfBounds(t *testing.T) {
 	})
 }
 
-func TestListPicker_WithInitialCursor_EmptyList(t *testing.T) {
+func TestDialog_WithInitialCursor_EmptyList(t *testing.T) {
 	p := NewListPicker("Test", nil, WithInitialCursor(5))
 	if p.cursor != 5 {
 		// Empty list: no clamping since len=0, cursor stays as-is
@@ -299,23 +299,23 @@ func TestListPicker_WithInitialCursor_EmptyList(t *testing.T) {
 	}
 }
 
-func TestListPicker_EmptyNavigation(t *testing.T) {
+func TestDialog_EmptyNavigation(t *testing.T) {
 	p := NewListPicker("Test", nil)
 	// Should not panic
 	p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p.Update(tea.KeyMsg{Type: tea.KeyUp})
 }
 
-func TestListPicker_EmptySelect(t *testing.T) {
+func TestDialog_EmptySelect(t *testing.T) {
 	p := NewListPicker("Test", nil)
 	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if !p.Aborted() {
 		t.Error("empty picker Enter should abort")
 	}
 }
 
-func TestListPicker_VimKeys(t *testing.T) {
+func TestDialog_VimKeys(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
 		{SessionID: "s1", Title: "Session 1"},
 		{SessionID: "s2", Title: "Session 2"},
@@ -324,14 +324,14 @@ func TestListPicker_VimKeys(t *testing.T) {
 
 	// k (up) at top → wrap to bottom
 	model, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 1 {
 		t.Errorf("cursor after k = %d, want 1 (wrap)", p.cursor)
 	}
 
 	// j (down) at bottom → wrap to top
 	model, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	p = model.(*ListPicker)
+	p = model.(*Dialog)
 	if p.cursor != 0 {
 		t.Errorf("cursor after j = %d, want 0 (wrap)", p.cursor)
 	}

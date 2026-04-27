@@ -84,10 +84,10 @@ func helperSetupModelPicker(a *App) []ModelItem {
 		items[i] = &modelItems[i]
 	}
 	currentIdx := findCurrentIndex(modelItems)
-	a.listPicker = NewListPicker("Select model", items, WithInitialCursor(currentIdx))
+	a.activeDialog = NewListPicker("Select model", items, WithInitialCursor(currentIdx))
 
 	captured := modelItems
-	a.onPickerDone = func(p *ListPicker) (tea.Model, tea.Cmd) {
+	a.onDialogDone = func(p *Dialog) (tea.Model, tea.Cmd) {
 		return a.handleModelPickerDone(p, captured)
 	}
 	return captured
@@ -151,10 +151,10 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 	if cmd != nil {
 		t.Error("expected nil cmd for empty args (commitCmd was nil)")
 	}
-	if a.listPicker == nil {
+	if a.activeDialog == nil {
 		t.Error("listPicker should be set")
 	}
-	if a.onPickerDone == nil {
+	if a.onDialogDone == nil {
 		t.Error("onPickerDone should be set")
 	}
 }
@@ -354,7 +354,7 @@ func TestHandleModelPickerDone_Cancel(t *testing.T) {
 	}
 
 	// Simulate abort
-	p := a.listPicker
+	p := a.activeDialog
 	p.aborted = true
 
 	model, cmd := a.handleModelPickerDone(p, captured)
@@ -378,8 +378,9 @@ func TestHandleModelPickerDone_Select(t *testing.T) {
 	wantProvider := captured[1].Provider
 	wantTier := captured[1].Tier
 
-	p := a.listPicker
-	p.selected = 1
+	p := a.activeDialog
+	p.done = true
+		p.cursor = 1
 
 	_, cmd := a.handleModelPickerDone(p, captured)
 
@@ -402,9 +403,10 @@ func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
 	helperSetupModelPicker(a)
 
 	// Create a picker with ghost provider item not in a.providers
-	p := a.listPicker
+	p := a.activeDialog
 	ghostItems := []ModelItem{{Provider: "ghost", Tier: config.TierPro, Model: "ghost-model"}}
-	p.selected = 0
+	p.done = true
+		p.cursor = 0
 
 	_, cmd := a.handleModelPickerDone(p, ghostItems)
 	if cmd == nil {
@@ -421,7 +423,7 @@ func TestHandleModelPickerDone_NilSelected(t *testing.T) {
 	helperSetupModelPicker(a)
 
 	// Neither aborted nor selected
-	p := a.listPicker
+	p := a.activeDialog
 	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier))
 	if cmd != nil {
 		t.Error("expected nil cmd when no selection")
@@ -622,7 +624,7 @@ func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	// Open a model picker first
 	a.handleModel("", nil)
-	if a.listPicker == nil {
+	if a.activeDialog == nil {
 		t.Fatal("expected listPicker to be set")
 	}
 	// Try opening again — should show info, not replace picker

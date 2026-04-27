@@ -10,18 +10,21 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-func newTestDialog() *PermissionDialog {
+// newTestPermDialog creates a permission Dialog and returns it along with
+// the response channel so tests can read the decision.
+func newTestPermDialog() (*Dialog, chan types.PermissionUserDecision) {
 	ch := make(chan types.PermissionUserDecision, 1)
-	return NewPermissionDialog(&types.PermissionAskEvent{
+	d := NewPermissionDialog(&types.PermissionAskEvent{
 		ToolName:   "Bash",
 		Message:    "permission required",
 		RuleDetail: "Bash(rm -rf *) from project",
 		ResponseCh: ch,
 	}, "rm -rf /tmp/test")
+	return d, ch
 }
 
 func TestPermissionDialog_ViewContainsInfo(t *testing.T) {
-	d := newTestDialog()
+	d, _ := newTestPermDialog()
 	view := d.View()
 
 	if !strings.Contains(view, "Bash") {
@@ -42,7 +45,7 @@ func TestPermissionDialog_ViewContainsInfo(t *testing.T) {
 }
 
 func TestPermissionDialog_KeyY_Allow(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	if d.Done() {
 		t.Error("should not be done before key press")
 	}
@@ -55,8 +58,9 @@ func TestPermissionDialog_KeyY_Allow(t *testing.T) {
 		t.Error("should be done after y key")
 	}
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionAllow {
 			t.Errorf("got %q, want allow", dec)
 		}
@@ -66,11 +70,12 @@ func TestPermissionDialog_KeyY_Allow(t *testing.T) {
 }
 
 func TestPermissionDialog_KeyN_Deny(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionDeny {
 			t.Errorf("got %q, want deny", dec)
 		}
@@ -80,11 +85,12 @@ func TestPermissionDialog_KeyN_Deny(t *testing.T) {
 }
 
 func TestPermissionDialog_KeyA_AllowAlways(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionAllowAlways {
 			t.Errorf("got %q, want allow_always", dec)
 		}
@@ -94,11 +100,12 @@ func TestPermissionDialog_KeyA_AllowAlways(t *testing.T) {
 }
 
 func TestPermissionDialog_Esc_Deny(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyEsc})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionDeny {
 			t.Errorf("got %q, want deny", dec)
 		}
@@ -108,12 +115,13 @@ func TestPermissionDialog_Esc_Deny(t *testing.T) {
 }
 
 func TestPermissionDialog_EnterSelectsCursor(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	// cursor starts at 0 = Allow
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionAllow {
 			t.Errorf("got %q, want allow (cursor=0)", dec)
 		}
@@ -123,12 +131,13 @@ func TestPermissionDialog_EnterSelectsCursor(t *testing.T) {
 }
 
 func TestPermissionDialog_ArrowDownThenEnter(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyDown}) // cursor=1 = Deny
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionDeny {
 			t.Errorf("got %q, want deny (cursor=1)", dec)
 		}
@@ -138,13 +147,14 @@ func TestPermissionDialog_ArrowDownThenEnter(t *testing.T) {
 }
 
 func TestPermissionDialog_ArrowDownTwiceThenEnter(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyDown}) // cursor=1
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyDown}) // cursor=2 = Allow always
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionAllowAlways {
 			t.Errorf("got %q, want allow_always (cursor=2)", dec)
 		}
@@ -154,13 +164,14 @@ func TestPermissionDialog_ArrowDownTwiceThenEnter(t *testing.T) {
 }
 
 func TestPermissionDialog_ArrowUpWraps(t *testing.T) {
-	d := newTestDialog()
+	d, ch := newTestPermDialog()
 	// cursor starts at 0, up wraps to last
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
 	d.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
+	dialogDonePermission(d, ch)
 	select {
-	case dec := <-d.responseCh:
+	case dec := <-ch:
 		if dec != types.UserDecisionAllowAlways {
 			t.Errorf("got %q, want allow_always (wrapped to last)", dec)
 		}
@@ -170,14 +181,14 @@ func TestPermissionDialog_ArrowUpWraps(t *testing.T) {
 }
 
 func TestPermissionDialog_DoneBeforeSelection(t *testing.T) {
-	d := newTestDialog()
+	d, _ := newTestPermDialog()
 	if d.Done() {
 		t.Error("should not be done before any key press")
 	}
 }
 
 func TestPermissionDialog_UnknownKeyIntercepted(t *testing.T) {
-	d := newTestDialog()
+	d, _ := newTestPermDialog()
 	handled := d.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if !handled {
 		t.Error("unknown keys should still be intercepted")

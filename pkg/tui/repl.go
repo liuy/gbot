@@ -556,7 +556,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case permissionAskMsg:
 		if m.event != nil {
 			detail := extractDetail(m.event.ToolName, m.event.Input)
-			a.permissionDialog = NewPermissionDialog(m.event, detail)
+			ch := m.event.ResponseCh
+			a.activeDialog = NewPermissionDialog(m.event, detail)
+			a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
+				dialogDonePermission(d, ch)
+				return a, a.readEvents()
+			}
 		}
 		return true, a.readEvents()
 
