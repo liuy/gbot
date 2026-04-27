@@ -961,7 +961,7 @@ func formatToolOutput(output string, isError bool, expand bool, availWidth int, 
 // Pre-cached styles for thinking blocks.
 var (
 	styleThinkingStar    = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	styleThinkingContent = lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
+	styleThinkingContent = lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
 )
 
 // renderThinkingBlock renders a thinking block using ✦ symbol.
