@@ -1227,7 +1227,7 @@ func (a *App) renderTaskList() string {
 	}
 	tasks := a.taskListFn()
 	if len(tasks) == 0 {
-		return styleDim.Render("  No tasks")
+		return ""
 	}
 
 	// Cap to maxTaskPanelItems
@@ -1241,16 +1241,17 @@ func (a *App) renderTaskList() string {
 		var style lipgloss.Style
 		switch t.Status {
 		case "in_progress":
-			icon = "▶"
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color("178")) // amber
+			icon = "[▶]"
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("111")) // soft blue
 		case "completed":
-			icon = "☑"
-			style = styleDim
+			icon = "[✓]"
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // emerald
 		default: // pending
-			icon = "☐"
+			icon = "[ ]"
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("246")) // cool gray
 		}
 
-		line := fmt.Sprintf(" %s %s %s", icon, t.ID, t.Subject)
+		line := fmt.Sprintf(" %s %s %s", style.Render(icon), t.ID, t.Subject)
 		if t.Owner != "" {
 			line += fmt.Sprintf(" (%s)", t.Owner)
 		}

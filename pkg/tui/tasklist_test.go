@@ -15,8 +15,8 @@ func TestRenderTaskList_Empty(t *testing.T) {
 	app.SetTaskListFn(func() []TaskSummary { return nil })
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "No tasks") {
-		t.Errorf("empty task list should show 'No tasks', got: %q", result)
+	if result != "" {
+		t.Errorf("no tasks should return empty string, got: %q", result)
 	}
 }
 
@@ -27,8 +27,8 @@ func TestRenderTaskList_Pending(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "☐") {
-		t.Errorf("pending task should use ☐, got: %q", result)
+	if !strings.Contains(result, "[ ]") {
+		t.Errorf("pending task should use [ ], got: %q", result)
 	}
 	if !strings.Contains(result, "1") {
 		t.Errorf("should show task ID, got: %q", result)
@@ -45,8 +45,8 @@ func TestRenderTaskList_InProgress(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "▶") {
-		t.Errorf("in_progress task should use ▶, got: %q", result)
+	if !strings.Contains(result, "[▶]") {
+		t.Errorf("in_progress task should use [▶], got: %q", result)
 	}
 }
 
@@ -57,8 +57,8 @@ func TestRenderTaskList_Completed(t *testing.T) {
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "☑") {
-		t.Errorf("completed task should use ☑, got: %q", result)
+	if !strings.Contains(result, "[✓]") {
+		t.Errorf("completed task should use [✓], got: %q", result)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestApp_TaskListCache_View(t *testing.T) {
 	app.taskListDirty = true
 
 	view := app.View()
-	if !strings.Contains(view, "☐") || !strings.Contains(view, "Fix auth") {
+	if !strings.Contains(view, "[ ]") || !strings.Contains(view, "Fix auth") {
 		t.Errorf("View should contain task list when tasks exist, got:\n%s", view)
 	}
 }
@@ -150,7 +150,7 @@ func TestApp_TaskListAutoHide_NoTasks(t *testing.T) {
 	// No tasks → panel should not appear in view
 	app.taskListDirty = true
 	view := app.View()
-	if strings.Contains(view, "☐") {
+	if strings.Contains(view, "[ ]") {
 		t.Errorf("View should not contain task panel when no tasks, got:\n%s", view)
 	}
 }
