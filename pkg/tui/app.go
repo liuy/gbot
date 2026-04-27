@@ -30,6 +30,19 @@ const (
 	minModalHeight = 5 // minimum modal height to keep dialog usable
 )
 
+// TaskSummary is a lightweight task representation for TUI rendering.
+// Decoupled from the tasks package to avoid import cycles.
+type TaskSummary struct {
+	ID        string
+	Subject   string
+	Status    string // "pending", "in_progress", "completed"
+	Owner     string
+	BlockedBy []string // only uncompleted blockers
+}
+
+// taskListFn reads tasks for display. Set via SetTaskListFn from main.go.
+type taskListFn func() []TaskSummary
+
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
 type App struct {
@@ -117,6 +130,12 @@ type App struct {
 	displayedOutputTokens int
 	outputTokenTarget     int
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
+
+	// Task list panel (Ctrl+T toggle)
+	taskListFn       taskListFn       // set from main.go to read tasks for display
+	taskListVisible  bool
+	taskListCache    string           // rendered task list, rebuilt when dirty
+	taskListDirty    bool
 	// Cache token tracking for spinner display
 	cacheReadTokens     int
 	cacheCreationTokens int
@@ -184,6 +203,12 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 // The estimate is a heuristic (len/4) and will be corrected after the first API response.
 func (a *App) SetInitialContext(usedTokens, contextWindow int) {
 	a.status.SetContext(usedTokens, contextWindow)
+}
+
+// SetTaskListFn sets the function used to read tasks for the task list panel.
+// Called from main.go after task tools are registered.
+func (a *App) SetTaskListFn(fn taskListFn) {
+	a.taskListFn = fn
 }
 
 // persistModelSelection writes the current provider/tier back to settings.json.
@@ -360,6 +385,22 @@ func (a *App) View() string {
 	// Reserve 5 lines for: progress (1) + input (1) + separator (1) + status bar (1) + margin (1).
 	maxContentLines := max(a.height-5, 1)
 
+	// Build task list panel if visible (cache rebuild only when dirty).
+	var taskPanel string
+	var taskPanelLines int
+	if a.taskListVisible && a.taskListFn != nil {
+		if a.taskListDirty {
+			a.taskListCache = a.renderTaskList()
+			a.taskListDirty = false
+		}
+		taskPanel = a.taskListCache
+		if taskPanel != "" {
+			taskPanelLines = strings.Count(taskPanel, "\n") + 1
+			taskPanel = taskPanel + "\n"
+			maxContentLines = max(maxContentLines-taskPanelLines, 1)
+		}
+	}
+
 	var visibleContent string
 	var showScrollIndicator bool
 
@@ -435,6 +476,11 @@ func (a *App) View() string {
 		sb.WriteString("\n")
 	}
 
+	// Task list panel (Ctrl+T toggle)
+	if taskPanel != "" {
+		sb.WriteString(taskPanel)
+	}
+
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		spinnerFrame := a.spinner.View()
@@ -494,6 +540,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlO:
 		a.allToolsExpanded = !a.allToolsExpanded
 		a.contentDirty = true
+		return a, nil
+
+	case tea.KeyCtrlT:
+		if a.taskListFn != nil {
+			a.taskListVisible = !a.taskListVisible
+			a.taskListDirty = true
+		}
 		return a, nil
 
 	case tea.KeyCtrlB:

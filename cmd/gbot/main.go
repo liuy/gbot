@@ -36,6 +36,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/task"
+	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
 	"github.com/liuy/gbot/pkg/tui"
 )
 
@@ -133,6 +134,13 @@ func main() {
 	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
 	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
 	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
+
+	// 3.4 Register task list tools (dir resolved later when sessionID is available).
+	taskList := tasklist.NewList("")
+	reg.MustRegister(tasklist.NewTaskCreate(taskList))
+	reg.MustRegister(tasklist.NewTaskGet(taskList))
+	reg.MustRegister(tasklist.NewTaskList(taskList))
+	reg.MustRegister(tasklist.NewTaskUpdate(taskList))
 
 	// 4. Create engine — all 10 tools registered, ToolsProvider captures full set.
 	logger := slog.Default()
@@ -307,6 +315,17 @@ func main() {
 		}
 	}
 
+		// 7.4.5 Initialize task list storage dir (now that sessionID is known).
+		if sessionID != "" {
+			if dir, err := tasklist.TasksDir(sessionID); err == nil {
+				if err := taskList.SetDir(dir); err != nil {
+					slog.Warn("main: tasks init failed", "error", err)
+				}
+			} else {
+				slog.Warn("main: tasks dir resolve failed", "error", err)
+			}
+		}
+
 		// 7.5 Wire auto-compact
 		if store != nil && sessionID != "" {
 			compactor := engine.NewAutoCompactor(store, sessionID, model, provider)
@@ -339,6 +358,46 @@ func main() {
 			}
 		}
 		app.SetInitialContext(initialTokens, contextWindow)
+
+	// 8.6 Wire task list panel reader
+	app.SetTaskListFn(func() []tui.TaskSummary {
+		if taskList.Dir() == "" {
+			return nil
+		}
+		allTasks, err := taskList.ListTasks()
+		if err != nil {
+			return nil
+		}
+		// Build completed-ID lookup once (O(n)) before iterating tasks.
+		completedIDs := make(map[string]bool)
+		for _, t := range allTasks {
+			if t.Status == tasklist.StatusCompleted {
+				completedIDs[t.ID] = true
+			}
+		}
+
+		var result []tui.TaskSummary
+		for _, t := range allTasks {
+			if t.Metadata != nil && t.Metadata["_internal"] != nil {
+				continue
+			}
+			// Filter blockedBy to only uncompleted
+			activeBlockedBy := make([]string, 0, len(t.BlockedBy))
+			for _, id := range t.BlockedBy {
+				if !completedIDs[id] {
+					activeBlockedBy = append(activeBlockedBy, id)
+				}
+			}
+			result = append(result, tui.TaskSummary{
+				ID:        t.ID,
+				Subject:   t.Subject,
+				Status:    string(t.Status),
+				Owner:     t.Owner,
+				BlockedBy: activeBlockedBy,
+			})
+		}
+		return result
+	})
 
 	// 9. Run bubbletea program
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())

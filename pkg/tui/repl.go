@@ -436,6 +436,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case toolEndMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+		a.taskListDirty = true
 		slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
 		return true, a.readEvents()
 

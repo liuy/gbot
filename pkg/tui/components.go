@@ -1208,5 +1208,66 @@ func stripRedundantVS16(s string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Task list panel rendering
+// ---------------------------------------------------------------------------
+
+// renderTaskList builds a compact task summary panel.
+// Aligned with TS TaskListV2.tsx rendering.
+//
+// Format:
+//
+//	☐ 1 Fix auth bug
+//	▶ 2 Write tests             (agent-1)
+//	☑ 3 Implement API           [blocked by 2]
+const maxTaskPanelItems = 5
+
+func (a *App) renderTaskList() string {
+	if a.taskListFn == nil {
+		return ""
+	}
+	tasks := a.taskListFn()
+	if len(tasks) == 0 {
+		return styleDim.Render("  No tasks")
+	}
+
+	// Cap to maxTaskPanelItems
+	if len(tasks) > maxTaskPanelItems {
+		tasks = tasks[:maxTaskPanelItems]
+	}
+
+	var b strings.Builder
+	for _, t := range tasks {
+		var icon string
+		var style lipgloss.Style
+		switch t.Status {
+		case "in_progress":
+			icon = "▶"
+			style = lipgloss.NewStyle().Foreground(lipgloss.Color("178")) // amber
+		case "completed":
+			icon = "☑"
+			style = styleDim
+		default: // pending
+			icon = "☐"
+		}
+
+		line := fmt.Sprintf(" %s %s %s", icon, t.ID, t.Subject)
+		if t.Owner != "" {
+			line += fmt.Sprintf(" (%s)", t.Owner)
+		}
+		if len(t.BlockedBy) > 0 {
+			ids := make([]string, len(t.BlockedBy))
+			for i, id := range t.BlockedBy {
+				ids[i] = "#" + id
+			}
+			line += fmt.Sprintf(" [blocked by %s]", strings.Join(ids, ", "))
+		}
+
+		b.WriteString(style.Render(line))
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
