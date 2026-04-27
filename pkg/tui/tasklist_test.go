@@ -4,50 +4,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 func newTaskTestApp() *App {
 	return newTestApp(&tuiMockProvider{})
-}
-
-func TestApp_CtrlT_Toggle(t *testing.T) {
-	app := newTaskTestApp()
-	app.SetTaskListFn(func() []TaskSummary {
-		return []TaskSummary{{ID: "1", Subject: "Test task", Status: "pending"}}
-	})
-
-	if app.taskListVisible {
-		t.Error("task list should start hidden")
-	}
-
-	// Toggle on
-	msg := tea.KeyMsg{Type: tea.KeyCtrlT}
-	model, _ := app.Update(msg)
-	a := model.(*App)
-	if !a.taskListVisible {
-		t.Error("Ctrl+T should show task list")
-	}
-
-	// Toggle off
-	model, _ = a.Update(msg)
-	a = model.(*App)
-	if a.taskListVisible {
-		t.Error("second Ctrl+T should hide task list")
-	}
-}
-
-func TestApp_CtrlT_NoOpWithoutFn(t *testing.T) {
-	app := newTaskTestApp()
-	// No SetTaskListFn called
-
-	msg := tea.KeyMsg{Type: tea.KeyCtrlT}
-	model, _ := app.Update(msg)
-	a := model.(*App)
-	if a.taskListVisible {
-		t.Error("Ctrl+T should be no-op without taskListFn")
-	}
 }
 
 func TestRenderTaskList_Empty(t *testing.T) {
@@ -154,7 +114,6 @@ func TestRenderTaskList_NilFn(t *testing.T) {
 
 func TestApp_TaskListDirty_OnToolEnd(t *testing.T) {
 	app := newTaskTestApp()
-	app.taskListVisible = true
 	app.taskListDirty = false
 
 	// Simulate tool end
@@ -173,12 +132,25 @@ func TestApp_TaskListCache_View(t *testing.T) {
 		return []TaskSummary{{ID: "1", Subject: "Fix auth", Status: "pending"}}
 	})
 
-	// Show task list
-	app.taskListVisible = true
+	// Task list auto-shows when dirty + fn returns tasks
 	app.taskListDirty = true
 
 	view := app.View()
 	if !strings.Contains(view, "☐") || !strings.Contains(view, "Fix auth") {
-		t.Errorf("View should contain task list when visible, got:\n%s", view)
+		t.Errorf("View should contain task list when tasks exist, got:\n%s", view)
+	}
+}
+
+func TestApp_TaskListAutoHide_NoTasks(t *testing.T) {
+	app := newTaskTestApp()
+	app.width = 80
+	app.height = 24
+	app.SetTaskListFn(func() []TaskSummary { return nil })
+
+	// No tasks → panel should not appear in view
+	app.taskListDirty = true
+	view := app.View()
+	if strings.Contains(view, "☐") {
+		t.Errorf("View should not contain task panel when no tasks, got:\n%s", view)
 	}
 }

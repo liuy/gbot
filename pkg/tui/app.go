@@ -131,9 +131,8 @@ type App struct {
 	outputTokenTarget     int
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
 
-	// Task list panel (Ctrl+T toggle)
+	// Task list panel (auto-shows when tasks exist)
 	taskListFn       taskListFn       // set from main.go to read tasks for display
-	taskListVisible  bool
 	taskListCache    string           // rendered task list, rebuilt when dirty
 	taskListDirty    bool
 	// Cache token tracking for spinner display
@@ -209,6 +208,7 @@ func (a *App) SetInitialContext(usedTokens, contextWindow int) {
 // Called from main.go after task tools are registered.
 func (a *App) SetTaskListFn(fn taskListFn) {
 	a.taskListFn = fn
+	a.taskListDirty = true
 }
 
 // persistModelSelection writes the current provider/tier back to settings.json.
@@ -388,7 +388,7 @@ func (a *App) View() string {
 	// Build task list panel if visible (cache rebuild only when dirty).
 	var taskPanel string
 	var taskPanelLines int
-	if a.taskListVisible && a.taskListFn != nil {
+	if a.taskListFn != nil {
 		if a.taskListDirty {
 			a.taskListCache = a.renderTaskList()
 			a.taskListDirty = false
@@ -476,7 +476,7 @@ func (a *App) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Task list panel (Ctrl+T toggle)
+	// Task list panel (auto-shows when tasks exist)
 	if taskPanel != "" {
 		sb.WriteString(taskPanel)
 	}
@@ -540,13 +540,6 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlO:
 		a.allToolsExpanded = !a.allToolsExpanded
 		a.contentDirty = true
-		return a, nil
-
-	case tea.KeyCtrlT:
-		if a.taskListFn != nil {
-			a.taskListVisible = !a.taskListVisible
-			a.taskListDirty = true
-		}
 		return a, nil
 
 	case tea.KeyCtrlB:

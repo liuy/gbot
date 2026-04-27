@@ -13,10 +13,6 @@ import (
 // Test helpers
 //
 //go:fix inline
-func strPtr(s string) *string { return new(s) }
-
-//go:fix inline
-func ptrStatus(s TaskStatus) *TaskStatus { return new(s) }
 
 func TestTaskUpdate_StatusFlow(t *testing.T) {
 	dir := t.TempDir()
