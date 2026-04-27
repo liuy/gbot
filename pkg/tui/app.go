@@ -82,6 +82,7 @@ type App struct {
 	history     *History
 	killRing    *KillRing
 	doublePress *DoublePress
+	completions *Completions
 
 	// Spinner progress state
 	progressStart    time.Time
@@ -140,6 +141,7 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 		history:          NewHistory(historyPath),
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
+		completions:      NewCompletions(),
 		allToolsExpanded: false,
 		idleStop:         make(chan struct{}),
 	}
@@ -460,6 +462,15 @@ func (a *App) View() string {
 	// Input
 	sb.WriteString(a.input.View())
 
+	// Completion dropdown (below input, above separator — TS: PromptInputFooter)
+	if a.completions.Visible() {
+		maxRows := max(
+			// reserve: separator + status + input + at least 1 content line
+			a.height-4, 1)
+		sb.WriteString("\n")
+		sb.WriteString(a.completions.Render(a.width, maxRows))
+	}
+
 	// Horizontal line separator + Status bar below input
 	sb.WriteString("\n")
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
@@ -494,12 +505,20 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyCtrlP, tea.KeyUp:
+		if a.completions.Visible() {
+			a.completions.SelectPrev()
+			return a, nil
+		}
 		if a.input.CursorUp() {
 			return a, nil
 		}
 		return a.handleHistoryUp(), nil
 
 	case tea.KeyCtrlN, tea.KeyDown:
+		if a.completions.Visible() {
+			a.completions.SelectNext()
+			return a, nil
+		}
 		if a.input.CursorDown() {
 			return a, nil
 		}
@@ -514,6 +533,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyCtrlL, tea.KeyCtrlG, tea.KeyEscape:
+		if a.completions.Visible() {
+			a.completions.Dismiss()
+			return a, nil
+		}
 		return a, nil
 
 	case tea.KeyCtrlLeft:
@@ -555,9 +578,27 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.handleKillWord()
 		return a, nil
 
+	case tea.KeyTab:
+		if a.completions.Visible() && a.input.cursor == len(a.input.value) {
+			fillText, _ := a.completions.Accept()
+			a.input.SetValue(fillText)
+			a.completions.Dismiss()
+			return a, nil
+		}
+		return a, nil
+
 	case tea.KeyEnter:
 		text := a.input.Value()
 		if strings.TrimSpace(text) == "" {
+			return a, nil
+		}
+		if a.completions.Visible() && a.input.cursor == len(a.input.value) {
+			fillText, shouldExec := a.completions.Accept()
+			a.completions.Dismiss()
+			if shouldExec {
+				return a, a.handleSubmitRepl(fillText)
+			}
+			a.input.SetValue(fillText)
 			return a, nil
 		}
 		return a, a.handleSubmitRepl(text)
@@ -568,11 +609,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyBackspace:
 		a.resetNavAndAccum()
 		a.input.Backspace()
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
 
 	case tea.KeyDelete:
 		a.resetNavAndAccum()
 		a.input.DeleteForward()
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
 
 	case tea.KeyHome:
@@ -588,6 +631,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeySpace:
 		a.resetNavAndAccum()
 		a.input.InsertChar(' ')
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
 
 	case tea.KeyLeft:
@@ -689,12 +733,14 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for _, ch := range msg.Runes {
 			a.input.InsertChar(ch)
 		}
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
 	}
 	a.resetNavAndAccum()
 	for _, ch := range msg.Runes {
 		a.input.InsertChar(ch)
 	}
+	a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 	return a, nil
 }
 

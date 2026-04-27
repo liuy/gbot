@@ -4871,3 +4871,228 @@ func TestLastNLines(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tab Completion integration tests
+// ---------------------------------------------------------------------------
+
+func TestApp_Completion_ShowsOnSlash(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/")
+	app.completions.Update(app.input.Value(), app.input.cursor == len(app.input.value))
+
+	view := app.View()
+	if !app.completions.Visible() {
+		t.Fatal("completions should be visible after typing '/'")
+	}
+	if !strings.Contains(view, "clear") {
+		t.Error("view should contain 'clear'")
+	}
+	if !strings.Contains(view, "model") {
+		t.Error("view should contain 'model'")
+	}
+	if !strings.Contains(view, "session") {
+		t.Error("view should contain 'session'")
+	}
+}
+
+func TestApp_Completion_TabFillsWithSpace(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/s")
+	app.completions.Update(app.input.Value(), true)
+	if !app.completions.Visible() {
+		t.Fatal("completions should be visible")
+	}
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+
+	got := app.input.Value()
+	if got != "/session " {
+		t.Errorf("after Tab, input = %q, want %q", got, "/session ")
+	}
+	if app.completions.Visible() {
+		t.Error("completions should be dismissed after Tab")
+	}
+}
+
+func TestApp_Completion_EscDismisses(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/")
+	app.completions.Update(app.input.Value(), true)
+	if !app.completions.Visible() {
+		t.Fatal("should be visible")
+	}
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyEscape})
+
+	if app.completions.Visible() {
+		t.Error("completions should be dismissed after Esc")
+	}
+}
+
+func TestApp_Completion_UpDownNavigation(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/")
+	app.completions.Update(app.input.Value(), true)
+
+	if app.completions.SelectedIndex() != 0 {
+		t.Fatalf("initial index = %d, want 0", app.completions.SelectedIndex())
+	}
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if app.completions.SelectedIndex() != 1 {
+		t.Errorf("after Down, index = %d, want 1", app.completions.SelectedIndex())
+	}
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if app.completions.SelectedIndex() != 2 {
+		t.Errorf("after Down, index = %d, want 2", app.completions.SelectedIndex())
+	}
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if app.completions.SelectedIndex() != 1 {
+		t.Errorf("after Up, index = %d, want 1", app.completions.SelectedIndex())
+	}
+}
+
+func TestApp_Completion_EnterExecutesNoArgs(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/cl")
+	app.completions.Update(app.input.Value(), true)
+	if !app.completions.Visible() {
+		t.Fatal("should be visible")
+	}
+
+	_, cmd := app.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if cmd == nil {
+		t.Error("Enter on /clear (no args) should execute, got nil cmd")
+	}
+	if app.completions.Visible() {
+		t.Error("completions should be dismissed after Enter")
+	}
+}
+
+func TestApp_Completion_EnterFillsWithArgs(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/s")
+	app.completions.Update(app.input.Value(), true)
+
+	app.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	got := app.input.Value()
+	if got != "/session " {
+		t.Errorf("after Enter on /session, input = %q, want %q", got, "/session ")
+	}
+	if app.completions.Visible() {
+		t.Error("completions should be dismissed")
+	}
+}
+
+func TestApp_Completion_IMEGuard(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/你好")
+	app.completions.Update(app.input.Value(), true)
+
+	if app.completions.Visible() {
+		t.Error("should not trigger for non-ASCII input")
+	}
+}
+
+func TestApp_Completion_SpaceDismisses(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/s")
+	app.completions.Update(app.input.Value(), true)
+	if !app.completions.Visible() {
+		t.Fatal("should be visible")
+	}
+
+	app.input.InsertChar(' ')
+	app.completions.Update(app.input.Value(), true)
+
+	if app.completions.Visible() {
+		t.Error("should dismiss after space")
+	}
+}
+
+func TestApp_Completion_RenderedBelowInput(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/")
+	app.completions.Update(app.input.Value(), true)
+
+	view := app.View()
+
+	inputIdx := strings.Index(view, "❯ /")
+	if inputIdx < 0 {
+		t.Fatal("view should contain input with '❯ /'")
+	}
+	clearIdx := strings.Index(view, "clear")
+	if clearIdx < 0 {
+		t.Fatal("view should contain 'clear' in completion")
+	}
+	if clearIdx < inputIdx {
+		t.Error("completion should be rendered below input, but 'clear' appears before '❯ /'")
+	}
+}
+
+// --- P2 edge case integration tests (from code review) ---
+
+func TestApp_Tab_NotVisible_NoOp(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app.input.SetValue("hello")
+
+	before := app.input.Value()
+	app.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if app.input.Value() != before {
+		t.Errorf("Tab when not visible should not change input, got %q", app.input.Value())
+	}
+}
+
+func TestApp_Tab_CursorNotAtEnd_NoOp(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	app.input.SetValue("/session")
+	app.completions.Update(app.input.Value(), true)
+	if !app.completions.Visible() {
+		t.Fatal("should be visible")
+	}
+
+	// Move cursor to start
+	app.input.cursor = 0
+	app.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+
+	if app.input.Value() != "/session" {
+		t.Errorf("Tab with cursor not at end should not fill, got %q", app.input.Value())
+	}
+}
+
+func TestApp_Enter_NormalText_Submits(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app.input.SetValue("hello world")
+
+	_, cmd := app.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Error("Enter on normal text should submit")
+	}
+}

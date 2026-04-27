@@ -2,6 +2,7 @@ package tui
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,11 +14,27 @@ type SlashCommand struct {
 	Args string // everything after the command name, e.g. "-n title"
 }
 
+// CommandDef describes a slash command for both lookup and tab completion.
+type CommandDef struct {
+	Description string // shown in suggestion dropdown
+	HasArgs     bool   // true = command takes arguments (Enter doesn't auto-execute)
+}
+
 // commandDefs maps slash command names to their definitions.
-var commandDefs = map[string]struct{}{
-	"session": {},
-	"clear":  {},
-	"model":  {},
+var commandDefs = map[string]CommandDef{
+	"session": {Description: "Switch or manage sessions", HasArgs: true},
+	"clear":   {Description: "Clear conversation", HasArgs: false},
+	"model":   {Description: "Switch model", HasArgs: true},
+}
+
+// AllCommands returns command names sorted alphabetically.
+func AllCommands() []string {
+	names := make([]string, 0, len(commandDefs))
+	for name := range commandDefs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // LookupSlashCommand checks if the input text is a slash command.

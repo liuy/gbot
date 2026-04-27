@@ -1,6 +1,35 @@
 package tui
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func TestAllCommands(t *testing.T) {
+	cmds := AllCommands()
+	if len(cmds) != 3 {
+		t.Fatalf("AllCommands() returned %d commands, want 3", len(cmds))
+	}
+	// Must be sorted alphabetically
+	if !slices.IsSorted(cmds) {
+		t.Errorf("AllCommands() not sorted: %v", cmds)
+	}
+	// Must contain all known commands
+	want := []string{"clear", "model", "session"}
+	for _, w := range want {
+		if !slices.Contains(cmds, w) {
+			t.Errorf("AllCommands() missing %q", w)
+		}
+	}
+}
+
+func TestCommandDefs_HasDescription(t *testing.T) {
+	for name, def := range commandDefs {
+		if def.Description == "" {
+			t.Errorf("command %q has empty Description", name)
+		}
+	}
+}
 
 func TestLookupSlashCommand(t *testing.T) {
 	tests := []struct {
