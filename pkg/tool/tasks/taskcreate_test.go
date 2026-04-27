@@ -194,8 +194,8 @@ func TestTaskCreate_Description(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
-	if desc != "TaskCreate(Fix auth)" {
-		t.Errorf("desc = %q, want %q", desc, "TaskCreate(Fix auth)")
+	if desc != "Fix auth" {
+		t.Errorf("desc = %q, want %q", desc, "Fix auth")
 	}
 
 	// Invalid input → fallback description

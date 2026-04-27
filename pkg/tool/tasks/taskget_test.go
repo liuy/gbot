@@ -225,8 +225,8 @@ func TestTaskGet_Description(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
-	if desc != "TaskGet(42)" {
-		t.Errorf("desc = %q, want %q", desc, "TaskGet(42)")
+	if desc != "#42" {
+		t.Errorf("desc = %q, want %q", desc, "#42")
 	}
 
 	// Invalid input → fallback

@@ -61,7 +61,7 @@ func NewTaskCreate(list *List) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Create a task in the task list", nil
 			}
-			return fmt.Sprintf("TaskCreate(%s)", in.Subject), nil
+			return in.Subject, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskCreate(list, input)

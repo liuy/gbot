@@ -37,7 +37,7 @@ type TaskSummary struct {
 	Subject   string
 	Status    string // "pending", "in_progress", "completed"
 	Owner     string
-	BlockedBy []string // only uncompleted blockers
+	BlockedBy []string // uncompleted blocker subjects
 }
 
 // taskListFn reads tasks for display. Set via SetTaskListFn from main.go.

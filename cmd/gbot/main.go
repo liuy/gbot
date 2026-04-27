@@ -368,12 +368,14 @@ func main() {
 		if err != nil {
 			return nil
 		}
-		// Build completed-ID lookup once (O(n)) before iterating tasks.
+		// Build ID→subject lookup and completed-ID set.
 		completedIDs := make(map[string]bool)
+		subjectByID := make(map[string]string)
 		for _, t := range allTasks {
 			if t.Status == tasklist.StatusCompleted {
 				completedIDs[t.ID] = true
 			}
+			subjectByID[t.ID] = t.Subject
 		}
 
 		var result []tui.TaskSummary
@@ -381,11 +383,11 @@ func main() {
 			if t.Metadata != nil && t.Metadata["_internal"] != nil {
 				continue
 			}
-			// Filter blockedBy to only uncompleted
+			// Filter blockedBy to only uncompleted, resolve to subjects.
 			activeBlockedBy := make([]string, 0, len(t.BlockedBy))
 			for _, id := range t.BlockedBy {
 				if !completedIDs[id] {
-					activeBlockedBy = append(activeBlockedBy, id)
+					activeBlockedBy = append(activeBlockedBy, subjectByID[id])
 				}
 			}
 			result = append(result, tui.TaskSummary{

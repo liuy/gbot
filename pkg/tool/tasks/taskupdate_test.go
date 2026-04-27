@@ -405,8 +405,8 @@ func TestTaskUpdate_Description_Func(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
-	if desc != "TaskUpdate(42)" {
-		t.Errorf("desc = %q, want %q", desc, "TaskUpdate(42)")
+	if desc != "#42" {
+		t.Errorf("desc = %q, want %q", desc, "#42")
 	}
 
 	desc, err = tool.Description(json.RawMessage(`{invalid`))

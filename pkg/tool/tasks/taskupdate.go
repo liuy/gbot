@@ -97,7 +97,10 @@ func NewTaskUpdate(list *List) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Update a task", nil
 			}
-			return fmt.Sprintf("TaskUpdate(%s)", in.TaskID), nil
+			if t, _ := list.GetTask(in.TaskID); t != nil {
+				return t.Subject, nil
+			}
+			return "#" + in.TaskID, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskUpdate(list, input)

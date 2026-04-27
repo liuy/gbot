@@ -1221,6 +1221,15 @@ func stripRedundantVS16(s string) string {
 //	☑ 3 Implement API           [blocked by 2]
 const maxTaskPanelItems = 5
 
+// truncateRunes truncates s to maxRunes, appending "..." if truncated.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
 func (a *App) renderTaskList() string {
 	if a.taskListFn == nil {
 		return ""
@@ -1272,11 +1281,12 @@ func (a *App) renderTaskList() string {
 			line += lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" (@%s)", t.Owner))
 		}
 		if isBlocked {
-			ids := make([]string, len(t.BlockedBy))
-			for i, id := range t.BlockedBy {
-				ids[i] = "#" + id
+			// Show blocker subjects with adaptive truncation (max 15 runes each).
+			subjects := make([]string, len(t.BlockedBy))
+			for i, s := range t.BlockedBy {
+				subjects[i] = truncateRunes(s, 15)
 			}
-			line += lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" [blocked by %s]", strings.Join(ids, ", ")))
+			line += lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" [blocked by %s]", strings.Join(subjects, ", ")))
 		}
 
 		b.WriteString(line)

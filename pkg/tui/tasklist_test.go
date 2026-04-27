@@ -81,13 +81,13 @@ func TestRenderTaskList_Blocked(t *testing.T) {
 	app := newTaskTestApp()
 	app.SetTaskListFn(func() []TaskSummary {
 		return []TaskSummary{
-			{ID: "2", Subject: "Blocked task", Status: "pending", BlockedBy: []string{"1"}},
+			{ID: "2", Subject: "Blocked task", Status: "pending", BlockedBy: []string{"Fix auth"}},
 		}
 	})
 
 	result := app.renderTaskList()
-	if !strings.Contains(result, "blocked by #1") {
-		t.Errorf("should show blocker, got: %q", result)
+	if !strings.Contains(result, "blocked by Fix auth") {
+		t.Errorf("should show blocker subject, got: %q", result)
 	}
 }
 

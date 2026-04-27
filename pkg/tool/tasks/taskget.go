@@ -54,7 +54,10 @@ func NewTaskGet(list *List) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Retrieve a task by ID", nil
 			}
-			return fmt.Sprintf("TaskGet(%s)", in.TaskID), nil
+			if t, _ := list.GetTask(in.TaskID); t != nil {
+				return t.Subject, nil
+			}
+			return "#" + in.TaskID, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskGet(list, input)
