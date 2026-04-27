@@ -4646,6 +4646,29 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	}
 }
 
+func TestApp_SlashCommand_PersistedToHistory(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, _ := short.NewStore(filepath.Join(dir, "test.db"))
+	if _, err := store.CreateSession(dir, "model"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	app.SetStore(store, "existing-session", dir, 0)
+
+	// Submit a slash command via Enter key
+	app.input.SetValue("/session")
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if app.history.Len() != 1 {
+		t.Errorf("history should contain 1 entry (the slash command), got %d", app.history.Len())
+	}
+	// Navigate up — should recall "/session"
+	text, _ := app.history.Up("")
+	if text != "/session" {
+		t.Errorf("history up = %q, want %q", text, "/session")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Modal peek tests
 // ---------------------------------------------------------------------------

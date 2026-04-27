@@ -659,6 +659,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	}
 	// Check for slash commands before adding user message to engine.
 	if cmd, ok := LookupSlashCommand(text); ok {
+		a.history.Add(text)
 		a.input.Reset()
 		return a.handleSlashCommand(cmd, commitCmd)
 	}
