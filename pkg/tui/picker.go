@@ -151,6 +151,7 @@ func WithInitialCursor(idx int) func(*Dialog) {
 		} else {
 			d.cursor = idx
 		}
+		d.clampScroll()
 	}
 }
 

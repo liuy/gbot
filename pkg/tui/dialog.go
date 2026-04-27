@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,15 +40,18 @@ type DialogDetail struct {
 
 // Dialog is a unified modal overlay for both list picking and permission asking.
 // It renders with a rounded border, optional detail section, and selectable options.
+// When options exceed available height, the dialog shows a fixed-height viewport
+// with scroll indicators (↑/↓ N more).
 type Dialog struct {
-	title   string
-	details []DialogDetail
-	options []DialogOption
-	cursor  int
-	done    bool  // user made a selection
-	aborted bool  // user cancelled (esc/q)
-	width   int
-	height  int
+	title        string
+	details      []DialogDetail
+	options      []DialogOption
+	cursor       int
+	scrollOffset int  // first visible option index
+	done         bool // user made a selection
+	aborted      bool // user cancelled (esc/q)
+	width        int
+	height       int
 }
 
 // NewDialog creates a dialog with the given title, options, and optional detail lines.
@@ -57,6 +61,62 @@ func NewDialog(title string, options []DialogOption, details ...DialogDetail) *D
 		details: details,
 		options: options,
 		cursor:  0,
+	}
+}
+
+// maxVisible returns the maximum number of lines for the options viewport.
+// This includes option lines plus any scroll indicators.
+func (d *Dialog) maxVisible() int {
+	if d.height == 0 || len(d.options) == 0 {
+		return len(d.options)
+	}
+	// Rendered height = content + 4 (2 border + 2 padding)
+	// Content = 2 (title+blank) + details + cond_blank + options + 2 (blank+hint)
+	detailLines := len(d.details)
+	if detailLines > 0 {
+		detailLines++ // blank line after details
+	}
+	h := min(max(d.height-8-detailLines, 3), len(d.options))
+	return h
+}
+
+// visibleCount returns how many option items are actually rendered
+// (excluding scroll indicator lines).
+func (d *Dialog) visibleCount() int {
+	total := len(d.options)
+	mv := d.maxVisible()
+	if total <= mv {
+		return total
+	}
+	// Reserve 2 lines for scroll indicators when scrolling is needed
+	vc := max(mv-2, 1)
+	return vc
+}
+
+// clampScroll adjusts scrollOffset so the cursor stays within the visible range.
+func (d *Dialog) clampScroll() {
+	if len(d.options) == 0 {
+		d.scrollOffset = 0
+		return
+	}
+	vc := d.visibleCount()
+
+	// Cursor above viewport → scroll up
+	if d.cursor < d.scrollOffset {
+		d.scrollOffset = d.cursor
+	}
+	// Cursor below viewport → scroll down
+	if d.cursor >= d.scrollOffset+vc {
+		d.scrollOffset = d.cursor - vc + 1
+	}
+
+	// Clamp scrollOffset
+	maxOffset := max(len(d.options)-vc, 0)
+	if d.scrollOffset > maxOffset {
+		d.scrollOffset = maxOffset
+	}
+	if d.scrollOffset < 0 {
+		d.scrollOffset = 0
 	}
 }
 
@@ -95,6 +155,7 @@ func (d *Dialog) HandleKey(key tea.KeyMsg) bool {
 			} else {
 				d.cursor = len(d.options) - 1
 			}
+			d.clampScroll()
 		}
 		return true
 	case "down", "j":
@@ -104,6 +165,7 @@ func (d *Dialog) HandleKey(key tea.KeyMsg) bool {
 			} else {
 				d.cursor = 0
 			}
+			d.clampScroll()
 		}
 		return true
 	case "enter":
@@ -142,6 +204,7 @@ func indexOfOption(options []DialogOption, target DialogOption) int {
 }
 
 // View renders the dialog with border, details, options, and hints.
+// When options exceed the viewport, only visible items are rendered with scroll indicators.
 func (d *Dialog) View() string {
 	if len(d.options) == 0 {
 		return dialogBorderStyle.Render("No items available.\n\nPress Esc to cancel.")
@@ -163,8 +226,29 @@ func (d *Dialog) View() string {
 		b.WriteString("\n")
 	}
 
-	// Options
-	for i, opt := range d.options {
+	// Options viewport
+	total := len(d.options)
+	mv := d.maxVisible()
+	vc := d.visibleCount()
+	start := d.scrollOffset
+	end := start + vc
+
+	// Scroll indicators
+	aboveCount := start
+	belowCount := total - end
+	needsScroll := total > mv
+
+	if needsScroll {
+		if aboveCount > 0 {
+			b.WriteString(dialogHint.Render(fmt.Sprintf("  ↑ %d more", aboveCount)))
+			b.WriteString("\n")
+		} else {
+			b.WriteString("\n") // reserve space for fixed height
+		}
+	}
+
+	for i := start; i < end; i++ {
+		opt := d.options[i]
 		row := "  " + opt.Label
 		if i == d.cursor {
 			b.WriteString(dialogHighlight.Render(row))
@@ -172,6 +256,15 @@ func (d *Dialog) View() string {
 			b.WriteString(dialogNormal.Render(row))
 		}
 		b.WriteString("\n")
+	}
+
+	if needsScroll {
+		if belowCount > 0 {
+			b.WriteString(dialogHint.Render(fmt.Sprintf("  ↓ %d more", belowCount)))
+			b.WriteString("\n")
+		} else {
+			b.WriteString("\n") // reserve space for fixed height
+		}
 	}
 
 	// Hint line

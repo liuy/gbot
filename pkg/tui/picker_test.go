@@ -336,3 +336,214 @@ func TestDialog_VimKeys(t *testing.T) {
 		t.Errorf("cursor after j = %d, want 0 (wrap)", p.cursor)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Viewport scrolling tests
+// ---------------------------------------------------------------------------
+
+// helperManyItems creates n PickerItems for scroll testing.
+func helperManyItems(n int) []PickerItem {
+	items := make([]SessionItem, n)
+	for i := range n {
+		items[i] = SessionItem{
+			SessionID: fmt.Sprintf("s%d", i),
+			Title:     fmt.Sprintf("Item %02d", i),
+		}
+	}
+	return helperSessionItems(items)
+}
+
+func TestDialog_MaxVisible_NoHeight(t *testing.T) {
+	// When height is 0 (default), all options are visible
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	if d.maxVisible() != 20 {
+		t.Errorf("maxVisible() = %d, want 20 (no height set)", d.maxVisible())
+	}
+}
+
+func TestDialog_MaxVisible_WithHeight(t *testing.T) {
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+	mv := d.maxVisible()
+	// height=15, overhead=8 (no details), so max = 15-8 = 7
+	if mv != 7 {
+		t.Errorf("maxVisible() = %d, want 7", mv)
+	}
+}
+
+func TestDialog_MaxVisible_ClampedToOptionCount(t *testing.T) {
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(3)))
+	d.height = 50
+	mv := d.maxVisible()
+	if mv != 3 {
+		t.Errorf("maxVisible() = %d, want 3 (clamped to option count)", mv)
+	}
+}
+
+func TestDialog_VisibleCount_NoScroll(t *testing.T) {
+	// 3 options, height large enough → no scrolling
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(3)))
+	d.height = 50
+	if d.visibleCount() != 3 {
+		t.Errorf("visibleCount() = %d, want 3 (no scroll needed)", d.visibleCount())
+	}
+}
+
+func TestDialog_VisibleCount_WithScroll(t *testing.T) {
+	// 20 options, height=15 → maxVisible=7, visibleCount=7-2=5
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+	if d.visibleCount() != 5 {
+		t.Errorf("visibleCount() = %d, want 5", d.visibleCount())
+	}
+}
+
+func TestDialog_ClampScroll_Down(t *testing.T) {
+	// 20 items, height=15 → visibleCount=5
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+
+	// Move cursor down past first page
+	for range 5 {
+		d.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	// cursor=5, scrollOffset should have moved
+	if d.scrollOffset == 0 {
+		t.Error("scrollOffset should have moved past 0")
+	}
+	if d.cursor != 5 {
+		t.Errorf("cursor = %d, want 5", d.cursor)
+	}
+}
+
+func TestDialog_ClampScroll_Up(t *testing.T) {
+	// 20 items, height=15 → visibleCount=5
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+	d.cursor = 10
+	d.clampScroll()
+
+	// Now cursor=10, scrollOffset should be around 6 (10-5+1)
+	if d.scrollOffset != 6 {
+		t.Errorf("scrollOffset = %d, want 6", d.scrollOffset)
+	}
+
+	// Move up several times
+	for range 5 {
+		d.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	// cursor=5, scrollOffset should have moved up
+	if d.scrollOffset > 5 {
+		t.Errorf("scrollOffset = %d, should be <= 5 after moving up", d.scrollOffset)
+	}
+}
+
+func TestDialog_ClampScroll_WrapToBottom(t *testing.T) {
+	// 20 items, height=15 → visibleCount=5
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+
+	// At cursor=0, press up → wrap to last item
+	d.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if d.cursor != 19 {
+		t.Errorf("cursor = %d, want 19 (wrap)", d.cursor)
+	}
+	// scrollOffset should show last page: 19-5+1=15
+	if d.scrollOffset != 15 {
+		t.Errorf("scrollOffset = %d, want 15", d.scrollOffset)
+	}
+}
+
+func TestDialog_ClampScroll_WrapToTop(t *testing.T) {
+	// 20 items, height=15 → visibleCount=5
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+	d.cursor = 19
+	d.clampScroll()
+
+	// At cursor=19, press down → wrap to first item
+	d.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if d.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (wrap)", d.cursor)
+	}
+	if d.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0", d.scrollOffset)
+	}
+}
+
+func TestDialog_View_ScrollIndicators(t *testing.T) {
+	// 10 items, height=12 → overhead=8, maxVisible=4, visibleCount=2
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(10)))
+	d.height = 12
+
+	view := d.View()
+	// Should show "↓ 8 more" at bottom initially (no items above)
+	if !strings.Contains(view, "↓ 8 more") {
+		t.Errorf("view should show '↓ 8 more', got:\n%s", view)
+	}
+	// At top: scroll indicator should NOT appear (hint "↑/k" is fine)
+	if strings.Contains(view, "↑ 0 more") || strings.Contains(view, "↑ 1 more") || strings.Contains(view, "↑ 2 more") {
+		t.Errorf("view should not show '↑ N more' at top, got:\n%s", view)
+	}
+
+	// Move down past first page
+	for range 2 {
+		d.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	view = d.View()
+	// Now in the middle: should show "↑ N more" indicator
+	if !strings.Contains(view, "↑ 1 more") {
+		t.Errorf("view should show '↑ 1 more' in middle, got:\n%s", view)
+	}
+}
+
+func TestDialog_View_NoScrollIndicatorsWhenAllFit(t *testing.T) {
+	// 3 items, large height → all fit, no indicators
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(3)))
+	d.height = 50
+
+	view := d.View()
+	if strings.Contains(view, "more") {
+		t.Errorf("view should not show scroll indicators when all fit, got:\n%s", view)
+	}
+}
+
+func TestDialog_WithInitialCursor_Scroll(t *testing.T) {
+	// 20 items, height=15 → visibleCount=5
+	items := helperManyItems(20)
+	p := NewListPicker("Test", items)
+	p.height = 15
+	p.cursor = 15
+	p.clampScroll()
+
+	// Cursor at 15, scrollOffset should show it
+	if p.cursor != 15 {
+		t.Errorf("cursor = %d, want 15", p.cursor)
+	}
+	if p.scrollOffset > 15 {
+		t.Errorf("scrollOffset = %d, should be <= 15", p.scrollOffset)
+	}
+	if p.scrollOffset < 11 {
+		t.Errorf("scrollOffset = %d, should be >= 11 (15-5+1)", p.scrollOffset)
+	}
+}
+
+func TestDialog_FixedHeightWhileScrolling(t *testing.T) {
+	// Verify dialog height stays constant while scrolling
+	d := NewDialog("Test", pickerItemsToOptions(helperManyItems(20)))
+	d.height = 15
+
+	view0 := d.View()
+	// Move down several times
+	for range 10 {
+		d.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	view1 := d.View()
+
+	// Count lines (approximate: split by \n)
+	lines0 := strings.Count(view0, "\n")
+	lines1 := strings.Count(view1, "\n")
+	if lines0 != lines1 {
+		t.Errorf("line count changed: initial=%d, after scroll=%d", lines0, lines1)
+	}
+}
