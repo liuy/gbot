@@ -2409,9 +2409,9 @@ func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 		t.Fatal("expected compact output event")
 	}
 
-	// With fix, should show "token: 35K → 29K" (real API tokens preserved)
+	// With fix, should show "token: 35.0k → 29.0k" (real API tokens preserved)
 	// Real before = 35000 (from lastInputTokens), message delta = 10000-4000 = 6000, after = 35000-6000 = 29000
-	if !strings.Contains(compactDisplayOutput, "token: 35K → 29K") {
-		t.Errorf("expected compact output to show real API tokens (35K → 29K), got:\n%s", compactDisplayOutput)
+	if !strings.Contains(compactDisplayOutput, "token: 35.0k → 29.0k") {
+		t.Errorf("expected compact output to show real API tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
 	}
 }

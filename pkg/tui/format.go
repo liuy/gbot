@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // formatElapsed returns a human-readable elapsed time string.
@@ -33,10 +35,7 @@ func formatDuration(d time.Duration) string {
 
 // formatTokenCount formats a token count: <1000 as-is, >=1000 as "1.2k".
 func formatTokenCount(n int) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	return fmt.Sprintf("%.1fk", float64(n)/1000)
+	return types.FormatTokenCount(n)
 }
 
 // animateTokenValue increments displayed toward target by one step.

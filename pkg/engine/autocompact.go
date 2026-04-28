@@ -28,21 +28,13 @@ type CompactResult struct {
 	Messages       []types.Message // post-compact message array
 }
 
-// formatTokens formats a token count for display (e.g., "150K", "500").
-// Rounds to nearest K for values >= 1000.
-func formatTokens(n int) string {
-	if n >= 1000 {
-		return fmt.Sprintf("%dK", (n+500)/1000)
-	}
-	return fmt.Sprintf("%d", n)
-}
 
 // formatCompactOutput builds the display text for a successful compact result.
 // Structure: stats line first (fills collapse preview), then summary content.
 func formatCompactOutput(result *CompactResult) string {
 	output := fmt.Sprintf("Conversation compacted (msg: %d → %d, token: %s → %s)",
 		result.BeforeMessages, len(result.Messages),
-		formatTokens(result.BeforeTokens), formatTokens(result.AfterTokens))
+		types.FormatTokenCount(result.BeforeTokens), types.FormatTokenCount(result.AfterTokens))
 	if result.Summary != "" {
 		output += "\n" + result.Summary
 	}

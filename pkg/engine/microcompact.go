@@ -168,7 +168,7 @@ func EstimateTokens(text string) int {
 	cjk := 0
 	nonCJK := 0
 	for _, r := range text {
-		if isCJK(r) {
+		if types.IsCJK(r) {
 			cjk++
 		} else {
 			nonCJK++
@@ -177,24 +177,6 @@ func EstimateTokens(text string) int {
 	// CJK: 1.5 tokens/char (3/2)
 	// Non-CJK: 0.25 tokens/char (1/4, same as previous len/4 for ASCII)
 	return cjk*3/2 + nonCJK/4
-}
-
-// isCJK reports whether r is a CJK character (Chinese, Japanese, or Korean).
-// Unicode ranges sourced from infinigence/tokenestimate character classification.
-func isCJK(r rune) bool {
-	return (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
-		(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
-		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
-		(r >= 0x2A700 && r <= 0x2B73F) || // CJK Extension C
-		(r >= 0x2B740 && r <= 0x2B81F) || // CJK Extension D
-		(r >= 0x2B820 && r <= 0x2CEAF) || // CJK Extension E
-		(r >= 0x2CEB0 && r <= 0x2EBEF) || // CJK Extension F
-		(r >= 0x30000 && r <= 0x3134F) || // CJK Extension G
-		(r >= 0x3040 && r <= 0x309F) || // Hiragana
-		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
-		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul Syllables
-		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
-		(r >= 0x3130 && r <= 0x318F) // Hangul Compatibility Jamo
 }
 
 // ---------------------------------------------------------------------------
