@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -729,5 +730,35 @@ func TestOpenPTY_SlaveOpenError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "open slave") {
 		t.Errorf("error = %v, want open slave error", err)
+	}
+}
+
+// --- exitCodeFromWait — signal-based exit codes ---
+
+func TestExitCodeFromWait_SignalSIGTERM(t *testing.T) {
+	t.Parallel()
+	// SIGTERM (signal 15) → exit code 128+15 = 143
+	cmd := exec.Command("bash", "-c", "kill -TERM $$")
+	err := cmd.Run()
+	if err == nil {
+		t.Skip("command exited cleanly, can't test signal path")
+	}
+	code := exitCodeFromWait(err)
+	if code != 143 {
+		t.Errorf("exitCodeFromWait(SIGTERM) = %d, want 143", code)
+	}
+}
+
+func TestExitCodeFromWait_SignalSIGUSR1(t *testing.T) {
+	t.Parallel()
+	// SIGUSR1 (signal 10) → exit code 128+10 = 138
+	cmd := exec.Command("bash", "-c", "kill -USR1 $$")
+	err := cmd.Run()
+	if err == nil {
+		t.Skip("command exited cleanly, can't test signal path")
+	}
+	code := exitCodeFromWait(err)
+	if code != 138 {
+		t.Errorf("exitCodeFromWait(SIGUSR1) = %d, want 138", code)
 	}
 }

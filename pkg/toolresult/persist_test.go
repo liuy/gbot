@@ -211,6 +211,90 @@ func TestIsToolResultContentEmpty_NonEmptyArrayTextBlock(t *testing.T) {
 	}
 }
 
+func TestIsToolResultContentEmpty_InvalidJSONArray(t *testing.T) {
+	// Array with invalid JSON blocks should return false (persist.go:113-115)
+	content := json.RawMessage(`[{invalid}]`)
+	got := IsToolResultContentEmpty(content)
+	if got {
+		t.Error("invalid JSON array should not be considered empty")
+	}
+}
+
+func TestIsToolResultContentEmpty_InvalidJSONString(t *testing.T) {
+	// String that starts with " but fails to unmarshal (persist.go:105 -> falls through)
+	// e.g. a raw byte array that starts with 0x22 (") but isn't valid JSON
+	content := json.RawMessage(`"unclosed string`)
+	got := IsToolResultContentEmpty(content)
+	if got {
+		t.Error("invalid JSON string should not be considered empty")
+	}
+}
+
+func TestIsToolResultContentEmpty_NonEmptyRawBytes(t *testing.T) {
+	// Content that doesn't start with " or [ — falls through to return false (persist.go:135)
+	content := json.RawMessage(`some plain text`)
+	got := IsToolResultContentEmpty(content)
+	if got {
+		t.Error("plain text content should not be considered empty")
+	}
+}
+
+func TestMaybePersistLargeToolResult_PersistFailure(t *testing.T) {
+	// Trigger the PersistToolResult failure path (persist.go:73-76)
+	// Use an invalid sessionID so GetToolResultsDir fails inside PersistToolResult
+	bigContent := strings.Repeat("x", 60000)
+	output := mustMarshal(bigContent)
+
+	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-fail", "../../etc")
+	if result.Persisted {
+		t.Error("should not persist with invalid sessionID")
+	}
+	// Output should be original output (fallback)
+	var s string
+	if err := json.Unmarshal(result.Output, &s); err != nil {
+		t.Fatalf("output should be valid JSON: %v", err)
+	}
+	if s != bigContent {
+		t.Errorf("fallback output mismatch: got length %d, want %d", len(s), len(bigContent))
+	}
+}
+
+func TestMaybePersistLargeToolResult_EmptyOutput_VerifyToolName(t *testing.T) {
+	// Verify the empty output message includes the tool name
+	output := mustMarshal("")
+	result := MaybePersistLargeToolResult(output, "MyTool", 50000, "tool-ename", "test-session")
+	var s string
+	if err := json.Unmarshal(result.Output, &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.Contains(s, "MyTool") {
+		t.Errorf("empty output message should contain tool name, got: %q", s)
+	}
+	if !strings.Contains(s, "completed with no output") {
+		t.Errorf("expected 'completed with no output', got: %q", s)
+	}
+}
+
+func TestMaybePersistLargeToolResult_BelowThresholdExactSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	// Output exactly at threshold should NOT be persisted.
+	// mustMarshal adds 2 quote bytes, so the JSON string "xxx...xxx" is len(content)+2 bytes.
+	// We need len(output) == threshold exactly, meaning the raw output bytes equal the threshold.
+	// With threshold=102 and 100 'x' chars, mustMarshal produces 102 bytes (100 + 2 quotes).
+	content := strings.Repeat("x", 100)
+	output := mustMarshal(content) // 102 bytes
+	if len(output) != 102 {
+		t.Fatalf("expected output 102 bytes, got %d", len(output))
+	}
+	result := MaybePersistLargeToolResult(output, "Bash", 102, "tool-exact", "test-session")
+	if result.Persisted {
+		t.Error("output at exactly threshold size should not be persisted")
+	}
+}
+
 func mustMarshal(s string) []byte {
 	b, err := json.Marshal(s)
 	if err != nil {

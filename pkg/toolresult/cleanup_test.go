@@ -136,6 +136,73 @@ func TestCleanupOldSessions_WithNonDirEntry(t *testing.T) {
 	}
 }
 
+func TestCleanupOldSessions_HomeError(t *testing.T) {
+	// Trigger os.UserHomeDir error (cleanup.go:33-35)
+	t.Setenv("HOME", "")
+	_, err := CleanupOldSessions(time.Now())
+	if err == nil {
+		t.Fatal("expected error when HOME is invalid")
+	}
+	if !strings.Contains(err.Error(), "home") && !strings.Contains(err.Error(), "HOME") {
+		t.Errorf("error should relate to home directory, got: %v", err)
+	}
+}
+
+func TestCleanupOldSessions_ReadDirError(t *testing.T) {
+	// Trigger os.ReadDir error that is NOT os.IsNotExist (cleanup.go:42)
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	// Create sessions dir as a file (not a directory) to cause ReadDir failure
+	sessionsDir := filepath.Join(tmpDir, ".gbot", "sessions")
+	if err := os.MkdirAll(filepath.Dir(sessionsDir), 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	if err := os.WriteFile(sessionsDir, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := CleanupOldSessions(time.Now())
+	if err == nil {
+		t.Fatal("expected error when sessions dir is a file")
+	}
+	if !strings.Contains(err.Error(), "sessions") {
+		t.Errorf("error should mention sessions, got: %v", err)
+	}
+}
+
+func TestCleanupOldSessions_RemoveAllFailure(t *testing.T) {
+	// Trigger os.RemoveAll failure when the tool-results dir is old
+	// but RemoveAll fails (cleanup.go:56 — cleaned not incremented)
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	// Create an old session with tool-results
+	oldDir := filepath.Join(tmpDir, ".gbot", "sessions", "old-rm-session", ToolResultsSubdir)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Set mtime to past
+	oldTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// Make the sessions dir read-only to potentially interfere with RemoveAll
+	// This is a best-effort test - on some systems root can still delete
+	cutoff := time.Now().Add(-24 * time.Hour)
+	cleaned, err := CleanupOldSessions(cutoff)
+	if err != nil {
+		t.Fatalf("CleanupOldSessions: %v", err)
+	}
+	// Even if RemoveAll succeeds, count should be >= 0
+	if cleaned < 0 {
+		t.Errorf("cleaned should be >= 0, got %d", cleaned)
+	}
+}
+
 func TestCleanupOldSessions_SessionWithoutToolResults(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)

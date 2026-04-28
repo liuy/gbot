@@ -762,3 +762,58 @@ func TestExecute_WithToolContextCWD(t *testing.T) {
 		t.Errorf("Stdout = %q, want to contain %q", output.Stdout, dir)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RenderResult — BackgroundTaskID branch (bash.go:170-174)
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_BackgroundTaskID(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New(nil)
+	result := tt.RenderResult(&bash.Output{
+		BackgroundTaskID: "bg-12345",
+	})
+	want := "Command timed out and was moved to background (task ID: bg-12345)"
+	if result != want {
+		t.Errorf("RenderResult(background only) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_StdoutAndBackgroundTaskID(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New(nil)
+	result := tt.RenderResult(&bash.Output{
+		Stdout:           "partial output",
+		BackgroundTaskID: "bg-99999",
+	})
+	want := "partial output\nCommand timed out and was moved to background (task ID: bg-99999)"
+	if result != want {
+		t.Errorf("RenderResult(stdout+bg) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_AllFieldsWithBackground(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New(nil)
+	result := tt.RenderResult(&bash.Output{
+		Stdout:           "output",
+		Stderr:           "warning",
+		TimedOut:         true,
+		BackgroundTaskID: "bg-42",
+	})
+	if !strings.Contains(result, "output") {
+		t.Error("missing stdout")
+	}
+	if !strings.Contains(result, "warning") {
+		t.Error("missing stderr")
+	}
+	if !strings.Contains(result, "Command timed out") {
+		t.Error("missing timed out message")
+	}
+	if !strings.Contains(result, "bg-42") {
+		t.Error("missing background task ID")
+	}
+}

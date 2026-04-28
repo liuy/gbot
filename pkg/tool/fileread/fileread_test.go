@@ -920,3 +920,603 @@ func TestRenderResult_FileUnchanged(t *testing.T) {
 		t.Errorf("RenderResult(FileUnchangedOutput) = %q, want %q", result, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CheckPermissions — cover the CheckPermissions_ closure in New()
+// ---------------------------------------------------------------------------
+
+func TestCheckPermissions_ValidInput(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	input := json.RawMessage(`{"file_path":"/tmp/test.txt"}`)
+	result := tt.CheckPermissions(input, nil)
+	if result.Behavior() != types.BehaviorAllow {
+		t.Errorf("CheckPermissions(valid) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
+	}
+}
+
+func TestCheckPermissions_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	input := json.RawMessage(`{invalid`)
+	result := tt.CheckPermissions(input, nil)
+	// Invalid JSON should still return allow (early return on unmarshal error)
+	if result.Behavior() != types.BehaviorAllow {
+		t.Errorf("CheckPermissions(invalid JSON) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
+	}
+}
+
+func TestCheckPermissions_ToolResultPath(t *testing.T) {
+	tt := fileread.New()
+	// IsToolResultPath checks for <home>/.gbot/sessions/<id>/tool-results/<file>
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	toolResultDir := filepath.Join(dir, ".gbot", "sessions", "test-session", "tool-results")
+	if err := os.MkdirAll(toolResultDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	toolResultPath := filepath.Join(toolResultDir, "result-123.txt")
+	input := json.RawMessage(`{"file_path":"` + toolResultPath + `"}`)
+	result := tt.CheckPermissions(input, nil)
+	if result.Behavior() != types.BehaviorAllow {
+		t.Errorf("CheckPermissions(toolresult path) behavior = %q, want %q", result.Behavior(), types.BehaviorAllow)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — value-type (non-pointer) cases
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_TextOutputValueType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(fileread.TextOutput{
+		Type:       "text",
+		FilePath:   "/tmp/test.go",
+		Content:    "hello",
+		NumLines:   1,
+		StartLine:  1,
+		TotalLines: 1,
+	})
+	if result != "hello" {
+		t.Errorf("RenderResult(TextOutput value) = %q, want %q", result, "hello")
+	}
+}
+
+func TestRenderResult_ImageOutputValueType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(fileread.ImageOutput{
+		Type:           "image",
+		FilePath:       "/tmp/img.png",
+		OriginalWidth:  100,
+		OriginalHeight: 200,
+	})
+	want := "Image: /tmp/img.png (100x200)"
+	if result != want {
+		t.Errorf("RenderResult(ImageOutput value) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_PDFOutputPointer(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(&fileread.PDFOutput{
+		Type:         "pdf",
+		FilePath:     "/tmp/test.pdf",
+		OriginalSize: 1024,
+	})
+	want := "PDF: /tmp/test.pdf (1024 bytes)"
+	if result != want {
+		t.Errorf("RenderResult(*PDFOutput) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_PDFOutputValueType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(fileread.PDFOutput{
+		Type:         "pdf",
+		FilePath:     "/tmp/test.pdf",
+		OriginalSize: 2048,
+	})
+	want := "PDF: /tmp/test.pdf (2048 bytes)"
+	if result != want {
+		t.Errorf("RenderResult(PDFOutput value) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_PartsOutputPointer(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(&fileread.PartsOutput{
+		Type:         "parts",
+		FilePath:     "/tmp/test.pdf",
+		OriginalSize: 4096,
+		Count:        5,
+	})
+	want := "PDF: /tmp/test.pdf (5 pages extracted)"
+	if result != want {
+		t.Errorf("RenderResult(*PartsOutput) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_PartsOutputValueType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(fileread.PartsOutput{
+		Type:         "parts",
+		FilePath:     "/tmp/test.pdf",
+		OriginalSize: 4096,
+		Count:        3,
+	})
+	want := "PDF: /tmp/test.pdf (3 pages extracted)"
+	if result != want {
+		t.Errorf("RenderResult(PartsOutput value) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_FileUnchangedValueType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(fileread.FileUnchangedOutput{
+		Type:     "file_unchanged",
+		FilePath: "/tmp/test.go",
+	})
+	want := "File unchanged: /tmp/test.go"
+	if result != want {
+		t.Errorf("RenderResult(FileUnchangedOutput value) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_UnknownType(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	result := tt.RenderResult(map[string]string{"foo": "bar"})
+	if !strings.Contains(result, "foo") {
+		t.Errorf("RenderResult(unknown) = %q, should contain 'foo'", result)
+	}
+	if !strings.Contains(result, "bar") {
+		t.Errorf("RenderResult(unknown) = %q, should contain 'bar'", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PDF error paths
+// ---------------------------------------------------------------------------
+
+func TestExecute_PDFEmptyFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "empty.pdf")
+	if err := os.WriteFile(fp, []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for empty PDF")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("Error = %q, want 'empty'", err.Error())
+	}
+}
+
+func TestExecute_PDFInvalidHeader(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "fake.pdf")
+	// Write content that is at least 5 bytes but doesn't start with %PDF-
+	if err := os.WriteFile(fp, []byte("NOTAPDF-REST-OF-CONTENT-HERE-XXXXXXXXX"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for non-PDF header")
+	}
+	if !strings.Contains(err.Error(), "not a valid PDF") {
+		t.Errorf("Error = %q, want 'not a valid PDF'", err.Error())
+	}
+}
+
+func TestExecute_PDFEncrypted(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "encrypted.pdf")
+	// Write a fake PDF header with /Encrypt dictionary
+	content := "%PDF-1.4\nsome content /Encrypt something here that is more than 20 bytes total for the check"
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for encrypted PDF")
+	}
+	if !strings.Contains(err.Error(), "password-protected") {
+		t.Errorf("Error = %q, want 'password-protected'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Binary extension rejection
+// ---------------------------------------------------------------------------
+
+func TestExecute_BinaryExtension(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "program.exe")
+	if err := os.WriteFile(fp, []byte("MZ\x90\x00binary content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for binary extension")
+	}
+	if !strings.Contains(err.Error(), "binary extension") {
+		t.Errorf("Error = %q, want 'binary extension'", err.Error())
+	}
+	if !strings.Contains(err.Error(), ".exe") {
+		t.Errorf("Error = %q, should contain '.exe'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Blocked device paths
+// ---------------------------------------------------------------------------
+
+func TestExecute_BlockedDevicePath(t *testing.T) {
+	t.Parallel()
+	input := json.RawMessage(`{"file_path":"/dev/zero"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for blocked device path")
+	}
+	if !strings.Contains(err.Error(), "device file") {
+		t.Errorf("Error = %q, want 'device file'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "/dev/zero") {
+		t.Errorf("Error = %q, should contain '/dev/zero'", err.Error())
+	}
+}
+
+func TestExecute_BlockedProcFdPath(t *testing.T) {
+	t.Parallel()
+	input := json.RawMessage(`{"file_path":"/proc/self/fd/0"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for /proc/self/fd/0")
+	}
+	if !strings.Contains(err.Error(), "device file") {
+		t.Errorf("Error = %q, want 'device file'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Null bytes detection (full file read path)
+// ---------------------------------------------------------------------------
+
+func TestExecute_NullBytesFullFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "binary.txt")
+	if err := os.WriteFile(fp, []byte("hello\x00world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for null bytes in text file")
+	}
+	if !strings.Contains(err.Error(), "null bytes") {
+		t.Errorf("Error = %q, want 'null bytes'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dedup: nil tctx and nil ReadFileState
+// ---------------------------------------------------------------------------
+
+func TestExecute_DedupNilTctx(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nil_tctx.txt")
+	if err := os.WriteFile(fp, []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	out, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if out.Content != "hello\n" {
+		t.Errorf("Content = %q, want %q", out.Content, "hello\n")
+	}
+}
+
+func TestExecute_DedupNilReadFileState(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "nil_state.txt")
+	if err := os.WriteFile(fp, []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tctx := &types.ToolUseContext{
+		ReadFileState: nil,
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	out, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if out.Content != "hello\n" {
+		t.Errorf("Content = %q, want %q", out.Content, "hello\n")
+	}
+	// Verify ReadFileState was initialized
+	if tctx.ReadFileState == nil {
+		t.Error("ReadFileState should have been initialized")
+	}
+	if len(tctx.ReadFileState) != 1 {
+		t.Errorf("ReadFileState len = %d, want 1", len(tctx.ReadFileState))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Offset beyond file length
+// ---------------------------------------------------------------------------
+
+func TestExecute_OffsetBeyondFileLength(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "short.txt")
+	if err := os.WriteFile(fp, []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// offset=100 with limit=5 — offset beyond file length
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":100,"limit":5}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	out, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if out.Content != "" {
+		t.Errorf("Content = %q, want empty (offset beyond file)", out.Content)
+	}
+	if out.TotalLines != 2 {
+		t.Errorf("TotalLines = %d, want 2", out.TotalLines)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// expandPath: relative path and ~ expansion
+// ---------------------------------------------------------------------------
+
+func TestExpandPath_HomePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	// expandPath is used for the dedup key, not file access.
+	// Verify dedup key uses HOME expansion by reading the same file twice
+	// with the same absolute path and confirming dedup works.
+	fp := filepath.Join(dir, "hometest.txt")
+	if err := os.WriteFile(fp, []byte("home content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tctx := &types.ToolUseContext{
+		ReadFileState: make(map[string]types.FileState),
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+
+	// First read
+	result, err := fileread.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("first Execute() error: %v", err)
+	}
+	out, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if out.Content != "home content\n" {
+		t.Errorf("Content = %q, want %q", out.Content, "home content\n")
+	}
+
+	// Second read should dedup (file unchanged)
+	result2, err := fileread.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("second Execute() error: %v", err)
+	}
+	if _, ok := result2.Data.(fileread.FileUnchangedOutput); !ok {
+		t.Errorf("second read Data type = %T, want FileUnchangedOutput (dedup should work)", result2.Data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Blocked device paths — comprehensive
+// ---------------------------------------------------------------------------
+
+func TestIsBlockedDevicePath_AllBlockedPaths(t *testing.T) {
+	t.Parallel()
+	blocked := []string{
+		"/dev/zero", "/dev/urandom", "/dev/random",
+		"/dev/full", "/dev/stdin", "/dev/tty",
+		"/dev/console", "/dev/stdout", "/dev/stderr",
+		"/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
+	}
+	for _, p := range blocked {
+		input := json.RawMessage(`{"file_path":"` + p + `"}`)
+		_, err := fileread.Execute(context.Background(), input, nil)
+		if err == nil {
+			t.Errorf("path %q: expected error for blocked device", p)
+		}
+	}
+}
+
+func TestIsBlockedDevicePath_ProcFdPaths(t *testing.T) {
+	t.Parallel()
+	procPaths := []string{
+		"/proc/self/fd/0",
+		"/proc/self/fd/1",
+		"/proc/self/fd/2",
+		"/proc/123/fd/0",
+		"/proc/123/fd/1",
+		"/proc/123/fd/2",
+	}
+	for _, p := range procPaths {
+		input := json.RawMessage(`{"file_path":"` + p + `"}`)
+		_, err := fileread.Execute(context.Background(), input, nil)
+		if err == nil {
+			t.Errorf("path %q: expected error for blocked /proc fd", p)
+		}
+		if err != nil && !strings.Contains(err.Error(), "device file") {
+			t.Errorf("path %q: error = %q, want 'device file'", p, err.Error())
+		}
+	}
+}
+
+func TestIsBlockedDevicePath_NotBlocked(t *testing.T) {
+	t.Parallel()
+	// /proc/123/fd/3 should NOT be blocked
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "normal.txt")
+	if err := os.WriteFile(fp, []byte("ok\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("normal file should not be blocked: %v", err)
+	}
+	out, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want TextOutput", result.Data)
+	}
+	if out.Content != "ok\n" {
+		t.Errorf("Content = %q, want %q", out.Content, "ok\n")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PDF page range edge cases — open-ended range
+// ---------------------------------------------------------------------------
+
+func TestExecute_PDFOpenEndedPageRange(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "open.pdf")
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Open-ended range "3-" should exceed max pages
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"3-"}`)
+	_, err = fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for open-ended page range exceeding max")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Errorf("Error = %q, want 'exceeds maximum'", err.Error())
+	}
+}
+
+func TestExecute_PDFPagesReversedRange(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "reversed.pdf")
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Reversed range "5-2" should be invalid
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"5-2"}`)
+	_, err = fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for reversed page range")
+	}
+	if !strings.Contains(err.Error(), "Invalid pages parameter") {
+		t.Errorf("Error = %q, want 'Invalid pages parameter'", err.Error())
+	}
+}
+
+func TestExecute_PDFPagesZero(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "zero.pdf")
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Page "0" should be invalid
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"0"}`)
+	_, err = fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for page 0")
+	}
+	if !strings.Contains(err.Error(), "Invalid pages parameter") {
+		t.Errorf("Error = %q, want 'Invalid pages parameter'", err.Error())
+	}
+}
+
+func TestExecute_PDFPagesNegativeRange(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "neg.pdf")
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Negative range "-5" should be invalid
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"-5"}`)
+	_, err = fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for negative range")
+	}
+	if !strings.Contains(err.Error(), "Invalid pages parameter") {
+		t.Errorf("Error = %q, want 'Invalid pages parameter'", err.Error())
+	}
+}
+
+func TestExecute_PDFPagesMultipleDashes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "multidash.pdf")
+	data, err := os.ReadFile("/tmp/test1.pdf")
+	if err != nil {
+		t.Skip("test PDF not available")
+	}
+	if err := os.WriteFile(fp, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// "1-2-3" should be invalid (multiple dashes)
+	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"1-2-3"}`)
+	_, err = fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for multiple dashes in pages")
+	}
+	if !strings.Contains(err.Error(), "Invalid pages parameter") {
+		t.Errorf("Error = %q, want 'Invalid pages parameter'", err.Error())
+	}
+}

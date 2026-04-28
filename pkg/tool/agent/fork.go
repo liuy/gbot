@@ -79,6 +79,11 @@ func (r *ForkAgentRegistry) Spawn(
 		cancel:      cancel,
 	}
 	r.agents[id] = state
+	// Snapshot while still holding the lock — the goroutine below will
+	// mutate state.Status and state.Result under the same mutex, so we
+	// must copy before releasing to avoid a data race between the caller
+	// reading the returned snapshot and the goroutine writing state.
+	snapshot := *state
 	r.mu.Unlock()
 
 	go func() {
@@ -110,7 +115,7 @@ func (r *ForkAgentRegistry) Spawn(
 		}
 	}()
 
-	return state, nil
+	return &snapshot, nil
 }
 
 // Wait blocks until the fork agent with the given ID completes.
@@ -122,11 +127,15 @@ func (r *ForkAgentRegistry) Wait(id string) (*ForkAgentState, bool) {
 		return nil, false
 	}
 	<-state.done
+	// Re-acquire lock to read final state — the spawned goroutine writes
+	// Status/Result under the lock, and we must read them under it too.
+	r.mu.Lock()
 	cp := *state
 	if state.Result != nil {
 		r := *state.Result
 		cp.Result = &r
 	}
+	r.mu.Unlock()
 	return &cp, true
 }
 

@@ -418,6 +418,7 @@ func TestHasImageBlock(t *testing.T) {
 		{"mixed with image", `[{"type":"text","text":"hi"},{"type":"image","source":{}}]`, true},
 		{"empty", ``, false},
 		{"invalid json", `not json`, false},
+		{"invalid array json", `[{`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -426,5 +427,132 @@ func TestHasImageBlock(t *testing.T) {
 				t.Errorf("HasImageBlock(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnsureToolResultsDir_InvalidSessionID(t *testing.T) {
+	ResetDirCache()
+	err := EnsureToolResultsDir("../../etc")
+	if err == nil {
+		t.Fatal("expected error for path traversal sessionID")
+	}
+	if !strings.Contains(err.Error(), "invalid sessionID") {
+		t.Errorf("error should mention invalid sessionID, got: %v", err)
+	}
+}
+
+func TestGetToolResultPath_InvalidSessionID(t *testing.T) {
+	_, err := GetToolResultPath("../../../etc", "tool-1", false)
+	if err == nil {
+		t.Fatal("expected error for path traversal sessionID")
+	}
+	if !strings.Contains(err.Error(), "invalid sessionID") {
+		t.Errorf("error should mention invalid sessionID, got: %v", err)
+	}
+}
+
+func TestIsToolResultPath_HomeError(t *testing.T) {
+	t.Setenv("HOME", "")
+	// When HOME is empty, UserHomeDir returns error -> should return false
+	got := IsToolResultPath("/some/path/file.txt")
+	if got {
+		t.Error("IsToolResultPath should return false when HOME is invalid")
+	}
+}
+
+func TestPersistToolResult_OpenFileNonIsExistError(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	sessionID := "openfile-test"
+	// Create the tool-results dir then make it read-only so OpenFile(O_EXCL|O_CREATE) fails
+	// with a permission error (not IsExist).
+	dir, err := GetToolResultsDir(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolResultsDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Make the directory read-only/executable only (no write), so new file creation fails
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o755) }() // restore for cleanup
+
+	_, err = PersistToolResult(sessionID, "collide-id", []byte("data"))
+	if err == nil {
+		t.Fatal("expected error when OpenFile fails with non-IsExist error")
+	}
+	if strings.Contains(err.Error(), "ensure dir") {
+		// The error came from MkdirAll, not OpenFile - still an error path covered
+		t.Logf("got ensure dir error: %v", err)
+	} else if strings.Contains(err.Error(), "create file") {
+		t.Logf("got create file error: %v", err)
+	} else {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestPersistToolResult_WriteFailReadonlyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	ResetDirCache()
+
+	sessionID := "write-err-test"
+	dir, err := GetToolResultsDir(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolResultsDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Make the dir read-only so creating a new file inside fails
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o755) }() // restore for cleanup
+
+	_, err = PersistToolResult(sessionID, "write-fail-id", []byte("data"))
+	if err == nil {
+		t.Fatal("expected error when writing to read-only dir")
+	}
+	if !strings.Contains(err.Error(), "file") && !strings.Contains(err.Error(), "dir") {
+		t.Errorf("error should mention file/dir issue, got: %v", err)
+	}
+}
+
+func TestGeneratePreview_UTF8Fallback(t *testing.T) {
+	// Trigger the cutPoint==0 fallback path (storage.go:238-240).
+	// When maxBytes is smaller than the first rune (3 bytes for CJK),
+	// the rune-boundary loop walks all the way back to cutPoint=0,
+	// then the fallback sets cutPoint = maxBytes.
+	// The preview will be content[:maxBytes] which may be incomplete UTF-8,
+	// but that's the documented best-effort fallback behavior.
+	content := "你好世界"
+	preview, hasMore := GeneratePreview(content, 1)
+	if !hasMore {
+		t.Error("expected hasMore=true for content exceeding maxBytes")
+	}
+	// The fallback path returns content[:1] which is a single byte of a 3-byte rune.
+	// Verify it's non-empty (the function didn't return empty string).
+	if len(preview) == 0 {
+		t.Error("expected non-empty preview from fallback")
+	}
+}
+
+func TestGeneratePreview_NewlineInFirstHalf(t *testing.T) {
+	// When newline is found but at position <= maxBytes/2, cutPoint stays at maxBytes.
+	// content = "a\n" + "b"*2000, maxBytes = 100
+	// lastNewline at index 1, maxBytes/2 = 50, so 1 <= 50 -> cutPoint stays at maxBytes
+	content := "a\n" + strings.Repeat("b", 3000)
+	preview, hasMore := GeneratePreview(content, 100)
+	if !hasMore {
+		t.Error("expected hasMore=true")
+	}
+	if len(preview) > 100 {
+		t.Errorf("preview should be <= 100 bytes, got %d", len(preview))
 	}
 }

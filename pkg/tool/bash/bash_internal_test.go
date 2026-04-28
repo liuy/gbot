@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1279,4 +1280,152 @@ func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 	if !out.TimedOut {
 		t.Error("TimedOut should be true — sleep should be killed on timeout, not backgrounded")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// spawnBackground — non-PTY cmd.Start() error path (bash.go:846-849)
+// ---------------------------------------------------------------------------
+
+func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
+	// Force non-PTY mode
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-spawn-start-err")
+	defer func() { SetPtmxCheckPath(orig) }()
+
+	// Use a fresh registry
+	origReg := defaultRegistry
+	freshReg := NewBackgroundTaskRegistry()
+	defaultRegistry = freshReg
+	defer func() { defaultRegistry = origReg }()
+
+	// Set a non-existent working directory to trigger cmd.Start() error
+	result, err := spawnBackground(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, freshReg)
+	if err != nil {
+		t.Fatalf("spawnBackground() error: %v (returns nil error, task completes with -1)", err)
+	}
+	out := result.Data.(*Output)
+	if !strings.Contains(out.Stdout, "Background task started") {
+		t.Errorf("Stdout = %q, want background message", out.Stdout)
+	}
+
+	// Wait for the goroutine to finish
+	tasks := freshReg.List()
+	if len(tasks) == 0 {
+		t.Fatal("no tasks registered")
+	}
+	task := tasks[0]
+	select {
+	case <-task.done:
+		if task.ExitCode != -1 {
+			t.Errorf("ExitCode = %d, want -1 (start error)", task.ExitCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("background task did not complete within timeout")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeNonPTYStreamingAutoBg — cmd.Start() error path (bash.go:467-470)
+// ---------------------------------------------------------------------------
+
+func TestExecuteNonPTYStreamingAutoBg_StartError(t *testing.T) {
+	// Force non-PTY mode
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-autobg-start")
+	defer func() { SetPtmxCheckPath(orig) }()
+
+	s := NewStreamingOutput(nil)
+	// Use a non-existent working directory to trigger cmd.Start() error
+	_, err := executeNonPTYStreamingAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry())
+	if err == nil {
+		t.Fatal("expected error with non-existent working directory")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") && !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "chdir") {
+		t.Errorf("error should reference missing directory, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isAutobackgroundingAllowed — whitespace-only input (bash.go:751-753)
+// ---------------------------------------------------------------------------
+
+func TestIsAutobackgroundingAllowed_TabOnly(t *testing.T) {
+	t.Parallel()
+	got := isAutobackgroundingAllowed("\t\t")
+	if !got {
+		t.Error("isAutobackgroundingAllowed(tab-only) = false, want true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executePTYStreamingSync — tmux environment overrides (bash.go:300-302)
+// ---------------------------------------------------------------------------
+
+func TestExecutePTYStreamingSync_TmuxOverrides(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	// Reset socket state and mark tmux as used so getEnvironmentOverrides returns non-nil
+	resetSocketState()
+	markTmuxToolUsed()
+	// Use execTmuxOverride to make tmux operations succeed
+	origOverride := execTmuxOverride
+	execTmuxOverride = func(args []string) (tmuxResult, bool) {
+		if slices.Contains(args, "display-message") {
+			return tmuxResult{Code: 0, Stdout: "/tmp/test-socket,12345"}, true
+		}
+		return tmuxResult{Code: 0}, true
+	}
+	defer func() { execTmuxOverride = origOverride }()
+
+	s := NewStreamingOutput(nil)
+	result, err := executePTYStreamingSync(context.Background(), Input{Command: "echo tmux-test"}, "", 10*time.Second, s)
+	if err != nil {
+		t.Fatalf("executePTYStreamingSync() error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Stdout, "tmux-test") {
+		t.Errorf("Stdout = %q, want to contain 'tmux-test'", output.Stdout)
+	}
+	resetSocketState()
+}
+
+// ---------------------------------------------------------------------------
+// executePTYStreamingAutoBg — tmux environment overrides (bash.go:341-343)
+// ---------------------------------------------------------------------------
+
+func TestExecutePTYStreamingAutoBg_TmuxOverrides(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	resetSocketState()
+	markTmuxToolUsed()
+	origOverride := execTmuxOverride
+	execTmuxOverride = func(args []string) (tmuxResult, bool) {
+		if slices.Contains(args, "display-message") {
+			return tmuxResult{Code: 0, Stdout: "/tmp/test-socket,12345"}, true
+		}
+		return tmuxResult{Code: 0}, true
+	}
+	defer func() { execTmuxOverride = origOverride }()
+
+	// Fresh registry for isolation
+	origReg := defaultRegistry
+	freshReg := NewBackgroundTaskRegistry()
+	defaultRegistry = freshReg
+	defer func() { defaultRegistry = origReg }()
+
+	s := NewStreamingOutput(nil)
+	// Fast command — completes before timeout
+	result, err := executePTYStreamingAutoBg(context.Background(), Input{Command: "echo tmux-autobg"}, "", 10*time.Second, s, freshReg)
+	if err != nil {
+		t.Fatalf("executePTYStreamingAutoBg() error: %v", err)
+	}
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Stdout, "tmux-autobg") {
+		t.Errorf("Stdout = %q, want to contain 'tmux-autobg'", output.Stdout)
+	}
+	resetSocketState()
 }
