@@ -2239,7 +2239,7 @@ func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
 
 // TestQuery_ProactiveCompact_SkipsBlockingLimit verifies that after a successful
 // proactive compact, the blocking limit check does not kill the conversation.
-// Bug: compact resets lastInputTokens=0, heuristic overestimates, blocking limit
+// Bug: compact resets ContextTokens=0, heuristic overestimates, blocking limit
 // triggers, and the engine returns TerminalPromptTooLong instead of continuing.
 func TestQuery_ProactiveCompact_SkipsBlockingLimit(t *testing.T) {
 	t.Parallel()
@@ -2331,7 +2331,7 @@ func (c *funcCompactor) Compact(ctx context.Context, messages []types.Message) (
 
 // TestQuery_ProactiveCompact_UsesRealAPITokens verifies that compact output shows
 // the real API input tokens (including system prompt + tools), not just message heuristic.
-// Bug: after compact resets lastInputTokens=0, currentInputTokens() falls back to heuristic
+// Bug: after compact resets ContextTokens=0, currentInputTokens() falls back to heuristic
 // which only counts message content → displays "8K → 8K" when real input was 15K.
 func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 	t.Parallel()
@@ -2387,9 +2387,9 @@ func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 
 	// Simulate: previous API call reported 15000 real input tokens.
 	// This is what happens in the user's real scenario — compact triggers
-	// after at least one API call has set lastInputTokens from usage data.
+	// after at least one API call has set ContextTokens from usage data.
 	eng.mu.Lock()
-	eng.lastInputTokens = 35000
+	eng.ContextTokens = 35000
 	eng.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2410,7 +2410,7 @@ func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 	}
 
 	// With fix, should show "token: 35.0k → 29.0k" (real API tokens preserved)
-	// Real before = 35000 (from lastInputTokens), message delta = 10000-4000 = 6000, after = 35000-6000 = 29000
+	// Real before = 35000 (from ContextTokens), message delta = 10000-4000 = 6000, after = 35000-6000 = 29000
 	if !strings.Contains(compactDisplayOutput, "token: 35.0k → 29.0k") {
 		t.Errorf("expected compact output to show real API tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
 	}

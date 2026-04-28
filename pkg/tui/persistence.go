@@ -47,6 +47,12 @@ func (a *App) persistTurn() {
 		// non-fatal: messages were persisted, timestamp is best-effort
 	}
 
+	if a.engine.ContextTokens > 0 {
+		if err := a.store.UpdateContextTokens(a.sessionID, a.engine.ContextTokens); err != nil {
+			slog.Error("persistTurn: update context tokens", "error", err)
+		}
+	}
+
 	// Auto-title: extract first user prompt as session title (TS: saveCustomTitle)
 	// Only runs on the first persist to avoid overwriting user-set titles.
 	if a.lastPersistedIdx == 0 && len(storeMsgs) > 0 {

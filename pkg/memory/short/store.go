@@ -116,6 +116,7 @@ func (s *Store) initSchema() error {
 		agent_type        TEXT DEFAULT '',
 		mode              TEXT DEFAULT '',
 		settings          TEXT DEFAULT '{}',
+		context_tokens    INTEGER DEFAULT 0,
 		created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);

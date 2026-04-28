@@ -25,8 +25,9 @@ func (s *Store) CreateSession(projectDir, model string) (*Session, error) {
 		INSERT INTO sessions (
 			session_id, project_dir, model, title,
 			parent_session_id, fork_point_seq, agent_type, mode, settings,
+			context_tokens,
 			created_at, updated_at
-		) VALUES (?, ?, ?, '', '', 0, '', '', ?, ?, ?)
+		) VALUES (?, ?, ?, '', '', 0, '', '', ?, 0, ?, ?)
 	`
 	_, err := s.db.Exec(query, sessionID, projectDir, model, settingsJSON, now, now)
 	if err != nil {
@@ -55,12 +56,13 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
+		       context_tokens,
 		       created_at, updated_at
 		FROM sessions WHERE session_id = ?
 	`
 	err := s.db.QueryRow(query, sessionID).Scan(
 		&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON,
+		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
 		&ses.CreatedAt, &ses.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -100,6 +102,7 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
+		       context_tokens,
 		       created_at, updated_at
 		FROM sessions
 		WHERE project_dir = ?
@@ -127,7 +130,7 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 
 		err := rows.Scan(
 			&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-			&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON,
+			&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
 			&ses.CreatedAt, &ses.UpdatedAt,
 		)
 		if err != nil {
@@ -205,6 +208,14 @@ func (s *Store) DeleteSession(sessionID string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 	return nil
+}
+
+// UpdateContextTokens persists the current context token count for a session.
+func (s *Store) UpdateContextTokens(sessionID string, tokens int) error {
+	_, err := s.db.Exec(
+		`UPDATE sessions SET context_tokens = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?`,
+		tokens, sessionID)
+	return err
 }
 
 // ExtractFirstPrompt extracts the first meaningful user prompt from message content JSON.
@@ -317,12 +328,13 @@ func (s *Store) getSession(sessionID string) (*Session, error) {
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
+		       context_tokens,
 		       created_at, updated_at
 		FROM sessions WHERE session_id = ?
 	`
 	err := s.db.QueryRow(query, sessionID).Scan(
 		&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON,
+		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
 		&ses.CreatedAt, &ses.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -364,12 +376,14 @@ func (s *Store) insertSession(sess *Session) error {
 		INSERT INTO sessions (
 			session_id, project_dir, model, title,
 			parent_session_id, fork_point_seq, agent_type, mode, settings,
+			context_tokens,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := s.db.Exec(query,
 		sess.SessionID, sess.ProjectDir, sess.Model, sess.Title,
 		sess.ParentSessionID, sess.ForkPointSeq, sess.AgentType, sess.Mode, string(settingsJSON),
+			sess.ContextTokens,
 		sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err

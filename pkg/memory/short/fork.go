@@ -36,6 +36,7 @@ func (s *Store) ForkSession(parentSessionID string, forkPointSeq int, agentType 
 		AgentType:       agentType,
 		Mode:            parent.Mode,
 		Settings:        parent.Settings,
+		ContextTokens:   parent.ContextTokens,
 		CreatedAt:       time.Now(),
 		UpdatedAt:       time.Now(),
 	}

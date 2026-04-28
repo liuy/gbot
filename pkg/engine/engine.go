@@ -98,12 +98,13 @@ type Engine struct {
 	autoCompactConfig          AutoCompactConfig
 	consecutiveCompactFailures int
 
-	// lastInputTokens stores the estimated context size from the last API response.
+	// ContextTokens stores the context token count from the last API response.
 	// Value = TotalInputTokens() + OutputTokens (input + cache + output of last turn).
-	// This approximates the context size for the NEXT API call, aligning with TS
-	// tokenCountWithEstimation. Reset to 0 after compact to prevent stale values.
-	// Used by currentInputTokens() to avoid re-walking all messages when available.
-	lastInputTokens int
+	// Persisted to sessions table so resume can restore the exact value,
+	// avoiding heuristic overestimation that triggers false compacts.
+	// After compact, decremented by message delta (heuristic) and corrected
+	// on next API response.
+	ContextTokens int
 
 	// mcpRegistry manages MCP server connections and tool discovery.
 	mcpRegistry *mcp.Registry
@@ -394,7 +395,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			e.fireCompactHooks(ctx, "auto", "pre")
 			// Capture real API tokens before compact (includes system prompt + tools).
 			e.mu.RLock()
-			realInputTokens := e.lastInputTokens
+			realInputTokens := e.ContextTokens
 			e.mu.RUnlock()
 			result, err := e.compactor.Compact(ctx, e.Messages())
 			if err != nil {
@@ -419,20 +420,22 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.mu.Unlock()
 				e.setMessages(result.Messages)
 				e.mu.Lock()
-				e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
+				messageDelta := result.BeforeTokens - result.AfterTokens
+				e.ContextTokens = e.ContextTokens - messageDelta
 				e.mu.Unlock()
+				if e.ContextTokens < 0 {
+					e.logger.Error("proactive compact: contextTokens went negative",
+						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
+				}
 				// Use real API tokens for before, estimate after from message delta.
 				// System prompt + tools don't change across compact,
 				// so subtracting only the message delta is correct.
-				if realInputTokens > 0 {
-					messageDelta := result.BeforeTokens - result.AfterTokens
-					result.BeforeTokens = realInputTokens
-					result.AfterTokens = max(realInputTokens-messageDelta, 0)
-				} else {
-					beforeTotal := e.currentInputTokens()
-					tokenDelta := result.BeforeTokens - result.AfterTokens
-					result.BeforeTokens = beforeTotal
-					result.AfterTokens = beforeTotal - tokenDelta
+				messageDelta = result.BeforeTokens - result.AfterTokens
+				result.BeforeTokens = realInputTokens
+				result.AfterTokens = realInputTokens - messageDelta
+				if result.AfterTokens < 0 {
+					e.logger.Error("proactive compact: AfterTokens went negative",
+						"realInputTokens", realInputTokens, "messageDelta", messageDelta)
 				}
 				compactOutput := formatCompactOutput(result)
 				e.emitEvent(eventCh, types.QueryEvent{
@@ -498,24 +501,27 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					})
 					e.fireCompactHooks(ctx, "auto", "pre")
 					e.mu.RLock()
-					reactiveRealTokens := e.lastInputTokens
+					reactiveRealTokens := e.ContextTokens
 					e.mu.RUnlock()
 					result, compactErr := e.compactor.Compact(ctx, e.Messages())
 					if compactErr == nil {
 						e.setMessages(result.Messages)
 						e.fireCompactHooks(ctx, "auto", "post")
 						e.mu.Lock()
-						e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
+						messageDelta := result.BeforeTokens - result.AfterTokens
+						e.ContextTokens = e.ContextTokens - messageDelta
 						e.mu.Unlock()
-						if reactiveRealTokens > 0 {
-							messageDelta := result.BeforeTokens - result.AfterTokens
-							result.BeforeTokens = reactiveRealTokens
-							result.AfterTokens = max(reactiveRealTokens-messageDelta, 0)
-						} else {
-							beforeTotal := e.currentInputTokens()
-							tokenDelta := result.BeforeTokens - result.AfterTokens
-							result.BeforeTokens = beforeTotal
-							result.AfterTokens = beforeTotal - tokenDelta
+						if e.ContextTokens < 0 {
+							e.logger.Error("reactive compact: contextTokens went negative",
+								"before", e.ContextTokens+messageDelta, "delta", messageDelta)
+						}
+						// Use real API tokens for before, estimate after from message delta.
+						messageDelta = result.BeforeTokens - result.AfterTokens
+						result.BeforeTokens = reactiveRealTokens
+						result.AfterTokens = reactiveRealTokens - messageDelta
+						if result.AfterTokens < 0 {
+							e.logger.Error("reactive compact: AfterTokens went negative",
+								"reactiveRealTokens", reactiveRealTokens, "messageDelta", messageDelta)
 						}
 						compactOutput := formatCompactOutput(result)
 						e.emitEvent(eventCh, types.QueryEvent{
@@ -567,7 +573,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			// response will be part of the next request context.
 			// Aligns with TS tokenCountWithEstimation (input + output).
 			e.mu.Lock()
-			e.lastInputTokens = resp.Usage.TotalInputTokens() + resp.Usage.OutputTokens
+			e.ContextTokens = resp.Usage.TotalInputTokens() + resp.Usage.OutputTokens
 			e.mu.Unlock()
 		}
 
@@ -1105,11 +1111,11 @@ func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
 }
 
 // currentInputTokens returns the estimated input token count.
-// Prefers the exact value from lastInputTokens (set after each API call).
-// Falls back to EstimateMessagesTokens when no API call has occurred yet.
+// Prefers the exact value from ContextTokens (restored from DB or set after API call).
+// Falls back to EstimateMessagesTokens when no persisted/API value is available.
 func (e *Engine) currentInputTokens() int {
 	e.mu.RLock()
-	last := e.lastInputTokens
+	last := e.ContextTokens
 	msgs := e.messages
 	e.mu.RUnlock()
 	if last > 0 {
@@ -1346,7 +1352,7 @@ func (e *Engine) Reset() {
 	e.mu.Lock()
 	e.messages = nil
 	e.turnCount = 0
-	e.lastInputTokens = 0
+	e.ContextTokens = 0
 	e.mu.Unlock()
 }
 

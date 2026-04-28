@@ -38,6 +38,7 @@ type Session struct {
 	AgentType       string            // Current agent type (TS: separate metadata message)
 	Mode            string            // Current mode (TS: separate metadata message)
 	Settings        map[string]string // JSON: agent/mode settings (TS: agent-setting messages)
+	ContextTokens   int               // persisted context token count from last API response
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

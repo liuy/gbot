@@ -294,6 +294,10 @@ func main() {
 						lastPersistedIdx = len(engineMsgs)
 						eng.SetSessionID(sessionID)
 						slog.Info("main: resumed session", "sessionID", sessionID, "messages", len(engineMsgs))
+						if ses, err := store.GetSession(sessionID); err == nil && ses.ContextTokens > 0 {
+							eng.ContextTokens = ses.ContextTokens
+							slog.Info("main: restored context tokens", "tokens", ses.ContextTokens)
+						}
 					} else {
 						slog.Warn("main: failed to convert resumed messages", "error", err)
 					}
