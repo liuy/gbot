@@ -18,6 +18,58 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// CompactResult carries structured results from a compact operation.
+// Returned by Compactor.Compact() for the engine to emit as a virtual tool call.
+type CompactResult struct {
+	Summary        string          // LLM-generated conversation summary (may be empty)
+	BeforeTokens   int             // estimated token count before compact
+	AfterTokens    int             // estimated token count after compact
+	BeforeMessages int             // message count before compact
+	Messages       []types.Message // post-compact message array
+}
+
+// estimateMessagesTokens computes a rough token count for a slice of messages.
+// Iterates ContentBlock fields directly — avoids JSON marshal overhead.
+func estimateMessagesTokens(msgs []types.Message) int {
+	var total int
+	for _, m := range msgs {
+		for _, block := range m.Content {
+			total += EstimateTokens(block.Text)
+			if len(block.Input) > 0 {
+				total += EstimateTokens(string(block.Input))
+			}
+			if len(block.Content) > 0 {
+				total += EstimateTokens(string(block.Content))
+			}
+			if block.Data != "" {
+				total += EstimateTokens(block.Data)
+			}
+		}
+	}
+	return total
+}
+
+// formatTokens formats a token count for display (e.g., "150K", "500").
+// Rounds to nearest K for values >= 1000.
+func formatTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%dK", (n+500)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// formatCompactOutput builds the display text for a successful compact result.
+// Structure: stats line first (fills collapse preview), then summary content.
+func formatCompactOutput(result *CompactResult) string {
+	output := fmt.Sprintf("Conversation compacted (msg: %d → %d, token: %s → %s)",
+		result.BeforeMessages, len(result.Messages),
+		formatTokens(result.BeforeTokens), formatTokens(result.AfterTokens))
+	if result.Summary != "" {
+		output += "\n" + result.Summary
+	}
+	return output
+}
+
 // Compactor implements Compactor by delegating to the short.Store's compact
 // functions and using the LLM provider to generate a summary.
 // TS align: compact.ts:compactConversation + partialCompactConversation
@@ -45,13 +97,12 @@ func NewAutoCompactor(store *short.Store, sessionID, model string, provider llm.
 // Compact compacts the conversation history by:
 //  1. Keeping the most recent messages (enough for recent context)
 //  2. Summarizing the older messages via LLM
-//  3. Returning [boundary, summary, kept_messages]
-//
-// Returns the post-compact message array, matching the TS CompactionResult structure.
-func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) ([]types.Message, error) {
+//  3. Returning CompactResult with summary, token stats, and post-compact messages.
+func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (*CompactResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
+	beforeTokens := estimateMessagesTokens(messages)
 
 	// Convert engine types → short types for store operations
 	shortMsgs := engineToShort(messages)
@@ -62,34 +113,58 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	keepFrom := c.findKeepFrom(shortMsgs)
 	if keepFrom >= len(shortMsgs) {
 		// Nothing to compact — keep all messages
-		return messages, nil
+		return &CompactResult{
+			BeforeTokens: beforeTokens,
+			BeforeMessages: len(messages),
+			AfterTokens:  beforeTokens,
+			Messages:     messages,
+		}, nil
 	}
 	if keepFrom <= 1 {
 		// Need at least 1 message to keep
-		return messages, nil
+		return &CompactResult{
+			BeforeTokens: beforeTokens,
+			BeforeMessages: len(messages),
+			AfterTokens:  beforeTokens,
+			Messages:     messages,
+		}, nil
 	}
 
 	// Call PartialCompact: creates boundary marker + splits head/tail
-	result, err := c.store.PartialCompact(c.sessionID, shortMsgs, keepFrom)
+	pcr, err := c.store.PartialCompact(c.sessionID, shortMsgs, keepFrom)
 	if err != nil {
 		c.logger.Error("PartialCompact failed", "error", err)
 		return nil, err
 	}
 
 	// Generate summary for the compacted head via LLM
-	summaryText, err := c.summarizeMessages(ctx, result.MessagesToKeep)
+	headMsgs := shortMsgs[:keepFrom]
+	summaryText, err := c.summarizeMessages(ctx, headMsgs)
 	if err != nil {
 		c.logger.Warn("summarizeMessages failed", "error", err)
 		// Fall back: return messages without summary (better than failing entirely)
-		return c.buildResultMessages(result, ""), nil
+		built := c.buildResultMessages(pcr, "")
+		return &CompactResult{
+			BeforeTokens: beforeTokens,
+			BeforeMessages: len(messages),
+			AfterTokens:  estimateMessagesTokens(built),
+			Messages:     built,
+		}, nil
 	}
 
 	// Record compact in database (write boundary + summary to store)
-	if err := c.store.RecordCompact(c.sessionID, result); err != nil {
+	if err := c.store.RecordCompact(c.sessionID, pcr); err != nil {
 		c.logger.Warn("RecordCompact failed", "error", err)
 	}
 
-	return c.buildResultMessages(result, summaryText), nil
+	built := c.buildResultMessages(pcr, summaryText)
+	return &CompactResult{
+		Summary:      summaryText,
+		BeforeTokens: beforeTokens,
+			BeforeMessages: len(messages),
+		AfterTokens:  estimateMessagesTokens(built),
+		Messages:     built,
+	}, nil
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).

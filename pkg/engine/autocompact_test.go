@@ -30,18 +30,27 @@ type mockCompactor struct {
 	err       error
 }
 
-func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) ([]types.Message, error) {
+func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*engine.CompactResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
 	m.lastInput = msgs
 	if m.result != nil {
-		return m.result, m.err
+		return &engine.CompactResult{
+			BeforeTokens: len(msgs) * 100,
+			AfterTokens:  len(m.result) * 100,
+			Messages:     m.result,
+		}, m.err
 	}
 	// Default: return a minimal user+assistant pair (valid API sequence)
-	return []types.Message{
+	msgs2 := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("[Previous conversation compacted]")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("[Summary acknowledged]")}},
+	}
+	return &engine.CompactResult{
+		BeforeTokens: len(msgs) * 100,
+		AfterTokens:  len(msgs2) * 100,
+		Messages:     msgs2,
 	}, m.err
 }
 
@@ -557,8 +566,8 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compact failed: %v", err)
 	}
-	if len(result) != 3 {
-		t.Errorf("expected 3 messages (no compact needed), got %d", len(result))
+	if len(result.Messages) != 3 {
+		t.Errorf("expected 3 messages (no compact needed), got %d", len(result.Messages))
 	}
 	if mp.compactCallCount != 0 {
 		t.Errorf("no LLM call expected for <4 messages, got %d", mp.compactCallCount)
@@ -591,7 +600,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	}
 
 	foundBoundary := false
-	for _, msg := range result {
+	for _, msg := range result.Messages {
 		for _, block := range msg.Content {
 			var content struct {
 				Subtype string `json:"subtype"`
@@ -626,7 +635,7 @@ func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
 		t.Fatalf("Compact should not return error on LLM failure (graceful fallback): %v", err)
 	}
 
-	if len(result) == 0 {
+	if len(result.Messages) == 0 {
 		t.Error("expected at least boundary message after fallback")
 	}
 	if mp.compactCallCount == 0 {
@@ -656,7 +665,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	}
 
 	foundRecentContent := false
-	for _, msg := range result {
+	for _, msg := range result.Messages {
 		for _, block := range msg.Content {
 			if block.Text == "recent-message-9" {
 				foundRecentContent = true

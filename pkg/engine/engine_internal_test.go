@@ -1949,8 +1949,12 @@ func TestSequentialToolLoop_Panics(t *testing.T) {
 
 type internalMockCompactor struct{}
 
-func (c *internalMockCompactor) Compact(_ context.Context, messages []types.Message) ([]types.Message, error) {
-	return messages, nil
+func (c *internalMockCompactor) Compact(_ context.Context, messages []types.Message) (*CompactResult, error) {
+	return &CompactResult{
+		BeforeTokens: len(messages) * 100,
+		AfterTokens:  len(messages) * 100,
+		Messages:     messages,
+	}, nil
 }
 
 func TestShouldAutoCompact(t *testing.T) {
@@ -2230,5 +2234,185 @@ func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
 	}
 	if inner["key"] != "value" {
 		t.Errorf("inner[key] = %q, want %q", inner["key"], "value")
+	}
+}
+
+// TestQuery_ProactiveCompact_SkipsBlockingLimit verifies that after a successful
+// proactive compact, the blocking limit check does not kill the conversation.
+// Bug: compact resets lastInputTokens=0, heuristic overestimates, blocking limit
+// triggers, and the engine returns TerminalPromptTooLong instead of continuing.
+func TestQuery_ProactiveCompact_SkipsBlockingLimit(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// LLM response for the API call that should happen after compact
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	// Compactor that succeeds but returns messages whose heuristic estimate
+	// still exceeds the blocking limit — reproducing the real bug.
+	compactCalled := false
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, messages []types.Message) (*CompactResult, error) {
+			compactCalled = true
+			// Return 2 messages with 130000 chars total → heuristic = 32500 tokens.
+			// blockingLimit = (50000 - 16000) - 3000 = 31000.
+			// 32500 > 31000 → would trigger blocking limit without the fix.
+			bigText := strings.Repeat("y", 130000)
+			return &CompactResult{
+				BeforeTokens:   32000,
+				AfterTokens:    32500,
+				BeforeMessages: len(messages),
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("boundary")}},
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(bigText)}},
+				},
+			}, nil
+		},
+	}
+
+	eng := New(&Params{
+		Provider:  mp,
+		Model:     "test-model",
+		MaxTokens: 16000,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-load 8 messages × 16000 chars = 128000 / 4 = 32000 heuristic tokens.
+	// threshold = (50000 - 16000) - 13000 = 21000 → 32000 > 21000 → proactive compact triggers.
+	bigText := strings.Repeat("x", 16000)
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(bigText)},
+		}))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "do something", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+
+	if !compactCalled {
+		t.Fatal("proactive compact should have been called")
+	}
+
+	// BUG: without the fix, this returns TerminalPromptTooLong because
+	// the blocking limit check runs after compact and the heuristic exceeds it.
+	if result.Terminal == types.TerminalPromptTooLong {
+		t.Fatal("blocking limit should be skipped after successful proactive compact, got TerminalPromptTooLong")
+	}
+	if result.Terminal != types.TerminalCompleted {
+		t.Fatalf("expected TerminalCompleted, got %s", result.Terminal)
+	}
+}
+
+// funcCompactor is a test helper that delegates Compact to a function.
+type funcCompactor struct {
+	fn func(context.Context, []types.Message) (*CompactResult, error)
+}
+
+func (c *funcCompactor) Compact(ctx context.Context, messages []types.Message) (*CompactResult, error) {
+	return c.fn(ctx, messages)
+}
+
+// TestQuery_ProactiveCompact_UsesRealAPITokens verifies that compact output shows
+// the real API input tokens (including system prompt + tools), not just message heuristic.
+// Bug: after compact resets lastInputTokens=0, currentInputTokens() falls back to heuristic
+// which only counts message content → displays "8K → 8K" when real input was 15K.
+func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// API call after compact succeeds
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 8000}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	var compactDisplayOutput string
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, messages []types.Message) (*CompactResult, error) {
+			// Simulate realistic compact: old messages = 10000 heuristic, new = 4000 heuristic
+			return &CompactResult{
+				BeforeTokens:   10000, // heuristic of old messages
+				AfterTokens:    4000,  // heuristic of new messages
+				BeforeMessages: len(messages),
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("boundary")}},
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("summary")}},
+					{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("recent")}},
+				},
+			}, nil
+		},
+	}
+
+	eng := New(&Params{
+		Provider:  mp,
+		Model:     "test-model",
+		MaxTokens: 16000,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-load messages that trigger proactive compact.
+	// threshold = (50000 - 16000) - 13000 = 21000.
+	// Need heuristic > 21000.
+	bigText := strings.Repeat("x", 16000)
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(bigText)},
+		}))
+	}
+
+	// Simulate: previous API call reported 15000 real input tokens.
+	// This is what happens in the user's real scenario — compact triggers
+	// after at least one API call has set lastInputTokens from usage data.
+	eng.mu.Lock()
+	eng.lastInputTokens = 25000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "do something", nil)
+	for ev := range eventCh {
+		// Capture the compact tool end display output
+		if ev.Type == types.EventToolEnd && ev.ToolResult != nil &&
+			strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
+			compactDisplayOutput = ev.ToolResult.DisplayOutput
+		}
+	}
+	<-resultCh
+
+	if compactDisplayOutput == "" {
+		t.Fatal("expected compact output event")
+	}
+
+	// BUG: without fix, shows "token: 6K → 0K" (heuristic fallback after reset)
+	// With fix, should show "token: 25K → 19K" (real API tokens preserved)
+	// Real before = 25000 (from lastInputTokens), message delta = 10000-4000 = 6000, after = 25000-6000 = 19000
+	if !strings.Contains(compactDisplayOutput, "token: 25K → 19K") {
+		t.Errorf("expected compact output to show real API tokens (25K → 19K), got:\n%s", compactDisplayOutput)
 	}
 }

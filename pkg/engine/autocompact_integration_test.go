@@ -286,7 +286,7 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 	}
 
 	// Verify compacted messages are different from original sub-messages
-	if len(compacted) == len(subMsgs) {
+	if len(compacted.Messages) == len(subMsgs) {
 		t.Error("expected sub-engine messages to be reduced after compact")
 	}
 
@@ -493,7 +493,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	}
 
 	// Verify compact produced result with boundary
-	if len(result) == 0 {
+	if len(result.Messages) == 0 {
 		t.Fatal("compact returned no messages")
 	}
 
@@ -515,8 +515,8 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	}
 
 	// Verify result has fewer messages than input (compact reduced them)
-	if len(result) >= len(msgs) {
-		t.Errorf("compact should reduce messages: got %d, input was %d", len(result), len(msgs))
+	if len(result.Messages) >= len(msgs) {
+		t.Errorf("compact should reduce messages: got %d, input was %d", len(result.Messages), len(msgs))
 	}
 }
 

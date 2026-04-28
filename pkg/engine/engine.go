@@ -1,7 +1,6 @@
 // Package engine implements the core agentic loop for gbot.
 //
 // Source reference: query.ts (~1730 lines), QueryEngine.ts
-//
 package engine
 
 import (
@@ -23,6 +22,8 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+
+	"github.com/google/uuid"
 )
 
 // Compactor is the interface for auto-compact operations.
@@ -30,7 +31,7 @@ import (
 // (proactive) or when the API returns a context overflow error (reactive).
 // TS align: autoCompact.ts + reactiveCompact.ts
 type Compactor interface {
-	Compact(ctx context.Context, messages []types.Message) ([]types.Message, error)
+	Compact(ctx context.Context, messages []types.Message) (*CompactResult, error)
 }
 
 // TS auto-compact constants.
@@ -122,19 +123,19 @@ type Engine struct {
 
 // Params holds the constructor arguments for Engine.
 type Params struct {
-	Provider      llm.Provider
-	Tools         []tool.Tool                 // static tool list (ignored if ToolsProvider is set)
-	ToolsProvider func() map[string]tool.Tool // dynamic tool resolution — called each turn
-	Model         string
-	MaxTokens     int
-	TokenBudget   int
-	Logger        *slog.Logger
-	Dispatcher    types.EventDispatcher
-	Compactor     Compactor
-	AutoCompact   AutoCompactConfig
-	MCPRegistry        *mcp.Registry
-	Hooks              *hooks.Hooks
-	PermissionChecker  permission.PermissionChecker
+	Provider          llm.Provider
+	Tools             []tool.Tool                 // static tool list (ignored if ToolsProvider is set)
+	ToolsProvider     func() map[string]tool.Tool // dynamic tool resolution — called each turn
+	Model             string
+	MaxTokens         int
+	TokenBudget       int
+	Logger            *slog.Logger
+	Dispatcher        types.EventDispatcher
+	Compactor         Compactor
+	AutoCompact       AutoCompactConfig
+	MCPRegistry       *mcp.Registry
+	Hooks             *hooks.Hooks
+	PermissionChecker permission.PermissionChecker
 }
 
 // QueryResult is the final result of a query.
@@ -345,6 +346,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	e.setMessages(mcResult.Messages)
 
 	reactiveCompactDone := false
+	proactiveCompactDone := false
 
 	for e.turnCount < e.maxTurns {
 		select {
@@ -369,9 +371,34 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Proactive auto-compact: check before API call.
 		// TS align: query.ts:453-468 — deps.autocompact() before API.
 		if e.shouldAutoCompact() {
-				e.fireCompactHooks(ctx, "auto", "pre")
-			compacted, err := e.compactor.Compact(ctx, e.Messages())
+			compactID := "compact-auto-" + uuid.New().String()[:8]
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type: types.EventToolStart,
+				ToolUse: &types.ToolUseEvent{
+					ID:      compactID,
+					Name:    "Compact",
+					Summary: "Compacting conversation...",
+				},
+			})
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type:    types.EventToolRun,
+				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+			})
+			e.fireCompactHooks(ctx, "auto", "pre")
+			// Capture real API tokens before compact (includes system prompt + tools).
+			e.mu.RLock()
+			realInputTokens := e.lastInputTokens
+			e.mu.RUnlock()
+			result, err := e.compactor.Compact(ctx, e.Messages())
 			if err != nil {
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: fmt.Sprintf("Compact failed: %v", err),
+						IsError:       true,
+					},
+				})
 				e.mu.Lock()
 				e.consecutiveCompactFailures++
 				failures := e.consecutiveCompactFailures
@@ -383,19 +410,43 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.mu.Lock()
 				e.consecutiveCompactFailures = 0
 				e.mu.Unlock()
-				e.setMessages(compacted)
+				e.setMessages(result.Messages)
 				e.mu.Lock()
 				e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
 				e.mu.Unlock()
+				// Use real API tokens for before, estimate after from message delta.
+				// System prompt + tools don't change across compact,
+				// so subtracting only the message delta is correct.
+				if realInputTokens > 0 {
+					messageDelta := result.BeforeTokens - result.AfterTokens
+					result.BeforeTokens = realInputTokens
+					result.AfterTokens = max(realInputTokens-messageDelta, 0)
+				} else {
+					beforeTotal := e.currentInputTokens()
+					tokenDelta := result.BeforeTokens - result.AfterTokens
+					result.BeforeTokens = beforeTotal
+					result.AfterTokens = beforeTotal - tokenDelta
+				}
+				compactOutput := formatCompactOutput(result)
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: compactOutput,
+					},
+				})
 				e.logger.Info("proactive auto-compact succeeded",
-					"messages", len(compacted))
+					"messages", len(result.Messages))
 			}
+			proactiveCompactDone = true
 		}
 
 		// Blocking limit: refuse API call if context exceeds safe threshold.
 		// TS align: query.ts blocking limit check — effectiveWindow - 3000.
 		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
-		if !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
+		// Also skip if proactive compact just succeeded — it already reduced context;
+		// if still too large, the API will overflow and reactive compact handles it.
+		if !proactiveCompactDone && !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
 			reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
 			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
 			blockingLimit := effectiveWindow - manualCompactBufferTokens
@@ -425,18 +476,60 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				// must not retry on overflow — they'd deadlock.
 				src := e.querySource()
 				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
+					compactID := "compact-reactive-" + uuid.New().String()[:8]
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventToolStart,
+						ToolUse: &types.ToolUseEvent{
+							ID:      compactID,
+							Name:    "Compact",
+							Summary: "Compacting after context overflow...",
+						},
+					})
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type:    types.EventToolRun,
+						ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+					})
 					e.fireCompactHooks(ctx, "auto", "pre")
-					compacted, compactErr := e.compactor.Compact(ctx, e.Messages())
+					e.mu.RLock()
+					reactiveRealTokens := e.lastInputTokens
+					e.mu.RUnlock()
+					result, compactErr := e.compactor.Compact(ctx, e.Messages())
 					if compactErr == nil {
-						e.setMessages(compacted)
-					e.fireCompactHooks(ctx, "auto", "post")
+						e.setMessages(result.Messages)
+						e.fireCompactHooks(ctx, "auto", "post")
 						e.mu.Lock()
 						e.lastInputTokens = 0 // reset: force heuristic fallback, prevent compact storm
 						e.mu.Unlock()
+						if reactiveRealTokens > 0 {
+							messageDelta := result.BeforeTokens - result.AfterTokens
+							result.BeforeTokens = reactiveRealTokens
+							result.AfterTokens = max(reactiveRealTokens-messageDelta, 0)
+						} else {
+							beforeTotal := e.currentInputTokens()
+							tokenDelta := result.BeforeTokens - result.AfterTokens
+							result.BeforeTokens = beforeTotal
+							result.AfterTokens = beforeTotal - tokenDelta
+						}
+						compactOutput := formatCompactOutput(result)
+						e.emitEvent(eventCh, types.QueryEvent{
+							Type: types.EventToolEnd,
+							ToolResult: &types.ToolResultEvent{
+								ToolUseID:     compactID,
+								DisplayOutput: compactOutput,
+							},
+						})
 						reactiveCompactDone = true
 						e.logger.Info("reactive auto-compact succeeded, retrying")
 						continue
 					}
+					e.emitEvent(eventCh, types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     compactID,
+							DisplayOutput: fmt.Sprintf("Compact failed: %v", compactErr),
+							IsError:       true,
+						},
+					})
 					e.logger.Warn("reactive auto-compact failed", "error", compactErr)
 				}
 			}
@@ -832,11 +925,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							func(evt types.QueryEvent) { e.emitEvent(eventCh, evt) },
 							ctx,
 						)
-					streamingExecutor.SetHooks(e.hooks, e.sessionID)
-					streamingExecutor.SetPermissionChecker(e.permissionChecker)
-					if e.isSubagent {
-						streamingExecutor.SetSubEngine(true)
-					}
+						streamingExecutor.SetHooks(e.hooks, e.sessionID)
+						streamingExecutor.SetPermissionChecker(e.permissionChecker)
+						if e.isSubagent {
+							streamingExecutor.SetSubEngine(true)
+						}
 					}
 					e.emitEvent(eventCh, types.QueryEvent{
 						Type: types.EventToolRun,
