@@ -1106,26 +1106,16 @@ func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
 
 // currentInputTokens returns the estimated input token count.
 // Prefers the exact value from lastInputTokens (set after each API call).
-// Falls back to the 4 chars/token heuristic via EstimateTokens when no API
-// call has occurred yet (e.g. first turn before any response).
+// Falls back to EstimateMessagesTokens when no API call has occurred yet.
 func (e *Engine) currentInputTokens() int {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	if e.lastInputTokens > 0 {
-		return e.lastInputTokens
+	last := e.lastInputTokens
+	msgs := e.messages
+	e.mu.RUnlock()
+	if last > 0 {
+		return last
 	}
-	total := 0
-	for _, msg := range e.messages {
-		for _, block := range msg.Content {
-			total += len(block.Text)
-			total += len(block.Input)
-			total += len(block.Content)
-		}
-	}
-	if total == 0 {
-		return 0
-	}
-	return total / 4
+	return EstimateMessagesTokens(msgs)
 }
 
 // shouldAutoCompact returns true if proactive auto-compact should be triggered.

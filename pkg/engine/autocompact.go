@@ -28,27 +28,6 @@ type CompactResult struct {
 	Messages       []types.Message // post-compact message array
 }
 
-// estimateMessagesTokens computes a rough token count for a slice of messages.
-// Iterates ContentBlock fields directly — avoids JSON marshal overhead.
-func estimateMessagesTokens(msgs []types.Message) int {
-	var total int
-	for _, m := range msgs {
-		for _, block := range m.Content {
-			total += EstimateTokens(block.Text)
-			if len(block.Input) > 0 {
-				total += EstimateTokens(string(block.Input))
-			}
-			if len(block.Content) > 0 {
-				total += EstimateTokens(string(block.Content))
-			}
-			if block.Data != "" {
-				total += EstimateTokens(block.Data)
-			}
-		}
-	}
-	return total
-}
-
 // formatTokens formats a token count for display (e.g., "150K", "500").
 // Rounds to nearest K for values >= 1000.
 func formatTokens(n int) string {
@@ -104,7 +83,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
-	beforeTokens := estimateMessagesTokens(messages)
+	beforeTokens := EstimateMessagesTokens(messages)
 
 	// Convert engine types → short types for store operations
 	shortMsgs := engineToShort(messages)
@@ -149,7 +128,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 		return &CompactResult{
 			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:    estimateMessagesTokens(built),
+			AfterTokens:    EstimateMessagesTokens(built),
 			Messages:       built,
 		}, nil
 	}
@@ -164,7 +143,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 		Summary:        summaryText,
 		BeforeTokens:   beforeTokens,
 		BeforeMessages: len(messages),
-		AfterTokens:    estimateMessagesTokens(built),
+		AfterTokens:    EstimateMessagesTokens(built),
 		Messages:       built,
 	}, nil
 }
