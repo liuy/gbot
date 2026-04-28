@@ -2389,7 +2389,7 @@ func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 	// This is what happens in the user's real scenario — compact triggers
 	// after at least one API call has set lastInputTokens from usage data.
 	eng.mu.Lock()
-	eng.lastInputTokens = 25000
+	eng.lastInputTokens = 35000
 	eng.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2409,10 +2409,9 @@ func TestQuery_ProactiveCompact_UsesRealAPITokens(t *testing.T) {
 		t.Fatal("expected compact output event")
 	}
 
-	// BUG: without fix, shows "token: 6K → 0K" (heuristic fallback after reset)
-	// With fix, should show "token: 25K → 19K" (real API tokens preserved)
-	// Real before = 25000 (from lastInputTokens), message delta = 10000-4000 = 6000, after = 25000-6000 = 19000
-	if !strings.Contains(compactDisplayOutput, "token: 25K → 19K") {
-		t.Errorf("expected compact output to show real API tokens (25K → 19K), got:\n%s", compactDisplayOutput)
+	// With fix, should show "token: 35K → 29K" (real API tokens preserved)
+	// Real before = 35000 (from lastInputTokens), message delta = 10000-4000 = 6000, after = 35000-6000 = 29000
+	if !strings.Contains(compactDisplayOutput, "token: 35K → 29K") {
+		t.Errorf("expected compact output to show real API tokens (35K → 29K), got:\n%s", compactDisplayOutput)
 	}
 }

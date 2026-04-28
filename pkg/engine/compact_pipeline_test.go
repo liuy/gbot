@@ -137,7 +137,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	p := &pipelineProvider{}
 	p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
 
-	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -274,7 +274,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 	p := &pipelineProvider{}
 	p.addStream(pipelineStreamEvents("test-model", "Response after microcompact only."), nil)
 
-	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",

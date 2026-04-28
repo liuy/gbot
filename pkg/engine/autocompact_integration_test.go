@@ -107,7 +107,7 @@ func TestAutoCompact_Proactive_E2E(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "After compact response."), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := engine.New(&engine.Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -186,7 +186,7 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	// Second call: success after compact
 	p.addStream(textStreamEvents("test-model", "Response after reactive compact."), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := engine.New(&engine.Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -253,7 +253,7 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	parentMsgs := makeLargeMessages(10, 100)
 	originalCount := len(parentMsgs)
@@ -322,7 +322,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	eng := engine.New(&engine.Params{
 		Provider:  p,
@@ -423,7 +423,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 		p.addStream(textStreamEvents("test-model", "Done."), nil)
 	}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := engine.New(&engine.Params{
 		Provider:  p,
 		Model:     "test-model",
@@ -484,7 +484,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	msgs := makeMessages(10, 5000)
 	result, err := compactor.Compact(context.Background(), msgs)
@@ -547,7 +547,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "sub-engine response after compact"), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	parent := engine.New(&engine.Params{
 		Provider:  p,
@@ -636,7 +636,7 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	// Second call: success after compact reduces messages
 	p.addStream(textStreamEvents("test-model", "recovered after reactive compact"), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p)
+	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	parent := engine.New(&engine.Params{
 		Provider:  p,

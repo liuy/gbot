@@ -534,7 +534,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	_, err = sc.Compact(context.Background(), []types.Message{})
 	if err == nil {
@@ -554,7 +554,7 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -586,7 +586,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 5000)
 
@@ -627,7 +627,7 @@ func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
@@ -655,7 +655,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 1000)
 
@@ -700,7 +700,7 @@ func TestCompactor_EngineIntegration_ProactiveCompact(t *testing.T) {
 	})
 	mp.addResponse(textStreamEvents("test-model", "Success after compact"), nil)
 
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp)
+	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 	eng := engine.New(&engine.Params{
 		Provider:  mp,
 		Model:     "test-model",

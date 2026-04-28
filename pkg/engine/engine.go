@@ -38,9 +38,16 @@ type Compactor interface {
 // Source: services/compact/autoCompact.ts
 const (
 	maxOutputTokensForSummary = 20_000 // MAX_OUTPUT_TOKENS_FOR_SUMMARY: reserve for compact output
-	autocompactBufferTokens   = 13_000 // AUTOCOMPACT_BUFFER_TOKENS: buffer below effective window
 	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: blocking limit buffer
 )
+
+// autoCompactBuffer returns the dynamic buffer for the auto-compact threshold.
+// TS uses a fixed 13K, but that's too aggressive for small windows (50% of 30K).
+// Dynamic: 7% of effectiveWindow, minimum 3K. At 200K window this ≈ 12.6K (≈ TS's 13K).
+func autoCompactBuffer(effectiveWindow int) int {
+	buf := max(effectiveWindow*7/100, 3000)
+	return buf
+}
 
 // AutoCompactConfig configures auto-compact behavior.
 // TS align: autoCompact.ts configuration
@@ -1156,7 +1163,7 @@ func (e *Engine) shouldAutoCompact() bool {
 	// threshold = effectiveWindow - 13K
 	reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
 	effectiveWindow := cfg.ContextWindow - reservedTokens
-	threshold := effectiveWindow - autocompactBufferTokens
+	threshold := effectiveWindow - autoCompactBuffer(effectiveWindow)
 	return tokens > threshold
 }
 

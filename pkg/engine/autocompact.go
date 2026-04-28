@@ -74,23 +74,25 @@ func formatCompactOutput(result *CompactResult) string {
 // functions and using the LLM provider to generate a summary.
 // TS align: compact.ts:compactConversation + partialCompactConversation
 type AutoCompactor struct {
-	store      *short.Store
-	sessionID  string
-	model      string
-	provider   llm.Provider
-	maxTokens  int // maxTokens for summary LLM call
-	logger     *slog.Logger
+	store         *short.Store
+	sessionID     string
+	model         string
+	provider      llm.Provider
+	contextWindow int // model's context window, used for dynamic keep target
+	maxTokens     int // maxTokens for summary LLM call
+	logger        *slog.Logger
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
-func NewAutoCompactor(store *short.Store, sessionID, model string, provider llm.Provider) *AutoCompactor {
+func NewAutoCompactor(store *short.Store, sessionID, model string, provider llm.Provider, contextWindow int) *AutoCompactor {
 	return &AutoCompactor{
-		store:     store,
-		sessionID: sessionID,
-		model:     model,
-		provider:  provider,
-		maxTokens: 16000,
-		logger:    slog.Default(),
+		store:         store,
+		sessionID:     sessionID,
+		model:         model,
+		provider:      provider,
+		contextWindow: contextWindow,
+		maxTokens:     16000,
+		logger:        slog.Default(),
 	}
 }
 
@@ -108,25 +110,25 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	shortMsgs := engineToShort(messages)
 
 	// Determine how many recent messages to keep.
-	// Strategy: count tokens from tail, keep adding until reaching ~80K tokens
-	// (well under the compact trigger threshold of ~187K).
+	// Strategy: count tokens from tail, keep adding until reaching dynamic target
+	// (contextWindow / 5, clamped to [2K, 60K]).
 	keepFrom := c.findKeepFrom(shortMsgs)
 	if keepFrom >= len(shortMsgs) {
 		// Nothing to compact — keep all messages
 		return &CompactResult{
-			BeforeTokens: beforeTokens,
+			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:  beforeTokens,
-			Messages:     messages,
+			AfterTokens:    beforeTokens,
+			Messages:       messages,
 		}, nil
 	}
 	if keepFrom <= 1 {
 		// Need at least 1 message to keep
 		return &CompactResult{
-			BeforeTokens: beforeTokens,
+			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:  beforeTokens,
-			Messages:     messages,
+			AfterTokens:    beforeTokens,
+			Messages:       messages,
 		}, nil
 	}
 
@@ -145,10 +147,10 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 		// Fall back: return messages without summary (better than failing entirely)
 		built := c.buildResultMessages(pcr, "")
 		return &CompactResult{
-			BeforeTokens: beforeTokens,
+			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:  estimateMessagesTokens(built),
-			Messages:     built,
+			AfterTokens:    estimateMessagesTokens(built),
+			Messages:       built,
 		}, nil
 	}
 
@@ -159,20 +161,22 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 
 	built := c.buildResultMessages(pcr, summaryText)
 	return &CompactResult{
-		Summary:      summaryText,
-		BeforeTokens: beforeTokens,
-			BeforeMessages: len(messages),
-		AfterTokens:  estimateMessagesTokens(built),
-		Messages:     built,
+		Summary:        summaryText,
+		BeforeTokens:   beforeTokens,
+		BeforeMessages: len(messages),
+		AfterTokens:    estimateMessagesTokens(built),
+		Messages:       built,
 	}, nil
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).
-// Counts rough tokens from the end and stops when reaching ~80K tokens,
-// leaving enough budget for the summary output.
-// TS align: compact.ts — keeps enough recent messages for context
+// Uses a dynamic target based on contextWindow: keep = contextWindow/5,
+// clamped to [2000, 60000]. For small windows this keeps less recent context,
+// for large windows it keeps more — but never more than 60K tokens.
+// TS align: compact.ts partialCompactConversation — keeps recent messages for context
 func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
-	const targetKeepTokens = 80000
+	// Dynamic keep target: contextWindow / 5, clamped
+	targetKeepTokens := max(min(c.contextWindow/5, 60000), 2000)
 
 	// Always keep at least 4 messages (2 turns)
 	minKeep := 4
@@ -274,8 +278,8 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 		boundaryContent = "Previous conversation compacted"
 	}
 	msgs = append(msgs, types.Message{
-		Role:       types.RoleUser,
-		Content:    []types.ContentBlock{types.NewTextBlock(boundaryContent)},
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock(boundaryContent)},
 		Timestamp: time.Now(),
 	})
 
@@ -283,8 +287,8 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	if summaryText != "" {
 		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "recent messages are preserved")
 		msgs = append(msgs, types.Message{
-			Role:       types.RoleUser,
-			Content:    []types.ContentBlock{types.NewTextBlock(summaryContent)},
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock(summaryContent)},
 			Timestamp: time.Now(),
 		})
 	}
@@ -341,11 +345,11 @@ func engineToShort(messages []types.Message) []*short.TranscriptMessage {
 		contentBytes, _ := json.Marshal(m.Content)
 		uid := uuid.New().String()
 		result = append(result, &short.TranscriptMessage{
-			UUID:      uid,
+			UUID:       uid,
 			ParentUUID: "",
-			Type:      string(m.Role),
-			Content:   string(contentBytes),
-			CreatedAt: m.Timestamp,
+			Type:       string(m.Role),
+			Content:    string(contentBytes),
+			CreatedAt:  m.Timestamp,
 		})
 	}
 	return result
@@ -370,15 +374,15 @@ func ShortMessageToEngine(m *short.TranscriptMessage) types.Message {
 	engineBlocks := make([]types.ContentBlock, 0, len(blocks))
 	for _, b := range blocks {
 		engineBlocks = append(engineBlocks, types.ContentBlock{
-			Type:       types.ContentType(b.Type),
-			Text:       b.Text,
-			ID:         b.ID,
-			Name:       b.Name,
-			Input:      b.Input,
-			ToolUseID:  b.ToolUseID,
-			Content:    b.Content,
-			IsError:    b.IsError,
-			Data:       b.Data,
+			Type:      types.ContentType(b.Type),
+			Text:      b.Text,
+			ID:        b.ID,
+			Name:      b.Name,
+			Input:     b.Input,
+			ToolUseID: b.ToolUseID,
+			Content:   b.Content,
+			IsError:   b.IsError,
+			Data:      b.Data,
 		})
 	}
 

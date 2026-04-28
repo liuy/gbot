@@ -328,7 +328,7 @@ func main() {
 
 		// 7.5 Wire auto-compact
 		if store != nil && sessionID != "" {
-			compactor := engine.NewAutoCompactor(store, sessionID, model, provider)
+			compactor := engine.NewAutoCompactor(store, sessionID, model, provider, contextWindow)
 			eng.SetCompactor(compactor, engine.AutoCompactConfig{
 				ContextWindow:          contextWindow,
 				MaxConsecutiveFailures: 3,
