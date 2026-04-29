@@ -798,25 +798,19 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	}
 	sb.WriteString(wordWrap(hdr.String(), availWidth))
 
-	// Done state for agent tools: show stats line + text output
-	if tc.ToolCount > 0 {
-		var contentParts []string
-		// Stats line: N tools + tokens
-		var statsParts []string
-		statsParts = append(statsParts, fmt.Sprintf("%d tool%s", tc.ToolCount, pluralS(tc.ToolCount)))
-		if tc.TokensIn > 0 || tc.TokensOut > 0 {
-			statsParts = append(statsParts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tc.TokensIn), formatTokenCount(tc.TokensOut)))
+		// Done state for agent tools: show agent logs + text output
+		if tc.ToolCount > 0 {
+			// Show agent tool progress logs (includes stats line)
+			if len(tc.AgentLogs) > 0 {
+				sb.WriteString(renderAgentLogs(&tc, availWidth))
+			}
+			// Agent text output
+			if tc.Output != "" {
+				sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
+			}
+		} else if tc.Output != "" {
+			sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
 		}
-		contentParts = append(contentParts, styleDim.Render(strings.Join(statsParts, " · ")))
-		// Agent text output
-		if tc.Output != "" {
-			contentParts = append(contentParts, tc.Output)
-		}
-		content := strings.Join(contentParts, "\n")
-		sb.WriteString("\n" + formatToolOutput(content, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
-	} else if tc.Output != "" {
-		sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
-	}
 }
 
 // renderAgentLogs renders sub-agent tool call progress using formatToolOutput.
