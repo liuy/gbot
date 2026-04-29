@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -2391,5 +2393,100 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 	// Compact delta = 10000-4000 = 6000, display: 35.0k → 29.0k
 	if !strings.Contains(compactDisplayOutput, "token: 35.0k → 29.0k") {
 		t.Errorf("expected compact output to show real API tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// currentInputTokens — TS align: tokenCountWithEstimation (utils/tokens.ts:226)
+// ---------------------------------------------------------------------------
+
+func TestCurrentInputTokens_ExactNoDelta(t *testing.T) {
+	t.Parallel()
+	// ContextTokens is set, last message is assistant → no delta.
+	// Should return ContextTokens exactly.
+	eng := &Engine{
+		ContextTokens: 9000,
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("world")}},
+		},
+	}
+
+	got := eng.currentInputTokens()
+	if got != 9000 {
+		t.Errorf("currentInputTokens() = %d, want 9000 (exact ContextTokens, no delta)", got)
+	}
+}
+
+func TestCurrentInputTokens_ExactPlusDelta(t *testing.T) {
+	t.Parallel()
+	// ContextTokens is set, but there are messages after the last assistant.
+	// Should return ContextTokens + estimated delta of new messages.
+	deltaText := strings.Repeat("x", 4000) // ~1000 tokens (4 chars/token)
+	eng := &Engine{
+		ContextTokens: 9000,
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
+			// Delta: tool result + user message after last assistant
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					types.NewToolResultBlock("tool-1", json.RawMessage(`"`+deltaText+`"`), false),
+				},
+			},
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(deltaText)}},
+		},
+	}
+
+	got := eng.currentInputTokens()
+	if got <= 9000 {
+		t.Errorf("currentInputTokens() = %d, want > 9000 (should include delta from new messages)", got)
+	}
+	// The delta should be roughly 2000 tokens (2 messages × ~1000 each).
+	// Allow generous range since estimation is approximate.
+	if got > 15000 {
+		t.Errorf("currentInputTokens() = %d, unexpectedly high (delta should be ~2000)", got)
+	}
+}
+
+func TestCurrentInputTokens_ZeroContextTokens_Fallback(t *testing.T) {
+	t.Parallel()
+	// ContextTokens == 0: abnormal state. Should log error and fall back
+	// to full message estimation.
+	text := strings.Repeat("x", 4000) // ~1000 tokens
+	eng := &Engine{
+		ContextTokens: 0,
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(text)}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(text)}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(text)}},
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	got := eng.currentInputTokens()
+	// Should be roughly 3000 tokens (3 messages × ~1000 each).
+	// Range check also catches got <= 0.
+	if got < 2000 || got > 6000 {
+		t.Errorf("currentInputTokens() = %d, want ~3000 (full message estimation fallback)", got)
+	}
+}
+
+func TestCurrentInputTokens_NoAssistantMessage_ReturnsExact(t *testing.T) {
+	t.Parallel()
+	// ContextTokens > 0 but no assistant message in history.
+	// Can't determine delta boundary — should return ContextTokens as-is.
+	eng := &Engine{
+		ContextTokens: 9000,
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))}},
+		},
+	}
+
+	got := eng.currentInputTokens()
+	if got != 9000 {
+		t.Errorf("currentInputTokens() = %d, want 9000 (no assistant message, return exact ContextTokens)", got)
 	}
 }
