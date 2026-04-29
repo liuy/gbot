@@ -296,8 +296,8 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	if !textDeltaSeen {
 		t.Error("expected to see a text delta event")
 	}
-	if result.TurnCount != 1 {
-		t.Errorf("expected 1 turn, got %d", result.TurnCount)
+	if result.TurnCount != 2 {
+		t.Errorf("expected 2 turns (2 API calls), got %d", result.TurnCount)
 	}
 }
 
@@ -1332,8 +1332,44 @@ func TestQuery_MaxTurns(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.TurnCount != 3 {
-		t.Errorf("expected 3 turns, got %d", result.TurnCount)
+	if result.TurnCount != 4 {
+		t.Errorf("expected 4 turns (4 API calls), got %d", result.TurnCount)
+	}
+}
+
+// TestQuery_TurnCountMatchesAPICalls verifies that TurnCount equals the
+// actual number of API calls made, including the final end_turn call.
+// Regression: the end_turn return path skipped turnCount++, causing
+// N API calls to report N-1 turns.
+func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
+	t.Parallel()
+
+	// 1 tool_use + 1 end_turn = 2 API calls → TurnCount should be 2
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test-model", "t1", "my_tool", `{}`), nil)
+	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
+
+	mt := &mockTool{name: "my_tool", enabled: true}
+	eng := engine.New(&engine.Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+
+	result := <-resultCh
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.TurnCount != 2 {
+		t.Errorf("expected TurnCount=2 (2 API calls), got %d", result.TurnCount)
 	}
 }
 

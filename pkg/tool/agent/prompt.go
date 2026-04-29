@@ -7,6 +7,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -41,7 +42,13 @@ func AgentPrompt(allowedAgentTypes []string) string {
 	for _, def := range filtered {
 		lines = append(lines, formatAgentLine(def))
 	}
-	return fmt.Sprintf(agentToolPrompt, strings.Join(lines, "\n"))
+	result := fmt.Sprintf(agentToolPrompt, strings.Join(lines, "\n"))
+	// Remove General references if General is not in allowed types
+	if len(allowedAgentTypes) > 0 && !slices.Contains(allowedAgentTypes, "General") {
+		result = strings.Replace(result, " If omitted, the General agent is used.", "", 1)
+		result = strings.Replace(result, `  subagent_type: "General",`, `  // subagent_type omitted`, 1)
+	}
+	return result
 }
 
 // agentPrompt returns the full system prompt contribution for the Agent tool.
@@ -98,7 +105,7 @@ The Agent tool launches specialized agents (subprocesses) that autonomously hand
 Available agent types and the tools they have access to:
 %s
 
-When using the Agent tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.
+When using the Agent tool, specify a subagent_type parameter to select which agent type to use. If omitted, the General agent is used.
 
 ## When to fork
 
@@ -178,7 +185,7 @@ A subagent_type is specified, so the agent starts fresh. It needs full context i
 Agent({
   name: "migration-review",
   description: "Independent migration review",
-  subagent_type: "general-purpose",
+  subagent_type: "General",
   prompt: "Review migration 0042_user_schema.sql for safety. Context: we're adding a NOT NULL column to a 50M-row table. Existing rows get a backfill default. I want a second opinion on whether the backfill approach is safe under concurrent writes — I've checked locking behavior but want independent verification. Report: is this safe, and if not, what specifically breaks?"
 })
 </example>`

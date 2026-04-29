@@ -137,7 +137,7 @@ func IsOneShotAgent(agentType string) bool {
 // System prompts — source: tools/AgentTool/built-in/*.ts
 // ---------------------------------------------------------------------------
 
-// generalPurposeSystemPrompt is the system prompt for the general-purpose agent.
+// generalPurposeSystemPrompt is the system prompt for the General agent.
 // Source: tools/AgentTool/built-in/generalPurposeAgent.ts
 const generalPurposeSystemPrompt = `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done.
 

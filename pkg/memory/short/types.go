@@ -106,7 +106,7 @@ type CronTask struct {
 
 // AgentState holds restored agent configuration.
 type AgentState struct {
-	AgentType  string            // "general-purpose", "Explore", "Plan", etc.
+	AgentType  string            // "General", "Explore", "Plan", etc.
 	Model      string            // "sonnet", "opus", "haiku"
 	Setting    map[string]string // agent-specific settings
 	ToolUseIDs map[string]string // tool_use_id → agent_id mapping

@@ -1319,17 +1319,27 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 500", app.displayedInputTokens)
 	}
 
-	// Agent usage — should also snap displayedInputTokens
+	// Agent usage — should snap displayedInputTokens (includes cache in total)
 	app.updateRepl(agentUsageMsg{
-		ParentToolUseID: "call_abc",
-		InputTokens:     300,
-		OutputTokens:    50,
+		ParentToolUseID:       "call_abc",
+		InputTokens:           300,
+		CacheReadInputTokens:  200,
+		OutputTokens:          50,
 	})
-	if app.displayedInputTokens != 800 {
-		t.Errorf("after agentUsageMsg, displayedInputTokens = %d, want 800 (500+300)", app.displayedInputTokens)
+	// TotalInputTokens = (500+300) InputTokens + (0+200) CacheRead = 1000
+	if app.displayedInputTokens != 1000 {
+		t.Errorf("after agentUsageMsg, displayedInputTokens = %d, want 1000", app.displayedInputTokens)
 	}
-	if app.inputTokenTarget != 800 {
-		t.Errorf("inputTokenTarget = %d, want 800", app.inputTokenTarget)
+	if app.inputTokenTarget != 1000 {
+		t.Errorf("inputTokenTarget = %d, want 1000", app.inputTokenTarget)
+	}
+	// Verify per-agent TokensIn includes cache: UpdateAgentUsage gets 300+200=500
+	blk := app.repl.Messages()[0].Blocks[0]
+	if blk.ToolCall.TokensIn != 500 {
+		t.Errorf("agent TokensIn = %d, want 500 (input+cache)", blk.ToolCall.TokensIn)
+	}
+	if blk.ToolCall.TokensOut != 50 {
+		t.Errorf("agent TokensOut = %d, want 50", blk.ToolCall.TokensOut)
 	}
 }
 

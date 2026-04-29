@@ -99,7 +99,7 @@ type thinkingDeltaMsg struct {
 // toolStartMsg/toolEndMsg so the parent Agent tool call can show live progress.
 type agentToolMsg struct {
 	ParentToolUseID string // parent Agent tool call ID
-	AgentType       string // "Explore", "general-purpose", "Plan"
+	AgentType       string // "General", "Explore", "Plan"
 	Depth           int    // nesting depth (0 = direct child)
 	SubType         string // "tool_start" or "tool_end"
 	ToolName        string // sub-agent's tool name (e.g. "Read", "Grep")

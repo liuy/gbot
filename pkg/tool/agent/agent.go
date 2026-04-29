@@ -43,7 +43,7 @@ type AgentOpts struct {
 	Tools              map[string]tool.Tool // filtered tool set
 	MaxTurns           int                  // 0 = default 50
 	Model              string               // "" = inherit from parent
-	AgentType          string               // resolved agent type (e.g. "general-purpose", "Explore")
+	AgentType          string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID    string               // parent Agent tool call ID for TUI progress display
 	ForkMessages       []types.Message      // non-nil: use pre-built fork messages instead of Prompt
 	ParentSystemPrompt json.RawMessage      // fork: parent engine's rendered system prompt bytes
@@ -183,7 +183,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 		return t.callFork(ctx, agentInput, tctx)
 	}
 
-	// Step 2: Resolve agent type (default: general-purpose)
+	// Step 2: Resolve agent type (default: General)
 	agentType := agentInput.SubagentType
 	if agentType == "" {
 		agentType = "General"

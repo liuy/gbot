@@ -620,6 +620,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				continue
 			}
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+			e.turnCount++
 			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
@@ -1503,7 +1504,7 @@ type SubEngineOptions struct {
 	MaxTurns        int                  // 0 = default 50
 	Model           string               // "" = inherit from parent
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
-	AgentType       string               // "general-purpose", "Explore", "Plan"
+	AgentType       string               // "General", "Explore", "Plan"
 }
 
 // NewSubEngine creates a new Engine that shares the Provider and Logger

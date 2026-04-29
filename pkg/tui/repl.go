@@ -455,7 +455,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
-		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
+		totalAgentIn := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens
+		a.repl.UpdateAgentUsage(m.ParentToolUseID, totalAgentIn, m.OutputTokens)
 		return true, a.readEvents()
 
 	case queryEndMsg:

@@ -626,7 +626,7 @@ type MessageView struct {
 
 // AgentLogEntry records one tool call from a sub-agent for live progress display.
 type AgentLogEntry struct {
-	AgentType string // "Explore", "general-purpose", "Plan"
+	AgentType string // "General", "Explore", "Plan"
 	Depth     int    // nesting depth
 	ToolName  string // "Read", "Grep", "Bash", etc.
 	Summary   string // tool summary text
