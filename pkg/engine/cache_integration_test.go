@@ -69,7 +69,7 @@ func cacheStreamEvents(cacheRead, cacheCreation int) []llm.StreamEvent {
 		{
 			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
-			Usage:    &llm.UsageDelta{OutputTokens: 10},
+			Usage:    &types.Usage{OutputTokens: 10},
 		},
 		{
 			Type: "message_stop",

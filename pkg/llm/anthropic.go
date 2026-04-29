@@ -356,7 +356,7 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 	case "message_delta":
 		var delta struct {
 			Delta MessageDelta `json:"delta"`
-			Usage UsageDelta   `json:"usage"`
+			Usage types.Usage   `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &delta); err == nil {
 			event.DeltaMsg = &delta.Delta

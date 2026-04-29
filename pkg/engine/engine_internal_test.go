@@ -450,7 +450,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t", Name: "tool"}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 1}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 1}},
 		{Type: "message_stop"},
 	}
 	for range 50 {
@@ -951,7 +951,7 @@ func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-ch
 			{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
 			{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}},
 			{Type: "content_block_stop", Index: 0},
-			{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 3}},
+			{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 3}},
 			{Type: "message_stop"},
 		}
 		ch := make(chan llm.StreamEvent, len(events))
@@ -1179,7 +1179,7 @@ func subTextEvents(model, text string) []llm.StreamEvent {
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: text}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
 		{Type: "message_stop"},
 	}
 }
@@ -1385,7 +1385,7 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "test_tool"}},
 		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &llm.UsageDelta{OutputTokens: 99999}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 99999}},
 		{Type: "message_stop"},
 	}
 	mp.addResponse(events, nil)
@@ -2128,7 +2128,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
 		{Type: "message_stop"},
 	}
 	mp.addResponse(events, nil)
@@ -2250,7 +2250,7 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 32000}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
 		{Type: "message_stop"},
 	}
 	tmp.addResponse(events, nil)
@@ -2330,7 +2330,7 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 35000}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
 		{Type: "content_block_stop", Index: 0},
-		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &llm.UsageDelta{OutputTokens: 5}},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
 		{Type: "message_stop"},
 	}
 	tmp.addResponse(events, nil)

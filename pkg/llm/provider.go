@@ -112,7 +112,7 @@ type StreamEvent struct {
 	Delta    *StreamDelta     `json:"delta,omitempty"`   // content_block_delta
 
 	// message_delta (final usage/stop_reason)
-	Usage    *UsageDelta      `json:"usage,omitempty"`
+	Usage    *types.Usage     `json:"usage,omitempty"`
 	DeltaMsg *MessageDelta    `json:"delta_msg,omitempty"`
 
 	// Error
@@ -151,17 +151,8 @@ type StreamDelta struct {
 
 // MessageDelta carries the final message-level delta.
 type MessageDelta struct {
-	StopReason string     `json:"stop_reason,omitempty"`
-	Usage      *UsageDelta `json:"usage,omitempty"`
-}
-
-// UsageDelta carries incremental usage info.
-// Source: Anthropic message_delta event — extended for cache token support.
-type UsageDelta struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens    int `json:"cache_read_input_tokens,omitempty"`
+	StopReason string      `json:"stop_reason,omitempty"`
+	Usage      *types.Usage `json:"usage,omitempty"`
 }
 
 // APIError represents an error from the LLM API.

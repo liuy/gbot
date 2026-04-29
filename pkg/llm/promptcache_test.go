@@ -878,8 +878,8 @@ func TestIntegration_SystemChangeTriggersBreak(t *testing.T) {
 
 // --- JSON marshal/unmarshal for new types ---
 
-func TestUsageDelta_CacheTokenJSON(t *testing.T) {
-	delta := UsageDelta{
+func TestUsage_CacheTokenJSON(t *testing.T) {
+	delta := types.Usage{
 		InputTokens:              100,
 		OutputTokens:             50,
 		CacheCreationInputTokens: 200,
@@ -889,7 +889,7 @@ func TestUsageDelta_CacheTokenJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	var got UsageDelta
+	var got types.Usage
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
@@ -901,8 +901,8 @@ func TestUsageDelta_CacheTokenJSON(t *testing.T) {
 	}
 }
 
-func TestUsageDelta_OmitEmpty(t *testing.T) {
-	delta := UsageDelta{InputTokens: 100, OutputTokens: 50}
+func TestUsage_OmitEmpty(t *testing.T) {
+	delta := types.Usage{InputTokens: 100, OutputTokens: 50}
 	b, err := json.Marshal(delta)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)

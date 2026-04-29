@@ -217,7 +217,7 @@ func (d *doubleCountProvider) Stream(_ context.Context, req *llm.Request) (<-cha
 			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
 			// Echo the same cache tokens in message_delta (triggers double-counting with +=)
-			Usage: &llm.UsageDelta{
+			Usage: &types.Usage{
 				OutputTokens:             5,
 				InputTokens:              10,
 				CacheCreationInputTokens: d.cacheCreation,
@@ -270,7 +270,7 @@ func cacheStreamEventsDetailed(msgID string, inputTokens, cacheCreation int, tex
 		{
 			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
-			Usage:    &llm.UsageDelta{OutputTokens: outputTokens},
+			Usage:    &types.Usage{OutputTokens: outputTokens},
 		},
 		{
 			Type: "message_stop",

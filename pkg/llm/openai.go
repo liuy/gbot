@@ -558,7 +558,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 				}
 
 				// Emit message_delta with stop_reason + usage
-				usage := &UsageDelta{}
+				usage := &types.Usage{}
 				if chunk.Usage != nil {
 					usage.InputTokens = chunk.Usage.PromptTokens - chunk.Usage.PromptTokensDetails.CachedTokens
 					usage.OutputTokens = chunk.Usage.CompletionTokens

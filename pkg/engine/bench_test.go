@@ -55,7 +55,7 @@ func (m *benchMockProvider) Stream(ctx context.Context, req *llm.Request) (<-cha
 		ch <- llm.StreamEvent{
 			Type:     "message_delta",
 			DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"},
-			Usage:    &llm.UsageDelta{OutputTokens: 20},
+			Usage:    &types.Usage{OutputTokens: 20},
 		}
 		ch <- llm.StreamEvent{Type: "message_stop"}
 	}()
