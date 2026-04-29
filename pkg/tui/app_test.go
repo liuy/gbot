@@ -1341,6 +1341,10 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	if blk.ToolCall.TokensOut != 50 {
 		t.Errorf("agent TokensOut = %d, want 50", blk.ToolCall.TokensOut)
 	}
+	// contextSize = 300+200+0+50 = 550
+	if blk.ToolCall.ContextSize != 550 {
+		t.Errorf("agent ContextSize = %d, want 550", blk.ToolCall.ContextSize)
+	}
 }
 
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {

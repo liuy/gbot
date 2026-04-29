@@ -625,8 +625,8 @@ func TestUpdateAgentUsage_Accumulates(t *testing.T) {
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentUsage("agent1", 100, 200)
-	s.UpdateAgentUsage("agent1", 50, 75)
+	s.UpdateAgentUsage("agent1", 100, 200, 300)
+	s.UpdateAgentUsage("agent1", 50, 75, 125)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -636,13 +636,38 @@ func TestUpdateAgentUsage_Accumulates(t *testing.T) {
 	if blk.ToolCall.TokensOut != 275 {
 		t.Errorf("expected TokensOut=275, got %d", blk.ToolCall.TokensOut)
 	}
+	// Last contextSize wins
+	if blk.ToolCall.ContextSize != 125 {
+		t.Errorf("expected ContextSize=125, got %d", blk.ToolCall.ContextSize)
+	}
+}
+
+func TestSetAgentContextWindow(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+
+	s.SetAgentContextWindow("agent1", 200000)
+
+	msgs := s.Messages()
+	blk := msgs[0].Blocks[0]
+	if blk.ToolCall.ContextWindow != 200000 {
+		t.Errorf("expected ContextWindow=200000, got %d", blk.ToolCall.ContextWindow)
+	}
+}
+
+func TestSetAgentContextWindow_UnknownParent_Noop(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	// Should not panic
+	s.SetAgentContextWindow("nonexistent", 200000)
 }
 
 func TestUpdateAgentUsage_UnknownParent_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	// Should not panic
-	s.UpdateAgentUsage("nonexistent", 100, 200)
+	s.UpdateAgentUsage("nonexistent", 100, 200, 300)
 }
 
 // ---------------------------------------------------------------------------

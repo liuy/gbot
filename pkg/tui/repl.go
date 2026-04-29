@@ -340,14 +340,26 @@ func (s *ReplState) UpdateAgentProgress(msg agentToolMsg) {
 }
 
 // UpdateAgentUsage accumulates sub-agent token usage into both global and per-agent counters.
-func (s *ReplState) UpdateAgentUsage(parentID string, inputTokens, outputTokens int) {
+func (s *ReplState) UpdateAgentUsage(parentID string, inputTokens, outputTokens, contextSize int) {
 	tcv, ok := s.pendingTool[parentID]
 	if !ok {
 		return
 	}
 	tcv.TokensIn += inputTokens
 	tcv.TokensOut += outputTokens
+	tcv.ContextSize = contextSize
 
+	s.updateToolBlock(parentID, tcv)
+}
+
+// SetAgentContextWindow sets the context window for a sub-agent tool call.
+// Called once at tool start so the TUI can display "8.7k/30.0k" usage ratios.
+func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
+	tcv, ok := s.pendingTool[parentID]
+	if !ok {
+		return
+	}
+	tcv.ContextWindow = window
 	s.updateToolBlock(parentID, tcv)
 }
 
@@ -419,6 +431,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case toolStartMsg:
 		a.markViewportDirty()
 		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
+		if m.Name == "Agent" {
+			a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
+		}
 		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
 		return true, a.readEvents()
 
@@ -456,7 +471,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.outputTokenTarget = a.status.usage.OutputTokens
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		totalAgentIn := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens
-		a.repl.UpdateAgentUsage(m.ParentToolUseID, totalAgentIn, m.OutputTokens)
+		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
+		slog.Info("tui:agent_usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "context_size", contextSize)
+		a.repl.UpdateAgentUsage(m.ParentToolUseID, totalAgentIn, m.OutputTokens, contextSize)
 		return true, a.readEvents()
 
 	case queryEndMsg:

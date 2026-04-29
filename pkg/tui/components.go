@@ -648,6 +648,8 @@ type ToolCallView struct {
 	ToolCount     int             // total sub-agent tool calls (for summary line when done)
 	TokensIn  int             // sub-agent input tokens (for summary line when done)
 	TokensOut int             // sub-agent output tokens (for summary line when done)
+	ContextSize   int             // sub-agent latest context size (InputTokens + CacheRead + CacheCreation + OutputTokens)
+	ContextWindow int             // sub-agent context window size (set once at tool start)
 }
 
 // ThinkingView renders a thinking block within a message.
@@ -848,14 +850,17 @@ func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
 		lines = append(lines, styleDim.Render(fmt.Sprintf("... +%d more", overflow)))
 	}
 
-	// Stats line: tool count + tokens
+	// Stats line: tokens · context · tools (matches main agent order)
 	if tcv.ToolCount > 0 || tcv.TokensIn > 0 || tcv.TokensOut > 0 {
 		var parts []string
-		if tcv.ToolCount > 0 {
-			parts = append(parts, fmt.Sprintf("%d tool%s", tcv.ToolCount, pluralS(tcv.ToolCount)))
-		}
 		if tcv.TokensIn > 0 || tcv.TokensOut > 0 {
 			parts = append(parts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tcv.TokensIn), formatTokenCount(tcv.TokensOut)))
+		}
+		if tcv.ContextSize > 0 && tcv.ContextWindow > 0 {
+			parts = append(parts, formatContextSize(tcv.ContextSize, tcv.ContextWindow))
+		}
+		if tcv.ToolCount > 0 {
+			parts = append(parts, fmt.Sprintf("%d tool%s", tcv.ToolCount, pluralS(tcv.ToolCount)))
 		}
 		if len(parts) > 0 {
 			lines = append(lines, styleDim.Render(strings.Join(parts, " · ")))
