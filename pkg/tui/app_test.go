@@ -4248,12 +4248,12 @@ func TestApp_ToolCount_NotShownWhenNotStreaming(t *testing.T) {
 // TestApp_UsageMsg_NoDoubleCount_MaxValue verifies that usage tokens use max()
 // not +=, preventing double-counting when providers report the same values
 // in both message_start and message_delta (e.g. MiniMax).
-func TestApp_UsageMsg_NoDoubleCount_MaxValue(t *testing.T) {
+func TestApp_UsageMsg_AccumulateAllFields(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
-	// First usage event (simulates message_start): input=6, cache_creation=404
+	// First usage event: input=6, cache_creation=404
 	app.updateRepl(usageMsg{InputTokens: 6, OutputTokens: 0, CacheReadInputTokens: 0, CacheCreationInputTokens: 404})
 
 	if app.status.usage.InputTokens != 6 {
@@ -4263,24 +4263,21 @@ func TestApp_UsageMsg_NoDoubleCount_MaxValue(t *testing.T) {
 		t.Errorf("after first usageMsg, CacheCreationInputTokens = %d, want 404", app.status.usage.CacheCreationInputTokens)
 	}
 
-	// Second usage event (simulates message_delta): same input/cache values + output
-	// MiniMax reports: input=6 (same), cache_creation=404 (same), output=44
+	// Second usage event: input=6, cache_creation=404, output=44
+	// All fields accumulate via +=.
 	app.updateRepl(usageMsg{InputTokens: 6, OutputTokens: 44, CacheReadInputTokens: 0, CacheCreationInputTokens: 404})
 
-	// With +=, InputTokens would be 12 and CacheCreationInputTokens would be 808.
-	// With max(), they should stay at 6 and 404.
-	if app.status.usage.InputTokens != 6 {
-		t.Errorf("after second usageMsg, InputTokens = %d, want 6 (max, not += which gives 12)", app.status.usage.InputTokens)
+	if app.status.usage.InputTokens != 12 {
+		t.Errorf("after second usageMsg, InputTokens = %d, want 12 (6+6)", app.status.usage.InputTokens)
 	}
-	if app.status.usage.CacheCreationInputTokens != 404 {
-		t.Errorf("after second usageMsg, CacheCreationInputTokens = %d, want 404 (max, not += which gives 808)", app.status.usage.CacheCreationInputTokens)
+	if app.status.usage.CacheCreationInputTokens != 808 {
+		t.Errorf("after second usageMsg, CacheCreationInputTokens = %d, want 808 (404+404)", app.status.usage.CacheCreationInputTokens)
 	}
-	// OutputTokens should accumulate (0 then 44 = 44)
 	if app.status.usage.OutputTokens != 44 {
 		t.Errorf("OutputTokens = %d, want 44", app.status.usage.OutputTokens)
 	}
 
-	// Verify displayed values also correct
+	// Verify displayed values
 	totalInput := app.status.usage.TotalInputTokens()
 	if app.displayedInputTokens != totalInput {
 		t.Errorf("displayedInputTokens = %d, want %d", app.displayedInputTokens, totalInput)
@@ -4288,18 +4285,18 @@ func TestApp_UsageMsg_NoDoubleCount_MaxValue(t *testing.T) {
 }
 
 // TestApp_UsageMsg_MaxValue_SecondLarger verifies max() works when delta has larger values.
-func TestApp_UsageMsg_MaxValue_SecondLarger(t *testing.T) {
+func TestApp_UsageMsg_AccumulateSecondLarger(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
 	// First: input=10
 	app.updateRepl(usageMsg{InputTokens: 10, OutputTokens: 0})
-	// Second: input=21 (larger, e.g. cache hit with more context)
+	// Second: input=21, output=35
 	app.updateRepl(usageMsg{InputTokens: 21, OutputTokens: 35})
 
-	if app.status.usage.InputTokens != 21 {
-		t.Errorf("InputTokens = %d, want 21 (max of 10 and 21)", app.status.usage.InputTokens)
+	if app.status.usage.InputTokens != 31 {
+		t.Errorf("InputTokens = %d, want 31 (10+21)", app.status.usage.InputTokens)
 	}
 	if app.status.usage.OutputTokens != 35 {
 		t.Errorf("OutputTokens = %d, want 35", app.status.usage.OutputTokens)
@@ -4314,12 +4311,12 @@ func TestApp_UsageMsg_MaxValue_SecondLarger(t *testing.T) {
 // Reproduces: TUI showed 26.7K (14294+7933+4492=26719) when actual context
 // was 22.2K (14294+7933=22227) because cache_creation=4492 from an earlier
 // API call was retained when the new call reported cache_creation=0.
-func TestApp_UsageMsg_CacheCreationClearedOnNewResponse(t *testing.T) {
+func TestApp_UsageMsg_CacheCreationAccumulates(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery(nil)
 
-	// First API call (message_start): input=100, cache_read=500, cache_creation=200
+	// First API call: input=100, cache_read=500, cache_creation=200
 	app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 0, CacheReadInputTokens: 500, CacheCreationInputTokens: 200})
 
 	totalIn := app.status.usage.TotalInputTokens()
@@ -4327,16 +4324,17 @@ func TestApp_UsageMsg_CacheCreationClearedOnNewResponse(t *testing.T) {
 		t.Fatalf("after first call, TotalInputTokens = %d, want 800 (100+500+200)", totalIn)
 	}
 
-	// Second API call (message_start of next tool turn): cache_creation=0
-	// The > 0 guard on CacheCreationInputTokens incorrectly retains 200.
+	// Second API call: input=150, cache_read=600, cache_creation=0
+	// With +=, all fields accumulate — cache_creation stays at 200.
 	app.updateRepl(usageMsg{InputTokens: 150, OutputTokens: 0, CacheReadInputTokens: 600, CacheCreationInputTokens: 0})
 
+	// InputTokens=100+150=250, CacheRead=500+600=1100, CacheCreation=200+0=200
 	totalIn = app.status.usage.TotalInputTokens()
-	if totalIn != 750 {
-		t.Errorf("after second call, TotalInputTokens = %d, want 750 (150+600+0), got inflated by stale cache_creation", totalIn)
+	if totalIn != 1550 {
+		t.Errorf("after second call, TotalInputTokens = %d, want 1550 (250+1100+200)", totalIn)
 	}
-	if app.displayedInputTokens != 750 {
-		t.Errorf("displayedInputTokens = %d, want 750", app.displayedInputTokens)
+	if app.displayedInputTokens != totalIn {
+		t.Errorf("displayedInputTokens = %d, want %d", app.displayedInputTokens, totalIn)
 	}
 }
 
@@ -4363,6 +4361,31 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 
 	if app.displayedInputTokens != 15000 {
 		t.Errorf("after queryEnd, displayedInputTokens = %d, want 15000 (post-compact engine.ContextTokens)", app.displayedInputTokens)
+	}
+}
+
+
+// TestApp_UsageMsg_SetContextUsesLatestTurn verifies that SetContext receives
+// the latest turn's input+output (context size), not the accumulated billing total.
+func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// Turn 1: input=8400, output=57
+	app.updateRepl(usageMsg{InputTokens: 8400, OutputTokens: 57})
+	wantT1 := 8400 + 57 // = 8457
+	if app.status.contextUsed != wantT1 {
+		t.Errorf("after T1, contextUsed = %d, want %d (latest turn input+output)", app.status.contextUsed, wantT1)
+	}
+
+	// Turn 2: input=65, cache_read=8000, output=33
+	// Accumulated billing = 8400+65 + 8000 = 16465, but context = latest turn = 8098
+	app.updateRepl(usageMsg{InputTokens: 65, CacheReadInputTokens: 8000, OutputTokens: 33})
+	wantT2 := 65 + 8000 + 33 // = 8098
+	if app.status.contextUsed != wantT2 {
+		t.Errorf("after T2, contextUsed = %d, want %d (latest turn), not %d (accumulated)",
+			app.status.contextUsed, wantT2, app.status.usage.TotalInputTokens())
 	}
 }
 

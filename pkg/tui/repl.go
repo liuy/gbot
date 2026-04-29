@@ -454,8 +454,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.displayedInputTokens = totalIn
 		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
-		a.status.SetContext(totalIn, a.engine.ContextWindow())
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
+		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
+		a.status.SetContext(contextSize, a.engine.ContextWindow())
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "context_size", contextSize, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
 		return true, a.readEvents()
 
@@ -539,23 +540,19 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
-		// Align with TS updateUsage: > 0 overwrite for input/cache, += for output.
-		// When InputTokens > 0 we're in message_start of a new API response —
-		// overwrite ALL input fields atomically so stale cache_creation from a
-		// previous response doesn't inflate the total.
-		if m.InputTokens > 0 {
-			a.status.usage.InputTokens = m.InputTokens
-			a.status.usage.CacheReadInputTokens = m.CacheReadInputTokens
-			a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens
-		}
+		// Accumulate billing cost from each turn's message_delta.
+		a.status.usage.InputTokens += m.InputTokens
 		a.status.usage.OutputTokens += m.OutputTokens
+		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
+		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
 		// Input tokens arrive all at once — snap immediately
 		totalIn := a.status.usage.TotalInputTokens()
 		a.displayedInputTokens = totalIn
 		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
-		a.status.SetContext(totalIn, a.engine.ContextWindow())
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
+		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
+		a.status.SetContext(contextSize, a.engine.ContextWindow())
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "context_size", contextSize, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		return true, a.readEvents()
 
 	case thinkingStartMsg:
