@@ -4306,6 +4306,66 @@ func TestApp_UsageMsg_MaxValue_SecondLarger(t *testing.T) {
 	}
 }
 
+// TestApp_UsageMsg_CacheCreationClearedOnNewResponse verifies that
+// CacheCreationInputTokens from a previous API call is cleared when the
+// new call has cache_creation=0. Without this fix, the stale value inflates
+// TotalInputTokens and the status bar shows a wrong context size.
+//
+// Reproduces: TUI showed 26.7K (14294+7933+4492=26719) when actual context
+// was 22.2K (14294+7933=22227) because cache_creation=4492 from an earlier
+// API call was retained when the new call reported cache_creation=0.
+func TestApp_UsageMsg_CacheCreationClearedOnNewResponse(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+
+	// First API call (message_start): input=100, cache_read=500, cache_creation=200
+	app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 0, CacheReadInputTokens: 500, CacheCreationInputTokens: 200})
+
+	totalIn := app.status.usage.TotalInputTokens()
+	if totalIn != 800 {
+		t.Fatalf("after first call, TotalInputTokens = %d, want 800 (100+500+200)", totalIn)
+	}
+
+	// Second API call (message_start of next tool turn): cache_creation=0
+	// The > 0 guard on CacheCreationInputTokens incorrectly retains 200.
+	app.updateRepl(usageMsg{InputTokens: 150, OutputTokens: 0, CacheReadInputTokens: 600, CacheCreationInputTokens: 0})
+
+	totalIn = app.status.usage.TotalInputTokens()
+	if totalIn != 750 {
+		t.Errorf("after second call, TotalInputTokens = %d, want 750 (150+600+0), got inflated by stale cache_creation", totalIn)
+	}
+	if app.displayedInputTokens != 750 {
+		t.Errorf("displayedInputTokens = %d, want 750", app.displayedInputTokens)
+	}
+}
+
+// TestApp_QueryEnd_UpdatesContextFromEngine verifies that at query end,
+// the status bar reflects engine.ContextTokens (post-compact), not the
+// stale pre-compact value from the last usageMsg.
+func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+
+	// Simulate API response with 26000 tokens
+	app.updateRepl(usageMsg{InputTokens: 26000, OutputTokens: 100})
+	if app.displayedInputTokens != 26000 {
+		t.Fatalf("before compact, displayedInputTokens = %d, want 26000", app.displayedInputTokens)
+	}
+
+	// Simulate compact reducing context to 15000
+	app.engine.ContextTokens = 15000
+
+	// Query ends — status bar should now show engine's post-compact value
+	app.updateRepl(queryEndMsg{})
+
+	if app.displayedInputTokens != 15000 {
+		t.Errorf("after queryEnd, displayedInputTokens = %d, want 15000 (post-compact engine.ContextTokens)", app.displayedInputTokens)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SetStore
 // ---------------------------------------------------------------------------

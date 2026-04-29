@@ -81,8 +81,8 @@ var requiredScenarios = []RequiredScenario{
 	{
 		Feature:     "auto-compact",
 		Package:     "pkg/engine",
-		NamePattern: `Proactive.*RealCompactor|Proactive.*E2E`,
-		Description: "Proactive compact with real AutoCompactor + Store (not mock)",
+		NamePattern: `PostTurn.*E2E`,
+		Description: "Post-turn compact with real AutoCompactor + Store (not mock)",
 	},
 	{
 		Feature:     "auto-compact",

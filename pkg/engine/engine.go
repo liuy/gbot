@@ -354,7 +354,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	e.setMessages(mcResult.Messages)
 
 	reactiveCompactDone := false
-	proactiveCompactDone := false
 
 	for e.turnCount < e.maxTurns {
 		select {
@@ -376,87 +375,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			}
 		}
 
-		// Proactive auto-compact: check before API call.
-		// TS align: query.ts:453-468 — deps.autocompact() before API.
-		if e.shouldAutoCompact() {
-			compactID := "compact-auto-" + uuid.New().String()[:8]
-			e.emitEvent(eventCh, types.QueryEvent{
-				Type: types.EventToolStart,
-				ToolUse: &types.ToolUseEvent{
-					ID:      compactID,
-					Name:    "Compact",
-					Summary: "Compacting conversation...",
-				},
-			})
-			e.emitEvent(eventCh, types.QueryEvent{
-				Type:    types.EventToolRun,
-				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
-			})
-			e.fireCompactHooks(ctx, "auto", "pre")
-			// Capture real API tokens before compact (includes system prompt + tools).
-			e.mu.RLock()
-			realInputTokens := e.ContextTokens
-			e.mu.RUnlock()
-			result, err := e.compactor.Compact(ctx, e.Messages())
-			if err != nil {
-				e.emitEvent(eventCh, types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     compactID,
-						DisplayOutput: fmt.Sprintf("Compact failed: %v", err),
-						IsError:       true,
-					},
-				})
-				e.mu.Lock()
-				e.consecutiveCompactFailures++
-				failures := e.consecutiveCompactFailures
-				e.mu.Unlock()
-				e.logger.Warn("proactive auto-compact failed",
-					"error", err,
-					"consecutiveFailures", failures)
-			} else {
-				e.mu.Lock()
-				e.consecutiveCompactFailures = 0
-				e.mu.Unlock()
-				e.setMessages(result.Messages)
-				e.mu.Lock()
-				messageDelta := result.BeforeTokens - result.AfterTokens
-				e.ContextTokens = e.ContextTokens - messageDelta
-				e.mu.Unlock()
-				if e.ContextTokens < 0 {
-					e.logger.Error("proactive compact: contextTokens went negative",
-						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
-				}
-				// Use real API tokens for before, estimate after from message delta.
-				// System prompt + tools don't change across compact,
-				// so subtracting only the message delta is correct.
-				messageDelta = result.BeforeTokens - result.AfterTokens
-				result.BeforeTokens = realInputTokens
-				result.AfterTokens = realInputTokens - messageDelta
-				if result.AfterTokens < 0 {
-					e.logger.Error("proactive compact: AfterTokens went negative",
-						"realInputTokens", realInputTokens, "messageDelta", messageDelta)
-				}
-				compactOutput := formatCompactOutput(result)
-				e.emitEvent(eventCh, types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     compactID,
-						DisplayOutput: compactOutput,
-					},
-				})
-				e.logger.Info("proactive auto-compact succeeded",
-					"messages", len(result.Messages))
-			}
-			proactiveCompactDone = true
-		}
-
 		// Blocking limit: refuse API call if context exceeds safe threshold.
 		// TS align: query.ts blocking limit check — effectiveWindow - 3000.
 		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
-		// Also skip if proactive compact just succeeded — it already reduced context;
+
 		// if still too large, the API will overflow and reactive compact handles it.
-		if !proactiveCompactDone && !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
+		if !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
 			reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
 			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
 			blockingLimit := effectiveWindow - manualCompactBufferTokens
@@ -584,6 +508,83 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// (e.g. Agent tool) can access the full parent conversation.
 		if streamingExecutor != nil {
 			streamingExecutor.SetMessages(e.messages)
+
+		}
+
+		// Post-turn compact: check after API response using accurate token data.
+		// ContextTokens was just updated from the API response, giving us the
+		// exact context size. If it exceeds the threshold, compact before continuing.
+		if e.shouldAutoCompact() {
+			compactID := "compact-auto-" + uuid.New().String()[:8]
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type: types.EventToolStart,
+				ToolUse: &types.ToolUseEvent{
+					ID:      compactID,
+					Name:    "Compact",
+					Summary: "Compacting conversation...",
+				},
+			})
+			e.emitEvent(eventCh, types.QueryEvent{
+				Type:    types.EventToolRun,
+				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+			})
+			e.fireCompactHooks(ctx, "auto", "pre")
+			e.mu.RLock()
+			realInputTokens := e.ContextTokens
+			e.mu.RUnlock()
+			result, err := e.compactor.Compact(ctx, e.Messages())
+			if err != nil {
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: fmt.Sprintf("Compact failed: %v", err),
+						IsError:       true,
+					},
+				})
+				e.mu.Lock()
+				e.consecutiveCompactFailures++
+				failures := e.consecutiveCompactFailures
+				e.mu.Unlock()
+				e.logger.Warn("post-turn auto-compact failed",
+					"error", err,
+					"consecutiveFailures", failures)
+			} else {
+				e.mu.Lock()
+				e.consecutiveCompactFailures = 0
+				e.mu.Unlock()
+				e.setMessages(result.Messages)
+				e.mu.Lock()
+				messageDelta := result.BeforeTokens - result.AfterTokens
+				e.ContextTokens = e.ContextTokens - messageDelta
+				e.mu.Unlock()
+				if e.ContextTokens < 0 {
+					e.logger.Error("post-turn compact: contextTokens went negative",
+						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
+				}
+				messageDelta = result.BeforeTokens - result.AfterTokens
+				result.BeforeTokens = realInputTokens
+				result.AfterTokens = realInputTokens - messageDelta
+				if result.AfterTokens < 0 {
+					e.logger.Error("post-turn compact: AfterTokens went negative",
+						"realInputTokens", realInputTokens, "messageDelta", messageDelta)
+				}
+				compactOutput := formatCompactOutput(result)
+				e.emitEvent(eventCh, types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: compactOutput,
+					},
+				})
+				e.logger.Info("post-turn auto-compact succeeded",
+					"messages", len(result.Messages))
+				e.fireCompactHooks(ctx, "auto", "post")
+				// Update executor messages after compact.
+				if streamingExecutor != nil {
+					streamingExecutor.SetMessages(e.messages)
+				}
+			}
 		}
 
 		// Stage 20: No-tool-use terminal path

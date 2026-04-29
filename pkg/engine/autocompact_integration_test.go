@@ -82,12 +82,13 @@ func (p *integrationProvider) addStream(events []llm.StreamEvent, err error) {
 // Integration Test 1: Proactive E2E with real AutoCompactor + Store
 // ---------------------------------------------------------------------------
 
-// TestAutoCompact_Proactive_E2E verifies proactive compact triggers with a
-// real AutoCompactor (real Store, real LLM summary mock). Validates that:
-//   - Compact is triggered when tokens exceed threshold
+// TestAutoCompact_PostTurn_E2E verifies post-turn compact triggers after
+// API response with a real AutoCompactor (real Store, real LLM summary mock).
+// Validates that:
+//   - Compact is triggered when tokens exceed threshold after API response
 //   - Result contains boundary marker from Store
 //   - Recent messages are preserved after compact
-func TestAutoCompact_Proactive_E2E(t *testing.T) {
+func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()

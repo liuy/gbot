@@ -461,6 +461,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case queryEndMsg:
 		a.repl.FinishStream(m.Err)
+
+		// Sync status bar with engine's final ContextTokens (post-compact).
+		// During streaming the bar showed the API-reported value; compact may
+		// have reduced the context after that.
+		if a.engine.ContextTokens > 0 {
+			a.displayedInputTokens = a.engine.ContextTokens
+			a.inputTokenTarget = a.engine.ContextTokens
+			a.status.SetContext(a.engine.ContextTokens, a.engine.ContextWindow())
+		}
+
 		if !a.progressStart.IsZero() {
 			elapsedStr := formatElapsed(a.progressStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.usage.TotalInputTokens()), formatTokenCount(a.status.usage.OutputTokens))
@@ -516,16 +526,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case usageMsg:
 		// Align with TS updateUsage: > 0 overwrite for input/cache, += for output.
+		// When InputTokens > 0 we're in message_start of a new API response —
+		// overwrite ALL input fields atomically so stale cache_creation from a
+		// previous response doesn't inflate the total.
 		if m.InputTokens > 0 {
 			a.status.usage.InputTokens = m.InputTokens
-		}
-		a.status.usage.OutputTokens += m.OutputTokens
-		if m.CacheReadInputTokens > 0 {
 			a.status.usage.CacheReadInputTokens = m.CacheReadInputTokens
-		}
-		if m.CacheCreationInputTokens > 0 {
 			a.status.usage.CacheCreationInputTokens = m.CacheCreationInputTokens
 		}
+		a.status.usage.OutputTokens += m.OutputTokens
 		// Input tokens arrive all at once — snap immediately
 		totalIn := a.status.usage.TotalInputTokens()
 		a.displayedInputTokens = totalIn

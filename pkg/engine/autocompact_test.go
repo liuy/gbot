@@ -681,7 +681,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 // Engine integration with AutoCompactor
 // ---------------------------------------------------------------------------
 
-func TestCompactor_EngineIntegration_ProactiveCompact(t *testing.T) {
+func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -712,6 +712,10 @@ func TestCompactor_EngineIntegration_ProactiveCompact(t *testing.T) {
 
 	largeMsgs := makeLargeMessages(20, 5000)
 	eng.SetMessages(largeMsgs)
+	// Set ContextTokens to a small value so blocking limit doesn't refuse
+	// the API call. In production, post-turn compact ensures context stays
+	// below threshold; this simulates that state.
+	eng.ContextTokens = 1000
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
