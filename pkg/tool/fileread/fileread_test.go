@@ -1520,3 +1520,83 @@ func TestExecute_PDFPagesMultipleDashes(t *testing.T) {
 		t.Errorf("Error = %q, want 'Invalid pages parameter'", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// File size and token limits — TS aligned: FileReadTool/limits.ts
+// ---------------------------------------------------------------------------
+
+// TestExecute_MaxSizeBytes_Exceeded verifies that reading a file larger than
+// MaxFileReadBytes (256KB) without explicit limit returns an error telling
+// the user to use offset/limit. TS align: readFileInRange FileTooLargeError.
+func TestExecute_MaxSizeBytes_Exceeded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "big.txt")
+	// 300KB file — exceeds 256KB limit
+	bigContent := strings.Repeat("x", 300*1024)
+	if err := os.WriteFile(fp, []byte(bigContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for file exceeding maxSizeBytes")
+	}
+	if !strings.Contains(err.Error(), "offset") || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("Error = %q, want suggestion to use offset/limit", err.Error())
+	}
+}
+
+// TestExecute_MaxSizeBytes_WithExplicitLimit_Succeeds verifies that the file
+// size check is skipped when the user provides an explicit limit parameter,
+// matching TS behavior: readFileInRange only checks maxBytes when limit is
+// undefined.
+func TestExecute_MaxSizeBytes_WithExplicitLimit_Succeeds(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "big.txt")
+	// 300KB file — exceeds 256KB, but explicit limit should bypass the check
+	bigContent := strings.Repeat("line\n", 60*1024) // ~300KB
+	if err := os.WriteFile(fp, []byte(bigContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `", "offset": 1, "limit": 10}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("with explicit limit, should succeed, got: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if output.NumLines != 10 {
+		t.Errorf("NumLines = %d, want 10", output.NumLines)
+	}
+}
+
+// TestExecute_MaxTokens_Exceeded verifies that reading a file whose token
+// count exceeds MaxFileReadTokens (25000) returns an error. Even if the file
+// is under 256KB, high-density content can exceed the token limit.
+// TS align: validateContentTokens MaxFileReadTokenExceededError.
+func TestExecute_MaxTokens_Exceeded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "dense.txt")
+	// ~120KB of text, under 256KB byte limit, but ~30K tokens > 25K limit
+	// Each char ≈ 0.25 token, so 120K chars ≈ 30K tokens
+	denseContent := strings.Repeat("a", 120*1024)
+	if err := os.WriteFile(fp, []byte(denseContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("want error for file exceeding maxTokens")
+	}
+	if !strings.Contains(err.Error(), "offset") || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("Error = %q, want suggestion to use offset/limit", err.Error())
+	}
+}

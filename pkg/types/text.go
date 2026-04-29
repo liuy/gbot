@@ -3,6 +3,25 @@ package types
 
 import "fmt"
 
+// EstimateTokens returns a rough token count for text using CJK-aware
+// heuristics: CJK characters ≈ 1.5 tokens/char, Latin ≈ 0.25 tokens/char.
+// This is fast and good enough for size-limit checks (not billing).
+func EstimateTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	cjk := 0
+	nonCJK := 0
+	for _, r := range text {
+		if IsCJK(r) {
+			cjk++
+		} else {
+			nonCJK++
+		}
+	}
+	return cjk*3/2 + nonCJK/4
+}
+
 // IsCJK reports whether r is a CJK character (Chinese, Japanese, Korean).
 // Used for token estimation where CJK text requires ~1.5 tokens per character
 // vs ~0.25 tokens per character for Latin text.

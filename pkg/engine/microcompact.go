@@ -162,21 +162,7 @@ func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 // Based on infinigence/tokenestimate linear regression model and Anthropic's
 // guidance that CJK is 2-3x more expensive per character.
 func EstimateTokens(text string) int {
-	if text == "" {
-		return 0
-	}
-	cjk := 0
-	nonCJK := 0
-	for _, r := range text {
-		if types.IsCJK(r) {
-			cjk++
-		} else {
-			nonCJK++
-		}
-	}
-	// CJK: 1.5 tokens/char (3/2)
-	// Non-CJK: 0.25 tokens/char (1/4, same as previous len/4 for ASCII)
-	return cjk*3/2 + nonCJK/4
+	return types.EstimateTokens(text)
 }
 
 // ---------------------------------------------------------------------------
