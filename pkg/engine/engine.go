@@ -426,35 +426,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 						ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 					})
 					e.fireCompactHooks(ctx, "auto", "pre")
-					e.mu.RLock()
-					reactiveRealTokens := e.ContextTokens
-					e.mu.RUnlock()
-					result, compactErr := e.compactor.Compact(ctx, e.Messages())
+					result, compactErr := e.runCompact(ctx, "reactive compact")
 					if compactErr == nil {
-						e.setMessages(result.Messages)
 						e.fireCompactHooks(ctx, "auto", "post")
-						e.mu.Lock()
-						messageDelta := result.BeforeTokens - result.AfterTokens
-						e.ContextTokens = e.ContextTokens - messageDelta
-						e.mu.Unlock()
-						if e.ContextTokens < 0 {
-							e.logger.Error("reactive compact: contextTokens went negative",
-								"before", e.ContextTokens+messageDelta, "delta", messageDelta)
-						}
-						// Use real API tokens for before, estimate after from message delta.
-						messageDelta = result.BeforeTokens - result.AfterTokens
-						result.BeforeTokens = reactiveRealTokens
-						result.AfterTokens = reactiveRealTokens - messageDelta
-						if result.AfterTokens < 0 {
-							e.logger.Error("reactive compact: AfterTokens went negative",
-								"reactiveRealTokens", reactiveRealTokens, "messageDelta", messageDelta)
-						}
-						compactOutput := formatCompactOutput(result)
 						e.emitEvent(eventCh, types.QueryEvent{
 							Type: types.EventToolEnd,
 							ToolResult: &types.ToolResultEvent{
 								ToolUseID:     compactID,
-								DisplayOutput: compactOutput,
+								DisplayOutput: formatCompactOutput(result),
 							},
 						})
 						reactiveCompactDone = true
@@ -531,16 +510,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 			})
 			e.fireCompactHooks(ctx, "auto", "pre")
-			e.mu.RLock()
-			realInputTokens := e.ContextTokens
-			e.mu.RUnlock()
-			result, err := e.compactor.Compact(ctx, e.Messages())
-			if err != nil {
+			result, compactErr := e.runCompact(ctx, "post-turn compact")
+			if compactErr != nil {
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
-						DisplayOutput: fmt.Sprintf("Compact failed: %v", err),
+						DisplayOutput: fmt.Sprintf("Compact failed: %v", compactErr),
 						IsError:       true,
 					},
 				})
@@ -549,34 +525,17 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				failures := e.consecutiveCompactFailures
 				e.mu.Unlock()
 				e.logger.Warn("post-turn auto-compact failed",
-					"error", err,
+					"error", compactErr,
 					"consecutiveFailures", failures)
 			} else {
 				e.mu.Lock()
 				e.consecutiveCompactFailures = 0
 				e.mu.Unlock()
-				e.setMessages(result.Messages)
-				e.mu.Lock()
-				messageDelta := result.BeforeTokens - result.AfterTokens
-				e.ContextTokens = e.ContextTokens - messageDelta
-				e.mu.Unlock()
-				if e.ContextTokens < 0 {
-					e.logger.Error("post-turn compact: contextTokens went negative",
-						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
-				}
-				messageDelta = result.BeforeTokens - result.AfterTokens
-				result.BeforeTokens = realInputTokens
-				result.AfterTokens = realInputTokens - messageDelta
-				if result.AfterTokens < 0 {
-					e.logger.Error("post-turn compact: AfterTokens went negative",
-						"realInputTokens", realInputTokens, "messageDelta", messageDelta)
-				}
-				compactOutput := formatCompactOutput(result)
 				e.emitEvent(eventCh, types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
-						DisplayOutput: compactOutput,
+						DisplayOutput: formatCompactOutput(result),
 					},
 				})
 				e.logger.Info("post-turn auto-compact succeeded",
@@ -1187,6 +1146,48 @@ func (e *Engine) shouldAutoCompact() bool {
 	effectiveWindow := cfg.ContextWindow - reservedTokens
 	threshold := effectiveWindow - autoCompactBuffer(effectiveWindow)
 	return tokens > threshold
+}
+
+// runCompact runs the compactor and applies the result to engine state.
+// It atomically updates messages and ContextTokens, eliminates the redundant
+// messageDelta calculation, and rewrites BeforeTokens/AfterTokens to use real
+// API token values for display. Returns the rewritten result for event emission.
+// The caller handles pre-conditions, event emissions, hooks, and post-compact bookkeeping.
+//
+// Goroutine safety: There is a theoretical TOCTOU window between the RLock
+// (reading realTokens) and the later Lock (updating messages + ContextTokens).
+// This is safe in practice because both reactive and proactive compact are
+// serialized within the query loop — only one compact can run at a time.
+func (e *Engine) runCompact(ctx context.Context, logLabel string) (*CompactResult, error) {
+	e.mu.RLock()
+	realTokens := e.ContextTokens
+	e.mu.RUnlock()
+
+	result, err := e.compactor.Compact(ctx, e.Messages())
+	if err != nil {
+		return nil, err
+	}
+
+	// Atomically update messages and ContextTokens to prevent
+	// concurrent readers from seeing new messages with stale token counts.
+	messageDelta := result.BeforeTokens - result.AfterTokens
+	e.mu.Lock()
+	e.messages = result.Messages
+	e.ContextTokens = e.ContextTokens - messageDelta
+	if e.ContextTokens < 0 {
+		e.logger.Error(logLabel+": contextTokens went negative",
+			"before", e.ContextTokens+messageDelta, "delta", messageDelta)
+	}
+	e.mu.Unlock()
+
+	// Replace heuristic BeforeTokens/AfterTokens with real API values.
+	result.BeforeTokens = realTokens
+	result.AfterTokens = realTokens - messageDelta
+	if result.AfterTokens < 0 {
+		e.logger.Error(logLabel+": AfterTokens went negative",
+			"realTokens", realTokens, "messageDelta", messageDelta)
+	}
+	return result, nil
 }
 
 // marshalMessages converts internal messages to API format.
