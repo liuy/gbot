@@ -454,9 +454,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.displayedInputTokens = totalIn
 		a.inputTokenTarget = totalIn
 		a.outputTokenTarget = a.status.usage.OutputTokens
-		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
-		a.status.SetContext(contextSize, a.engine.ContextWindow())
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "context_size", contextSize, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
+		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
 		a.repl.UpdateAgentUsage(m.ParentToolUseID, m.InputTokens, m.OutputTokens)
 		return true, a.readEvents()
 

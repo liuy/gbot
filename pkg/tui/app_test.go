@@ -4389,6 +4389,34 @@ func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
 	}
 }
 
+
+// TestApp_AgentUsageMsg_DoesNotUpdateSetContext verifies that agentUsageMsg
+// does NOT change the context bar — only usageMsg (main model) controls it.
+func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	// Main model sets context
+	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
+	mainContext := app.status.contextUsed
+	if mainContext != 600 {
+		t.Fatalf("after usageMsg, contextUsed = %d, want 600", mainContext)
+	}
+
+	// Sub-agent usage should NOT change context
+	app.updateRepl(agentUsageMsg{
+		ParentToolUseID: "call_abc",
+		InputTokens:     5000,
+		OutputTokens:    200,
+	})
+	if app.status.contextUsed != mainContext {
+		t.Errorf("after agentUsageMsg, contextUsed = %d, want %d (unchanged)",
+			app.status.contextUsed, mainContext)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SetStore
 // ---------------------------------------------------------------------------
