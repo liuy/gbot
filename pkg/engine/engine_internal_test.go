@@ -463,6 +463,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		Tools:       []tool.Tool{mt},
 		Model:       "test",
 		TokenBudget: 999999,
+		MaxTurns:    50,
 	})
 
 	eventCh, resultCh := eng.Query(context.Background(), "test", nil)
@@ -1282,10 +1283,10 @@ func TestNewSubEngineMaxTurns(t *testing.T) {
 	mp := &testProvider{}
 	parent := New(&Params{Provider: mp, Model: "test"})
 
-	// Case 1: MaxTurns=0 → default 50
+	// Case 1: MaxTurns=0 → no limit
 	sub1 := parent.NewSubEngine(SubEngineOptions{MaxTurns: 0})
-	if sub1.maxTurns != 50 {
-		t.Errorf("sub1.maxTurns = %d, want 50 (default)", sub1.maxTurns)
+	if sub1.maxTurns != 0 {
+		t.Errorf("sub1.maxTurns = %d, want 0 (no limit)", sub1.maxTurns)
 	}
 
 	// Case 2: MaxTurns=5 → 5
@@ -1424,11 +1425,11 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 
 func TestSubMaxTurns(t *testing.T) {
 	t.Parallel()
-	if subMaxTurns(0) != 50 {
-		t.Errorf("subMaxTurns(0) = %d, want 50", subMaxTurns(0))
+	if subMaxTurns(0) != 0 {
+		t.Errorf("subMaxTurns(0) = %d, want 0 (no limit)", subMaxTurns(0))
 	}
-	if subMaxTurns(-1) != 50 {
-		t.Errorf("subMaxTurns(-1) = %d, want 50", subMaxTurns(-1))
+	if subMaxTurns(-1) != 0 {
+		t.Errorf("subMaxTurns(-1) = %d, want 0 (no limit)", subMaxTurns(-1))
 	}
 	if subMaxTurns(10) != 10 {
 		t.Errorf("subMaxTurns(10) = %d, want 10", subMaxTurns(10))

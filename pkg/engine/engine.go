@@ -90,7 +90,7 @@ type Engine struct {
 	agentType string
 
 	// maxTurns is the maximum number of agentic turns before stopping.
-	// Default: 50. Sub-engines may override via SubEngineOptions.
+	// 0 means no limit — aligns with TS built-in agents (undefined maxTurns).
 	maxTurns int
 
 	// Auto-compact fields
@@ -136,6 +136,7 @@ type Params struct {
 	ToolsProvider     func() map[string]tool.Tool // dynamic tool resolution — called each turn
 	Model             string
 	MaxTokens         int
+	MaxTurns          int // 0 = no limit
 	TokenBudget       int
 	Logger            *slog.Logger
 	Dispatcher        types.EventDispatcher
@@ -214,7 +215,7 @@ func New(p *Params) *Engine {
 		tokenBudget:             p.TokenBudget,
 		dispatcher:              p.Dispatcher,
 		notifications:           &notificationQueue{},
-		maxTurns:                50,
+		maxTurns:                p.MaxTurns,
 		compactor:               p.Compactor,
 		autoCompactConfig:       p.AutoCompact,
 		mcpRegistry:             p.MCPRegistry,
@@ -355,7 +356,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 
 	reactiveCompactDone := false
 
-	for e.turnCount < e.maxTurns {
+	for e.maxTurns == 0 || e.turnCount < e.maxTurns {
 		select {
 		case <-ctx.Done():
 			return QueryResult{
@@ -1502,7 +1503,7 @@ func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
 type SubEngineOptions struct {
 	SystemPrompt    string               // sub-agent's system prompt
 	Tools           map[string]tool.Tool // filtered tool set
-	MaxTurns        int                  // 0 = default 50
+	MaxTurns        int                  // 0 = no limit
 	Model           string               // "" = inherit from parent
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
 	AgentType       string               // "General", "Explore", "Plan"
@@ -1609,10 +1610,10 @@ func (e *Engine) SystemPrompt() json.RawMessage { return e.systemPrompt }
 func (e *Engine) SetSystemPrompt(sp json.RawMessage) { e.systemPrompt = sp }
 
 // subMaxTurns returns the max turns for a sub-engine.
-// 0 or negative means use parent default (50).
+// 0 or negative means no limit (same as TS built-in agents).
 func subMaxTurns(n int) int {
 	if n <= 0 {
-		return 50
+		return 0
 	}
 	return n
 }

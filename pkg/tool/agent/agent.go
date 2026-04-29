@@ -41,7 +41,7 @@ type AgentOpts struct {
 	Prompt             string               // actual user prompt for the sub-agent
 	SystemPrompt       json.RawMessage      // sub-agent's system prompt
 	Tools              map[string]tool.Tool // filtered tool set
-	MaxTurns           int                  // 0 = default 50
+	MaxTurns           int                  // 0 = no limit
 	Model              string               // "" = inherit from parent
 	AgentType          string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID    string               // parent Agent tool call ID for TUI progress display
