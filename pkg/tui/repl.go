@@ -720,15 +720,15 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.cacheReadTokens = 0
 	a.cacheCreationTokens = 0
 	// Estimate input tokens from context + user message text
-	totalChars := len(a.systemPrompt) + len(text)
+	estimate := types.EstimateTokens(string(a.systemPrompt)) + types.EstimateTokens(text)
 	for _, msg := range a.repl.Messages() {
 		for _, blk := range msg.Blocks {
 			if blk.Type == BlockText {
-				totalChars += len(blk.Text)
+				estimate += types.EstimateTokens(blk.Text)
 			}
 		}
 	}
-	a.inputTokenTarget = totalChars / 4
+	a.inputTokenTarget = estimate
 
 	return tea.Batch(
 		commitCmd,

@@ -2236,40 +2236,17 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	}
 	<-resultCh
 
-	// Should have exactly 2 usage events: message_start (input) + message_delta (output)
-	if len(usageEvents) != 2 {
-		t.Fatalf("expected 2 usage events, got %d: %+v", len(usageEvents), usageEvents)
+	// Should have exactly 1 usage event from message_delta (message_start no longer emits).
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 usage event, got %d: %+v", len(usageEvents), usageEvents)
 	}
 
-	// First event (message_start): input tokens set, output=0
+	// Only event (message_delta): carries complete usage with input + output.
 	if usageEvents[0].InputTokens != 2500 {
-		t.Errorf("first usage InputTokens = %d, want 2500", usageEvents[0].InputTokens)
+		t.Errorf("usage InputTokens = %d, want 2500", usageEvents[0].InputTokens)
 	}
-	if usageEvents[0].OutputTokens != 0 {
-		t.Errorf("first usage OutputTokens = %d, want 0 (not yet known)", usageEvents[0].OutputTokens)
-	}
-
-	// Second event (message_delta): output tokens set, input carries max() value (2500)
-	if usageEvents[1].OutputTokens != 100 {
-		t.Errorf("second usage OutputTokens = %d, want 100", usageEvents[1].OutputTokens)
-	}
-	if usageEvents[1].InputTokens != 2500 {
-		t.Errorf("second usage InputTokens = %d, want 2500 (max of start+delta)", usageEvents[1].InputTokens)
-	}
-
-	// Verify TUI-style accumulation using max() for input, += for output:
-	totalIn, totalOut := 0, 0
-	for _, u := range usageEvents {
-		if u.InputTokens > totalIn {
-			totalIn = u.InputTokens
-		}
-		totalOut += u.OutputTokens
-	}
-	if totalIn != 2500 {
-		t.Errorf("accumulated input tokens = %d, want 2500", totalIn)
-	}
-	if totalOut != 100 {
-		t.Errorf("accumulated output tokens = %d, want 100", totalOut)
+	if usageEvents[0].OutputTokens != 100 {
+		t.Errorf("usage OutputTokens = %d, want 100", usageEvents[0].OutputTokens)
 	}
 }
 
@@ -2333,30 +2310,13 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 	}
 	result := <-resultCh
 
-	if len(usageEvents) != 2 {
-		t.Fatalf("expected 2 usage events, got %d: %+v", len(usageEvents), usageEvents)
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 usage event (message_delta only), got %d: %+v", len(usageEvents), usageEvents)
 	}
 
-	// First event (message_start): cache tokens are 0
-	if usageEvents[0].CacheReadInputTokens != 0 {
-		t.Errorf("first usage CacheRead = %d, want 0", usageEvents[0].CacheReadInputTokens)
-	}
-
-	// Second event (message_delta): MUST carry the cache_read from event.Usage,
-	// not from the stale local `usage` variable (which was 0 from message_start).
-	if usageEvents[1].CacheReadInputTokens != 5000 {
-		t.Errorf("second usage CacheRead = %d, want 5000 (from message_delta)", usageEvents[1].CacheReadInputTokens)
-	}
-
-	// Verify TUI-style accumulation
-	totalCacheRead := 0
-	for _, u := range usageEvents {
-		if u.CacheReadInputTokens > 0 {
-			totalCacheRead = u.CacheReadInputTokens
-		}
-	}
-	if totalCacheRead != 5000 {
-		t.Errorf("accumulated cache_read = %d, want 5000", totalCacheRead)
+	// Only event (message_delta): carries cache_read from event.Usage.
+	if usageEvents[0].CacheReadInputTokens != 5000 {
+		t.Errorf("usage CacheRead = %d, want 5000 (from message_delta)", usageEvents[0].CacheReadInputTokens)
 	}
 
 	// Verify returned message has correct accumulated cache tokens
@@ -2424,24 +2384,13 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 	}
 	result := <-resultCh
 
-	if len(usageEvents) != 2 {
-		t.Fatalf("expected 2 usage events, got %d", len(usageEvents))
+	if len(usageEvents) != 1 {
+		t.Fatalf("expected 1 usage event (message_delta only), got %d", len(usageEvents))
 	}
 
-	// First event (message_start): cache_creation=5409
+	// Only event (message_delta): carries cache_creation from message_delta.
 	if usageEvents[0].CacheCreationInputTokens != 5409 {
-		t.Errorf("first usage CacheCreation = %d, want 5409", usageEvents[0].CacheCreationInputTokens)
-	}
-
-	// Accumulated total using TUI-style > 0 overwrite (not +=)
-	totalCacheCreation := 0
-	for _, u := range usageEvents {
-		if u.CacheCreationInputTokens > 0 {
-			totalCacheCreation = u.CacheCreationInputTokens
-		}
-	}
-	if totalCacheCreation != 5409 {
-		t.Errorf("accumulated cache_creation = %d, want 5409", totalCacheCreation)
+		t.Errorf("usage CacheCreation = %d, want 5409", usageEvents[0].CacheCreationInputTokens)
 	}
 
 	// Returned message

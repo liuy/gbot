@@ -837,15 +837,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 			if event.Message != nil {
 				model = event.Message.Model
 				usage = event.Message.Usage
-				e.emitEvent(eventCh, types.QueryEvent{
-					Type: types.EventUsage,
-					Usage: &types.UsageEvent{
-						InputTokens:              usage.InputTokens,
-						OutputTokens:             usage.OutputTokens,
-						CacheReadInputTokens:     usage.CacheReadInputTokens,
-						CacheCreationInputTokens: usage.CacheCreationInputTokens,
-					},
-				})
+				// NOTE: do NOT emit EventUsage from message_start.
+				// MiniMax message_start usage is unreliable (often all-zero).
+				// Only emit from message_delta which is consistently accurate.
 			}
 
 		case "content_block_start":

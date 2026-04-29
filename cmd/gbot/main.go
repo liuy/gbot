@@ -354,11 +354,11 @@ func main() {
 		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
 
 		// 8.5 Estimate initial context usage from system prompt + tools.
-		// Rough heuristic: ~4 chars per token. Corrected after first API response.
-		initialTokens := len(systemPrompt) / 4
+		// CJK-aware estimation. Corrected after first API response.
+		initialTokens := types.EstimateTokens(string(systemPrompt))
 		for _, t := range reg.EnabledTools() {
 			if b, err := json.Marshal(t.InputSchema()); err == nil {
-				initialTokens += len(b) / 4
+				initialTokens += types.EstimateTokens(string(b))
 			}
 		}
 		app.SetInitialContext(initialTokens, contextWindow)
