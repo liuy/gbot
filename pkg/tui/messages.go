@@ -67,7 +67,8 @@ type toolEndMsg struct {
 // queryEndMsg signals that the engine has finished processing.
 // Source: useStreaming hook onComplete callback.
 type queryEndMsg struct {
-	Err error // nil on success
+	Err      error                 // nil on success
+	Terminal types.TerminalReason  // why the query ended
 }
 
 // usageMsg carries token usage from the LLM provider during streaming.

@@ -385,8 +385,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
 			blockingLimit := effectiveWindow - manualCompactBufferTokens
 			if blockingLimit > 0 && e.currentInputTokens() >= blockingLimit {
+				tokens := e.currentInputTokens()
 				e.logger.Warn("blocking limit exceeded, refusing API call",
-					"tokens", e.currentInputTokens(),
+					"tokens", tokens,
 					"limit", blockingLimit)
 				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
 				return QueryResult{
@@ -394,6 +395,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					TurnCount:  e.turnCount,
 					TotalUsage: totalUsage,
 					Terminal:   types.TerminalPromptTooLong,
+					Error:      fmt.Errorf("Prompt is too long: %s context tokens exceeds %s limit", types.FormatTokenCount(tokens), types.FormatTokenCount(blockingLimit)),
 				}
 			}
 		}

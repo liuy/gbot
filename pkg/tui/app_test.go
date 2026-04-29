@@ -5156,3 +5156,36 @@ func TestApp_Enter_NormalText_Submits(t *testing.T) {
 		t.Error("Enter on normal text should submit")
 	}
 }
+
+func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+
+	// Simulate blocking limit error from engine
+	app.updateRepl(queryEndMsg{
+		Err:      fmt.Errorf("Prompt is too long: 43.7k context tokens exceeds 31.0k limit"),
+		Terminal: types.TerminalPromptTooLong,
+	})
+
+	// FinishStream should have added the error as a system message.
+	found := false
+	for _, msg := range app.repl.messages {
+		if msg.Role != "system" {
+			continue
+		}
+		for _, b := range msg.Blocks {
+			if b.Type == BlockText && strings.Contains(b.Text, "Prompt is too long") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Error("expected system message with 'Prompt is too long' after blocking limit queryEnd")
+	}
+}

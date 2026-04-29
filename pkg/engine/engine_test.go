@@ -491,6 +491,12 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	if result.Terminal != types.TerminalPromptTooLong {
 		t.Fatalf("expected TerminalPromptTooLong, got %s", result.Terminal)
 	}
+	if result.Error == nil {
+		t.Fatal("blocking limit should set Error for TUI visibility")
+	}
+	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
+		t.Errorf("Error should contain 'Prompt is too long', got: %v", result.Error)
+	}
 
 	// Negative blocking limit: when contextWindow < maxTokens + 3000,
 	// the formula produces a negative blockingLimit which is skipped.
