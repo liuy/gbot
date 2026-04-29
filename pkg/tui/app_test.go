@@ -5189,3 +5189,62 @@ func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 		t.Error("expected system message with 'Prompt is too long' after blocking limit queryEnd")
 	}
 }
+
+// TestApp_QueryEnd_UsesEngineTotalUsage verifies that the stats line at query
+// end reflects the engine's accumulated TotalUsage (correct across multi-turn
+// queries), not the TUI's per-turn streaming usage.
+func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+
+	// Simulate streaming: TUI sees per-turn values (overwritten each turn).
+	// Turn 1: 10k input, 500 output
+	app.updateRepl(usageMsg{InputTokens: 10000, CacheReadInputTokens: 5000})
+	app.updateRepl(usageMsg{OutputTokens: 500})
+	// Turn 2: 12k input, 300 output (TUI overwrites input, accumulates output)
+	app.updateRepl(usageMsg{InputTokens: 12000, CacheReadInputTokens: 8000})
+	app.updateRepl(usageMsg{OutputTokens: 300})
+
+	// Before queryEnd, TUI's streaming usage has:
+	// - InputTokens=12000, CacheRead=8000 (overwritten by turn 2)
+	// - OutputTokens=800 (accumulated: 500+300)
+	streamingTotalIn := app.status.usage.TotalInputTokens()
+	if streamingTotalIn != 20000 {
+		t.Logf("streaming TotalInput = %d (expected 20000, per-turn overwritten)", streamingTotalIn)
+	}
+
+	// Engine's TotalUsage has correct accumulated values across both turns:
+	// Turn 1: Input=10000, CacheRead=5000, Output=500
+	// Turn 2: Input=12000, CacheRead=8000, Output=300
+	// Total: Input=22000, CacheRead=13000, Output=800
+	engineTotal := types.Usage{
+		InputTokens:              22000,
+		OutputTokens:             800,
+		CacheReadInputTokens:     13000,
+		CacheCreationInputTokens: 0,
+	}
+
+	// Query ends with engine's accumulated TotalUsage
+	app.updateRepl(queryEndMsg{
+		Terminal:   types.TerminalCompleted,
+		TotalUsage: engineTotal,
+	})
+
+	// After queryEnd, the stats line should show engine's accumulated values.
+	// Check that a.statsLine (or equivalent) uses engine totals, not streaming.
+	// The last assistant message should contain the stats.
+	lastMsg := app.repl.lastMsg()
+	if lastMsg == nil {
+		t.Fatal("expected at least one message after queryEnd")
+	}
+	statsText := lastMsg.View(200, false, "", false, 50)
+	if !strings.Contains(statsText, "35.0k") && !strings.Contains(statsText, "35000") {
+		// TotalInput = 22000 + 13000 = 35000 = 35.0k
+		t.Errorf("stats line should show engine accumulated total input (35.0k), got:\n%s", statsText)
+	}
+	if !strings.Contains(statsText, "800") {
+		t.Errorf("stats line should show engine accumulated output (800), got:\n%s", statsText)
+	}
+}

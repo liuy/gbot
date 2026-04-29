@@ -479,17 +479,24 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 
 		if !a.progressStart.IsZero() {
+			// Use engine's accumulated TotalUsage for stats line (correct
+			// across multi-turn queries). Fall back to streaming usage if
+			// engine didn't provide accumulated data.
+			queryUsage := m.TotalUsage
+			if queryUsage.InputTokens == 0 && queryUsage.OutputTokens == 0 {
+				queryUsage = a.status.usage
+			}
 			elapsedStr := formatElapsed(a.progressStart)
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.status.usage.TotalInputTokens()), formatTokenCount(a.status.usage.OutputTokens))
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(queryUsage.TotalInputTokens()), formatTokenCount(queryUsage.OutputTokens))
 			var cachePart string
-			if a.status.usage.CacheReadInputTokens > 0 || a.status.usage.CacheCreationInputTokens > 0 {
-				total := a.status.usage.CacheReadInputTokens + a.status.usage.CacheCreationInputTokens + a.status.usage.InputTokens
+			if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
+				total := queryUsage.CacheReadInputTokens + queryUsage.CacheCreationInputTokens + queryUsage.InputTokens
 				if total > 0 {
-					if a.status.usage.CacheReadInputTokens > 0 {
-						pct := a.status.usage.CacheReadInputTokens * 100 / total
+					if queryUsage.CacheReadInputTokens > 0 {
+						pct := queryUsage.CacheReadInputTokens * 100 / total
 						cachePart = fmt.Sprintf(" · %d%% cached", pct)
 					} else {
-						cachePart = fmt.Sprintf(" · %s warmed", formatTokenCount(a.status.usage.CacheCreationInputTokens))
+						cachePart = fmt.Sprintf(" · %s warmed", formatTokenCount(queryUsage.CacheCreationInputTokens))
 					}
 				}
 			} else {
@@ -508,7 +515,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
 				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
-				slog.Info("tui:query_end", "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+				slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 			}
 		}
 		a.progressStart = time.Time{}
@@ -786,7 +793,7 @@ func (a *App) readEvents() tea.Cmd {
 					return queryEndMsg{}
 				}
 				a.repl.CloseChannels()
-				return queryEndMsg{Err: result.Error, Terminal: result.Terminal}
+				return queryEndMsg{Err: result.Error, Terminal: result.Terminal, TotalUsage: result.TotalUsage}
 			}
 		}
 	}
