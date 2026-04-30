@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // AbortController manages cancellation for the query loop.
@@ -62,18 +61,23 @@ func ShouldInterruptTool(behavior tool.InterruptBehavior, ctx context.Context) b
 	return behavior == tool.InterruptCancel
 }
 
-// CheckAbort examines the context and returns the appropriate terminal reason.
+// AbortError wraps a context cancellation error with phase information
+// indicating where the abort occurred (streaming or tool execution).
+// Use errors.As to discriminate: var ae *AbortError; errors.As(err, &ae)
+type AbortError struct {
+	Phase string // "streaming" or "tools"
+	Err   error  // underlying ctx.Err()
+}
+
+func (e *AbortError) Error() string { return e.Err.Error() }
+func (e *AbortError) Unwrap() error { return e.Err }
+
+// ShouldAbort returns nil if the context is alive, or an AbortError wrapping
+// the context cancellation with the given phase.
 // Source: query.ts — abort checks at Stages 18 and 23.
-func CheckAbort(ctx context.Context, phase string) types.TerminalReason {
+func ShouldAbort(ctx context.Context, phase string) error {
 	if ctx.Err() == nil {
-		return ""
+		return nil
 	}
-	switch phase {
-	case "streaming":
-		return types.TerminalAbortedStreaming
-	case "tools":
-		return types.TerminalAbortedTools
-	default:
-		return types.TerminalAbortedStreaming
-	}
+	return &AbortError{Phase: phase, Err: ctx.Err()}
 }

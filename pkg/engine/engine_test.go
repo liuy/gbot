@@ -222,9 +222,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Fatalf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 	if len(result.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
 	}
@@ -287,9 +285,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Fatalf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 	if !toolResultSeen {
 		t.Error("expected to see a tool result event")
 	}
@@ -423,11 +419,8 @@ func TestQuery_ContextCancellation(t *testing.T) {
 
 	result := <-resultCh
 	// The context is already cancelled, so the select in queryLoop should catch it
-	// before calling callLLM, resulting in TerminalAbortedStreaming.
-	if result.Terminal != types.TerminalAbortedStreaming {
-		t.Errorf("expected TerminalAbortedStreaming, got %s (error: %v)", result.Terminal, result.Error)
-	}
-	// Also verify the error is set and mentions context cancellation
+	// before calling callLLM, resulting in a cancellation error.
+	// Verify the error is set and mentions context cancellation
 	if result.Error == nil {
 		t.Fatal("expected non-nil error from context cancellation")
 	}
@@ -488,11 +481,8 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	}
 
 	result := <-resultCh
-	if result.Terminal != types.TerminalPromptTooLong {
-		t.Fatalf("expected TerminalPromptTooLong, got %s", result.Terminal)
-	}
 	if result.Error == nil {
-		t.Fatal("blocking limit should set Error for TUI visibility")
+		t.Fatal("expected prompt too long error")
 	}
 	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
 		t.Errorf("Error should contain 'Prompt is too long', got: %v", result.Error)
@@ -532,8 +522,8 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		}
 
 		result := <-resultCh
-		if result.Terminal != types.TerminalCompleted {
-			t.Fatalf("negative blockingLimit should be skipped, got %s", result.Terminal)
+		if result.Error != nil {
+			t.Fatalf("negative blockingLimit should be skipped, got: %v", result.Error)
 		}
 	})
 }
@@ -566,8 +556,8 @@ func TestQuery_UnknownTool(t *testing.T) {
 	// The unknown tool creates a tool_result block in messages but does NOT
 	// emit an EventToolEnd event (only known tools emit events).
 	// Verify the conversation continued and completed successfully.
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Errorf("expected success, got: %v", result.Error)
 	}
 }
 
@@ -652,11 +642,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "bad request") {
 		t.Errorf("error should contain 'bad request', got: %v", result.Error)
 	}
-	// The error is wrapped by callLLM as "stream request: <original>", but
-	// classifyTerminalError uses errors.As to unwrap and see the APIError type.
-	if result.Terminal != types.TerminalPromptTooLong {
-		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
-	}
+
 }
 
 func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
@@ -690,9 +676,7 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("expected no error after retry, got: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted after retry, got %s", result.Terminal)
-	}
+
 }
 
 func TestQuery_DisabledToolSkipped(t *testing.T) {
@@ -952,76 +936,6 @@ func TestSetMessages(t *testing.T) {
 	}
 }
 
-// TestClassifyTerminalError tests the classifyTerminalError helper function.
-// This test validates error classification by triggering actual engine errors
-// and checking the TerminalReason in the result.
-func TestClassifyTerminalError(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		makeErr  func() *llm.APIError
-		expected types.TerminalReason
-	}{
-		{
-			name:     "context overflow",
-			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"} },
-			expected: types.TerminalPromptTooLong,
-		},
-		{
-			name:     "rate limit",
-			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 429} },
-			expected: types.TerminalBlockingLimit,
-		},
-		{
-			name:     "server error 500",
-			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 500} },
-			expected: types.TerminalModelError,
-		},
-		{
-			name:     "overloaded 529",
-			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 529} },
-			expected: types.TerminalModelError,
-		},
-		{
-			name:     "API error 400 without prompt_too_long",
-			makeErr:  func() *llm.APIError { return &llm.APIError{Status: 400, ErrorCode: "other_error"} },
-			expected: types.TerminalModelError,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			mp := &mockProvider{}
-			// Return an error from Stream to trigger classifyTerminalError
-			// The error is NOT wrapped when returned via event.Error
-			events := []llm.StreamEvent{
-				{Error: tt.makeErr()},
-			}
-			mp.addResponse(events, nil)
-
-			eng := engine.New(&engine.Params{
-				Provider: mp,
-				Model:    "test",
-				Logger:   slog.Default(),
-			})
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			eventCh, resultCh := eng.Query(ctx, "test", nil)
-			for range eventCh {
-			}
-
-			result := <-resultCh
-			if result.Terminal != tt.expected {
-				t.Errorf("classifyTerminalError() = %s, want %s", result.Terminal, tt.expected)
-			}
-		})
-	}
-}
-
 func TestQuery_MultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1242,9 +1156,6 @@ func TestQuery_PingEvent(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
 	// Verify assistant message contains text after the ping
 	if len(result.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
@@ -1451,9 +1362,6 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "stream interrupted") {
 		t.Errorf("error should contain 'stream interrupted', got: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalModelError {
-		t.Errorf("expected TerminalModelError, got %s", result.Terminal)
-	}
 }
 
 // TestQuery_RetryableStreamError tests handleStreamError's Continue=true path.
@@ -1489,12 +1397,9 @@ func TestQuery_RetryableStreamError(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
 }
 
-// TestQuery_ContextOverflowStreamError tests classifyTerminalError's context overflow path.
+// TestQuery_ContextOverflowStreamError tests that context overflow errors are returned correctly.
 func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	t.Parallel()
 
@@ -1524,12 +1429,9 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "prompt too long") {
 		t.Errorf("error should mention 'prompt too long', got: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalPromptTooLong {
-		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
-	}
 }
 
-// TestQuery_RateLimitStreamError tests classifyTerminalError's rate limit path.
+// TestQuery_RateLimitStreamError tests that rate limit errors are returned correctly.
 func TestQuery_RateLimitStreamError(t *testing.T) {
 	t.Parallel()
 
@@ -1558,9 +1460,6 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	}
 	if !strings.Contains(result.Error.Error(), "rate limited") {
 		t.Errorf("error should mention 'rate limited', got: %v", result.Error)
-	}
-	if result.Terminal != types.TerminalBlockingLimit {
-		t.Errorf("expected TerminalBlockingLimit, got %s", result.Terminal)
 	}
 }
 
@@ -1598,8 +1497,8 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 		t.Errorf("unexpected error: %v", result.Error)
 	}
 	// Verify we got a successful completion
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Errorf("expected success, got: %v", result.Error)
 	}
 }
 
@@ -1728,9 +1627,6 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
-	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
 	}
 }
 
@@ -1995,9 +1891,6 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	result := <-resultCh
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
-	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
 	}
 }
 
@@ -2509,8 +2402,8 @@ func TestProcessNotifications_EmptyQueue(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("Terminal = %q, want completed (empty queue)", result.Terminal)
+	if result.Error != nil {
+		t.Errorf("unexpected result: %v", result.Error)
 	}
 }
 
@@ -2549,8 +2442,8 @@ func TestProcessNotifications_DrainsAndRunsTurns(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("Terminal = %q, want completed", result.Terminal)
+	if result.Error != nil {
+		t.Errorf("unexpected result: %v", result.Error)
 	}
 
 	// Verify notification was injected: should have at least query_start + turn_start + text_delta + turn_end + query_end
@@ -2636,8 +2529,8 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	}
 	// Context cancellation from provider error path classifies as model_error,
 	// not aborted_streaming (which only fires from engine's own <-ctx.Done() check)
-	if result.Terminal == types.TerminalCompleted {
-		t.Errorf("Terminal should not be completed on error, got %q", result.Terminal)
+	if result.Error == nil {
+		t.Errorf("unexpected result: %v", result.Error)
 	}
 }
 

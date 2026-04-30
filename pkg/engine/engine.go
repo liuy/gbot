@@ -152,7 +152,6 @@ type QueryResult struct {
 	Messages   []types.Message
 	TurnCount  int
 	TotalUsage types.Usage
-	Terminal   types.TerminalReason
 	Error      error
 }
 
@@ -274,7 +273,7 @@ func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.Raw
 		pending := e.notifications.Drain()
 		if len(pending) == 0 {
 			// Race guard: Hub event fired but queue already drained
-			resultCh <- QueryResult{Terminal: types.TerminalCompleted}
+			resultCh <- QueryResult{}
 			return
 		}
 
@@ -361,7 +360,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		case <-ctx.Done():
 			return QueryResult{
 				Messages: e.messages,
-				Terminal: types.TerminalAbortedStreaming,
 				Error:    ctx.Err(),
 			}
 		default:
@@ -395,7 +393,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
 					TotalUsage: totalUsage,
-					Terminal:   types.TerminalPromptTooLong,
 					Error:      fmt.Errorf("Prompt is too long: %s context tokens exceeds %s limit", types.FormatTokenCount(tokens), types.FormatTokenCount(blockingLimit)),
 				}
 			}
@@ -459,7 +456,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
 				return QueryResult{
 					Messages: e.messages,
-					Terminal: e.classifyTerminalError(err),
 					Error:    err,
 				}
 			}
@@ -586,7 +582,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
 				TotalUsage: totalUsage,
-				Terminal:   types.TerminalCompleted,
 			}
 		}
 
@@ -623,7 +618,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		Messages:   e.messages,
 		TurnCount:  e.turnCount,
 		TotalUsage: totalUsage,
-		Terminal:   types.TerminalCompleted,
 	}
 }
 
@@ -1055,17 +1049,6 @@ func extractJSONStringField(jsonStr, fieldName, prefix string, maxLen int) strin
 		value = value[:maxLen] + "..."
 	}
 	return prefix + value
-}
-
-// classifyTerminalError maps an error to a terminal reason.
-func (e *Engine) classifyTerminalError(err error) types.TerminalReason {
-	if llm.IsContextOverflow(err) {
-		return types.TerminalPromptTooLong
-	}
-	if llm.IsRateLimit(err) {
-		return types.TerminalBlockingLimit
-	}
-	return types.TerminalModelError
 }
 
 // currentInputTokens estimates current context token count.

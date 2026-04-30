@@ -343,19 +343,6 @@ type ToolResultEvent struct {
 	Timing        time.Duration   `json:"timing,omitempty"`
 }
 
-// TerminalReason indicates why the query loop exited.
-// Source: query.ts transition decision tree
-type TerminalReason string
-
-const (
-	TerminalCompleted        TerminalReason = "completed"
-	TerminalAbortedStreaming TerminalReason = "aborted_streaming"
-	TerminalAbortedTools     TerminalReason = "aborted_tools"
-	TerminalModelError       TerminalReason = "model_error"
-	TerminalBlockingLimit    TerminalReason = "blocking_limit"
-	TerminalPromptTooLong    TerminalReason = "prompt_too_long"
-)
-
 // ContinueReason indicates why the loop continues to another iteration.
 type ContinueReason string
 
@@ -368,7 +355,6 @@ const (
 type LoopAction struct {
 	Continue bool
 	Reason   ContinueReason
-	Terminal TerminalReason
 }
 
 // ---------------------------------------------------------------------------

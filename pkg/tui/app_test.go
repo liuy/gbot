@@ -5230,8 +5230,7 @@ func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 
 	// Simulate blocking limit error from engine
 	app.updateRepl(queryEndMsg{
-		Err:      fmt.Errorf("Prompt is too long: 43.7k context tokens exceeds 31.0k limit"),
-		Terminal: types.TerminalPromptTooLong,
+		Err: fmt.Errorf("Prompt is too long: 43.7k context tokens exceeds 31.0k limit"),
 	})
 
 	// FinishStream should have added the error as a system message.
@@ -5293,7 +5292,6 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 
 	// Query ends with engine's accumulated TotalUsage
 	app.updateRepl(queryEndMsg{
-		Terminal:   types.TerminalCompleted,
 		TotalUsage: engineTotal,
 	})
 

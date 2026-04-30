@@ -467,36 +467,6 @@ func TestQueryEventJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TerminalReason constants
-// ---------------------------------------------------------------------------
-
-func TestTerminalReasonConstants(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		reason types.TerminalReason
-		want   string
-	}{
-		{"completed", types.TerminalCompleted, "completed"},
-		{"aborted_streaming", types.TerminalAbortedStreaming, "aborted_streaming"},
-		{"aborted_tools", types.TerminalAbortedTools, "aborted_tools"},
-		{"model_error", types.TerminalModelError, "model_error"},
-		{"blocking_limit", types.TerminalBlockingLimit, "blocking_limit"},
-		{"prompt_too_long", types.TerminalPromptTooLong, "prompt_too_long"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if string(tc.reason) != tc.want {
-				t.Errorf("TerminalReason %s = %q, want %q", tc.name, tc.reason, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ContinueReason constants
 // ---------------------------------------------------------------------------
 
@@ -543,14 +513,10 @@ func TestLoopAction(t *testing.T) {
 
 	terminal := types.LoopAction{
 		Continue: false,
-		Terminal: types.TerminalCompleted,
 	}
 
 	if terminal.Continue {
 		t.Error("Continue = true, want false")
-	}
-	if terminal.Terminal != types.TerminalCompleted {
-		t.Errorf("Terminal = %q, want %q", terminal.Terminal, types.TerminalCompleted)
 	}
 }
 

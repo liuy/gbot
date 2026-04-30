@@ -12,7 +12,7 @@ import (
 // The TS source maintains:
 //   - Token budget per query (configurable)
 //   - Cumulative usage across turns
-//   - Budget exhaustion triggers TerminalPromptTooLong
+//   - Budget exhaustion triggers a "prompt too long" error
 //
 // The TS source maintains:
 type BudgetTracker struct {

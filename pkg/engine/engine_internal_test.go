@@ -471,8 +471,8 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 	}
 	result := <-resultCh
 	// After 50 turns the for loop exits, hitting line 226-231
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted after max turns, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Fatalf("expected success after max turns, got: %v", result.Error)
 	}
 	if result.TurnCount != 50 {
 		t.Errorf("expected 50 turns, got %d", result.TurnCount)
@@ -1313,9 +1313,6 @@ func TestQuerySync(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
 	if len(result.Messages) < 2 {
 		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
 	}
@@ -1353,9 +1350,6 @@ func TestQuerySyncCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	result := eng.QuerySync(ctx, "test query", nil)
-	if result.Terminal != types.TerminalAbortedStreaming {
-		t.Errorf("expected TerminalAbortedStreaming, got %s", result.Terminal)
-	}
 	if result.Error == nil {
 		t.Fatal("expected non-nil error from cancelled context")
 	}
@@ -1416,10 +1410,7 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 
 	// Should complete normally despite heavy token usage (subagent bypasses budget check)
 	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
-	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("sub-agent should bypass budget check and complete, got terminal=%s", result.Terminal)
+		t.Fatalf("sub-agent should bypass budget check and complete, got: %v", result.Error)
 	}
 }
 
@@ -1753,9 +1744,6 @@ func TestQueryWithExistingMessages(t *testing.T) {
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
-	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
 	}
 
 	// Verify messages start with the pre-constructed ones (not an extra injected user msg)
@@ -2162,8 +2150,8 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 	}
 
 	result := <-resultCh
-	if result.Terminal != types.TerminalCompleted {
-		t.Fatalf("sub-agent should complete despite blocking limit, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Fatalf("sub-agent should complete despite blocking limit, got: %v", result.Error)
 	}
 }
 
@@ -2306,8 +2294,8 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 	if !compactCalled {
 		t.Fatal("post-turn compact should have been called")
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Fatalf("expected TerminalCompleted, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Fatalf("expected success, got: %v", result.Error)
 	}
 }
 

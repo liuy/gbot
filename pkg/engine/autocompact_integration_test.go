@@ -212,9 +212,7 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 
 	// Verify the response came from the retry (second API call)
 	foundRecovery := false
@@ -363,9 +361,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("turn 2 failed: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 
 	// Verify turn 2 response is in final messages
 	foundTurn2 := false
@@ -579,9 +575,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 
 	// Verify compact happened: final messages should be fewer than the 10 we set
 	// (compact replaces them with a summary + boundary marker).
@@ -666,9 +660,7 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 
 	// Verify the response came from the retry (second API call after compact)
 	foundRecovery := false

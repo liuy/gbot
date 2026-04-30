@@ -2,11 +2,11 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestNewAbortController(t *testing.T) {
@@ -85,32 +85,30 @@ func TestShouldInterruptTool_Cancelled(t *testing.T) {
 	}
 }
 
-func TestCheckAbort_NoAbort(t *testing.T) {
+func TestShouldAbort_NoAbort(t *testing.T) {
 	ctx := context.Background()
-	if reason := engine.CheckAbort(ctx, "streaming"); reason != "" {
-		t.Errorf("expected empty reason, got %s", reason)
+	if err := engine.ShouldAbort(ctx, "streaming"); err != nil {
+		t.Errorf("expected nil with live context, got: %v", err)
 	}
 }
 
-func TestCheckAbort_WithAbort(t *testing.T) {
+func TestShouldAbort_Cancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	tests := []struct {
-		phase    string
-		expected types.TerminalReason
-	}{
-		{"streaming", types.TerminalAbortedStreaming},
-		{"tools", types.TerminalAbortedTools},
-		{"unknown", types.TerminalAbortedStreaming},
+	err := engine.ShouldAbort(ctx, "streaming")
+	if err == nil {
+		t.Fatal("expected error with cancelled context")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.phase, func(t *testing.T) {
-			reason := engine.CheckAbort(ctx, tt.phase)
-			if reason != tt.expected {
-				t.Errorf("CheckAbort(%q) = %s, want %s", tt.phase, reason, tt.expected)
-			}
-		})
+	var ae *engine.AbortError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *AbortError, got %T", err)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+	if !errors.Is(ae.Err, context.Canceled) {
+		t.Errorf("underlying error = %v, want context.Canceled", ae.Err)
 	}
 }

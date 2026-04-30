@@ -340,9 +340,7 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 
 	if mc.CallCount() == 0 {
 		t.Error("reactive auto-compact should have been triggered on prompt_too_long")
@@ -391,9 +389,7 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "too long") {
 		t.Errorf("error should mention too long, got: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalPromptTooLong {
-		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
-	}
+
 
 	if mc.CallCount() != 1 {
 		t.Errorf("expected 1 compact call (reactive, no second retry), got %d", mc.CallCount())
@@ -430,9 +426,7 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "too long") {
 		t.Errorf("error should mention too long, got: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalPromptTooLong {
-		t.Errorf("expected TerminalPromptTooLong, got %s", result.Terminal)
-	}
+
 }
 
 // ---------------------------------------------------------------------------
@@ -513,9 +507,7 @@ func TestAutoCompact_NoCompactor_NormalQuery(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
-	}
+
 }
 
 // ---------------------------------------------------------------------------
@@ -728,8 +720,8 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result)
 	}
-	if result.Terminal != types.TerminalCompleted {
-		t.Errorf("expected TerminalCompleted, got %s", result.Terminal)
+	if result.Error != nil {
+		t.Errorf("expected success, got: %v", result.Error)
 	}
 }
 

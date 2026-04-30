@@ -477,13 +477,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case queryEndMsg:
-		// Log abnormal terminal reasons for diagnostics (blocking_limit,
-		// prompt_too_long, model_error, etc.)
-		if m.Terminal != "" && m.Terminal != types.TerminalCompleted && m.Err == nil {
-			slog.Warn("tui:query ended with non-completed terminal but no error",
-				"terminal", string(m.Terminal))
-		}
-
 		a.repl.FinishStream(m.Err)
 
 		// Sync status bar with engine's final ContextTokens (post-compact).
@@ -806,7 +799,7 @@ func (a *App) readEvents() tea.Cmd {
 					return queryEndMsg{}
 				}
 				a.repl.CloseChannels()
-				return queryEndMsg{Err: result.Error, Terminal: result.Terminal, TotalUsage: result.TotalUsage}
+				return queryEndMsg{Err: result.Error, TotalUsage: result.TotalUsage}
 			}
 		}
 	}
