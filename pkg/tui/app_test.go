@@ -5311,3 +5311,105 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 		t.Errorf("stats line should show engine accumulated output (800), got:\n%s", statsText)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2: Escape cancel + AbortError display
+// ---------------------------------------------------------------------------
+
+func TestApp_HandleEscape_DuringStreaming(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+
+	cancelled := false
+	app.repl.cancelFunc = func() {
+		cancelled = true
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if cmd != nil {
+		t.Error("Escape during streaming should not produce a command")
+	}
+	a := model.(*App)
+
+	if !cancelled {
+		t.Error("expected cancelFunc to be called")
+	}
+	if a.repl.cancelFunc != nil {
+		t.Error("cancelFunc should be nil after Escape")
+	}
+	// Escape does NOT call FinishStream — streaming stays true
+	if !a.repl.streaming {
+		t.Error("streaming should still be true (FinishStream not called by Escape)")
+	}
+}
+
+func TestApp_HandleEscape_DuringStreaming_NoCancelFunc(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+	// cancelFunc is nil — should not panic
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if cmd != nil {
+		t.Error("Escape during streaming should not produce a command")
+	}
+	a := model.(*App)
+	if !a.repl.streaming {
+		t.Error("streaming should still be true (no FinishStream)")
+	}
+}
+
+func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+
+	// Simulate query end with streaming-phase AbortError
+	abortErr := &engine.AbortError{Phase: "streaming", Err: context.Canceled}
+	app.updateRepl(queryEndMsg{Err: abortErr})
+
+	if app.repl.streaming {
+		t.Error("streaming should be false after queryEnd")
+	}
+
+	// Check the friendly error message is displayed
+	lastMsg := app.repl.lastMsg()
+	if lastMsg == nil {
+		t.Fatal("expected an error message after abort")
+	}
+	text := lastMsg.View(200, false, "", false, 50)
+	if !strings.Contains(text, "cancelled during streaming") {
+		t.Errorf("expected friendly abort message, got:\n%s", text)
+	}
+	// Should NOT contain raw "context canceled"
+	if strings.Contains(text, "context canceled") {
+		t.Errorf("should not contain raw context.Canceled text, got:\n%s", text)
+	}
+}
+
+func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery(nil)
+	app.progressStart = time.Now().Add(-1 * time.Second)
+
+	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
+	app.updateRepl(queryEndMsg{Err: abortErr})
+
+	if app.repl.streaming {
+		t.Error("streaming should be false after queryEnd")
+	}
+
+	lastMsg := app.repl.lastMsg()
+	if lastMsg == nil {
+		t.Fatal("expected an error message after abort")
+	}
+	text := lastMsg.View(200, false, "", false, 50)
+	if !strings.Contains(text, "cancelled during tool execution") {
+		t.Errorf("expected friendly tools abort message, got:\n%s", text)
+	}
+}

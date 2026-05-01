@@ -356,13 +356,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 	reactiveCompactDone := false
 
 	for e.maxTurns == 0 || e.turnCount < e.maxTurns {
-		select {
-		case <-ctx.Done():
+		// Stage 4: Loop-top abort check.
+		// Source: query.ts — context cancellation check at loop top.
+		if err := ShouldAbort(ctx, "streaming"); err != nil {
 			return QueryResult{
 				Messages: e.messages,
-				Error:    ctx.Err(),
+				Error:    err,
 			}
-		default:
 		}
 
 		// Drain pending notifications (stall alerts, completion notifications
@@ -487,6 +487,25 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		if streamingExecutor != nil {
 			streamingExecutor.SetMessages(e.messages)
 
+			// Stage 18: Post-streaming abort check.
+			// Source: query.ts:1015-1029 — consume getRemainingResults or yieldMissingToolResultBlocks.
+			// Must generate synthetic tool_results for all tool_use blocks in the
+			// assistant message to prevent API 400 errors on the next turn.
+			if err := ShouldAbort(ctx, "streaming"); err != nil {
+				streamingExecutor.Discard()
+				syntheticBlocks := SyntheticToolResultsForBlocks(resp.Content, nil, AbortReasonUserInterrupted)
+				if len(syntheticBlocks) > 0 {
+					e.appendMessage(types.Message{Role: types.RoleUser, Content: syntheticBlocks})
+				}
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+				return QueryResult{
+					Messages:   e.messages,
+					TurnCount:  e.turnCount,
+					TotalUsage: totalUsage,
+					Error:      err,
+				}
+			}
 		}
 
 		// Post-turn compact: check after API response using accurate token data.
@@ -599,6 +618,19 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				Role:    types.RoleUser,
 				Content: execResult.ToolResultBlocks,
 			})
+		}
+
+		// Stage 23: Post-tool-execution abort check.
+		// Source: query.ts:1485-1516 — tool execution complete, check abort.
+		if err := ShouldAbort(ctx, "tools"); err != nil {
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+			return QueryResult{
+				Messages:   e.messages,
+				TurnCount:  e.turnCount,
+				TotalUsage: totalUsage,
+				Error:      err,
+			}
 		}
 
 		// Append NewMessages AFTER tool_result.
@@ -772,10 +804,34 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 	for event := range streamCh {
 		select {
 		case <-ctx.Done():
+			// Source: query.ts Stage 2+3 — streaming interrupted:
+			// 1. Generate synthetic tool_results for ALL tool_use blocks.
+			//    ExecuteAll never runs after mid-stream abort, so even started tools
+			//    need synthetic results to prevent orphaned tool_use blocks.
+			// 2. Append partial assistant message for conversation consistency
+			var orphanedBlocks []types.ContentBlock
 			if streamingExecutor != nil {
+				orphanedBlocks = SyntheticToolResultsForBlocks(
+					contentBlocks, nil, AbortReasonStreamingFallback)
 				streamingExecutor.Discard()
 			}
-			return nil, nil, ctx.Err()
+			if hasContent {
+				e.appendMessage(types.Message{
+					Role:       types.RoleAssistant,
+					Content:    contentBlocks,
+					Model:      model,
+					StopReason: stopReason,
+					Usage:      &usage,
+					Timestamp:  time.Now(),
+				})
+				if len(orphanedBlocks) > 0 {
+					e.appendMessage(types.Message{
+						Role:    types.RoleUser,
+						Content: orphanedBlocks,
+					})
+				}
+			}
+			return nil, nil, ShouldAbort(ctx, "streaming")
 		default:
 		}
 

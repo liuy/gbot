@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -477,7 +478,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case queryEndMsg:
-		a.repl.FinishStream(m.Err)
+		// Display user-friendly message for abort errors
+		displayErr := m.Err
+		if displayErr != nil {
+			if ae, ok := errors.AsType[*engine.AbortError](displayErr); ok {
+				switch ae.Phase {
+				case "streaming":
+					displayErr = fmt.Errorf("query cancelled during streaming")
+				case "tools":
+					displayErr = fmt.Errorf("query cancelled during tool execution")
+				default:
+					displayErr = fmt.Errorf("query cancelled (%s)", ae.Phase)
+				}
+			}
+		}
+		a.repl.FinishStream(displayErr)
 
 		// Sync status bar with engine's final ContextTokens (post-compact).
 		// During streaming the bar showed the API-reported value; compact may

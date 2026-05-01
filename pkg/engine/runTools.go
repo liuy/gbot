@@ -171,6 +171,20 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 	e.messages = messages
 }
 
+// StartedToolIDs returns tool IDs that have been started (executing or completed).
+// Used to identify orphaned tool_uses during mid-stream abort.
+func (e *StreamingToolExecutor) StartedToolIDs() map[string]bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ids := make(map[string]bool)
+	for _, tt := range e.tools {
+		if tt.Status == StatusExecuting || tt.Status == StatusCompleted {
+			ids[tt.ID] = true
+		}
+	}
+	return ids
+}
+
 // SetHooks injects the hooks system into the executor.
 // Called from engine.go after construction.
 func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
@@ -479,17 +493,17 @@ func (e *StreamingToolExecutor) processQueue() {
 // Tools with InterruptBlock are NOT cancelled on user interrupt.
 func (e *StreamingToolExecutor) getAbortReason(t tool.Tool) string {
 	if e.discarded {
-		return "streaming_fallback"
+		return AbortReasonStreamingFallback
 	}
 	if e.hasErrored {
-		return "sibling_error"
+		return AbortReasonSiblingError
 	}
 	select {
 	case <-e.rootCtx.Done():
 		if t.InterruptBehavior() == tool.InterruptBlock {
 			return ""
 		}
-		return "user_interrupted"
+		return AbortReasonUserInterrupted
 	default:
 		return ""
 	}

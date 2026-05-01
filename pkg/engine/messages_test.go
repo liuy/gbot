@@ -94,7 +94,7 @@ func TestCreateToolErrorBlock(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", "user_interrupted")
+	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonUserInterrupted)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
@@ -106,7 +106,7 @@ func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", "streaming_fallback")
+	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonStreamingFallback)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
@@ -118,7 +118,7 @@ func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_SiblingError(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", "sibling_error")
+	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonSiblingError)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)

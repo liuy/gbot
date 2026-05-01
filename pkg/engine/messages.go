@@ -50,21 +50,46 @@ func CreateToolErrorBlock(toolUseID string, errMsg string) types.ContentBlock {
 	return types.NewToolResultBlock(toolUseID, errJSON, true)
 }
 
+// Abort reason constants for synthetic error blocks.
+// Source: StreamingToolExecutor.ts — abort reasons from abortController.abort(reason).
+const (
+	AbortReasonUserInterrupted  = "user_interrupted"
+	AbortReasonStreamingFallback = "streaming_fallback"
+	AbortReasonSiblingError     = "sibling_error"
+)
+
 // CreateSyntheticErrorBlock creates a tool_result block for abort scenarios.
 // Source: StreamingToolExecutor.ts:153-205 — createSyntheticErrorMessage().
-// Reasons: sibling_error, user_interrupted, streaming_fallback.
+// Reasons: AbortReasonSiblingError, AbortReasonUserInterrupted, AbortReasonStreamingFallback.
 func CreateSyntheticErrorBlock(toolUseID, reason string) types.ContentBlock {
 	var msg string
 	switch reason {
-	case "user_interrupted":
+	case AbortReasonUserInterrupted:
 		msg = "User rejected tool use"
-	case "streaming_fallback":
+	case AbortReasonStreamingFallback:
 		msg = "Error: Streaming fallback - tool execution discarded"
 	default:
 		msg = "Cancelled: parallel tool call errored"
 	}
 	errJSON, _ := json.Marshal(map[string]string{"error": msg})
 	return types.NewToolResultBlock(toolUseID, errJSON, true)
+}
+
+// SyntheticToolResultsForBlocks generates synthetic tool_result error blocks
+// for tool_use blocks whose IDs are NOT in startedIDs.
+// Used during post-streaming and mid-streaming aborts to prevent orphaned
+// tool_use blocks (which would cause API 400 errors on the next turn).
+// Source: query.ts — yieldMissingToolResultBlocks.
+func SyntheticToolResultsForBlocks(blocks []types.ContentBlock, startedIDs map[string]bool, reason string) []types.ContentBlock {
+	var result []types.ContentBlock
+	for _, cb := range blocks {
+		if cb.Type == types.ContentTypeToolUse {
+			if _, started := startedIDs[cb.ID]; !started {
+				result = append(result, CreateSyntheticErrorBlock(cb.ID, reason))
+			}
+		}
+	}
+	return result
 }
 
 // ExtractTextBlocks returns all text content from a message.

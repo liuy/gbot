@@ -581,7 +581,23 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.input.DeleteForward()
 		return a, nil
 
-	case tea.KeyCtrlL, tea.KeyCtrlG, tea.KeyEscape:
+	case tea.KeyEscape:
+		if a.completions.Visible() {
+			a.completions.Dismiss()
+			return a, nil
+		}
+		// Source: TS onCancel — Escape during streaming cancels the query.
+		// Do NOT call FinishStream — let queryEndMsg handle it naturally.
+		if a.repl.IsStreaming() {
+			if a.repl.cancelFunc != nil {
+				a.repl.cancelFunc()
+				a.repl.cancelFunc = nil
+			}
+			return a, nil
+		}
+		return a, nil
+
+	case tea.KeyCtrlL, tea.KeyCtrlG:
 		if a.completions.Visible() {
 			a.completions.Dismiss()
 			return a, nil

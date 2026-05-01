@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -2477,5 +2478,355 @@ func TestCurrentInputTokens_NoAssistantMessage_ReturnsExact(t *testing.T) {
 	got := eng.currentInputTokens()
 	if got != 9000 {
 		t.Errorf("currentInputTokens() = %d, want 9000 (no assistant message, return exact ContextTokens)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Abort alignment tests
+// ---------------------------------------------------------------------------
+
+// callbackTool is a test tool that invokes a callback on Call.
+type callbackTool struct {
+	name   string
+	onCall func()
+}
+
+func (t *callbackTool) Name() string                                { return t.name }
+func (t *callbackTool) Aliases() []string                           { return nil }
+func (t *callbackTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *callbackTool) InputSchema() json.RawMessage                { return nil }
+func (t *callbackTool) Call(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	if t.onCall != nil {
+		t.onCall()
+	}
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (t *callbackTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *callbackTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *callbackTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *callbackTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *callbackTool) IsEnabled() bool                        { return true }
+func (t *callbackTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *callbackTool) Prompt() string          { return "" }
+func (t *callbackTool) RenderResult(any) string { return "" }
+func (t *callbackTool) MaxResultSize() int      { return 50000 }
+
+func TestAbortError_TypeDiscrimination(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ShouldAbort(ctx, "streaming")
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+
+	var ae *AbortError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected *AbortError, got %T", err)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false, want true")
+	}
+}
+
+func TestSyntheticToolResultsForBlocks(t *testing.T) {
+	t.Parallel()
+
+	blocks := []types.ContentBlock{
+		types.NewTextBlock("some text"),
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "Write"},
+		{Type: types.ContentTypeToolUse, ID: "tu_3", Name: "Bash"},
+	}
+
+	// tu_1 is started, tu_2 and tu_3 are orphaned
+	started := map[string]bool{"tu_1": true}
+	results := SyntheticToolResultsForBlocks(blocks, started, AbortReasonUserInterrupted)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 synthetic blocks, got %d", len(results))
+	}
+
+	for i, cb := range results {
+		if cb.Type != types.ContentTypeToolResult {
+			t.Errorf("results[%d].Type = %q, want %q", i, cb.Type, types.ContentTypeToolResult)
+		}
+		var parsed map[string]string
+		if err := json.Unmarshal(cb.Content, &parsed); err != nil {
+			t.Fatalf("results[%d]: failed to parse content: %v", i, err)
+		}
+		if _, ok := parsed["error"]; !ok {
+			t.Errorf("results[%d]: expected 'error' key in content", i)
+		}
+	}
+
+	ids := map[string]bool{results[0].ToolUseID: true, results[1].ToolUseID: true}
+	if ids["tu_1"] {
+		t.Error("tu_1 should not appear (it was started)")
+	}
+	if !ids["tu_2"] || !ids["tu_3"] {
+		t.Errorf("expected tu_2 and tu_3 in results, got IDs: %v", results)
+	}
+}
+
+func TestSyntheticToolResultsForBlocks_NilStarted(t *testing.T) {
+	t.Parallel()
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"},
+		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "Write"},
+	}
+	results := SyntheticToolResultsForBlocks(blocks, nil, AbortReasonStreamingFallback)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 synthetic blocks (all orphan), got %d", len(results))
+	}
+}
+
+func TestSyntheticToolResultsForBlocks_NoToolUse(t *testing.T) {
+	t.Parallel()
+
+	blocks := []types.ContentBlock{types.NewTextBlock("just text")}
+	results := SyntheticToolResultsForBlocks(blocks, nil, AbortReasonUserInterrupted)
+	if len(results) != 0 {
+		t.Errorf("expected 0 synthetic blocks for text-only, got %d", len(results))
+	}
+}
+
+func TestStartedToolIDs(t *testing.T) {
+	t.Parallel()
+
+	executor := &StreamingToolExecutor{
+		tools: []*TrackedTool{
+			{ID: "t1", Status: StatusExecuting},
+			{ID: "t2", Status: StatusCompleted},
+			{ID: "t3", Status: 0},
+		},
+	}
+	ids := executor.StartedToolIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 started IDs, got %d", len(ids))
+	}
+	if !ids["t1"] {
+		t.Error("expected t1 (executing)")
+	}
+	if !ids["t2"] {
+		t.Error("expected t2 (completed)")
+	}
+	if ids["t3"] {
+		t.Error("t3 should not be started")
+	}
+}
+
+func TestRunTurns_LoopTopAbort(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+	if !errors.Is(ae.Err, context.Canceled) {
+		t.Errorf("underlying error = %v, want context.Canceled", ae.Err)
+	}
+}
+
+func TestRunTurns_PostStreamingAbort_NoToolUse(t *testing.T) {
+	// Text-only response completes a turn normally. Cancel fires right after
+	// streaming data is sent. On the next iteration, loop-top catches it.
+	// No synthetic blocks because there were no tool_uses.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(ch)
+	// Second turn channel (closed by goroutine in case engine reaches it)
+	ch2 := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(ch2)
+
+	eng := New(&Params{Provider: mp, Model: "test"})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		// Send complete text response
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hello"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		// Cancel after all streaming data is sent
+		cancel()
+		close(ch)
+		close(ch2)
+	}()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+	result := <-resultCh
+
+	if result.Error == nil {
+		t.Fatal("expected error from loop-top abort after text turn")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T", result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+
+	// No synthetic tool_result blocks in any message
+	for _, msg := range result.Messages {
+		for _, cb := range msg.Content {
+			if cb.Type == types.ContentTypeToolResult {
+				t.Error("unexpected synthetic tool_result in text-only response")
+			}
+		}
+	}
+}
+
+func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
+	// Streaming returns tool_use response, then ctx is cancelled before ExecuteAll.
+	// Synthetic tool_results should be generated for the orphaned tool_uses.
+	mp := &testProvider{}
+	slowCh := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(slowCh)
+
+	mt := &testTool{name: "Read"}
+	eng := New(&Params{
+		Provider: mp,
+		Tools:    []tool.Tool{mt},
+		Model:    "test",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		defer close(slowCh)
+		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
+		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
+		slowCh <- llm.StreamEvent{Type: "message_stop"}
+		// Cancel after streaming completes but before tools execute
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+	result := <-resultCh
+
+	if result.Error == nil {
+		t.Fatal("expected error")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T", result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+
+	// Verify synthetic tool_result was generated
+	if len(result.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(result.Messages))
+	}
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleUser {
+		t.Fatalf("last message role = %q, want %q", lastMsg.Role, types.RoleUser)
+	}
+
+	hasToolResult := false
+	for _, cb := range lastMsg.Content {
+		if cb.Type == types.ContentTypeToolResult {
+			hasToolResult = true
+			if cb.ToolUseID != "tu_1" {
+				t.Errorf("tool_result ToolUseID = %q, want %q", cb.ToolUseID, "tu_1")
+			}
+			var parsed map[string]string
+			if err := json.Unmarshal(cb.Content, &parsed); err != nil {
+				t.Fatalf("failed to parse tool_result content: %v", err)
+			}
+			if !strings.Contains(parsed["error"], "User rejected") {
+				t.Errorf("error = %q, want to contain 'User rejected'", parsed["error"])
+			}
+		}
+	}
+	if !hasToolResult {
+		t.Error("expected synthetic tool_result block for orphaned tool_use")
+	}
+}
+
+func TestRunTurns_PostToolAbort(t *testing.T) {
+	// Tool executes, then cancels context. Stage 23 should catch it.
+	mp := &testProvider{}
+	toolEvents := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "test_tool"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(toolEvents, nil)
+	// Second response (won't be reached due to abort)
+	mp.addResponse(subTextEvents("test", "done"), nil)
+
+	var ctxCancel context.CancelFunc
+	ct := &callbackTool{
+		name: "test_tool",
+		onCall: func() {
+			time.Sleep(50 * time.Millisecond)
+			ctxCancel()
+		},
+	}
+
+	eng := New(&Params{
+		Provider: mp,
+		Tools:    []tool.Tool{ct},
+		Model:    "test",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctxCancel = cancel
+
+	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	for range eventCh {
+	}
+	result := <-resultCh
+
+	if result.Error == nil {
+		t.Fatal("expected error after tool execution abort")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "tools" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "tools")
 	}
 }
