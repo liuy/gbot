@@ -688,6 +688,22 @@ func FinalizeResult(messages []types.Message, agentType string, startTime time.T
 		// This assistant message has no text (pure tool_use) — continue backward
 	}
 
+	// Before fallback, check for interrupt marker on any message.
+	// When the sub-agent is cancelled, appendInlineInterruptMessage adds
+	// [Request interrupted by user] to the last message (user or assistant).
+	for _, msg := range messages {
+		for _, blk := range msg.Content {
+			if blk.Type == types.ContentTypeText && strings.Contains(blk.Text, types.InterruptMessage) {
+				return &types.SubQueryResult{
+					AgentType:       agentType,
+					Content:         "(agent interrupted by user)",
+					TotalDurationMs: time.Since(startTime).Milliseconds(),
+					TotalTokens:     totalUsage.InputTokens + totalUsage.OutputTokens,
+				}
+			}
+		}
+	}
+
 	// Fallback: no text found in any assistant message
 	return &types.SubQueryResult{
 		AgentType:       agentType,

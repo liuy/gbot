@@ -221,6 +221,54 @@ func TestResultExtractionNoText(t *testing.T) {
 	}
 }
 
+
+func TestResultExtractionInterruptOnUserMessage(t *testing.T) {
+	// Sub-agent was interrupted — interrupt marker is on user message (tool_result).
+	// FinalizeResult should detect it and return interrupted message, not "completed".
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("search")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("id1", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("id1", json.RawMessage(`"file contents"`), false),
+			types.NewTextBlock(types.InterruptMessage),
+		}},
+	}
+
+	startTime := time.Now()
+	result := FinalizeResult(messages, "Plan", startTime, types.Usage{}, 1)
+
+	if strings.Contains(result.Content, "completed") {
+		t.Errorf("should not say 'completed' when interrupted, got: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "interrupted") {
+		t.Errorf("Content should mention 'interrupted', got: %q", result.Content)
+	}
+}
+
+func TestResultExtractionInterruptOnAssistantMessage(t *testing.T) {
+	// Sub-agent interrupted mid-stream — interrupt on assistant message.
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("search")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("Let me check"),
+			types.NewTextBlock(types.InterruptMessage),
+		}},
+	}
+
+	startTime := time.Now()
+	result := FinalizeResult(messages, "Explore", startTime, types.Usage{}, 0)
+
+	// Should return the text content found ("Let me check[Request interrupted by user]")
+	if !strings.Contains(result.Content, "Let me check") {
+		t.Errorf("should contain text content, got: %q", result.Content)
+	}
+	if !strings.Contains(result.Content, types.InterruptMessage) {
+		t.Errorf("should contain interrupt marker, got: %q", result.Content)
+	}
+}
+
 func TestCallNilFactory(t *testing.T) {
 	at := New() // No SetFactory called
 
