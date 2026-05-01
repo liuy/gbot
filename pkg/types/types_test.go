@@ -2,7 +2,6 @@ package types_test
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -938,53 +937,3 @@ func TestQueryEventPermissionAskField(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// SubQueryResult.AppendCancelMarker
-// ---------------------------------------------------------------------------
-
-func TestAppendCancelMarker_WithExistingContent(t *testing.T) {
-	t.Parallel()
-
-	r := &types.SubQueryResult{Content: "partial result"}
-	r.AppendCancelMarker()
-
-	if !r.Cancelled {
-		t.Error("Cancelled = false, want true")
-	}
-	if !strings.Contains(r.Content, "partial result") {
-		t.Errorf("Content should preserve original, got %q", r.Content)
-	}
-	if !strings.Contains(r.Content, "[Query cancelled by user]") {
-		t.Errorf("Content should contain cancel marker, got %q", r.Content)
-	}
-}
-
-func TestAppendCancelMarker_EmptyContent(t *testing.T) {
-	t.Parallel()
-
-	r := &types.SubQueryResult{Content: ""}
-	r.AppendCancelMarker()
-
-	if !r.Cancelled {
-		t.Error("Cancelled = false, want true")
-	}
-	if r.Content != " [Query cancelled by user]" {
-		t.Errorf("Content = %q, want cancel marker only", r.Content)
-	}
-}
-
-func TestAppendCancelMarker_Idempotent(t *testing.T) {
-	t.Parallel()
-
-	r := &types.SubQueryResult{Content: "result"}
-	r.AppendCancelMarker()
-	firstContent := r.Content
-	r.AppendCancelMarker()
-
-	if r.Content == firstContent {
-		t.Error("second call should append another marker, content unchanged")
-	}
-	if !r.Cancelled {
-		t.Error("Cancelled = false after second call, want true")
-	}
-}

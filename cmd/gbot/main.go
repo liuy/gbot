@@ -223,9 +223,9 @@ func main() {
 			if result.Error != nil {
 				if ctx.Err() != nil {
 					// Source: agentToolUtils.ts:640-668 — AbortError path:
-					// return partial output + cancel marker, nil error.
+					// return partial output, nil error. FinalizeResult handles
+					// the interrupt message; no separate cancel marker needed.
 					r := agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0)
-					r.AppendCancelMarker()
 					return r, nil
 				}
 				return nil, result.Error
