@@ -373,12 +373,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 				e.logger.Warn("blocking limit exceeded, refusing API call",
 					"tokens", tokens,
 					"limit", blockingLimit)
-				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
+				blockErr := fmt.Errorf("Prompt is too long: %s context tokens exceeds %s limit", types.FormatTokenCount(tokens), types.FormatTokenCount(blockingLimit))
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: blockErr})
 				return QueryResult{
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
 					TotalUsage: totalUsage,
-					Error:      fmt.Errorf("Prompt is too long: %s context tokens exceeds %s limit", types.FormatTokenCount(tokens), types.FormatTokenCount(blockingLimit)),
+					Error:      blockErr,
 				}
 			}
 		}
@@ -497,7 +498,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 					e.appendMessage(types.Message{Role: types.RoleUser, Content: syntheticBlocks})
 				}
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
-				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
+					InputTokens:              totalUsage.InputTokens,
+					OutputTokens:             totalUsage.OutputTokens,
+					CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+					CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+				}})
 				return QueryResult{
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
@@ -595,7 +601,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
-			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
+				InputTokens:              totalUsage.InputTokens,
+				OutputTokens:             totalUsage.OutputTokens,
+				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+			}})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -623,7 +634,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Source: query.ts:1485-1516 — tool execution complete, check abort.
 		if err := ShouldAbort(ctx, "tools"); err != nil {
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
-			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
+				InputTokens:              totalUsage.InputTokens,
+				OutputTokens:             totalUsage.OutputTokens,
+				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+			}})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -645,7 +661,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		e.turnCount++
 	}
 
-	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
+		InputTokens:              totalUsage.InputTokens,
+		OutputTokens:             totalUsage.OutputTokens,
+		CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+		CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+	}})
 	return QueryResult{
 		Messages:   e.messages,
 		TurnCount:  e.turnCount,

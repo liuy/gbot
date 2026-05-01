@@ -452,6 +452,59 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 	}
 }
 
+func TestQuery_EventQueryEndCarriesErrorOnCancel(t *testing.T) {
+	// Regression test: when Escape cancels a query during tool execution,
+	// EventQueryEnd must carry the cancel error. Previously the error was
+	// only in resultCh (now removed) — EventQueryEnd had nil error, so
+	// the TUI showed no cancel feedback.
+	mp := &mockProvider{}
+
+	// LLM responds with a tool_use
+	blockStarted := make(chan struct{})
+	mt := &mockTool{
+		name:    "slow_tool",
+		enabled: true,
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			close(blockStarted)
+			<-ctx.Done() // block until cancelled
+			return nil, ctx.Err()
+		},
+	}
+
+	toolEvents := toolUseStreamEvents("test-model", "tu1", "slow_tool", `{}`)
+	mp.addResponse(toolEvents, nil)
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Dispatcher: ec,
+		Logger:     slog.Default(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		<-blockStarted
+		cancel()
+	}()
+
+	eng.QuerySync(ctx, "run the tool", nil)
+
+	endEvents := ec.FindEvents(types.EventQueryEnd)
+	if len(endEvents) == 0 {
+		t.Fatal("expected at least one EventQueryEnd")
+	}
+	last := endEvents[len(endEvents)-1]
+	if last.Error == nil {
+		t.Fatal("EventQueryEnd.Error must be non-nil when context cancelled during tool execution")
+	}
+	if !errors.Is(last.Error, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", last.Error)
+	}
+}
+
 func TestQuery_ContextCancellation(t *testing.T) {
 	mp := &mockProvider{}
 
