@@ -3021,8 +3021,13 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
 				hasAssistant = true
 				for _, cb := range msg.Content {
-					if cb.Type != types.ContentTypeToolUse || cb.ID != "tu_1" {
-						t.Errorf("unexpected content block: type=%q id=%q", cb.Type, cb.ID)
+					switch {
+					case cb.Type == types.ContentTypeToolUse && cb.ID == "tu_1":
+						// expected tool_use block
+					case cb.Type == types.ContentTypeText && cb.Text == types.InterruptMessage:
+						// expected: inline interrupt message appended on abort
+					default:
+						t.Errorf("unexpected content block: type=%q id=%q text=%q", cb.Type, cb.ID, cb.Text)
 					}
 				}
 			}
@@ -3096,3 +3101,203 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+
+// ---------------------------------------------------------------------------
+// TDD: appendInlineInterruptMessage — verify [Request interrupted by user]
+// appears in the last assistant message for all 3 abort paths, and does NOT
+// appear for loop-top abort.
+// ---------------------------------------------------------------------------
+
+// lastAssistantText returns the text content of the last assistant message.
+func lastAssistantText(msgs []types.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == types.RoleAssistant {
+			var parts []string
+			for _, cb := range msgs[i].Content {
+				if cb.Type == types.ContentTypeText {
+					parts = append(parts, cb.Text)
+				}
+			}
+			return strings.Join(parts, "")
+		}
+	}
+	return ""
+}
+
+// hasInterruptMessage checks if any assistant message contains InterruptMessage.
+func hasInterruptMessage(msgs []types.Message) bool {
+	for _, msg := range msgs {
+		for _, cb := range msg.Content {
+			if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, types.InterruptMessage) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestInlineInterrupt_PostStreamingAbort_Text(t *testing.T) {
+	// Cancel mid-stream while receiving text — interrupt message should appear.
+	// Pattern: same as TestCallLLM_PostLoopAbort_TextOnly but checks inline message.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "world"}}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected abort error")
+	}
+	if !hasInterruptMessage(result.Messages) {
+		text := lastAssistantText(result.Messages)
+		t.Errorf("expected %q in assistant messages, got: %q", types.InterruptMessage, text)
+	}
+}
+
+func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
+	// Cancel after tool_use blocks streamed via channel but before tool execution.
+	// Pattern: same as TestRunTurns_PostStreamingAbort_SyntheticToolResults.
+	mp := &testProvider{}
+	slowCh := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(slowCh)
+
+	mt := &testTool{name: "test_tool"}
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Tools: []tool.Tool{mt}, Model: "test", Dispatcher: tc})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		defer close(slowCh)
+		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "Let me help"}}
+		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 1, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "test_tool"}}
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 1, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}}
+		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 1}
+		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
+		slowCh <- llm.StreamEvent{Type: "message_stop"}
+		// Cancel after streaming completes but before tools execute
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected abort error")
+	}
+	if !hasInterruptMessage(result.Messages) {
+		text := lastAssistantText(result.Messages)
+		t.Errorf("expected %q in assistant messages after tool_use abort, got: %q", types.InterruptMessage, text)
+	}
+}
+
+func TestInlineInterrupt_PostToolAbort(t *testing.T) {
+	// Tool executes successfully, then context cancelled at Stage 23.
+	mp := &testProvider{}
+	toolEvents := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "test_tool"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(toolEvents, nil)
+	mp.addResponse(subTextEvents("done", ""), nil)
+
+	var ctxCancel context.CancelFunc
+	ct := &callbackTool{
+		name: "test_tool",
+		onCall: func() {
+			time.Sleep(50 * time.Millisecond)
+			ctxCancel()
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Tools: []tool.Tool{ct}, Model: "test", Dispatcher: tc})
+	ctx, cancel := context.WithCancel(context.Background())
+	ctxCancel = cancel
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected abort error after tool execution")
+	}
+	if !hasInterruptMessage(result.Messages) {
+		text := lastAssistantText(result.Messages)
+		t.Errorf("expected %q in assistant messages after post-tool abort, got: %q", types.InterruptMessage, text)
+	}
+}
+
+func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.T) {
+	// Cancel during reactive compact — interrupt appended to user query (last message).
+	mp := &testProvider{}
+	overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
+	mp.addResponse(nil, overflowErr)
+	ch := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{ContextWindow: 100000})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected abort error during compact")
+	}
+	// Interrupt appended to user query (last message in messages).
+	if !hasInterruptMessage(result.Messages) {
+		t.Error("reactive compact abort should have inline interrupt on user message")
+	}
+}
+
+func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
+	// Loop-top abort — interrupt message appended to user query message.
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	// Last message should be the user query with interrupt appended.
+	msgs := result.Messages
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != types.RoleUser {
+		t.Fatalf("expected last message to be user, got %s", last.Role)
+	}
+	if !hasInterruptMessage(msgs) {
+		t.Error("loop-top abort should have inline interrupt message on user message")
+	}
+}

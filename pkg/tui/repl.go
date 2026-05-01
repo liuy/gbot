@@ -473,18 +473,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case queryEndMsg:
-		// Display user-friendly message for abort errors
+		// For abort errors, append inline interrupt message and finish cleanly.
+		// The engine already added [Request interrupted by user] to the
+		// assistant message content; we mirror it in the TUI display.
 		displayErr := m.Err
 		if displayErr != nil {
-			if ae, ok := errors.AsType[*engine.AbortError](displayErr); ok {
-				switch ae.Phase {
-				case "streaming":
-					displayErr = fmt.Errorf("query cancelled during streaming")
-				case "tools":
-					displayErr = fmt.Errorf("query cancelled during tool execution")
-				default:
-					displayErr = fmt.Errorf("query cancelled (%s)", ae.Phase)
-				}
+			if _, ok := errors.AsType[*engine.AbortError](displayErr); ok {
+				a.repl.AppendChunk(types.InterruptMessage)
+				displayErr = nil
 			}
 		}
 		slog.Info("tui:queryEnd", "err", displayErr)

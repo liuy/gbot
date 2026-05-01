@@ -446,6 +446,10 @@ func (r *SubQueryResult) AppendCancelMarker() {
 // to detect recursive forking. Source: forkSubagent.ts — FORK_BOILERPLATE_TAG
 const ForkBoilerplateTag = "fork-boilerplate"
 
+// InterruptMessage is appended inline to the assistant message when the user cancels.
+// Source: TS INTERRUPT_MESSAGE — "[Request interrupted by user]".
+const InterruptMessage = "[Request interrupted by user]"
+
 // ---------------------------------------------------------------------------
 // EventDispatcher — interface for routing events from Engine to consumers.
 // Source: engine/EventDispatcher (moved here for dependency inversion)

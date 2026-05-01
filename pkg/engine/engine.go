@@ -343,6 +343,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Stage 4: Loop-top abort check.
 		// Source: query.ts — context cancellation check at loop top.
 		if err := ShouldAbort(ctx, "streaming"); err != nil {
+			e.appendInlineInterruptMessage()
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 			return QueryResult{
 				Messages: e.messages,
@@ -389,6 +390,24 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 
 		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt)
 		if err != nil {
+			// Abort check: if ctx was cancelled during callLLM, return *AbortError
+			// with inline interrupt message. This handles the common case where
+			// the user presses Escape during streaming (text, thinking, or tool_use).
+			if abortErr := ShouldAbort(ctx, "streaming"); abortErr != nil {
+				e.appendInlineInterruptMessage()
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr, Usage: &types.UsageEvent{
+					InputTokens:              totalUsage.InputTokens,
+					OutputTokens:             totalUsage.OutputTokens,
+					CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+					CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+				}})
+				return QueryResult{
+					Messages:   e.messages,
+					TurnCount:  e.turnCount,
+					TotalUsage: totalUsage,
+					Error:      abortErr,
+				}
+			}
 			// Reactive compact: try compact + retry on context overflow.
 			// TS align: query.ts:1119-1175 — reactiveCompact.tryReactiveCompact()
 			if e.compactor != nil && llm.IsContextOverflow(err) && !reactiveCompactDone {
@@ -440,6 +459,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			// If ctx was cancelled during compact, return *AbortError instead
 			// of the original API error (overflow, rate limit, etc.).
 			if abortErr := ShouldAbort(ctx, "streaming"); abortErr != nil {
+				e.appendInlineInterruptMessage()
 				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 				return QueryResult{
 					Messages:   e.messages,
@@ -492,6 +512,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			// Must generate synthetic tool_results for all tool_use blocks in the
 			// assistant message to prevent API 400 errors on the next turn.
 			if err := ShouldAbort(ctx, "streaming"); err != nil {
+				e.appendInlineInterruptMessage()
 				streamingExecutor.Discard()
 				syntheticBlocks := SyntheticToolResultsForBlocks(resp.Content, nil, AbortReasonUserInterrupted)
 				if len(syntheticBlocks) > 0 {
@@ -633,6 +654,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Stage 23: Post-tool-execution abort check.
 		// Source: query.ts:1485-1516 — tool execution complete, check abort.
 		if err := ShouldAbort(ctx, "tools"); err != nil {
+			e.appendInlineInterruptMessage()
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
 				InputTokens:              totalUsage.InputTokens,
@@ -1492,6 +1514,25 @@ func (e *Engine) appendMessage(msg types.Message) {
 	e.mu.Lock()
 	e.messages = append(e.messages, msg)
 	e.mu.Unlock()
+}
+
+// appendInlineInterruptMessage appends the interrupt message to the last
+// assistant message's content, searching backwards. This handles the case
+// where tool results were appended after the assistant message.
+// Source: TS createUserInterruptionMessage.
+func (e *Engine) appendInlineInterruptMessage() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.messages) == 0 {
+		return
+	}
+	last := &e.messages[len(e.messages)-1]
+	last.Content = append(last.Content, types.NewTextBlock(types.InterruptMessage))
+	e.logger.Info("engine:append_inline_interrupt",
+		"msg_index", len(e.messages)-1,
+		"role", last.Role,
+		"total_messages", len(e.messages),
+		"content_blocks", len(last.Content))
 }
 
 // appendMessages adds multiple messages to the history under Lock.

@@ -5226,18 +5226,19 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 		t.Error("streaming should be false after queryEnd")
 	}
 
-	// Check the friendly error message is displayed
+	// AbortError should append inline interrupt message, not display as error.
+	// The message content should contain the interrupt text.
 	lastMsg := app.repl.lastMsg()
 	if lastMsg == nil {
-		t.Fatal("expected an error message after abort")
+		t.Fatal("expected a message after abort")
 	}
 	text := lastMsg.View(200, false, "", false, 50)
-	if !strings.Contains(text, "cancelled during streaming") {
-		t.Errorf("expected friendly abort message, got:\n%s", text)
+	if !strings.Contains(text, types.InterruptMessage) {
+		t.Errorf("expected inline interrupt message, got:\n%s", text)
 	}
-	// Should NOT contain raw "context canceled"
-	if strings.Contains(text, "context canceled") {
-		t.Errorf("should not contain raw context.Canceled text, got:\n%s", text)
+	// Should NOT contain "Error:" prefix — cancellation is not an error
+	if strings.Contains(text, "Error:") {
+		t.Errorf("abort should not display as Error, got:\n%s", text)
 	}
 }
 
@@ -5254,13 +5255,17 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 		t.Error("streaming should be false after queryEnd")
 	}
 
+	// AbortError during tool execution should also show inline interrupt.
 	lastMsg := app.repl.lastMsg()
 	if lastMsg == nil {
-		t.Fatal("expected an error message after abort")
+		t.Fatal("expected a message after abort")
 	}
 	text := lastMsg.View(200, false, "", false, 50)
-	if !strings.Contains(text, "cancelled during tool execution") {
-		t.Errorf("expected friendly tools abort message, got:\n%s", text)
+	if !strings.Contains(text, types.InterruptMessage) {
+		t.Errorf("expected inline interrupt message, got:\n%s", text)
+	}
+	if strings.Contains(text, "Error:") {
+		t.Errorf("abort should not display as Error, got:\n%s", text)
 	}
 }
 
