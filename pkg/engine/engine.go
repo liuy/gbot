@@ -450,6 +450,18 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				}
 			}
 
+			// Stage 15.5: Abort check after reactive compact attempt.
+			// If ctx was cancelled during compact, return *AbortError instead
+			// of the original API error (overflow, rate limit, etc.).
+			if abortErr := ShouldAbort(ctx, "streaming"); abortErr != nil {
+				return QueryResult{
+					Messages:   e.messages,
+					TurnCount:  e.turnCount,
+					TotalUsage: totalUsage,
+					Error:      abortErr,
+				}
+			}
+
 			// Stage 16: Error handling
 			action := e.handleStreamError(err)
 			if !action.Continue {
@@ -815,7 +827,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					contentBlocks, nil, AbortReasonStreamingFallback)
 				streamingExecutor.Discard()
 			}
-			if hasContent {
+			if len(contentBlocks) > 0 {
 				e.appendMessage(types.Message{
 					Role:       types.RoleAssistant,
 					Content:    contentBlocks,

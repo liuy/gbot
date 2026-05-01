@@ -3009,3 +3009,140 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 			t.Error("expected partial assistant message to be appended")
 		}
 	}
+
+	func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
+		// Gap 2 fix: mid-stream abort with tool_use but NO text/thinking.
+		// hasContent would be false, but contentBlocks is non-empty.
+		// The abort handler should still append the partial assistant message
+		// and generate synthetic tool_results.
+		//
+		// Simulate: events flow, then cancel fires, select guard catches it.
+		// We use an unbuffered channel to force synchronization: goroutine sends
+		// one event at a time, main goroutine consumes, cancel fires mid-stream.
+		mp := &testProvider{}
+		ch := make(chan llm.StreamEvent, 20)
+		mp.addChannelResponse(ch)
+
+		mt := &testTool{name: "Read"}
+		eng := New(&Params{
+			Provider: mp,
+			Tools:    []tool.Tool{mt},
+			Model:    "test",
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			// Send tool_use events (NO text_delta, so hasContent stays false)
+			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
+			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+			// Wait for main goroutine to process events, then cancel + close
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			close(ch)
+		}()
+
+		eventCh, resultCh := eng.Query(ctx, "test", nil)
+		for range eventCh {
+		}
+		result := <-resultCh
+
+		if result.Error == nil {
+			t.Fatal("expected error from abort")
+		}
+
+		var ae *AbortError
+		if !errors.As(result.Error, &ae) {
+			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+		}
+		if ae.Phase != "streaming" {
+			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+		}
+
+		// Verify partial assistant message was appended (this is the Gap 2 fix)
+		hasAssistant := false
+		for _, msg := range result.Messages {
+			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+				hasAssistant = true
+				for _, cb := range msg.Content {
+					if cb.Type != types.ContentTypeToolUse || cb.ID != "tu_1" {
+						t.Errorf("unexpected content block: type=%q id=%q", cb.Type, cb.ID)
+					}
+				}
+			}
+		}
+		if !hasAssistant {
+			t.Error("expected partial assistant message with tool_use block (Gap 2: contentBlocks non-empty should append)")
+		}
+
+		// Verify synthetic tool_result was generated
+		hasSynthetic := false
+		for _, msg := range result.Messages {
+			for _, cb := range msg.Content {
+				if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
+					hasSynthetic = true
+				}
+			}
+		}
+		if !hasSynthetic {
+			t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
+		}
+	}
+
+	func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
+		// Gap 3 fix: cancel during reactive compact should return *AbortError,
+		// not the original API error (context overflow).
+		mp := &testProvider{}
+		// First response: context overflow error
+		overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
+		mp.addResponse(nil, overflowErr)
+		// Second response: won't be reached
+		ch := make(chan llm.StreamEvent, 10)
+		mp.addChannelResponse(ch)
+
+		eng := New(&Params{
+			Provider: mp,
+			Model:    "test",
+		})
+		// Set compactor that blocks until ctx is cancelled
+		eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{
+			ContextWindow: 100000,
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Cancel while compact is blocking
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			close(ch)
+		}()
+
+		eventCh, resultCh := eng.Query(ctx, "test", nil)
+		for range eventCh {
+		}
+		result := <-resultCh
+
+		if result.Error == nil {
+			t.Fatal("expected error")
+		}
+
+		// Should be *AbortError, not context overflow or raw context.Canceled
+		var ae *AbortError
+		if !errors.As(result.Error, &ae) {
+			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+		}
+		if ae.Phase != "streaming" {
+			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+		}
+	}
+
+	// blockingCompactor blocks on ctx until cancelled, then returns error.
+	type blockingCompactor struct{}
+
+	func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*CompactResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
