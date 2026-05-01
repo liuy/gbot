@@ -589,6 +589,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Source: TS onCancel — Escape during streaming cancels the query.
 		// Do NOT call FinishStream — let queryEndMsg handle it naturally.
 		if a.repl.IsStreaming() {
+			slog.Info("tui:escape_cancel", "hasCancelFunc", a.repl.cancelFunc != nil)
 			if a.repl.cancelFunc != nil {
 				a.repl.cancelFunc()
 				a.repl.cancelFunc = nil
@@ -736,6 +737,7 @@ func (a *App) resetNavAndAccum() {
 // handleCtrlC handles Ctrl+C: cancel stream or double-press quit.
 func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 	if a.repl.IsStreaming() {
+		slog.Info("tui:ctrlc_cancel", "hasCancelFunc", a.repl.cancelFunc != nil)
 		if a.repl.cancelFunc != nil {
 			a.repl.cancelFunc()
 			a.repl.cancelFunc = nil

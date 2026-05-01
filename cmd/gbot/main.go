@@ -221,8 +221,12 @@ func main() {
 				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
 			}
 			if result.Error != nil {
-				if ctx.Err() != nil && len(result.Messages) > 0 {
-					return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0), nil
+				if ctx.Err() != nil {
+					// Source: agentToolUtils.ts:640-668 — AbortError path:
+					// return partial output + cancel marker, nil error.
+					r := agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0)
+					r.AppendCancelMarker()
+					return r, nil
 				}
 				return nil, result.Error
 			}

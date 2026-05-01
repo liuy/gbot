@@ -492,6 +492,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				}
 			}
 		}
+		slog.Info("tui:queryEnd", "err", displayErr)
 		a.repl.FinishStream(displayErr)
 
 		// Sync status bar with engine's final ContextTokens (post-compact).

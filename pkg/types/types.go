@@ -426,6 +426,20 @@ type SubQueryResult struct {
 	TotalTokens       int
 	TotalToolUseCount int
 	AsyncLaunched     bool // true = fork agent launched in background
+	Cancelled         bool // true = query was cancelled by user (partial output)
+}
+
+const cancelMarker = " [Query cancelled by user]"
+
+// AppendCancelMarker marks the result as cancelled and appends a user-visible marker.
+// Source: agentToolUtils.ts:640-668 — AbortError produces status:'killed' + partialResult.
+func (r *SubQueryResult) AppendCancelMarker() {
+	r.Cancelled = true
+	if r.Content == "" {
+		r.Content = cancelMarker
+	} else {
+		r.Content += cancelMarker
+	}
 }
 
 // ForkBoilerplateTag is the marker string used in fork agent directive messages

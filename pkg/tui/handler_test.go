@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -326,12 +327,12 @@ func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
 func TestConvertEventToMsg_QueryEnd(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventQueryEnd})
-	if msg == nil {
-		t.Fatal("EventQueryEnd should not return nil")
-	}
-	_, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Errorf("expected queryEndMsg, got %T", msg)
+	// EventQueryEnd must NOT produce queryEndMsg — the TUI gets the real
+	// result (with error info) via resultCh. Converting here causes a race:
+	// hub's empty queryEndMsg arrives before resultCh, causing FinishStream(nil)
+	// which swallows AbortError.
+	if msg != nil {
+		t.Errorf("EventQueryEnd should return nil (handled via resultCh), got %T", msg)
 	}
 }
 
@@ -657,4 +658,39 @@ func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 		t.Fatal("timed out waiting for auto-deny")
 	}
 	<-done // ensure Handle returns
+}
+
+// ---------------------------------------------------------------------------
+// Integration: Hub EventQueryEnd must not produce queryEndMsg
+// ---------------------------------------------------------------------------
+
+// TestIntegration_HubEventQueryEndNoQueryEndMsg simulates the full cancel flow:
+// engine aborts → hub dispatches EventQueryEnd → TUI handler receives it.
+// The handler must NOT convert EventQueryEnd to queryEndMsg, because the TUI
+// gets the real result (with error info) via resultCh. If EventQueryEnd produces
+// queryEndMsg, it races with resultCh and FinishStream(nil) swallows AbortError.
+func TestIntegration_HubEventQueryEndNoQueryEndMsg(t *testing.T) {
+	h := hub.NewHub()
+	handler := NewTUIHandler()
+	h.Subscribe(handler)
+
+	// Simulate engine abort: hub dispatches EventQueryEnd
+	h.Dispatch(hub.Event{Type: types.EventQueryEnd})
+
+	// Wait for hub goroutine to dispatch
+	time.Sleep(20 * time.Millisecond)
+
+	// Drain appCh — should NOT find any queryEndMsg
+	for {
+		select {
+		case msg := <-handler.appCh:
+			if _, ok := msg.(queryEndMsg); ok {
+				t.Error("appCh should NOT contain queryEndMsg from hub's EventQueryEnd — " +
+					"this causes a race with resultCh and swallows AbortError")
+			}
+			// Other message types are fine (e.g. events we don't care about)
+		default:
+			return // appCh empty, good
+		}
+	}
 }

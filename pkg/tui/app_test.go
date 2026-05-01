@@ -2169,9 +2169,8 @@ func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventQueryEnd,
 	})
-	_, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Errorf("expected queryEndMsg, got %T", msg)
+	if msg != nil {
+		t.Errorf("EventQueryEnd should return nil (handled via resultCh), got %T", msg)
 	}
 }
 
@@ -5413,3 +5412,5 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 		t.Errorf("expected friendly tools abort message, got:\n%s", text)
 	}
 }
+
+// ---------------------------------------------------------------------------
