@@ -2830,3 +2830,182 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		t.Errorf("Phase = %q, want %q", ae.Phase, "tools")
 	}
 }
+
+	// ---------------------------------------------------------------------------
+	// Post-loop abort tests (TDD for the !streamComplete cascade fix)
+	// Bug: when provider closes streamCh due to ctx cancel, for-range exits
+	// without triggering the select <-ctx.Done() guard inside the loop.
+	// ---------------------------------------------------------------------------
+
+	func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
+		// Provider sends tool_use events but NOT message_stop, then ctx is cancelled
+		// and channel closed. Post-loop cascade should detect abort and generate
+		// synthetic tool_results for the orphaned tool_use block.
+		mp := &testProvider{}
+		ch := make(chan llm.StreamEvent, 20)
+		mp.addChannelResponse(ch)
+
+		mt := &testTool{name: "Read"}
+		eng := New(&Params{
+			Provider: mp,
+			Tools:    []tool.Tool{mt},
+			Model:    "test",
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			// Send tool_use events but NO message_stop
+			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
+			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+			ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
+			// Wait for main goroutine to consume all events and block on for-range
+			time.Sleep(50 * time.Millisecond)
+			// Cancel + close channel (simulates provider detecting ctx cancellation)
+			cancel()
+			close(ch)
+		}()
+
+		eventCh, resultCh := eng.Query(ctx, "test", nil)
+		for range eventCh {
+		}
+		result := <-resultCh
+
+		if result.Error == nil {
+			t.Fatal("expected error from post-loop abort")
+		}
+
+		var ae *AbortError
+		if !errors.As(result.Error, &ae) {
+			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+		}
+		if ae.Phase != "streaming" {
+			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+		}
+
+		// Verify synthetic tool_result was generated for the orphaned tool_use
+		hasSyntheticResult := false
+		for _, msg := range result.Messages {
+			for _, cb := range msg.Content {
+				if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
+					hasSyntheticResult = true
+					var parsed map[string]string
+					if err := json.Unmarshal(cb.Content, &parsed); err != nil {
+						t.Fatalf("failed to parse synthetic tool_result: %v", err)
+					}
+					if !strings.Contains(parsed["error"], "discarded") {
+						t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed["error"])
+					}
+				}
+			}
+		}
+		if !hasSyntheticResult {
+			t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
+		}
+	}
+
+	func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
+		// Provider closes channel immediately after ctx is cancelled, before
+		// sending any content events. Should return AbortError with no messages.
+		mp := &testProvider{}
+		ch := make(chan llm.StreamEvent, 5)
+		mp.addChannelResponse(ch)
+
+		eng := New(&Params{Provider: mp, Model: "test"})
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			// Send only message_start, no content, no message_stop
+			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			close(ch)
+		}()
+
+		eventCh, resultCh := eng.Query(ctx, "test", nil)
+		for range eventCh {
+		}
+		result := <-resultCh
+
+		if result.Error == nil {
+			t.Fatal("expected error from post-loop abort")
+		}
+
+		var ae *AbortError
+		if !errors.As(result.Error, &ae) {
+			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+		}
+		if ae.Phase != "streaming" {
+			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+		}
+
+		// No assistant message should be appended (no content received)
+		for _, msg := range result.Messages {
+			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+				t.Errorf("unexpected assistant message with %d content blocks (expected no content)", len(msg.Content))
+			}
+		}
+	}
+
+	func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
+		// Provider sends text content but NOT message_stop, then ctx cancelled.
+		// Should return AbortError with partial assistant message appended.
+		mp := &testProvider{}
+		ch := make(chan llm.StreamEvent, 20)
+		mp.addChannelResponse(ch)
+
+		eng := New(&Params{Provider: mp, Model: "test"})
+		ctx, cancel := context.WithCancel(context.Background())
+
+		go func() {
+			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
+			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
+			// Wait for main goroutine to consume all events and block on for-range
+			time.Sleep(50 * time.Millisecond)
+			// Cancel + close without message_stop
+			cancel()
+			close(ch)
+		}()
+
+		eventCh, resultCh := eng.Query(ctx, "test", nil)
+		for range eventCh {
+		}
+		result := <-resultCh
+
+		if result.Error == nil {
+			t.Fatal("expected error from post-loop abort")
+		}
+
+		var ae *AbortError
+		if !errors.As(result.Error, &ae) {
+			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+		}
+		if ae.Phase != "streaming" {
+			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+		}
+
+		// Partial assistant message should be appended
+		hasAssistant := false
+		for _, msg := range result.Messages {
+			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+				hasAssistant = true
+				// Verify text content was preserved
+				found := false
+				for _, cb := range msg.Content {
+					if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "Hello") {
+						found = true
+					}
+				}
+				if !found {
+					t.Error("assistant message missing partial text content")
+				}
+			}
+		}
+		if !hasAssistant {
+			t.Error("expected partial assistant message to be appended")
+		}
+	}

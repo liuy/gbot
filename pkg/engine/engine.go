@@ -1013,15 +1013,58 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 
 	if hasContent && len(contentBlocks) == 0 {
 		contentBlocks = append(contentBlocks, types.NewTextBlock(currentText.String()))
+	} else if currentText.Len() > 0 {
+		// Finalize text blocks that didn't get content_block_stop.
+		for i := range contentBlocks {
+			if contentBlocks[i].Type == types.ContentTypeText && contentBlocks[i].Text == "" {
+				contentBlocks[i].Text = currentText.String()
+				break
+			}
+		}
 	}
 
-	// Detect interrupted stream: content was received but stream never completed.
-	if hasContent && !streamComplete {
-		if streamingExecutor != nil {
-			streamingExecutor.Discard()
+	// Post-loop: stream ended without message_stop — determine why.
+	//
+	// Go channel semantics create a control flow gap: when ctx is cancelled,
+	// the provider closes streamCh, causing for-range to exit naturally
+	// without triggering the select <-ctx.Done() guard inside the loop.
+	if !streamComplete {
+		if ctx.Err() != nil {
+			// User cancelled — provider closed channel after detecting ctx cancellation.
+			var orphanedBlocks []types.ContentBlock
+			if streamingExecutor != nil {
+				orphanedBlocks = SyntheticToolResultsForBlocks(contentBlocks, nil, AbortReasonStreamingFallback)
+				streamingExecutor.Discard()
+			}
+			if len(contentBlocks) > 0 {
+				e.appendMessage(types.Message{
+					Role:       types.RoleAssistant,
+					Content:    contentBlocks,
+					Model:      model,
+					StopReason: stopReason,
+					Usage:      &usage,
+					Timestamp:  time.Now(),
+				})
+				if len(orphanedBlocks) > 0 {
+					e.appendMessage(types.Message{
+						Role:    types.RoleUser,
+						Content: orphanedBlocks,
+					})
+				}
+			}
+			return nil, nil, ShouldAbort(ctx, "streaming")
 		}
-		e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
-		return nil, nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
+		if hasContent {
+			// Genuine stream failure: content received but no stop signal.
+			if streamingExecutor != nil {
+				streamingExecutor.Discard()
+			}
+			e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
+			return nil, nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
+		}
+		// No content and no cancel — stream ended immediately without explanation.
+		e.logger.Error("stream ended without content or completion signal")
+		return nil, nil, fmt.Errorf("stream ended without content or completion signal")
 	}
 
 	return &types.Message{
