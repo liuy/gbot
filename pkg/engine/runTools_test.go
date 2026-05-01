@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -162,7 +161,7 @@ func TestConcurrentToolLoop_SingleTool(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
 	var events []types.QueryEvent
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
 		events = append(events, evt)
 	})
 
@@ -195,7 +194,7 @@ func TestConcurrentToolLoop_UnknownTool(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "nonexistent", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
@@ -226,7 +225,7 @@ func TestConcurrentToolLoop_ToolError(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "fail", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
@@ -277,7 +276,7 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_b", Input: json.RawMessage(`{}`)},
 	}
 	start := time.Now()
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
 	if len(result.ToolResultBlocks) != 2 {
@@ -332,7 +331,7 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_b", Input: json.RawMessage(`{}`)},
 	}
 	start := time.Now()
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
 	if len(result.ToolResultBlocks) != 2 {
@@ -383,7 +382,7 @@ func TestConcurrentToolLoop_MixedSafeUnsafe(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_b", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_3", Name: "safe_c", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
@@ -424,7 +423,7 @@ func TestConcurrentToolLoop_ResultsInOrder(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "slow", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "fast", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
@@ -470,7 +469,7 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
 	}
 	start := time.Now()
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
 	if len(result.ToolResultBlocks) != 2 {
@@ -526,7 +525,7 @@ func TestConcurrentToolLoop_NonBashErrorNoKill(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "fail_tool", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
@@ -557,7 +556,7 @@ func TestConcurrentToolLoop_ContextCancelled(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
@@ -586,7 +585,7 @@ func TestConcurrentToolLoop_InterruptBlockNotCancelled(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "agent", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(ctx, tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
@@ -638,7 +637,7 @@ func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_mod", Input: json.RawMessage(`{}`)},
 	}
 	tctx := &types.ToolUseContext{WorkingDir: "/original"}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, tctx, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, tctx, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
@@ -672,7 +671,7 @@ func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "streamer", Input: json.RawMessage(`{}`)},
 	}
 	var events []types.QueryEvent
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
 		events = append(events, evt)
 	})
 
@@ -705,7 +704,7 @@ func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
 func TestConcurrentToolLoop_EmptyBlocks(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, nil, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, nil, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 0 {
 		t.Errorf("expected 0 results for nil blocks, got %d", len(result.ToolResultBlocks))
@@ -713,7 +712,7 @@ func TestConcurrentToolLoop_EmptyBlocks(t *testing.T) {
 
 	// Also test with non-tool blocks only.
 	blocks := []types.ContentBlock{types.NewTextBlock("not a tool")}
-	result = engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result = ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	if len(result.ToolResultBlocks) != 0 {
 		t.Errorf("expected 0 results for text-only blocks, got %d", len(result.ToolResultBlocks))
 	}
@@ -728,7 +727,7 @@ func TestConcurrentToolLoop_SkipsNonToolBlocks(t *testing.T) {
 		types.NewTextBlock("not a tool"),
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "echo", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
@@ -760,7 +759,7 @@ func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"bad"}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
 	}
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
@@ -798,7 +797,7 @@ func TestConcurrentToolLoop_UnknownToolDisplayOutput(t *testing.T) {
 	}
 
 	var events []types.QueryEvent
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
 		events = append(events, evt)
 	})
 
@@ -857,7 +856,7 @@ func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
 	}
 
 	var events []types.QueryEvent
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
 		events = append(events, evt)
 	})
 
@@ -922,7 +921,7 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 
 	var mu sync.Mutex
 	var events []types.QueryEvent
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {
 		mu.Lock()
 		events = append(events, evt)
 		mu.Unlock()
@@ -992,7 +991,7 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_read_99", Name: "capture", Input: json.RawMessage(`{}`)},
 	}
 
-	result := engine.ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	if len(result.ToolResultBlocks) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
 	}

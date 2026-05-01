@@ -1,17 +1,15 @@
-package engine_test
+package engine
 
 import (
 	"context"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/liuy/gbot/pkg/engine"
 )
 
 func TestNewAbortController(t *testing.T) {
 	t.Parallel()
-	ac := engine.NewAbortController(context.Background())
+	ac := NewAbortController(context.Background())
 	if ac == nil {
 		t.Fatal("expected non-nil controller")
 	}
@@ -24,7 +22,7 @@ func TestNewAbortController(t *testing.T) {
 }
 
 func TestAbortController_Abort(t *testing.T) {
-	ac := engine.NewAbortController(context.Background())
+	ac := NewAbortController(context.Background())
 	ac.Abort("user interrupt")
 
 	if ac.Reason() != "user interrupt" {
@@ -42,7 +40,7 @@ func TestAbortController_Abort(t *testing.T) {
 
 func TestAbortController_ParentCancellation(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
-	ac := engine.NewAbortController(parent)
+	ac := NewAbortController(parent)
 
 	cancel()
 
@@ -66,7 +64,7 @@ func TestAbortController_ParentCancellation(t *testing.T) {
 func TestShouldInterruptTool_NoAbort(t *testing.T) {
 	ctx := context.Background()
 	// Both InterruptCancel (0) and InterruptBlock (1) should return false when ctx is alive.
-	if engine.ShouldInterruptTool(0, ctx) {
+	if ShouldInterruptTool(0, ctx) {
 		t.Error("expected false for InterruptCancel with live context")
 	}
 }
@@ -76,7 +74,7 @@ func TestShouldInterruptTool_Cancelled(t *testing.T) {
 	cancel()
 
 	// InterruptCancel (0) should return true when context is cancelled
-	if !engine.ShouldInterruptTool(0, ctx) {
+	if !ShouldInterruptTool(0, ctx) {
 		t.Error("expected true for InterruptCancel with cancelled context")
 	}
 	// Verify the cancelled context actually reports an error.
@@ -87,7 +85,7 @@ func TestShouldInterruptTool_Cancelled(t *testing.T) {
 
 func TestShouldAbort_NoAbort(t *testing.T) {
 	ctx := context.Background()
-	if err := engine.ShouldAbort(ctx, "streaming"); err != nil {
+	if err := ShouldAbort(ctx, "streaming"); err != nil {
 		t.Errorf("expected nil with live context, got: %v", err)
 	}
 }
@@ -96,12 +94,12 @@ func TestShouldAbort_Cancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := engine.ShouldAbort(ctx, "streaming")
+	err := ShouldAbort(ctx, "streaming")
 	if err == nil {
 		t.Fatal("expected error with cancelled context")
 	}
 
-	var ae *engine.AbortError
+	var ae *AbortError
 	if !errors.As(err, &ae) {
 		t.Fatalf("expected *AbortError, got %T", err)
 	}

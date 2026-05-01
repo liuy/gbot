@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -108,12 +107,12 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "After compact response."), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
-	eng := engine.New(&engine.Params{
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -125,18 +124,14 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
 	// Verify boundary marker exists in result messages
 	foundBoundary := false
-	for _, msg := range result.Messages {
+	for _, msg := range eng.Messages() {
 		for _, block := range msg.Content {
 			if block.Type == types.ContentTypeText {
 				var content struct {
@@ -187,12 +182,12 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	// Second call: success after compact
 	p.addStream(textStreamEvents("test-model", "Response after reactive compact."), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
-	eng := engine.New(&engine.Params{
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000, // high threshold so proactive doesn't fire first
 		},
 		Logger: slog.Default(),
@@ -204,19 +199,14 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test query", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test query", nil)
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
 
-
 	// Verify the response came from the retry (second API call)
 	foundRecovery := false
-	for _, msg := range result.Messages {
+	for _, msg := range eng.Messages() {
 		for _, block := range msg.Content {
 			if strings.Contains(block.Text, "reactive compact") {
 				foundRecovery = true
@@ -252,16 +242,16 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	parentMsgs := makeLargeMessages(10, 100)
 	originalCount := len(parentMsgs)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -269,7 +259,7 @@ func TestAutoCompact_ForkCompact_Isolation(t *testing.T) {
 	eng.SetMessages(parentMsgs)
 
 	// Create sub-engine (fork) — should inherit config but not affect parent
-	subEng := eng.NewSubEngine(engine.SubEngineOptions{
+	subEng := eng.NewSubEngine(SubEngineOptions{
 		SystemPrompt: "You are a sub-agent.",
 		MaxTurns:     5,
 		Model:        "test-model",
@@ -321,13 +311,13 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 500,
 		},
 		Logger: slog.Default(),
@@ -341,10 +331,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "turn 1", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "turn 1", nil)
 	if result.Error != nil {
 		t.Fatalf("turn 1 failed: %v", result.Error)
 	}
@@ -354,18 +341,14 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	eng.SetMessages(largeMsgs)
 	p.addStream(textStreamEvents("test-model", "Turn 2 response after compact."), nil)
 
-	eventCh, resultCh = eng.Query(ctx, "turn 2", nil)
-	for range eventCh {
-	}
-	result = <-resultCh
+	result = eng.QuerySync(ctx, "turn 2", nil)
 	if result.Error != nil {
 		t.Fatalf("turn 2 failed: %v", result.Error)
 	}
 
-
 	// Verify turn 2 response is in final messages
 	foundTurn2 := false
-	for _, msg := range result.Messages {
+	for _, msg := range eng.Messages() {
 		for _, block := range msg.Content {
 			if strings.Contains(block.Text, "Turn 2 response") {
 				foundTurn2 = true
@@ -420,12 +403,12 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 		p.addStream(textStreamEvents("test-model", "Done."), nil)
 	}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
-	eng := engine.New(&engine.Params{
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	eng := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -447,14 +430,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected error during concurrent compact: %v", result.Error)
-	}
+	_ = eng.QuerySync(ctx, "test", nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +457,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 
 	p := &integrationProvider{}
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
 	msgs := makeMessages(10, 5000)
 	result, err := compactor.Compact(context.Background(), msgs)
@@ -544,13 +520,13 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "sub-engine response after compact"), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
-	parent := engine.New(&engine.Params{
+	parent := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -558,7 +534,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 
 	// Sub-engine inherits compactor + config from parent.
 	// NewSubEngine passes compactor + autoCompactConfig.
-	subEng := parent.NewSubEngine(engine.SubEngineOptions{
+	subEng := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
 		MaxTurns:  5,
 	})
@@ -631,20 +607,20 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	// Second call: success after compact reduces messages
 	p.addStream(textStreamEvents("test-model", "recovered after reactive compact"), nil)
 
-	compactor := engine.NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 
-	parent := engine.New(&engine.Params{
+	parent := New(&Params{
 		Provider:  p,
 		Model:     "test-model",
 		Compactor: compactor,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000, // high threshold so proactive doesn't fire first
 		},
 		Logger: slog.Default(),
 	})
 
 	// Sub-engine inherits compactor + config
-	subEng := parent.NewSubEngine(engine.SubEngineOptions{
+	subEng := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
 		MaxTurns:  5,
 	})

@@ -152,7 +152,7 @@ func TestApp_View_Streaming(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
@@ -212,7 +212,7 @@ func TestApp_Update_ErrorMsg(t *testing.T) {
 func TestApp_Update_StreamChunk(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.AppendTextItem()
 
 	model, _ := app.Update(textDeltaMsg{Text: "hello "})
@@ -232,7 +232,7 @@ func TestApp_Update_StreamChunk(t *testing.T) {
 func TestApp_Update_StreamToolUse(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	model, _ := app.Update(toolStartMsg{ID: "t1", Name: "Read", Input: `{"file":"test.go"}`})
 	a := model.(*App)
@@ -279,7 +279,7 @@ func TestApp_Update_StreamToolResult(t *testing.T) {
 func TestApp_Update_StreamComplete(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("response text")
@@ -353,7 +353,7 @@ func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
 	}
 
 	app := newTestApp(mp)
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 
@@ -826,7 +826,7 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 	app.repl.AppendTextItem()
@@ -859,7 +859,7 @@ func TestApp_View_StreamingNoProgressStart(t *testing.T) {
 func TestApp_Update_StreamToolDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 
 	model, _ := app.Update(toolParamDeltaMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
@@ -876,7 +876,7 @@ func TestApp_Update_StreamToolDelta(t *testing.T) {
 func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Write", "", `{}`)
 
 	delta := `{"content":"package main\nfunc main() {}"}`
@@ -934,7 +934,7 @@ func TestReplState_PendingToolStarted_NilLastMsg(t *testing.T) {
 
 func TestReplState_PendingToolDone_UnknownID(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	// No tool was started with this ID
 	s.PendingToolDone("nonexistent", "output", false, 0)
 	// Should not panic, no tool updated
@@ -942,7 +942,7 @@ func TestReplState_PendingToolDone_UnknownID(t *testing.T) {
 
 func TestReplState_PendingToolDelta(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	s.PendingToolStarted("t1", "Read", "", `{}`)
 	s.PendingToolDelta("t1", `{"file":"a.go"}`, "a.go")
 	tcv := s.pendingTool["t1"]
@@ -964,7 +964,7 @@ func TestReplState_PendingToolDelta(t *testing.T) {
 
 func TestReplState_PendingToolDelta_UnknownID(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	// Delta for unknown tool ID — should not panic
 	s.PendingToolDelta("unknown", `{"x":1}`, "")
 }
@@ -1003,7 +1003,6 @@ func TestApp_ReadEvents_AppChClosed(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
-	app.repl.resultCh = nil
 
 	// Close appCh to trigger the !ok path
 	close(h.appCh)
@@ -1016,70 +1015,13 @@ func TestApp_ReadEvents_AppChClosed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// readEvents — resultCh receives result
-// ---------------------------------------------------------------------------
-
-func TestApp_ReadEvents_ReceiveResult(t *testing.T) {
-	t.Parallel()
-	h := NewTUIHandler()
-	eng := engine.New(&engine.Params{
-		Provider: &tuiMockProvider{},
-		Model:    "test",
-	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
-	app.tuiHandler = h
-
-	// Create a result channel that will deliver a result
-	resultCh := make(chan engine.QueryResult, 1)
-	resultCh <- engine.QueryResult{Error: errors.New("test error")}
-	app.repl.resultCh = resultCh
-
-	cmd := app.readEvents()
-	msg := cmd()
-	cm, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Fatalf("expected queryEndMsg, got %T", msg)
-	}
-	if cm.Err == nil || cm.Err.Error() != "test error" {
-		t.Errorf("expected error from result, got %v", cm.Err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// readEvents — resultCh already closed
-// ---------------------------------------------------------------------------
-
-func TestApp_ReadEvents_ResultChClosed(t *testing.T) {
-	t.Parallel()
-	h := NewTUIHandler()
-	eng := engine.New(&engine.Params{
-		Provider: &tuiMockProvider{},
-		Model:    "test",
-	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
-	app.tuiHandler = h
-
-	// Close resultCh before reading
-	resultCh := make(chan engine.QueryResult, 1)
-	close(resultCh)
-	app.repl.resultCh = resultCh
-
-	cmd := app.readEvents()
-	msg := cmd()
-	_, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Fatalf("expected queryEndMsg when resultCh closed, got %T", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // updateRepl — turnStartMsg, streamMessageMsg, toolEndMsg
 // ---------------------------------------------------------------------------
 
 func TestApp_UpdateRepl_TurnStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	_, cmd := app.updateRepl(turnStartMsg{})
 	if cmd == nil {
 		t.Error("turnStartMsg should return a readEvents cmd")
@@ -1089,7 +1031,7 @@ func TestApp_UpdateRepl_TurnStart(t *testing.T) {
 func TestApp_UpdateRepl_StreamMessage(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	_, cmd := app.updateRepl(streamMessageMsg{Role: "assistant"})
 	if cmd == nil {
 		t.Error("streamMessageMsg should return a readEvents cmd")
@@ -1099,7 +1041,7 @@ func TestApp_UpdateRepl_StreamMessage(t *testing.T) {
 func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 	_, cmd := app.updateRepl(toolEndMsg{ToolUseID: "t1", Output: "ok"})
 	if cmd == nil {
@@ -1114,7 +1056,7 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 func TestApp_Update_RoutesAgentToolMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search code", "{}")
 	_, cmd := app.Update(agentToolMsg{
 		ParentToolUseID: "call_abc",
@@ -1131,7 +1073,7 @@ func TestApp_Update_RoutesAgentToolMsg(t *testing.T) {
 func TestApp_UpdateRepl_AgentToolMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 	_, cmd := app.updateRepl(agentToolMsg{
 		ParentToolUseID: "call_abc",
@@ -1164,7 +1106,7 @@ func TestApp_UpdateRepl_AgentToolMsg(t *testing.T) {
 func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
 	// Step 1: tool_start with empty summary (as happens at content_block_start)
@@ -1204,7 +1146,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
 	// tool_start at depth=0 (sub-agent's depth)
@@ -1248,7 +1190,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
 func TestApp_UpdateRepl_AgentThinkingRemoved(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
 	// thinking_start → adds Thinking entry
@@ -1287,7 +1229,7 @@ func TestApp_UpdateRepl_AgentThinkingRemoved(t *testing.T) {
 func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_1", "Bash", "test", "{}")
 	// Clear any existing dirty flag
 	app.contentDirty = false
@@ -1310,7 +1252,7 @@ func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
 func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
 	// Main model usage — snaps displayedInputTokens
@@ -1350,7 +1292,7 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	handled, cmd := app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 50})
 	if !handled {
@@ -1382,7 +1324,7 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	handled, cmd := app.updateRepl(thinkingStartMsg{})
 	if !handled {
@@ -1399,7 +1341,7 @@ func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
 func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.thinkingActive = true
 
 	handled, cmd := app.updateRepl(thinkingEndMsg{Duration: 3 * time.Second})
@@ -1423,7 +1365,7 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 
 func TestReplState_PendingThinkingStarted(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	s.PendingThinkingStarted()
 
 	m := s.lastMsg()
@@ -1455,7 +1397,7 @@ func TestReplState_PendingThinkingStarted_NilLastMsg(t *testing.T) {
 
 func TestReplState_PendingThinkingDelta(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	s.PendingThinkingStarted()
 	s.PendingThinkingDelta("hello ")
 	s.PendingThinkingDelta("world")
@@ -1469,7 +1411,7 @@ func TestReplState_PendingThinkingDelta(t *testing.T) {
 
 func TestReplState_PendingThinkingDelta_NoActiveBlock(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	// No thinking block started — activeThinkingIdx is -1
 	s.PendingThinkingDelta("should be ignored")
 	m := s.lastMsg()
@@ -1489,7 +1431,7 @@ func TestReplState_PendingThinkingDelta_NilLastMsg(t *testing.T) {
 
 func TestReplState_PendingThinkingDone(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	s.PendingThinkingStarted()
 	s.PendingThinkingDelta("some thought")
 	s.PendingThinkingDone(2500 * time.Millisecond)
@@ -1512,7 +1454,7 @@ func TestReplState_PendingThinkingDone(t *testing.T) {
 
 func TestReplState_PendingThinkingDone_NoActiveBlock(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	// No thinking block started
 	s.PendingThinkingDone(time.Second)
 	// Should not panic, activeThinkingIdx should stay -1
@@ -1527,7 +1469,7 @@ func TestReplState_PendingThinkingDone_NilLastMsg(t *testing.T) {
 func TestApp_UpdateRepl_ThinkingDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// Start thinking first
 	app.updateRepl(thinkingStartMsg{})
@@ -1557,7 +1499,7 @@ func TestApp_UpdateRepl_ThinkingDelta(t *testing.T) {
 func TestApp_UpdateRepl_ThinkingStartCreatesBlock(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	app.updateRepl(thinkingStartMsg{})
 
@@ -1576,7 +1518,7 @@ func TestApp_UpdateRepl_ThinkingStartCreatesBlock(t *testing.T) {
 func TestApp_UpdateRepl_ThinkingEndMarksDone(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	app.updateRepl(thinkingStartMsg{})
 	app.updateRepl(thinkingDeltaMsg{Text: "thinking text"})
@@ -1703,7 +1645,7 @@ func TestApp_HandleKey_CtrlY_EmptyRing(t *testing.T) {
 
 func TestReplState_AppendChunk_LastBlockIsTool(t *testing.T) {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	s.PendingToolStarted("t1", "Read", "", `{}`)
 	// Last block is a tool block, not text
 	s.AppendChunk("hello")
@@ -1875,7 +1817,7 @@ func TestApp_Update_UnknownMsg(t *testing.T) {
 
 func TestApp_FinishStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("response")
@@ -1908,7 +1850,7 @@ func TestApp_FinishStream_Empty(t *testing.T) {
 
 func TestApp_FinishStream_WithTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
 	app.repl.PendingToolDone("t1", "contents", false, 0)
@@ -1931,7 +1873,7 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 
 func TestApp_FinishStream_WithError(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("partial")
@@ -1980,7 +1922,7 @@ func TestApp_FinishStream_NoDuplicateRendering(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 
 	// Simulate streaming: blocks grow directly in s.messages
@@ -2013,7 +1955,7 @@ func TestApp_FinishStream_NoDuplicateRendering(t *testing.T) {
 func TestApp_FinishStream_ClearsState(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("some text")
 
@@ -2029,7 +1971,7 @@ func TestApp_FinishStream_ClearsState(t *testing.T) {
 func TestApp_FinishStream_BlocksGrowIncrementally(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// First text block
 	app.repl.AppendTextItem()
@@ -2169,8 +2111,8 @@ func TestApp_EngineEventToMsg_Complete(t *testing.T) {
 	msg := NewTUIHandler().convertEventToMsg(types.QueryEvent{
 		Type: types.EventQueryEnd,
 	})
-	if msg != nil {
-		t.Errorf("EventQueryEnd should return nil (handled via resultCh), got %T", msg)
+	if _, ok := msg.(queryEndMsg); !ok {
+		t.Errorf("EventQueryEnd should return queryEndMsg, got %T", msg)
 	}
 }
 
@@ -2195,7 +2137,6 @@ func TestApp_ReadEvents_NilHandler(t *testing.T) {
 		Model:    "test-model",
 	})
 	app := NewApp(eng, json.RawMessage(`"test"`), nil)
-	app.repl.resultCh = nil
 
 	cmd := app.readEvents()
 	msg := cmd()
@@ -2216,8 +2157,7 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	app.height = 24
 
 	ctx := context.Background()
-	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
-	app.repl.resultCh = resultCh
+	app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 
 	cmd := app.readEvents()
 	// Wait briefly for events to flow through Hub → TUIHandler → appCh
@@ -2269,8 +2209,6 @@ func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
 
-	// Simulate: appCh has buffered events, resultCh is already closed
-	app.repl.resultCh = nil // already closed
 
 	// Send a buffered event first
 	h.appCh <- textDeltaMsg{Text: "late event"}
@@ -2296,7 +2234,6 @@ func TestApp_ReadEvents_ReturnsCompleteWhenBothChannelsClosed(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
-	app.repl.resultCh = nil
 
 	// Close appCh so idle readEvents gets !ok and returns queryEndMsg
 	close(h.appCh)
@@ -2317,7 +2254,6 @@ func TestApp_ReadEvents_NilHandlerReturnsComplete(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = nil
-	app.repl.resultCh = nil
 
 	cmd := app.readEvents()
 	msg := cmd()
@@ -2332,7 +2268,7 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	v := app.View()
@@ -2464,7 +2400,7 @@ func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 
@@ -2502,7 +2438,7 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now().Add(-2 * time.Second)
 	app.repl.AppendTextItem()
@@ -2538,7 +2474,7 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 
@@ -2574,7 +2510,7 @@ func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 
 	// Simulate first query state (without starting a real engine goroutine)
 	app.repl.AddUserMessage("first query")
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.status.usage.InputTokens = 100
 	app.status.usage.OutputTokens = 50
 	app.displayedInputTokens = 100
@@ -2776,9 +2712,6 @@ func TestApp_ReadEvents_BlockingAppCh(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
-	// resultCh is non-nil but empty (no sender) so select blocks on both channels
-	resultCh := make(chan engine.QueryResult)
-	app.repl.resultCh = resultCh
 
 	// Send event using channel-based sync to avoid race
 	sendReady := make(chan struct{})
@@ -2800,66 +2733,6 @@ func TestApp_ReadEvents_BlockingAppCh(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// readEvents — resultCh receives in blocking select
-// ---------------------------------------------------------------------------
-
-func TestApp_ReadEvents_BlockingResultCh(t *testing.T) {
-	t.Parallel()
-	h := NewTUIHandler()
-	eng := engine.New(&engine.Params{
-		Provider: &tuiMockProvider{},
-		Model:    "test",
-	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
-	app.tuiHandler = h
-
-	resultCh := make(chan engine.QueryResult, 1)
-	app.repl.resultCh = resultCh
-
-	// Send result AFTER readEvents starts
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		resultCh <- engine.QueryResult{Error: errors.New("async error")}
-	}()
-
-	cmd := app.readEvents()
-	msg := cmd()
-	cm, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Fatalf("expected queryEndMsg, got %T", msg)
-	}
-	if cm.Err == nil || cm.Err.Error() != "async error" {
-		t.Errorf("expected async error, got %v", cm.Err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// readEvents — resultCh closed in blocking select
-// ---------------------------------------------------------------------------
-
-func TestApp_ReadEvents_BlockingResultChClosed(t *testing.T) {
-	t.Parallel()
-	h := NewTUIHandler()
-	eng := engine.New(&engine.Params{
-		Provider: &tuiMockProvider{},
-		Model:    "test",
-	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
-	app.tuiHandler = h
-
-	resultCh := make(chan engine.QueryResult, 1)
-	close(resultCh)
-	app.repl.resultCh = resultCh
-
-	cmd := app.readEvents()
-	msg := cmd()
-	_, ok := msg.(queryEndMsg)
-	if !ok {
-		t.Fatalf("expected queryEndMsg when resultCh closed in blocking select, got %T", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // readEvents — blocking select appCh closed
 // ---------------------------------------------------------------------------
 
@@ -2872,10 +2745,6 @@ func TestApp_ReadEvents_BlockingAppChClosed(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
-
-	// Non-nil resultCh that will block (empty, no sender)
-	resultCh := make(chan engine.QueryResult)
-	app.repl.resultCh = resultCh
 
 	// Close appCh so the blocking select hits !ok
 	close(h.appCh)
@@ -3089,8 +2958,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	app.height = 24
 
 	ctx := t.Context()
-	_, resultCh := app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
-	app.repl.resultCh = resultCh
+	app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 
 	// Drain hub events into appCh until it's empty, using a done channel
 	// for sync instead of time.Sleep to avoid race.
@@ -3124,7 +2992,7 @@ func TestApp_View_StreamingToolBlink(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendTextItem()
@@ -3238,7 +3106,7 @@ func TestPrettyJSON_InvalidJSON(t *testing.T) {
 func TestApp_Update_StreamToolOutput(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
 
 	model, _ := app.Update(toolOutputDeltaMsg{
@@ -3263,7 +3131,7 @@ func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
 	t.Parallel()
 	// Sending output for a non-existent tool should not panic
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "nonexistent",
 		DisplayOutput: "output",
@@ -3277,7 +3145,7 @@ func TestApp_Update_StreamToolOutput_NonExistent(t *testing.T) {
 func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
 
 	// Set pendingToolStart BEFORE calling Update so it's available synchronously
@@ -3313,7 +3181,7 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 
 	// Simulate: user submits first query
 	app.repl.AddUserMessage("first query")
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-2 * time.Second)
 
 	// Streaming: assistant response
@@ -3380,7 +3248,7 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 	app.height = 24
 
 	app.repl.AddUserMessage("hi")
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello back")
@@ -3420,7 +3288,7 @@ func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 	app.repl.AppendTextItem()
@@ -3469,7 +3337,7 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 20 // small height to trigger scrolling (maxLines = 17)
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 
@@ -3522,7 +3390,7 @@ func TestApp_View_ToolOutputCollapsed(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 40
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	// 10 lines of output — should collapse to 3 lines + hint
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
@@ -3552,7 +3420,7 @@ func TestApp_View_ToolOutputExpanded(t *testing.T) {
 	app.width = 80
 	app.height = 40
 	app.allToolsExpanded = true
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
@@ -3577,7 +3445,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 
 	// Simulate full query lifecycle
 	app.repl.AddUserMessage("test")
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
@@ -3677,7 +3545,7 @@ func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 15 // small height → maxLines = 12
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 
@@ -3715,7 +3583,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	}
 
 	app.repl.AddUserMessage("test")
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
@@ -3759,7 +3627,7 @@ func TestApp_Scroll_WindowLimitsContent(t *testing.T) {
 	app.height = 10 // maxContentLines = 10 - 3 = 7
 
 	// Add 20 lines of plain text (not tool output, to avoid per-tool truncation)
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
@@ -3793,7 +3661,7 @@ func TestApp_Scroll_AutoScrollToBottom(t *testing.T) {
 	app.height = 10
 
 	// Add long content
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
@@ -3820,7 +3688,7 @@ func TestApp_Scroll_PageUpPageDown(t *testing.T) {
 	app.height = 10
 
 	// Add long content
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
@@ -3855,7 +3723,7 @@ func TestApp_Scroll_MouseWheel(t *testing.T) {
 	app.height = 10
 
 	// Add long content
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
@@ -3885,7 +3753,7 @@ func TestApp_Scroll_ResetOnSubmit(t *testing.T) {
 	app.height = 10
 
 	// Add long content and scroll up
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
@@ -3929,7 +3797,7 @@ func TestApp_Scroll_IndicatorPosition(t *testing.T) {
 	app.height = 10
 
 	// Add long content
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
@@ -3968,7 +3836,7 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	app.height = 12 // maxContentLines=7, viewLines=6
 
 	// Create content where scrollTotal is just over maxContentLines.
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 10))
@@ -4000,7 +3868,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 
 	// 19 lines of content → totalPages=4, maxOff=13
 	// At bottom (offset=13): midLine=16, old formula 16/6+1=3 (wrong, should be 4)
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 19))
@@ -4016,7 +3884,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	app2 := newTestApp(&tuiMockProvider{})
 	app2.width = 80
 	app2.height = 12
-	app2.repl.StartQuery(nil)
+	app2.repl.StartQuery()
 	app2.spinner.Start()
 	app2.progressStart = time.Now()
 	app2.repl.AppendChunk(strings.Repeat("line\n", 13))
@@ -4040,7 +3908,7 @@ func TestApp_Scroll_HalfPageScroll(t *testing.T) {
 	app.height = 12 // maxContentLines=7, viewLines=6, halfPage=3
 
 	// 30 lines → 5 pages (viewLines=6)
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
@@ -4093,7 +3961,7 @@ func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
 	app.height = 40 // large height
 
 	// Add short content
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk("short response")
@@ -4124,7 +3992,7 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	// 9 lines: scrollTotal=9, maxOff=9-6=3, halfPage=3.
 	// PgUp from bottom: 3-3=0 → clamped to 0.
 	// Bug: userScrolled = 0>0 = false → View() auto-scrolls back.
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now()
 	app.repl.AppendChunk(strings.Repeat("line\n", 9))
@@ -4218,7 +4086,7 @@ func TestApp_ToolCount_ResetsOnNewQuery(t *testing.T) {
 	app.repl.toolCount = 5
 
 	// StartQuery resets toolCount
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	if app.repl.toolCount != 0 {
 		t.Errorf("toolCount should be 0 after StartQuery, got %d", app.repl.toolCount)
@@ -4229,7 +4097,7 @@ func TestApp_ToolCount_IncrementOnToolStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("id1", "Read", "", "")
 	if app.repl.toolCount != 1 {
 		t.Errorf("toolCount should be 1 after one tool start, got %d", app.repl.toolCount)
@@ -4264,7 +4132,7 @@ func TestApp_ToolCount_NotShownWhenNotStreaming(t *testing.T) {
 func TestApp_UsageMsg_AccumulateAllFields(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// First usage event: input=6, cache_creation=404
 	app.updateRepl(usageMsg{InputTokens: 6, OutputTokens: 0, CacheReadInputTokens: 0, CacheCreationInputTokens: 404})
@@ -4301,7 +4169,7 @@ func TestApp_UsageMsg_AccumulateAllFields(t *testing.T) {
 func TestApp_UsageMsg_AccumulateSecondLarger(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// First: input=10
 	app.updateRepl(usageMsg{InputTokens: 10, OutputTokens: 0})
@@ -4327,7 +4195,7 @@ func TestApp_UsageMsg_AccumulateSecondLarger(t *testing.T) {
 func TestApp_UsageMsg_CacheCreationAccumulates(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// First API call: input=100, cache_read=500, cache_creation=200
 	app.updateRepl(usageMsg{InputTokens: 100, OutputTokens: 0, CacheReadInputTokens: 500, CacheCreationInputTokens: 200})
@@ -4357,7 +4225,7 @@ func TestApp_UsageMsg_CacheCreationAccumulates(t *testing.T) {
 func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 
 	// Simulate API response with 26000 tokens
@@ -4383,7 +4251,7 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 
 	// Turn 1: input=8400, output=57
 	app.updateRepl(usageMsg{InputTokens: 8400, OutputTokens: 57})
@@ -4408,7 +4276,7 @@ func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
 func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
 	// Main model sets context
@@ -4725,7 +4593,6 @@ func TestApp_ReadEvents_IdleModeWithStop(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	h := NewTUIHandler()
 	app.tuiHandler = h
-	app.repl.resultCh = nil // idle mode
 	app.idleStop = make(chan struct{})
 
 	// Signal stop immediately
@@ -4738,22 +4605,6 @@ func TestApp_ReadEvents_IdleModeWithStop(t *testing.T) {
 	}
 }
 
-func TestApp_ReadEvents_ResultChannelClosed(t *testing.T) {
-	app := newTestApp(&tuiMockProvider{})
-	h := NewTUIHandler()
-	app.tuiHandler = h
-
-	// Create and immediately close result channel
-	resultCh := make(chan engine.QueryResult)
-	close(resultCh)
-	app.repl.resultCh = resultCh
-
-	cmd := app.readEvents()
-	msg := cmd()
-	if _, ok := msg.(queryEndMsg); !ok {
-		t.Fatalf("expected queryEndMsg from closed resultCh, got %T", msg)
-	}
-}
 
 func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
@@ -5224,7 +5075,7 @@ func TestApp_Enter_NormalText_Submits(t *testing.T) {
 func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 
 	// Simulate blocking limit error from engine
@@ -5259,7 +5110,7 @@ func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 
 	// Simulate streaming: TUI sees per-turn values (overwritten each turn).
@@ -5364,7 +5215,7 @@ func TestApp_HandleEscape_DuringStreaming_NoCancelFunc(t *testing.T) {
 func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 
 	// Simulate query end with streaming-phase AbortError
@@ -5393,7 +5244,7 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.StartQuery(nil)
+	app.repl.StartQuery()
 	app.progressStart = time.Now().Add(-1 * time.Second)
 
 	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}

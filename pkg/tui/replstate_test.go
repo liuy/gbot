@@ -9,7 +9,7 @@ import (
 // freshState creates a ReplState with a started query and one assistant message.
 func freshState() *ReplState {
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	return s
 }
 
@@ -58,7 +58,7 @@ func TestAddUserMessage(t *testing.T) {
 func TestStartQuery_SetsStreaming(t *testing.T) {
 	t.Parallel()
 	s := NewReplState()
-	s.StartQuery(nil)
+	s.StartQuery()
 	if !s.IsStreaming() {
 		t.Error("expected streaming after StartQuery")
 	}
@@ -734,5 +734,5 @@ func TestCloseChannels(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.CloseChannels()
-	// Just verify it doesn't panic — resultCh is unexported
+	// Just verify it doesn't panic
 }

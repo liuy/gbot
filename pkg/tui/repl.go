@@ -36,9 +36,6 @@ type ReplState struct {
 	// Total tool calls in the current query (for progress display)
 	toolCount int
 
-	// Channel for the final query result (nil when idle)
-	resultCh <-chan engine.QueryResult
-
 	// Cancellation
 	cancelFunc context.CancelFunc
 
@@ -84,8 +81,7 @@ func (s *ReplState) AddUserMessage(text string) {
 
 // StartQuery begins a new streaming query, storing the result channel.
 // Creates the assistant message immediately so blocks grow during streaming.
-func (s *ReplState) StartQuery(resultCh <-chan engine.QueryResult) {
-	s.resultCh = resultCh
+func (s *ReplState) StartQuery() {
 	s.streaming = true
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
@@ -384,7 +380,6 @@ func (s *ReplState) FinishStream(err error) {
 
 // CloseChannels clears the result channel.
 func (s *ReplState) CloseChannels() {
-	s.resultCh = nil
 }
 
 // IsStreaming returns whether a query is in progress.
@@ -561,7 +556,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.contentCache = ""
 		a.contentDirty = false
 		// Keep listening for Hub events while idle (Path B: fork agent
-		// notifications). readEvents blocks on appCh only when resultCh is nil.
+		// notifications). readEvents blocks on appCh.
 		return true, a.readEvents()
 
 	case usageMsg:
@@ -620,8 +615,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Path B: idle — trigger ProcessNotifications
 		ctx, cancel := context.WithCancel(context.Background())
 		a.repl.cancelFunc = cancel
-		_, resultCh := a.engine.ProcessNotifications(ctx, a.systemPrompt)
-		a.repl.StartQuery(resultCh)
+		a.engine.ProcessNotifications(ctx, a.systemPrompt)
+		a.repl.StartQuery()
 		a.status.SetStreaming(true)
 		a.spinner.Start()
 		a.progressStart = time.Now()
@@ -640,7 +635,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case errMsg:
 		a.status.SetError(m.Err.Error())
-		a.repl.CloseChannels()
 		// Commit uncommitted messages before resetting so error context
 		// is preserved in terminal scrollback.
 		var errCommitCmd tea.Cmd
@@ -727,9 +721,9 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.repl.cancelFunc = cancel
 
-	// eventCh is discarded — events flow through Hub → TUIHandler → appCh
-	_, resultCh := a.engine.Query(ctx, text, a.systemPrompt)
-	a.repl.StartQuery(resultCh)
+	// events flow through Hub → TUIHandler → appCh
+	a.engine.Query(ctx, text, a.systemPrompt)
+	a.repl.StartQuery()
 	a.status.SetStreaming(true)
 	a.spinner.Start()
 	a.progressStart = time.Now()
@@ -761,62 +755,21 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	)
 }
 
-// readEvents reads the next event from TUIHandler.appCh or the result channel.
+// readEvents reads the next event from TUIHandler.appCh.
 // This is called as a tea.Cmd.
 func (a *App) readEvents() tea.Cmd {
 	return func() tea.Msg {
 		if a.tuiHandler == nil {
 			return queryEndMsg{}
 		}
-
-		// Drain loop: prioritize appCh events over resultCh so that tool events
-		// arriving just before resultCh closes are not missed.
-		for {
-			// First try non-blocking drain of any buffered appCh events.
-			select {
-			case msg, ok := <-a.tuiHandler.appCh:
-				if !ok {
-					a.repl.CloseChannels()
-					return queryEndMsg{}
-				}
-				return msg
-			default:
-				// appCh empty — fall through to blocking select below.
+		select {
+		case msg, ok := <-a.tuiHandler.appCh:
+			if !ok {
+				return queryEndMsg{}
 			}
-
-			// appCh is empty. Now block waiting for the next event from either
-			// channel. resultCh may be nil (already closed) or closed.
-			if a.repl.resultCh == nil {
-				// Idle mode: block on appCh with cancellation via idleStop.
-				// This is the "always listening" equivalent of TS's useQueueProcessor.
-				select {
-				case msg, ok := <-a.tuiHandler.appCh:
-					if !ok {
-						return queryEndMsg{}
-					}
-					slog.Debug("tui:readEvents:idle", "msgType", fmt.Sprintf("%T", msg))
-					return msg
-				case <-a.idleStop:
-					return idleAbortedMsg{}
-				}
-			}
-
-			select {
-			case msg, ok := <-a.tuiHandler.appCh:
-				if !ok {
-					a.repl.CloseChannels()
-					return queryEndMsg{}
-				}
-				slog.Debug("tui:readEvents:return:blocked", "msgType", fmt.Sprintf("%T", msg))
-				return msg
-
-			case result, ok := <-a.repl.resultCh:
-				if !ok {
-					return queryEndMsg{}
-				}
-				a.repl.CloseChannels()
-				return queryEndMsg{Err: result.Error, TotalUsage: result.TotalUsage}
-			}
+			return msg
+		case <-a.idleStop:
+			return idleAbortedMsg{}
 		}
 	}
 }

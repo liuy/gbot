@@ -223,10 +223,16 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		}
 
 	case types.EventQueryEnd:
-		// Don't emit queryEndMsg from hub events — resultCh already carries
-		// the authoritative queryEndMsg with error info. Emitting here would
-		// race with resultCh and swallow AbortError notifications.
-		return nil
+		var totalUsage types.Usage
+		if evt.Usage != nil {
+			totalUsage = types.Usage{
+				InputTokens:              evt.Usage.InputTokens,
+				OutputTokens:             evt.Usage.OutputTokens,
+				CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
+			}
+		}
+		return queryEndMsg{Err: evt.Error, TotalUsage: totalUsage}
 
 	case types.EventToolParamDelta:
 		// LLM streaming JSON input delta

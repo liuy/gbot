@@ -327,12 +327,10 @@ func TestConvertEventToMsg_ToolUseDelta_ToolResultNil(t *testing.T) {
 func TestConvertEventToMsg_QueryEnd(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventQueryEnd})
-	// EventQueryEnd must NOT produce queryEndMsg — the TUI gets the real
-	// result (with error info) via resultCh. Converting here causes a race:
-	// hub's empty queryEndMsg arrives before resultCh, causing FinishStream(nil)
-	// which swallows AbortError.
-	if msg != nil {
-		t.Errorf("EventQueryEnd should return nil (handled via resultCh), got %T", msg)
+	// EventQueryEnd produces queryEndMsg — the sole completion signal
+	// now that resultCh has been removed.
+	if _, ok := msg.(queryEndMsg); !ok {
+		t.Errorf("EventQueryEnd should return queryEndMsg, got %T", msg)
 	}
 }
 
@@ -666,9 +664,8 @@ func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 
 // TestIntegration_HubEventQueryEndNoQueryEndMsg simulates the full cancel flow:
 // engine aborts → hub dispatches EventQueryEnd → TUI handler receives it.
-// The handler must NOT convert EventQueryEnd to queryEndMsg, because the TUI
-// gets the real result (with error info) via resultCh. If EventQueryEnd produces
-// queryEndMsg, it races with resultCh and FinishStream(nil) swallows AbortError.
+// The handler converts EventQueryEnd to queryEndMsg, which is the sole
+// completion signal now that resultCh has been removed.
 func TestIntegration_HubEventQueryEndNoQueryEndMsg(t *testing.T) {
 	h := hub.NewHub()
 	handler := NewTUIHandler()
@@ -680,17 +677,19 @@ func TestIntegration_HubEventQueryEndNoQueryEndMsg(t *testing.T) {
 	// Wait for hub goroutine to dispatch
 	time.Sleep(20 * time.Millisecond)
 
-	// Drain appCh — should NOT find any queryEndMsg
+	// Drain appCh — should find queryEndMsg (sole completion signal)
+	found := false
 	for {
 		select {
 		case msg := <-handler.appCh:
 			if _, ok := msg.(queryEndMsg); ok {
-				t.Error("appCh should NOT contain queryEndMsg from hub's EventQueryEnd — " +
-					"this causes a race with resultCh and swallows AbortError")
+				found = true
 			}
-			// Other message types are fine (e.g. events we don't care about)
 		default:
-			return // appCh empty, good
+			if !found {
+				t.Error("appCh should contain queryEndMsg from hub's EventQueryEnd")
+			}
+			return
 		}
 	}
 }

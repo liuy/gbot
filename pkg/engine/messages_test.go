@@ -1,16 +1,15 @@
-package engine_test
+package engine
 
 import (
 	"encoding/json"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestCreateUserMessage(t *testing.T) {
 	t.Parallel()
-	msg := engine.CreateUserMessage("hello")
+	msg := CreateUserMessage("hello")
 	if msg.Role != types.RoleUser {
 		t.Errorf("expected RoleUser, got %s", msg.Role)
 	}
@@ -27,7 +26,7 @@ func TestCreateUserMessage(t *testing.T) {
 
 func TestCreateAssistantMessage(t *testing.T) {
 	t.Parallel()
-	msg := engine.CreateAssistantMessage("response text")
+	msg := CreateAssistantMessage("response text")
 	if msg.Role != types.RoleAssistant {
 		t.Errorf("expected RoleAssistant, got %s", msg.Role)
 	}
@@ -48,7 +47,7 @@ func TestCreateToolResultMessage(t *testing.T) {
 		types.NewToolResultBlock("tu_1", json.RawMessage(`"ok"`), false),
 		types.NewToolResultBlock("tu_2", json.RawMessage(`"also ok"`), false),
 	}
-	msg := engine.CreateToolResultMessage(blocks)
+	msg := CreateToolResultMessage(blocks)
 	if msg.Role != types.RoleUser {
 		t.Errorf("expected RoleUser, got %s", msg.Role)
 	}
@@ -72,7 +71,7 @@ func TestCreateToolResultMessage(t *testing.T) {
 
 func TestCreateToolErrorBlock(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateToolErrorBlock("tu_1", "something broke")
+	block := CreateToolErrorBlock("tu_1", "something broke")
 	if block.Type != types.ContentTypeToolResult {
 		t.Errorf("expected ContentTypeToolResult, got %s", block.Type)
 	}
@@ -94,7 +93,7 @@ func TestCreateToolErrorBlock(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonUserInterrupted)
+	block := CreateSyntheticErrorBlock("tu_1", AbortReasonUserInterrupted)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
@@ -106,7 +105,7 @@ func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonStreamingFallback)
+	block := CreateSyntheticErrorBlock("tu_1", AbortReasonStreamingFallback)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
@@ -118,7 +117,7 @@ func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 
 func TestCreateSyntheticErrorBlock_SiblingError(t *testing.T) {
 	t.Parallel()
-	block := engine.CreateSyntheticErrorBlock("tu_1", engine.AbortReasonSiblingError)
+	block := CreateSyntheticErrorBlock("tu_1", AbortReasonSiblingError)
 	var parsed map[string]string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
@@ -138,7 +137,7 @@ func TestExtractTextBlocks(t *testing.T) {
 			types.NewTextBlock("world"),
 		},
 	}
-	texts := engine.ExtractTextBlocks(msg)
+	texts := ExtractTextBlocks(msg)
 	if len(texts) != 2 {
 		t.Fatalf("expected 2 text blocks, got %d", len(texts))
 	}
@@ -153,7 +152,7 @@ func TestExtractTextBlocks_Empty(t *testing.T) {
 		Role:    types.RoleAssistant,
 		Content: []types.ContentBlock{},
 	}
-	texts := engine.ExtractTextBlocks(msg)
+	texts := ExtractTextBlocks(msg)
 	if len(texts) != 0 {
 		t.Errorf("expected 0 text blocks, got %d", len(texts))
 	}
@@ -166,7 +165,7 @@ func TestHasToolUseBlocks(t *testing.T) {
 			types.NewTextBlock("no tools here"),
 		},
 	}
-	if engine.HasToolUseBlocks(msg) {
+	if HasToolUseBlocks(msg) {
 		t.Error("expected false for text-only message")
 	}
 
@@ -176,7 +175,7 @@ func TestHasToolUseBlocks(t *testing.T) {
 			{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "bash"},
 		},
 	}
-	if !engine.HasToolUseBlocks(msg2) {
+	if !HasToolUseBlocks(msg2) {
 		t.Error("expected true for message with tool_use")
 	}
 }
@@ -190,7 +189,7 @@ func TestExtractToolUseBlocks(t *testing.T) {
 			{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "grep"},
 		},
 	}
-	blocks := engine.ExtractToolUseBlocks(msg)
+	blocks := ExtractToolUseBlocks(msg)
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 tool use blocks, got %d", len(blocks))
 	}

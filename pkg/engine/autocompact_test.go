@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -30,13 +29,13 @@ type mockCompactor struct {
 	err       error
 }
 
-func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*engine.CompactResult, error) {
+func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*CompactResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
 	m.lastInput = msgs
 	if m.result != nil {
-		return &engine.CompactResult{
+		return &CompactResult{
 			BeforeTokens: len(msgs) * 100,
 			AfterTokens:  len(m.result) * 100,
 			Messages:     m.result,
@@ -47,7 +46,7 @@ func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*engin
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("[Previous conversation compacted]")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("[Summary acknowledged]")}},
 	}
-	return &engine.CompactResult{
+	return &CompactResult{
 		BeforeTokens: len(msgs) * 100,
 		AfterTokens:  len(msgs2) * 100,
 		Messages:     msgs2,
@@ -180,11 +179,11 @@ func TestAutoCompact_Proactive_TriggersWhenOverThreshold(t *testing.T) {
 
 	mc := &mockCompactor{}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 1000,
 		},
 		Logger: slog.Default(),
@@ -195,11 +194,7 @@ func TestAutoCompact_Proactive_TriggersWhenOverThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -217,11 +212,11 @@ func TestAutoCompact_Proactive_DoesNotTriggerWhenUnderThreshold(t *testing.T) {
 
 	mc := &mockCompactor{}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -235,11 +230,7 @@ func TestAutoCompact_Proactive_DoesNotTriggerWhenUnderThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -262,11 +253,11 @@ func TestAutoCompact_Proactive_CompactedMessagesReplaced(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100,
 		},
 		Logger: slog.Default(),
@@ -277,11 +268,7 @@ func TestAutoCompact_Proactive_CompactedMessagesReplaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -319,11 +306,11 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 
 	mc := &mockCompactor{}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -332,11 +319,7 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
@@ -365,11 +348,11 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 
 	mc := &mockCompactor{}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000,
 		},
 		Logger: slog.Default(),
@@ -378,11 +361,7 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error when reactive compact retry also fails")
 	}
@@ -406,7 +385,7 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 		Message:   "too long",
 	})
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -415,11 +394,7 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error when no compactor available")
 	}
@@ -446,11 +421,11 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 
 	mc := &mockCompactor{err: errors.New("compact failed")}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: mc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow:          100,
 			MaxConsecutiveFailures: 2,
 		},
@@ -462,11 +437,7 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -490,7 +461,7 @@ func TestAutoCompact_NoCompactor_NormalQuery(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello!"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -499,11 +470,7 @@ func TestAutoCompact_NoCompactor_NormalQuery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -526,7 +493,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	_, err = sc.Compact(context.Background(), []types.Message{})
 	if err == nil {
@@ -546,7 +513,7 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -578,7 +545,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 5000)
 
@@ -619,7 +586,7 @@ func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
@@ -647,7 +614,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
 
 	msgs := makeMessages(10, 1000)
 
@@ -692,12 +659,12 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	})
 	mp.addResponse(textStreamEvents("test-model", "Success after compact"), nil)
 
-	sc := engine.NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
-	eng := engine.New(&engine.Params{
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
 		Compactor: sc,
-		AutoCompact: engine.AutoCompactConfig{
+		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000,
 		},
 	})
@@ -712,11 +679,7 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result)
 	}
@@ -746,7 +709,7 @@ func TestShortMessageToEngine_ContentRoundTrip(t *testing.T) {
 		CreatedAt: original.Timestamp,
 	}
 
-	converted := engine.ShortMessageToEngine(shortMsg)
+	converted := ShortMessageToEngine(shortMsg)
 	if converted.Role != original.Role {
 		t.Errorf("Role round-trip: got %s, want %s", converted.Role, original.Role)
 	}
@@ -767,7 +730,7 @@ func TestShortMessageToEngine_NonJSONContent(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	converted := engine.ShortMessageToEngine(shortMsg)
+	converted := ShortMessageToEngine(shortMsg)
 	if converted.Role != types.RoleUser {
 		t.Errorf("Role: got %s, want user", converted.Role)
 	}
@@ -793,7 +756,7 @@ func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	converted := engine.ShortMessageToEngine(shortMsg)
+	converted := ShortMessageToEngine(shortMsg)
 	if converted.Role != types.RoleAssistant {
 		t.Errorf("Role: got %s, want assistant", converted.Role)
 	}

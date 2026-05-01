@@ -459,18 +459,17 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 	}
 
 	mt := &testTool{name: "tool"}
+	tc := newEventCollector()
 	eng := New(&Params{
 		Provider:    mp,
 		Tools:       []tool.Tool{mt},
 		Model:       "test",
 		TokenBudget: 999999,
 		MaxTurns:    50,
+		Dispatcher:   tc,
 	})
 
-	eventCh, resultCh := eng.Query(context.Background(), "test", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(context.Background(), "test", nil)
 	// After 50 turns the for loop exits, hitting line 226-231
 	if result.Error != nil {
 		t.Fatalf("expected success after max turns, got: %v", result.Error)
@@ -488,40 +487,32 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	// Create a slow-streaming provider: sends events with a delay between them.
-	// This gives us a window where the stream channel has not-yet-consumed events,
-	// allowing ctx.Done() to fire during the for-range iteration.
 	slowCh := make(chan llm.StreamEvent, 10)
 	mp.addChannelResponse(slowCh)
 
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider: mp,
-		Model:    "test",
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Start sending events slowly in a goroutine
 	go func() {
 		defer close(slowCh)
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
-		// Delay before next event — cancel ctx during this window
 		time.Sleep(100 * time.Millisecond)
-		// After this point, callLLM should detect ctx.Done() and return
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "x"}}
 	}()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	eng.Query(ctx, "test", nil)
 
-	// Cancel after a short delay — during streaming
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
-	// Drain events
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Error("expected error from cancelled context during streaming")
 	}
@@ -972,18 +963,17 @@ func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-ch
 func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 	dt := &discardSlowTool{}
 	p := &midStreamErrorProvider{}
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider: p,
-		Tools:    []tool.Tool{dt},
-		Model:    "test",
+		Provider:   p,
+		Tools:      []tool.Tool{dt},
+		Model:      "test",
+		Dispatcher: tc,
 	})
 
 	ctx := t.Context()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 
 	// The retryable error from call 1 should be retried, and call 2 should succeed
 	if result.Error != nil {
@@ -1144,31 +1134,6 @@ func (p *testProvider) addChannelResponse(ch chan llm.StreamEvent) {
 	defer p.mu.Unlock()
 	p.responses = append(p.responses, testResponse{channel: ch})
 }
-
-// testTool is a minimal tool for internal tests.
-type testTool struct {
-	name string
-}
-
-func (t *testTool) Name() string                                { return t.name }
-func (t *testTool) Aliases() []string                           { return nil }
-func (t *testTool) Description(json.RawMessage) (string, error) { return t.name, nil }
-func (t *testTool) InputSchema() json.RawMessage                { return nil }
-func (t *testTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
-	return &tool.ToolResult{Data: "ok"}, nil
-}
-func (t *testTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
-	return types.PermissionAllowDecision{}
-}
-func (t *testTool) IsReadOnly(json.RawMessage) bool           { return true }
-func (t *testTool) IsDestructive(json.RawMessage) bool        { return false }
-func (t *testTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
-func (t *testTool) IsEnabled() bool                           { return true }
-func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
-func (t *testTool) Prompt() string                            { return "" }
-func (t *testTool) RenderResult(any) string                   { return "" }
-
-func (t *testTool) MaxResultSize() int { return 50000 }
 
 // ---------------------------------------------------------------------------
 // Sub-engine tests
@@ -1360,7 +1325,7 @@ func TestQuerySyncCancellation(t *testing.T) {
 }
 
 func TestEmitEventNilSafe(t *testing.T) {
-	// Sub-engine has dispatcher=nil. With nil eventCh, emitEvent should silently discard.
+	// Sub-engine has dispatcher=nil. emitEvent should silently discard.
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
 
@@ -1368,7 +1333,7 @@ func TestEmitEventNilSafe(t *testing.T) {
 		t.Fatal("expected nil dispatcher for default engine")
 	}
 	// This should NOT panic — that's the entire assertion
-	eng.emitEvent(nil, types.QueryEvent{Type: types.EventTurnStart})
+	eng.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
 }
 
 func TestSubEngineBudgetBypass(t *testing.T) {
@@ -1443,6 +1408,12 @@ func (m *mockDispatcher) Dispatch(event types.QueryEvent) {
 	m.events = append(m.events, event)
 }
 
+func (m *mockDispatcher) Events() []types.QueryEvent {
+	out := make([]types.QueryEvent, len(m.events))
+	copy(out, m.events)
+	return out
+}
+
 func TestTaggedDispatcher_InjectsMeta(t *testing.T) {
 	t.Parallel()
 
@@ -1509,7 +1480,7 @@ func TestNewSubEngine_TaggedDispatcher(t *testing.T) {
 	}
 
 	// Emit an event through the sub-engine and verify it reaches the mock dispatcher
-	subEng.emitEvent(nil, types.QueryEvent{
+	subEng.emitEvent(types.QueryEvent{
 		Type:    types.EventToolStart,
 		ToolUse: &types.ToolUseEvent{ID: "sub_1", Name: "Read"},
 	})
@@ -2123,10 +2094,12 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:  mp,
-		Model:     "test-model",
-		MaxTokens: 16000,
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
 	})
 	eng.isSubagent = true
 	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
@@ -2146,11 +2119,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "do something", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "do something", nil)
 	if result.Error != nil {
 		t.Fatalf("sub-agent should complete despite blocking limit, got: %v", result.Error)
 	}
@@ -2261,10 +2230,12 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 		},
 	}
 
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:  tmp,
-		Model:     "test-model",
-		MaxTokens: 16000,
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
 	})
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
@@ -2286,11 +2257,7 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "do something", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "do something", nil)
 
 	if !compactCalled {
 		t.Fatal("post-turn compact should have been called")
@@ -2341,10 +2308,12 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 		},
 	}
 
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:  tmp,
-		Model:     "test-model",
-		MaxTokens: 16000,
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
 	})
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
@@ -2366,14 +2335,14 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "do something", nil)
-	for ev := range eventCh {
-		if ev.Type == types.EventToolEnd && ev.ToolResult != nil &&
-			strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
+	 eng.QuerySync(ctx, "do something", nil)
+
+	for _, ev := range tc.FindEvents(types.EventToolEnd) {
+		if ev.ToolResult != nil && strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
 			compactDisplayOutput = ev.ToolResult.DisplayOutput
 		}
 	}
-	<-resultCh
+
 
 	if compactDisplayOutput == "" {
 		t.Fatal("expected compact output event")
@@ -2660,7 +2629,8 @@ func TestRunTurns_PostStreamingAbort_NoToolUse(t *testing.T) {
 	ch2 := make(chan llm.StreamEvent, 10)
 	mp.addChannelResponse(ch2)
 
-	eng := New(&Params{Provider: mp, Model: "test"})
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -2677,10 +2647,7 @@ func TestRunTurns_PostStreamingAbort_NoToolUse(t *testing.T) {
 		close(ch2)
 	}()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 
 	if result.Error == nil {
 		t.Fatal("expected error from loop-top abort after text turn")
@@ -2712,10 +2679,12 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 	mp.addChannelResponse(slowCh)
 
 	mt := &testTool{name: "Read"}
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test",
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test",
+		Dispatcher: tc,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2733,10 +2702,7 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		cancel()
 	}()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 
 	if result.Error == nil {
 		t.Fatal("expected error")
@@ -2804,19 +2770,18 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		},
 	}
 
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider: mp,
-		Tools:    []tool.Tool{ct},
-		Model:    "test",
+		Provider:   mp,
+		Tools:      []tool.Tool{ct},
+		Model:      "test",
+		Dispatcher: tc,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 
 	if result.Error == nil {
 		t.Fatal("expected error after tool execution abort")
@@ -2846,32 +2811,28 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		mp.addChannelResponse(ch)
 
 		mt := &testTool{name: "Read"}
+		tc := newEventCollector()
 		eng := New(&Params{
-			Provider: mp,
-			Tools:    []tool.Tool{mt},
-			Model:    "test",
+			Provider:   mp,
+			Tools:      []tool.Tool{mt},
+			Model:      "test",
+			Dispatcher: tc,
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
 
 		go func() {
-			// Send tool_use events but NO message_stop
 			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
 			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
 			ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
-			// Wait for main goroutine to consume all events and block on for-range
 			time.Sleep(50 * time.Millisecond)
-			// Cancel + close channel (simulates provider detecting ctx cancellation)
 			cancel()
 			close(ch)
 		}()
 
-		eventCh, resultCh := eng.Query(ctx, "test", nil)
-		for range eventCh {
-		}
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "test", nil)
 
 		if result.Error == nil {
 			t.Fatal("expected error from post-loop abort")
@@ -2913,21 +2874,18 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		ch := make(chan llm.StreamEvent, 5)
 		mp.addChannelResponse(ch)
 
-		eng := New(&Params{Provider: mp, Model: "test"})
+		tc := newEventCollector()
+		eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
 		ctx, cancel := context.WithCancel(context.Background())
 
 		go func() {
-			// Send only message_start, no content, no message_stop
 			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 			time.Sleep(50 * time.Millisecond)
 			cancel()
 			close(ch)
 		}()
 
-		eventCh, resultCh := eng.Query(ctx, "test", nil)
-		for range eventCh {
-		}
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "test", nil)
 
 		if result.Error == nil {
 			t.Fatal("expected error from post-loop abort")
@@ -2956,7 +2914,8 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		ch := make(chan llm.StreamEvent, 20)
 		mp.addChannelResponse(ch)
 
-		eng := New(&Params{Provider: mp, Model: "test"})
+		tc := newEventCollector()
+		eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
 		ctx, cancel := context.WithCancel(context.Background())
 
 		go func() {
@@ -2964,17 +2923,12 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
 			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
-			// Wait for main goroutine to consume all events and block on for-range
 			time.Sleep(50 * time.Millisecond)
-			// Cancel + close without message_stop
 			cancel()
 			close(ch)
 		}()
 
-		eventCh, resultCh := eng.Query(ctx, "test", nil)
-		for range eventCh {
-		}
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "test", nil)
 
 		if result.Error == nil {
 			t.Fatal("expected error from post-loop abort")
@@ -3024,30 +2978,27 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		mp.addChannelResponse(ch)
 
 		mt := &testTool{name: "Read"}
+		tc := newEventCollector()
 		eng := New(&Params{
-			Provider: mp,
-			Tools:    []tool.Tool{mt},
-			Model:    "test",
+			Provider:   mp,
+			Tools:      []tool.Tool{mt},
+			Model:      "test",
+			Dispatcher: tc,
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
 
 		go func() {
-			// Send tool_use events (NO text_delta, so hasContent stays false)
 			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
 			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-			// Wait for main goroutine to process events, then cancel + close
 			time.Sleep(50 * time.Millisecond)
 			cancel()
 			close(ch)
 		}()
 
-		eventCh, resultCh := eng.Query(ctx, "test", nil)
-		for range eventCh {
-		}
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "test", nil)
 
 		if result.Error == nil {
 			t.Fatal("expected error from abort")
@@ -3098,32 +3049,28 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		// First response: context overflow error
 		overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
 		mp.addResponse(nil, overflowErr)
-		// Second response: won't be reached
 		ch := make(chan llm.StreamEvent, 10)
 		mp.addChannelResponse(ch)
 
+		tc := newEventCollector()
 		eng := New(&Params{
-			Provider: mp,
-			Model:    "test",
+			Provider:   mp,
+			Model:      "test",
+			Dispatcher: tc,
 		})
-		// Set compactor that blocks until ctx is cancelled
 		eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{
 			ContextWindow: 100000,
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())
 
-		// Cancel while compact is blocking
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			cancel()
 			close(ch)
 		}()
 
-		eventCh, resultCh := eng.Query(ctx, "test", nil)
-		for range eventCh {
-		}
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "test", nil)
 
 		if result.Error == nil {
 			t.Fatal("expected error")

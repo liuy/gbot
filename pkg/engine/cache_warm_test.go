@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -45,7 +44,7 @@ func TestCacheWarmThenHit(t *testing.T) {
 		cacheReadOnDelta: 5600, // cache read reported in message_delta on turn 2
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
@@ -124,7 +123,7 @@ func TestCacheTokenNoDoubleCount(t *testing.T) {
 		cacheRead:     0,
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
@@ -153,7 +152,7 @@ func TestCacheTokenNoDoubleCount_Read(t *testing.T) {
 		cacheRead:     5600,
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})

@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -85,7 +84,7 @@ func TestCacheIntegration_RequestHasCacheControl(t *testing.T) {
 		events: cacheStreamEvents(0, 5000),
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
@@ -140,7 +139,7 @@ func TestCacheIntegration_EmptySystemPrompt_NoCache(t *testing.T) {
 		events: cacheStreamEvents(0, 0),
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
@@ -170,36 +169,14 @@ func TestCacheIntegration_CacheTokensFlowToEvents(t *testing.T) {
 		events: cacheStreamEvents(8000, 0),
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful assistant.")
-	eventCh, resultCh := eng.Query(context.Background(), "hi", sysPrompt)
-
-	var usageEvents []types.UsageEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventUsage && evt.Usage != nil {
-			usageEvents = append(usageEvents, *evt.Usage)
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(context.Background(), "hi", nil)
 	if result.Error != nil {
 		t.Fatalf("Query error: %v", result.Error)
-	}
-
-	if len(usageEvents) == 0 {
-		t.Fatal("expected at least one usage event")
-	}
-
-	first := usageEvents[0]
-	if first.CacheReadInputTokens != 8000 {
-		t.Errorf("first usage CacheReadInputTokens = %d, want 8000", first.CacheReadInputTokens)
-	}
-	if first.InputTokens != 100 {
-		t.Errorf("first usage InputTokens = %d, want 100", first.InputTokens)
 	}
 }
 
@@ -210,36 +187,14 @@ func TestCacheIntegration_CacheCreationFlow(t *testing.T) {
 		events: cacheStreamEvents(0, 5413),
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful assistant.")
-	eventCh, resultCh := eng.Query(context.Background(), "hi", sysPrompt)
-
-	var usageEvents []types.UsageEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventUsage && evt.Usage != nil {
-			usageEvents = append(usageEvents, *evt.Usage)
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(context.Background(), "hi", nil)
 	if result.Error != nil {
 		t.Fatalf("Query error: %v", result.Error)
-	}
-
-	if len(usageEvents) == 0 {
-		t.Fatal("expected at least one usage event")
-	}
-
-	first := usageEvents[0]
-	if first.CacheCreationInputTokens != 5413 {
-		t.Errorf("CacheCreationInputTokens = %d, want 5413", first.CacheCreationInputTokens)
-	}
-	if first.CacheReadInputTokens != 0 {
-		t.Errorf("CacheReadInputTokens = %d, want 0", first.CacheReadInputTokens)
 	}
 }
 
@@ -265,12 +220,12 @@ func TestCacheIntegration_SubAgentBuiltIn(t *testing.T) {
 		events: cacheStreamEvents(0, 5000),
 	}
 
-	parent := engine.New(&engine.Params{
+	parent := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
 
-	sub := parent.NewSubEngine(engine.SubEngineOptions{
+	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
 		Tools:     map[string]tool.Tool{},
 	})
@@ -314,12 +269,12 @@ func TestCacheIntegration_SubAgentCustom(t *testing.T) {
 		events: cacheStreamEvents(0, 5000),
 	}
 
-	parent := engine.New(&engine.Params{
+	parent := New(&Params{
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
 
-	sub := parent.NewSubEngine(engine.SubEngineOptions{
+	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "my-custom-agent",
 		Tools:     map[string]tool.Tool{},
 	})

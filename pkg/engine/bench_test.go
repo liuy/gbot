@@ -142,21 +142,11 @@ func BenchmarkCallLLM_Accumulate(b *testing.B) {
 	})
 
 	systemPrompt := json.RawMessage(`"You are a helpful assistant."`)
-	eventCh := make(chan types.QueryEvent, 128)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = eng.callLLM(context.Background(), systemPrompt, eventCh)
-		// Drain events
-		for {
-			select {
-			case <-eventCh:
-			default:
-				goto next3
-			}
-		}
-	next3:
+		_, _, _ = eng.callLLM(context.Background(), systemPrompt)
 		eng.Reset()
 	}
 }

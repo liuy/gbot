@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
@@ -105,7 +104,7 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test-model", "tu-1", "my_tool", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "Tool was blocked"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -116,10 +115,7 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Use the tool", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Use the tool", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -176,7 +172,7 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test-model", "tu-1", "my_tool", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -187,10 +183,7 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Use the tool", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Use the tool", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -238,7 +231,7 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test-model", "tu-1", "my_tool", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -249,10 +242,7 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Use the tool", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Use the tool", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -303,7 +293,7 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test-model", "tu-1", "my_tool", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "I see the error"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -314,10 +304,7 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Use the tool", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Use the tool", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -364,7 +351,7 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 	// Second response: LLM does more work
 	mp.addResponse(textStreamEvents("test-model", "OK, more work done"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -374,10 +361,7 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Do something", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Do something", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -412,7 +396,7 @@ func TestIntegration_NoHooks_EngineWorks(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello!"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -422,10 +406,7 @@ func TestIntegration_NoHooks_EngineWorks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Say hello", nil)
-	for range eventCh {
-	}
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Say hello", nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -450,7 +431,7 @@ func TestIntegration_SessionEnd_FiresOnClose(t *testing.T) {
 	}
 	hookSystem := hooks.NewHooks(hookConfig, rec)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),

@@ -138,14 +138,16 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
 
 	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:  p,
-		Model:     "test-model",
-		Compactor: compactor,
+		Provider:   p,
+		Model:      "test-model",
+		Compactor:  compactor,
 		AutoCompact: AutoCompactConfig{
 			ContextWindow: 500,
 		},
-		Logger: slog.Default(),
+		Logger:     slog.Default(),
+		Dispatcher: tc,
 	})
 
 	// Build messages: old tool_use + tool_result pairs, timestamp > 60 min ago.
@@ -196,11 +198,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "continue", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "continue", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -276,14 +274,16 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 
 	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 	eng := New(&Params{
-		Provider:  p,
-		Model:     "test-model",
-		Compactor: compactor,
+		Provider:   p,
+		Model:      "test-model",
+		Compactor:  compactor,
 		AutoCompact: AutoCompactConfig{
 			ContextWindow: 100000, // high threshold → auto-compact won't trigger
 		},
 		Logger: slog.Default(),
 	})
+	tc := newEventCollector()
+	eng.dispatcher = tc
 
 	// Small messages with old tool_results → microcompact fires but auto-compact won't
 	oldTime := baseTime.Add(-61 * time.Minute)
@@ -312,11 +312,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}

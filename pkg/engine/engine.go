@@ -241,71 +241,55 @@ func (e *Engine) EnqueueNotification(msg types.Message) {
 
 // Query executes the agentic loop for a user message.
 // Source: query.ts:queryLoop() — the while(true) agentic loop.
-// Returns a channel of streaming events and a channel for the final result.
-func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt json.RawMessage) (<-chan types.QueryEvent, <-chan QueryResult) {
-	eventCh := make(chan types.QueryEvent, 128)
-	resultCh := make(chan QueryResult, 1)
-
+func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt json.RawMessage) {
 	go func() {
-		defer close(eventCh)
-		defer close(resultCh)
-
-		result := e.queryLoop(ctx, userMessage, systemPrompt, eventCh)
-		resultCh <- result
+		e.queryLoop(ctx, userMessage, systemPrompt)
 	}()
-
-	return eventCh, resultCh
 }
 
 // ProcessNotifications drains pending notifications and runs the turn loop.
 // This is Path B — equivalent to TS's between-turn new query() invocation.
-// Unlike Query(), no userMessage is injected; the notifications themselves
-// are the user-role messages fed into the conversation.
-// Returns the same channels as Query() so the TUI can reuse the streaming pipeline.
-func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.RawMessage) (<-chan types.QueryEvent, <-chan QueryResult) {
-	eventCh := make(chan types.QueryEvent, 128)
-	resultCh := make(chan QueryResult, 1)
-
+func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.RawMessage) {
 	go func() {
-		defer close(eventCh)
-		defer close(resultCh)
-
 		pending := e.notifications.Drain()
 		if len(pending) == 0 {
-			// Race guard: Hub event fired but queue already drained
-			resultCh <- QueryResult{}
 			return
 		}
-
 		e.appendMessages(pending)
 		for i := range pending {
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 		}
-
-		result := e.runTurns(ctx, systemPrompt, eventCh)
-		resultCh <- result
+		e.runTurns(ctx, systemPrompt)
 	}()
-
-	return eventCh, resultCh
 }
 
-// emitEvent sends an event via Hub (if set) or the event channel.
-// When Hub is present, it is the authoritative path — eventCh is skipped
-// to avoid unbounded buffering and potential deadlocks from undrained channels.
-func (e *Engine) emitEvent(eventCh chan<- types.QueryEvent, event types.QueryEvent) {
+// ProcessNotificationsSync drains pending notifications and runs the turn loop synchronously.
+// Used by tests that need to wait for the result.
+func (e *Engine) ProcessNotificationsSync(ctx context.Context, systemPrompt json.RawMessage) QueryResult {
+	pending := e.notifications.Drain()
+	if len(pending) == 0 {
+		return QueryResult{}
+	}
+	e.appendMessages(pending)
+	for i := range pending {
+		e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+	}
+	return e.runTurns(ctx, systemPrompt)
+}
+
+// emitEvent sends an event via the dispatcher (Hub).
+// When no dispatcher is set (sub-engine), events are silently discarded
+// and results are returned via the function return value.
+func (e *Engine) emitEvent(event types.QueryEvent) {
 	if e.dispatcher != nil {
 		e.dispatcher.Dispatch(event)
-		return
 	}
-	if eventCh != nil {
-		eventCh <- event
-	}
-	// Both nil (sub-engine): silently discard — result returned via QueryResult
+	// No dispatcher (sub-engine): silently discard
 }
 
 // queryLoop is the main agentic loop.
 // Source: query.ts — the while(true) loop with 28 stages.
-func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
+func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
 	// Stage 0: Process user input
 	userMsg := types.Message{
 		Role: types.RoleUser,
@@ -315,14 +299,14 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 		Timestamp: time.Now(),
 	}
 	e.appendMessage(userMsg)
-	e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
-	return e.runTurns(ctx, systemPrompt, eventCh)
+	return e.runTurns(ctx, systemPrompt)
 }
 
 // runTurns executes the agentic turn loop. Shared by queryLoop (normal path)
 // and QueryWithExistingMessages (fork agent path).
-func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) QueryResult {
+func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) QueryResult {
 	var totalUsage types.Usage
 	// Log query summary on every exit path.
 	defer func() {
@@ -359,6 +343,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Stage 4: Loop-top abort check.
 		// Source: query.ts — context cancellation check at loop top.
 		if err := ShouldAbort(ctx, "streaming"); err != nil {
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 			return QueryResult{
 				Messages: e.messages,
 				Error:    err,
@@ -370,7 +355,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		if pending := e.notifications.Drain(); len(pending) > 0 {
 			e.appendMessages(pending)
 			for i := range pending {
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 			}
 		}
 
@@ -388,7 +373,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.logger.Warn("blocking limit exceeded, refusing API call",
 					"tokens", tokens,
 					"limit", blockingLimit)
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 				return QueryResult{
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
@@ -399,9 +384,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		}
 
 		// Stage 14-15: API call streaming loop
-		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnStart})
+		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
 
-		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt, eventCh)
+		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt)
 		if err != nil {
 			// Reactive compact: try compact + retry on context overflow.
 			// TS align: query.ts:1119-1175 — reactiveCompact.tryReactiveCompact()
@@ -411,7 +396,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				src := e.querySource()
 				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
 					compactID := "compact-reactive-" + uuid.New().String()[:8]
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolStart,
 						ToolUse: &types.ToolUseEvent{
 							ID:      compactID,
@@ -419,7 +404,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 							Summary: "Compacting after context overflow...",
 						},
 					})
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type:    types.EventToolRun,
 						ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 					})
@@ -427,7 +412,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					result, compactErr := e.runCompact(ctx, "reactive compact")
 					if compactErr == nil {
 						e.fireCompactHooks(ctx, "auto", "post")
-						e.emitEvent(eventCh, types.QueryEvent{
+						e.emitEvent(types.QueryEvent{
 							Type: types.EventToolEnd,
 							ToolResult: &types.ToolResultEvent{
 								ToolUseID:     compactID,
@@ -438,7 +423,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 						e.logger.Info("reactive auto-compact succeeded, retrying")
 						continue
 					}
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolEnd,
 						ToolResult: &types.ToolResultEvent{
 							ToolUseID:     compactID,
@@ -454,6 +439,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			// If ctx was cancelled during compact, return *AbortError instead
 			// of the original API error (overflow, rate limit, etc.).
 			if abortErr := ShouldAbort(ctx, "streaming"); abortErr != nil {
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: abortErr})
 				return QueryResult{
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
@@ -466,6 +452,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			action := e.handleStreamError(err)
 			if !action.Continue {
 				e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
 				return QueryResult{
 					Messages: e.messages,
 					Error:    err,
@@ -509,8 +496,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				if len(syntheticBlocks) > 0 {
 					e.appendMessage(types.Message{Role: types.RoleUser, Content: syntheticBlocks})
 				}
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 				return QueryResult{
 					Messages:   e.messages,
 					TurnCount:  e.turnCount,
@@ -525,7 +512,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// exact context size. If it exceeds the threshold, compact before continuing.
 		if e.shouldAutoCompact() {
 			compactID := "compact-auto-" + uuid.New().String()[:8]
-			e.emitEvent(eventCh, types.QueryEvent{
+			e.emitEvent(types.QueryEvent{
 				Type: types.EventToolStart,
 				ToolUse: &types.ToolUseEvent{
 					ID:      compactID,
@@ -533,14 +520,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 					Summary: "Compacting conversation...",
 				},
 			})
-			e.emitEvent(eventCh, types.QueryEvent{
+			e.emitEvent(types.QueryEvent{
 				Type:    types.EventToolRun,
 				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 			})
 			e.fireCompactHooks(ctx, "auto", "pre")
 			result, compactErr := e.runCompact(ctx, "post-turn compact")
 			if compactErr != nil {
-				e.emitEvent(eventCh, types.QueryEvent{
+				e.emitEvent(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
@@ -559,7 +546,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 				e.mu.Lock()
 				e.consecutiveCompactFailures = 0
 				e.mu.Unlock()
-				e.emitEvent(eventCh, types.QueryEvent{
+				e.emitEvent(types.QueryEvent{
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
@@ -586,9 +573,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 			if pending := e.notifications.Drain(); len(pending) > 0 {
 				e.appendMessages(pending)
 				for i := range pending {
-					e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
+					e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &pending[i]})
 				}
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				continue
 			}
 
@@ -602,13 +589,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 						types.NewTextBlock("[hook] " + blockResult.Stderr),
 					},
 				})
-				e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.turnCount++
 				continue
 			}
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -635,8 +622,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		// Stage 23: Post-tool-execution abort check.
 		// Source: query.ts:1485-1516 — tool execution complete, check abort.
 		if err := ShouldAbort(ctx, "tools"); err != nil {
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
-			e.emitEvent(eventCh, types.QueryEvent{Type: types.EventQueryEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 			return QueryResult{
 				Messages:   e.messages,
 				TurnCount:  e.turnCount,
@@ -652,12 +639,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage, eve
 		}
 
 		// End of this streaming round
-		e.emitEvent(eventCh, types.QueryEvent{Type: types.EventTurnEnd})
+		e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 
 		// Stage 25-26: Turn counting
 		e.turnCount++
 	}
 
+	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
 	return QueryResult{
 		Messages:   e.messages,
 		TurnCount:  e.turnCount,
@@ -706,7 +694,7 @@ func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase str
 		e.hooks.PostCompact(ctx, input)
 	}
 }
-func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, eventCh chan<- types.QueryEvent) (*types.Message, *StreamingToolExecutor, error) {
+func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 	// Build tool definitions for API
 	var toolDefs []llm.ToolDef
@@ -878,7 +866,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					}
 					blockAcc[bidx] = acc
 					summary := e.computeSummary(cb.Name, cb.Input)
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolStart,
 						ToolUse: &types.ToolUseEvent{
 							ID:      cb.ID,
@@ -889,11 +877,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					})
 				case types.ContentTypeThinking:
 					thinkingStart = time.Now()
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventThinkingStart,
 					})
 				case types.ContentTypeText:
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventTextStart,
 					})
 				}
@@ -905,7 +893,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case "text_delta":
 					currentText.WriteString(event.Delta.Text)
 					hasContent = true
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventTextDelta,
 						Text: event.Delta.Text,
 					})
@@ -914,7 +902,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 						acc := blockAcc[event.Index]
 						acc.toolInput.WriteString(event.Delta.PartialJSON)
 						summary := e.computeSummary(acc.toolName, json.RawMessage(acc.toolInput.String()))
-						e.emitEvent(eventCh, types.QueryEvent{
+						e.emitEvent(types.QueryEvent{
 							Type: types.EventToolParamDelta,
 							PartialInput: &types.PartialInputEvent{
 								ID:      acc.toolID,
@@ -926,7 +914,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					}
 				case "thinking_delta":
 					currentText.WriteString(event.Delta.Thinking)
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventThinkingDelta,
 						Thinking: &types.ThinkingEvent{
 							Text: event.Delta.Thinking,
@@ -943,7 +931,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				case types.ContentTypeText:
 					cb.Text = currentText.String()
 					currentText.Reset()
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventTextEnd,
 					})
 				case types.ContentTypeToolUse:
@@ -955,7 +943,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					if streamingExecutor == nil {
 						streamingExecutor = NewStreamingToolExecutor(
 							e.tools, nil,
-							func(evt types.QueryEvent) { e.emitEvent(eventCh, evt) },
+							func(evt types.QueryEvent) { e.emitEvent(evt) },
 							ctx,
 						)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
@@ -964,7 +952,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 							streamingExecutor.SetSubEngine(true)
 						}
 					}
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolRun,
 						ToolUse: &types.ToolUseEvent{
 							ID:   cb.ID,
@@ -976,7 +964,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 					cb.Text = currentText.String()
 					currentText.Reset()
 					elapsed := time.Since(thinkingStart)
-					e.emitEvent(eventCh, types.QueryEvent{
+					e.emitEvent(types.QueryEvent{
 						Type: types.EventThinkingEnd,
 						Thinking: &types.ThinkingEvent{
 							Duration: elapsed,
@@ -1003,7 +991,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage, even
 				if event.Usage.CacheCreationInputTokens > 0 {
 					usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
 				}
-				e.emitEvent(eventCh, types.QueryEvent{
+				e.emitEvent(types.QueryEvent{
 					Type: types.EventUsage,
 					Usage: &types.UsageEvent{
 						InputTokens:              usage.InputTokens,
@@ -1683,7 +1671,7 @@ func (e *Engine) querySource() string {
 // Used by sub-agents created via AgentTool. EventCh is nil — events are silently discarded.
 // Source: TS sync sub-agents execute runAgent() directly in the caller's context.
 func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
-	return e.queryLoop(ctx, userMessage, systemPrompt, nil)
+	return e.queryLoop(ctx, userMessage, systemPrompt)
 }
 
 // QueryWithExistingMessages executes the agentic turn loop starting from
@@ -1691,7 +1679,7 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // that build their own conversation history.
 func (e *Engine) QueryWithExistingMessages(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
 	e.setMessages(messages)
-	return e.runTurns(ctx, systemPrompt, nil)
+	return e.runTurns(ctx, systemPrompt)
 }
 
 // Model returns the engine's model name.
@@ -1710,4 +1698,10 @@ func subMaxTurns(n int) int {
 		return 0
 	}
 	return n
+}
+
+// SetDispatcher is exported for use by external test packages.
+// It allows tests to observe events dispatched by the engine.
+func (e *Engine) SetDispatcher(d types.EventDispatcher) {
+	e.dispatcher = d
 }

@@ -1,4 +1,4 @@
-package engine_test
+package engine
 
 import (
 	"context"
@@ -11,12 +11,83 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 "github.com/liuy/gbot/pkg/types"
 )
+
+// eventCollector implements types.EventDispatcher for test observability.
+// Captures all events dispatched by the engine, allowing tests to inspect
+// event sequences and verify correct behavior.
+type eventCollector struct {
+	mu     sync.Mutex
+	done   chan struct{}
+	result QueryResult
+	events []types.QueryEvent
+}
+
+func newEventCollector() *eventCollector {
+	return &eventCollector{done: make(chan struct{})}
+}
+
+func (ec *eventCollector) Dispatch(event types.QueryEvent) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.events = append(ec.events, event)
+	if event.Type == types.EventQueryEnd {
+		ec.result = QueryResult{Error: event.Error}
+		if event.Usage != nil {
+			ec.result.TotalUsage = types.Usage{
+				InputTokens:              event.Usage.InputTokens,
+				OutputTokens:             event.Usage.OutputTokens,
+				CacheReadInputTokens:     event.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: event.Usage.CacheCreationInputTokens,
+			}
+		}
+		select {
+			case <-ec.done:
+			// already closed
+			default:
+				close(ec.done)
+			}
+	}
+}
+
+func (ec *eventCollector) WaitForResult() QueryResult {
+	<-ec.done
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.result
+}
+
+func (ec *eventCollector) Events() []types.QueryEvent {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	out := make([]types.QueryEvent, len(ec.events))
+	copy(out, ec.events)
+	return out
+}
+
+func (ec *eventCollector) FindEvents(typ types.QueryEventType) []types.QueryEvent {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	var result []types.QueryEvent
+	for _, e := range ec.events {
+		if e.Type == typ {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+func (ec *eventCollector) Reset() {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.events = nil
+	ec.result = QueryResult{}
+	ec.done = make(chan struct{})
+}
 
 // ---------------------------------------------------------------------------
 // Mock Provider
@@ -141,7 +212,7 @@ func toolUseStreamEvents(model, toolID, toolName, toolInput string) []llm.Stream
 func TestNew_Defaults(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 	})
@@ -160,7 +231,7 @@ func TestNew_Defaults(t *testing.T) {
 func TestNew_DefaultMaxTokens(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:    mp,
 		Model:       "test-model",
 		MaxTokens:   0,
@@ -184,7 +255,7 @@ func TestNew_WithTools(t *testing.T) {
 	t.Parallel()
 	mp := &mockProvider{}
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -205,7 +276,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello, world!"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -214,11 +285,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Say hello", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Say hello", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -259,37 +326,27 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "Read the file", nil)
-
-	var toolResultSeen, textDeltaSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventToolEnd {
-			toolResultSeen = true
-		}
-		if evt.Type == types.EventTextDelta {
-			textDeltaSeen = true
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "Read the file", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-	if !toolResultSeen {
+	if len(ec.FindEvents(types.EventToolEnd)) == 0 {
 		t.Error("expected to see a tool result event")
 	}
-	if !textDeltaSeen {
+	if len(ec.FindEvents(types.EventTextDelta)) == 0 {
 		t.Error("expected to see a text delta event")
 	}
 	if result.TurnCount != 2 {
@@ -330,7 +387,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -340,11 +397,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "List Go files", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "List Go files", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -402,7 +455,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 func TestQuery_ContextCancellation(t *testing.T) {
 	mp := &mockProvider{}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -413,11 +466,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	// Cancel BEFORE calling Query to deterministically trigger context cancellation
 	cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test query", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test query", nil)
 	// The context is already cancelled, so the select in queryLoop should catch it
 	// before calling callLLM, resulting in a cancellation error.
 	// Verify the error is set and mentions context cancellation
@@ -448,7 +497,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:  mp,
 		Tools:     []tool.Tool{mt},
 		Model:     "test-model",
@@ -457,7 +506,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	})
 	// Set auto-compact config without compactor so auto-compact won't fire.
 	// Only the blocking limit should guard against oversized context.
-	eng.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+	eng.UpdateAutoCompactConfig(AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
 	})
@@ -476,11 +525,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "do something", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "do something", nil)
 	if result.Error == nil {
 		t.Fatal("expected prompt too long error")
 	}
@@ -502,14 +547,14 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		}
 		mp.addResponse(events, nil)
 
-		eng := engine.New(&engine.Params{
+		eng := New(&Params{
 			Provider:  mp,
 			Model:     "test-model",
 			MaxTokens: 16000,
 			Logger:    slog.Default(),
 		})
 		// ContextWindow=1000, maxTokens=16000 -> blockingLimit = 1000 - 16000 - 3000 = -18000 (skipped)
-		eng.UpdateAutoCompactConfig(engine.AutoCompactConfig{
+		eng.UpdateAutoCompactConfig(AutoCompactConfig{
 			ContextWindow:          1000,
 			MaxConsecutiveFailures: 3,
 		})
@@ -517,11 +562,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		eventCh, resultCh := eng.Query(ctx, "hello", nil)
-		for range eventCh {
-		}
-
-		result := <-resultCh
+		result := eng.QuerySync(ctx, "hello", nil)
 		if result.Error != nil {
 			t.Fatalf("negative blockingLimit should be skipped, got: %v", result.Error)
 		}
@@ -536,7 +577,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 	mp.addResponse(events, nil)
 	mp.addResponse(textStreamEvents("test-model", "Tool not found."), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -545,11 +586,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "use unknown tool", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "use unknown tool", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -577,30 +614,30 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "call failing tool", nil)
-
+	result := eng.QuerySync(ctx, "call failing tool", nil)
+	if result.Error != nil {
+		t.Fatalf("unexpected final error: %v", result.Error)
+	}
+	toolEndEvents := ec.FindEvents(types.EventToolEnd)
 	var gotErrorResult bool
 	var errorDisplayOutput string
-	for evt := range eventCh {
-		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
+	for _, evt := range toolEndEvents {
+		if evt.ToolResult != nil && evt.ToolResult.IsError {
 			gotErrorResult = true
 			errorDisplayOutput = evt.ToolResult.DisplayOutput
 		}
-	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected final error: %v", result.Error)
 	}
 	if !gotErrorResult {
 		t.Error("expected tool result error event")
@@ -622,7 +659,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 		Retryable: false,
 	})
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -631,11 +668,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -659,7 +692,7 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	// Second call: success after retry
 	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -668,15 +701,10 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("expected no error after retry, got: %v", result.Error)
 	}
-
 }
 
 func TestQuery_DisabledToolSkipped(t *testing.T) {
@@ -694,7 +722,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	}
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -704,11 +732,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -721,7 +745,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 func TestAddSystemMessage(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -743,7 +767,7 @@ func TestAddSystemMessage(t *testing.T) {
 func TestReset(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -764,7 +788,7 @@ func TestReset(t *testing.T) {
 func TestMessages(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -785,7 +809,7 @@ func TestMessages(t *testing.T) {
 func TestMessages_ReturnsCopy(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -808,7 +832,7 @@ func TestMessages_ReturnsCopy(t *testing.T) {
 func TestMessages_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -837,7 +861,7 @@ func TestMessages_ConcurrentAccess(t *testing.T) {
 func TestSetSessionID(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -856,7 +880,7 @@ func TestSetSessionID(t *testing.T) {
 func TestSetModel(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "initial-model",
 		Logger:   slog.Default(),
@@ -876,7 +900,7 @@ func TestSetProvider(t *testing.T) {
 	t.Parallel()
 
 	initialProvider := &mockProvider{}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: initialProvider,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -900,7 +924,7 @@ func TestSetProvider(t *testing.T) {
 func TestSetMessages(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -964,31 +988,24 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 		return &tool.ToolResult{Data: "b_result"}, nil
 	}}
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{toolA, toolB},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{toolA, toolB},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "call both tools", nil)
-
-	var toolResults int
-	for evt := range eventCh {
-		if evt.Type == types.EventToolEnd {
-			toolResults++
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "call both tools", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if toolResults != 2 {
-		t.Errorf("expected 2 tool results, got %d", toolResults)
+	if len(ec.FindEvents(types.EventToolEnd)) != 2 {
+		t.Errorf("expected 2 tool results, got %d", len(ec.FindEvents(types.EventToolEnd)))
 	}
 	if !toolACalled {
 		t.Error("tool_a was not called")
@@ -1005,23 +1022,29 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test-model", "tu_1", "my_tool", `{}`), nil)
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
+	ec := newEventCollector()
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var toolUseStartSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventToolStart && evt.ToolUse != nil {
-			toolUseStartSeen = true
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	toolStartEvents := ec.FindEvents(types.EventToolStart)
+	if len(toolStartEvents) == 0 {
+		t.Fatal("expected EventToolStart event")
+	}
+	for _, evt := range toolStartEvents {
+		if evt.ToolUse != nil {
 			if evt.ToolUse.ID != "tu_1" {
 				t.Errorf("expected tool use ID tu_1, got %s", evt.ToolUse.ID)
 			}
@@ -1029,14 +1052,6 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 				t.Errorf("expected tool use name my_tool, got %s", evt.ToolUse.Name)
 			}
 		}
-	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
-	}
-	if !toolUseStartSeen {
-		t.Error("expected EventToolStart event")
 	}
 }
 
@@ -1055,33 +1070,28 @@ func TestQuery_StreamingTextDeltas(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "greet me", nil)
-
-	var deltas []string
-	for evt := range eventCh {
-		if evt.Type == types.EventTextDelta {
-			deltas = append(deltas, evt.Text)
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "greet me", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if len(deltas) != 2 {
-		t.Fatalf("expected 2 text deltas, got %d", len(deltas))
+
+	textEvents := ec.FindEvents(types.EventTextDelta)
+	if len(textEvents) != 2 {
+		t.Fatalf("expected 2 text deltas, got %d", len(textEvents))
 	}
-	if deltas[0] != "Hello " || deltas[1] != "world!" {
-		t.Errorf("unexpected deltas: %v", deltas)
+	if textEvents[0].Text != "Hello " || textEvents[1].Text != "world!" {
+		t.Errorf("unexpected deltas: %v %v", textEvents[0].Text, textEvents[1].Text)
 	}
 }
 
@@ -1091,36 +1101,26 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hi"), nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var turnStarts, completes int
-	for evt := range eventCh {
-		switch evt.Type {
-		case types.EventTurnStart:
-			turnStarts++
-		case types.EventQueryEnd:
-			completes++
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if turnStarts != 1 {
-		t.Errorf("expected 1 turn start, got %d", turnStarts)
+	if len(ec.FindEvents(types.EventTurnStart)) != 1 {
+		t.Errorf("expected 1 turn start, got %d", len(ec.FindEvents(types.EventTurnStart)))
 	}
-	if completes != 1 {
-		t.Errorf("expected 1 complete, got %d", completes)
+	if len(ec.FindEvents(types.EventQueryEnd)) != 1 {
+		t.Errorf("expected 1 complete, got %d", len(ec.FindEvents(types.EventQueryEnd)))
 	}
 }
 
@@ -1139,7 +1139,7 @@ func TestQuery_PingEvent(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1148,11 +1148,7 @@ func TestQuery_PingEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "ping", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "ping", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1189,7 +1185,7 @@ func TestQuery_NilUsage(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1198,11 +1194,7 @@ func TestQuery_NilUsage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1225,7 +1217,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1235,11 +1227,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "do 3 rounds", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "do 3 rounds", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1261,7 +1249,7 @@ func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1271,11 +1259,7 @@ func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1298,34 +1282,31 @@ func TestQuery_DescriptionError(t *testing.T) {
 		enabled: true,
 		descFn:  func(json.RawMessage) (string, error) { return "", errors.New("desc error") },
 	}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var toolResultSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventToolEnd {
-			toolResultSeen = true
-			if evt.ToolResult == nil {
-				t.Fatal("ToolResult is nil")
-			}
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if !toolResultSeen {
-		t.Error("expected tool result event to be emitted")
+
+	toolEndEvents := ec.FindEvents(types.EventToolEnd)
+	if len(toolEndEvents) == 0 {
+		t.Fatal("expected tool result event to be emitted")
+	}
+	for _, evt := range toolEndEvents {
+		if evt.ToolResult == nil {
+			t.Fatal("ToolResult is nil")
+		}
 	}
 }
 
@@ -1342,7 +1323,7 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1351,11 +1332,7 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error from stream event error")
 	}
@@ -1380,7 +1357,7 @@ func TestQuery_RetryableStreamError(t *testing.T) {
 	// Second response: success after retry
 	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1389,11 +1366,7 @@ func TestQuery_RetryableStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1409,7 +1382,7 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1418,11 +1391,7 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -1441,7 +1410,7 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1450,11 +1419,7 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -1471,7 +1436,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 	// the first turn and loops back to check ctx.Done() at the top.
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1484,11 +1449,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 		cancel()
 	}()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	// Don't discard result - assert on it
 	// The response completes normally (end_turn) before cancellation, so no error expected.
 	// This test validates the ctx.Done() path exists; actual cancellation
@@ -1518,35 +1479,31 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 		enabled: true,
 		descFn:  func(json.RawMessage) (string, error) { return "", errors.New("desc error") },
 	}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var toolUseStartSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventToolStart && evt.ToolUse != nil {
-			toolUseStartSeen = true
-			// Verify description fell back to tool name
-			if evt.ToolUse.Name != "desc_err_tool" {
-				t.Errorf("expected tool name 'desc_err_tool', got '%s'", evt.ToolUse.Name)
-			}
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if !toolUseStartSeen {
-		t.Error("expected EventToolStart event")
+
+	toolStartEvents := ec.FindEvents(types.EventToolStart)
+	if len(toolStartEvents) == 0 {
+		t.Fatal("expected EventToolStart event")
+	}
+	for _, evt := range toolStartEvents {
+		if evt.ToolUse != nil && evt.ToolUse.Name != "desc_err_tool" {
+			t.Errorf("expected tool name 'desc_err_tool', got '%s'", evt.ToolUse.Name)
+		}
 	}
 }
 
@@ -1564,7 +1521,7 @@ func TestQuery_HasContentNoBlocks(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1573,11 +1530,7 @@ func TestQuery_HasContentNoBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1610,7 +1563,7 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -1620,11 +1573,7 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1669,7 +1618,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	handler := &hubMockHandler{}
 	h.Subscribe(handler)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:   mp,
 		Tools:      []tool.Tool{mt},
 		Model:      "test-model",
@@ -1680,11 +1629,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test hub events", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test hub events", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1754,7 +1699,7 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	handler := &hubMockHandler{}
 	h.Subscribe(handler)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:   mp,
 		Tools:      []tool.Tool{mt},
 		Model:      "test-model",
@@ -1765,11 +1710,7 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test ordering", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test ordering", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1794,26 +1735,6 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	}
 }
 
-// mockDispatcher is a non-hub EventDispatcher for testing interface compliance.
-type mockDispatcher struct {
-	mu     sync.Mutex
-	events []types.QueryEvent
-}
-
-func (d *mockDispatcher) Dispatch(event types.QueryEvent) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.events = append(d.events, event)
-}
-
-func (d *mockDispatcher) Events() []types.QueryEvent {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := make([]types.QueryEvent, len(d.events))
-	copy(out, d.events)
-	return out
-}
-
 func TestQuery_EventDispatcherInterface(t *testing.T) {
 	t.Parallel()
 
@@ -1821,7 +1742,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "via interface"), nil)
 
 	d := &mockDispatcher{}
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:   mp,
 		Model:      "test-model",
 		Logger:     slog.Default(),
@@ -1831,11 +1752,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test interface", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test interface", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1874,7 +1791,7 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Hello"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:   mp,
 		Model:      "test-model",
 		Logger:     slog.Default(),
@@ -1884,11 +1801,7 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test nil hub", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test nil hub", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1901,7 +1814,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Hello Xiaoming!"), nil)
 	mp.addResponse(textStreamEvents("test-model", "Your name is Xiaoming."), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -1909,10 +1822,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 
 	// Turn 1
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
-	eventCh1, resultCh1 := eng.Query(ctx1, "My name is Xiaoming", nil)
-	for range eventCh1 {
-	}
-	result1 := <-resultCh1
+	result1 := eng.QuerySync(ctx1, "My name is Xiaoming", nil)
 	cancel1()
 	if result1.Error != nil {
 		t.Fatalf("turn 1 error: %v", result1.Error)
@@ -1925,10 +1835,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 
 	// Turn 2
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	eventCh2, resultCh2 := eng.Query(ctx2, "What is my name?", nil)
-	for range eventCh2 {
-	}
-	result2 := <-resultCh2
+	result2 := eng.QuerySync(ctx2, "What is my name?", nil)
 	cancel2()
 	if result2.Error != nil {
 		t.Fatalf("turn 2 error: %v", result2.Error)
@@ -1953,7 +1860,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 	}
 
 	// Turn 1 user message content preserved
-	texts := engine.ExtractTextBlocks(msgs2[0])
+	texts := ExtractTextBlocks(msgs2[0])
 	if len(texts) == 0 || texts[0] != "My name is Xiaoming" {
 		t.Errorf("msg[0] text = %v, want 'My name is Xiaoming'", texts)
 	}
@@ -1970,7 +1877,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 func TestEngine_EnqueueNotification(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -2002,11 +1909,13 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Notification seen!"), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	// Enqueue notification BEFORE starting query — it should be drained
@@ -2022,11 +1931,15 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
 
+	// The notification should have been injected as a message
 	var notificationMsgSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventQueryStart && evt.Message != nil {
+	for _, evt := range ec.FindEvents(types.EventQueryStart) {
+		if evt.Message != nil {
 			for _, block := range evt.Message.Content {
 				if strings.HasPrefix(block.Text, "<task-notification>") {
 					notificationMsgSeen = true
@@ -2034,13 +1947,6 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 			}
 		}
 	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
-	}
-
-	// The notification should have been injected as a message
 	if !notificationMsgSeen {
 		t.Error("expected notification message to be emitted as EventQueryStart")
 	}
@@ -2068,7 +1974,7 @@ func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "Done"), nil)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -2095,11 +2001,7 @@ func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -2146,24 +2048,25 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	eng.QuerySync(ctx, "test", nil)
 
 	var usageEvents []types.UsageEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventUsage && evt.Usage != nil {
+	for _, evt := range ec.FindEvents(types.EventUsage) {
+		if evt.Usage != nil {
 			usageEvents = append(usageEvents, *evt.Usage)
 		}
 	}
-	<-resultCh
 
 	// Should have exactly 1 usage event from message_delta (message_start no longer emits).
 	if len(usageEvents) != 1 {
@@ -2220,24 +2123,25 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", nil)
 
 	var usageEvents []types.UsageEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventUsage && evt.Usage != nil {
+	for _, evt := range ec.FindEvents(types.EventUsage) {
+		if evt.Usage != nil {
 			usageEvents = append(usageEvents, *evt.Usage)
 		}
 	}
-	result := <-resultCh
 
 	if len(usageEvents) != 1 {
 		t.Fatalf("expected 1 usage event (message_delta only), got %d: %+v", len(usageEvents), usageEvents)
@@ -2294,24 +2198,25 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", nil)
 
 	var usageEvents []types.UsageEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventUsage && evt.Usage != nil {
+	for _, evt := range ec.FindEvents(types.EventUsage) {
+		if evt.Usage != nil {
 			usageEvents = append(usageEvents, *evt.Usage)
 		}
 	}
-	result := <-resultCh
 
 	if len(usageEvents) != 1 {
 		t.Fatalf("expected 1 usage event (message_delta only), got %d", len(usageEvents))
@@ -2340,7 +2245,7 @@ func TestEnqueueNotification_DispatchesHubEvent(t *testing.T) {
 	handler := &hubMockHandler{}
 	h.Subscribe(handler)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider:   &mockProvider{},
 		Model:      "test-model",
 		Logger:     slog.Default(),
@@ -2367,7 +2272,7 @@ func TestEnqueueNotification_DispatchesHubEvent(t *testing.T) {
 func TestEnqueueNotification_NoDispatcher_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -2383,7 +2288,7 @@ func TestEnqueueNotification_NoDispatcher_NoPanic(t *testing.T) {
 func TestProcessNotifications_EmptyQueue(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -2392,13 +2297,7 @@ func TestProcessNotifications_EmptyQueue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
-
-	// Drain events
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.ProcessNotificationsSync(ctx, nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -2414,11 +2313,13 @@ func TestProcessNotifications_DrainsAndRunsTurns(t *testing.T) {
 	// LLM sees the notification and responds with text (no tool_use)
 	mp.addResponse(textStreamEvents("test-model", "Background task completed."), nil)
 
-	// No Hub — events flow through eventCh
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	// Capture events via eventCollector
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		Logger:     slog.Default(),
+		Dispatcher: ec,
 	})
 
 	// Enqueue a notification (no Hub event since dispatcher is nil)
@@ -2430,36 +2331,16 @@ func TestProcessNotifications_DrainsAndRunsTurns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
-
-	// Collect events from eventCh (no Hub)
-	var eventTypes []types.QueryEventType
-	for evt := range eventCh {
-		eventTypes = append(eventTypes, evt.Type)
-	}
-
-	result := <-resultCh
+	result := eng.ProcessNotificationsSync(ctx, nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if result.Error != nil {
-		t.Errorf("unexpected result: %v", result.Error)
-	}
 
 	// Verify notification was injected: should have at least query_start + turn_start + text_delta + turn_end + query_end
-	var gotQueryStart, gotTurnStart, gotTextDelta, gotQueryEnd bool
-	for _, et := range eventTypes {
-		switch et {
-		case types.EventQueryStart:
-			gotQueryStart = true
-		case types.EventTurnStart:
-			gotTurnStart = true
-		case types.EventTextDelta:
-			gotTextDelta = true
-		case types.EventQueryEnd:
-			gotQueryEnd = true
-		}
-	}
+	gotQueryStart := len(ec.FindEvents(types.EventQueryStart)) > 0
+	gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
+	gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
+	gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
 	if !gotQueryStart {
 		t.Error("expected EventQueryStart for notification message")
 	}
@@ -2498,7 +2379,7 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	// LLM never responds — we cancel the context
 	mp.addResponse(nil, context.Canceled)
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -2516,11 +2397,7 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 		cancel()
 	}()
 
-	eventCh, resultCh := eng.ProcessNotifications(ctx, nil)
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.ProcessNotificationsSync(ctx, nil)
 	if result.Error == nil {
 		t.Error("expected error from cancelled context")
 	}
@@ -2540,42 +2417,45 @@ func TestQuery_EventTextStartEmitted(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "hello"), nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var textStartSeen bool
-	var textStartBeforeDelta bool
-	var deltaSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventTextStart {
-			textStartSeen = true
-			if !deltaSeen {
-				textStartBeforeDelta = true
-			}
-		}
-		if evt.Type == types.EventTextDelta {
-			deltaSeen = true
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if !textStartSeen {
+
+	textStartEvents := ec.FindEvents(types.EventTextStart)
+	if len(textStartEvents) == 0 {
 		t.Error("expected EventTextStart event to be emitted for text content block")
 	}
-	if !textStartBeforeDelta {
-		t.Error("expected EventTextStart to fire before any EventTextDelta")
+	// Verify text start fires before any text delta
+	textDeltaEvents := ec.FindEvents(types.EventTextDelta)
+	if len(textStartEvents) == 0 || len(textDeltaEvents) == 0 {
+		t.Fatal("expected both EventTextStart and EventTextDelta events")
 	}
+	// Verify text start fires before any text delta
+	allEvents := ec.Events()
+	var textStartIdx, textDeltaIdx = -1, -1
+		for i, evt := range allEvents {
+			if evt.Type == types.EventTextStart && textStartIdx < 0 {
+				textStartIdx = i
+			}
+			if evt.Type == types.EventTextDelta && textDeltaIdx < 0 {
+				textDeltaIdx = i
+			}
+		}
+		if textStartIdx >= 0 && textDeltaIdx >= 0 && textStartIdx > textDeltaIdx {
+			t.Error("expected EventTextStart to fire before any EventTextDelta")
+		}
 }
 
 func TestQuery_EventTextEndEmitted(t *testing.T) {
@@ -2584,42 +2464,44 @@ func TestQuery_EventTextEndEmitted(t *testing.T) {
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "hello"), nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var textEndSeen bool
-	var textEndAfterDelta bool
-	var deltaSeen bool
-	for evt := range eventCh {
-		if evt.Type == types.EventTextDelta {
-			deltaSeen = true
-		}
-		if evt.Type == types.EventTextEnd {
-			textEndSeen = true
-			if deltaSeen {
-				textEndAfterDelta = true
-			}
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if !textEndSeen {
+
+	textEndEvents := ec.FindEvents(types.EventTextEnd)
+	if len(textEndEvents) == 0 {
 		t.Error("expected EventTextEnd event to be emitted for text content block")
 	}
-	if !textEndAfterDelta {
-		t.Error("expected EventTextEnd to fire after last EventTextDelta")
+	// Verify text end fires after text delta
+	textDeltaEvents := ec.FindEvents(types.EventTextDelta)
+	if len(textEndEvents) == 0 || len(textDeltaEvents) == 0 {
+		t.Fatal("expected both EventTextEnd and EventTextDelta events")
 	}
+		allEvents := ec.Events()
+		var textEndIdx, textDeltaIdx = -1, -1
+		for i, evt := range allEvents {
+			if evt.Type == types.EventTextDelta && textDeltaIdx < 0 {
+				textDeltaIdx = i
+			}
+			if evt.Type == types.EventTextEnd && textEndIdx < 0 {
+				textEndIdx = i
+			}
+		}
+		if textEndIdx >= 0 && textDeltaIdx >= 0 && textEndIdx < textDeltaIdx {
+			t.Error("expected EventTextEnd to fire after last EventTextDelta")
+		}
 }
 
 func TestQuery_EventToolRunEmitted(t *testing.T) {
@@ -2630,49 +2512,33 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var toolRunSeen bool
-	var toolRunID, toolRunName string
-	var toolStartSeen, toolEndSeen bool
-	var toolStartBeforeRun, toolRunBeforeEnd bool
-	for evt := range eventCh {
-		switch evt.Type {
-		case types.EventToolStart:
-			toolStartSeen = true
-		case types.EventToolRun:
-			toolRunSeen = true
-			if evt.ToolUse != nil {
-				toolRunID = evt.ToolUse.ID
-				toolRunName = evt.ToolUse.Name
-			}
-			if toolStartSeen {
-				toolStartBeforeRun = true
-			}
-		case types.EventToolEnd:
-			toolEndSeen = true
-			if toolRunSeen {
-				toolRunBeforeEnd = true
-			}
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
-	if !toolRunSeen {
+
+	toolRunEvents := ec.FindEvents(types.EventToolRun)
+	if len(toolRunEvents) == 0 {
 		t.Error("expected EventToolRun event to be emitted for tool_use content block")
+	}
+	var toolRunID, toolRunName string
+	for _, evt := range toolRunEvents {
+		if evt.ToolUse != nil {
+			toolRunID = evt.ToolUse.ID
+			toolRunName = evt.ToolUse.Name
+		}
 	}
 	if toolRunID != "tu_1" {
 		t.Errorf("EventToolRun ID = %q, want tu_1", toolRunID)
@@ -2680,16 +2546,30 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 	if toolRunName != "my_tool" {
 		t.Errorf("EventToolRun Name = %q, want my_tool", toolRunName)
 	}
-	if !toolStartSeen {
+	if len(ec.FindEvents(types.EventToolStart)) == 0 {
 		t.Error("expected EventToolStart")
 	}
-	if !toolEndSeen {
+	if len(ec.FindEvents(types.EventToolEnd)) == 0 {
 		t.Error("expected EventToolEnd")
 	}
-	if !toolStartBeforeRun {
+	// Verify ordering: ToolStart before ToolRun, ToolRun before ToolEnd
+	allEvents := ec.Events()
+	var toolStartIdx, toolRunIdx, toolEndIdx = -1, -1, -1
+	for i, evt := range allEvents {
+		if evt.Type == types.EventToolStart && toolStartIdx < 0 {
+			toolStartIdx = i
+		}
+		if evt.Type == types.EventToolRun && toolRunIdx < 0 {
+			toolRunIdx = i
+		}
+		if evt.Type == types.EventToolEnd && toolEndIdx < 0 {
+			toolEndIdx = i
+		}
+	}
+	if toolStartIdx >= 0 && toolRunIdx >= 0 && toolStartIdx > toolRunIdx {
 		t.Error("expected EventToolStart to fire before EventToolRun")
 	}
-	if !toolRunBeforeEnd {
+	if toolRunIdx >= 0 && toolEndIdx >= 0 && toolRunIdx > toolEndIdx {
 		t.Error("expected EventToolRun to fire before EventToolEnd")
 	}
 }
@@ -2717,32 +2597,32 @@ func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	mt := &mockTool{name: "my_tool", enabled: true}
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
 
 	// Collect all content lifecycle events in order
 	var eventOrder []string
-	for evt := range eventCh {
+	for _, evt := range ec.Events() {
 		switch evt.Type {
 		case types.EventThinkingStart, types.EventThinkingDelta, types.EventThinkingEnd,
 			types.EventToolStart, types.EventToolParamDelta, types.EventToolRun, types.EventToolEnd,
 			types.EventTextStart, types.EventTextDelta, types.EventTextEnd:
 			eventOrder = append(eventOrder, string(evt.Type))
 		}
-	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
 	// Expected order: thinking_start -> thinking_delta -> thinking_end ->
@@ -2783,36 +2663,26 @@ func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
 	}
 	mp.addResponse(events, nil)
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "test", nil)
-
-	var gotTextStart, gotTextEnd bool
-	for evt := range eventCh {
-		switch evt.Type {
-		case types.EventTextStart:
-			gotTextStart = true
-		case types.EventTextEnd:
-			gotTextEnd = true
-		}
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-	if !gotTextStart {
+	if len(ec.FindEvents(types.EventTextStart)) == 0 {
 		t.Error("EventTextStart not emitted for empty text block")
 	}
-	if !gotTextEnd {
+	if len(ec.FindEvents(types.EventTextEnd)) == 0 {
 		t.Error("EventTextEnd not emitted for empty text block")
 	}
 }
@@ -2861,29 +2731,29 @@ func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
 		return &tool.ToolResult{Data: "file1\nfile2"}, nil
 	}}
 
-	eng := engine.New(&engine.Params{
-		Provider: mp,
-		Tools:    []tool.Tool{toolRead, toolBash},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Dispatcher: ec,
+		Tools:      []tool.Tool{toolRead, toolBash},
+		Model:      "test-model",
+		Logger:     slog.Default(),
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "read and ls", nil)
+	result := eng.QuerySync(ctx, "read and ls", nil)
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
 
 	// Collect EventToolParamDelta events to verify ID/Name correspondence
 	var paramDeltas []types.PartialInputEvent
-	for evt := range eventCh {
-		if evt.Type == types.EventToolParamDelta && evt.PartialInput != nil {
+	for _, evt := range ec.FindEvents(types.EventToolParamDelta) {
+		if evt.PartialInput != nil {
 			paramDeltas = append(paramDeltas, *evt.PartialInput)
 		}
-	}
-
-	result := <-resultCh
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
 	// Verify tool inputs are complete and NOT mixed
@@ -2963,7 +2833,7 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 		return &tool.ToolResult{Data: "matches"}, nil
 	}}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{toolRead, toolBash, toolGrep},
 		Model:    "test-model",
@@ -2973,12 +2843,7 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "parallel ops", nil)
-	// Drain events
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "parallel ops", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3001,7 +2866,7 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 func TestSetCompactor(t *testing.T) {
 	t.Parallel()
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test-model",
 		Logger:   slog.Default(),
@@ -3010,7 +2875,7 @@ func TestSetCompactor(t *testing.T) {
 	// Set compactor and verify it doesn't panic
 	eng.SetCompactor(
 		&mockCompactor{},
-		engine.AutoCompactConfig{
+		AutoCompactConfig{
 			ContextWindow:          100000,
 			MaxConsecutiveFailures: 3,
 		},
@@ -3020,7 +2885,7 @@ func TestSetCompactor(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 10 {
 		wg.Go(func() {
-			eng.SetCompactor(&mockCompactor{}, engine.AutoCompactConfig{ContextWindow: 100000})
+			eng.SetCompactor(&mockCompactor{}, AutoCompactConfig{ContextWindow: 100000})
 		})
 	}
 	wg.Wait()
@@ -3068,7 +2933,7 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 		},
 	}
 
-	eng := engine.New(&engine.Params{
+	eng := New(&Params{
 		Provider: mp,
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
@@ -3078,13 +2943,7 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventCh, resultCh := eng.Query(ctx, "/roast", nil)
-
-	// Drain events
-	for range eventCh {
-	}
-
-	result := <-resultCh
+	result := eng.QuerySync(ctx, "/roast", nil)
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3180,13 +3039,13 @@ func contentBlockTypes(blocks []types.ContentBlock) []string {
 }
 
 // TestAllTools_AllToolsRegisteredBeforeEngine verifies that when all tools
-// are registered before engine.New(), AllTools() returns the correct count.
+// are registered before New(), AllTools() returns the correct count.
 // Root cause of "11 tools vs 14 tools" bug: main.go used to register
-// Agent/TaskOutput/TaskStop after engine.New(). Fix: register all tools first.
+// Agent/TaskOutput/TaskStop after New(). Fix: register all tools first.
 func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	t.Parallel()
 
-	// Correct registration order: ALL tools before engine.New()
+	// Correct registration order: ALL tools before New()
 	reg := tool.NewRegistry()
 	for _, name := range []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep"} {
 		reg.MustRegister(&mockTool{name: name, enabled: true})
@@ -3196,8 +3055,8 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	reg.MustRegister(&mockTool{name: "TaskOutput", enabled: true})
 	reg.MustRegister(&mockTool{name: "TaskStop", enabled: true})
 
-	// engine.New() — ToolsProvider snapshots all 10 tools
-	eng := engine.New(&engine.Params{
+	// New() — ToolsProvider snapshots all 10 tools
+	eng := New(&Params{
 		Provider:      &mockProvider{},
 		ToolsProvider: reg.ToolMapFn(),
 		Model:         "test-model",
@@ -3206,7 +3065,7 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	got := len(eng.AllTools())
 	if got != 10 {
 		t.Errorf("AllTools() = %d tools, want 10. "+
-			"All tools registered before engine.New() but count is wrong.", got)
+			"All tools registered before New() but count is wrong.", got)
 	}
 }
 

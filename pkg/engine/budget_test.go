@@ -1,16 +1,15 @@
-package engine_test
+package engine
 
 import (
 	"log/slog"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestNewBudgetTracker(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(1000, slog.Default())
+	bt := NewBudgetTracker(1000, slog.Default())
 	if bt == nil {
 		t.Fatal("expected non-nil tracker")
 	}
@@ -21,7 +20,7 @@ func TestNewBudgetTracker(t *testing.T) {
 
 func TestNewBudgetTracker_NilLogger(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(1000, nil)
+	bt := NewBudgetTracker(1000, nil)
 	if bt == nil {
 		t.Fatal("expected non-nil tracker with nil logger")
 	}
@@ -29,7 +28,7 @@ func TestNewBudgetTracker_NilLogger(t *testing.T) {
 
 func TestBudgetTracker_Consume(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(1000, slog.Default())
+	bt := NewBudgetTracker(1000, slog.Default())
 
 	bt.Consume(types.Usage{InputTokens: 300, OutputTokens: 100})
 	if bt.Remaining() != 600 {
@@ -44,7 +43,7 @@ func TestBudgetTracker_Consume(t *testing.T) {
 
 func TestBudgetTracker_Exhausted(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(100, slog.Default())
+	bt := NewBudgetTracker(100, slog.Default())
 	if bt.Exhausted() {
 		t.Error("should not be exhausted initially")
 	}
@@ -57,7 +56,7 @@ func TestBudgetTracker_Exhausted(t *testing.T) {
 
 func TestBudgetTracker_NotExhaustedZeroBudget(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(0, slog.Default())
+	bt := NewBudgetTracker(0, slog.Default())
 	if bt.Exhausted() {
 		t.Error("zero budget should never be exhausted (unlimited)")
 	}
@@ -69,7 +68,7 @@ func TestBudgetTracker_NotExhaustedZeroBudget(t *testing.T) {
 
 func TestBudgetTracker_CheckAndWarn(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(100, slog.Default())
+	bt := NewBudgetTracker(100, slog.Default())
 	if bt.CheckAndWarn() {
 		t.Error("should not warn when not exhausted")
 	}
@@ -82,7 +81,7 @@ func TestBudgetTracker_CheckAndWarn(t *testing.T) {
 
 func TestBudgetTracker_Usage(t *testing.T) {
 	t.Parallel()
-	bt := engine.NewBudgetTracker(1000, slog.Default())
+	bt := NewBudgetTracker(1000, slog.Default())
 	bt.Consume(types.Usage{InputTokens: 300, OutputTokens: 100})
 	bt.Consume(types.Usage{InputTokens: 200, OutputTokens: 50})
 
@@ -105,7 +104,7 @@ func TestTrimMessages_NoTrim(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("system")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 	}
-	result := engine.TrimMessages(msgs, 10)
+	result := TrimMessages(msgs, 10)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}
@@ -120,7 +119,7 @@ func TestTrimMessages_TrimToMax(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("4")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("5")}},
 	}
-	result := engine.TrimMessages(msgs, 3)
+	result := TrimMessages(msgs, 3)
 	if len(result) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(result))
 	}
@@ -145,7 +144,7 @@ func TestTrimMessages_PreserveSystem(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("3")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("4")}},
 	}
-	result := engine.TrimMessages(msgs, 2)
+	result := TrimMessages(msgs, 2)
 	if len(result) != 3 { // system + 2 most recent
 		t.Fatalf("expected 3 messages, got %d", len(result))
 	}
@@ -169,7 +168,7 @@ func TestTrimMessages_ZeroMax(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("1")}},
 	}
-	result := engine.TrimMessages(msgs, 0)
+	result := TrimMessages(msgs, 0)
 	if len(result) != 1 {
 		t.Errorf("expected no trimming with max=0, got %d messages", len(result))
 	}
@@ -177,7 +176,7 @@ func TestTrimMessages_ZeroMax(t *testing.T) {
 
 func TestTrimMessages_Empty(t *testing.T) {
 	t.Parallel()
-	result := engine.TrimMessages(nil, 5)
+	result := TrimMessages(nil, 5)
 	if result != nil {
 		t.Errorf("expected nil for nil input, got %v", result)
 	}
