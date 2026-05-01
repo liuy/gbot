@@ -507,14 +507,17 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "x"}}
 	}()
 
-	eng.Query(ctx, "test", nil)
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
+	// Use QuerySync (not Query) to avoid goroutine leaking.
+	// The test goroutine blocks until completion, so no concurrent access
+	// to e.messages between two goroutines.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
 
 	result := eng.QuerySync(ctx, "test", nil)
 	if result.Error == nil {
-		t.Error("expected error from cancelled context during streaming")
+		t.Fatal("expected error from cancelled context during streaming")
 	}
 	if !strings.Contains(result.Error.Error(), "context") {
 		t.Errorf("expected error to mention context, got %q", result.Error.Error())
