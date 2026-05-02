@@ -1191,3 +1191,100 @@ func TestOpenAISSE_ToolArgumentsTooLarge(t *testing.T) {
 		t.Errorf("first event = %q, want message_start", events[0].Type)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Thinking + ToolCall: reasoning_content followed by tool_calls (no text)
+// ---------------------------------------------------------------------------
+
+func TestOpenAISSE_ThinkingThenToolCall_ClosesThinking(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"Let me read the file."},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/tmp/x\"}"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	// Expected: thinking opens, thinking deltas, thinking closes,
+	// then tool opens, tool deltas, tool closes.
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",  // thinking
+		"content_block_delta",  // thinking_delta
+		"content_block_stop",   // thinking closes before tool
+		"content_block_start",  // tool_use
+		"content_block_delta",  // input_json_delta
+		"message_delta",
+		"content_block_stop",   // tool closes
+		"message_stop",
+	)
+
+	// Verify thinking content_block_start
+	thinkingStart := events[1]
+	if thinkingStart.ContentBlock == nil || thinkingStart.ContentBlock.Type != types.ContentTypeThinking {
+		t.Errorf("thinking content_block_start type = %v, want thinking", thinkingStart.ContentBlock)
+	}
+
+	// Verify thinking content_block_stop index matches thinking block
+	thinkingStop := events[3]
+	if thinkingStop.Index != 0 {
+		t.Errorf("thinking content_block_stop index = %d, want 0", thinkingStop.Index)
+	}
+
+	// Verify tool content_block_start
+	toolStart := events[4]
+	if toolStart.ContentBlock == nil || toolStart.ContentBlock.Type != types.ContentTypeToolUse {
+		t.Errorf("tool content_block_start type = %v, want tool_use", toolStart.ContentBlock)
+	}
+	if toolStart.ContentBlock.Name != "Read" {
+		t.Errorf("tool name = %q, want Read", toolStart.ContentBlock.Name)
+	}
+}
+
+// TestOpenAISSE_ThinkingThenTextStillWorks verifies the existing path
+// (thinking -> text) still works after the fix.
+func TestOpenAISSE_ThinkingThenTextStillWorks(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"Thinking..."},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	events := collectEvents(ctx, p, body)
+
+	assertEventTypes(t, events,
+		"message_start",
+		"content_block_start",  // thinking
+		"content_block_delta",  // thinking_delta
+		"content_block_stop",   // thinking closes when text starts
+		"content_block_start",  // text
+		"content_block_delta",  // text_delta
+		"content_block_stop",   // text closes
+		"message_delta",
+		"message_stop",
+	)
+}

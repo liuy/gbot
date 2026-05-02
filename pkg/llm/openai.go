@@ -495,6 +495,11 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 
 				// Function name → emit content_block_start
 				if tc.Function.Name != "" {
+					// Close thinking block if still open
+					if thinkingBlockOpen {
+						send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: thinkingContentIndex})
+						thinkingBlockOpen = false
+					}
 					// Close text block if still open
 					if textBlockOpen {
 						send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
