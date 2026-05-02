@@ -643,6 +643,7 @@ func translateMessages(messages []types.Message) []openaiMessage {
 		var assistantToolCalls []openaiToolCall
 		var assistantText strings.Builder
 		var toolResults []openaiMessage
+		var userTexts []openaiMessage
 
 		for _, cb := range msg.Content {
 			switch cb.Type {
@@ -650,7 +651,7 @@ func translateMessages(messages []types.Message) []openaiMessage {
 				if msg.Role == types.RoleAssistant {
 					assistantText.WriteString(cb.Text)
 				} else {
-					result = append(result, openaiMessage{
+					userTexts = append(userTexts, openaiMessage{
 						Role:    string(msg.Role),
 						Content: cb.Text,
 					})
@@ -693,8 +694,12 @@ func translateMessages(messages []types.Message) []openaiMessage {
 			result = append(result, om)
 		}
 
-		// Append tool result messages
+		// OpenAI requires tool results immediately after the assistant message
+		// that made the tool call, before any subsequent user text.
+		// For user messages with mixed tool_result + text (e.g. fork agents),
+		// emit tool results first, then user text.
 		result = append(result, toolResults...)
+		result = append(result, userTexts...)
 	}
 
 	return result

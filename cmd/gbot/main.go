@@ -207,10 +207,12 @@ func main() {
 				AgentType:       opts.AgentType,
 			})
 			messages := opts.UserContextMessages
-			messages = append(messages, types.Message{
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
-			})
+			if opts.Prompt != "" {
+				messages = append(messages, types.Message{
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+				})
+			}
 			if len(opts.ForkMessages) > 0 {
 				messages = append(opts.ForkMessages, messages...)
 			}
