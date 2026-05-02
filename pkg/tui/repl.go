@@ -459,6 +459,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case queryEndMsg:
+		// Sub-agent queryEnd: do NOT finish the main query stream.
+		// Only the main engine's queryEnd (Agent == nil) should trigger FinishStream.
+		// Bug: sub-engine's EventQueryEnd was flowing through without agent metadata,
+		// causing FinishStream to cancel the main query's context mid-loop.
+		if m.Agent != nil {
+			return true, a.readEvents()
+		}
+
 		// For abort errors, append inline interrupt message and finish cleanly.
 		// The engine already added [Request interrupted by user] to the
 		// assistant message content; we mirror it in the TUI display.

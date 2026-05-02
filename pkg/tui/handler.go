@@ -160,7 +160,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
 			}
 		}
-		return queryEndMsg{Err: evt.Error, TotalUsage: totalUsage}
+		return queryEndMsg{Err: evt.Error, TotalUsage: totalUsage, Agent: evt.Agent}
 
 	case types.EventToolParamDelta:
 		// LLM streaming JSON input delta

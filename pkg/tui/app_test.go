@@ -5869,3 +5869,65 @@ func TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded(t *testing.T) {
 		t.Errorf("long thinking should be collapsed with hint when expand=false, got:\n%s", plain)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Sub-agent queryEndMsg must NOT cancel main query context (compact bug)
+// ---------------------------------------------------------------------------
+
+func TestApp_QueryEndMsg_SubAgent_DoesNotCancelMainContext(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Simulate main query in progress: set up streaming state with a cancelFunc
+	ctx, cancel := context.WithCancel(context.Background())
+	app.repl.cancelFunc = cancel
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	// Set up a parent tool block for the sub-agent
+	parentToolID := "tool-parent-123"
+	app.repl.pendingTool[parentToolID] = &ToolCallView{
+		ID:       parentToolID,
+		Name:     "Agent",
+		Summary:  "Execute a sub-agent task",
+		Done:     false,
+		Blocks:   []ContentBlock{},
+	}
+
+	// Sub-agent's queryEndMsg arrives (with Agent metadata set)
+	subAgentMeta := &types.AgentMeta{
+		ParentToolUseID: parentToolID,
+		AgentType:       "Explore",
+	}
+	msg := queryEndMsg{
+		Err:        nil,
+		TotalUsage: types.Usage{InputTokens: 100, OutputTokens: 50},
+		Agent:      subAgentMeta,
+	}
+
+	// Process the sub-agent's queryEndMsg
+	handled, _ := app.updateRepl(msg)
+	if !handled {
+		t.Fatal("updateRepl should handle queryEndMsg")
+	}
+
+	// CRITICAL: the main query must still be streaming
+	if !app.repl.IsStreaming() {
+		t.Error("sub-agent queryEndMsg must NOT stop main query streaming")
+	}
+
+	// CRITICAL: cancelFunc must NOT have been called
+	if ctx.Err() != nil {
+		t.Error("sub-agent queryEndMsg must NOT cancel the main query context")
+	}
+
+	// cancelFunc must still be set (not consumed)
+	if app.repl.cancelFunc == nil {
+		t.Error("cancelFunc should still be set for main query")
+	}
+
+	// Clean up
+	cancel()
+}

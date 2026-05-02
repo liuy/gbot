@@ -74,6 +74,7 @@ type toolEndMsg struct {
 type queryEndMsg struct {
 	Err        error                 // nil on success
 	TotalUsage types.Usage           // engine's accumulated usage across all turns
+	Agent      *types.AgentMeta      // non-nil when from a sub-agent
 }
 
 // usageMsg carries token usage from the LLM provider during streaming.
