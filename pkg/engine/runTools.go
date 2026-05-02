@@ -945,20 +945,4 @@ func ConcurrentToolLoop(
 	return executor.ExecuteAll(blocks)
 }
 
-// ---------------------------------------------------------------------------
-// SequentialToolLoop is a deprecated stub.
-// DEPRECATED: use ConcurrentToolLoop instead. Kept as stub for test compilation.
-// ---------------------------------------------------------------------------
-
-// SequentialToolLoop is a deprecated stub. Tests that reference it should be
-// rewritten for ConcurrentToolLoop.
-func SequentialToolLoop(
-	ctx context.Context,
-	tools map[string]tool.Tool,
-	blocks []types.ContentBlock,
-	tctx *types.ToolUseContext,
-	onEvent func(types.QueryEvent),
-) []tool.ToolResult {
-	panic("SequentialToolLoop is deprecated, use ConcurrentToolLoop")
-}
 

@@ -1889,27 +1889,6 @@ func TestMarshalToolOutput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SequentialToolLoop panic test
-// ---------------------------------------------------------------------------
-
-func TestSequentialToolLoop_Panics(t *testing.T) {
-	t.Parallel()
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Error("SequentialToolLoop should panic")
-		}
-		msg, ok := r.(string)
-		if !ok || !strings.Contains(msg, "deprecated") {
-			t.Errorf("panic message should mention deprecated, got: %v", r)
-		}
-	}()
-
-	SequentialToolLoop(context.Background(), nil, nil, nil, nil)
-}
-
-// ---------------------------------------------------------------------------
 // shouldAutoCompact tests
 // ---------------------------------------------------------------------------
 

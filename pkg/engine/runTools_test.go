@@ -67,41 +67,6 @@ func (b *blockTool) Prompt() string                             { return "" }
 func (b *blockTool) MaxResultSize() int { return 50000 }
 func (b *blockTool) RenderResult(any) string                      { return "" }
 
-func TestSequentialToolLoop_SingleTool(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_UnknownTool(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_ToolError(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_MultipleTools(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_CancelledContext(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_SkipsNonToolBlocks(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_Timing(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_ContextModifier(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_ContextModifier_NilTctx(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
 
 // ---------------------------------------------------------------------------
 // StreamingToolExecutor tests — source: StreamingToolExecutor.ts
@@ -1022,30 +987,3 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // ToolWithWireFormat tests
-// ---------------------------------------------------------------------------
-
-
-func TestSequentialToolLoop_WireFormat(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestSequentialToolLoop_DefaultFormat(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-
-func TestIntegration_ExploreAgent_NoUsageTrailer(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestIntegration_PlanAgent_NoUsageTrailer(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestIntegration_GeneralAgent_HasUsageTrailer(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
-
-func TestIntegration_GeneralAgent_NoAgentID(t *testing.T) {
-	t.Skip("TODO: rewrite for ConcurrentToolLoop")
-}
