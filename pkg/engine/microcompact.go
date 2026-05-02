@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
-	"github.com/liuy/gbot/pkg/toolresult"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
 

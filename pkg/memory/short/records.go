@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/liuy/gbot/pkg/toolresult"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
 // SaveContentReplacementRecords persists budget replacement records to the transcript.

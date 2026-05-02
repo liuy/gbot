@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/toolresult"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
 func newRecordsTestStore(t *testing.T) *Store {
