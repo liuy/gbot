@@ -131,7 +131,9 @@ func main() {
 	agenttool.InitLoader(workingDir)
 	bashTaskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
 	forkTaskReg := agentTool.TaskAdapter()
-	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
+	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg).
+		RegisterPrefix("bg-", bashTaskReg).
+		RegisterPrefix("fork-", forkTaskReg)
 	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
 	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
 
