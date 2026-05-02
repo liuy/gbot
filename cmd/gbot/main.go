@@ -35,7 +35,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
 	"github.com/liuy/gbot/pkg/tui"
 )
@@ -115,7 +115,7 @@ func main() {
 	reg.MustRegister(skilltool.New(skillReg))
 
 	// 3.2 Register Agent tool early (factory wired after engine creation).
-	// SetNotifyFn with stubs creates forkReg so TaskAdapter() works.
+	// SetNotifyFn with stubs creates forkReg so JobAdapter() works.
 	agentTool := agenttool.New()
 	agentTool.SetWorkingDir(workingDir)
 	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
@@ -127,13 +127,13 @@ func main() {
 	)
 	reg.MustRegister(agentTool)
 
-	// 3.3 Register task management tools (needs agentTool.TaskAdapter from SetNotifyFn).
+	// 3.3 Register task management tools (needs agentTool.JobAdapter from SetNotifyFn).
 	agenttool.InitLoader(workingDir)
-	bashTaskReg := bash.NewTaskInfoAdapter(bash.DefaultRegistry())
-	forkTaskReg := agentTool.TaskAdapter()
-	compositeTaskReg := task.NewMultiRegistry(bashTaskReg, forkTaskReg)
-	reg.MustRegister(task.NewTaskOutput(compositeTaskReg))
-	reg.MustRegister(task.NewTaskStop(compositeTaskReg))
+	bashJobReg := bash.NewJobInfoAdapter(bash.DefaultRegistry())
+	forkJobReg := agentTool.JobAdapter()
+	compositeJobReg := job.NewMultiRegistry(bashJobReg, forkJobReg)
+	reg.MustRegister(job.NewJobOutput(compositeJobReg))
+	reg.MustRegister(job.NewJobStop(compositeJobReg))
 
 	// 3.4 Register task list tools (dir resolved later when sessionID is available).
 	taskList := tasklist.NewList("")
@@ -429,9 +429,9 @@ func main() {
 		return result
 	})
 	app.SetKillAllFn(func() {
-		for _, t := range compositeTaskReg.List() {
+		for _, t := range compositeJobReg.List() {
 			if t.Status == "running" {
-				_ = compositeTaskReg.Kill(t.ID)
+				_ = compositeJobReg.Kill(t.ID)
 			}
 		}
 	})

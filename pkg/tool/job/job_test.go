@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 // mockRegistry implements Registry for testing.
 type mockRegistry struct {
 	mu    sync.Mutex
-	tasks map[string]*TaskInfo
+	tasks map[string]*JobInfo
 }
 
 func newMockRegistry() *mockRegistry {
-	return &mockRegistry{tasks: make(map[string]*TaskInfo)}
+	return &mockRegistry{tasks: make(map[string]*JobInfo)}
 }
 
-func (m *mockRegistry) Get(id string) (*TaskInfo, bool) {
+func (m *mockRegistry) Get(id string) (*JobInfo, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -44,10 +44,10 @@ func (m *mockRegistry) Kill(id string) error {
 	return nil
 }
 
-func (m *mockRegistry) List() []*TaskInfo {
+func (m *mockRegistry) List() []*JobInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var result []*TaskInfo
+	var result []*JobInfo
 	for _, t := range m.tasks {
 		cp := *t
 		result = append(result, &cp)
@@ -75,7 +75,7 @@ func (m *mockRegistry) Wait(id string) (int, error) {
 	return -1, fmt.Errorf("timeout waiting for task %s", id)
 }
 
-func (m *mockRegistry) add(info *TaskInfo) {
+func (m *mockRegistry) add(info *JobInfo) {
 	m.mu.Lock()
 	m.tasks[info.ID] = info
 	m.mu.Unlock()
@@ -85,9 +85,9 @@ func (m *mockRegistry) add(info *TaskInfo) {
 // TaskOutput tests
 // ---------------------------------------------------------------------------
 
-func TestTaskOutput_CompletedTask(t *testing.T) {
+func TestJobOutput_CompletedTask(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:       "bg-1",
 		Type:     "local_bash",
 		Status:   "completed",
@@ -96,7 +96,7 @@ func TestTaskOutput_CompletedTask(t *testing.T) {
 		ExitCode: 0,
 	})
 
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	input := json.RawMessage(`{"task_id":"bg-1"}`)
 	result, err := tl.Call(context.Background(), input, nil)
 	if err != nil {
@@ -118,22 +118,22 @@ func TestTaskOutput_CompletedTask(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_NotFound(t *testing.T) {
+func TestJobOutput_NotFound(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	input := json.RawMessage(`{"task_id":"nonexistent"}`)
 	_, err := tl.Call(context.Background(), input, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent task")
 	}
-	if !strings.Contains(err.Error(), "no task found") {
-		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	if !strings.Contains(err.Error(), "no job found") {
+		t.Errorf("error = %q, want error containing 'no job found'", err.Error())
 	}
 }
 
-func TestTaskOutput_BlockWait(t *testing.T) {
+func TestJobOutput_BlockWait(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:      "bg-2",
 		Type:    "local_bash",
 		Status:  "running",
@@ -150,7 +150,7 @@ func TestTaskOutput_BlockWait(t *testing.T) {
 		reg.mu.Unlock()
 	}()
 
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	block := true
 	input, _ := json.Marshal(OutputInput{TaskID: "bg-2", Block: &block, Timeout: 5000})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
@@ -167,15 +167,15 @@ func TestTaskOutput_BlockWait(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_BlockTimeout(t *testing.T) {
+func TestJobOutput_BlockTimeout(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:     "bg-3",
 		Type:   "local_bash",
 		Status: "running",
 	})
 
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	block := true
 	input, _ := json.Marshal(OutputInput{TaskID: "bg-3", Block: &block, Timeout: 200})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
@@ -189,16 +189,16 @@ func TestTaskOutput_BlockTimeout(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_NotReady(t *testing.T) {
+func TestJobOutput_NotReady(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:     "bg-4",
 		Type:   "local_bash",
 		Status: "running",
 		Output: "partial output",
 	})
 
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	block := false
 	input, _ := json.Marshal(OutputInput{TaskID: "bg-4", Block: &block})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
@@ -215,9 +215,9 @@ func TestTaskOutput_NotReady(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_EmptyTaskID(t *testing.T) {
+func TestJobOutput_EmptyTaskID(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":""}`), nil)
 	if err == nil {
 		t.Error("expected error for empty task_id")
@@ -227,9 +227,9 @@ func TestTaskOutput_EmptyTaskID(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_InvalidJSON(t *testing.T) {
+func TestJobOutput_InvalidJSON(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`invalid`), nil)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
@@ -243,16 +243,16 @@ func TestTaskOutput_InvalidJSON(t *testing.T) {
 // TaskStop tests
 // ---------------------------------------------------------------------------
 
-func TestTaskStop_Success(t *testing.T) {
+func TestJobStop_Success(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:      "bg-10",
 		Type:    "local_bash",
 		Status:  "running",
 		Command: "sleep 60",
 	})
 
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	input := json.RawMessage(`{"task_id":"bg-10"}`)
 	result, err := tl.Call(context.Background(), input, nil)
 	if err != nil {
@@ -271,28 +271,28 @@ func TestTaskStop_Success(t *testing.T) {
 	}
 }
 
-func TestTaskStop_NotFound(t *testing.T) {
+func TestJobStop_NotFound(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"nonexistent"}`), nil)
 	if err == nil {
 		t.Error("expected error for nonexistent task")
 	}
-	if !strings.Contains(err.Error(), "no task found") {
-		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	if !strings.Contains(err.Error(), "no job found") {
+		t.Errorf("error = %q, want error containing 'no job found'", err.Error())
 	}
 }
 
-func TestTaskStop_NotRunning(t *testing.T) {
+func TestJobStop_NotRunning(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:       "bg-11",
 		Type:     "local_bash",
 		Status:   "completed",
 		ExitCode: 0,
 	})
 
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-11"}`), nil)
 	if err == nil {
 		t.Error("expected error for non-running task")
@@ -302,9 +302,9 @@ func TestTaskStop_NotRunning(t *testing.T) {
 	}
 }
 
-func TestTaskStop_EmptyTaskID(t *testing.T) {
+func TestJobStop_EmptyTaskID(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Error("expected error for empty task_id")
@@ -314,9 +314,9 @@ func TestTaskStop_EmptyTaskID(t *testing.T) {
 	}
 }
 
-func TestTaskStop_InvalidJSON(t *testing.T) {
+func TestJobStop_InvalidJSON(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`invalid`), nil)
 	if err == nil {
 		t.Error("expected error for invalid JSON")
@@ -330,10 +330,10 @@ func TestTaskStop_InvalidJSON(t *testing.T) {
 // Tool interface compliance
 // ---------------------------------------------------------------------------
 
-func TestTaskOutput_ImplementsTool(t *testing.T) {
+func TestJobOutput_ImplementsTool(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
-	if tl.Name() != "TaskOutput" {
+	tl := NewJobOutput(reg)
+	if tl.Name() != "JobOutput" {
 		t.Errorf("Name = %q, want TaskOutput", tl.Name())
 	}
 	if !tl.IsReadOnly(nil) {
@@ -344,10 +344,10 @@ func TestTaskOutput_ImplementsTool(t *testing.T) {
 	}
 }
 
-func TestTaskStop_ImplementsTool(t *testing.T) {
+func TestJobStop_ImplementsTool(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
-	if tl.Name() != "TaskStop" {
+	tl := NewJobStop(reg)
+	if tl.Name() != "JobStop" {
 		t.Errorf("Name = %q, want TaskStop", tl.Name())
 	}
 	aliases := tl.Aliases()
@@ -362,9 +362,9 @@ func TestTaskStop_ImplementsTool(t *testing.T) {
 	}
 }
 
-func TestTaskStop_Description(t *testing.T) {
+func TestJobStop_Description(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	desc, err := tl.Description(json.RawMessage(`{"task_id":"bg-1"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
@@ -374,9 +374,9 @@ func TestTaskStop_Description(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_Description(t *testing.T) {
+func TestJobOutput_Description(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	desc, err := tl.Description(json.RawMessage(`{"task_id":"bg-1"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
@@ -386,14 +386,14 @@ func TestTaskOutput_Description(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_RenderResult(t *testing.T) {
+func TestJobOutput_RenderResult(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 
 	// Test rendering with output
 	result := tl.RenderResult(&OutputOutput{
 		RetrievalStatus: "success",
-		Task: &TaskInfo{
+		Task: &JobInfo{
 			ID:     "bg-1",
 			Status: "completed",
 			Output: "hello world",
@@ -410,9 +410,9 @@ func TestTaskOutput_RenderResult(t *testing.T) {
 	}
 }
 
-func TestTaskStop_RenderResult(t *testing.T) {
+func TestJobStop_RenderResult(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 
 	result := tl.RenderResult(&StopOutput{
 		Message: "Successfully stopped task: bg-1 (sleep 60)",
@@ -427,45 +427,45 @@ func TestTaskStop_RenderResult(t *testing.T) {
 // Coverage: description fallback + render fallback
 // ---------------------------------------------------------------------------
 
-func TestTaskOutput_DescriptionInvalidJSON(t *testing.T) {
+func TestJobOutput_DescriptionInvalidJSON(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	desc, err := tl.Description(json.RawMessage(`invalid`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "Get task output" {
-		t.Errorf("Description fallback = %q, want Get task output", desc)
+	if desc != "Get job output" {
+		t.Errorf("Description fallback = %q, want Get job output", desc)
 	}
 }
 
-func TestTaskOutput_DescriptionEmptyCommand(t *testing.T) {
+func TestJobOutput_DescriptionEmptyCommand(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	desc, err := tl.Description(json.RawMessage(`{"task_id":""}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "TaskOutput()" {
-		t.Errorf("Description = %q, want TaskOutput()", desc)
+	if desc != "JobOutput()" {
+		t.Errorf("Description = %q, want JobOutput()", desc)
 	}
 }
 
-func TestTaskStop_DescriptionInvalidJSON(t *testing.T) {
+func TestJobStop_DescriptionInvalidJSON(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	desc, err := tl.Description(json.RawMessage(`invalid`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if desc != "Stop a running background task" {
-		t.Errorf("Description fallback = %q, want Stop a running background task", desc)
+	if desc != "Stop a running background job" {
+		t.Errorf("Description fallback = %q, want Stop a running background job", desc)
 	}
 }
 
-func TestTaskOutput_RenderResultFallback(t *testing.T) {
+func TestJobOutput_RenderResultFallback(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	// Pass wrong type to hit the fallback path
 	result := tl.RenderResult("not an OutputOutput")
 	if result != "not an OutputOutput" {
@@ -473,9 +473,9 @@ func TestTaskOutput_RenderResultFallback(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_RenderResultNilTask(t *testing.T) {
+func TestJobOutput_RenderResultNilTask(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	result := tl.RenderResult(&OutputOutput{
 		RetrievalStatus: "timeout",
 		Task:            nil,
@@ -485,12 +485,12 @@ func TestTaskOutput_RenderResultNilTask(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_RenderResultNoOutput(t *testing.T) {
+func TestJobOutput_RenderResultNoOutput(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	result := tl.RenderResult(&OutputOutput{
 		RetrievalStatus: "success",
-		Task: &TaskInfo{
+		Task: &JobInfo{
 			ID:     "bg-1",
 			Status: "completed",
 		},
@@ -500,28 +500,28 @@ func TestTaskOutput_RenderResultNoOutput(t *testing.T) {
 	}
 }
 
-func TestTaskStop_RenderResultFallback(t *testing.T) {
+func TestJobStop_RenderResultFallback(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	result := tl.RenderResult("not a StopOutput")
 	if result != "not a StopOutput" {
 		t.Errorf("RenderResult fallback = %q, want not a StopOutput", result)
 	}
 }
 
-func TestTaskStop_KillError(t *testing.T) {
+func TestJobStop_KillError(t *testing.T) {
 	reg := newMockRegistry()
 	// Don't add task — Kill will fail via Get first
 	// Actually we need a task that exists but Kill fails.
 	// Use a custom mock for this.
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	// Task doesn't exist — tests the "not found" before Kill
 	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"missing"}`), nil)
 	if err == nil {
 		t.Error("expected error for missing task")
 	}
-	if !strings.Contains(err.Error(), "no task found") {
-		t.Errorf("error = %q, want error containing 'no task found'", err.Error())
+	if !strings.Contains(err.Error(), "no job found") {
+		t.Errorf("error = %q, want error containing 'no job found'", err.Error())
 	}
 }
 
@@ -534,9 +534,9 @@ func (k *killErrorRegistry) Kill(id string) error {
 	return fmt.Errorf("kill failed: permission denied")
 }
 
-func TestTaskStop_KillReturnsError(t *testing.T) {
+func TestJobStop_KillReturnsError(t *testing.T) {
 	base := newMockRegistry()
-	base.add(&TaskInfo{
+	base.add(&JobInfo{
 		ID:      "bg-20",
 		Type:    "local_bash",
 		Status:  "running",
@@ -544,7 +544,7 @@ func TestTaskStop_KillReturnsError(t *testing.T) {
 	})
 	reg := &killErrorRegistry{mockRegistry: base}
 
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-20"}`), nil)
 	if err == nil {
 		t.Fatal("expected error when Kill fails")
@@ -554,9 +554,9 @@ func TestTaskStop_KillReturnsError(t *testing.T) {
 	}
 }
 
-func TestTaskStop_EmptyCommandUsesDescription(t *testing.T) {
+func TestJobStop_EmptyCommandUsesDescription(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:          "bg-21",
 		Type:        "local_bash",
 		Status:      "running",
@@ -564,7 +564,7 @@ func TestTaskStop_EmptyCommandUsesDescription(t *testing.T) {
 		Description: "my custom task",
 	})
 
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	result, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-21"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -579,9 +579,9 @@ func TestTaskStop_EmptyCommandUsesDescription(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_ContextCancelled(t *testing.T) {
+func TestJobOutput_ContextCancelled(t *testing.T) {
 	reg := newMockRegistry()
-	reg.add(&TaskInfo{
+	reg.add(&JobInfo{
 		ID:     "bg-30",
 		Type:   "local_bash",
 		Status: "running",
@@ -591,7 +591,7 @@ func TestTaskOutput_ContextCancelled(t *testing.T) {
 	// Cancel context immediately so the polling loop hits ctx.Done()
 	cancel()
 
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	block := true
 	input, _ := json.Marshal(OutputInput{TaskID: "bg-30", Block: &block, Timeout: 5000})
 	_, err := tl.Call(ctx, json.RawMessage(input), nil)
@@ -603,9 +603,9 @@ func TestTaskOutput_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestTaskOutput_InputSchema(t *testing.T) {
+func TestJobOutput_InputSchema(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskOutput(reg)
+	tl := NewJobOutput(reg)
 	schema := tl.InputSchema()
 	if len(schema) == 0 {
 		t.Fatal("InputSchema should not be empty")
@@ -623,9 +623,9 @@ func TestTaskOutput_InputSchema(t *testing.T) {
 	}
 }
 
-func TestTaskStop_InputSchema(t *testing.T) {
+func TestJobStop_InputSchema(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	schema := tl.InputSchema()
 	if len(schema) == 0 {
 		t.Fatal("InputSchema should not be empty")
@@ -643,20 +643,20 @@ func TestTaskStop_InputSchema(t *testing.T) {
 	}
 }
 
-func TestTaskStop_IsConcurrencySafe(t *testing.T) {
+func TestJobStop_IsConcurrencySafe(t *testing.T) {
 	reg := newMockRegistry()
-	tl := NewTaskStop(reg)
+	tl := NewJobStop(reg)
 	if !tl.IsConcurrencySafe(nil) {
 		t.Error("TaskStop should be concurrency-safe")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TaskInfo agent fields
+// JobInfo agent fields
 // ---------------------------------------------------------------------------
 
-func TestTaskInfo_AgentFields(t *testing.T) {
-	info := &TaskInfo{
+func TestJobInfo_AgentFields(t *testing.T) {
+	info := &JobInfo{
 		ID:         "fork-1",
 		Type:       "local_agent",
 		Status:     "completed",
@@ -681,7 +681,7 @@ func TestTaskInfo_AgentFields(t *testing.T) {
 	}
 
 	// Verify backward compat: old JSON without agent fields unmarshals fine
-	var parsed TaskInfo
+	var parsed JobInfo
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestTaskInfo_AgentFields(t *testing.T) {
 
 	// Old JSON without agent fields should unmarshal with zero values
 	oldJSON := `{"task_id":"bg-1","task_type":"local_bash","status":"completed"}`
-	var old TaskInfo
+	var old JobInfo
 	if err := json.Unmarshal([]byte(oldJSON), &old); err != nil {
 		t.Fatalf("Unmarshal old JSON: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"time"
 )
 
@@ -1107,7 +1107,7 @@ func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) 
 // Bug fix: adapter exposes correct exit code for killed task
 // ---------------------------------------------------------------------------
 
-func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
+func TestJobInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 
 	task := r.Spawn("sleep 60", 12345, nil)
@@ -1115,7 +1115,7 @@ func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 		t.Fatalf("Kill() error: %v", err)
 	}
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	info, ok := adapter.Get(task.ID)
 	if !ok {
 		t.Fatalf("Get(%q) not found", task.ID)
@@ -1130,12 +1130,12 @@ func TestTaskInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TaskInfoAdapter — Kill, List, Wait, Get coverage
+// JobInfoAdapter — Kill, List, Wait, Get coverage
 // ---------------------------------------------------------------------------
 
-func TestTaskInfoAdapter_GetNotFound(t *testing.T) {
+func TestJobInfoAdapter_GetNotFound(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	info, ok := adapter.Get("nonexistent")
 	if ok {
@@ -1146,12 +1146,12 @@ func TestTaskInfoAdapter_GetNotFound(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_List(t *testing.T) {
+func TestJobInfoAdapter_List(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 	t1 := r.Spawn("echo a", 100, NewStreamingOutput(nil))
 	t2 := r.Spawn("echo b", 101, NewStreamingOutput(nil))
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	list := adapter.List()
 	if len(list) != 2 {
 		t.Fatalf("List() returned %d tasks, want 2", len(list))
@@ -1173,9 +1173,9 @@ func TestTaskInfoAdapter_List(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_ListEmpty(t *testing.T) {
+func TestJobInfoAdapter_ListEmpty(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	list := adapter.List()
 	if len(list) != 0 {
@@ -1183,14 +1183,14 @@ func TestTaskInfoAdapter_ListEmpty(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_Wait(t *testing.T) {
+func TestJobInfoAdapter_Wait(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 	task := r.Spawn("echo done", 200, NewStreamingOutput(nil))
 
 	// Complete the task so Wait returns immediately
 	task.Complete(0, false)
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	exitCode, err := adapter.Wait(task.ID)
 	if err != nil {
 		t.Fatalf("Wait() error: %v", err)
@@ -1200,9 +1200,9 @@ func TestTaskInfoAdapter_Wait(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_WaitNotFound(t *testing.T) {
+func TestJobInfoAdapter_WaitNotFound(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	_, err := adapter.Wait("nonexistent")
 	if err == nil {
@@ -1213,12 +1213,12 @@ func TestTaskInfoAdapter_WaitNotFound(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_Kill(t *testing.T) {
+func TestJobInfoAdapter_Kill(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 	// PID=0 avoids killProcessTree hitting real processes; adapter test is delegation-only
 	task := r.Spawn("sleep 60", 0, NewStreamingOutput(nil))
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	if err := adapter.Kill(task.ID); err != nil {
 		t.Fatalf("Kill() error: %v", err)
 	}
@@ -1232,9 +1232,9 @@ func TestTaskInfoAdapter_Kill(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_KillNotFound(t *testing.T) {
+func TestJobInfoAdapter_KillNotFound(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	err := adapter.Kill("nonexistent")
 	if err == nil {
@@ -1245,12 +1245,12 @@ func TestTaskInfoAdapter_KillNotFound(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_KillNotRunning(t *testing.T) {
+func TestJobInfoAdapter_KillNotRunning(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 	task := r.Spawn("echo x", 400, NewStreamingOutput(nil))
 	task.Complete(0, false)
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	err := adapter.Kill(task.ID)
 	if err == nil {
 		t.Fatal("expected error when killing completed task")
@@ -1260,7 +1260,7 @@ func TestTaskInfoAdapter_KillNotRunning(t *testing.T) {
 	}
 }
 
-func TestTaskInfoAdapter_GetWithOutput(t *testing.T) {
+func TestJobInfoAdapter_GetWithOutput(t *testing.T) {
 	r := NewBackgroundTaskRegistry()
 	s := NewStreamingOutput(nil)
 	if _, err := s.Write([]byte("hello output")); err != nil {
@@ -1269,7 +1269,7 @@ func TestTaskInfoAdapter_GetWithOutput(t *testing.T) {
 	task := r.Spawn("echo hello", 500, s)
 	task.Complete(0, false)
 
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 	info, ok := adapter.Get(task.ID)
 	if !ok {
 		t.Fatal("Get() should find task")
@@ -1326,33 +1326,33 @@ func contains(s, substr string) bool {
 
 
 // ---------------------------------------------------------------------------
-// ErrNotFound wrapping — MultiRegistry relies on errors.Is(err, task.ErrNotFound)
+// ErrNotFound wrapping — MultiRegistry relies on errors.Is(err, job.ErrNotFound)
 // ---------------------------------------------------------------------------
 
-func TestTaskInfoAdapter_KillNotFound_WrapsErrNotFound(t *testing.T) {
+func TestJobInfoAdapter_KillNotFound_WrapsErrNotFound(t *testing.T) {
 	t.Parallel()
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	err := adapter.Kill("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
-	if !errors.Is(err, task.ErrNotFound) {
-		t.Errorf("Kill should wrap task.ErrNotFound for MultiRegistry dispatch, got: %v", err)
+	if !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("Kill should wrap job.ErrNotFound for MultiRegistry dispatch, got: %v", err)
 	}
 }
 
-func TestTaskInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
+func TestJobInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
 	t.Parallel()
 	r := NewBackgroundTaskRegistry()
-	adapter := NewTaskInfoAdapter(r)
+	adapter := NewJobInfoAdapter(r)
 
 	_, err := adapter.Wait("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
-	if !errors.Is(err, task.ErrNotFound) {
-		t.Errorf("Wait should wrap task.ErrNotFound for MultiRegistry dispatch, got: %v", err)
+	if !errors.Is(err, job.ErrNotFound) {
+		t.Errorf("Wait should wrap job.ErrNotFound for MultiRegistry dispatch, got: %v", err)
 	}
 }

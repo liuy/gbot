@@ -546,10 +546,10 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 }
 
 
-func TestForkAgentTaskAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
+func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 
 	// Spawn and complete a fork agent
 	state, _ := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {

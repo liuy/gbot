@@ -3,26 +3,26 @@ package agent
 import (
 	"fmt"
 
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 )
 
 // Compile-time interface check.
-var _ task.Registry = (*ForkAgentTaskAdapter)(nil)
+var _ job.Registry = (*ForkAgentJobAdapter)(nil)
 
-// ForkAgentTaskAdapter adapts ForkAgentRegistry to the task.Registry interface.
+// ForkAgentJobAdapter adapts ForkAgentRegistry to the job.Registry interface.
 // This enables TaskOutput/TaskStop to manage fork agent tasks alongside bash tasks.
-type ForkAgentTaskAdapter struct {
+type ForkAgentJobAdapter struct {
 	reg *ForkAgentRegistry
 }
 
-// NewForkAgentTaskAdapter creates an adapter wrapping a ForkAgentRegistry.
+// NewForkAgentJobAdapter creates an adapter wrapping a ForkAgentRegistry.
 // If reg is nil, all methods return not-found.
-func NewForkAgentTaskAdapter(reg *ForkAgentRegistry) *ForkAgentTaskAdapter {
-	return &ForkAgentTaskAdapter{reg: reg}
+func NewForkAgentJobAdapter(reg *ForkAgentRegistry) *ForkAgentJobAdapter {
+	return &ForkAgentJobAdapter{reg: reg}
 }
 
 // Get returns task info by ID.
-func (a *ForkAgentTaskAdapter) Get(id string) (*task.TaskInfo, bool) {
+func (a *ForkAgentJobAdapter) Get(id string) (*job.JobInfo, bool) {
 	if a.reg == nil {
 		return nil, false
 	}
@@ -34,24 +34,24 @@ func (a *ForkAgentTaskAdapter) Get(id string) (*task.TaskInfo, bool) {
 }
 
 // Kill cancels a running fork agent by ID.
-func (a *ForkAgentTaskAdapter) Kill(id string) error {
+func (a *ForkAgentJobAdapter) Kill(id string) error {
 	if a.reg == nil {
-		return fmt.Errorf("kill %q: %w", id, task.ErrNotFound)
+		return fmt.Errorf("kill %q: %w", id, job.ErrNotFound)
 	}
 	if !a.reg.Cancel(id) {
-		return fmt.Errorf("kill %q: %w", id, task.ErrNotFound)
+		return fmt.Errorf("kill %q: %w", id, job.ErrNotFound)
 	}
 	return nil
 }
 
 // List returns all fork agent tasks as TaskInfo snapshots.
 // Triggers lazy cleanup for any terminal-state agents.
-func (a *ForkAgentTaskAdapter) List() []*task.TaskInfo {
+func (a *ForkAgentJobAdapter) List() []*job.JobInfo {
 	if a.reg == nil {
 		return nil
 	}
 	states := a.reg.List()
-	result := make([]*task.TaskInfo, len(states))
+	result := make([]*job.JobInfo, len(states))
 	hasTerminal := false
 	for i, s := range states {
 		result[i] = convertState(s)
@@ -68,22 +68,22 @@ func (a *ForkAgentTaskAdapter) List() []*task.TaskInfo {
 // Wait blocks until the fork agent completes, returning an exit code.
 // ForkAgentRegistry.Wait blocks on <-state.done which is closed after the
 // goroutine updates Status and Result, so the copy reflects the final state.
-func (a *ForkAgentTaskAdapter) Wait(id string) (int, error) {
+func (a *ForkAgentJobAdapter) Wait(id string) (int, error) {
 	if a.reg == nil {
-		return -1, fmt.Errorf("wait %q: %w", id, task.ErrNotFound)
+		return -1, fmt.Errorf("wait %q: %w", id, job.ErrNotFound)
 	}
 	state, ok := a.reg.Wait(id)
 	if !ok {
-		return -1, fmt.Errorf("wait %q: %w", id, task.ErrNotFound)
+		return -1, fmt.Errorf("wait %q: %w", id, job.ErrNotFound)
 	}
 	info := convertState(state)
 	return info.ExitCode, nil
 }
 
-// convertState maps a ForkAgentState snapshot to a task.TaskInfo.
+// convertState maps a ForkAgentState snapshot to a job.JobInfo.
 // ForkCancelled maps to "killed" to match TS TaskOutputTool's status vocabulary.
-func convertState(s *ForkAgentState) *task.TaskInfo {
-	info := &task.TaskInfo{
+func convertState(s *ForkAgentState) *job.JobInfo {
+	info := &job.JobInfo{
 		ID:          s.ID,
 		Type:        "local_agent",
 		Description: s.Description,
@@ -114,4 +114,4 @@ func convertState(s *ForkAgentState) *task.TaskInfo {
 }
 
 // Prefix returns the ID prefix for fork agent tasks.
-func (a *ForkAgentTaskAdapter) Prefix() string { return "fork-" }
+func (a *ForkAgentJobAdapter) Prefix() string { return "fork-" }

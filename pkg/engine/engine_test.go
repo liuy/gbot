@@ -3105,8 +3105,8 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	}
 	reg.MustRegister(&mockTool{name: "Skill", enabled: true})
 	reg.MustRegister(&mockTool{name: "Agent", enabled: true})
-	reg.MustRegister(&mockTool{name: "TaskOutput", enabled: true})
-	reg.MustRegister(&mockTool{name: "TaskStop", enabled: true})
+	reg.MustRegister(&mockTool{name: "JobOutput", enabled: true})
+	reg.MustRegister(&mockTool{name: "JobStop", enabled: true})
 
 	// New() — ToolsProvider snapshots all 10 tools
 	eng := New(&Params{

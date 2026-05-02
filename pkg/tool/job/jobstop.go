@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"context"
@@ -24,37 +24,37 @@ type StopOutput struct {
 	Command  string `json:"command,omitempty"`
 }
 
-// NewTaskStop creates the TaskStop tool.
+// NewJobStop creates the TaskStop tool.
 // Source: tools/TaskStopTool/TaskStopTool.ts
-func NewTaskStop(reg Registry) tool.Tool {
+func NewJobStop(reg Registry) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"task_id": {
 				"type": "string",
-				"description": "The ID of the background task to stop"
+				"description": "The ID of the background job to stop"
 			}
 		}
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "TaskStop",
+		Name_:  "JobStop",
 		Aliases_: []string{"KillShell"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in StopInput
 			if err := json.Unmarshal(input, &in); err != nil {
-				return "Stop a running background task", nil
+				return "Stop a running background job", nil
 			}
-			return fmt.Sprintf("Stop task %s", in.TaskID), nil
+			return fmt.Sprintf("Stop job %s", in.TaskID), nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
-			return executeTaskStop(reg, input)
+			return executeJobStop(reg, input)
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars:   100000,
-		Prompt_: taskStopPrompt(),
+		Prompt_: jobStopPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*StopOutput)
 			if !ok {
@@ -65,9 +65,9 @@ func NewTaskStop(reg Registry) tool.Tool {
 	})
 }
 
-// executeTaskStop runs the TaskStop tool logic.
+// executeJobStop runs the TaskStop tool logic.
 // Source: TaskStopTool.ts — call() + validateInput()
-func executeTaskStop(reg Registry, input json.RawMessage) (*tool.ToolResult, error) {
+func executeJobStop(reg Registry, input json.RawMessage) (*tool.ToolResult, error) {
 	var in StopInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -80,16 +80,16 @@ func executeTaskStop(reg Registry, input json.RawMessage) (*tool.ToolResult, err
 	// Validate task exists and is running
 	info, found := reg.Get(in.TaskID)
 	if !found {
-		return nil, fmt.Errorf("no task found with ID: %s", in.TaskID)
+		return nil, fmt.Errorf("no job found with ID: %s", in.TaskID)
 	}
 
 	if isTerminal(info.Status) {
-		return nil, fmt.Errorf("task %s is not running (status: %s)", in.TaskID, info.Status)
+		return nil, fmt.Errorf("job %s is not running (status: %s)", in.TaskID, info.Status)
 	}
 
 	// Kill the task
 	if err := reg.Kill(in.TaskID); err != nil {
-		return nil, fmt.Errorf("failed to stop task %s: %w", in.TaskID, err)
+		return nil, fmt.Errorf("failed to stop job %s: %w", in.TaskID, err)
 	}
 
 	cmd := info.Command
@@ -99,7 +99,7 @@ func executeTaskStop(reg Registry, input json.RawMessage) (*tool.ToolResult, err
 
 	return &tool.ToolResult{
 		Data: &StopOutput{
-			Message:  fmt.Sprintf("Successfully stopped task: %s (%s)", in.TaskID, cmd),
+			Message:  fmt.Sprintf("Successfully stopped job: %s (%s)", in.TaskID, cmd),
 			TaskID:   in.TaskID,
 			TaskType: info.Type,
 			Command:  cmd,

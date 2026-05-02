@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"errors"
@@ -56,7 +56,7 @@ func (m *MultiRegistry) routeByPrefix(id string) Registry {
 // Get returns task info by ID.
 // Prefix-matched IDs go directly to the owning registry.
 // Others fall back to linear scan.
-func (m *MultiRegistry) Get(id string) (*TaskInfo, bool) {
+func (m *MultiRegistry) Get(id string) (*JobInfo, bool) {
 	if reg := m.routeByPrefix(id); reg != nil {
 		return reg.Get(id)
 	}
@@ -89,8 +89,8 @@ func (m *MultiRegistry) Kill(id string) error {
 }
 
 // List returns tasks from all registries concatenated.
-func (m *MultiRegistry) List() []*TaskInfo {
-	var result []*TaskInfo
+func (m *MultiRegistry) List() []*JobInfo {
+	var result []*JobInfo
 	for _, reg := range m.registries {
 		result = append(result, reg.List()...)
 	}

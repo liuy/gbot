@@ -4,23 +4,23 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 )
 
-// TaskInfoAdapter adapts BackgroundTaskRegistry to the task.Registry interface.
+// JobInfoAdapter adapts BackgroundTaskRegistry to the job.Registry interface.
 // This is the bridge between the bash package's internal BackgroundTask type
 // and the task package's public TaskInfo type.
-type TaskInfoAdapter struct {
+type JobInfoAdapter struct {
 	reg *BackgroundTaskRegistry
 }
 
-// NewTaskInfoAdapter creates an adapter wrapping a BackgroundTaskRegistry.
-func NewTaskInfoAdapter(reg *BackgroundTaskRegistry) *TaskInfoAdapter {
-	return &TaskInfoAdapter{reg: reg}
+// NewJobInfoAdapter creates an adapter wrapping a BackgroundTaskRegistry.
+func NewJobInfoAdapter(reg *BackgroundTaskRegistry) *JobInfoAdapter {
+	return &JobInfoAdapter{reg: reg}
 }
 
 // Get returns task info by ID.
-func (a *TaskInfoAdapter) Get(id string) (*task.TaskInfo, bool) {
+func (a *JobInfoAdapter) Get(id string) (*job.JobInfo, bool) {
 	bt, ok := a.reg.Get(id)
 	if !ok {
 		return nil, false
@@ -29,20 +29,20 @@ func (a *TaskInfoAdapter) Get(id string) (*task.TaskInfo, bool) {
 }
 
 // Kill terminates a running task by ID.
-// Translates bash-specific "not found" errors into task.ErrNotFound
+// Translates bash-specific "not found" errors into job.ErrNotFound
 // so that MultiRegistry can properly skip to the next registry.
-func (a *TaskInfoAdapter) Kill(id string) error {
+func (a *JobInfoAdapter) Kill(id string) error {
 	err := a.reg.Kill(id)
 	if err != nil && isBashNotFound(err) {
-		return fmt.Errorf("kill %q: %w", id, task.ErrNotFound)
+		return fmt.Errorf("kill %q: %w", id, job.ErrNotFound)
 	}
 	return err
 }
 
 // List returns all tasks.
-func (a *TaskInfoAdapter) List() []*task.TaskInfo {
+func (a *JobInfoAdapter) List() []*job.JobInfo {
 	tasks := a.reg.List()
-	result := make([]*task.TaskInfo, len(tasks))
+	result := make([]*job.JobInfo, len(tasks))
 	for i, bt := range tasks {
 		result[i] = backgroundTaskToInfo(bt)
 	}
@@ -50,28 +50,28 @@ func (a *TaskInfoAdapter) List() []*task.TaskInfo {
 }
 
 // Wait blocks until the task finishes, returning the exit code.
-// Translates bash-specific "not found" errors into task.ErrNotFound.
-func (a *TaskInfoAdapter) Wait(id string) (int, error) {
+// Translates bash-specific "not found" errors into job.ErrNotFound.
+func (a *JobInfoAdapter) Wait(id string) (int, error) {
 	code, err := a.reg.Wait(id)
 	if err != nil && isBashNotFound(err) {
-		return code, fmt.Errorf("wait %q: %w", id, task.ErrNotFound)
+		return code, fmt.Errorf("wait %q: %w", id, job.ErrNotFound)
 	}
 	return code, err
 }
 
 // isBashNotFound detects the bash registry's ad-hoc "task X not found" error.
 // BackgroundTaskRegistry doesn't import the task package, so it uses
-// fmt.Errorf("task %q not found") instead of wrapping task.ErrNotFound.
+// fmt.Errorf("task %q not found") instead of wrapping job.ErrNotFound.
 func isBashNotFound(err error) bool {
 	return strings.Contains(err.Error(), "not found")
 }
 
 // backgroundTaskToInfo converts a BackgroundTask to a TaskInfo snapshot.
-func backgroundTaskToInfo(bt *BackgroundTask) *task.TaskInfo {
+func backgroundTaskToInfo(bt *BackgroundTask) *job.JobInfo {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 
-	info := &task.TaskInfo{
+	info := &job.JobInfo{
 		ID:          bt.ID,
 		Type:        "local_bash",
 		Status:      string(bt.Status),
@@ -88,4 +88,4 @@ func backgroundTaskToInfo(bt *BackgroundTask) *task.TaskInfo {
 }
 
 // Prefix returns the ID prefix for bash background tasks.
-func (a *TaskInfoAdapter) Prefix() string { return "bg-" }
+func (a *JobInfoAdapter) Prefix() string { return "bg-" }

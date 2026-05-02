@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"context"
@@ -23,12 +23,12 @@ type OutputInput struct {
 // Source: TaskOutputTool.tsx — TaskOutputToolOutput
 type OutputOutput struct {
 	RetrievalStatus string    `json:"retrieval_status"` // success, timeout, not_ready
-	Task            *TaskInfo `json:"task"`
+	Task            *JobInfo `json:"task"`
 }
 
-// NewTaskOutput creates the TaskOutput tool.
+// NewJobOutput creates the TaskOutput tool.
 // Source: tools/TaskOutputTool/TaskOutputTool.tsx
-func NewTaskOutput(reg Registry) tool.Tool {
+func NewJobOutput(reg Registry) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["task_id"],
@@ -51,23 +51,23 @@ func NewTaskOutput(reg Registry) tool.Tool {
 	}`)
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:  "TaskOutput",
+		Name_:  "JobOutput",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in OutputInput
 			if err := json.Unmarshal(input, &in); err != nil {
-				return "Get task output", nil
+				return "Get job output", nil
 			}
-			return fmt.Sprintf("TaskOutput(%s)", in.TaskID), nil
+			return fmt.Sprintf("JobOutput(%s)", in.TaskID), nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
-			return executeTaskOutput(ctx, reg, input)
+			return executeJobOutput(ctx, reg, input)
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars:   100000,
-		Prompt_: taskOutputPrompt(),
+		Prompt_: jobOutputPrompt(),
 		RenderResult_: func(data any) string {
 			out, ok := data.(*OutputOutput)
 			if !ok {
@@ -87,9 +87,9 @@ func NewTaskOutput(reg Registry) tool.Tool {
 	})
 }
 
-// executeTaskOutput runs the TaskOutput tool logic.
+// executeJobOutput runs the TaskOutput tool logic.
 // Source: TaskOutputTool.tsx — call() + waitForTaskCompletion
-func executeTaskOutput(ctx context.Context, reg Registry, input json.RawMessage) (*tool.ToolResult, error) {
+func executeJobOutput(ctx context.Context, reg Registry, input json.RawMessage) (*tool.ToolResult, error) {
 	var in OutputInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -112,7 +112,7 @@ func executeTaskOutput(ctx context.Context, reg Registry, input json.RawMessage)
 	// Initial lookup
 	info, found := reg.Get(in.TaskID)
 	if !found {
-		return nil, fmt.Errorf("no task found with ID: %s", in.TaskID)
+		return nil, fmt.Errorf("no job found with ID: %s", in.TaskID)
 	}
 
 	// If already terminal, return immediately

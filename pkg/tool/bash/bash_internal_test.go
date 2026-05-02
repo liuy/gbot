@@ -687,11 +687,11 @@ func TestExecuteStream_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
 		t.Errorf("task.Command = %q, want sleep 10", task.Command)
 	}
 
-	// Step 4: Verify TaskStop can find it via MultiRegistry + TaskInfoAdapter
-	taskReg := NewTaskInfoAdapter(registry)
+	// Step 4: Verify TaskStop can find it via MultiRegistry + JobInfoAdapter
+	taskReg := NewJobInfoAdapter(registry)
 	taskInfo, found := taskReg.Get(outputID)
 	if !found {
-		t.Fatalf("TaskInfoAdapter.Get(%q) not found — TaskStop would fail", outputID)
+		t.Fatalf("JobInfoAdapter.Get(%q) not found — TaskStop would fail", outputID)
 	}
 	if taskInfo.Type != "local_bash" {
 		t.Errorf("taskInfo.Type = %q, want local_bash", taskInfo.Type)
@@ -699,7 +699,7 @@ func TestExecuteStream_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
 
 	// Step 5: Verify Kill works via the adapter (TaskStop's path)
 	if err := taskReg.Kill(outputID); err != nil {
-		t.Fatalf("TaskInfoAdapter.Kill(%q) error: %v — TaskStop would fail", outputID, err)
+		t.Fatalf("JobInfoAdapter.Kill(%q) error: %v — TaskStop would fail", outputID, err)
 	}
 
 	// Step 6: Verify task is now in terminal state

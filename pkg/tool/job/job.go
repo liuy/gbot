@@ -1,18 +1,18 @@
-// Package task provides tools for managing background tasks.
+// Package job provides tools for managing background jobs.
 //
 // Source reference: tools/TaskOutputTool/, tools/TaskStopTool/
-package task
+package job
 
 import "errors"
 
-// ErrNotFound is returned by Registry methods when a task ID does not exist
+// ErrNotFound is returned by Registry methods when a job ID does not exist
 // in any backing registry. Callers should use errors.Is(err, ErrNotFound)
 // to check for this condition rather than string matching.
-var ErrNotFound = errors.New("task not found")
+var ErrNotFound = errors.New("job not found")
 
-// TaskInfo is a snapshot of a background task's state.
+// JobInfo is a snapshot of a background task's state.
 // Source: TaskOutputTool.tsx — TaskOutput type
-type TaskInfo struct {
+type JobInfo struct {
 	ID          string `json:"task_id"`
 	Type        string `json:"task_type"`              // "local_bash"
 	Status      string `json:"status"`                 // running, completed, failed, killed
@@ -28,14 +28,14 @@ type TaskInfo struct {
 }
 
 // Registry is the interface for querying and managing background tasks.
-// bash.BackgroundTaskRegistry satisfies this interface via TaskInfoAdapter.
+// bash.BackgroundTaskRegistry satisfies this interface via JobInfoAdapter.
 type Registry interface {
 	// Get returns task info by ID. Returns (nil, false) if not found.
-	Get(id string) (*TaskInfo, bool)
+	Get(id string) (*JobInfo, bool)
 	// Kill terminates a running task by ID.
 	Kill(id string) error
 	// List returns all tasks.
-	List() []*TaskInfo
+	List() []*JobInfo
 	// Wait blocks until the task finishes, returning the exit code.
 	Wait(id string) (int, error)
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -142,7 +142,7 @@ func TestAdapter_GetCompleted(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -175,7 +175,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 		nil, "slow task", "call_1",
 	)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -201,7 +201,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	info, ok := adapter.Get(state.ID)
 	if !ok {
 		t.Fatal("Get returned false")
@@ -217,7 +217,7 @@ func TestAdapter_GetFailed(t *testing.T) {
 func TestAdapter_GetNotFound(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	_, ok := adapter.Get("nonexistent")
 	if ok {
 		t.Error("Get should return false for nonexistent ID")
@@ -242,7 +242,7 @@ func TestAdapter_List(t *testing.T) {
 	reg.Wait(s1.ID)
 	reg.Wait(s2.ID)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	list := adapter.List()
 	if len(list) != 2 {
 		t.Fatalf("List returned %d tasks, want 2", len(list))
@@ -270,7 +270,7 @@ func TestAdapter_List_TriggerCleanup(t *testing.T) {
 	)
 	reg.Wait(state.ID)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	// List triggers cleanup of terminal agents
 	adapter.List()
 
@@ -295,7 +295,7 @@ func TestAdapter_KillSuccess(t *testing.T) {
 	)
 	<-started
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	if err := adapter.Kill(state.ID); err != nil {
 		t.Errorf("Kill returned error: %v", err)
 	}
@@ -305,12 +305,12 @@ func TestAdapter_KillSuccess(t *testing.T) {
 func TestAdapter_KillNotFound(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	err := adapter.Kill("nonexistent")
 	if err == nil {
 		t.Error("Kill should return error for nonexistent ID")
 	}
-	if !errors.Is(err, task.ErrNotFound) {
+	if !errors.Is(err, job.ErrNotFound) {
 		t.Errorf("error = %v, want ErrNotFound", err)
 	}
 }
@@ -325,7 +325,7 @@ func TestAdapter_WaitCompleted(t *testing.T) {
 		nil, "wait test", "call_1",
 	)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	code, err := adapter.Wait(state.ID)
 	if err != nil {
 		t.Fatalf("Wait error: %v", err)
@@ -345,7 +345,7 @@ func TestAdapter_WaitFailed(t *testing.T) {
 		nil, "fail test", "call_1",
 	)
 
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	code, err := adapter.Wait(state.ID)
 	if err != nil {
 		t.Fatalf("Wait error: %v", err)
@@ -358,19 +358,19 @@ func TestAdapter_WaitFailed(t *testing.T) {
 func TestAdapter_WaitNotFound(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
-	adapter := NewForkAgentTaskAdapter(reg)
+	adapter := NewForkAgentJobAdapter(reg)
 	_, err := adapter.Wait("nonexistent")
 	if err == nil {
 		t.Error("Wait should return error for nonexistent ID")
 	}
-	if !errors.Is(err, task.ErrNotFound) {
+	if !errors.Is(err, job.ErrNotFound) {
 		t.Errorf("error = %v, want ErrNotFound", err)
 	}
 }
 
 func TestAdapter_NilRegistry(t *testing.T) {
 	t.Parallel()
-	adapter := NewForkAgentTaskAdapter(nil)
+	adapter := NewForkAgentJobAdapter(nil)
 
 	_, ok := adapter.Get("any")
 	if ok {

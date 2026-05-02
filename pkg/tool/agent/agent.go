@@ -19,7 +19,7 @@ import (
 
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -128,13 +128,13 @@ func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
 // Injected from main.go to avoid agent → mcp import.
 func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
 
-// TaskAdapter returns a task.Registry wrapping the fork agent registry.
+// JobAdapter returns a job.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
-func (t *AgentTool) TaskAdapter() task.Registry {
+func (t *AgentTool) JobAdapter() job.Registry {
 	if t.forkReg == nil {
 		return nil
 	}
-	return NewForkAgentTaskAdapter(t.forkReg)
+	return NewForkAgentJobAdapter(t.forkReg)
 }
 
 // Name returns the tool name.

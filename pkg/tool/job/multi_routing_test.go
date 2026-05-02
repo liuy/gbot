@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ type trackCallRegistry struct {
 	killCalls []string
 }
 
-func (t *trackCallRegistry) Get(id string) (*TaskInfo, bool) {
+func (t *trackCallRegistry) Get(id string) (*JobInfo, bool) {
 	t.getCalls = append(t.getCalls, id)
 	return t.Registry.Get(id)
 }
@@ -49,8 +49,8 @@ func (t *trackCallRegistry) String() string {
 
 func TestMulti_PrefixAutoDiscovery(t *testing.T) {
 	t.Parallel()
-	bash := &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}
-	fork := &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}
+	bash := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}
+	fork := &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}
 
 	m := NewMultiRegistry(bash, fork)
 	// No manual RegisterPrefix needed — auto-discovered from Prefixer interface
@@ -66,8 +66,8 @@ func TestMulti_PrefixAutoDiscovery(t *testing.T) {
 
 func TestMulti_PrefixRouting_Get(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -88,8 +88,8 @@ func TestMulti_PrefixRouting_Get(t *testing.T) {
 
 func TestMulti_PrefixRouting_Kill(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -106,8 +106,8 @@ func TestMulti_PrefixRouting_Kill(t *testing.T) {
 
 func TestMulti_PrefixRouting_Wait(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "completed", ExitCode: 0}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "completed", ExitCode: 1}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Status: "completed", ExitCode: 0}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Status: "completed", ExitCode: 1}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -125,7 +125,7 @@ func TestMulti_PrefixRouting_Wait(t *testing.T) {
 
 func TestMulti_PrefixRouting_Fallback(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "custom-1", Type: "other", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "custom-1", Type: "other", Status: "running"})
 
 	m := NewMultiRegistry(r1)
 	// No Prefixer — all lookups via linear scan
@@ -141,8 +141,8 @@ func TestMulti_PrefixRouting_Fallback(t *testing.T) {
 
 func TestMulti_PrefixRouting_KillNotFound(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -160,8 +160,8 @@ func TestMulti_PrefixRouting_KillNotFound(t *testing.T) {
 
 func TestMulti_PrefixRouting_GetNotFound(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
-	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
 
@@ -176,7 +176,7 @@ func TestMulti_PrefixRouting_GetNotFound(t *testing.T) {
 
 func TestMulti_NilRegistryFiltered(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
 	m := NewMultiRegistry(r1, nil)
 
 	info, ok := m.Get("bg-1")

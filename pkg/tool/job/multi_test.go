@@ -1,4 +1,4 @@
-package task
+package job
 
 import (
 	"strings"
@@ -12,8 +12,8 @@ import (
 
 func TestMulti_GetFirst(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	info, ok := m.Get("bg-1")
@@ -27,8 +27,8 @@ func TestMulti_GetFirst(t *testing.T) {
 
 func TestMulti_GetSecond(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	info, ok := m.Get("fork-1")
@@ -42,8 +42,8 @@ func TestMulti_GetSecond(t *testing.T) {
 
 func TestMulti_GetNotFound(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	_, ok := m.Get("nonexistent")
@@ -54,8 +54,8 @@ func TestMulti_GetNotFound(t *testing.T) {
 
 func TestMulti_List(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Type: "local_bash"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Type: "local_agent"})
 	m := NewMultiRegistry(r1, r2)
 
 	list := m.List()
@@ -73,8 +73,8 @@ func TestMulti_List(t *testing.T) {
 
 func TestMulti_KillFirst(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	if err := m.Kill("bg-1"); err != nil {
@@ -84,8 +84,8 @@ func TestMulti_KillFirst(t *testing.T) {
 
 func TestMulti_KillSecond(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Status: "running"})
 	m := NewMultiRegistry(r1, r2)
 
 	if err := m.Kill("fork-1"); err != nil {
@@ -95,7 +95,7 @@ func TestMulti_KillSecond(t *testing.T) {
 
 func TestMulti_KillNotFound(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
 	m := NewMultiRegistry(r1)
 
 	err := m.Kill("nonexistent")
@@ -109,8 +109,8 @@ func TestMulti_KillNotFound(t *testing.T) {
 
 func TestMulti_WaitFirst(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "completed", ExitCode: 0})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "completed", ExitCode: 0})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "completed", ExitCode: 0})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Status: "completed", ExitCode: 0})
 	m := NewMultiRegistry(r1, r2)
 
 	code, err := m.Wait("bg-1")
@@ -124,8 +124,8 @@ func TestMulti_WaitFirst(t *testing.T) {
 
 func TestMulti_WaitSecond(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "completed", ExitCode: 0})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	r2 := newStubRegistry(&JobInfo{ID: "fork-1", Status: "completed", ExitCode: 0})
 	m := NewMultiRegistry(r1, r2)
 
 	code, err := m.Wait("fork-1")
@@ -139,7 +139,7 @@ func TestMulti_WaitSecond(t *testing.T) {
 
 func TestMulti_WaitNotFound(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
 	m := NewMultiRegistry(r1)
 
 	start := time.Now()
