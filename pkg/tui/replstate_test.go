@@ -729,3 +729,164 @@ func TestCloseChannels(t *testing.T) {
 	s.CloseChannels()
 	// Just verify it doesn't panic
 }
+
+// ---------------------------------------------------------------------------
+// Grandchild (depth 2) recursive search in findToolView / updateToolBlock
+// ---------------------------------------------------------------------------
+
+// setupNestedAgent creates a two-level nesting:
+//   pendingTool["agent1"] → Blocks[0] = ToolCall{ID: "child_agent"}
+//
+// This simulates a child agent that has spawned its own agent tool (grandchild).
+func setupNestedAgent() *ReplState {
+	s := freshState()
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+
+	// Simulate child agent spawning a grandchild tool inside the parent's Blocks
+	parent := s.pendingTool["agent1"]
+	parent.AgentType = "Explore"
+	parent.Blocks = append(parent.Blocks, ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			ID:   "child_agent",
+			Name: "Agent",
+		},
+	})
+	parent.ToolCount++
+	s.updateToolBlock("agent1", parent)
+	return s
+}
+
+func TestFindToolView_FindsNestedBlock(t *testing.T) {
+	t.Parallel()
+	s := setupNestedAgent()
+
+	// "child_agent" is nested inside agent1.Blocks, not at message top level.
+	got := s.findToolView("child_agent")
+	if got == nil {
+		t.Fatal("findToolView should find nested block 'child_agent' inside parent agent")
+	}
+	if got.ID != "child_agent" {
+		t.Errorf("expected ID child_agent, got %q", got.ID)
+	}
+	if got.Name != "Agent" {
+		t.Errorf("expected Name Agent, got %q", got.Name)
+	}
+}
+
+func TestFindToolView_FindsTopLevel(t *testing.T) {
+	t.Parallel()
+	s := setupNestedAgent()
+
+	// "agent1" is at top level (pendingTool) — should still work.
+	got := s.findToolView("agent1")
+	if got == nil {
+		t.Fatal("findToolView should find top-level 'agent1'")
+	}
+	if got.ID != "agent1" {
+		t.Errorf("expected ID agent1, got %q", got.ID)
+	}
+}
+
+func TestFindToolView_DeeplyNested(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+
+	// Level 2: child inside agent1
+	parent := s.pendingTool["agent1"]
+	parent.AgentType = "Explore"
+	parent.Blocks = append(parent.Blocks, ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			ID:   "child_agent",
+			Name: "Agent",
+			Blocks: []ContentBlock{
+				{
+					Type: BlockTool,
+					ToolCall: ToolCallView{
+						ID:   "grandchild_read",
+						Name: "Read",
+					},
+				},
+			},
+		},
+	})
+	s.updateToolBlock("agent1", parent)
+
+	// Should find the deeply nested grandchild
+	got := s.findToolView("grandchild_read")
+	if got == nil {
+		t.Fatal("findToolView should find deeply nested 'grandchild_read'")
+	}
+	if got.ID != "grandchild_read" {
+		t.Errorf("expected ID grandchild_read, got %q", got.ID)
+	}
+}
+
+func TestUpdateToolBlock_UpdatesNestedBlock(t *testing.T) {
+	t.Parallel()
+	s := setupNestedAgent()
+
+	// Mutate the nested child via updateToolBlock
+	child := s.findToolView("child_agent")
+	child.Done = true
+	child.Output = "grandchild result"
+	ok := s.updateToolBlock("child_agent", child)
+	if !ok {
+		t.Fatal("updateToolBlock should return true for nested block")
+	}
+
+	// Re-fetch to verify persistence
+	got := s.findToolView("child_agent")
+	if got == nil {
+		t.Fatal("findToolView should still find child_agent after update")
+	}
+	if !got.Done {
+		t.Error("child_agent should be done after update")
+	}
+	if got.Output != "grandchild result" {
+		t.Errorf("expected output 'grandchild result', got %q", got.Output)
+	}
+}
+
+func TestUpdateToolBlock_NestedNotFound_ReturnsFalse(t *testing.T) {
+	t.Parallel()
+	s := setupNestedAgent()
+
+	tcv := &ToolCallView{ID: "nonexistent", Done: true}
+	ok := s.updateToolBlock("nonexistent", tcv)
+	if ok {
+		t.Error("updateToolBlock should return false for nonexistent ID")
+	}
+}
+
+// TestGrandchildTextDelta verifies the full flow: grandchild text events
+// are appended to the correct nested parent's Blocks.
+func TestGrandchildTextDelta(t *testing.T) {
+	t.Parallel()
+	s := setupNestedAgent()
+
+	// Simulate grandchild text delta arriving
+	parent := s.findToolView("child_agent")
+	if parent == nil {
+		t.Fatal("child_agent not found")
+	}
+
+	// Append text block (same logic as textDeltaMsg handler)
+	// parent.Blocks is empty, so this will create a new text block.
+	parent.Blocks = append(parent.Blocks, ContentBlock{Type: BlockText, Text: "hello"})
+	s.updateToolBlock("child_agent", parent)
+
+	// Verify text is persisted in the nested structure
+	got := s.findToolView("child_agent")
+	if len(got.Blocks) != 1 {
+		t.Fatalf("expected 1 block in child_agent, got %d", len(got.Blocks))
+	}
+	if got.Blocks[0].Type != BlockText {
+		t.Errorf("expected BlockText, got %v", got.Blocks[0].Type)
+	}
+	if got.Blocks[0].Text != "hello" {
+		t.Errorf("expected text 'hello', got %q", got.Blocks[0].Text)
+	}
+}

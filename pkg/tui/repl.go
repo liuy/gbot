@@ -59,11 +59,26 @@ func NewReplState() *ReplState {
 // (not just lastMsg) and replaces its ToolCallView. Returns false if not found.
 func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
 	for i := len(s.messages) - 1; i >= 0; i-- {
-		m := &s.messages[i]
-		for j := len(m.Blocks) - 1; j >= 0; j-- {
-			if m.Blocks[j].Type == BlockTool && m.Blocks[j].ToolCall.ID == id {
-				m.Blocks[j].ToolCall = *tcv
+		if updateToolBlockInBlocks(&s.messages[i].Blocks, id, tcv) {
+			return true
+		}
+	}
+	return false
+}
+
+// updateToolBlockInBlocks recursively searches and updates a ToolCallView by ID.
+func updateToolBlockInBlocks(blocks *[]ContentBlock, id string, tcv *ToolCallView) bool {
+	for i := len(*blocks) - 1; i >= 0; i-- {
+		blk := &(*blocks)[i]
+		if blk.Type == BlockTool {
+			if blk.ToolCall.ID == id {
+				blk.ToolCall = *tcv
 				return true
+			}
+			if len(blk.ToolCall.Blocks) > 0 {
+				if updateToolBlockInBlocks(&blk.ToolCall.Blocks, id, tcv) {
+					return true
+				}
 			}
 		}
 	}
@@ -72,15 +87,39 @@ func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
 
 // findToolView returns the ToolCallView for the given tool ID.
 // Searches pendingTool first, then all messages backwards (most recent first).
+// Recursively searches nested Blocks within agent tool calls.
 func (s *ReplState) findToolView(id string) *ToolCallView {
+	// 1. Top-level pending tools
 	if tcv, ok := s.pendingTool[id]; ok {
 		return tcv
 	}
+	// 2. Search pending tools' nested Blocks (child agent tools)
+	for _, tcv := range s.pendingTool {
+		if found := findToolViewInBlocks(tcv.Blocks, id); found != nil {
+			return found
+		}
+	}
+	// 3. Search messages recursively
 	for i := len(s.messages) - 1; i >= 0; i-- {
-		m := &s.messages[i]
-		for j := len(m.Blocks) - 1; j >= 0; j-- {
-			if m.Blocks[j].Type == BlockTool && m.Blocks[j].ToolCall.ID == id {
-				return &m.Blocks[j].ToolCall
+		if found := findToolViewInBlocks(s.messages[i].Blocks, id); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// findToolViewInBlocks recursively searches for a ToolCallView by ID within ContentBlocks.
+func findToolViewInBlocks(blocks []ContentBlock, id string) *ToolCallView {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		blk := &blocks[i]
+		if blk.Type == BlockTool {
+			if blk.ToolCall.ID == id {
+				return &blk.ToolCall
+			}
+			if len(blk.ToolCall.Blocks) > 0 {
+				if found := findToolViewInBlocks(blk.ToolCall.Blocks, id); found != nil {
+					return found
+				}
 			}
 		}
 	}
