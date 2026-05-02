@@ -634,6 +634,102 @@ func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Integration test: bash spawnBackground ID must match registry + TaskStop
+// ---------------------------------------------------------------------------
+
+func TestExecuteStream_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
+	// Force non-PTY for deterministic behavior
+	orig := PtmxCheckPath()
+	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-id-match")
+	defer func() { SetPtmxCheckPath(orig) }()
+
+	registry := DefaultRegistry()
+	// Clean slate
+	for _, task := range registry.List() {
+		registry.Remove(task.ID)
+	}
+	defer func() {
+		for _, task := range registry.List() {
+			registry.Remove(task.ID)
+		}
+	}()
+
+	// Step 1: Run a background task via ExecuteStream
+	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg task"}`), nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("result.Data type = %T, want *Output", result.Data)
+	}
+
+	// Step 2: Extract task ID from the output message
+	// Output format: "Background task started with ID: bg-XXXXX\n..."
+	outputID := extractBgID(out.Stdout)
+	if outputID == "" {
+		t.Fatalf("could not extract bg- ID from output: %q", out.Stdout)
+	}
+
+	// Step 3: Verify the ID exists in the default registry
+	task, found := registry.Get(outputID)
+	if !found {
+		// List all tasks to show what's actually registered
+		tasks := registry.List()
+		var ids []string
+		for _, t := range tasks {
+			ids = append(ids, t.ID)
+		}
+		t.Fatalf("registry.Get(%q) not found. Registry contains: %v (ID mismatch bug!)", outputID, ids)
+	}
+	if task.Command != "sleep 10" {
+		t.Errorf("task.Command = %q, want sleep 10", task.Command)
+	}
+
+	// Step 4: Verify TaskStop can find it via MultiRegistry + TaskInfoAdapter
+	taskReg := NewTaskInfoAdapter(registry)
+	taskInfo, found := taskReg.Get(outputID)
+	if !found {
+		t.Fatalf("TaskInfoAdapter.Get(%q) not found — TaskStop would fail", outputID)
+	}
+	if taskInfo.Type != "local_bash" {
+		t.Errorf("taskInfo.Type = %q, want local_bash", taskInfo.Type)
+	}
+
+	// Step 5: Verify Kill works via the adapter (TaskStop's path)
+	if err := taskReg.Kill(outputID); err != nil {
+		t.Fatalf("TaskInfoAdapter.Kill(%q) error: %v — TaskStop would fail", outputID, err)
+	}
+
+	// Step 6: Verify task is now in terminal state
+	select {
+	case <-task.done:
+		if task.Status != TaskKilled && task.Status != TaskCompleted {
+			t.Errorf("task.Status after kill = %q, want killed or completed", task.Status)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("task did not terminate after kill within timeout")
+	}
+}
+
+// extractBgID extracts a bg-XXXXX ID from a string like
+// "Background task started with ID: bg-12345\n..."
+func extractBgID(s string) string {
+	// Find "bg-" followed by digits
+	idx := strings.Index(s, "bg-")
+	if idx == -1 {
+		return ""
+	}
+	rest := s[idx:]
+	end := strings.IndexAny(rest, "\n ")
+	if end == -1 {
+		return rest
+	}
+	return rest[:end]
+}
+
+// ---------------------------------------------------------------------------
 // executeNonPTYStreaming coverage — force non-PTY mode
 // ---------------------------------------------------------------------------
 
