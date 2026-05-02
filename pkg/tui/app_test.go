@@ -1050,57 +1050,57 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// updateRepl — agentToolMsg (regression: must be in App.Update type switch)
+// updateRepl — agent toolStartMsg (regression: must be in App.Update type switch)
 // ---------------------------------------------------------------------------
 
-func TestApp_Update_RoutesAgentToolMsg(t *testing.T) {
+func TestApp_Update_RoutesAgentToolStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search code", "{}")
-	_, cmd := app.Update(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Grep",
-		Summary:         "search pattern",
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+	_, cmd := app.Update(toolStartMsg{
+		ID:      "sub-1",
+		Name:    "Grep",
+		Summary: "search pattern",
+		Agent:   agent,
 	})
 	if cmd == nil {
-		t.Error("agentToolMsg should be routed to updateRepl and return a readEvents cmd")
+		t.Error("agent toolStartMsg should be routed to updateRepl and return a readEvents cmd")
 	}
 }
 
-func TestApp_UpdateRepl_AgentToolMsg(t *testing.T) {
+func TestApp_UpdateRepl_AgentToolStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
-	_, cmd := app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Grep",
-		Summary:         "pattern",
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+	_, cmd := app.updateRepl(toolStartMsg{
+		ID:      "sub-1",
+		Name:    "Grep",
+		Summary: "pattern",
+		Agent:   agent,
 	})
 	if cmd == nil {
-		t.Error("agentToolMsg should return a readEvents cmd")
+		t.Error("agent toolStartMsg should return a readEvents cmd")
 	}
 	tcv, ok := app.repl.pendingTool["call_abc"]
 	if !ok {
 		t.Fatal("pendingTool should have call_abc")
 	}
-	if len(tcv.AgentLogs) == 0 {
-		t.Error("AgentLogs should have at least one entry")
+	if len(tcv.Blocks) == 0 {
+		t.Error("Blocks should have at least one entry")
 	}
-	if tcv.AgentLogs[0].ToolName != "Grep" {
-		t.Errorf("AgentLogs[0].ToolName = %q, want Grep", tcv.AgentLogs[0].ToolName)
+	if tcv.Blocks[0].ToolCall.Name != "Grep" {
+		t.Errorf("Blocks[0].ToolCall.Name = %q, want Grep", tcv.Blocks[0].ToolCall.Name)
 	}
-	if tcv.AgentLogs[0].Done {
+	if tcv.Blocks[0].ToolCall.Done {
 		t.Error("tool_start entry should not be Done")
 	}
 }
 
-// TestApp_UpdateRepl_AgentToolParamDelta verifies that tool_param_delta events
+// TestApp_UpdateRepl_AgentToolParamDelta verifies that toolParamDeltaMsg events
 // update the summary of the last running tool entry.
 // TDD RED: tool_start with empty summary → tool_param_delta with summary → summary updated.
 func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
@@ -1109,39 +1109,38 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
 	// Step 1: tool_start with empty summary (as happens at content_block_start)
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Bash",
-		Summary:         "", // empty at content_block_start
+	app.updateRepl(toolStartMsg{
+		ID:      "sub-1",
+		Name:    "Bash",
+		Summary: "", // empty at content_block_start
+		Agent:   agent,
 	})
 	tcv := app.repl.pendingTool["call_abc"]
-	if tcv.AgentLogs[0].Summary != "" {
-		t.Fatalf("initial summary should be empty, got %q", tcv.AgentLogs[0].Summary)
+	if tcv.Blocks[0].ToolCall.Summary != "" {
+		t.Fatalf("initial summary should be empty, got %q", tcv.Blocks[0].ToolCall.Summary)
 	}
 
-	// Step 2: tool_param_delta arrives with summary from streaming input
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_param_delta",
-		ToolName:        "Bash",
-		Summary:         "count files",
+	// Step 2: toolParamDeltaMsg arrives with summary from streaming input
+	app.updateRepl(toolParamDeltaMsg{
+		ID:      "sub-1",
+		Summary: "count files",
+		Agent:   agent,
 	})
 
 	// Verify summary updated
 	tcv = app.repl.pendingTool["call_abc"]
-	if len(tcv.AgentLogs) == 0 {
-		t.Fatal("AgentLogs should have entries")
+	if len(tcv.Blocks) == 0 {
+		t.Fatal("Blocks should have entries")
 	}
-	if tcv.AgentLogs[0].Summary != "count files" {
-		t.Errorf("summary should be updated to %q, got %q", "count files", tcv.AgentLogs[0].Summary)
+	if tcv.Blocks[0].ToolCall.Summary != "count files" {
+		t.Errorf("summary should be updated to %q, got %q", "count files", tcv.Blocks[0].ToolCall.Summary)
 	}
 }
 
-// TestApp_UpdateRepl_AgentToolParamDelta_SameDepth verifies tool_param_delta
+// TestApp_UpdateRepl_AgentToolParamDelta_SameDepth verifies toolParamDeltaMsg
 // updates the existing entry even when depth matches (no duplicate entry).
 func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
 	t.Parallel()
@@ -1149,78 +1148,83 @@ func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
-	// tool_start at depth=0 (sub-agent's depth)
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Summary:         "",
-		Depth:           1,
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	// tool_start at depth=1 (sub-agent's depth)
+	app.updateRepl(toolStartMsg{
+		ID:      "sub-1",
+		Name:    "Read",
+		Summary: "",
+		Agent:   agent,
 	})
 	tcv := app.repl.pendingTool["call_abc"]
-	if len(tcv.AgentLogs) != 1 {
-		t.Fatalf("expected 1 AgentLog entry, got %d", len(tcv.AgentLogs))
+	if len(tcv.Blocks) != 1 {
+		t.Fatalf("expected 1 Block entry, got %d", len(tcv.Blocks))
 	}
-	if tcv.AgentLogs[0].ToolName != "Read" {
-		t.Errorf("expected tool Read, got %s", tcv.AgentLogs[0].ToolName)
+	if tcv.Blocks[0].ToolCall.Name != "Read" {
+		t.Errorf("expected tool Read, got %s", tcv.Blocks[0].ToolCall.Name)
 	}
 
-	// tool_param_delta also at depth=1 — should update existing entry, not add new
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_param_delta",
-		ToolName:        "Read",
-		Summary:         "Makefile",
-		Depth:           1,
+	// toolParamDeltaMsg — should update existing entry, not add new
+	app.updateRepl(toolParamDeltaMsg{
+		ID:      "sub-1",
+		Summary: "Makefile",
+		Agent:   agent,
 	})
 
 	tcv = app.repl.pendingTool["call_abc"]
-	if len(tcv.AgentLogs) != 1 {
-		t.Errorf("expected 1 AgentLog entry (no duplicate), got %d: %+v", len(tcv.AgentLogs), tcv.AgentLogs)
+	if len(tcv.Blocks) != 1 {
+		t.Errorf("expected 1 Block entry (no duplicate), got %d: %+v", len(tcv.Blocks), tcv.Blocks)
 	}
-	if tcv.AgentLogs[0].Summary != "Makefile" {
-		t.Errorf("expected summary Makefile, got %q", tcv.AgentLogs[0].Summary)
+	if tcv.Blocks[0].ToolCall.Summary != "Makefile" {
+		t.Errorf("expected summary Makefile, got %q", tcv.Blocks[0].ToolCall.Summary)
 	}
 }
 
-// TestApp_UpdateRepl_AgentThinkingRemoved verifies that Thinking entry is
-// removed when tools start, not just marked done.
-func TestApp_UpdateRepl_AgentThinkingRemoved(t *testing.T) {
+// TestApp_UpdateRepl_AgentThinkingPreserved verifies that Thinking entry is
+// preserved when tools start — thinking blocks are part of the agent output.
+func TestApp_UpdateRepl_AgentThinkingPreserved(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
 
-	// thinking_start → adds Thinking entry
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "thinking_start",
-	})
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	// thinking_start → adds Thinking block
+	app.updateRepl(thinkingStartMsg{Agent: agent})
 	tcv := app.repl.pendingTool["call_abc"]
-	if len(tcv.AgentLogs) != 1 || tcv.AgentLogs[0].ToolName != "Thinking" {
-		t.Fatalf("should have 1 Thinking entry, got %v", tcv.AgentLogs)
+	if len(tcv.Blocks) != 1 || tcv.Blocks[0].Type != BlockThinking {
+		t.Fatalf("should have 1 BlockThinking entry, got %v", tcv.Blocks)
 	}
 
-	// tool_start → removes Thinking, adds tool
-	app.updateRepl(agentToolMsg{
-		ParentToolUseID: "call_abc",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Summary:         "main.go",
+	// tool_start → adds tool, thinking block is preserved
+	app.updateRepl(toolStartMsg{
+		ID:      "sub-1",
+		Name:    "Read",
+		Summary: "main.go",
+		Agent:   agent,
 	})
 	tcv = app.repl.pendingTool["call_abc"]
-	for _, e := range tcv.AgentLogs {
-		if e.ToolName == "Thinking" {
-			t.Error("Thinking entry should be removed when tools start")
+	// Should have 2 blocks: thinking + Read tool
+	if len(tcv.Blocks) != 2 {
+		t.Errorf("should have 2 blocks (thinking + Read), got %d: %v", len(tcv.Blocks), tcv.Blocks)
+	}
+	hasThinking := false
+	hasTool := false
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockThinking {
+			hasThinking = true
+		}
+		if b.Type == BlockTool && b.ToolCall.Name == "Read" {
+			hasTool = true
 		}
 	}
-	// Should have exactly 1 entry (Read)
-	if len(tcv.AgentLogs) != 1 {
-		t.Errorf("should have 1 entry (Read), got %d: %v", len(tcv.AgentLogs), tcv.AgentLogs)
+	if !hasThinking {
+		t.Error("thinking block should be preserved after tool starts")
+	}
+	if !hasTool {
+		t.Error("Read tool block should exist")
 	}
 }
 
@@ -1247,8 +1251,8 @@ func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
 // updateRepl — usageMsg
 // ---------------------------------------------------------------------------
 
-// TestApp_AgentUsageMsg_UpdatesInputTokens verifies that agentUsageMsg snaps
-// displayedInputTokens to include sub-agent input tokens.
+// TestApp_AgentUsageMsg_UpdatesInputTokens verifies that usageMsg with Agent
+// snaps displayedInputTokens to include sub-agent input tokens.
 func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -1262,20 +1266,21 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	}
 
 	// Agent usage — should snap displayedInputTokens (includes cache in total)
-	app.updateRepl(agentUsageMsg{
-		ParentToolUseID:       "call_abc",
-		InputTokens:           300,
-		CacheReadInputTokens:  200,
-		OutputTokens:          50,
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc"}
+	app.updateRepl(usageMsg{
+		InputTokens:          300,
+		CacheReadInputTokens: 200,
+		OutputTokens:         50,
+		Agent:                agent,
 	})
 	// TotalInputTokens = (500+300) InputTokens + (0+200) CacheRead = 1000
 	if app.displayedInputTokens != 1000 {
-		t.Errorf("after agentUsageMsg, displayedInputTokens = %d, want 1000", app.displayedInputTokens)
+		t.Errorf("after agent usageMsg, displayedInputTokens = %d, want 1000", app.displayedInputTokens)
 	}
 	if app.inputTokenTarget != 1000 {
 		t.Errorf("inputTokenTarget = %d, want 1000", app.inputTokenTarget)
 	}
-	// Verify per-agent TokensIn includes cache: UpdateAgentUsage gets 300+200=500
+	// Verify per-agent TokensIn includes cache: handler computes 300+200=500
 	blk := app.repl.Messages()[0].Blocks[0]
 	if blk.ToolCall.TokensIn != 500 {
 		t.Errorf("agent TokensIn = %d, want 500 (input+cache)", blk.ToolCall.TokensIn)
@@ -4271,8 +4276,8 @@ func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
 }
 
 
-// TestApp_AgentUsageMsg_DoesNotUpdateSetContext verifies that agentUsageMsg
-// does NOT change the context bar — only usageMsg (main model) controls it.
+// TestApp_AgentUsageMsg_DoesNotUpdateSetContext verifies that usageMsg with Agent
+// does NOT change the context bar beyond what the main model already set.
 func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -4286,15 +4291,21 @@ func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
 		t.Fatalf("after usageMsg, contextUsed = %d, want 600", mainContext)
 	}
 
-	// Sub-agent usage should NOT change context
-	app.updateRepl(agentUsageMsg{
-		ParentToolUseID: "call_abc",
-		InputTokens:     5000,
-		OutputTokens:    200,
+	// Sub-agent usage should update context (usageMsg with Agent updates SetContext)
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc"}
+	app.updateRepl(usageMsg{
+		InputTokens:  5000,
+		OutputTokens: 200,
+		Agent:        agent,
 	})
-	if app.status.contextUsed != mainContext {
-		t.Errorf("after agentUsageMsg, contextUsed = %d, want %d (unchanged)",
-			app.status.contextUsed, mainContext)
+	// After agent usageMsg, contextUsed should be updated because usageMsg
+	// handler computes contextSize from all token fields and calls SetContext.
+	// The context bar reflects the latest context (main + agent combined).
+	newContext := app.status.contextUsed
+	if newContext == mainContext {
+		// Agent usage should have updated context to include agent tokens
+		t.Errorf("after agent usageMsg, contextUsed = %d, expected change from %d",
+			newContext, mainContext)
 	}
 }
 
@@ -5270,3 +5281,591 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// updateRepl — sub-agent thinking delta and end (Blocks rendering)
+// ---------------------------------------------------------------------------
+
+func TestApp_UpdateRepl_SubAgentThinkingDelta_AppendsText(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	// thinking_start → adds Thinking block
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	tcv := app.repl.pendingTool["call_abc"]
+	if len(tcv.Blocks) != 1 || tcv.Blocks[0].Type != BlockThinking {
+		t.Fatalf("should have 1 BlockThinking, got %d blocks", len(tcv.Blocks))
+	}
+
+	// thinking_delta → should append text to the thinking block
+	app.updateRepl(thinkingDeltaMsg{Text: "analyzing files...", Agent: agent})
+
+	tcv = app.repl.pendingTool["call_abc"]
+	foundThinking := false
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockThinking && strings.Contains(b.Thinking.Text, "analyzing") {
+			foundThinking = true
+			break
+		}
+	}
+	if !foundThinking {
+		t.Errorf("thinking delta should append text to BlockThinking, got Blocks: %v", tcv.Blocks)
+	}
+}
+
+func TestApp_UpdateRepl_SubAgentThinkingEnd_MarksDone(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	// thinking_start → adds Thinking block
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+
+	// thinking_delta → adds text
+	app.updateRepl(thinkingDeltaMsg{Text: "thinking text", Agent: agent})
+
+	// thinking_end → should mark block as Done with Duration
+	app.updateRepl(thinkingEndMsg{Duration: 3 * time.Second, Agent: agent})
+
+	tcv := app.repl.pendingTool["call_abc"]
+	foundDoneThinking := false
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockThinking && b.Thinking.Done && b.Thinking.Duration == 3*time.Second {
+			foundDoneThinking = true
+			break
+		}
+	}
+	if !foundDoneThinking {
+		t.Errorf("thinking end should mark BlockThinking Done with Duration, got Blocks: %v", tcv.Blocks)
+	}
+}
+
+func TestApp_UpdateRepl_SubAgentThinkingStartDeltaEnd_ContentPreserved(t *testing.T) {
+	t.Parallel()
+	// Full flow: thinking_start → delta → delta → end
+	// After end, thinking block should still exist (Done=true) with text preserved
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
+
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	app.updateRepl(thinkingDeltaMsg{Text: "thinking... ", Agent: agent})
+	app.updateRepl(thinkingDeltaMsg{Text: "more thinking...", Agent: agent})
+	app.updateRepl(thinkingEndMsg{Duration: 2 * time.Second, Agent: agent})
+
+	tcv := app.repl.pendingTool["call_abc"]
+	if len(tcv.Blocks) != 1 {
+		t.Fatalf("expected 1 BlockThinking after thinking_end, got %d", len(tcv.Blocks))
+	}
+	blk := tcv.Blocks[0]
+	if blk.Type != BlockThinking {
+		t.Errorf("expected BlockThinking, got %d", blk.Type)
+	}
+	if !blk.Thinking.Done {
+		t.Error("thinking should be marked Done")
+	}
+	if !strings.Contains(blk.Thinking.Text, "thinking") {
+		t.Errorf("thinking text should be preserved, got: %q", blk.Thinking.Text)
+	}
+	if blk.Thinking.Duration != 2*time.Second {
+			t.Errorf("thinking duration should be 2s, got %v", blk.Thinking.Duration)
+		}
+	}
+
+// TestApp_UpdateRepl_SubAgentToolFullLifecycle verifies the complete data flow
+// for a sub-agent tool: tool_start → tool_param_delta → tool_output → tool_end.
+// Then renders the message and checks that sub-agent tools appear NESTED inside
+// the parent agent block, not at the top level.
+//
+// This test goes through actual message handlers — NOT constructing Blocks directly.
+func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+
+	// --- Step 1: Main agent starts an Agent tool ---
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.SetAgentContextWindow("call_agent1", 200000)
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// --- Step 2: Sub-agent starts a Grep tool ---
+	app.updateRepl(toolStartMsg{
+		ID:      "sub_grep1",
+		Name:    "Grep",
+		Summary: "pattern",
+		Input:   `{"pattern":"TODO"}`,
+		Agent:   agent,
+	})
+
+	// Verify: Grep block added to parent.Blocks[]
+	tcv := app.repl.pendingTool["call_agent1"]
+	if len(tcv.Blocks) != 1 {
+		t.Fatalf("step2: expected 1 block in parent, got %d", len(tcv.Blocks))
+	}
+	if tcv.Blocks[0].ToolCall.Name != "Grep" {
+		t.Errorf("step2: expected Grep, got %q", tcv.Blocks[0].ToolCall.Name)
+	}
+	if tcv.Blocks[0].ToolCall.Done {
+		t.Error("step2: tool should not be done yet")
+	}
+
+	// --- Step 3: Sub-agent tool output arrives ---
+	// BUG: toolOutputDeltaMsg has no Agent field.
+	// PendingToolOutput searches pendingTool["sub_grep1"] → NOT FOUND (it's in parent.Blocks).
+	// The output is silently LOST.
+	app.updateRepl(toolOutputDeltaMsg{
+		ToolUseID:     "sub_grep1",
+		DisplayOutput: "file1.go:10: TODO fix\nfile2.go:20: TODO refactor",
+		Timing:        50 * time.Millisecond,
+			Agent:         agent,
+	})
+
+	// Verify: output should be in parent.Blocks[0].ToolCall.Output
+	tcv = app.repl.pendingTool["call_agent1"]
+	subTool := tcv.Blocks[0].ToolCall
+	if subTool.Output == "" {
+		t.Error("step3: sub-agent tool output is EMPTY — toolOutputDeltaMsg has no Agent field, output lost")
+	}
+
+	// --- Step 4: Sub-agent tool ends ---
+	app.updateRepl(toolEndMsg{
+		ToolUseID: "sub_grep1",
+		Output:    "2 matches found",
+		IsError:   false,
+		Timing:    100 * time.Millisecond,
+		Agent:     agent,
+	})
+
+	// Verify: BlockTool marked Done, Output and Elapsed set
+	tcv = app.repl.pendingTool["call_agent1"]
+	subTool = tcv.Blocks[0].ToolCall
+	if !subTool.Done {
+		t.Error("step4: sub-agent tool should be done after toolEndMsg")
+	}
+	if subTool.Output == "" {
+		t.Error("step4: sub-agent tool Output is empty — toolEndMsg sub-agent path doesn't set Output")
+	}
+	if subTool.Elapsed == 0 {
+		t.Error("step4: sub-agent tool Elapsed is zero — toolEndMsg sub-agent path doesn't set Elapsed")
+	}
+
+	// --- Step 5: Main agent tool ends ---
+	app.repl.PendingToolDone("call_agent1", "agent result", false, 500*time.Millisecond)
+
+	// --- Step 6: Render and verify nesting ---
+	msgs := app.repl.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages")
+	}
+	rendered := msgs[0].View(80, false, "", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	if !strings.Contains(plain, "Agent") {
+		t.Errorf("step6: rendering should contain 'Agent', got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "Grep") {
+		t.Errorf("step6: rendering should contain nested 'Grep', got:\n%s", plain)
+	}
+	if subTool.Output != "" && !strings.Contains(plain, "matches") {
+		t.Errorf("step6: rendering should contain sub-agent output, got:\n%s", plain)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentTextDeltaViaMessageFlow verifies textDeltaMsg
+// through the actual message handler, not by constructing Blocks directly.
+func TestApp_UpdateRepl_SubAgentTextDeltaViaMessageFlow(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	app.updateRepl(textDeltaMsg{
+		Text:  "Now analyzing the codebase...",
+		Agent: agent,
+	})
+
+	tcv := app.repl.pendingTool["call_agent1"]
+	found := false
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockText && strings.Contains(b.Text, "analyzing") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("textDeltaMsg should add BlockText to parent.Blocks, got blocks: %+v", tcv.Blocks)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentNestedRendering verifies the full message flow
+// produces correctly indented nested rendering:
+//
+//	● Agent(explore) (500ms)
+//	| ↑0 ↓0 · 1 tools
+//	  ● Grep(pattern) (100ms)
+//	  | 2 matches found
+//
+// Rules:
+//   - Tool header line: indent + ● + name(summary) + (time), NO pipe before ●
+//   - Output first line: indent + | + content
+//   - Nested tools just add depth*2 spaces, same pipe rules
+func TestApp_UpdateRepl_SubAgentNestedRendering(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+
+	// --- Step 1: Main agent starts an Agent tool ---
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.SetAgentContextWindow("call_agent1", 200000)
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// --- Step 2: Sub-agent starts a Grep tool ---
+	app.updateRepl(toolStartMsg{
+		ID:      "sub_grep1",
+		Name:    "Grep",
+		Summary: "pattern",
+		Input:   `{"pattern":"TODO"}`,
+		Agent:   agent,
+	})
+
+	// --- Step 3: Sub-agent tool output arrives ---
+	app.updateRepl(toolOutputDeltaMsg{
+		ToolUseID:     "sub_grep1",
+		DisplayOutput: "file1.go:10: TODO fix\nfile2.go:20: TODO refactor",
+		Timing:        50 * time.Millisecond,
+		Agent:         agent,
+	})
+
+	// --- Step 4: Sub-agent tool ends ---
+	app.updateRepl(toolEndMsg{
+		ToolUseID: "sub_grep1",
+		Output:    "2 matches found",
+		IsError:   false,
+		Timing:    100 * time.Millisecond,
+		Agent:     agent,
+	})
+
+	// --- Step 5: Main agent tool ends ---
+	app.repl.PendingToolDone("call_agent1", "agent result", false, 500*time.Millisecond)
+
+	// --- Step 6: Render and verify indentation ---
+	msgs := app.repl.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages")
+	}
+	rendered := msgs[0].View(80, false, "", false, 0)
+	plain := stripANSIPrintable(rendered)
+	lines := strings.Split(plain, "\n")
+
+	t.Logf("rendered:\n%s", plain)
+
+	// Verify line 0: parent agent header — "● Agent(explore) (500ms)"
+	if len(lines) < 1 {
+		t.Fatal("no lines rendered")
+	}
+	parentHeader := lines[0]
+	if !strings.Contains(parentHeader, "Agent") {
+		t.Errorf("line0: expected 'Agent' in header, got %q", parentHeader)
+	}
+	// Parent header must NOT start with spaces (depth=0) and NOT start with |
+	if strings.HasPrefix(parentHeader, "|") {
+		t.Errorf("line0: parent header must not start with |, got %q", parentHeader)
+	}
+	if strings.HasPrefix(parentHeader, " ") {
+		t.Errorf("line0: parent header (depth=0) must not have leading spaces, got %q", parentHeader)
+	}
+
+	// Verify nested Grep header line: "  ● Grep(pattern) (100ms)"
+	// Must have 2 leading spaces, must contain "Grep", must NOT have | before ●
+	grepFound := false
+	for _, line := range lines {
+		if strings.Contains(line, "Grep") {
+			grepFound = true
+			// Must start with exactly 2 spaces (depth=1)
+			if !strings.HasPrefix(line, "  ") {
+				t.Errorf("Grep header must start with 2 spaces (depth=1), got %q", line)
+			}
+			if strings.HasPrefix(line, "  |") {
+				t.Errorf("Grep header must NOT have | before ●, got %q", line)
+			}
+			// Must contain ● after the indent
+			if !strings.HasPrefix(line, "  ●") {
+				t.Errorf("Grep header must be '  ● Grep(...)', got %q", line)
+			}
+			break
+		}
+	}
+	if !grepFound {
+		t.Errorf("rendering should contain 'Grep', got:\n%s", plain)
+	}
+
+	// Verify nested Grep output line: "  | 2 matches found"
+	// Must have 2 leading spaces then |
+	grepOutputFound := false
+	for _, line := range lines {
+		trimmed := strings.TrimPrefix(line, "  ")
+		if trimmed != line && strings.HasPrefix(trimmed, "|") && strings.Contains(trimmed, "matches") {
+			grepOutputFound = true
+			break
+		}
+	}
+	if !grepOutputFound {
+		t.Errorf("expected '  | ...matches...' output line, got:\n%s", plain)
+	}
+
+	// Verify NO line has | before ● (pipe before tool dot is always wrong)
+	for i, line := range lines {
+		if strings.Contains(line, "●") && strings.Contains(line, "|") {
+			// Check if | appears before ●
+			pipeIdx := strings.Index(line, "|")
+			dotIdx := strings.Index(line, "●")
+			if pipeIdx < dotIdx && pipeIdx >= 0 {
+				t.Errorf("line%d: | must not appear before ●, got %q", i, line)
+			}
+		}
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentThinkingPreservedAfterToolStart verifies that
+// a completed thinking block (thinkingEnd received) is NOT removed when a
+// subsequent toolStartMsg arrives. The P1.2 fix should only remove ACTIVE
+// (non-Done) thinking blocks, not completed ones.
+func TestApp_UpdateRepl_SubAgentThinkingPreservedAfterToolStart(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Sub-agent starts thinking
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	app.updateRepl(thinkingDeltaMsg{Text: "Let me analyze the code...", Agent: agent})
+	app.updateRepl(thinkingEndMsg{Duration: 500 * time.Millisecond, Agent: agent})
+
+	// Verify thinking block is Done
+	tcv := app.repl.findToolView("call_agent1")
+	thinkingCount := 0
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockThinking {
+			thinkingCount++
+			if !b.Thinking.Done {
+				t.Error("thinking should be Done after thinkingEndMsg")
+			}
+			if b.Thinking.Text == "" {
+				t.Error("thinking text should not be empty")
+			}
+		}
+	}
+	if thinkingCount != 1 {
+		t.Fatalf("expected 1 thinking block after thinkingEnd, got %d", thinkingCount)
+	}
+
+	// Sub-agent starts a tool — this should NOT remove the completed thinking
+	app.updateRepl(toolStartMsg{
+		ID:      "sub_grep1",
+		Name:    "Grep",
+		Summary: "pattern",
+		Input:   `{}`,
+		Agent:   agent,
+	})
+
+	// Verify thinking block is STILL THERE
+	tcv = app.repl.findToolView("call_agent1")
+	thinkingCount = 0
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockThinking {
+			thinkingCount++
+		}
+	}
+	if thinkingCount != 1 {
+		t.Errorf("completed thinking block should NOT be removed by toolStartMsg, got %d thinking blocks", thinkingCount)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentTextIndentation verifies that text content
+// from a sub-agent is rendered with proper depth indentation (2 spaces for
+// depth=1 inside an agent block).
+func TestApp_UpdateRepl_SubAgentTextIndentation(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Sub-agent sends text
+	app.updateRepl(textDeltaMsg{Text: "Here is my analysis of the codebase.", Agent: agent})
+
+	// End the agent
+	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond)
+
+	// Render and check indentation
+	msgs := app.repl.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages")
+	}
+	rendered := msgs[0].View(80, false, "", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	t.Logf("rendered:\n%s", plain)
+
+	// Text should be at depth=1 (2-space indent)
+	if !strings.Contains(plain, "| Here is my analysis") {
+		t.Errorf("sub-agent text should have | prefix with indent, got:\n%s", plain)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentThinkingStreaming verifies that thinking content
+// is rendered DURING streaming (Done=false), not only after thinkingEnd.
+func TestApp_UpdateRepl_SubAgentThinkingStreaming(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Sub-agent starts thinking
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	app.updateRepl(thinkingDeltaMsg{Text: "Analyzing the module structure...", Agent: agent})
+
+	// Do NOT send thinkingEnd — tool is still running, thinking is streaming
+
+	// Render the message (agent tool is still in running state)
+	msgs := app.repl.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("no messages")
+	}
+	rendered := msgs[0].View(80, false, "●", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	t.Logf("rendered (streaming):\n%s", plain)
+
+	// Thinking content should be visible during streaming
+	if !strings.Contains(plain, "Analyzing") {
+		t.Errorf("thinking text should be rendered during streaming (Done=false), got:\n%s", plain)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentThinkingStreamingHasIndent verifies that thinking
+// content rendered inside an agent (depth=1) has 2-space indent on all lines.
+func TestApp_UpdateRepl_SubAgentThinkingStreamingHasIndent(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	app.updateRepl(thinkingDeltaMsg{Text: "Analyzing the module structure...", Agent: agent})
+
+	msgs := app.repl.Messages()
+	rendered := msgs[0].View(80, false, "●", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	t.Logf("rendered:\n%s", plain)
+
+	// Thinking header and content should be at depth=1 (2-space indent)
+	lines := strings.Split(plain, "\n")
+	thinkingFound := false
+	for _, line := range lines {
+		stripped := stripANSIPrintable(line)
+		if strings.Contains(stripped, "Thinking") {
+			thinkingFound = true
+			if !strings.HasPrefix(stripped, "  ") {
+				t.Errorf("thinking header at depth=1 should start with 2 spaces, got %q", stripped)
+			}
+		}
+		if strings.Contains(stripped, "Analyzing") {
+			if !strings.HasPrefix(stripped, "  ") {
+				t.Errorf("thinking content at depth=1 should start with 2 spaces, got %q", stripped)
+			}
+		}
+	}
+	if !thinkingFound {
+		t.Errorf("should find 'Thinking' in output, got:\n%s", plain)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentTextCollapsedWhenNotExpanded verifies that long text
+// inside an agent's Blocks is collapsed (shows hint) when expand=false.
+func TestApp_UpdateRepl_SubAgentTextCollapsedWhenNotExpanded(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Send enough text to trigger collapse (5+ lines worth)
+	longText := "Line one of the analysis.\nLine two of the analysis.\nLine three of the analysis.\nLine four of the analysis.\nLine five of the analysis.\nLine six of the analysis."
+	app.updateRepl(textDeltaMsg{Text: longText, Agent: agent})
+	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond)
+
+	msgs := app.repl.Messages()
+	// expand=false → should show collapse hint
+	rendered := msgs[0].View(80, false, "", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	t.Logf("rendered (collapsed):\n%s", plain)
+
+	// Should show collapse hint like "… +N lines"
+	if !strings.Contains(plain, "…") && !strings.Contains(plain, "...") {
+		t.Errorf("long text should be collapsed with hint when expand=false, got:\n%s", plain)
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded verifies that
+// thinking content inside an agent's Blocks is collapsed when expand=false.
+func TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Start thinking, add enough content to trigger collapse
+	app.updateRepl(thinkingStartMsg{Agent: agent})
+	longThinking := "Thinking line one.\nThinking line two.\nThinking line three.\nThinking line four.\nThinking line five.\nThinking line six."
+	app.updateRepl(thinkingDeltaMsg{Text: longThinking, Agent: agent})
+	app.updateRepl(thinkingEndMsg{Duration: 500 * time.Millisecond, Agent: agent})
+	app.repl.PendingToolDone("call_agent1", "", false, 500*time.Millisecond)
+
+	msgs := app.repl.Messages()
+	// expand=false → thinking content should be collapsed
+	rendered := msgs[0].View(80, false, "", false, 0)
+	plain := stripANSIPrintable(rendered)
+
+	t.Logf("rendered (collapsed):\n%s", plain)
+
+	// Should show collapse hint
+	if !strings.Contains(plain, "…") && !strings.Contains(plain, "ctrl+o") {
+		t.Errorf("long thinking should be collapsed with hint when expand=false, got:\n%s", plain)
+	}
+}

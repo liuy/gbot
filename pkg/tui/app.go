@@ -326,7 +326,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case textStartMsg, textDeltaMsg, textEndMsg, toolRunMsg, toolStartMsg, toolParamDeltaMsg, toolOutputDeltaMsg, toolEndMsg,
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
-		agentToolMsg, agentUsageMsg,
 		notificationPendingMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg,
 		permissionAskMsg:

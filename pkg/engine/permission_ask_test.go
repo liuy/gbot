@@ -33,11 +33,16 @@ func init() {
 // askUser() tests
 // ---------------------------------------------------------------------------
 
-func TestAskUser_SubEngineDeniesImmediately(t *testing.T) {
+func TestAskUser_SubEngineEmitsPermissionAsk(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 1)
+	emitEvent := func(evt types.QueryEvent) {
+		eventCh <- evt
+	}
+
 	executor := NewStreamingToolExecutor(
 		map[string]tool.Tool{},
 		nil,
-		func(evt types.QueryEvent) {},
+		emitEvent,
 		context.Background(),
 	)
 	executor.SetSubEngine(true)
@@ -49,13 +54,39 @@ func TestAskUser_SubEngineDeniesImmediately(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	decision := executor.askUser(tt, permission.Decision{
-		Action:  permission.ActionAsk,
-		Message: "test ask",
-	}, "")
+	resultCh := make(chan types.PermissionUserDecision, 1)
+	go func() {
+		decision := executor.askUser(tt, permission.Decision{
+			Action:  permission.ActionAsk,
+			Message: "test ask",
+		}, "")
+		resultCh <- decision
+	}()
 
-	if decision != types.UserDecisionDeny {
-		t.Errorf("sub-engine should deny immediately, got %v", decision)
+	// Sub-engine should emit PermissionAsk event (same as main engine)
+	var capturedEvent types.QueryEvent
+	select {
+	case capturedEvent = <-eventCh:
+		if capturedEvent.Type != types.EventPermissionAsk {
+			t.Fatalf("expected EventPermissionAsk, got %v", capturedEvent.Type)
+		}
+		if capturedEvent.PermissionAsk == nil {
+			t.Fatal("PermissionAsk field is nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for EventPermissionAsk from sub-engine")
+	}
+
+	// Respond with deny
+	capturedEvent.PermissionAsk.ResponseCh <- types.UserDecisionDeny
+
+	select {
+	case decision := <-resultCh:
+		if decision != types.UserDecisionDeny {
+			t.Errorf("expected UserDecisionDeny, got %v", decision)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for askUser result")
 	}
 }
 
@@ -676,10 +707,15 @@ func TestCheckContentPermissions_Integration(t *testing.T) {
 }
 
 func TestSetSubEngine_Integration(t *testing.T) {
+	askCh := make(chan *types.PermissionAskEvent, 1)
 	executor := NewStreamingToolExecutor(
 		map[string]tool.Tool{},
 		nil,
-		func(evt types.QueryEvent) {},
+		func(evt types.QueryEvent) {
+			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+				askCh <- evt.PermissionAsk
+			}
+		},
 		context.Background(),
 	)
 
@@ -692,6 +728,7 @@ func TestSetSubEngine_Integration(t *testing.T) {
 		t.Error("SetSubEngine(true) should set isSubEngine flag")
 	}
 
+	// Sub-engine now emits permission asks (same as main engine)
 	tt := &TrackedTool{
 		ID:     "tu_1",
 		Name:   "TestTool",
@@ -699,13 +736,30 @@ func TestSetSubEngine_Integration(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	decision := executor.askUser(tt, permission.Decision{
-		Action:  permission.ActionAsk,
-		Message: "test",
-	}, "")
+	resultCh := make(chan types.PermissionUserDecision, 1)
+	go func() {
+		decision := executor.askUser(tt, permission.Decision{
+			Action:  permission.ActionAsk,
+			Message: "test",
+		}, "")
+		resultCh <- decision
+	}()
 
-	if decision != types.UserDecisionDeny {
-		t.Errorf("sub-engine should deny immediately, got %v", decision)
+	// Respond to the permission ask
+	select {
+	case ask := <-askCh:
+		ask.ResponseCh <- types.UserDecisionDeny
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for permission ask from sub-engine")
+	}
+
+	select {
+	case decision := <-resultCh:
+		if decision != types.UserDecisionDeny {
+			t.Errorf("expected UserDecisionDeny, got %v", decision)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for askUser result")
 	}
 
 	executor.SetSubEngine(false)

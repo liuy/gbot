@@ -55,20 +55,46 @@ func NewReplState() *ReplState {
 	}
 }
 
-// updateToolBlock finds the tool block with the given ID in the last message
-// (searching in reverse) and replaces its ToolCallView. Returns false if not found.
+// updateToolBlock finds the tool block with the given ID across all messages
+// (not just lastMsg) and replaces its ToolCallView. Returns false if not found.
 func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
-	m := s.lastMsg()
-	if m == nil {
-		return false
-	}
-	for i := len(m.Blocks) - 1; i >= 0; i-- {
-		if m.Blocks[i].Type == BlockTool && m.Blocks[i].ToolCall.ID == id {
-			m.Blocks[i].ToolCall = *tcv
-			return true
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := &s.messages[i]
+		for j := len(m.Blocks) - 1; j >= 0; j-- {
+			if m.Blocks[j].Type == BlockTool && m.Blocks[j].ToolCall.ID == id {
+				m.Blocks[j].ToolCall = *tcv
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// findToolView returns the ToolCallView for the given tool ID.
+// Searches pendingTool first, then all messages backwards (most recent first).
+func (s *ReplState) findToolView(id string) *ToolCallView {
+	if tcv, ok := s.pendingTool[id]; ok {
+		return tcv
+	}
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := &s.messages[i]
+		for j := len(m.Blocks) - 1; j >= 0; j-- {
+			if m.Blocks[j].Type == BlockTool && m.Blocks[j].ToolCall.ID == id {
+				return &m.Blocks[j].ToolCall
+			}
+		}
+	}
+	return nil
+}
+
+// trimBlocks keeps the last 50 non-thinking blocks.
+// Thinking blocks do not count toward the limit.
+func (s *ReplState) trimBlocks(tcv *ToolCallView) {
+	const maxBlocks = 50
+	if len(tcv.Blocks) <= maxBlocks {
+		return
+	}
+	tcv.Blocks = tcv.Blocks[len(tcv.Blocks)-maxBlocks:]
 }
 
 // AddUserMessage appends a user message to the session history.
@@ -249,106 +275,6 @@ func (s *ReplState) PendingThinkingDone(duration time.Duration) {
 	s.activeThinkingIdx = -1
 }
 
-// UpdateAgentProgress handles sub-agent events (thinking, tool_start, tool_end).
-func (s *ReplState) UpdateAgentProgress(msg agentToolMsg) {
-	tcv, ok := s.pendingTool[msg.ParentToolUseID]
-	if !ok {
-		slog.Info("tui:agent_progress:unknown_parent", "parentID", msg.ParentToolUseID, "agentType", msg.AgentType, "toolName", msg.ToolName)
-		return
-	}
-
-	switch msg.SubType {
-	case "thinking_start":
-		// Add a Thinking entry if none exists
-		for _, e := range tcv.AgentLogs {
-			if e.ToolName == "Thinking" && !e.Done {
-				return // already thinking
-			}
-		}
-		tcv.AgentLogs = append(tcv.AgentLogs, AgentLogEntry{
-			AgentType: msg.AgentType,
-			Depth:     msg.Depth,
-			ToolName:  "Thinking",
-			Done:      false,
-		})
-
-	case "thinking_end":
-		// Remove Thinking entry - only shown during active thinking phase
-		for i := range tcv.AgentLogs {
-			if tcv.AgentLogs[i].ToolName == "Thinking" && !tcv.AgentLogs[i].Done {
-				tcv.AgentLogs = append(tcv.AgentLogs[:i], tcv.AgentLogs[i+1:]...)
-				break
-			}
-		}
-
-	case "tool_start":
-		// Remove any Thinking entry - thinking done, tools starting
-		for i := range tcv.AgentLogs {
-			if tcv.AgentLogs[i].ToolName == "Thinking" {
-				tcv.AgentLogs = append(tcv.AgentLogs[:i], tcv.AgentLogs[i+1:]...)
-				break
-			}
-		}
-		// Mark previous entries at same depth as done
-		for i := range tcv.AgentLogs {
-			if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done {
-				tcv.AgentLogs[i].Done = true
-			}
-		}
-		tcv.AgentLogs = append(tcv.AgentLogs, AgentLogEntry{
-			AgentType: msg.AgentType,
-			Depth:     msg.Depth,
-			ToolName:  msg.ToolName,
-			Summary:   msg.Summary,
-			Done:      false,
-		})
-		tcv.ToolCount++
-
-	case "tool_param_delta":
-		// Update summary of last tool entry at this depth (streaming input).
-		// Match by ToolName to avoid updating a different tool at same depth.
-		if msg.Summary != "" {
-			for i := len(tcv.AgentLogs) - 1; i >= 0; i-- {
-				if tcv.AgentLogs[i].Depth == msg.Depth && tcv.AgentLogs[i].ToolName == msg.ToolName && tcv.AgentLogs[i].ToolName != "Thinking" {
-					tcv.AgentLogs[i].Summary = msg.Summary
-					break
-				}
-			}
-		}
-
-	case "tool_end":
-		// Mark the last non-done tool entry at this depth as done
-		for i := len(tcv.AgentLogs) - 1; i >= 0; i-- {
-			if tcv.AgentLogs[i].Depth == msg.Depth && !tcv.AgentLogs[i].Done && tcv.AgentLogs[i].ToolName != "Thinking" {
-				tcv.AgentLogs[i].Done = true
-				tcv.AgentLogs[i].IsError = msg.IsError
-				break
-			}
-		}
-	}
-
-	// Keep last 50 entries
-	if len(tcv.AgentLogs) > 50 {
-		tcv.AgentLogs = tcv.AgentLogs[len(tcv.AgentLogs)-50:]
-	}
-
-	// Update the block in lastMsg
-	s.updateToolBlock(msg.ParentToolUseID, tcv)
-}
-
-// UpdateAgentUsage accumulates sub-agent token usage into both global and per-agent counters.
-func (s *ReplState) UpdateAgentUsage(parentID string, inputTokens, outputTokens, contextSize int) {
-	tcv, ok := s.pendingTool[parentID]
-	if !ok {
-		return
-	}
-	tcv.TokensIn += inputTokens
-	tcv.TokensOut += outputTokens
-	tcv.ContextSize = contextSize
-
-	s.updateToolBlock(parentID, tcv)
-}
-
 // SetAgentContextWindow sets the context window for a sub-agent tool call.
 // Called once at tool start so the TUI can display "8.7k/30.0k" usage ratios.
 func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
@@ -359,6 +285,7 @@ func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
 	tcv.ContextWindow = window
 	s.updateToolBlock(parentID, tcv)
 }
+
 
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
@@ -400,11 +327,23 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case textDeltaMsg:
 		a.markViewportDirty()
-		a.repl.AppendChunk(m.Text)
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				if len(parent.Blocks) > 0 && parent.Blocks[len(parent.Blocks)-1].Type == BlockText {
+					parent.Blocks[len(parent.Blocks)-1].Text += m.Text
+				} else {
+					parent.Blocks = append(parent.Blocks, ContentBlock{Type: BlockText, Text: m.Text})
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.repl.AppendChunk(m.Text)
+		}
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 	case textStartMsg:
-		// No-op: text content block started. Future use: viewport transitions.
+		// No-op: text content block started.
 		return true, a.readEvents()
 
 	case textEndMsg:
@@ -413,6 +352,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case toolRunMsg:
 		// No-op: tool execution started after input accumulation.
+		// Sub-agent tool_run is informational; tool_start already added the entry.
 		return true, a.readEvents()
 
 	case turnStartMsg:
@@ -426,50 +366,96 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case toolStartMsg:
 		a.markViewportDirty()
-		a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
-		if m.Name == "Agent" {
-			a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				parent.Blocks = append(parent.Blocks, ContentBlock{
+					Type: BlockTool,
+					ToolCall: ToolCallView{
+						ID: m.ID, Name: m.Name, Summary: m.Summary,
+						Input: m.Input, Done: false,
+					},
+				})
+				parent.ToolCount++
+				if parent.AgentType == "" && m.Agent.AgentType != "" {
+					parent.AgentType = m.Agent.AgentType
+				}
+				a.repl.trimBlocks(parent)
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
+			if m.Name == "Agent" {
+				a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
+			}
 		}
-		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary)
+		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary, "agent", m.Agent != nil)
 		return true, a.readEvents()
 
 	case toolParamDeltaMsg:
 		a.markViewportDirty()
-		a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil && m.Summary != "" {
+				for i := len(parent.Blocks) - 1; i >= 0; i-- {
+					if parent.Blocks[i].Type == BlockTool && !parent.Blocks[i].ToolCall.Done {
+						parent.Blocks[i].ToolCall.Summary = m.Summary
+						break
+					}
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
+		}
 		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
 
 	case toolOutputDeltaMsg:
 		a.markViewportDirty()
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				for i := len(parent.Blocks) - 1; i >= 0; i-- {
+					if parent.Blocks[i].Type == BlockTool && parent.Blocks[i].ToolCall.ID == m.ToolUseID {
+						parent.Blocks[i].ToolCall.Output = m.DisplayOutput
+						if m.Timing > parent.Blocks[i].ToolCall.Elapsed {
+							parent.Blocks[i].ToolCall.Elapsed = m.Timing
+						}
+						break
+					}
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
 		a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
+		}
 		return true, a.readEvents()
 
 	case toolEndMsg:
 		a.markViewportDirty()
-		a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
-		a.taskListDirty = true
-		slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output))
-		return true, a.readEvents()
-
-	case agentToolMsg:
-		a.markViewportDirty()
-		a.repl.UpdateAgentProgress(m)
-		return true, a.readEvents()
-
-	case agentUsageMsg:
-		a.status.usage.InputTokens += m.InputTokens
-		a.status.usage.OutputTokens += m.OutputTokens
-		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
-		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
-		totalIn := a.status.usage.TotalInputTokens()
-		a.displayedInputTokens = totalIn
-		a.inputTokenTarget = totalIn
-		a.outputTokenTarget = a.status.usage.OutputTokens
-		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
-		totalAgentIn := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens
-		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
-		slog.Info("tui:agent_usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "context_size", contextSize)
-		a.repl.UpdateAgentUsage(m.ParentToolUseID, totalAgentIn, m.OutputTokens, contextSize)
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				for i := len(parent.Blocks) - 1; i >= 0; i-- {
+					if parent.Blocks[i].Type == BlockTool && !parent.Blocks[i].ToolCall.Done {
+						parent.Blocks[i].ToolCall.Done = true
+						parent.Blocks[i].ToolCall.IsError = m.IsError
+						parent.Blocks[i].ToolCall.Output = m.Output
+						parent.Blocks[i].ToolCall.Elapsed = m.Timing
+						break
+					}
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+			a.taskListDirty = true
+		}
+		if m.IsError {
+			slog.Error("tui:tool_error", "id", m.ToolUseID, "output", m.Output)
+		}
+		slog.Info("tui:tool_end", "id", m.ToolUseID, "isError", m.IsError, "outputLen", len(m.Output), "agent", m.Agent != nil)
 		return true, a.readEvents()
 
 	case queryEndMsg:
@@ -569,25 +555,73 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
 		a.status.SetContext(contextSize, a.engine.ContextWindow())
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "context_size", contextSize, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
+		// Sub-agent: also accumulate into parent tool call stats
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				totalAgentIn := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens
+				parent.TokensIn += totalAgentIn
+				parent.TokensOut += m.OutputTokens
+				parent.ContextSize = contextSize
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		}
 		return true, a.readEvents()
 
 	case thinkingStartMsg:
-		a.thinkingActive = true
-		a.thinkingStart = time.Now()
-		a.markViewportDirty()
-		a.repl.PendingThinkingStarted()
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				parent.Blocks = append(parent.Blocks, ContentBlock{
+					Type:     BlockThinking,
+				})
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.thinkingActive = true
+			a.thinkingStart = time.Now()
+			a.markViewportDirty()
+			a.repl.PendingThinkingStarted()
+		}
 		return true, a.readEvents()
 
 	case thinkingDeltaMsg:
 		a.markViewportDirty()
-		a.repl.PendingThinkingDelta(m.Text)
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				for i := len(parent.Blocks) - 1; i >= 0; i-- {
+					if parent.Blocks[i].Type == BlockThinking && !parent.Blocks[i].Thinking.Done {
+						parent.Blocks[i].Thinking.Text += m.Text
+						break
+					}
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.repl.PendingThinkingDelta(m.Text)
+		}
 		return true, a.readEvents()
 
 	case thinkingEndMsg:
-		a.thinkingActive = false
-		a.thinkingDuration = m.Duration
-		a.markViewportDirty()
-		a.repl.PendingThinkingDone(m.Duration)
+		if m.Agent != nil {
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil {
+				for i := len(parent.Blocks) - 1; i >= 0; i-- {
+					if parent.Blocks[i].Type == BlockThinking && !parent.Blocks[i].Thinking.Done {
+						parent.Blocks[i].Thinking.Done = true
+						parent.Blocks[i].Thinking.Duration = m.Duration
+						break
+					}
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
+		} else {
+			a.thinkingActive = false
+			a.thinkingDuration = m.Duration
+			a.markViewportDirty()
+			a.repl.PendingThinkingDone(m.Duration)
+		}
 		return true, a.readEvents()
 
 	case permissionAskMsg:

@@ -353,18 +353,21 @@ func TestConvertEventToMsg_AgentToolStart(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "parent-1", AgentType: "Explore", Depth: 0},
 		ToolUse: &types.ToolUseEvent{ID: "child-1", Name: "Grep", Summary: "searching"},
 	})
-	am, ok := msg.(agentToolMsg)
+	ts, ok := msg.(toolStartMsg)
 	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+		t.Fatalf("expected toolStartMsg, got %T", msg)
 	}
-	if am.ParentToolUseID != "parent-1" {
-		t.Errorf("ParentToolUseID = %q, want %q", am.ParentToolUseID, "parent-1")
+	if ts.Agent == nil {
+		t.Fatal("Agent should not be nil")
 	}
-	if am.AgentType != "Explore" {
-		t.Errorf("AgentType = %q, want %q", am.AgentType, "Explore")
+	if ts.Agent.ParentToolUseID != "parent-1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", ts.Agent.ParentToolUseID, "parent-1")
 	}
-	if am.ToolName != "Grep" {
-		t.Errorf("ToolName = %q, want %q", am.ToolName, "Grep")
+	if ts.Agent.AgentType != "Explore" {
+		t.Errorf("Agent.AgentType = %q, want %q", ts.Agent.AgentType, "Explore")
+	}
+	if ts.Name != "Grep" {
+		t.Errorf("Name = %q, want %q", ts.Name, "Grep")
 	}
 }
 
@@ -387,15 +390,21 @@ func TestConvertEventToMsg_AgentToolParamDelta(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose", Depth: 1},
 		PartialInput: &types.PartialInputEvent{ID: "c1", Name: "Read", Delta: `{"path":"a.go"}`, Summary: "reading"},
 	})
-	am, ok := msg.(agentToolMsg)
+	pd, ok := msg.(toolParamDeltaMsg)
 	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+		t.Fatalf("expected toolParamDeltaMsg, got %T", msg)
 	}
-	if am.SubType != "tool_param_delta" {
-		t.Errorf("SubType = %q, want tool_param_delta", am.SubType)
+	if pd.Agent == nil {
+		t.Fatal("Agent should not be nil")
 	}
-	if am.ToolName != "Read" {
-		t.Errorf("ToolName = %q, want Read", am.ToolName)
+	if pd.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", pd.Agent.ParentToolUseID, "p1")
+	}
+	if pd.ID != "c1" {
+		t.Errorf("ID = %q, want %q", pd.ID, "c1")
+	}
+	if pd.Summary != "reading" {
+		t.Errorf("Summary = %q, want %q", pd.Summary, "reading")
 	}
 }
 
@@ -406,11 +415,17 @@ func TestConvertEventToMsg_AgentToolEnd(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
 		ToolResult: &types.ToolResultEvent{ToolUseID: "c1", IsError: true},
 	})
-	am, ok := msg.(agentToolMsg)
+	te, ok := msg.(toolEndMsg)
 	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+		t.Fatalf("expected toolEndMsg, got %T", msg)
 	}
-	if !am.IsError {
+	if te.Agent == nil {
+		t.Fatal("Agent should not be nil")
+	}
+	if te.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", te.Agent.ParentToolUseID, "p1")
+	}
+	if !te.IsError {
 		t.Error("IsError = false, want true")
 	}
 }
@@ -422,12 +437,18 @@ func TestConvertEventToMsg_AgentToolRun(t *testing.T) {
 		Agent:  &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose"},
 		ToolUse: &types.ToolUseEvent{ID: "c1", Name: "Bash"},
 	})
-	am, ok := msg.(agentToolMsg)
+	tr, ok := msg.(toolRunMsg)
 	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+		t.Fatalf("expected toolRunMsg, got %T", msg)
 	}
-	if am.SubType != "tool_run" {
-		t.Errorf("SubType = %q, want tool_run", am.SubType)
+	if tr.Agent == nil {
+		t.Fatal("Agent should not be nil")
+	}
+	if tr.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", tr.Agent.ParentToolUseID, "p1")
+	}
+	if tr.Name != "Bash" {
+		t.Errorf("Name = %q, want Bash", tr.Name)
 	}
 }
 
@@ -437,12 +458,15 @@ func TestConvertEventToMsg_AgentThinkingStart(t *testing.T) {
 		Type:  types.EventThinkingStart,
 		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
 	})
-	am, ok := msg.(agentToolMsg)
+	ts, ok := msg.(thinkingStartMsg)
 	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+		t.Fatalf("expected thinkingStartMsg, got %T", msg)
 	}
-	if am.SubType != "thinking_start" {
-		t.Errorf("SubType = %q, want thinking_start", am.SubType)
+	if ts.Agent == nil {
+		t.Fatal("Agent should not be nil")
+	}
+	if ts.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", ts.Agent.ParentToolUseID, "p1")
 	}
 }
 
@@ -452,12 +476,28 @@ func TestConvertEventToMsg_AgentThinkingEnd(t *testing.T) {
 		Type:  types.EventThinkingEnd,
 		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
 	})
-	am, ok := msg.(agentToolMsg)
-	if !ok {
-		t.Fatalf("expected agentToolMsg, got %T", msg)
+	// Agent thinking_end with nil Thinking returns nil
+	if msg != nil {
+		t.Errorf("expected nil for agent ThinkingEnd with nil Thinking, got %T", msg)
 	}
-	if am.SubType != "thinking_end" {
-		t.Errorf("SubType = %q, want thinking_end", am.SubType)
+}
+
+func TestConvertEventToMsg_AgentThinkingEnd_WithThinking(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:  types.EventThinkingEnd,
+		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
+		Thinking: &types.ThinkingEvent{Duration: 1 * time.Second},
+	})
+	te, ok := msg.(thinkingEndMsg)
+	if !ok {
+		t.Fatalf("expected thinkingEndMsg, got %T", msg)
+	}
+	if te.Agent == nil {
+		t.Fatal("Agent should not be nil")
+	}
+	if te.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", te.Agent.ParentToolUseID, "p1")
 	}
 }
 
@@ -468,27 +508,43 @@ func TestConvertEventToMsg_AgentUsage(t *testing.T) {
 		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
 		Usage: &types.UsageEvent{InputTokens: 50, OutputTokens: 25, CacheReadInputTokens: 10},
 	})
-	au, ok := msg.(agentUsageMsg)
+	u, ok := msg.(usageMsg)
 	if !ok {
-		t.Fatalf("expected agentUsageMsg, got %T", msg)
+		t.Fatalf("expected usageMsg, got %T", msg)
 	}
-	if au.InputTokens != 50 {
-		t.Errorf("InputTokens = %d, want 50", au.InputTokens)
+	if u.Agent == nil {
+		t.Fatal("Agent should not be nil")
 	}
-	if au.CacheReadInputTokens != 10 {
-		t.Errorf("CacheReadInputTokens = %d, want 10", au.CacheReadInputTokens)
+	if u.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", u.Agent.ParentToolUseID, "p1")
+	}
+	if u.InputTokens != 50 {
+		t.Errorf("InputTokens = %d, want 50", u.InputTokens)
+	}
+	if u.CacheReadInputTokens != 10 {
+		t.Errorf("CacheReadInputTokens = %d, want 10", u.CacheReadInputTokens)
 	}
 }
 
-func TestConvertEventToMsg_AgentTextDelta_Filtered(t *testing.T) {
+func TestConvertEventToMsg_AgentTextDelta_ProducesTextDeltaMsg(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
 		Type:  types.EventTextDelta,
 		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
 		Text:  "sub-agent text",
 	})
-	if msg != nil {
-		t.Errorf("agent text_delta should be filtered (nil), got %T", msg)
+	td, ok := msg.(textDeltaMsg)
+	if !ok {
+		t.Fatalf("expected textDeltaMsg, got %T", msg)
+	}
+	if td.Agent == nil {
+		t.Fatal("Agent should not be nil")
+	}
+	if td.Agent.ParentToolUseID != "p1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", td.Agent.ParentToolUseID, "p1")
+	}
+	if td.Text != "sub-agent text" {
+		t.Errorf("Text = %q, want %q", td.Text, "sub-agent text")
 	}
 }
 

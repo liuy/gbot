@@ -70,82 +70,6 @@ func (h *TUIHandler) Dropped() int64 {
 // convertEventToMsg converts a types.QueryEvent to a bubbletea message.
 // Returns nil for unhandled event types.
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
-	// Sub-agent events: convert to agentToolMsg for grouped display
-	if evt.Agent != nil {
-	
-		switch evt.Type {
-		case types.EventToolStart:
-			if evt.ToolUse != nil {
-				return agentToolMsg{
-					ParentToolUseID: evt.Agent.ParentToolUseID,
-					AgentType:       evt.Agent.AgentType,
-					Depth:           evt.Agent.Depth,
-					SubType:         string(evt.Type),
-					ToolName:        evt.ToolUse.Name,
-					Summary:         evt.ToolUse.Summary,
-				}
-			}
-		case types.EventToolParamDelta:
-			if evt.PartialInput != nil {
-				return agentToolMsg{
-					ParentToolUseID: evt.Agent.ParentToolUseID,
-					AgentType:       evt.Agent.AgentType,
-					Depth:           evt.Agent.Depth,
-					SubType:         "tool_param_delta",
-					ToolName:        evt.PartialInput.Name,
-					Summary:         evt.PartialInput.Summary,
-				}
-			}
-		case types.EventToolEnd:
-			if evt.ToolResult != nil {
-				return agentToolMsg{
-					ParentToolUseID: evt.Agent.ParentToolUseID,
-					AgentType:       evt.Agent.AgentType,
-					Depth:           evt.Agent.Depth,
-					SubType:         string(evt.Type),
-					ToolName:        "", // tool_end doesn't carry name
-					IsError:         evt.ToolResult.IsError,
-				}
-			}
-		case types.EventThinkingStart:
-			return agentToolMsg{
-				ParentToolUseID: evt.Agent.ParentToolUseID,
-				AgentType:       evt.Agent.AgentType,
-				Depth:           evt.Agent.Depth,
-				SubType:         "thinking_start",
-			}
-		case types.EventThinkingEnd:
-			return agentToolMsg{
-				ParentToolUseID: evt.Agent.ParentToolUseID,
-				AgentType:       evt.Agent.AgentType,
-				Depth:           evt.Agent.Depth,
-				SubType:         "thinking_end",
-			}
-		case types.EventToolRun:
-			if evt.ToolUse != nil {
-				return agentToolMsg{
-					ParentToolUseID: evt.Agent.ParentToolUseID,
-					AgentType:       evt.Agent.AgentType,
-					Depth:           evt.Agent.Depth,
-					SubType:         "tool_run",
-					ToolName:        evt.ToolUse.Name,
-				}
-			}
-		case types.EventUsage:
-			if evt.Usage != nil {
-				return agentUsageMsg{
-					ParentToolUseID:          evt.Agent.ParentToolUseID,
-					InputTokens:              evt.Usage.InputTokens,
-					OutputTokens:             evt.Usage.OutputTokens,
-					CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
-					CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
-				}
-			}
-		}
-		slog.Info("tui:handler:agent_filtered", "type", evt.Type, "parentID", evt.Agent.ParentToolUseID)
-		return nil // drop remaining non-tool sub-agent events (text_delta, turn_*, etc.)
-	}
-
 	switch evt.Type {
 	case types.EventNotificationPending:
 		return notificationPendingMsg{}
@@ -154,13 +78,13 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return turnStartMsg{}
 
 	case types.EventTextStart:
-		return textStartMsg{}
+		return textStartMsg{Agent: evt.Agent}
 
 	case types.EventTextDelta:
-		return textDeltaMsg{Text: evt.Text}
+		return textDeltaMsg{Text: evt.Text, Agent: evt.Agent}
 
 	case types.EventTextEnd:
-		return textEndMsg{}
+		return textEndMsg{Agent: evt.Agent}
 
 	case types.EventQueryStart:
 		if evt.Message != nil {
@@ -175,14 +99,16 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				Name:    evt.ToolUse.Name,
 				Summary: evt.ToolUse.Summary,
 				Input:   prettyJSON(evt.ToolUse.Input),
+				Agent:   evt.Agent,
 			}
 		}
 
 	case types.EventToolRun:
 		if evt.ToolUse != nil {
 			return toolRunMsg{
-				ID:   evt.ToolUse.ID,
-				Name: evt.ToolUse.Name,
+				ID:    evt.ToolUse.ID,
+				Name:  evt.ToolUse.Name,
+				Agent: evt.Agent,
 			}
 		}
 
@@ -193,6 +119,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				Output:    evt.ToolResult.DisplayOutput,
 				IsError:   evt.ToolResult.IsError,
 				Timing:    evt.ToolResult.Timing,
+				Agent:     evt.Agent,
 			}
 		}
 
@@ -206,20 +133,21 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				OutputTokens:             evt.Usage.OutputTokens,
 				CacheReadInputTokens:     evt.Usage.CacheReadInputTokens,
 				CacheCreationInputTokens: evt.Usage.CacheCreationInputTokens,
+				Agent:                    evt.Agent,
 			}
 		}
 
 	case types.EventThinkingStart:
-		return thinkingStartMsg{}
+		return thinkingStartMsg{Agent: evt.Agent}
 
 	case types.EventThinkingDelta:
 		if evt.Thinking != nil && evt.Thinking.Text != "" {
-			return thinkingDeltaMsg{Text: evt.Thinking.Text}
+			return thinkingDeltaMsg{Text: evt.Thinking.Text, Agent: evt.Agent}
 		}
 
 	case types.EventThinkingEnd:
 		if evt.Thinking != nil {
-			return thinkingEndMsg{Duration: evt.Thinking.Duration}
+			return thinkingEndMsg{Duration: evt.Thinking.Duration, Agent: evt.Agent}
 		}
 
 	case types.EventQueryEnd:
@@ -241,6 +169,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				ID:      evt.PartialInput.ID,
 				Delta:   evt.PartialInput.Delta,
 				Summary: evt.PartialInput.Summary,
+				Agent:   evt.Agent,
 			}
 		}
 		return nil
@@ -252,6 +181,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				ToolUseID:     evt.ToolResult.ToolUseID,
 				DisplayOutput: evt.ToolResult.DisplayOutput,
 				Timing:        evt.ToolResult.Timing,
+				Agent:         evt.Agent,
 			}
 		}
 		return nil
@@ -261,7 +191,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		return nil
 
 	case types.EventPermissionAsk:
-		// 修正 15: Convert to permissionAskMsg for TUI dialog overlay.
+		// Permission ask from any engine (main or sub).
 		if evt.PermissionAsk != nil {
 			return permissionAskMsg{event: evt.PermissionAsk}
 		}

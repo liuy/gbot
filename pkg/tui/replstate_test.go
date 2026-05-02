@@ -243,22 +243,16 @@ func TestPendingToolDone_AccumulatesSubAgentToolCount(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
-	// Simulate sub-agent adding ToolCount via UpdateAgentProgress
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Depth:           0,
-	})
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Grep",
-		Depth:           0,
-	})
-	// ToolCount from AgentLogs should be accumulated
+	// Simulate sub-agent adding blocks directly to Blocks
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks,
+		ContentBlock{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", AgentType: "Explore", Done: true}},
+		ContentBlock{Type: BlockTool, ToolCall: ToolCallView{Name: "Grep", AgentType: "Explore", Done: true}},
+	)
+	tcv.ToolCount = 2
+	tcv.AgentType = "Explore"
+	s.updateToolBlock("agent1", tcv)
+	// ToolCount from Blocks should be accumulated
 	s.PendingToolDone("agent1", "done", false, time.Second)
 
 	msgs := s.Messages()
@@ -422,211 +416,207 @@ func TestPendingThinkingDone_NilLastMsg_Noop(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateAgentProgress
+// Blocks — sub-agent event blocks (replaces AgentEvents)
 // ---------------------------------------------------------------------------
 
-func TestUpdateAgentProgress_ToolStart(t *testing.T) {
+func TestBlocks_ToolStart(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		AgentType:       "Explore",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Summary:         "reading main.go",
-		Depth:           0,
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks, ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			Name: "Read", Summary: "reading main.go", AgentType: "Explore",
+		},
 	})
+	tcv.ToolCount++
+	tcv.AgentType = "Explore"
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if len(blk.ToolCall.AgentLogs) != 1 {
-		t.Fatalf("expected 1 agent log, got %d", len(blk.ToolCall.AgentLogs))
+	if len(blk.ToolCall.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blk.ToolCall.Blocks))
 	}
-	log := blk.ToolCall.AgentLogs[0]
-	if log.ToolName != "Read" {
-		t.Errorf("expected tool Read, got %q", log.ToolName)
+	b := blk.ToolCall.Blocks[0]
+	if b.ToolCall.Name != "Read" {
+		t.Errorf("expected tool Read, got %q", b.ToolCall.Name)
 	}
-	if log.Summary != "reading main.go" {
-		t.Errorf("expected summary, got %q", log.Summary)
+	if b.ToolCall.Summary != "reading main.go" {
+		t.Errorf("expected summary, got %q", b.ToolCall.Summary)
 	}
-	if log.Done {
-		t.Error("log should not be done yet")
+	if b.ToolCall.Done {
+		t.Error("block should not be done yet")
 	}
 }
 
-func TestUpdateAgentProgress_ToolEnd(t *testing.T) {
+func TestBlocks_ToolEnd(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Depth:           0,
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks, ContentBlock{
+		Type:     BlockTool,
+		ToolCall: ToolCallView{Name: "Read"},
 	})
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_end",
-		ToolName:        "Read",
-		Depth:           0,
-	})
+	tcv.ToolCount++
+	s.updateToolBlock("agent1", tcv)
+
+	// Mark done
+	tcv.Blocks[0].ToolCall.Done = true
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if len(blk.ToolCall.AgentLogs) != 1 {
-		t.Fatalf("expected 1 agent log, got %d", len(blk.ToolCall.AgentLogs))
+	if len(blk.ToolCall.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blk.ToolCall.Blocks))
 	}
-	if !blk.ToolCall.AgentLogs[0].Done {
-		t.Error("log should be done after tool_end")
+	if !blk.ToolCall.Blocks[0].ToolCall.Done {
+		t.Error("block should be done after tool_end")
 	}
 }
 
-func TestUpdateAgentProgress_ToolEnd_WithError(t *testing.T) {
+func TestBlocks_ToolEnd_WithError(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_start",
-		ToolName:        "Bash",
-		Depth:           0,
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks, ContentBlock{
+		Type:     BlockTool,
+		ToolCall: ToolCallView{Name: "Bash"},
 	})
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_end",
-		ToolName:        "Bash",
-		Depth:           0,
-		IsError:         true,
-	})
+	tcv.ToolCount++
+	tcv.Blocks[0].ToolCall.Done = true
+	tcv.Blocks[0].ToolCall.IsError = true
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if !blk.ToolCall.AgentLogs[0].IsError {
-		t.Error("log should have IsError=true")
+	if !blk.ToolCall.Blocks[0].ToolCall.IsError {
+		t.Error("block should have IsError=true")
 	}
 }
 
-func TestUpdateAgentProgress_ThinkingStartAndEnd(t *testing.T) {
+func TestBlocks_ThinkingStartAndEnd(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	// thinking_start adds a Thinking entry
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		AgentType:       "Explore",
-		SubType:         "thinking_start",
-		Depth:           0,
+	// thinking_start adds a Thinking block
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks, ContentBlock{
+		Type:     BlockThinking,
+		Thinking: ThinkingView{},
 	})
+	tcv.AgentType = "Explore"
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if len(blk.ToolCall.AgentLogs) != 1 {
-		t.Fatalf("expected 1 log (thinking), got %d", len(blk.ToolCall.AgentLogs))
+	if len(blk.ToolCall.Blocks) != 1 {
+		t.Fatalf("expected 1 block (thinking), got %d", len(blk.ToolCall.Blocks))
 	}
-	if blk.ToolCall.AgentLogs[0].ToolName != "Thinking" {
-		t.Errorf("expected Thinking, got %q", blk.ToolCall.AgentLogs[0].ToolName)
+	if blk.ToolCall.Blocks[0].Type != BlockThinking {
+		t.Errorf("expected BlockThinking, got %d", blk.ToolCall.Blocks[0].Type)
 	}
 
-	// thinking_end removes the Thinking entry
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "thinking_end",
-		Depth:           0,
-	})
+	// thinking_end removes the Thinking block
+	tcv.Blocks = tcv.Blocks[:0]
+	s.updateToolBlock("agent1", tcv)
 
 	blk = msgs[0].Blocks[0]
-	if len(blk.ToolCall.AgentLogs) != 0 {
-		t.Errorf("expected 0 logs (thinking removed), got %d", len(blk.ToolCall.AgentLogs))
+	if len(blk.ToolCall.Blocks) != 0 {
+		t.Errorf("expected 0 blocks (thinking removed), got %d", len(blk.ToolCall.Blocks))
 	}
 }
 
-func TestUpdateAgentProgress_ToolParamDelta(t *testing.T) {
+func TestBlocks_ToolParamDelta(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Depth:           0,
+	tcv := s.pendingTool["agent1"]
+	tcv.Blocks = append(tcv.Blocks, ContentBlock{
+		Type:     BlockTool,
+		ToolCall: ToolCallView{Name: "Read"},
 	})
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "agent1",
-		SubType:         "tool_param_delta",
-		ToolName:        "Read",
-		Summary:         "/tmp/updated.go",
-		Depth:           0,
-	})
+	tcv.ToolCount++
+	s.updateToolBlock("agent1", tcv)
+
+	// Update summary (tool_param_delta behavior)
+	tcv.Blocks[0].ToolCall.Summary = "/tmp/updated.go"
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if blk.ToolCall.AgentLogs[0].Summary != "/tmp/updated.go" {
-		t.Errorf("expected updated summary, got %q", blk.ToolCall.AgentLogs[0].Summary)
+	if blk.ToolCall.Blocks[0].ToolCall.Summary != "/tmp/updated.go" {
+		t.Errorf("expected updated summary, got %q", blk.ToolCall.Blocks[0].ToolCall.Summary)
 	}
 }
 
-func TestUpdateAgentProgress_UnknownParent_Noop(t *testing.T) {
+func TestBlocks_UnknownParent_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	// No tool started with this ID — should not panic
-	s.UpdateAgentProgress(agentToolMsg{
-		ParentToolUseID: "nonexistent",
-		SubType:         "tool_start",
-		ToolName:        "Read",
-		Depth:           0,
-	})
+	// No tool started with this ID — findToolView returns nil, no panic
+	tcv := s.findToolView("nonexistent")
+	if tcv != nil {
+		t.Error("expected nil for unknown parent")
+	}
 	msgs := s.Messages()
 	if len(msgs[0].Blocks) != 0 {
 		t.Error("expected no blocks")
 	}
 }
 
-func TestUpdateAgentProgress_TrimsOver50Entries(t *testing.T) {
+func TestBlocks_TrimsOver50Entries(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	// Add 55 tool entries
+	tcv := s.pendingTool["agent1"]
+	// Add 55 tool blocks directly
 	for i := range 55 {
-		s.UpdateAgentProgress(agentToolMsg{
-			ParentToolUseID: "agent1",
-			SubType:         "tool_start",
-			ToolName:        "Read",
-			Summary:         fmt.Sprintf("file_%d", i),
-			Depth:           0,
+		tcv.Blocks = append(tcv.Blocks, ContentBlock{
+			Type: BlockTool,
+			ToolCall: ToolCallView{
+				Name: "Read", Summary: fmt.Sprintf("file_%d", i), Done: true,
+			},
 		})
-		s.UpdateAgentProgress(agentToolMsg{
-			ParentToolUseID: "agent1",
-			SubType:         "tool_end",
-			ToolName:        "Read",
-			Depth:           0,
-		})
+		tcv.ToolCount++
 	}
+	s.trimBlocks(tcv)
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
-	if len(blk.ToolCall.AgentLogs) > 50 {
-		t.Errorf("expected <= 50 agent logs, got %d", len(blk.ToolCall.AgentLogs))
+	if len(blk.ToolCall.Blocks) > 50 {
+		t.Errorf("expected <= 50 blocks, got %d", len(blk.ToolCall.Blocks))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// UpdateAgentUsage
+// AgentUsage — direct token accumulation (replaces UpdateAgentUsage)
 // ---------------------------------------------------------------------------
 
-func TestUpdateAgentUsage_Accumulates(t *testing.T) {
+func TestAgentUsage_Accumulates(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
 
-	s.UpdateAgentUsage("agent1", 100, 200, 300)
-	s.UpdateAgentUsage("agent1", 50, 75, 125)
+	tcv := s.pendingTool["agent1"]
+	tcv.TokensIn += 100
+	tcv.TokensOut += 200
+	tcv.ContextSize = 300
+	s.updateToolBlock("agent1", tcv)
+
+	tcv.TokensIn += 50
+	tcv.TokensOut += 75
+	tcv.ContextSize = 125
+	s.updateToolBlock("agent1", tcv)
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -663,11 +653,14 @@ func TestSetAgentContextWindow_UnknownParent_Noop(t *testing.T) {
 	s.SetAgentContextWindow("nonexistent", 200000)
 }
 
-func TestUpdateAgentUsage_UnknownParent_Noop(t *testing.T) {
+func TestAgentUsage_UnknownParent_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	// Should not panic
-	s.UpdateAgentUsage("nonexistent", 100, 200, 300)
+	// Should not panic — findToolView returns nil
+	tcv := s.findToolView("nonexistent")
+	if tcv != nil {
+		t.Error("expected nil for unknown parent")
+	}
 }
 
 // ---------------------------------------------------------------------------

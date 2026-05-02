@@ -650,6 +650,8 @@ type ToolCallView struct {
 	TokensOut int             // sub-agent output tokens (for summary line when done)
 	ContextSize   int             // sub-agent latest context size (InputTokens + CacheRead + CacheCreation + OutputTokens)
 	ContextWindow int             // sub-agent context window size (set once at tool start)
+	Blocks        []ContentBlock  // nested blocks for agent's sub-events (text/tool/thinking)
+	AgentType     string          // agent type name (e.g., "Explore", "Plan")
 }
 
 // ThinkingView renders a thinking block within a message.
@@ -686,14 +688,14 @@ func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, m
 					sb.WriteString("\n")
 				}
 			case BlockTool:
-				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines)
+				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0)
 				sb.WriteString("\n")
 				// Blank line between completed tool and following text block
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
 					sb.WriteString("\n")
 				}
 			case BlockThinking:
-				blk.renderThinkingBlock(&sb, availWidth, expand, toolDot, noHint)
+				blk.renderThinkingBlock(&sb, availWidth, expand, toolDot, noHint, 0)
 				sb.WriteString("\n")
 			case BlockStats:
 				sb.WriteString(blk.Text)
@@ -728,18 +730,67 @@ func prefixLine(i int, text string, contentStyle lipgloss.Style) string {
 	return strings.Repeat(" ", prefixWidth) + styledText
 }
 
+// indentLines prepends indent to every line of s.
+func indentLines(s string, indent string) string {
+	if indent == "" || s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = indent + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderStatsText returns a styled stats string for an agent tool.
+// Empty string if no stats to show.
+// agentTypeName returns the display agent type, checking both AgentType field
+// and AgentLogs. Returns empty string if not an agent or type is internal ("fork").
+func agentTypeName(tc *ToolCallView) string {
+	if tc.AgentType != "" && tc.AgentType != "fork" {
+		return tc.AgentType
+	}
+	if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" && tc.AgentLogs[0].AgentType != "fork" {
+		return tc.AgentLogs[0].AgentType
+	}
+	return ""
+}
+
+func renderStatsText(tcv *ToolCallView) string {
+	var parts []string
+	if tcv.TokensIn > 0 || tcv.TokensOut > 0 {
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tcv.TokensIn), formatTokenCount(tcv.TokensOut)))
+	}
+	if tcv.ContextSize > 0 && tcv.ContextWindow > 0 {
+		parts = append(parts, formatContextSize(tcv.ContextSize, tcv.ContextWindow))
+	}
+	if tcv.ToolCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d tool%s", tcv.ToolCount, pluralS(tcv.ToolCount)))
+	}
+	if len(parts) > 0 {
+		return styleDim.Render(strings.Join(parts, " · "))
+	}
+	return ""
+}
+
 // renderToolCall renders a tool block using ● dot indicator.
 // When expand is true, full tool output is shown; otherwise output is collapsed.
-// Format matches TS: ● ToolName(summary)
+// depth controls indentation: depth=0 is top-level, depth=N adds N*2 spaces.
 //
-//	⎿  output line 1
-//	⎿  output line 2
-//	⎿  … +N lines (ctrl+o to expand)
-func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, maxOutputLines int) {
+// Rendering rules (same at every depth):
+//
+//	● ToolName(summary) (time)       ← line 1: dot + name, NO pipe
+//	| output line 1                  ← line 2: pipe + first output
+//	  output line 2                  ← line 3+: spaces (pipe width) + continuation
+//
+// Nested tools inside an Agent's Blocks render at depth+1, adding 2 more spaces
+// before ALL lines (header and output alike).
+func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, maxOutputLines int, depth int) {
 	if blk.Type != BlockTool {
 		return
 	}
 	tc := blk.ToolCall
+	indent := strings.Repeat("  ", depth)
 
 	// Determine dot color per TS ToolUseLoader.tsx:
 	// When Done: isError→red(9), else→green(10)
@@ -763,31 +814,44 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		} else {
 			runningDot = " "
 		}
-		// Show "Agent Explore(desc)" when agent type is known
-		// Source: TS UI.tsx:760-775 userFacingName() — "fork"/"General" are internal, not displayed
 		agentName := tc.Name
-		if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" && tc.AgentLogs[0].AgentType != "fork" {
-			agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
+		if agentTypeName(&tc) != "" {
+			agentName = tc.Name + " " + agentTypeName(&tc)
 		}
 		header := runningDot + " " + styleNameBold.Render(agentName)
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", tc.Summary)
 		}
 		header += " " + styleDim.Render("running...")
-		sb.WriteString(wordWrap(header, availWidth))
-		if len(tc.AgentLogs) > 0 {
+		sb.WriteString(indent + wordWrap(header, availWidth))
+		// Render running sub-blocks if present
+		if len(tc.Blocks) > 0 {
+			subIndent := strings.Repeat("  ", depth+1)
+			for _, sub := range tc.Blocks {
+				switch sub.Type {
+				case BlockTool:
+					sb.WriteString("\n")
+					sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
+				case BlockText:
+					if sub.Text != "" {
+						sb.WriteString("\n" + indentLines(formatToolOutput(Render(sub.Text), false, expand, availWidth-len(subIndent)-2, noHint, maxOutputLines, lipgloss.NewStyle()), subIndent))
+					}
+					case BlockThinking:
+						sb.WriteString("\n")
+						sub.renderThinkingBlock(sb, availWidth, expand, toolDot, noHint, depth+1)
+				}
+			}
+		} else if len(tc.AgentLogs) > 0 {
 			sb.WriteString(renderAgentLogs(&tc, availWidth))
 		}
 		return
 	}
 
-	// Done state — build header then wrap
+	// Done state — build header
 	var hdr strings.Builder
-	// Show "Agent Explore(desc)" when agent type is known
-	// Source: TS UI.tsx:760-775 userFacingName() — "fork"/"General" are internal, not displayed
 	agentName := tc.Name
-	if len(tc.AgentLogs) > 0 && tc.AgentLogs[0].AgentType != "" && tc.AgentLogs[0].AgentType != "fork" {
-		agentName = tc.Name + " " + tc.AgentLogs[0].AgentType
+	if agentTypeName(&tc) != "" {
+		agentName = tc.Name + " " + agentTypeName(&tc)
 	}
 	hdr.WriteString(dotStr)
 	hdr.WriteByte(' ')
@@ -798,21 +862,44 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	if tc.Elapsed > 0 {
 		hdr.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
 	}
-	sb.WriteString(wordWrap(hdr.String(), availWidth))
+	sb.WriteString(indent + wordWrap(hdr.String(), availWidth))
 
-		// Done state for agent tools: show agent logs + text output
+	if len(tc.Blocks) > 0 {
+		// Agent with nested blocks: stats line + recursive sub-blocks
+		statsText := renderStatsText(&tc)
+		if statsText != "" {
+			sb.WriteString("\n" + indentLines(formatToolOutput(statsText, false, true, availWidth-2, true, 0, lipgloss.NewStyle()), indent))
+		}
+		subIndent := strings.Repeat("  ", depth+1)
+		for _, sub := range tc.Blocks {
+			switch sub.Type {
+			case BlockTool:
+				sb.WriteString("\n")
+				sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
+			case BlockText:
+				if sub.Text != "" {
+					sb.WriteString("\n" + indentLines(formatToolOutput(Render(sub.Text), false, expand, availWidth-len(subIndent)-2, noHint, maxOutputLines, lipgloss.NewStyle()), subIndent))
+				}
+			case BlockThinking:
+				sb.WriteString("\n")
+								sub.renderThinkingBlock(sb, availWidth, expand, toolDot, noHint, depth+1)
+			}
+		}
+	} else {
+		// Non-agent or legacy: render output
 		if tc.ToolCount > 0 {
-			// Show agent tool progress logs (includes stats line)
 			if len(tc.AgentLogs) > 0 {
 				sb.WriteString(renderAgentLogs(&tc, availWidth))
 			}
-			// Agent text output
 			if tc.Output != "" {
-				sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
+				output := formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
+				sb.WriteString("\n" + indentLines(output, indent))
 			}
 		} else if tc.Output != "" {
-			sb.WriteString("\n" + formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle()))
+			output := formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
+			sb.WriteString("\n" + indentLines(output, indent))
 		}
+	}
 }
 
 // renderAgentLogs renders sub-agent tool call progress using formatToolOutput.
@@ -968,7 +1055,7 @@ var (
 // After done (Done=true): static ✦ + duration + collapsed/expanded content.
 // Title line matches tool block style (bold name + dim details).
 // Content uses italic to distinguish from tool output.
-func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool) {
+func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, depth int) {
 	if blk.Type != BlockThinking {
 		return
 	}
@@ -984,17 +1071,19 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 			// Invisible blink frame: hide ✦ (space for alignment)
 			star = " "
 		}
-		header := star + " " + styleNameBold.Render("Thinking") + styleDim.Render("...")
-		sb.WriteString(wordWrap(header, availWidth))
+		indent := strings.Repeat("  ", depth)
+	header := star + " " + styleNameBold.Render("Thinking") + styleDim.Render("...")
+		sb.WriteString(indent + wordWrap(header, availWidth))
 
 		// Show streaming content (italic to distinguish from tool output)
 		if tv.Text != "" {
 			formatted := formatToolOutput(tv.Text, false, true, availWidth-2, noHint, 0, styleThinkingContent)
-			sb.WriteString("\n" + styleThinkingContent.Render(formatted))
+			sb.WriteString("\n" + indentLines(styleThinkingContent.Render(formatted), indent))
 		}
 		return
 	}
 
+	indent := strings.Repeat("  ", depth)
 	// Done state: static gold bold ✦ Thought for X
 	star := styleThinkingStar.Render(thinkingStar)
 	var hdr strings.Builder
@@ -1005,12 +1094,12 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 		hdr.WriteString(styleNameBold.Render(" for "))
 		hdr.WriteString(styleDim.Render(formatDuration(tv.Duration)))
 	}
-	sb.WriteString(wordWrap(hdr.String(), availWidth))
+	sb.WriteString(indent + wordWrap(hdr.String(), availWidth))
 
 	// Show content with collapse/expand (italic to distinguish from tool output)
 	if tv.Text != "" {
 		formatted := formatToolOutput(tv.Text, false, expand, availWidth-2, noHint, 0, styleThinkingContent)
-		sb.WriteString("\n" + styleThinkingContent.Render(formatted))
+		sb.WriteString("\n" + indentLines(styleThinkingContent.Render(formatted), indent))
 	}
 }
 

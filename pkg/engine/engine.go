@@ -113,6 +113,10 @@ type Engine struct {
 	// Nil when no hooks are configured.
 	hooks *hooks.Hooks
 
+	// agentMetaDepth tracks nesting depth for sub-agent rendering.
+	// 0 = main engine, 1 = direct child, 2 = grandchild, etc.
+	agentMetaDepth int
+
 	// permissionChecker evaluates permission rules for tool invocations.
 	// Nil when no permission rules are configured (default allow).
 	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
@@ -221,6 +225,7 @@ func New(p *Params) *Engine {
 		hooks:                   p.Hooks,
 		permissionChecker:       p.PermissionChecker,
 		contentReplacementState: toolresult.NewContentReplacementState(),
+		agentMetaDepth:         0,
 	}
 }
 
@@ -1672,13 +1677,13 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
 	var dispatcher types.EventDispatcher
 	if e.dispatcher != nil && opts.ParentToolUseID != "" {
-		parentDepth := 0 // depth tracking for nested agents not yet implemented
+		depth := e.agentMetaDepth + 1
 		dispatcher = &taggedDispatcher{
 			parent: e.dispatcher,
 			meta: &types.AgentMeta{
 				ParentToolUseID: opts.ParentToolUseID,
 				AgentType:       opts.AgentType,
-				Depth:           parentDepth,
+				Depth:           depth,
 			},
 		}
 	}

@@ -207,13 +207,8 @@ func (e *StreamingToolExecutor) SetSubEngine(v bool) {
 // askUser asks the user for permission via TUI dialog.
 // Blocks until the user responds, a context is cancelled, or the executor is discarded.
 // 修正 2: uses doEmit. 修正 3: sessionAllowed cache. 修正 4: askMu serialization.
-// 修正 6: sub-engine auto-deny. 修正 7: three-way select.
+// 修正 7: three-way select.
 func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Decision, matchedContent string) types.PermissionUserDecision {
-	// 修正 6: sub-engine directly deny
-	if e.isSubEngine {
-		return types.UserDecisionDeny
-	}
-
 	// 修正 3: check session-scoped cache
 	cacheKey := tt.Name
 	if matchedContent != "" {
