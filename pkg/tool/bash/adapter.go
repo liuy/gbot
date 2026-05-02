@@ -1,6 +1,9 @@
 package bash
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/liuy/gbot/pkg/tool/task"
 )
 
@@ -26,8 +29,14 @@ func (a *TaskInfoAdapter) Get(id string) (*task.TaskInfo, bool) {
 }
 
 // Kill terminates a running task by ID.
+// Translates bash-specific "not found" errors into task.ErrNotFound
+// so that MultiRegistry can properly skip to the next registry.
 func (a *TaskInfoAdapter) Kill(id string) error {
-	return a.reg.Kill(id)
+	err := a.reg.Kill(id)
+	if err != nil && isBashNotFound(err) {
+		return fmt.Errorf("kill %q: %w", id, task.ErrNotFound)
+	}
+	return err
 }
 
 // List returns all tasks.
@@ -41,8 +50,20 @@ func (a *TaskInfoAdapter) List() []*task.TaskInfo {
 }
 
 // Wait blocks until the task finishes, returning the exit code.
+// Translates bash-specific "not found" errors into task.ErrNotFound.
 func (a *TaskInfoAdapter) Wait(id string) (int, error) {
-	return a.reg.Wait(id)
+	code, err := a.reg.Wait(id)
+	if err != nil && isBashNotFound(err) {
+		return code, fmt.Errorf("wait %q: %w", id, task.ErrNotFound)
+	}
+	return code, err
+}
+
+// isBashNotFound detects the bash registry's ad-hoc "task X not found" error.
+// BackgroundTaskRegistry doesn't import the task package, so it uses
+// fmt.Errorf("task %q not found") instead of wrapping task.ErrNotFound.
+func isBashNotFound(err error) bool {
+	return strings.Contains(err.Error(), "not found")
 }
 
 // backgroundTaskToInfo converts a BackgroundTask to a TaskInfo snapshot.

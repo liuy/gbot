@@ -652,6 +652,7 @@ type ToolCallView struct {
 	ContextWindow int             // sub-agent context window size (set once at tool start)
 	Blocks        []ContentBlock  // nested blocks for agent's sub-events (text/tool/thinking)
 	AgentType     string          // agent type name (e.g., "Explore", "Plan")
+	IsBackground  bool            // true = fork agent, keep "running in background..." until sub-engine queryEnd
 }
 
 // ThinkingView renders a thinking block within a message.
@@ -822,7 +823,11 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", tc.Summary)
 		}
-		header += " " + styleDim.Render("running...")
+		if tc.IsBackground {
+			header += " " + styleDim.Render("running in background...")
+		} else {
+			header += " " + styleDim.Render("running...")
+		}
 		sb.WriteString(indent + wordWrap(header, availWidth))
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {

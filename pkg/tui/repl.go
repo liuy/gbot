@@ -488,7 +488,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+			if m.IsBackground {
+				// Fork agent: keep running state, just set IsBackground flag.
+				// The card stays Done=false until the fork agent's sub-engine
+				// dispatches queryEndMsg, which marks it Done.
+				tcv := a.repl.findToolView(m.ToolUseID)
+				if tcv != nil {
+					tcv.IsBackground = true
+					tcv.Output = m.Output
+					a.repl.updateToolBlock(m.ToolUseID, tcv)
+				} else {
+					slog.Warn("tui:background_tool_not_found", "id", m.ToolUseID)
+				}
+			} else {
+				a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+			}
 			a.taskListDirty = true
 		}
 		if m.IsError {
@@ -503,6 +517,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Bug: sub-engine's EventQueryEnd was flowing through without agent metadata,
 		// causing FinishStream to cancel the main query's context mid-loop.
 		if m.Agent != nil {
+			// Fork agent completed: mark parent card as Done.
+			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			if parent != nil && parent.IsBackground && !parent.Done {
+				parent.Done = true
+				if start, ok := a.repl.pendingToolStart[m.Agent.ParentToolUseID]; ok {
+					parent.Elapsed = time.Since(start)
+				}
+				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+			}
 			return true, a.readEvents()
 		}
 

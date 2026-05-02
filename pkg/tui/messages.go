@@ -62,11 +62,12 @@ type toolOutputDeltaMsg struct {
 // toolEndMsg delivers a tool execution result.
 // Source: useStreaming hook onToolResult callback.
 type toolEndMsg struct {
-	ToolUseID string
-	Output    string        // pretty-printed JSON
-	IsError   bool
-	Timing    time.Duration // elapsed time
-	Agent     *types.AgentMeta // non-nil when from a sub-agent
+	ToolUseID    string
+	Output       string        // pretty-printed JSON
+	IsError      bool
+	Timing       time.Duration // elapsed time
+	Agent        *types.AgentMeta // non-nil when from a sub-agent
+	IsBackground bool            // true = fork agent launched async, keep in running state
 }
 
 // queryEndMsg signals that the engine has finished processing.

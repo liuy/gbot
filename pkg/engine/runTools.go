@@ -749,6 +749,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				Output:        outputJSON,
 				DisplayOutput: displayOutput,
 				Timing:        elapsed,
+				IsBackground:  isBackgroundResult(result.Data),
 			},
 		})
 		tt.Result = result
@@ -788,6 +789,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			Output:        outputJSON,
 			DisplayOutput: displayOutput,
 			Timing:        elapsed,
+			IsBackground:  isBackgroundResult(result.Data),
 		},
 	})
 	tt.Result = result
@@ -797,6 +799,13 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	}
 	e.applyContextModifier(tt, result)
 	e.firePostToolUseHook(tt, false)
+}
+
+// isBackgroundResult returns true if the tool result data is a SubQueryResult
+// from a fork agent that was launched asynchronously.
+func isBackgroundResult(data any) bool {
+	sqr, ok := data.(*types.SubQueryResult)
+	return ok && sqr.AsyncLaunched
 }
 
 
@@ -822,7 +831,9 @@ func marshalToolOutput(t tool.Tool, data any, doubleWrap bool) []byte {
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
 func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapsed time.Duration) {
 	e.firePostToolUseHook(tt, true)
-	errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
+	// Error content must be a JSON string (not object) for Anthropic API compatibility.
+	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
+	errJSON, _ := json.Marshal(err.Error())
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{

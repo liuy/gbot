@@ -195,6 +195,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		if evt.ToolResult != nil {
 			return toolEndMsg{
 				ToolUseID: evt.ToolResult.ToolUseID,
+					IsBackground: evt.ToolResult.IsBackground,
 				Output:    evt.ToolResult.DisplayOutput,
 				IsError:   evt.ToolResult.IsError,
 				Timing:    evt.ToolResult.Timing,

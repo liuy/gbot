@@ -341,6 +341,7 @@ type ToolResultEvent struct {
 	DisplayOutput string          `json:"display_output,omitempty"` // human-readable result for TUI
 	IsError       bool            `json:"is_error,omitempty"`
 	Timing        time.Duration   `json:"timing,omitempty"`
+	IsBackground  bool            `json:"is_background,omitempty"` // true = fork agent launched async
 }
 
 // ContinueReason indicates why the loop continues to another iteration.

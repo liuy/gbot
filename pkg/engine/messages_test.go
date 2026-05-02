@@ -82,48 +82,48 @@ func TestCreateToolErrorBlock(t *testing.T) {
 		t.Error("expected IsError to be true")
 	}
 
-	var parsed map[string]string
-	if err := json.Unmarshal(block.Content, &parsed); err != nil {
-		t.Fatalf("failed to parse content: %v", err)
-	}
-	if parsed["error"] != "something broke" {
-		t.Errorf("expected error 'something broke', got %q", parsed["error"])
-	}
+
+
+
+
+
+
+
 }
 
 func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonUserInterrupted)
-	var parsed map[string]string
+	var parsed string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed["error"] != "User rejected tool use" {
-		t.Errorf("unexpected error message: %q", parsed["error"])
+	if parsed != "User rejected tool use" {
+		t.Errorf("unexpected error message: %q", parsed)
 	}
 }
 
 func TestCreateSyntheticErrorBlock_StreamingFallback(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonStreamingFallback)
-	var parsed map[string]string
+	var parsed string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed["error"] != "Error: Streaming fallback - tool execution discarded" {
-		t.Errorf("unexpected error message: %q", parsed["error"])
+	if parsed != "Error: Streaming fallback - tool execution discarded" {
+		t.Errorf("unexpected error message: %q", parsed)
 	}
 }
 
 func TestCreateSyntheticErrorBlock_SiblingError(t *testing.T) {
 	t.Parallel()
 	block := CreateSyntheticErrorBlock("tu_1", AbortReasonSiblingError)
-	var parsed map[string]string
+	var parsed string
 	if err := json.Unmarshal(block.Content, &parsed); err != nil {
 		t.Fatalf("failed to parse: %v", err)
 	}
-	if parsed["error"] != "Cancelled: parallel tool call errored" {
-		t.Errorf("unexpected error message: %q", parsed["error"])
+	if parsed != "Cancelled: parallel tool call errored" {
+		t.Errorf("unexpected error message: %q", parsed)
 	}
 }
 

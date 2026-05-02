@@ -135,6 +135,7 @@ type App struct {
 	taskListFn       taskListFn       // set from main.go to read tasks for display
 	taskListCache    string           // rendered task list, rebuilt when dirty
 	taskListDirty    bool
+	killAllFn        func()           // set from main.go to kill all background tasks
 	// Cache token tracking for spinner display
 	cacheReadTokens     int
 	cacheCreationTokens int
@@ -212,6 +213,11 @@ func (a *App) SetInitialContext(usedTokens, contextWindow int) {
 func (a *App) SetTaskListFn(fn taskListFn) {
 	a.taskListFn = fn
 	a.taskListDirty = true
+}
+
+// SetKillAllFn sets the callback to kill all background tasks on double-press Escape.
+func (a *App) SetKillAllFn(fn func()) {
+	a.killAllFn = fn
 }
 
 // persistModelSelection writes the current provider/tier back to settings.json.
@@ -583,6 +589,17 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		if a.completions.Visible() {
 			a.completions.Dismiss()
+			return a, nil
+		}
+		// Double-press check FIRST — works regardless of streaming state.
+		// If first press was while streaming and queryEndMsg arrived between
+		// the two presses, IsStreaming() would be false but doublePress
+		// still has the pending state from the first press.
+		if a.doublePress.Press("escape") {
+			slog.Info("tui:double_escape_kill_all")
+			if a.killAllFn != nil {
+				a.killAllFn()
+			}
 			return a, nil
 		}
 		// Source: TS onCancel — Escape during streaming cancels the query.

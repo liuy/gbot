@@ -88,6 +88,16 @@ func (r *ForkAgentRegistry) Spawn(
 
 	go func() {
 		defer close(state.done)
+		defer func() {
+			if p := recover(); p != nil {
+				r.mu.Lock()
+				state.Status = ForkFailed
+				r.mu.Unlock()
+				if notifyFn != nil {
+					notifyFn(id, parentToolUseID, nil, fmt.Errorf("panic: %v", p))
+				}
+			}
+		}()
 
 		result, err := runFn(childCtx)
 

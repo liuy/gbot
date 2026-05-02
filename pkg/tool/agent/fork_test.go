@@ -471,3 +471,104 @@ func TestIsInForkChild_EmptyMessages(t *testing.T) {
 		t.Error("should return false for empty messages")
 	}
 }
+
+
+func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
+	t.Parallel()
+	reg := NewForkAgentRegistry()
+
+	var notified bool
+	var notifyErr error
+	notifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {
+		notified = true
+		notifyErr = err
+	}
+
+	state, err := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
+		panic("something went terribly wrong")
+	}, notifyFn, "test panic", "tool-1")
+	if err != nil {
+		t.Fatalf("Spawn should not error, got %v", err)
+	}
+
+	// Wait for completion
+	final, ok := reg.Wait(state.ID)
+	if !ok {
+		t.Fatal("Wait should find the agent")
+	}
+	if final.Status != ForkFailed {
+		t.Errorf("expected ForkFailed, got %s", final.Status)
+	}
+	if !notified {
+		t.Error("notifyFn should be called on panic")
+	}
+	if notifyErr == nil {
+		t.Error("notifyErr should not be nil")
+	}
+	if !strings.Contains(notifyErr.Error(), "panic: something went terribly wrong") {
+		t.Errorf("error should mention panic, got %v", notifyErr)
+	}
+}
+
+
+func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
+	t.Parallel()
+	reg := NewForkAgentRegistry()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	notifyFn := func(agentID, toolUseID string, result *types.SubQueryResult, err error) {}
+
+	state, err := reg.Spawn(ctx, func(innerCtx context.Context) (*types.SubQueryResult, error) {
+		<-innerCtx.Done()
+		// Return partial result even though cancelled
+		return &types.SubQueryResult{Content: "partial work done", TotalTokens: 50}, ctx.Err()
+	}, notifyFn, "test partial", "tool-1")
+	if err != nil {
+		t.Fatalf("Spawn should not error, got %v", err)
+	}
+
+	cancel()
+
+	final, ok := reg.Wait(state.ID)
+	if !ok {
+		t.Fatal("Wait should find the agent")
+	}
+	if final.Status != ForkCancelled {
+		t.Errorf("expected ForkCancelled, got %s", final.Status)
+	}
+	if final.Result == nil {
+		t.Error("partial result should be preserved on cancellation")
+	}
+	if final.Result != nil && final.Result.Content != "partial work done" {
+		t.Errorf("expected partial content, got %q", final.Result.Content)
+	}
+}
+
+
+func TestForkAgentTaskAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
+	t.Parallel()
+	reg := NewForkAgentRegistry()
+	adapter := NewForkAgentTaskAdapter(reg)
+
+	// Spawn and complete a fork agent
+	state, _ := reg.Spawn(context.Background(), func(ctx context.Context) (*types.SubQueryResult, error) {
+		return &types.SubQueryResult{Content: "done"}, nil
+	}, nil, "test", "tool-1")
+	reg.Wait(state.ID) // wait for completion
+
+	// Get should find the completed agent
+	info, found := adapter.Get(state.ID)
+	if !found {
+		t.Fatal("Get should find completed fork agent")
+	}
+	if info.Status != "completed" {
+		t.Errorf("expected completed, got %s", info.Status)
+	}
+
+	// SECOND Get should still find it (not cleaned up by first Get)
+	_, found = adapter.Get(state.ID)
+	if !found {
+		t.Error("Get should still find completed fork agent on second call — lazy cleanup too aggressive")
+	}
+}

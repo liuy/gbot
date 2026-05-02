@@ -2510,12 +2510,12 @@ func TestSyntheticToolResultsForBlocks(t *testing.T) {
 		if cb.Type != types.ContentTypeToolResult {
 			t.Errorf("results[%d].Type = %q, want %q", i, cb.Type, types.ContentTypeToolResult)
 		}
-		var parsed map[string]string
+		var parsed string
 		if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 			t.Fatalf("results[%d]: failed to parse content: %v", i, err)
 		}
-		if _, ok := parsed["error"]; !ok {
-			t.Errorf("results[%d]: expected 'error' key in content", i)
+		if parsed == "" {
+			t.Errorf("results[%d]: expected non-empty error content", i)
 		}
 	}
 
@@ -2714,12 +2714,12 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 			if cb.ToolUseID != "tu_1" {
 				t.Errorf("tool_result ToolUseID = %q, want %q", cb.ToolUseID, "tu_1")
 			}
-			var parsed map[string]string
+			var parsed string
 			if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 				t.Fatalf("failed to parse tool_result content: %v", err)
 			}
-			if !strings.Contains(parsed["error"], "User rejected") {
-				t.Errorf("error = %q, want to contain 'User rejected'", parsed["error"])
+			if !strings.Contains(parsed, "User rejected") {
+				t.Errorf("error = %q, want to contain 'User rejected'", parsed)
 			}
 		}
 	}
@@ -2834,12 +2834,12 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 			for _, cb := range msg.Content {
 				if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
 					hasSyntheticResult = true
-					var parsed map[string]string
+					var parsed string
 					if err := json.Unmarshal(cb.Content, &parsed); err != nil {
 						t.Fatalf("failed to parse synthetic tool_result: %v", err)
 					}
-					if !strings.Contains(parsed["error"], "discarded") {
-						t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed["error"])
+					if !strings.Contains(parsed, "discarded") {
+						t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed)
 					}
 				}
 			}

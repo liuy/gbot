@@ -426,6 +426,13 @@ func main() {
 		}
 		return result
 	})
+	app.SetKillAllFn(func() {
+		for _, t := range compositeTaskReg.List() {
+			if t.Status == "running" {
+				_ = compositeTaskReg.Kill(t.ID)
+			}
+		}
+	})
 
 	// 9. Run bubbletea program
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())

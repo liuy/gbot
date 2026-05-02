@@ -6,7 +6,10 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"errors"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/tool/task"
 	"time"
 )
 
@@ -1319,4 +1322,37 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 // helper
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
+}
+
+
+// ---------------------------------------------------------------------------
+// ErrNotFound wrapping — MultiRegistry relies on errors.Is(err, task.ErrNotFound)
+// ---------------------------------------------------------------------------
+
+func TestTaskInfoAdapter_KillNotFound_WrapsErrNotFound(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	err := adapter.Kill("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	if !errors.Is(err, task.ErrNotFound) {
+		t.Errorf("Kill should wrap task.ErrNotFound for MultiRegistry dispatch, got: %v", err)
+	}
+}
+
+func TestTaskInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
+	t.Parallel()
+	r := NewBackgroundTaskRegistry()
+	adapter := NewTaskInfoAdapter(r)
+
+	_, err := adapter.Wait("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent task")
+	}
+	if !errors.Is(err, task.ErrNotFound) {
+		t.Errorf("Wait should wrap task.ErrNotFound for MultiRegistry dispatch, got: %v", err)
+	}
 }

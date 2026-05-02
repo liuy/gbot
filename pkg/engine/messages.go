@@ -46,7 +46,8 @@ func CreateToolResultMessage(blocks []types.ContentBlock) types.Message {
 // Source: StreamingToolExecutor.ts:86-99 — createSyntheticErrorMessage().
 // Unknown tools get: "Error: No such tool available: <name>"
 func CreateToolErrorBlock(toolUseID string, errMsg string) types.ContentBlock {
-	errJSON, _ := json.Marshal(map[string]string{"error": errMsg})
+	// Error content must be a JSON string for Anthropic API compatibility.
+	errJSON, _ := json.Marshal(errMsg)
 	return types.NewToolResultBlock(toolUseID, errJSON, true)
 }
 
@@ -71,7 +72,8 @@ func CreateSyntheticErrorBlock(toolUseID, reason string) types.ContentBlock {
 	default:
 		msg = "Cancelled: parallel tool call errored"
 	}
-	errJSON, _ := json.Marshal(map[string]string{"error": msg})
+	// Error content must be a JSON string for Anthropic API compatibility.
+	errJSON, _ := json.Marshal(msg)
 	return types.NewToolResultBlock(toolUseID, errJSON, true)
 }
 

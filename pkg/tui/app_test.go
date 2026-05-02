@@ -5223,6 +5223,100 @@ func TestApp_HandleEscape_DuringStreaming_NoCancelFunc(t *testing.T) {
 	}
 }
 
+func TestApp_HandleEscape_DoublePress_KillAll(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+
+	cancelled := false
+	app.repl.cancelFunc = func() {
+		cancelled = true
+	}
+
+	killAllCalled := false
+	app.killAllFn = func() {
+		killAllCalled = true
+	}
+
+	// First Escape: cancels query, sets double-press pending
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if !cancelled {
+		t.Error("first Escape should call cancelFunc")
+	}
+	if killAllCalled {
+		t.Error("first Escape should NOT call killAllFn")
+	}
+
+	// Second Escape within 800ms: kills all background tasks
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if !killAllCalled {
+		t.Error("second Escape should call killAllFn")
+	}
+}
+
+func TestApp_HandleEscape_SinglePress_NoKillAll(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+
+	cancelled := false
+	app.repl.cancelFunc = func() {
+		cancelled = true
+	}
+
+	killAllCalled := false
+	app.killAllFn = func() {
+		killAllCalled = true
+	}
+
+	// Single Escape
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	a := model.(*App)
+
+	if !cancelled {
+		t.Error("Escape should call cancelFunc")
+	}
+	if killAllCalled {
+		t.Error("single Escape should NOT call killAllFn")
+	}
+	if a.repl.cancelFunc != nil {
+		t.Error("cancelFunc should be nil after Escape")
+	}
+}
+
+func TestApp_HandleEscape_DoublePress_NotStreaming_StillKillsAll(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	// Not streaming — but background tasks may still be running
+
+	killAllCalled := false
+	app.killAllFn = func() {
+		killAllCalled = true
+	}
+
+	// Two quick presses while not streaming — still kills background tasks
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if !killAllCalled {
+		t.Error("double-press should kill background tasks even when not streaming")
+	}
+}
+
+func TestApp_HandleEscape_KillAllFnNil_NoPanic(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.streaming = true
+	app.spinner.Start()
+	app.repl.cancelFunc = func() {}
+	app.killAllFn = nil // no killAllFn set
+
+	// Two quick presses — should not panic
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+}
+
 func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -5930,4 +6024,202 @@ func TestApp_QueryEndMsg_SubAgent_DoesNotCancelMainContext(t *testing.T) {
 
 	// Clean up
 	cancel()
+}
+
+
+// ---------------------------------------------------------------------------
+// queryEndMsg from fork agent — marks parent card Done via updateRepl
+// ---------------------------------------------------------------------------
+
+func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	parentToolID := "tool-fork-parent-1"
+	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
+	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-2 * time.Second)
+
+	// Set parent as background (simulates toolEndMsg with IsBackground=true)
+	tcv := app.repl.findToolView(parentToolID)
+	tcv.IsBackground = true
+	tcv.Output = "Fork agent launched"
+	app.repl.updateToolBlock(parentToolID, tcv)
+
+	// Verify parent is NOT done yet
+	if app.repl.findToolView(parentToolID).Done {
+		t.Fatal("parent should NOT be Done before fork agent completes")
+	}
+
+	// Sub-agent queryEndMsg arrives
+	subAgentMeta := &types.AgentMeta{
+		ParentToolUseID: parentToolID,
+		AgentType:       "Explore",
+	}
+	msg := queryEndMsg{
+		Err:        nil,
+		TotalUsage: types.Usage{InputTokens: 50, OutputTokens: 30},
+		Agent:      subAgentMeta,
+	}
+
+	handled, _ := app.updateRepl(msg)
+	if !handled {
+		t.Fatal("updateRepl should handle fork agent queryEndMsg")
+	}
+
+	// Verify parent card is now Done
+	parent := app.repl.findToolView(parentToolID)
+	if parent == nil {
+		t.Fatal("parent card should still exist")
+	}
+	if !parent.Done {
+		t.Error("parent card should be Done after fork agent queryEndMsg")
+	}
+	if parent.Elapsed < time.Second {
+		t.Errorf("parent Elapsed should be >= 1s, got %v", parent.Elapsed)
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Fork agent error + multiple agents tests
+// ---------------------------------------------------------------------------
+
+func TestApp_QueryEndMsg_ForkAgent_ErrorMarksParentDone(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	parentToolID := "tool-fork-err-1"
+	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
+	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-1 * time.Second)
+
+	tcv := app.repl.findToolView(parentToolID)
+	tcv.IsBackground = true
+	app.repl.updateToolBlock(parentToolID, tcv)
+
+	// Fork agent completes with error
+	msg := queryEndMsg{
+		Err:        fmt.Errorf("fork agent failed: timeout"),
+		TotalUsage: types.Usage{InputTokens: 10, OutputTokens: 5},
+		Agent: &types.AgentMeta{
+			ParentToolUseID: parentToolID,
+			AgentType:       "Explore",
+		},
+	}
+
+	handled, _ := app.updateRepl(msg)
+	if !handled {
+		t.Fatal("updateRepl should handle fork agent error queryEndMsg")
+	}
+
+	// Parent should be marked Done even when fork agent failed
+	parent := app.repl.findToolView(parentToolID)
+	if parent == nil {
+		t.Fatal("parent card should exist")
+	}
+	if !parent.Done {
+		t.Error("parent card should be Done even when fork agent errored")
+	}
+}
+
+func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	// Set up two independent fork agents
+	for _, id := range []string{"tool-fork-a", "tool-fork-b"} {
+		app.repl.PendingToolStarted(id, "Agent", "fork", "{}")
+		app.repl.pendingToolStart[id] = time.Now().Add(-1 * time.Second)
+		tcv := app.repl.findToolView(id)
+		tcv.IsBackground = true
+		app.repl.updateToolBlock(id, tcv)
+	}
+
+	// First fork agent completes
+	msg1 := queryEndMsg{
+		Agent: &types.AgentMeta{
+			ParentToolUseID: "tool-fork-a",
+			AgentType:       "Explore",
+		},
+	}
+	app.updateRepl(msg1)
+
+	// Only tool-fork-a should be Done, tool-fork-b should still be running
+	a := app.repl.findToolView("tool-fork-a")
+	b := app.repl.findToolView("tool-fork-b")
+	if !a.Done {
+		t.Error("tool-fork-a should be Done after its queryEndMsg")
+	}
+	if b.Done {
+		t.Error("tool-fork-b should NOT be Done — only fork-a completed")
+	}
+	if b.IsBackground != true {
+		t.Error("tool-fork-b should still be IsBackground=true")
+	}
+
+	// Second fork agent completes
+	msg2 := queryEndMsg{
+		Agent: &types.AgentMeta{
+			ParentToolUseID: "tool-fork-b",
+			AgentType:       "Plan",
+		},
+	}
+	app.updateRepl(msg2)
+
+	// Now both should be Done
+	b = app.repl.findToolView("tool-fork-b")
+	if !b.Done {
+		t.Error("tool-fork-b should be Done after its queryEndMsg")
+	}
+}
+
+
+func TestApp_SetKillAllFn(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+
+	called := false
+	app.SetKillAllFn(func() {
+		called = true
+	})
+
+	// Trigger double-press to exercise the setter
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if !called {
+		t.Error("SetKillAllFn callback should be invoked on double-press")
+	}
+}
+
+func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+
+	// Send toolEndMsg with IsBackground=true for a tool that doesn't exist
+	msg := toolEndMsg{
+		ToolUseID:    "nonexistent-tool",
+		Output:       "Fork agent launched",
+		IsBackground: true,
+	}
+	// Should not panic, and should log a warning (verified by slog output)
+	handled, _ := app.updateRepl(msg)
+	if !handled {
+		t.Error("updateRepl should handle toolEndMsg")
+	}
+	// The tool view should NOT exist since we never called PendingToolStarted
+	if app.repl.findToolView("nonexistent-tool") != nil {
+		t.Error("tool should not exist in pending map")
+	}
 }

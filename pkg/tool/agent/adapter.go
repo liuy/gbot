@@ -21,7 +21,7 @@ func NewForkAgentTaskAdapter(reg *ForkAgentRegistry) *ForkAgentTaskAdapter {
 	return &ForkAgentTaskAdapter{reg: reg}
 }
 
-// Get returns task info by ID. Triggers lazy cleanup for terminal-state agents.
+// Get returns task info by ID.
 func (a *ForkAgentTaskAdapter) Get(id string) (*task.TaskInfo, bool) {
 	if a.reg == nil {
 		return nil, false
@@ -30,12 +30,7 @@ func (a *ForkAgentTaskAdapter) Get(id string) (*task.TaskInfo, bool) {
 	if !ok {
 		return nil, false
 	}
-	info := convertState(state)
-	// Lazy cleanup: after reading a terminal agent, purge all completed agents.
-	if state.Status != ForkRunning {
-		a.reg.CleanupCompleted()
-	}
-	return info, true
+	return convertState(state), true
 }
 
 // Kill cancels a running fork agent by ID.
