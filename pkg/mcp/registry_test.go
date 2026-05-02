@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1914,5 +1915,383 @@ func TestGetBatchSizeInvalidEnv(t *testing.T) {
 	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "-1")
 	if v := getRemoteBatchSize(); v != remoteBatchDefault {
 		t.Errorf("negative env should use default, got %d", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ConnectAgentServers (agent-specific MCP connections)
+// Source: runAgent.ts:95-218 — initializeAgentMcpServers
+// ---------------------------------------------------------------------------
+
+func TestConnectAgentServers_EmptySpecs(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", nil)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if handle != nil {
+		t.Error("expected nil handle for empty specs")
+	}
+}
+
+func TestConnectAgentServers_StringRefExisting(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// Set up a fake global server with discovered tools
+	cfg := ScopedMcpServerConfig{
+		Config: &StdioConfig{Command: "echo"},
+		Scope:  ScopeUser,
+	}
+	r.mu.Lock()
+	r.configs["my-server"] = cfg
+	r.connections["my-server"] = &ConnectedServer{Name: "my-server", Config: cfg}
+	r.tools = append(r.tools, DiscoveredTool{
+		Name:         "mcp__my-server__read",
+		OriginalName: "read",
+		ServerName:   "my-server",
+	})
+	r.mu.Unlock()
+
+	// Connect using string ref
+	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("expected non-nil handle")
+	}
+	defer func() { _ = handle.Cleanup() }()
+
+	tools := handle.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	dt, ok := tools["mcp__my-server__read"]
+	if !ok {
+		t.Fatal("expected tool mcp__my-server__read")
+	}
+	if dt.ServerName != "my-server" {
+		t.Errorf("tool server = %q, want my-server", dt.ServerName)
+	}
+}
+
+func TestConnectAgentServers_StringRefNonExistent(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	rawSpecs := []json.RawMessage{[]byte(`"nonexistent"`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No tools found, handle should be nil
+	if handle != nil {
+		t.Error("expected nil handle when no servers resolve")
+	}
+}
+
+func TestConnectAgentServers_InvalidSpec(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// Spec that's neither a valid string ref nor a valid server config
+	rawSpecs := []json.RawMessage{[]byte(`123`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle != nil {
+		t.Error("expected nil handle for invalid spec")
+	}
+}
+
+func TestConnectAgentServers_CleanupIdempotent(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// Set up a fake global server
+	cfg := ScopedMcpServerConfig{
+		Config: &StdioConfig{Command: "echo"},
+		Scope:  ScopeUser,
+	}
+	r.mu.Lock()
+	r.configs["my-server"] = cfg
+	r.connections["my-server"] = &ConnectedServer{Name: "my-server", Config: cfg}
+	r.tools = append(r.tools, DiscoveredTool{
+		Name:         "mcp__my-server__read",
+		OriginalName: "read",
+		ServerName:   "my-server",
+	})
+	r.mu.Unlock()
+
+	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("expected non-nil handle")
+	}
+
+	// Cleanup twice — second call should be no-op
+	if err := handle.Cleanup(); err != nil {
+		t.Errorf("first cleanup: %v", err)
+	}
+	if err := handle.Cleanup(); err != nil {
+		t.Errorf("second cleanup (idempotent): %v", err)
+	}
+}
+
+func TestConnectAgentServers_CleanupDisconnectsNewConnections(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// Set up a fake global server so the string ref path works
+	cfg := ScopedMcpServerConfig{
+		Config: &StdioConfig{Command: "echo"},
+		Scope:  ScopeUser,
+	}
+	r.mu.Lock()
+	r.configs["my-server"] = cfg
+	r.connections["my-server"] = &ConnectedServer{Name: "my-server", Config: cfg}
+	r.tools = append(r.tools, DiscoveredTool{
+		Name:       "mcp__my-server__tool",
+		ServerName: "my-server",
+	})
+	r.mu.Unlock()
+
+	// Use string ref only — no new connections created, cleanup should be no-op
+	rawSpecs := []json.RawMessage{[]byte(`"my-server"`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("expected non-nil handle")
+	}
+
+	// String refs don't create new connections, so Cleanup should not remove "my-server"
+	if err := handle.Cleanup(); err != nil {
+		t.Errorf("cleanup: %v", err)
+	}
+
+	// Original global server should still exist
+	if _, ok := r.GetConnection("my-server"); !ok {
+		t.Error("global server should not be removed by string ref cleanup")
+	}
+}
+
+func TestConnectAgentServers_InlineConfigConnects(t *testing.T) {
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer r.Close()
+
+	// Setup a real MCP server with a tool
+	srv, t2 := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "inline_tool", Description: "Test tool"}, noopToolHandler)
+	// Pre-register transport for the auto-generated name "agent-test-agent-0"
+	p.mu.Lock()
+	p.transports["agent-test-agent-0"] = t2
+	p.mu.Unlock()
+
+	// Inline config (not string ref)
+	inlineCfg := `{"command": "test-cmd", "args": ["--test"]}`
+	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("expected non-nil handle")
+	}
+	defer func() { _ = handle.Cleanup() }()
+
+	tools := handle.Tools()
+	if len(tools) == 0 {
+		t.Fatal("expected tools to be discovered from inline MCP server")
+	}
+	// Tool name should be qualified: mcp__agent-test-agent-0__inline_tool
+	found := false
+	for name := range tools {
+		if strings.Contains(name, "inline_tool") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		var names []string
+		for n := range tools {
+			names = append(names, n)
+		}
+		t.Errorf("expected inline_tool in discovered tools, got: %v", names)
+	}
+
+	// Cleanup should remove the agent-specific connection
+	if err := handle.Cleanup(); err != nil {
+		t.Errorf("cleanup: %v", err)
+	}
+	if _, ok := r.GetConnection("agent-test-agent-0"); ok {
+		t.Error("expected agent connection to be removed after cleanup")
+	}
+}
+
+func TestConnectAgentServers_InlineConnectFails(t *testing.T) {
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer r.Close()
+
+	// Make the provider fail for the auto-generated server name
+	p.mu.Lock()
+	p.failConn["agent-test-agent-0"] = true
+	p.mu.Unlock()
+
+	inlineCfg := `{"command": "test-cmd"}`
+	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	// Should not panic; returns nil handle (all servers failed)
+	if err != nil {
+		t.Errorf("expected nil error on partial failure, got: %v", err)
+	}
+	if handle != nil {
+		t.Error("expected nil handle when all inline servers fail")
+	}
+
+	// No agent connections should remain
+	r.mu.RLock()
+	for name := range r.connections {
+		if strings.HasPrefix(name, "agent-") {
+			t.Errorf("unexpected agent connection %q after failed connect", name)
+		}
+	}
+	r.mu.RUnlock()
+}
+
+func TestConnectAgentServers_MixedRefsAndInline(t *testing.T) {
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer r.Close()
+
+	// Setup global server for string ref
+	globalCfg := ScopedMcpServerConfig{
+		Config: &StdioConfig{Command: "echo"},
+		Scope:  ScopeUser,
+	}
+	r.mu.Lock()
+	r.configs["global-srv"] = globalCfg
+	r.connections["global-srv"] = &ConnectedServer{Name: "global-srv", Config: globalCfg}
+	r.tools = append(r.tools, DiscoveredTool{
+		Name:         "mcp__global-srv__read",
+		OriginalName: "read",
+		ServerName:   "global-srv",
+	})
+	r.mu.Unlock()
+
+	// Setup inline server
+	srv, t2 := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "inline_tool", Description: "Test"}, noopToolHandler)
+	p.mu.Lock()
+	p.transports["agent-mixed-agent-0"] = t2
+	p.mu.Unlock()
+
+	// Mix: string ref + inline config
+	rawSpecs := []json.RawMessage{
+		[]byte(`"global-srv"`),
+		[]byte(`{"command": "test-cmd"}`),
+	}
+	handle, err := r.ConnectAgentServers(context.Background(), "mixed-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle == nil {
+		t.Fatal("expected non-nil handle")
+	}
+	defer func() { _ = handle.Cleanup() }()
+
+	tools := handle.Tools()
+	if len(tools) < 2 {
+		var names []string
+		for n := range tools {
+			names = append(names, n)
+		}
+		t.Fatalf("expected at least 2 tools (ref + inline), got %d: %v", len(tools), names)
+	}
+	// Verify ref tool present
+	if _, ok := tools["mcp__global-srv__read"]; !ok {
+		t.Error("expected ref tool mcp__global-srv__read")
+	}
+	// Verify inline tool present
+	found := false
+	for name := range tools {
+		if strings.Contains(name, "inline_tool") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected inline_tool in tools")
+	}
+}
+
+func TestConnectAgentServers_StringRefNotConnectedServer(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// Global server exists but is NOT a ConnectedServer (e.g., FailedServer)
+	cfg := ScopedMcpServerConfig{
+		Config: &StdioConfig{Command: "echo"},
+		Scope:  ScopeUser,
+	}
+	r.mu.Lock()
+	r.configs["failed-srv"] = cfg
+	r.connections["failed-srv"] = &FailedServer{Name: "failed-srv", Config: cfg}
+	r.mu.Unlock()
+
+	rawSpecs := []json.RawMessage{[]byte(`"failed-srv"`)}
+	handle, err := r.ConnectAgentServers(context.Background(), "test-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if handle != nil {
+		t.Error("expected nil handle when ref points to non-connected server")
+	}
+}
+
+func TestConnectAgentServers_InlineConnectsNoTools(t *testing.T) {
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{})
+	defer r.Close()
+
+	// Setup MCP server with NO tools
+	_, t2 := setupInMemoryServer(t)
+	// Don't add any tools — server connects but discovers nothing
+	p.mu.Lock()
+	p.transports["agent-notools-agent-0"] = t2
+	p.mu.Unlock()
+
+	inlineCfg := `{"command": "test-cmd"}`
+	rawSpecs := []json.RawMessage{[]byte(inlineCfg)}
+	handle, err := r.ConnectAgentServers(context.Background(), "notools-agent", rawSpecs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Connected but no tools — should still return handle (has cleanup)
+	if handle == nil {
+		t.Fatal("expected non-nil handle even with no tools (has cleanup)")
+	}
+	tools := handle.Tools()
+	if len(tools) != 0 {
+		t.Errorf("expected 0 tools, got %d", len(tools))
+	}
+	// Cleanup should work
+	if err := handle.Cleanup(); err != nil {
+		t.Errorf("cleanup: %v", err)
 	}
 }

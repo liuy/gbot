@@ -236,6 +236,24 @@ func main() {
 		eng.Tools,
 	)
 
+	// 4.3b Wire MCP connect function for agent-specific MCP servers.
+	if mcpRegistry != nil {
+		agentTool.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
+			handle, err := mcpRegistry.ConnectAgentServers(ctx, agentID, rawSpecs)
+			if err != nil || handle == nil {
+				return nil, err
+			}
+			mcpTools := make(map[string]tool.Tool)
+			for name, dt := range handle.Tools() {
+				mcpTools[name] = engine.NewMCPTool(dt, mcpRegistry)
+			}
+			return &agenttool.McpConnectResult{
+				Tools:   mcpTools,
+				Cleanup: handle.Cleanup,
+			}, nil
+		})
+	}
+
 	// 4.4 Replace stub SetNotifyFn with real callbacks.
 	agentTool.SetNotifyFn(
 		func(xml string) {

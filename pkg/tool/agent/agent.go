@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"runtime"
@@ -29,6 +31,17 @@ import (
 // Injected by main.go after engine construction to avoid agent → engine import cycle.
 type SubEngineFactory func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error)
 
+// McpConnectResult holds the result of connecting agent-specific MCP servers.
+type McpConnectResult struct {
+	Tools   map[string]tool.Tool // discovered MCP tools
+	Cleanup func() error         // must be deferred; nil if no cleanup needed
+}
+
+// McpConnectFunc connects agent-specific MCP servers.
+// Injected by main.go to avoid agent → mcp direct dependency.
+// Source: runAgent.ts:95-218 — initializeAgentMcpServers
+type McpConnectFunc func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*McpConnectResult, error)
+
 // SkillRegistry provides skill lookup for agent skill preloading.
 // Interface avoids circular import (agent → skills → types).
 type SkillRegistry interface {
@@ -38,16 +51,16 @@ type SkillRegistry interface {
 // AgentOpts passes parameters to the sub-engine factory.
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
-	Prompt             string               // actual user prompt for the sub-agent
-	SystemPrompt       json.RawMessage      // sub-agent's system prompt
-	Tools              map[string]tool.Tool // filtered tool set
-	MaxTurns           int                  // 0 = no limit
-	Model              string               // "" = inherit from parent
-	AgentType          string               // resolved agent type (e.g. "General", "Explore")
-	ParentToolUseID    string               // parent Agent tool call ID for TUI progress display
-	ForkMessages       []types.Message      // non-nil: use pre-built fork messages instead of Prompt
-	ParentSystemPrompt json.RawMessage      // fork: parent engine's rendered system prompt bytes
-	UserContextMessages []types.Message     // [currentDate, claudeMd?, skill?...] injected before userPrompt
+	Prompt              string               // actual user prompt for the sub-agent
+	SystemPrompt        json.RawMessage      // sub-agent's system prompt
+	Tools               map[string]tool.Tool // filtered tool set
+	MaxTurns            int                  // 0 = no limit
+	Model               string               // "" = inherit from parent
+	AgentType           string               // resolved agent type (e.g. "General", "Explore")
+	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
+	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
+	ParentSystemPrompt  json.RawMessage      // fork: parent engine's rendered system prompt bytes
+	UserContextMessages []types.Message      // [currentDate, claudeMd?, skill?...] injected before userPrompt
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +85,9 @@ type AgentTool struct {
 	skillReg    SkillRegistry
 	skillsOnce  sync.Once
 	skillsCache []types.SkillCommand
+
+	// MCP connector — injected from main.go for agent-specific MCP servers.
+	mcpConnect McpConnectFunc
 }
 
 // New creates a new AgentTool with no dependencies.
@@ -107,6 +123,10 @@ func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs 
 
 // SetSkillRegistry sets the skill registry for agent skill preloading.
 func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
+
+// SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
+// Injected from main.go to avoid agent → mcp import.
+func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
 
 // TaskAdapter returns a task.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -203,6 +223,25 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 	// Source: runAgent.ts:95-218 — initializeAgentMcpServers
 	filteredTools = FilterMCPToolsForAgent(filteredTools, agentDef.RequiredMcpServers)
 
+	// Step 4.6: Connect agent-specific MCP servers (if any)
+	// Source: runAgent.ts:95-218 — initializeAgentMcpServers (inline defs)
+	if len(agentDef.McpServersRaw) > 0 && t.mcpConnect != nil {
+		mcpResult, err := t.mcpConnect(ctx, "agent-"+agentType, agentDef.McpServersRaw)
+		if err != nil {
+			slog.Warn("agent MCP connect failed", "agent", agentType, "error", err)
+		}
+		if mcpResult != nil {
+			if mcpResult.Cleanup != nil {
+				defer func() {
+					if cerr := mcpResult.Cleanup(); cerr != nil {
+						slog.Warn("agent MCP cleanup failed", "agent", agentType, "error", cerr)
+					}
+				}()
+			}
+			maps.Copy(filteredTools, mcpResult.Tools)
+		}
+	}
+
 	// Step 5.5: Resolve model (needed for enhanceSystemPrompt)
 	// Source: AgentTool.tsx:579-583 — model resolution
 	model := agentInput.Model
@@ -255,25 +294,25 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 		t.skillsOnce.Do(func() {
 			t.skillsCache = t.skillReg.GetAllSkills()
 		})
-	allSkills := t.skillsCache
+		allSkills := t.skillsCache
 		resolved := ResolveSkillNames(agentDef.Skills, allSkills, agentType)
 		skillMsgs := BuildSkillMessages(resolved)
 		userCtxMsgs = append(userCtxMsgs, skillMsgs...)
 	}
 
-		// Step 7: Call factory to create sub-engine and execute
+	// Step 7: Call factory to create sub-engine and execute
 	var parentToolUseID string
 	if tctx != nil {
 		parentToolUseID = tctx.ToolUseID
 	}
 	opts := AgentOpts{
-		Prompt:             agentInput.Prompt,
-		SystemPrompt:       systemPrompt,
-		Tools:              filteredTools,
-		MaxTurns:           agentDef.MaxTurns,
-		Model:              model,
-		AgentType:          agentType,
-		ParentToolUseID:    parentToolUseID,
+		Prompt:              agentInput.Prompt,
+		SystemPrompt:        systemPrompt,
+		Tools:               filteredTools,
+		MaxTurns:            agentDef.MaxTurns,
+		Model:               model,
+		AgentType:           agentType,
+		ParentToolUseID:     parentToolUseID,
 		UserContextMessages: userCtxMsgs,
 	}
 
@@ -412,8 +451,8 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 			Tools:              parentTools,
 			MaxTurns:           forkMaxTurns,
 			Model:              model,
-			AgentType: "fork",
-			ParentToolUseID:     parentToolUseID,
+			AgentType:          "fork",
+			ParentToolUseID:    parentToolUseID,
 			ParentSystemPrompt: systemPrompt,
 		}
 		if input.SubagentType != "" {

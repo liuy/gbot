@@ -403,6 +403,7 @@ type AgentDefinition struct {
 	Isolation              string         // isolation — "worktree" (future)
 	CriticalSystemReminder string         // criticalSystemReminder_EXPERIMENTAL
 	RequiredMcpServers     []string       // requiredMcpServers
+	McpServersRaw          []json.RawMessage // mcpServers — raw JSON for pkg/mcp to parse (avoids types→mcp cycle)
 }
 
 // AgentInput is the input parameters for the Agent tool.

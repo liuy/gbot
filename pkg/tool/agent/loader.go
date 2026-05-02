@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -577,10 +578,42 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		}
 	}
 
+		// Parse mcpServers — inline MCP server definitions
+		// Source: loadAgentsDir.ts:693-723
+		// Stored as raw JSON for later parsing by pkg/mcp (avoids import cycle).
+		// Each entry is either a JSON string (ref to existing server)
+		// or a JSON object (inline server config).
+		if mcpRaw, exists := frontmatter["mcpServers"]; exists {
+			def.McpServersRaw = parseMcpServersRaw(mcpRaw)
+		}
+
 	// criticalSystemReminder_EXPERIMENTAL
 	if csr, ok := frontmatter["criticalSystemReminder_EXPERIMENTAL"].(string); ok && csr != "" {
 		def.CriticalSystemReminder = csr
 	}
+}
+
+// parseMcpServersRaw converts frontmatter mcpServers array to []json.RawMessage.
+// Source: loadAgentsDir.ts:693-723
+// Each entry is either a string (ref to existing server) or an object (inline config).
+// Stored as raw JSON; pkg/mcp parses them when connecting (avoids import cycle).
+func parseMcpServersRaw(raw any) []json.RawMessage {
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var result []json.RawMessage
+	for _, item := range arr {
+		if item == nil {
+			continue
+		}
+		b, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		result = append(result, json.RawMessage(b))
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

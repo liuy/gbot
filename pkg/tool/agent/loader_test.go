@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1174,5 +1175,159 @@ func TestFileIdentity_ProcFile(t *testing.T) {
 	// On most Linux systems, /dev/null has valid stat
 	if id == "" {
 		t.Error("fileIdentity(/dev/null) returned empty string, expected non-empty identity")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseMcpServersRaw tests
+// Source: loadAgentsDir.ts:693-723
+// ---------------------------------------------------------------------------
+
+func TestParseMcpServersRaw_NilInput(t *testing.T) {
+	result := parseMcpServersRaw(nil)
+	if result != nil {
+		t.Errorf("expected nil for nil input, got %v", result)
+	}
+}
+
+func TestParseMcpServersRaw_NonArrayInput(t *testing.T) {
+	result := parseMcpServersRaw("not-an-array")
+	if result != nil {
+		t.Errorf("expected nil for string input, got %v", result)
+	}
+}
+
+func TestParseMcpServersRaw_EmptyArray(t *testing.T) {
+	result := parseMcpServersRaw([]any{})
+	if result != nil {
+		t.Errorf("expected nil for empty array, got %v", result)
+	}
+}
+
+func TestParseMcpServersRaw_StringRefs(t *testing.T) {
+	input := []any{"server-a", "server-b"}
+	result := parseMcpServersRaw(input)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+	// Each entry should be a JSON string
+	for i, want := range []string{`"server-a"`, `"server-b"`} {
+		if string(result[i]) != want {
+			t.Errorf("entry[%d]: got %s, want %s", i, string(result[i]), want)
+		}
+	}
+}
+
+func TestParseMcpServersRaw_InlineObject(t *testing.T) {
+	input := []any{
+		map[string]any{
+			"command": "npx",
+			"args":    []any{"-y", "@anthropic/mcp-server"},
+		},
+	}
+	result := parseMcpServersRaw(input)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	// Verify it's valid JSON and can be unmarshaled
+	var parsed map[string]any
+	if err := json.Unmarshal(result[0], &parsed); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+	if parsed["command"] != "npx" {
+		t.Errorf("expected command=npx, got %v", parsed["command"])
+	}
+}
+
+func TestParseMcpServersRaw_MixedRefsAndInline(t *testing.T) {
+	input := []any{
+		"existing-server",
+		map[string]any{"command": "node", "args": []any{"server.js"}},
+	}
+	result := parseMcpServersRaw(input)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result))
+	}
+	// First should be a string ref
+	var ref string
+	if err := json.Unmarshal(result[0], &ref); err != nil {
+		t.Fatalf("first entry should be a string: %v", err)
+	}
+	if ref != "existing-server" {
+		t.Errorf("first entry: got %q, want %q", ref, "existing-server")
+	}
+	// Second should be an object
+	var obj map[string]any
+	if err := json.Unmarshal(result[1], &obj); err != nil {
+		t.Fatalf("second entry should be an object: %v", err)
+	}
+	if obj["command"] != "node" {
+		t.Errorf("second entry command: got %v, want node", obj["command"])
+	}
+}
+
+func TestLoader_McpServersRaw_ParsedFromFrontmatter(t *testing.T) {
+	orig := globalLoader
+	dir := t.TempDir()
+	globalLoader = NewLoader(dir)
+	defer func() { globalLoader = orig }()
+
+	// Create project agent directory
+	agentsDir := filepath.Join(dir, ".gbot", "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	agentContent := "---\nname: TestAgent\ndescription: \"Test agent for mcpServers\"\ntools: [\"Read\"]\nmcpServers:\n  - my-server\n  - command: node\n    args: [\"server.js\"]\n---\n\nTest agent body.\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "test.md"), []byte(agentContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload the global loader from the temp dir
+	InitLoader(dir)
+
+	def, err := GetAgentDefinition("TestAgent")
+	if err != nil {
+		t.Fatalf("GetAgentDefinition: %v", err)
+	}
+	if len(def.McpServersRaw) != 2 {
+		t.Fatalf("expected 2 McpServersRaw entries, got %d", len(def.McpServersRaw))
+	}
+	// First entry: string ref
+	var ref string
+	if err := json.Unmarshal(def.McpServersRaw[0], &ref); err != nil {
+		t.Fatalf("first entry should be string ref: %v", err)
+	}
+	if ref != "my-server" {
+		t.Errorf("first entry: got %q, want %q", ref, "my-server")
+	}
+	// Second entry: inline object
+	var obj map[string]any
+	if err := json.Unmarshal(def.McpServersRaw[1], &obj); err != nil {
+		t.Fatalf("second entry should be object: %v", err)
+	}
+	if obj["command"] != "node" {
+		t.Errorf("second entry command: got %v, want node", obj["command"])
+	}
+}
+
+func TestParseMcpServersRaw_NilItemInArray(t *testing.T) {
+	input := []any{"server-a", nil, "server-b"}
+	result := parseMcpServersRaw(input)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 entries (nil skipped), got %d", len(result))
+	}
+	var ref string
+	if err := json.Unmarshal(result[0], &ref); err != nil {
+		t.Fatalf("first entry: %v", err)
+	}
+	if ref != "server-a" {
+		t.Errorf("first: got %q, want server-a", ref)
+	}
+	if err := json.Unmarshal(result[1], &ref); err != nil {
+		t.Fatalf("second entry: %v", err)
+	}
+	if ref != "server-b" {
+		t.Errorf("second: got %q, want server-b", ref)
 	}
 }

@@ -7,6 +7,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -513,6 +514,219 @@ func (r *Registry) GetConfigs() map[string]ScopedMcpServerConfig {
 //
 // Uses sync.Once to ensure Close is idempotent.
 // ---------------------------------------------------------------------------
+
+// Agent-specific MCP server connections
+// Source: runAgent.ts:95-218 — initializeAgentMcpServers
+
+// agentServerConnectTimeout is the per-server connection timeout for agent MCP servers.
+const agentServerConnectTimeout = 30 * time.Second
+
+// AgentServerHandle holds agent-specific MCP connections and their cleanup.
+// Created by ConnectAgentServers; caller must defer handle.Cleanup().
+type AgentServerHandle struct {
+	tools     map[string]DiscoveredTool
+	connNames []string // names of newly created connections (not shared refs)
+	cleanup   func() error
+	cleaned   bool // idempotent guard
+	mu        sync.Mutex
+}
+
+// Tools returns the discovered tools from agent-specific MCP servers.
+func (h *AgentServerHandle) Tools() map[string]DiscoveredTool {
+	return h.tools
+}
+
+// Cleanup closes connections created by ConnectAgentServers.
+// Safe to call multiple times (idempotent).
+// MUST be called in defer() on ALL exit paths (success, error, cancellation, panic).
+func (h *AgentServerHandle) Cleanup() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cleaned {
+		return nil
+	}
+	h.cleaned = true
+	if h.cleanup != nil {
+		return h.cleanup()
+	}
+	return nil
+}
+
+// ConnectAgentServers connects MCP servers for a specific agent.
+//
+// rawSpecs are parsed from AgentDefinition.McpServersRaw ([]json.RawMessage).
+// Each entry is either a JSON string (ref to existing global server)
+// or a JSON object (inline server config to connect fresh).
+//
+// String refs reuse existing global clients (no cleanup needed).
+// Inline defs create new connections that must be cleaned up via handle.Cleanup().
+//
+// Source: runAgent.ts:95-218 — initializeAgentMcpServers
+func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*AgentServerHandle, error) {
+	if len(rawSpecs) == 0 {
+		return nil, nil
+	}
+
+	handle := &AgentServerHandle{
+		tools: make(map[string]DiscoveredTool),
+	}
+
+	// Phase 1: Separate string refs from inline specs (pure JSON parsing, no lock).
+	type inlineSpec struct {
+		raw  json.RawMessage
+		cfg  McpServerConfig
+		name string
+	}
+	var stringRefs []string
+	var inlineSpecs []inlineSpec
+
+	for _, raw := range rawSpecs {
+		var ref string
+		if json.Unmarshal(raw, &ref) == nil && ref != "" {
+			stringRefs = append(stringRefs, ref)
+			continue
+		}
+		cfg, err := UnmarshalServerConfig(raw)
+		if err != nil {
+			slog.Warn("agent MCP server config parse failed", "agent", agentID, "error", err)
+			continue
+		}
+		inlineSpecs = append(inlineSpecs, inlineSpec{
+			raw:  raw,
+			cfg:  cfg,
+			name: fmt.Sprintf("agent-%s-%d", agentID, len(inlineSpecs)),
+		})
+	}
+
+	// Phase 2: Resolve string refs under a single RLock (fixes TOCTOU).
+	// Build server→tools index in one pass (O(n+m) instead of O(n×m)).
+	if len(stringRefs) > 0 {
+		refSet := make(map[string]bool, len(stringRefs))
+		for _, ref := range stringRefs {
+			refSet[ref] = true
+		}
+
+		r.mu.RLock()
+		// Validate all refs exist and are connected
+		validRefs := make(map[string]bool)
+		for ref := range refSet {
+			conn, ok := r.connections[ref]
+			if !ok {
+				r.mu.RUnlock()
+				slog.Warn("agent MCP server ref not found", "server", ref, "agent", agentID)
+				r.mu.RLock()
+				continue
+			}
+			if _, ok := conn.(*ConnectedServer); !ok {
+				r.mu.RUnlock()
+				slog.Warn("agent MCP server ref not connected", "server", ref, "agent", agentID)
+				r.mu.RLock()
+				continue
+			}
+			validRefs[ref] = true
+		}
+		// Build server→tools index once, copy tools for valid refs
+		for _, dt := range r.tools {
+			if validRefs[dt.ServerName] {
+				handle.tools[dt.Name] = dt
+			}
+		}
+		r.mu.RUnlock()
+
+		if len(validRefs) > 0 {
+			slog.Info("agent MCP string refs resolved", "agent", agentID, "refs", len(validRefs))
+		}
+	}
+
+	// Phase 3: Connect inline specs in parallel.
+	if len(inlineSpecs) > 0 {
+		type connResult struct {
+			serverName string
+			conn       ServerConnection
+			scopedCfg  ScopedMcpServerConfig
+			tools      []DiscoveredTool
+			err        error
+		}
+		results := make([]connResult, len(inlineSpecs))
+		var wg sync.WaitGroup
+		for i, spec := range inlineSpecs {
+			wg.Add(1)
+			go func(idx int, s inlineSpec) {
+				defer wg.Done()
+				scopedCfg := ScopedMcpServerConfig{
+					Config: s.cfg,
+					Scope:  ScopeDynamic,
+				}
+				connectCtx, cancel := context.WithTimeout(ctx, agentServerConnectTimeout)
+				conn, err := r.manager.ConnectToServer(connectCtx, s.name, scopedCfg)
+				cancel()
+				if err != nil {
+					results[idx] = connResult{serverName: s.name, err: err}
+					return
+				}
+				// ConnectToServer returns (*FailedServer, nil) on failure — check for it.
+				if _, failed := conn.(*FailedServer); failed {
+					results[idx] = connResult{serverName: s.name, err: fmt.Errorf("connection failed for %s", s.name)}
+					return
+				}
+				// Discover tools before releasing goroutine
+				var tools []DiscoveredTool
+				if cs, ok := conn.(*ConnectedServer); ok {
+					discoveries := BatchDiscovery(ctx, []*ConnectedServer{cs}, r.toolCache, r.resourceCache, r.commandCache)
+					for _, d := range discoveries {
+						tools = append(tools, d.Tools...)
+					}
+				}
+				results[idx] = connResult{
+					serverName: s.name,
+					conn:       conn,
+					scopedCfg:  scopedCfg,
+					tools:      tools,
+				}
+			}(i, spec)
+		}
+		wg.Wait()
+
+		// Collect results sequentially
+		var newConnNames []string
+		for _, res := range results {
+			if res.err != nil {
+				slog.Warn("agent MCP server connect failed", "server", res.serverName, "agent", agentID, "error", res.err)
+				continue
+			}
+			r.mu.Lock()
+			r.connections[res.serverName] = res.conn
+			r.configs[res.serverName] = res.scopedCfg
+			r.mu.Unlock()
+			newConnNames = append(newConnNames, res.serverName)
+			for _, dt := range res.tools {
+				handle.tools[dt.Name] = dt
+			}
+		}
+
+		if len(newConnNames) > 0 {
+			slog.Info("agent MCP inline servers connected", "agent", agentID, "count", len(newConnNames))
+			namesCopy := make([]string, len(newConnNames))
+			copy(namesCopy, newConnNames)
+			handle.connNames = namesCopy
+			handle.cleanup = func() error {
+				var firstErr error
+				for _, name := range namesCopy {
+					if err := r.Disconnect(name); err != nil && firstErr == nil {
+						firstErr = err
+					}
+				}
+				return firstErr
+			}
+		}
+	}
+
+	if len(handle.tools) == 0 && handle.cleanup == nil {
+		return nil, nil
+	}
+
+	return handle, nil
+}
 
 // Close performs a two-phase shutdown of all MCP server connections.
 // Source: useManageMCPConnections.ts:1027-1041 — cleanup effect
