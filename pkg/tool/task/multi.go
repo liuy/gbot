@@ -9,11 +9,11 @@ import (
 // Compile-time interface check.
 var _ Registry = (*MultiRegistry)(nil)
 
-// MultiRegistry composes multiple Registry instances with optional prefix-based routing.
+// MultiRegistry composes multiple Registry instances with prefix-based routing.
 // nil entries are filtered at construction time.
 //
-// When prefix routing is configured via RegisterPrefix, lookups for IDs matching a
-// registered prefix go directly to the associated registry — no cross-registry iteration.
+// Registries implementing the Prefixer interface are automatically routed:
+// IDs matching the declared prefix go directly to that registry.
 // Unknown prefixes fall back to linear scan.
 type MultiRegistry struct {
 	registries []Registry
@@ -27,22 +27,20 @@ type prefixEntry struct {
 
 // NewMultiRegistry creates a composite registry from multiple sources.
 // nil entries are silently filtered out.
+// Registries implementing Prefixer are auto-registered for prefix routing.
 func NewMultiRegistry(registries ...Registry) *MultiRegistry {
 	filtered := make([]Registry, 0, len(registries))
+	var prefixes []prefixEntry
 	for _, r := range registries {
-		if r != nil {
-			filtered = append(filtered, r)
+		if r == nil {
+			continue
+		}
+		filtered = append(filtered, r)
+		if p, ok := r.(Prefixer); ok {
+			prefixes = append(prefixes, prefixEntry{prefix: p.Prefix(), reg: r})
 		}
 	}
-	return &MultiRegistry{registries: filtered}
-}
-
-// RegisterPrefix associates an ID prefix with a specific registry.
-// Lookups for IDs starting with prefix bypass other registries.
-// Returns self for chaining: m.RegisterPrefix("bg-", bashReg).RegisterPrefix("fork-", forkReg)
-func (m *MultiRegistry) RegisterPrefix(prefix string, reg Registry) *MultiRegistry {
-	m.prefixMap = append(m.prefixMap, prefixEntry{prefix: prefix, reg: reg})
-	return m
+	return &MultiRegistry{registries: filtered, prefixMap: prefixes}
 }
 
 // routeByPrefix returns the registry for the given ID if a prefix matches.

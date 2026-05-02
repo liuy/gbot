@@ -86,3 +86,6 @@ func backgroundTaskToInfo(bt *BackgroundTask) *task.TaskInfo {
 
 	return info
 }
+
+// Prefix returns the ID prefix for bash background tasks.
+func (a *TaskInfoAdapter) Prefix() string { return "bg-" }

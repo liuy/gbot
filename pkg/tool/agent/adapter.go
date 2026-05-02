@@ -112,3 +112,6 @@ func convertState(s *ForkAgentState) *task.TaskInfo {
 	}
 	return info
 }
+
+// Prefix returns the ID prefix for fork agent tasks.
+func (a *ForkAgentTaskAdapter) Prefix() string { return "fork-" }

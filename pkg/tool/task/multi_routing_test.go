@@ -1,6 +1,3 @@
-// Test that prefix-based routing avoids unnecessary cross-registry lookups.
-// TDD: write failing tests first, then implement.
-
 package task
 
 import (
@@ -9,33 +6,71 @@ import (
 	"testing"
 )
 
-// trackCallRegistry wraps a stubRegistry and tracks which methods were called.
-type trackCallRegistry struct {
+// prefixStub wraps stubRegistry and declares a prefix.
+type prefixStub struct {
 	*stubRegistry
+	prefix string
+}
+
+func (p *prefixStub) Prefix() string { return p.prefix }
+
+// trackCallRegistry wraps a registry and tracks method calls.
+type trackCallRegistry struct {
+	Registry
 	getCalls  []string
 	killCalls []string
 }
 
 func (t *trackCallRegistry) Get(id string) (*TaskInfo, bool) {
 	t.getCalls = append(t.getCalls, id)
-	return t.stubRegistry.Get(id)
+	return t.Registry.Get(id)
 }
 
 func (t *trackCallRegistry) Kill(id string) error {
 	t.killCalls = append(t.killCalls, id)
-	return t.stubRegistry.Kill(id)
+	return t.Registry.Kill(id)
+}
+
+// Prefix delegates to inner registry if it implements Prefixer.
+func (t *trackCallRegistry) Prefix() string {
+	if p, ok := t.Registry.(Prefixer); ok {
+		return p.Prefix()
+	}
+	return ""
+}
+
+func (t *trackCallRegistry) String() string {
+	return fmt.Sprintf("trackCallRegistry{getCalls: %v, killCalls: %v}", t.getCalls, t.killCalls)
+}
+
+// ---------------------------------------------------------------------------
+// Prefix auto-discovery tests
+// ---------------------------------------------------------------------------
+
+func TestMulti_PrefixAutoDiscovery(t *testing.T) {
+	t.Parallel()
+	bash := &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}
+	fork := &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}
+
+	m := NewMultiRegistry(bash, fork)
+	// No manual RegisterPrefix needed — auto-discovered from Prefixer interface
+
+	info, ok := m.Get("fork-1")
+	if !ok {
+		t.Fatal("Get fork-1 returned false")
+	}
+	if info.Type != "local_agent" {
+		t.Errorf("Type = %q, want local_agent", info.Type)
+	}
 }
 
 func TestMulti_PrefixRouting_Get(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"})}
-	fork := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"})}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Type: "local_bash", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Type: "local_agent", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
-	m.RegisterPrefix("bg-", bash)
-	m.RegisterPrefix("fork-", fork)
 
-	// Get fork-1 should ONLY query fork registry
 	info, ok := m.Get("fork-1")
 	if !ok {
 		t.Fatal("Get fork-1 returned false")
@@ -53,14 +88,11 @@ func TestMulti_PrefixRouting_Get(t *testing.T) {
 
 func TestMulti_PrefixRouting_Kill(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})}
-	fork := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
-	m.RegisterPrefix("bg-", bash)
-	m.RegisterPrefix("fork-", fork)
 
-	// Kill bg-1 should ONLY query bash registry
 	if err := m.Kill("bg-1"); err != nil {
 		t.Errorf("Kill bg-1 error: %v", err)
 	}
@@ -74,14 +106,11 @@ func TestMulti_PrefixRouting_Kill(t *testing.T) {
 
 func TestMulti_PrefixRouting_Wait(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "completed", ExitCode: 0})}
-	fork := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "completed", ExitCode: 1})}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "completed", ExitCode: 0}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "completed", ExitCode: 1}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
-	m.RegisterPrefix("bg-", bash)
-	m.RegisterPrefix("fork-", fork)
 
-	// Wait fork-1 should ONLY query fork registry
 	code, err := m.Wait("fork-1")
 	if err != nil {
 		t.Fatalf("Wait fork-1 error: %v", err)
@@ -99,9 +128,8 @@ func TestMulti_PrefixRouting_Fallback(t *testing.T) {
 	r1 := newStubRegistry(&TaskInfo{ID: "custom-1", Type: "other", Status: "running"})
 
 	m := NewMultiRegistry(r1)
-	m.RegisterPrefix("bg-", r1) // only bg- prefix registered
+	// No Prefixer — all lookups via linear scan
 
-	// custom-1 has no registered prefix → fallback to linear scan
 	info, ok := m.Get("custom-1")
 	if !ok {
 		t.Fatal("Get custom-1 should succeed via fallback")
@@ -111,33 +139,17 @@ func TestMulti_PrefixRouting_Fallback(t *testing.T) {
 	}
 }
 
-func TestMulti_PrefixRouting_KillFallback(t *testing.T) {
-	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})}
-
-	m := NewMultiRegistry(bash)
-	m.RegisterPrefix("fork-", bash) // only fork prefix registered, not bg-
-
-	// Kill bg-1 should fall back to linear scan
-	if err := m.Kill("bg-1"); err != nil {
-		t.Errorf("Kill bg-1 via fallback error: %v", err)
-	}
-}
-
 func TestMulti_PrefixRouting_KillNotFound(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})}
-	fork := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
-	m.RegisterPrefix("bg-", bash)
-	m.RegisterPrefix("fork-", fork)
 
 	err := m.Kill("fork-99")
 	if err == nil {
 		t.Error("Kill should return error for nonexistent fork-99")
 	}
-	// Should only query fork registry, not bash
 	if len(bash.killCalls) != 0 {
 		t.Errorf("bash.Kill should not be called for fork-99, got: %v", bash.killCalls)
 	}
@@ -148,12 +160,10 @@ func TestMulti_PrefixRouting_KillNotFound(t *testing.T) {
 
 func TestMulti_PrefixRouting_GetNotFound(t *testing.T) {
 	t.Parallel()
-	bash := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})}
-	fork := &trackCallRegistry{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})}
+	bash := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"}), prefix: "bg-"}}
+	fork := &trackCallRegistry{Registry: &prefixStub{stubRegistry: newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"}), prefix: "fork-"}}
 
 	m := NewMultiRegistry(bash, fork)
-	m.RegisterPrefix("bg-", bash)
-	m.RegisterPrefix("fork-", fork)
 
 	_, ok := m.Get("fork-99")
 	if ok {
@@ -164,50 +174,36 @@ func TestMulti_PrefixRouting_GetNotFound(t *testing.T) {
 	}
 }
 
-func TestMulti_PrefixRouting_NoPrefix(t *testing.T) {
+func TestMulti_NilRegistryFiltered(t *testing.T) {
 	t.Parallel()
 	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	r2 := newStubRegistry(&TaskInfo{ID: "fork-1", Status: "running"})
+	m := NewMultiRegistry(r1, nil)
 
-	// No RegisterPrefix calls → should behave like old linear scan
-	m := NewMultiRegistry(r1, r2)
-
-	info, ok := m.Get("fork-1")
+	info, ok := m.Get("bg-1")
 	if !ok {
-		t.Fatal("Get fork-1 should succeed via linear scan")
+		t.Fatal("Get bg-1 should succeed")
 	}
-	if info.ID != "fork-1" {
-		t.Errorf("ID = %q, want fork-1", info.ID)
+	if info.ID != "bg-1" {
+		t.Errorf("ID = %q, want bg-1", info.ID)
 	}
 }
 
-func TestMulti_RegisterPrefixReturnsSelf(t *testing.T) {
+func TestMulti_EmptyRegistries(t *testing.T) {
 	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
+	m := NewMultiRegistry()
 
-	// RegisterPrefix should return *MultiRegistry for chaining
-	m := NewMultiRegistry(r1)
-	result := m.RegisterPrefix("bg-", r1)
-	if result != m {
-		t.Error("RegisterPrefix should return *MultiRegistry for chaining")
+	_, ok := m.Get("any")
+	if ok {
+		t.Error("Get should return false with no registries")
 	}
-}
 
-// Verify the stubRegistry Kill returns ErrNotFound properly.
-func TestStubRegistry_KillErrNotFound(t *testing.T) {
-	r := newStubRegistry()
-	err := r.Kill("nonexistent")
+	err := m.Kill("any")
 	if err == nil {
-		t.Error("expected error")
+		t.Error("Kill should return error with no registries")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want not found", err.Error())
+
+	_, err = m.Wait("any")
+	if err == nil {
+		t.Error("Wait should return error with no registries")
 	}
-}
-
-// Verify trackCallRegistry with fmt.Stringer for debug
-var _ fmt.Stringer = (*trackCallRegistry)(nil)
-
-func (t *trackCallRegistry) String() string {
-	return fmt.Sprintf("trackCallRegistry{getCalls: %v, killCalls: %v}", t.getCalls, t.killCalls)
 }

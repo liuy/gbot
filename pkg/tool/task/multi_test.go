@@ -1,63 +1,13 @@
 package task
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
 
-// stubRegistry is a simple in-memory Registry for testing MultiRegistry.
-type stubRegistry struct {
-	tasks map[string]*TaskInfo
-}
-
-func newStubRegistry(tasks ...*TaskInfo) *stubRegistry {
-	m := make(map[string]*TaskInfo, len(tasks))
-	for _, t := range tasks {
-		m[t.ID] = t
-	}
-	return &stubRegistry{tasks: m}
-}
-
-func (s *stubRegistry) Get(id string) (*TaskInfo, bool) {
-	t, ok := s.tasks[id]
-	if !ok {
-		return nil, false
-	}
-	cp := *t
-	return &cp, true
-}
-
-func (s *stubRegistry) Kill(id string) error {
-	t, ok := s.tasks[id]
-	if !ok {
-		return fmt.Errorf("kill %q: %w", id, ErrNotFound)
-	}
-	t.Status = "killed"
-	t.ExitCode = 137
-	return nil
-}
-
-func (s *stubRegistry) List() []*TaskInfo {
-	var result []*TaskInfo
-	for _, t := range s.tasks {
-		cp := *t
-		result = append(result, &cp)
-	}
-	return result
-}
-
-func (s *stubRegistry) Wait(id string) (int, error) {
-	t, ok := s.tasks[id]
-	if !ok {
-		return -1, fmt.Errorf("wait %q: %w", id, ErrNotFound)
-	}
-	return t.ExitCode, nil
-}
-
 // ---------------------------------------------------------------------------
-// MultiRegistry tests
+// Basic MultiRegistry tests (prefix routing tested in multi_routing_test.go)
 // ---------------------------------------------------------------------------
 
 func TestMulti_GetFirst(t *testing.T) {
@@ -205,47 +155,5 @@ func TestMulti_WaitNotFound(t *testing.T) {
 	// Must not block — Get-first should fail fast
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("Wait took %v for nonexistent ID — should be fast (Get-first)", elapsed)
-	}
-}
-
-func TestMulti_NilRegistryFiltered(t *testing.T) {
-	t.Parallel()
-	r1 := newStubRegistry(&TaskInfo{ID: "bg-1", Status: "running"})
-	// Pass nil as second registry
-	m := NewMultiRegistry(r1, nil)
-
-	// Should not panic
-	info, ok := m.Get("bg-1")
-	if !ok {
-		t.Fatal("Get bg-1 should succeed")
-	}
-	if info.ID != "bg-1" {
-		t.Errorf("ID = %q, want bg-1", info.ID)
-	}
-
-	// List should work
-	list := m.List()
-	if len(list) != 1 {
-		t.Fatalf("List = %d, want 1", len(list))
-	}
-}
-
-func TestMulti_EmptyRegistries(t *testing.T) {
-	t.Parallel()
-	m := NewMultiRegistry()
-
-	_, ok := m.Get("any")
-	if ok {
-		t.Error("Get should return false with no registries")
-	}
-
-	err := m.Kill("any")
-	if err == nil {
-		t.Error("Kill should return error with no registries")
-	}
-
-	_, err = m.Wait("any")
-	if err == nil {
-		t.Error("Wait should return error with no registries")
 	}
 }

@@ -39,3 +39,10 @@ type Registry interface {
 	// Wait blocks until the task finishes, returning the exit code.
 	Wait(id string) (int, error)
 }
+
+// Prefixer is an optional interface that Registries can implement to declare
+// their ID prefix. MultiRegistry uses this for direct routing without
+// cross-registry iteration.
+type Prefixer interface {
+	Prefix() string
+}
