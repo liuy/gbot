@@ -20,24 +20,108 @@ func TestTUIHandler_DroppedCounter_Zero(t *testing.T) {
 	}
 }
 
-func TestTUIHandler_DroppedCounter_WhenBufferFull(t *testing.T) {
+func TestTUIHandler_Coalescing_AccumulatesText(t *testing.T) {
 	h := NewTUIHandler()
-	// Fill the 256-buffer
-	for range 256 {
-		h.appCh <- textDeltaMsg{Text: "fill"}
+	// text_delta events accumulate, don't go to channel immediately
+	for range 10 {
+		h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 	}
 
-	// Next event should be dropped
-	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "dropped"})
-
-	if h.Dropped() != 1 {
-		t.Errorf("expected 1 dropped, got %d", h.Dropped())
+	// Channel should be empty — text is coalesced
+	select {
+	case <-h.appCh:
+		t.Fatal("expected no messages yet, text should be coalesced")
+	default:
 	}
 
-	// And another
-	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "also dropped"})
-	if h.Dropped() != 2 {
-		t.Errorf("expected 2 dropped, got %d", h.Dropped())
+	// Non-text event triggers flush
+	h.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{}})
+
+	// Now channel should have: flushed text + usage = 2 messages
+	msgs := 0
+drain:
+	for {
+		select {
+		case <-h.appCh:
+			msgs++
+		default:
+			break drain
+		}
+	}
+	if msgs != 2 {
+		t.Errorf("expected 2 messages (flushed text + usage), got %d", msgs)
+	}
+}
+
+func TestTUIHandler_Coalescing_FlushesOnTimeWindow(t *testing.T) {
+	h := NewTUIHandler()
+
+	// Send a small text — should NOT flush immediately (window not elapsed)
+	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hi"})
+	select {
+	case <-h.appCh:
+		t.Fatal("should not flush within 100ms window")
+	default:
+	}
+
+	// Wait for the 100ms window to pass
+	time.Sleep(150 * time.Millisecond)
+
+	// Send another text_delta — should trigger flush (window elapsed)
+	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "there"})
+
+	// Should get the coalesced message
+	select {
+	case msg := <-h.appCh:
+		td, ok := msg.(textDeltaMsg)
+		if !ok {
+			t.Fatalf("expected textDeltaMsg, got %T", msg)
+		}
+		if td.Text != "hithere" {
+			t.Errorf("expected coalesced 'hithere', got %q", td.Text)
+		}
+	default:
+		t.Fatal("expected flushed message after window elapsed")
+	}
+
+	// Flush remaining (nothing should be left)
+	h.Flush()
+	select {
+	case <-h.appCh:
+		t.Fatal("nothing should remain after time-window flush")
+	default:
+	}
+}
+
+func TestTUIHandler_BlockingWrite_WaitsForConsumer(t *testing.T) {
+	h := NewTUIHandler()
+	// Fill the buffer
+	for range cap(h.appCh) {
+		h.appCh <- turnStartMsg{}
+	}
+
+	// A non-coalesced event (usage) should block until consumer drains
+	done := make(chan struct{})
+	go func() {
+		h.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{}})
+		close(done)
+	}()
+
+	// Handle should be blocked
+	select {
+	case <-done:
+		t.Fatal("Handle should block when buffer is full")
+	case <-time.After(50 * time.Millisecond):
+		// Good — still blocked
+	}
+
+	// Drain one message — Handle should complete
+	<-h.appCh
+	select {
+	case <-done:
+		// Good — Handle completed
+	case <-time.After(time.Second):
+		t.Fatal("Handle should complete after consumer drains")
 	}
 }
 
@@ -683,7 +767,7 @@ func TestTUIHandler_PermissionAsk_DeliveredToChannel(t *testing.T) {
 func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 	h := NewTUIHandler()
 	// Fill the buffer completely so the blocking write cannot succeed
-	for range 256 {
+	for range cap(h.appCh) {
 		h.appCh <- textDeltaMsg{Text: "fill"}
 	}
 
@@ -747,5 +831,115 @@ func TestIntegration_HubEventQueryEndNoQueryEndMsg(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Benchmarks: measure event throughput (engine → TUIHandler → channel)
+// ---------------------------------------------------------------------------
+
+// BenchmarkTUIHandler_TextDelta_Throughput measures raw event throughput:
+// how many text_delta events/sec can flow through TUIHandler when the
+// consumer drains continuously. With coalescing, text accumulates and
+// flushes as batched messages (every 512 bytes).
+func BenchmarkTUIHandler_TextDelta_Throughput(b *testing.B) {
+	handler := NewTUIHandler()
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-handler.appCh:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	b.ResetTimer()
+	for range b.N {
+		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+	}
+	b.StopTimer()
+	handler.Flush()
+	close(done)
+}
+
+// NOTE: BufferFull benchmark removed — with blocking writes (no timeout),
+// a full channel causes Handle to block indefinitely, which is the intended
+// backpressure behavior. This cannot be benchmarked without a consumer.
+
+// BenchmarkTUIHandler_MixedEvents simulates realistic streaming:
+// 60% text_delta + 10% thinking_delta + 30% other events.
+// Non-streaming events trigger flush of accumulated text/thinking.
+func BenchmarkTUIHandler_MixedEvents(b *testing.B) {
+	handler := NewTUIHandler()
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-handler.appCh:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	events := []types.QueryEvent{
+		{Type: types.EventTextDelta, Text: "hello world"},
+		{Type: types.EventTextDelta, Text: "more text"},
+		{Type: types.EventTextDelta, Text: "继续"},
+		{Type: types.EventUsage, Usage: &types.UsageEvent{InputTokens: 100, OutputTokens: 50}},
+		{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Read", Summary: "main.go"}},
+		{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1", DisplayOutput: "package main", Timing: time.Millisecond}},
+		{Type: types.EventTextDelta, Text: "result: "},
+		{Type: types.EventTextDelta, Text: "done"},
+		{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "hmm"}},
+		{Type: types.EventTextDelta, Text: "final"},
+	}
+
+	b.ResetTimer()
+	for i := range b.N {
+		handler.Handle(events[i%len(events)])
+	}
+	b.StopTimer()
+	handler.Flush()
+	close(done)
+}
+
+// BenchmarkTUIHandler_CoalescedBatch measures the effective message rate
+// after coalescing: how many batched messages/sec reach the channel.
+// This is the metric that matters for bubbletea Update() call pressure.
+func BenchmarkTUIHandler_CoalescedBatch(b *testing.B) {
+	handler := NewTUIHandler()
+
+	msgCount := int64(0)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-handler.appCh:
+				msgCount++
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	b.ResetTimer()
+	for range b.N {
+		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
+	}
+	handler.Flush()
+	b.StopTimer()
+	close(done)
+
+	// Report the ratio: how many channel messages vs Handle() calls.
+	// Without coalescing this would be ~1.0. With coalescing it should be
+	// ~1/512 = 0.002 (one channel message per 512 Handle calls).
+	if b.N > 0 {
+		ratio := float64(msgCount) / float64(b.N)
+		b.ReportMetric(ratio, "msg/call")
 	}
 }
