@@ -18,6 +18,7 @@ coverage.out
 
 # Claude Code
 CLAUDE.md
+.claude/
 
 # Specs (local design docs)
 specs/
