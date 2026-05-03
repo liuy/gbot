@@ -803,3 +803,100 @@ func TestMaxOutputSize(t *testing.T) {
 		t.Errorf("MaxOutputSize = %d, want 30000", MaxOutputSize)
 	}
 }
+
+func TestStreamingOutput_ReplaceLastLine(t *testing.T) {
+	t.Parallel()
+
+	var updates []StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		updates = append(updates, u)
+	})
+
+	mustWrite(t, s, []byte("line1\nline2\n"))
+
+	updates = updates[:0] // reset tracker
+	s.ReplaceLastLine("line2-updated")
+
+	if len(updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(updates))
+	}
+
+	lines := s.Lines()
+	if len(lines) != 2 {
+		t.Fatalf("Lines() = %d, want 2", len(lines))
+	}
+	if lines[0] != "line1" {
+		t.Errorf("lines[0] = %q, want %q", lines[0], "line1")
+	}
+	if lines[1] != "line2-updated" {
+		t.Errorf("lines[1] = %q, want %q", lines[1], "line2-updated")
+	}
+	if updates[0].TotalBytes <= 12 {
+		t.Errorf("TotalBytes = %d, should have grown after ReplaceLastLine", updates[0].TotalBytes)
+	}
+}
+
+func TestStreamingOutput_ReplaceLastLineEmpty(t *testing.T) {
+	t.Parallel()
+
+	var updates []StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		updates = append(updates, u)
+	})
+
+	// Replace on empty buffer — should add as new line
+	s.ReplaceLastLine("first-line")
+
+	if len(updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(updates))
+	}
+	lines := s.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("Lines() = %d, want 1", len(lines))
+	}
+	if lines[0] != "first-line" {
+		t.Errorf("lines[0] = %q, want %q", lines[0], "first-line")
+	}
+}
+
+func TestStreamingOutput_ReplaceLastLineNilCallback(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+	mustWrite(t, s, []byte("hello\n"))
+	s.ReplaceLastLine("replaced") // should not panic
+
+	lines := s.Lines()
+	if lines[0] != "replaced" {
+		t.Errorf("lines[0] = %q, want %q", lines[0], "replaced")
+	}
+}
+
+func TestStreamingOutput_ReplaceLastLineProgress(t *testing.T) {
+	t.Parallel()
+
+	var updates []StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		updates = append(updates, u)
+	})
+
+	// Simulate progress bar: Write line, then replace multiple times
+	mustWrite(t, s, []byte("Downloading 10%\n"))
+	updates = updates[:0]
+
+	s.ReplaceLastLine("Downloading 50%")
+	s.ReplaceLastLine("Downloading 90%")
+	s.ReplaceLastLine("Done!")
+
+	if len(updates) != 3 {
+		t.Fatalf("updates = %d, want 3", len(updates))
+	}
+
+	lines := s.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("Lines() = %d, want 1", len(lines))
+	}
+	if lines[0] != "Done!" {
+		t.Errorf("lines[0] = %q, want %q", lines[0], "Done!")
+	}
+}

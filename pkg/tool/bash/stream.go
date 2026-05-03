@@ -180,3 +180,32 @@ func (s *StreamingOutput) FinalUpdate() {
 		})
 	}
 }
+
+// ReplaceLastLine replaces the last line in both lines and lastLines buffers.
+// Used by Screen's Replace events to update progress bars in-place.
+// Thread-safe.
+func (s *StreamingOutput) ReplaceLastLine(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.lines) > 0 {
+		s.lines[len(s.lines)-1] = line
+	} else {
+		s.lines = append(s.lines, line)
+	}
+	if len(s.lastLines) > 0 {
+		s.lastLines[len(s.lastLines)-1] = line
+	} else {
+		s.lastLines = append(s.lastLines, line)
+	}
+	s.totalBytes += int64(len(line))
+
+	if s.onProgress != nil {
+		s.onProgress(StreamingUpdate{
+			Lines:        slices.Clone(s.lastLines),
+			TotalLines:   s.totalLines,
+			TotalBytes:   s.totalBytes,
+			IsIncomplete: true,
+		})
+	}
+}

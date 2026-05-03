@@ -301,10 +301,16 @@ func executePTYStreamingSync(ctx context.Context, in Input, cwd string, timeout 
 		baseEnv = applyEnvOverrides(baseEnv, overrides)
 	}
 
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+		switch ev.Kind {
+		case tool.ScreenAppend:
+			_, _ = s.Write([]byte(ev.Content + "\n"))
+		case tool.ScreenReplace:
+			s.ReplaceLastLine(ev.Content)
+		}
+	})
 	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
-		func(line string) {
-			_, _ = s.Write([]byte(line + "\n"))
-		},
+		screen,
 		timeout,
 	)
 
@@ -349,12 +355,19 @@ func executePTYStreamingAutoBg(ctx context.Context, in Input, cwd string, timeou
 	var ptyInterrupted bool
 	var ptyPID atomic.Int64
 
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+		switch ev.Kind {
+		case tool.ScreenAppend:
+			_, _ = s.Write([]byte(ev.Content + "\n"))
+		case tool.ScreenReplace:
+			s.ReplaceLastLine(ev.Content)
+		}
+	})
+
 	go func() {
 		defer close(ptyDone)
 		ptyExitCode, ptyInterrupted, _ = ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
-			func(line string) {
-				_, _ = s.Write([]byte(line + "\n"))
-			},
+			screen,
 			MaxTimeout, // long timeout — we manage the real timeout externally
 			func(pid int) {
 				ptyPID.Store(int64(pid))
@@ -540,13 +553,21 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 	}
 
 	// Execute in PTY
-	var outputBuf strings.Builder
+	var outputLines []string
+
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+		switch ev.Kind {
+		case tool.ScreenAppend:
+			outputLines = append(outputLines, ev.Content)
+		case tool.ScreenReplace:
+			if len(outputLines) > 0 {
+				outputLines[len(outputLines)-1] = ev.Content
+			}
+		}
+	})
 
 	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
-		func(line string) {
-			outputBuf.WriteString(line)
-			outputBuf.WriteByte('\n')
-		},
+		screen,
 		timeout,
 	)
 
@@ -563,7 +584,7 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 	_ = os.Remove(cwdFile)
 
 	output := &Output{
-		Stdout:   truncateOutput(outputBuf.String(), MaxOutputSize),
+		Stdout:   truncateOutput(strings.Join(outputLines, "\n"), MaxOutputSize),
 		ExitCode: exitCode,
 		TimedOut: interrupted,
 		CWD:      newCwd,
@@ -805,22 +826,29 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			// Start PTY in a goroutine so we can get the PID.
 			// Use a channel to synchronize: must wait for ptyCommand to finish
 			// before calling task.Complete.
-			ptyDone := make(chan struct{})
-			var ptyExitCode int
-			go func() {
-				defer close(ptyDone)
-				ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
-					func(line string) {
-						_, _ = s.Write([]byte(line + "\n"))
-					},
-					timeout,
-					func(pid int) {
-						task.mu.Lock()
-						task.PID = pid
-						task.mu.Unlock()
-					},
-				)
-			}()
+			screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+			switch ev.Kind {
+			case tool.ScreenAppend:
+				_, _ = s.Write([]byte(ev.Content + "\n"))
+			case tool.ScreenReplace:
+				s.ReplaceLastLine(ev.Content)
+			}
+		})
+
+		ptyDone := make(chan struct{})
+		var ptyExitCode int
+		go func() {
+			defer close(ptyDone)
+			ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
+				screen,
+				timeout,
+				func(pid int) {
+					task.mu.Lock()
+					task.PID = pid
+					task.mu.Unlock()
+				},
+			)
+		}()
 
 			// Wait for ptyCommand to finish before completing the task
 			<-ptyDone

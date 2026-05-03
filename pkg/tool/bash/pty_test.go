@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // --- executeNonPTY tests (internal access) ---
@@ -185,7 +187,9 @@ func TestPtyCommand_MultilineOutput(t *testing.T) {
 		"echo line1; echo line2; echo line3",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		10*time.Second,
 	)
 	if err != nil {
@@ -211,7 +215,9 @@ func TestPtyCommand_Environment(t *testing.T) {
 		"echo $GBOT_TEST_VAR",
 		"",
 		append(os.Environ(), "GBOT_TEST_VAR=testvalue123"),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		10*time.Second,
 	)
 	if ptyErr != nil {
@@ -241,7 +247,9 @@ func TestPtyCommand_PartialLineFlush(t *testing.T) {
 		"printf 'no-newline-end'",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		10*time.Second,
 	)
 	if err != nil {
@@ -267,7 +275,9 @@ func TestPtyCommand_PartialLine(t *testing.T) {
 		"printf 'partial-no-newline'",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		10*time.Second,
 	)
 	if err != nil {
@@ -293,7 +303,9 @@ func TestPtyCommand_ExitBySignal(t *testing.T) {
 		"sleep 10",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		200*time.Millisecond,
 	)
 	if err != nil {
@@ -320,7 +332,9 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 		"kill -ABRT $$",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		500*time.Millisecond,
 	)
 	// Command should terminate with signal (exit code != 0) or error
@@ -341,7 +355,9 @@ func TestPtyCommand_LongLine(t *testing.T) {
 		"printf '%s\\n' "+longStr,
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		10*time.Second,
 	)
 	if err != nil {
@@ -367,7 +383,9 @@ func TestPtyCommand_ReadError(t *testing.T) {
 		"exec cat",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		500*time.Millisecond,
 	)
 	// Command times out, should get interrupted (exit code 137) or error
@@ -388,7 +406,9 @@ func TestPtyCommand_SigkillExit(t *testing.T) {
 		"sleep 10",
 		"",
 		os.Environ(),
-		func(line string) { lines = append(lines, line) },
+		tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}),
 		200*time.Millisecond,
 	)
 	if err != nil {
@@ -512,7 +532,7 @@ func TestPtyCommand_StartError(t *testing.T) {
 		"echo hi",
 		"",
 		os.Environ(),
-		func(line string) {},
+		tool.NewScreen(nil),
 		5*time.Second,
 	)
 	if err == nil {
@@ -569,7 +589,7 @@ func TestPtyCommand_OpenPTYError(t *testing.T) {
 		"echo hi",
 		"",
 		os.Environ(),
-		func(line string) {},
+		tool.NewScreen(nil),
 		5*time.Second,
 	)
 	if err == nil {
@@ -601,7 +621,9 @@ func TestDrainPTY_NormalLines(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte("hello\nworld\n")}, 64)
 	var lines []string
-	drainPTY(reader, func(line string) { lines = append(lines, line) })
+	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}))
 	if len(lines) != 2 {
 		t.Fatalf("lines = %v, want 2 lines", lines)
 	}
@@ -622,7 +644,9 @@ func TestDrainPTY_EOBBreak(t *testing.T) {
 		16,
 	)
 	var lines []string
-	drainPTY(reader, func(line string) { lines = append(lines, line) })
+	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}))
 	joined := strings.Join(lines, "")
 	if len(joined) != 32 {
 		t.Errorf("output len = %d, want 32, got %q", len(joined), joined)
@@ -639,7 +663,9 @@ func TestDrainPTY_NonEOFError(t *testing.T) {
 	}()
 	reader := bufio.NewReaderSize(r, 64)
 	var lines []string
-	drainPTY(reader, func(line string) { lines = append(lines, line) })
+	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}))
 	if len(lines) < 1 {
 		t.Fatal("expected at least one line from flush")
 	}
@@ -651,14 +677,16 @@ func TestDrainPTY_NonEOFError(t *testing.T) {
 func TestDrainPTY_NilCallback(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte("hello\n")}, 64)
-	drainPTY(reader, nil) // should not panic
+	drainPTY(reader, tool.NewScreen(nil)) // should not panic
 }
 
 func TestDrainPTY_Empty(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte{}}, 64)
 	var lines []string
-	drainPTY(reader, func(line string) { lines = append(lines, line) })
+	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+			lines = append(lines, ev.Content)
+		}))
 	if len(lines) != 0 {
 		t.Errorf("lines = %v, want empty", lines)
 	}

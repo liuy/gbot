@@ -1,7 +1,6 @@
 package bash
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -60,16 +59,16 @@ var (
 	}
 )
 
-// ptyCommand runs cmd in a PTY, streaming stripped lines to the callback.
+// ptyCommand runs cmd in a PTY, feeding raw PTY output through a Screen.
 // Returns exit code, interrupted flag, and any error.
-// onOutput receives lines with ANSI already stripped.
-// Partial lines at buffer boundaries are held until '\n' or EOF.
+// The Screen interprets \r (line replacement) and \n (line advance),
+// preserving ANSI SGR colors and emitting structured ScreenEvents.
 //
 // Source: ShellCommand.ts — ShellCommandImpl wraps a child process.
 // PTY allocation is the Go-native equivalent of TS's spawn() with file-mode stdio.
 // All TS algorithms (timeout escalation, process tree kill) are preserved 1:1.
 func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
-	onOutput func(line string), timeout time.Duration, onStart ...func(pid int)) (exitCode int, interrupted bool, err error) {
+	screen *tool.Screen, timeout time.Duration, onStart ...func(pid int)) (exitCode int, interrupted bool, err error) {
 
 	// Open PTY master/slave pair
 	ptyMaster, ptySlave, err := openPTY()
@@ -146,11 +145,10 @@ func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
 		}
 	}()
 
-	// Read loop — read from PTY master, strip ANSI, emit lines
+	// Read loop — feed raw PTY output through Screen for \r/\n/ANSI processing
 	// Source: ShellCommand.ts — file mode reads from output file;
 	// PTY reads from master fd with partial-line buffering.
-	reader := bufio.NewReader(ptyMaster)
-	drainPTY(reader, onOutput)
+	drainPTY(ptyMaster, screen)
 
 	// Wait for process to exit
 	waitErr := execCmd.Wait()
@@ -169,44 +167,24 @@ func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
 	return code, timeoutFired, nil
 }
 
-// drainPTY reads from a PTY master reader, strips ANSI, and emits lines.
-// Handles partial lines at buffer boundaries — accumulated data is flushed
-// when a newline is seen or when the reader returns an error/EOF.
+// drainPTY reads raw PTY output and feeds it to the Screen for processing.
+// The Screen handles \r (line replacement), \n (line advance), and ANSI sequences.
+// On EOF or error, flushes any remaining buffered content.
 //
 // Source: ShellCommand.ts — file mode reads from output file;
 // PTY reads from master fd with partial-line buffering.
-func drainPTY(reader *bufio.Reader, onOutput func(string)) {
-	var partialLine strings.Builder
-
+func drainPTY(reader io.Reader, screen *tool.Screen) {
+	buf := make([]byte, 4096)
 	for {
-		line, isPrefix, readErr := reader.ReadLine()
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			screen.Write(buf[:n])
+		}
 		if readErr != nil {
-			if readErr == io.EOF {
-				break
-			}
-			// EIO when PTY closes — flush and break
 			break
 		}
-
-		// Strip ANSI from the chunk
-		stripped := tool.StripANSI(string(line))
-		partialLine.WriteString(stripped)
-
-		if !isPrefix {
-			// Complete line — emit it
-			if onOutput != nil {
-				onOutput(partialLine.String())
-			}
-			partialLine.Reset()
-		}
 	}
-
-	// Flush remaining partial line
-	if partialLine.Len() > 0 {
-		if onOutput != nil {
-			onOutput(partialLine.String())
-		}
-	}
+	screen.Flush()
 }
 
 // exitCodeFromWait determines the exit code from a cmd.Wait() error.
