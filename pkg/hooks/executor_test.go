@@ -184,7 +184,7 @@ func TestExecuteHook_ContextCancelled(t *testing.T) {
 	e := &CommandExecutor{}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to ensure command has started before cancellation
 		cancel()
 	}()
 	result := e.ExecuteHook(ctx, "sleep 10", &HookInput{}, 10*time.Second)

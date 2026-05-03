@@ -113,7 +113,7 @@ func TestGetSession_WithNullableFields(t *testing.T) {
 
 	// Insert session with nullable fields set
 	sessionID := uuid.New().String()
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 	query := `
 		INSERT INTO sessions (
 			session_id, project_dir, model, title,
@@ -170,9 +170,9 @@ func TestListSessions_SortedByUpdatedAt(t *testing.T) {
 
 	// Create sessions with different timestamps
 	ses1, _ := store.CreateSession("/project", "model1")
-	time.Sleep(10 * time.Millisecond) // ensure different timestamps
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: ensure different SQLite timestamps // ensure different timestamps
 	ses2, _ := store.CreateSession("/project", "model2")
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: ensure different SQLite timestamps
 	ses3, _ := store.CreateSession("/project", "model3")
 
 	sessions, err := store.ListSessions("/project", 0)
@@ -304,7 +304,7 @@ func TestUpdateSessionTimestamp(t *testing.T) {
 	defer cleanup()
 
 	ses, _ := store.CreateSession("/project", "model")
-	time.Sleep(2 * time.Second) // ensure SQLite CURRENT_TIMESTAMP differs (second granularity)
+	time.Sleep(2 * time.Second) // REAL-TIME: ensure SQLite CURRENT_TIMESTAMP differs // ensure SQLite CURRENT_TIMESTAMP differs (second granularity)
 
 	err := store.UpdateSessionTimestamp(ses.SessionID)
 	if err != nil {

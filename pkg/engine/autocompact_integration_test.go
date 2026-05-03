@@ -385,7 +385,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	p := &integrationProvider{}
 	// Slow Complete to give time for concurrent notification
 	p.completeFn = func(req *llm.Request) (*llm.Response, error) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to simulate slow LLM call for concurrent notification interleaving // REAL-TIME: simulates slow LLM to exercise concurrent paths
 		return &llm.Response{
 			ID:    "summary-resp",
 			Type:  "message",
@@ -421,9 +421,9 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 			eng.EnqueueNotification(types.Message{
 				Role:      types.RoleUser,
 				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("notification %d", i))},
-				Timestamp: time.Now(),
+				Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 			})
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: needed to stagger concurrent notifications // REAL-TIME: pacing notifications over time to test concurrency
 		}
 	}()
 

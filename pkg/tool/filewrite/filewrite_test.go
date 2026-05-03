@@ -464,7 +464,7 @@ func TestExecute_ContentChanged_Stale(t *testing.T) {
 		},
 	}
 	// Modify file after read
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: needed for filesystem mtime granularity
 	if err := os.WriteFile(fp, []byte("modified by others"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +705,7 @@ func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
 		},
 	}
 	// Modify file after recording read state
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: needed for filesystem mtime granularity
 	if err := os.WriteFile(fp, []byte("modified by others"), 0644); err != nil {
 		t.Fatal(err)
 	}

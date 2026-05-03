@@ -265,11 +265,11 @@ func TestHub_RaceStress(t *testing.T) {
 	}
 
 	// Let it run then stop
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // REAL-TIME: stress test duration
 	close(stop)
 
 	// Give goroutines time to finish their last iteration
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: goroutine drain time
 	wg.Wait()
 }
 

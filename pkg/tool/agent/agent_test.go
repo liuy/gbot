@@ -159,7 +159,7 @@ func TestResultExtractionNormal(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("found it")}},
 	}
 
-	startTime := time.Now().Add(-1 * time.Second)
+	startTime := time.Now().Add(-1 * time.Second)  // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "General", startTime, types.Usage{InputTokens: 100, OutputTokens: 50}, 0)
 
 	if result.Content != "found it" {
@@ -189,7 +189,7 @@ func TestResultExtractionFallback(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now().Add(-2 * time.Second)
+	startTime := time.Now().Add(-2 * time.Second)  // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Explore", startTime, types.Usage{InputTokens: 200, OutputTokens: 100}, 2)
 
 	// Should walk backward and find "found something" from the first assistant
@@ -213,7 +213,7 @@ func TestResultExtractionNoText(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()
+	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Plan", startTime, types.Usage{}, 1)
 
 	if !strings.Contains(result.Content, "no text output") {
@@ -236,7 +236,7 @@ func TestResultExtractionInterruptOnUserMessage(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()
+	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Plan", startTime, types.Usage{}, 1)
 
 	if strings.Contains(result.Content, "completed") {
@@ -257,7 +257,7 @@ func TestResultExtractionInterruptOnAssistantMessage(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()
+	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Explore", startTime, types.Usage{}, 0)
 
 	// Should return the text content found ("Let me check[Request interrupted by user]")
@@ -357,13 +357,15 @@ func TestCallFork_DetachedContext(t *testing.T) {
 
 	var factoryCtx context.Context
 	var factoryMu sync.Mutex
+	parentCancelled := make(chan struct{})
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		factoryMu.Lock()
 		factoryCtx = ctx
 		factoryMu.Unlock()
 
-		// Simulate work that outlives parent cancellation
-		time.Sleep(300 * time.Millisecond)
+		// Block until the parent context is cancelled, simulating work
+		// that outlives parent cancellation without a fixed sleep.
+		<-parentCancelled
 
 		// The fork agent's context must NOT be cancelled
 		if ctx.Err() != nil {
@@ -410,6 +412,7 @@ func TestCallFork_DetachedContext(t *testing.T) {
 	// Cancel the parent context — simulates FinishStream on normal query completion.
 	// The fork agent is running in a goroutine; this MUST NOT kill it.
 	parentCancel()
+	close(parentCancelled) // unblock the factory goroutine so it can complete
 
 	// Wait for the fork agent to finish by checking the registry
 	final, found := at.forkReg.Wait(sqr.AgentID)

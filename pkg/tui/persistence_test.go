@@ -86,8 +86,8 @@ func TestPersistTurn_SuccessfulPersist(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -139,7 +139,7 @@ func TestPersistTurn_Incremental(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -157,9 +157,9 @@ func TestPersistTurn_Incremental(t *testing.T) {
 
 	// Add more messages
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply1")}, Timestamp: time.Now()},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply1")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	// Second persist: only the 2 new messages
@@ -197,8 +197,8 @@ func TestPersistTurn_AutoTitle(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -239,8 +239,8 @@ func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -352,8 +352,8 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -368,10 +368,10 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 
 	// Add more messages
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second prompt")}, Timestamp: time.Now()},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply2")}, Timestamp: time.Now()},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply2")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
 	})
 
 	// Second persist — should NOT change title

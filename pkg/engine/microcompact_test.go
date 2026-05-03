@@ -360,7 +360,7 @@ func TestEvaluateTimeBasedTrigger_Disabled(t *testing.T) {
 
 	defaultMicrocompactConfig.TimeBased.Enabled = false
 	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)},
+		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
 	}
 	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
 	if result != nil {
@@ -381,7 +381,7 @@ func TestEvaluateTimeBasedTrigger_NoAssistant(t *testing.T) {
 func TestEvaluateTimeBasedTrigger_UnderThreshold(t *testing.T) {
 	// Message from 5 minutes ago — under 60 minute threshold
 	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)},
+		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
 	}
 	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
 	if result != nil {
@@ -394,7 +394,7 @@ func TestEvaluateTimeBasedTrigger_OverThreshold(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
 
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	// Assistant message from 61 minutes ago
@@ -413,7 +413,7 @@ func TestEvaluateTimeBasedTrigger_OverThreshold(t *testing.T) {
 func TestEvaluateTimeBasedTrigger_WrongSource(t *testing.T) {
 	// Empty querySource → nil (time-based requires explicit source)
 	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)},
+		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
 	}
 	result := EvaluateTimeBasedTrigger(messages, "")
 	if result != nil {
@@ -430,7 +430,7 @@ func TestEvaluateTimeBasedTrigger_PrefixSource(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
 
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	messages := []types.Message{
@@ -449,7 +449,7 @@ func TestEvaluateTimeBasedTrigger_PrefixSource(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_NoTrigger(t *testing.T) {
 	// Gap under threshold → no trigger
 	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)},
+		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
 	}
 	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
 	if result != nil {
@@ -461,7 +461,7 @@ func TestMaybeTimeBasedMicrocompact_ClearsOldResults(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
 
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	// Create messages: assistant with 3 tool_uses, user with 3 tool_results
@@ -514,7 +514,7 @@ func TestMaybeTimeBasedMicrocompact_ClearsOldResults(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_KeepsMinOne(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -540,7 +540,7 @@ func TestMaybeTimeBasedMicrocompact_KeepsMinOne(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_NothingToClear(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -565,7 +565,7 @@ func TestMaybeTimeBasedMicrocompact_NothingToClear(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_AlreadyCleared(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -597,7 +597,7 @@ func TestMaybeTimeBasedMicrocompact_AlreadyCleared(t *testing.T) {
 func TestMicrocompactMessages_TimeBasedFires(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -637,7 +637,7 @@ func TestMicrocompactMessages_TimeBasedFires(t *testing.T) {
 func TestMicrocompactMessages_TimeBasedSkips(t *testing.T) {
 	// Recent message, no trigger
 	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)},
+		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-5 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
 	}
 	result := MicrocompactMessages(messages, QuerySourceReplMainThread, nil)
 	if len(result.Messages) != len(messages) {
@@ -660,7 +660,7 @@ func TestMicrocompactMessages_ClearsWarningSuppression(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -694,7 +694,7 @@ func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_CallsNotifyCacheDeletion(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -753,7 +753,7 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
 	orig := nowFunc
 	defer func() { nowFunc = orig }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig

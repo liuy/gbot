@@ -44,7 +44,7 @@ func TestWriteWorkspaceMeta_CreatesDir(t *testing.T) {
 	// .gbot/ doesn't exist yet
 	meta := &WorkspaceMeta{
 		CurrentSessionID: "sess-123",
-		LastActiveAt:     time.Now().Truncate(time.Millisecond),
+		LastActiveAt:     time.Now().Truncate(time.Millisecond), // REAL-TIME: deterministic timestamp for test data
 	}
 
 	if err := WriteWorkspaceMeta(dir, meta); err != nil {

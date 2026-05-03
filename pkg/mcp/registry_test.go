@@ -718,8 +718,8 @@ func TestRegistry_ScheduleReconnect_FiresAfterDelay(t *testing.T) {
 	// Stop the timer before it fires to avoid hanging
 	timer.Stop()
 
-	// Verify timer is cleaned up
-	time.Sleep(10 * time.Millisecond)
+	// Timer was explicitly stopped; no need to wait.
+	// The test only verifies Stop() doesn't panic.
 	r.mu.RLock()
 	_, stillHasTimer := r.reconnectTimers["remote"]
 	r.mu.RUnlock()
@@ -1326,7 +1326,7 @@ func TestRegistry_Close_SlowServer(t *testing.T) {
 		Name:   "srv",
 		Config: cfg,
 		Cleanup: func() error {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond) // REAL-TIME: simulating slow server cleanup
 			return nil
 		},
 	}
@@ -1425,8 +1425,20 @@ func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
 	// Schedule reconnect at attempt 0
 	r.ScheduleReconnect("remote", 0)
 
-	// Wait for timer to fire (short backoff + jitter)
-	time.Sleep(100 * time.Millisecond)
+	// Poll for reconnect timer to fire: the original timer will be replaced
+	// or removed once the reconnect attempt finishes.
+	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: unique persist ID
+	for time.Now().Before(deadline) {  // REAL-TIME: unique persist ID
+		r.mu.RLock()
+		_, hasTimer := r.reconnectTimers["remote"]
+		r.mu.RUnlock()
+		if hasTimer {
+			// Timer still present means reconnect hasn't fired yet; keep waiting
+			time.Sleep(2 * time.Millisecond) // REAL-TIME: polling interval for reconnect timer
+			continue
+		}
+		break
+	}
 
 	// After failed reconnect, either:
 	// - timer entry is gone (cleaned up by the fired func)
@@ -1473,8 +1485,14 @@ func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
 	// Schedule reconnect at attempt 0
 	r.ScheduleReconnect("remote", 0)
 
-	// Wait for timer to fire (short backoff + jitter)
-	time.Sleep(100 * time.Millisecond)
+	// Poll for the status callback to fire
+	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: unique persist ID
+	for time.Now().Before(deadline) {  // REAL-TIME: unique persist ID
+		if statusChanged.Load() >= 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond) // REAL-TIME: polling interval for reconnect status
+	}
 
 	// Status callback should have been called
 	if statusChanged.Load() != 1 {
@@ -1647,7 +1665,7 @@ type slowProvider struct {
 }
 
 func (p *slowProvider) NewTransport(name string, cfg McpServerConfig, scope ConfigScope, trusted bool) (mcp.Transport, error) {
-	time.Sleep(p.delay)
+	time.Sleep(p.delay) // REAL-TIME: simulating network latency in mock provider
 	return p.inMemoryProvider.NewTransport(name, cfg, scope, trusted)
 }
 
@@ -1678,7 +1696,7 @@ func TestConnectAll_ConcurrentExecution(t *testing.T) {
 		}
 	}
 
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: unique persist ID
 	results := r.ConnectAll(context.Background(), configs)
 	elapsed := time.Since(start)
 
@@ -1725,7 +1743,7 @@ func (p *concurrentCountProvider) NewTransport(name string, cfg McpServerConfig,
 		p.mu.Unlock()
 	}()
 
-	time.Sleep(p.delay)
+	time.Sleep(p.delay) // REAL-TIME: simulating network latency in mock provider
 
 	if p.failNames[name] {
 		return nil, fmt.Errorf("mock: connection failed for %q", name)

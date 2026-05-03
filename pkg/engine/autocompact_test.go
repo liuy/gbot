@@ -159,7 +159,7 @@ func makeMessages(n, charCount int) []types.Message {
 		msgs[i] = types.Message{
 			Role:      role,
 			Content:   []types.ContentBlock{content},
-			Timestamp: time.Now(),
+			Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 		}
 	}
 	return msgs
@@ -699,7 +699,7 @@ func TestShortMessageToEngine_ContentRoundTrip(t *testing.T) {
 	original := types.Message{
 		Role:      types.RoleUser,
 		Content:   []types.ContentBlock{types.NewTextBlock("hello world")},
-		Timestamp: time.Now(),
+		Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 	}
 
 	contentBytes, _ := json.Marshal(original.Content)
@@ -728,7 +728,7 @@ func TestShortMessageToEngine_NonJSONContent(t *testing.T) {
 	shortMsg := &short.TranscriptMessage{
 		Type:      "user",
 		Content:   "plain text content",
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now(), // REAL-TIME: needed for CreatedAt field in test
 	}
 
 	converted := ShortMessageToEngine(shortMsg)
@@ -754,7 +754,7 @@ func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 	shortMsg := &short.TranscriptMessage{
 		Type:      "assistant",
 		Content:   string(contentBytes),
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now(), // REAL-TIME: needed for CreatedAt field in test
 	}
 
 	converted := ShortMessageToEngine(shortMsg)

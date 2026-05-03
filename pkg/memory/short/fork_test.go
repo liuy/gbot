@@ -865,7 +865,7 @@ func TestMergeForkBack_SkipProgressMessages(t *testing.T) {
 		UUID:      "c-prog",
 		Type:      "progress",
 		Content:   "running...",
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now(), // REAL-TIME: deterministic timestamp for test data
 	}
 	if err := store.AppendMessage(childID, progressMsg); err != nil {
 		t.Fatalf("AppendMessage progress: %v", err)

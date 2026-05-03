@@ -1223,7 +1223,7 @@ func TestAsyncHook_Command_RunsInBackground(t *testing.T) {
 	for rec.CallCount() == 0 {
 		select {
 		case <-deadline:
-			t.Fatal("timed out waiting for async hook to execute")
+			t.Fatal("timed out waiting for async hook to run")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1326,8 +1326,15 @@ func TestAsyncHook_NonBlocking_NoRewake(t *testing.T) {
 
 	h.PostToolUse(context.Background(), &HookInput{ToolName: "Bash"})
 
-	// Give goroutine time to run
-	time.Sleep(100 * time.Millisecond)
+	// Give async goroutine time to run via short poll
+	deadline := time.After(2 * time.Second)
+	for rec.CallCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for async hook to run")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	// OnRewake not called → test passes
 }
 
@@ -1346,7 +1353,16 @@ func TestAsyncHook_NilOnRewake(t *testing.T) {
 	// OnRewake is nil — should not panic
 
 	h.PostToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	time.Sleep(100 * time.Millisecond)
+
+	// Wait for async goroutine to run
+	deadline := time.After(2 * time.Second)
+	for rec.CallCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for async nil-rewake hook to run")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	// No panic → pass
 }
 
@@ -1366,7 +1382,9 @@ func TestAsyncHook_NilExecutor_SkipsExecution(t *testing.T) {
 	if results != nil {
 		t.Errorf("expected nil results, got %v", results)
 	}
-	time.Sleep(100 * time.Millisecond)
+
+	// No recorder to check — no panic means pass.
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to let async goroutine run with nil executor
 }
 
 func TestAsyncHook_PromptType(t *testing.T) {
@@ -1438,10 +1456,15 @@ func TestAsyncHook_HookName_Command(t *testing.T) {
 	h := NewHooks(config, rec)
 
 	h.PostToolUse(context.Background(), &HookInput{ToolName: "Bash"})
-	time.Sleep(200 * time.Millisecond)
 
-	if !executed.Load() {
-		t.Error("async hook did not execute")
+	// Wait for async hook to execute
+	deadline := time.After(2 * time.Second)
+	for !executed.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for async hook to execute")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

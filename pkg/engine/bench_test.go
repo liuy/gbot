@@ -112,14 +112,14 @@ func BenchmarkMarshalMessages_LargeHistory(b *testing.B) {
 			Content: []types.ContentBlock{
 				types.NewTextBlock("This is a user message with some content about the codebase."),
 			},
-			Timestamp: time.Now(),
+			Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 		})
 		eng.messages = append(eng.messages, types.Message{
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				types.NewTextBlock("This is an assistant response with analysis and recommendations."),
 			},
-			Timestamp: time.Now(),
+			Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 		})
 	}
 
@@ -165,7 +165,7 @@ func BenchmarkMessageJSONMarshal(b *testing.B) {
 		},
 		StopReason: "end_turn",
 		Usage:      &types.Usage{InputTokens: 500, OutputTokens: 200},
-		Timestamp:  time.Now(),
+		Timestamp:  time.Now(), // REAL-TIME: needed for message timestamp in test
 	}
 
 	b.ReportAllocs()

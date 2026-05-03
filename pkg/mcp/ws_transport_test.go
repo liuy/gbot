@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,7 +233,7 @@ func TestWSConn_Read_ContextCancelled(t *testing.T) {
 
 	// Cancel context while waiting for a message
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		runtime.Gosched() // yield so Read() enters its select loop first
 		cancel()
 	}()
 
@@ -701,6 +703,9 @@ func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
+	serverCanClose := make(chan struct{})
+	var closeOnce sync.Once
+	signalServerClose := func() { closeOnce.Do(func() { close(serverCanClose) }) }
 	// Server sends one message then closes
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -709,12 +714,13 @@ func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 		}
 		// Send a valid message
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"ping","id":1}`))
-		// Small delay to let client read it
-		time.Sleep(50 * time.Millisecond)
+		// Wait for client to read the message before closing
+		<-serverCanClose
 		// Close — this will cause readLoop to exit and close the incoming channel
 		_ = conn.Close()
 	}))
 	defer server.Close()
+	defer signalServerClose()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
 	transport := &wsTransport{url: wsURL, headers: http.Header{}}
@@ -734,17 +740,23 @@ func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 		t.Fatal("expected non-nil message")
 	}
 
-	// Give readLoop time to detect close and drain incoming channel
-	time.Sleep(100 * time.Millisecond)
+	// Signal server to close now that we've read the message
+	signalServerClose()
 
-	// Now Read should return io.EOF (incoming channel closed)
-	_, err = conn.Read(ctx)
-	if err == nil {
-		t.Fatal("want error after channel closed")
+	// Poll until Read returns an error (readLoop detects close)
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: polling deadline
+	for time.Now().Before(deadline) { // REAL-TIME: polling check
+		readCtx, readCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		_, readErr := conn.Read(readCtx)
+		readCancel()
+		if readErr != nil {
+			if readErr != io.EOF {
+				t.Logf("Read after close: %v (acceptable)", readErr)
+			}
+			return // success
+		}
 	}
-	if err != io.EOF {
-		t.Logf("Read after close: %v (acceptable)", err)
-	}
+	t.Fatal("Read never returned error after server close")
 
 	_ = conn.Close()
 }
@@ -757,6 +769,7 @@ func TestWSConn_Write_ConnectionError(t *testing.T) {
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
+	serverClosed := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -764,6 +777,7 @@ func TestWSConn_Write_ConnectionError(t *testing.T) {
 		}
 		// Close immediately
 		_ = conn.Close()
+		close(serverClosed)
 	}))
 	defer server.Close()
 
@@ -777,7 +791,9 @@ func TestWSConn_Write_ConnectionError(t *testing.T) {
 	}
 
 	// Wait for server to close
-	time.Sleep(100 * time.Millisecond)
+	<-serverClosed
+	// Yield to let the close propagate to the client side
+	runtime.Gosched()
 
 	// Write should fail since server closed
 	msg := &jsonrpc.Request{Method: "test"}

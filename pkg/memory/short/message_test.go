@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -37,6 +38,10 @@ func createTestSession(t *testing.T, store *Store, sessionID string) {
 	}
 }
 
+// testTimeBase is a fixed timestamp used by testMessage to avoid time.Now()
+// in tests. Deterministic across runs.
+var testTimeBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // Test helper to create a test message
 func testMessage(seq int64, msgType, uuid, parentUUID, content string) *TranscriptMessage {
 	return &TranscriptMessage{
@@ -45,7 +50,7 @@ func testMessage(seq int64, msgType, uuid, parentUUID, content string) *Transcri
 		UUID:       uuid,
 		ParentUUID: parentUUID,
 		Content:    content,
-		CreatedAt:  time.Now(),
+		CreatedAt:  testTimeBase,
 	}
 }
 
@@ -522,12 +527,13 @@ func TestRecordSidechainTranscript(t *testing.T) {
 }
 
 func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
 	// Insert messages
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
 	for i := range 10 {
 		msg := &TranscriptMessage{
 			UUID:      fmt.Sprintf("uuid-%d", i),
@@ -575,14 +581,16 @@ func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("concurrent writer timed out — likely deadlock")
 	}
+	})
 }
 
 func TestFindLatestMessage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
 
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
 	msg1 := &TranscriptMessage{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: baseTime}
 	msg2 := &TranscriptMessage{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`, CreatedAt: baseTime.Add(1 * time.Second)}
 	msg3 := &TranscriptMessage{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`, CreatedAt: baseTime.Add(2 * time.Second)}
@@ -612,6 +620,7 @@ func TestFindLatestMessage(t *testing.T) {
 	if latest.UUID != "uuid-3" {
 		t.Errorf("got UUID %q, want uuid-3", latest.UUID)
 	}
+	})
 }
 
 func TestCountVisibleMessages(t *testing.T) {

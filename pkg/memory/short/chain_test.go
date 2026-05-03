@@ -109,7 +109,7 @@ func TestBuildConversationChain_BranchRecovery(t *testing.T) {
 		UUID:       "uuid-2b",
 		ParentUUID: "uuid-1", // Same parent as uuid-2
 		Content:    `[{"type":"tool_use","id":"tu2","name":"read"}]`,
-		CreatedAt:  time.Now(),
+		CreatedAt:  time.Now(), // REAL-TIME: deterministic timestamp for test data
 	}
 	if err := store.AppendMessage(sessionID, orphan); err != nil {
 		t.Fatalf("AppendMessage orphan: %v", err)
@@ -237,14 +237,14 @@ func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testi
 			UUID:       "asst-1",
 			Type:       "assistant",
 			Content:    `[{"type":"tool_use","id":"tu1","name":"bash"}]`,
-			CreatedAt:  time.Now().Add(-2 * time.Second),
+			CreatedAt:  time.Now().Add(-2 * time.Second), // REAL-TIME: deterministic timestamp for test data
 		},
 		// Orphaned sibling with same tool_use id
 		{
 			UUID:       "asst-2",
 			Type:       "assistant",
 			Content:    `[{"type":"tool_use","id":"tu1","name":"read"}]`, // Same id!
-			CreatedAt:  time.Now().Add(-1 * time.Second),
+			CreatedAt:  time.Now().Add(-1 * time.Second), // REAL-TIME: deterministic timestamp for test data
 		},
 		// Tool result for first assistant
 		{
@@ -252,7 +252,7 @@ func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testi
 			Type:       "user",
 			ParentUUID: "asst-1",
 			Content:    `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`,
-			CreatedAt:  time.Now(),
+			CreatedAt:  time.Now(), // REAL-TIME: deterministic timestamp for test data
 		},
 	}
 
@@ -285,13 +285,13 @@ func TestRecoverOrphanedParallelToolResults_NoSiblings(t *testing.T) {
 			UUID:      "asst-1",
 			Type:      "assistant",
 			Content:   `[{"type":"tool_use","id":"tu1","name":"bash"}]`,
-			CreatedAt: time.Now(),
+			CreatedAt: time.Now(), // REAL-TIME: deterministic timestamp for test data
 		},
 		{
 			UUID:      "user-1",
 			Type:      "user",
 			Content:   `[{"type":"text","text":"next"}]`,
-			CreatedAt: time.Now(),
+			CreatedAt: time.Now(), // REAL-TIME: deterministic timestamp for test data
 		},
 	}
 
@@ -306,7 +306,7 @@ func TestRecoverOrphanedParallelToolResults_NoSiblings(t *testing.T) {
 
 func TestRecoverOrphanedParallelToolResults_TimeOrder(t *testing.T) {
 	// Verify recovered messages are sorted by timestamp
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	allMessages := []*TranscriptMessage{
 		{
@@ -353,9 +353,9 @@ func TestRecoverOrphanedParallelToolResults_TimeOrder(t *testing.T) {
 
 func TestFindLeafMessage(t *testing.T) {
 	messages := []*TranscriptMessage{
-		{UUID: "a", ParentUUID: "b", CreatedAt: time.Now()}, // a's parent is b
-		{UUID: "b", ParentUUID: "", CreatedAt: time.Now()},  // b is root
-		{UUID: "c", ParentUUID: "b", CreatedAt: time.Now()}, // c's parent is b
+		{UUID: "a", ParentUUID: "b", CreatedAt: time.Now()}, // a's parent is b // REAL-TIME: deterministic timestamp for test data
+		{UUID: "b", ParentUUID: "", CreatedAt: time.Now()},  // b is root // REAL-TIME: deterministic timestamp for test data
+		{UUID: "c", ParentUUID: "b", CreatedAt: time.Now()}, // c's parent is b // REAL-TIME: deterministic timestamp for test data
 	}
 
 	// Both a and c are leaves (no one points to them)
@@ -414,7 +414,7 @@ func TestReverseMessages(t *testing.T) {
 }
 
 func TestFindLeafMessage_NoProgressMessages(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	messages := []*TranscriptMessage{
 		{UUID: "user-1", Type: "user", ParentUUID: "", CreatedAt: now.Add(-2 * time.Second)},
@@ -499,7 +499,7 @@ func TestBuildConversationChain_LoadError(t *testing.T) {
 // Line 59-61: recoverOrphanedParallelToolResults — chainAssistants empty returns chain
 func TestRecoverOrphanedParallelToolResults_NoChainAssistants(t *testing.T) {
 	allMessages := []*TranscriptMessage{
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -512,8 +512,8 @@ func TestRecoverOrphanedParallelToolResults_NoChainAssistants(t *testing.T) {
 func TestRecoverOrphanedParallelToolResults_NonAssistantWithToolUseID(t *testing.T) {
 	// User message with a tool_use-like block (edge case: non-assistant but tool_use block)
 	allMessages := []*TranscriptMessage{
-		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()},
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"reply"}]`, CreatedAt: time.Now()},
+		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"reply"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -526,8 +526,8 @@ func TestRecoverOrphanedParallelToolResults_NonAssistantWithToolUseID(t *testing
 func TestRecoverOrphanedParallelToolResults_NoSiblingsGroup(t *testing.T) {
 	// Assistant in chain with tool_use ID, but no siblings at all
 	allMessages := []*TranscriptMessage{
-		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()},
-		{UUID: "user-1", Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, CreatedAt: time.Now()},
+		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	// The anchor is asst-1 with tool_use id tu1. No other assistant has same id.
@@ -540,7 +540,7 @@ func TestRecoverOrphanedParallelToolResults_NoSiblingsGroup(t *testing.T) {
 
 // Lines 247-256: findLeafMessage — all leaves are sidechain or progress (fallback path)
 func TestFindLeafMessage_AllSidechainOrProgress(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 	messages := []*TranscriptMessage{
 		{UUID: "root", Type: "user", ParentUUID: "", CreatedAt: now},
 		{UUID: "leaf-1", Type: "progress", ParentUUID: "root", IsSidechain: 0, CreatedAt: now.Add(1 * time.Second)},
@@ -558,7 +558,7 @@ func TestFindLeafMessage_AllSidechainOrProgress(t *testing.T) {
 
 // Lines 247-256: findLeafMessage — all leaves are sidechain (only sidechain candidates)
 func TestFindLeafMessage_OnlySidechainLeaves(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 	messages := []*TranscriptMessage{
 		{UUID: "root", Type: "user", ParentUUID: "", CreatedAt: now},
 		{UUID: "side-1", Type: "user", ParentUUID: "root", IsSidechain: 1, CreatedAt: now.Add(1 * time.Second)},
@@ -591,7 +591,7 @@ func TestRecoverOrphanedParallelToolResults_NilSiblings(t *testing.T) {
 	// siblings map entry is nil, which shouldn't happen normally.
 	// Test by having only a user message in the chain.
 	allMessages := []*TranscriptMessage{
-		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash","input":{}}]`, CreatedAt: time.Now()},
+		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash","input":{}}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -604,8 +604,8 @@ func TestChain_GetMessageID_NonAssistant(t *testing.T) {
 	// Direct test of the non-assistant path in recoverOrphanedParallelToolResults
 	// by having a chain with only user messages (no assistants with tool_use)
 	allMessages := []*TranscriptMessage{
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
-		{UUID: "user-2", Type: "user", Content: `[{"type":"text","text":"world"}]`, CreatedAt: time.Now().Add(time.Second)},
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-2", Type: "user", Content: `[{"type":"text","text":"world"}]`, CreatedAt: time.Now().Add(time.Second)}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -618,8 +618,8 @@ func TestChain_NilGroup_Fallback(t *testing.T) {
 	// Create a chain with an assistant that has a tool_use block with an ID
 	// that no other message shares. This should trigger the nil group fallback.
 	allMessages := []*TranscriptMessage{
-		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"unique-id-1","name":"bash","input":{}}]`, CreatedAt: time.Now()},
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"result"}]`, CreatedAt: time.Now().Add(time.Second)},
+		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"unique-id-1","name":"bash","input":{}}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"result"}]`, CreatedAt: time.Now().Add(time.Second)}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 

@@ -2,6 +2,7 @@ package bash
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -419,7 +420,7 @@ func TestEnsureSocketInitialized_PollingPath(t *testing.T) {
 	}()
 
 	// Let the goroutine enter the polling loop
-	time.Sleep(100 * time.Millisecond)
+	runtime.Gosched()
 
 	// Release under mutex — goroutine checks under mutex
 	tmuxMu.Lock()

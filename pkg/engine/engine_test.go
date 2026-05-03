@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1498,7 +1499,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel after the first turn completes — queryLoop catches it at top of next iteration
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // REAL-TIME: wait for first turn to complete before canceling
 		cancel()
 	}()
 
@@ -1942,7 +1943,7 @@ func TestEngine_EnqueueNotification(t *testing.T) {
 		Content: []types.ContentBlock{
 			types.NewTextBlock("<task-notification><task-id>bg-1</task-id></task-notification>"),
 		},
-		Timestamp: time.Now(),
+		Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 	})
 
 	msgs := eng.Messages()
@@ -1978,7 +1979,7 @@ func TestQuery_NotificationsDrained(t *testing.T) {
 		Content: []types.ContentBlock{
 			types.NewTextBlock("<task-notification><task-id>bg-1</task-id></task-notification>"),
 		},
-		Timestamp: time.Now(),
+		Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2044,7 +2045,7 @@ func TestEngine_EnqueueNotification_Concurrent(t *testing.T) {
 				Content: []types.ContentBlock{
 					types.NewTextBlock(fmt.Sprintf("notification-%d", n)),
 				},
-				Timestamp: time.Now(),
+				Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 			})
 		}(i)
 	}
@@ -2446,7 +2447,7 @@ func TestProcessNotifications_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel immediately after a short delay to let the goroutine start
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		runtime.Gosched()
 		cancel()
 	}()
 

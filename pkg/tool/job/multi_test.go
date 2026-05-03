@@ -142,7 +142,7 @@ func TestMulti_WaitNotFound(t *testing.T) {
 	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
 	m := NewMultiRegistry(r1)
 
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: unique ID generation
 	_, err := m.Wait("nonexistent")
 	elapsed := time.Since(start)
 

@@ -18,12 +18,16 @@ import (
 // Checked patterns:
 //
 //	P1: _ = xxx.Exec/Scan/Unmarshal/... — discarded setup errors
+//	P1: //nolint suppressions — fix the issue, not hide it
+//	P2: time.Sleep in tests — use synctest.Test or channels
 //	P3: len(x) > 0 — no exact count check
+//	P3: time.Now in tests — use synctest.Test or injectable nowFunc
 //
 // Exemptions:
 //   - defer { _ = ... } / t.Cleanup — cleanup is acceptable
 //   - Benchmark functions — performance tests
 //   - _, _ = xxx.WriteString(...) — write result not needed
+//   - Inside synctest.Test() bubble — fake clock already in use
 func TestWeakAssertions(t *testing.T) {
 	projectRoot := findProjectRoot(t)
 	if projectRoot == "" {
@@ -324,6 +328,66 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+		{
+			Name:     "time.Sleep in test - use synctest.Test or channels",
+			TestOnly: true,
+			Regex:    regexp.MustCompile(`time\.Sleep\(`),
+			Level:    "P2",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				if isInSynctestBubble(lines, lineIdx) {
+					return true
+				}
+				if isInComment(match, lines, lineIdx) {
+					return true
+				}
+				if hasREALTIMEComment(lines, lineIdx) {
+					return true
+				}
+				return false
+			},
+		},
+		{
+			Name:     "time.Now in test - use synctest.Test or injectable nowFunc",
+			TestOnly: true,
+			Regex:    regexp.MustCompile(`time\.Now\(\)`),
+			Level:    "P3",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				if isInSynctestBubble(lines, lineIdx) {
+					return true
+				}
+				if isInComment(match, lines, lineIdx) {
+					return true
+				}
+				if hasREALTIMEComment(lines, lineIdx) {
+					return true
+				}
+				return false
+			},
+		},
+}
+
+// isInComment checks if the match is inside a // comment.
+func isInComment(match string, lines []string, lineIdx int) bool {
+	line := lines[lineIdx]
+	idx := strings.Index(line, match)
+	if idx < 0 {
+		return false
+	}
+	commentIdx := strings.Index(line, "//")
+	return commentIdx >= 0 && commentIdx < idx
+}
+
+// hasREALTIMEComment checks if the line has a REAL-TIME comment on the same or next line.
+func hasREALTIMEComment(lines []string, lineIdx int) bool {
+	// Check same line
+	if strings.Contains(lines[lineIdx], "REAL-TIME") {
+		return true
+	}
+	// Check next line
+	if lineIdx+1 < len(lines) && strings.Contains(lines[lineIdx+1], "REAL-TIME") {
+		return true
+	}
+	return false
 }
 
 // scanFile checks a single file for weak assertion patterns.
@@ -367,6 +431,21 @@ func scanFile(t *testing.T, path, projectRoot string) int {
 	}
 
 	return issues
+}
+
+// isInSynctestBubble checks if the line is inside a synctest.Test() callback.
+func isInSynctestBubble(lines []string, lineIdx int) bool {
+	for i := lineIdx; i >= 0 && i >= lineIdx-50; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.Contains(trimmed, "synctest.Test(") {
+			return true
+		}
+		// Stop at function boundary
+		if strings.HasPrefix(trimmed, "func Test") || strings.HasPrefix(trimmed, "func (") {
+			break
+		}
+	}
+	return false
 }
 
 // isInDefer checks if the line is inside a defer block.

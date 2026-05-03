@@ -754,7 +754,7 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	if r.offset >= len(r.data) {
 		return 0, io.EOF
 	}
-	time.Sleep(r.delay)
+	time.Sleep(r.delay) // REAL-TIME: simulated network delay in test reader
 	n := copy(p, r.data[r.offset:])
 	r.offset += n
 	return n, nil

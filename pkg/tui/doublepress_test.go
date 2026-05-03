@@ -35,7 +35,7 @@ func TestDoublePress_Expired(t *testing.T) {
 	d.Press("ctrl-c")
 	// Simulate timeout by manually setting lastTime
 	d.mu.Lock()
-	d.lastTime = time.Now().Add(-1 * time.Second)
+	d.lastTime = time.Now().Add(-1 * time.Second)  // REAL-TIME: expiry simulation
 	d.mu.Unlock()
 
 	if d.Press("ctrl-c") {

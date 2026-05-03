@@ -106,7 +106,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 	// Override time for microcompact trigger
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig
@@ -243,7 +243,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 	origNow := nowFunc
 	defer func() { nowFunc = origNow }()
-	baseTime := time.Now()
+	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
 	nowFunc = func() time.Time { return baseTime }
 
 	origCfg := defaultMicrocompactConfig

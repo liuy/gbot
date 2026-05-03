@@ -1644,7 +1644,7 @@ func TestShouldCleanupCompleted_ReturnsTrueAfterDelay(t *testing.T) {
 	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
 
 	l.mu.Lock()
-	l.allDoneSince = time.Now().Add(-10 * time.Second)
+	l.allDoneSince = time.Now().Add(-10 * time.Second)  // REAL-TIME: allDoneSince auto-reset
 	l.mu.Unlock()
 
 	if !l.ShouldCleanupCompleted(5 * time.Second) {
@@ -1773,7 +1773,7 @@ func TestAutoResetIntegration(t *testing.T) {
 
 	// 4. Fake time elapsed: set allDoneSince to 6s ago.
 	l.mu.Lock()
-	l.allDoneSince = time.Now().Add(-6 * time.Second)
+	l.allDoneSince = time.Now().Add(-6 * time.Second)  // REAL-TIME: allDoneSince auto-reset
 	l.mu.Unlock()
 
 	if !l.ShouldCleanupCompleted(5 * time.Second) {
@@ -1823,7 +1823,7 @@ func TestAutoResetIntegration_PendingTaskBlocksReset(t *testing.T) {
 
 	// Fake time elapsed.
 	l.mu.Lock()
-	l.allDoneSince = time.Now().Add(-10 * time.Second)
+	l.allDoneSince = time.Now().Add(-10 * time.Second)  // REAL-TIME: allDoneSince auto-reset
 	l.mu.Unlock()
 
 	// Add a new pending task (doesn't trigger checkAutoReset, so allDoneSince stays set).

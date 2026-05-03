@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -121,9 +120,13 @@ func TestForkRegistry_List(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
 
+	// Block agents on channels so they stay running until we check List
+	unblockA := make(chan struct{})
+	unblockB := make(chan struct{})
+
 	_, err := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
-			time.Sleep(100 * time.Millisecond)
+			<-unblockA
 			return &types.SubQueryResult{Content: "a"}, nil
 		},
 		nil, "task a", "call_1",
@@ -133,7 +136,7 @@ func TestForkRegistry_List(t *testing.T) {
 	}
 	_, err = reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
-			time.Sleep(100 * time.Millisecond)
+			<-unblockB
 			return &types.SubQueryResult{Content: "b"}, nil
 		},
 		nil, "task b", "call_2",
@@ -146,6 +149,9 @@ func TestForkRegistry_List(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("expected 2 agents, got %d", len(list))
 	}
+
+	close(unblockA)
+	close(unblockB)
 }
 
 func TestForkRegistry_NotifyCalled(t *testing.T) {
@@ -341,9 +347,10 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
 
+	unblock := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
-			time.Sleep(200 * time.Millisecond)
+			<-unblock
 			return &types.SubQueryResult{Content: "done"}, nil
 		},
 		nil, "snapshot test", "call_1",
@@ -367,7 +374,8 @@ func TestForkRegistry_GetReturnsSnapshot(t *testing.T) {
 		t.Error("internal Result was mutated via returned pointer")
 	}
 
-	// Wait for completion to clean up
+	// Unblock the agent so Wait can complete
+	close(unblock)
 	reg.Wait(state.ID)
 }
 

@@ -64,7 +64,7 @@ func TestGetInvokedSkillsForAgent(t *testing.T) {
 
 	reg := NewRegistry(t.TempDir())
 	reg.AddInvokedSkill("commit", "p:commit", "c1", "agent-1")
-	time.Sleep(time.Millisecond) // ensure ordering
+	time.Sleep(time.Millisecond) // REAL-TIME: needed to ensure InvokedAt timestamps differ for ordering
 	reg.AddInvokedSkill("review", "p:review", "c2", "agent-1")
 	reg.AddInvokedSkill("test", "p:test", "c3", "agent-2")
 
@@ -178,7 +178,7 @@ func TestCreateSkillAttachment_TotalBudgetEnforcement(t *testing.T) {
 	for i := range 10 {
 		content := strings.Repeat("a", 10000) // 10K chars each
 		reg.AddInvokedSkill("skill-"+strings.Repeat("a", 1+i), "p:s"+string(rune('0'+i)), content, "agent-1")
-		time.Sleep(time.Millisecond) // ensure ordering
+		time.Sleep(time.Millisecond) // REAL-TIME: needed to ensure InvokedAt timestamps differ for ordering
 	}
 
 	// Total budget: 25000 tokens * 4 = 100000 chars

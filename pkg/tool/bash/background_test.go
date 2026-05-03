@@ -132,11 +132,15 @@ func TestBackgroundTaskRegistry_Wait(t *testing.T) {
 
 	task := r.Spawn("echo hello", 0, nil)
 
-	// Complete in background
+	// Signal the goroutine to complete only after Wait is blocking.
+	// This ensures Wait() actually waits for the async completion.
+	started := make(chan struct{})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-started // block until Wait is on the stack
 		task.Complete(0, false)
 	}()
+
+	close(started) // allow goroutine to proceed
 
 	code, err := r.Wait(task.ID)
 	if err != nil {
@@ -1369,7 +1373,7 @@ func TestCleanupCompleted_RemovesExpiredTasks(t *testing.T) {
 
 	// Manually set evictAfter to past
 	task.mu.Lock()
-	task.evictAfter = time.Now().Add(-1 * time.Second)
+	task.evictAfter = time.Now().Add(-1 * time.Second)  // REAL-TIME: eviction timing
 	task.mu.Unlock()
 
 	reg.CleanupCompleted()
@@ -1448,7 +1452,7 @@ func TestCleanupCompleted_MultipleTasks(t *testing.T) {
 	expired := reg.Spawn("echo 1", 0, nil)
 	expired.Complete(0, false)
 	expired.mu.Lock()
-	expired.evictAfter = time.Now().Add(-1 * time.Second)
+	expired.evictAfter = time.Now().Add(-1 * time.Second)  // REAL-TIME: eviction timing
 	expired.mu.Unlock()
 
 	fresh := reg.Spawn("echo 2", 0, nil)

@@ -79,7 +79,7 @@ func TestFormatDuration_Zero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFormatElapsed(t *testing.T) {
-	start := time.Now().Add(-2 * time.Second)
+	start := time.Now().Add(-2 * time.Second)  // REAL-TIME: formatElapsed duration
 	v := formatElapsed(start)
 	if !strings.HasPrefix(v, "2") || !strings.HasSuffix(v, "s") {
 		t.Errorf("formatElapsed(2s ago) = %q, want prefix '2' and suffix 's'", v)
@@ -87,7 +87,7 @@ func TestFormatElapsed(t *testing.T) {
 }
 
 func TestFormatElapsed_Milliseconds(t *testing.T) {
-	start := time.Now().Add(-100 * time.Millisecond)
+	start := time.Now().Add(-100 * time.Millisecond)  // REAL-TIME: formatElapsed duration
 	v := formatElapsed(start)
 	if !strings.HasSuffix(v, "s") {
 		t.Errorf("formatElapsed(100ms ago) = %q, want s suffix", v)

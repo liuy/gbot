@@ -352,7 +352,7 @@ func TestClientManager_AuthCacheExpiry(t *testing.T) {
 
 	// Simulate TTL expiry by setting a past timestamp
 	store.mu.Lock()
-	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}
+	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}  // REAL-TIME: auth cache TTL / process timing
 	store.mu.Unlock()
 
 	if store.isCached("server-a") {
@@ -521,7 +521,7 @@ func TestProcessCleanupEscalation(t *testing.T) {
 	}
 
 	// Run escalation — should terminate within ~500ms
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
@@ -907,7 +907,7 @@ func TestProcessCleanupEscalation_SigTermPath(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
@@ -933,7 +933,7 @@ func TestProcessCleanupEscalation_SigKillPath(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
@@ -1176,7 +1176,7 @@ func TestFileAuthCache_TTLExpiry(t *testing.T) {
 	store.set("server-a")
 	// Force expiry
 	store.mu.Lock()
-	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}
+	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}  // REAL-TIME: auth cache TTL / process timing
 	store.mu.Unlock()
 	if store.isCached("server-a") {
 		t.Error("should not be cached after TTL expiry")

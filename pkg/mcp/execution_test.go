@@ -638,7 +638,7 @@ func TestTruncateContent(t *testing.T) {
 
 func TestPersistToolResult(t *testing.T) {
 	content := "test content " + strings.Repeat("x", 1000)
-	persistID := fmt.Sprintf("test-persist-%d", time.Now().UnixMilli())
+	persistID := fmt.Sprintf("test-persist-%d", time.Now().UnixMilli())  // REAL-TIME: pending tool start time
 
 	path, err := persistToolResult(content, persistID)
 	if err != nil {

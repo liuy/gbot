@@ -215,7 +215,7 @@ func TestGetDynamicHeaders_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
+	start := time.Now()  // REAL-TIME: start timing
 	result := GetDynamicHeaders(ctx, "test", cfg, ScopeUser, true)
 	elapsed := time.Since(start)
 

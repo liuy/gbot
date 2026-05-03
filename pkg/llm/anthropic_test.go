@@ -906,8 +906,8 @@ func TestParseAPIError_EmptyErrorMessage(t *testing.T) {
 
 func TestStream_ContextCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Slow response to allow context cancellation
-		time.Sleep(2 * time.Second)
+		// REAL-TIME: needed for context cancellation test — server must outlive client timeout
+		time.Sleep(2 * time.Second) // REAL-TIME: server must outlive client timeout
 	}))
 	defer server.Close()
 
@@ -1672,8 +1672,10 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 
 	// Don't read from eventCh — ParseSSE is blocked on the trailing event send.
 	// Cancel the context so it exits via the ctx.Done() branch.
-	// Wait a moment for the goroutine to reach the select.
-	time.Sleep(50 * time.Millisecond)
+	// Give the goroutine a moment to reach the select, then cancel.
+	// Use a brief pause since we need the goroutine to be inside the select
+	// before we cancel — the goroutine is blocked on an unbuffered channel send.
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: goroutine scheduling synchronization
 	cancel()
 
 	select {

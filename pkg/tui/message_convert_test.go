@@ -48,7 +48,7 @@ func TestEngineMessagesToStore_Empty(t *testing.T) {
 
 func TestStoreMessagesToEngine_InvalidRole(t *testing.T) {
 	msgs := []short.TranscriptMessage{
-		{Type: "alien", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},
+		{Type: "alien", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},  // REAL-TIME: round-trip timestamp
 	}
 	_, err := StoreMessagesToEngine(msgs)
 	if err == nil {
@@ -60,7 +60,7 @@ func TestStoreMessagesToEngine_InvalidRole(t *testing.T) {
 }
 
 func TestMessageConvert_RoundTrip(t *testing.T) {
-	now := time.Now().Truncate(time.Millisecond) // truncate to avoid monotonic clock differences
+	now := time.Now().Truncate(time.Millisecond) // REAL-TIME: round-trip timestamp
 
 	tests := []struct {
 		name    string
@@ -218,7 +218,7 @@ func TestMessageConvert_RoundTrip(t *testing.T) {
 }
 
 func TestMessageConvert_MultipleMessages(t *testing.T) {
-	now := time.Now().Truncate(time.Millisecond)
+	now := time.Now().Truncate(time.Millisecond)  // REAL-TIME: round-trip timestamp
 
 	original := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: now},

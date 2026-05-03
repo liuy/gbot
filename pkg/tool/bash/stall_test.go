@@ -441,7 +441,7 @@ func TestStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 	w := &stallWatcher{
 		outputPath: path,
 		lastSize:   int64(len(content)),
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
 	}
 	w.cancelled.Store(true) // cancelled before readTail returns
@@ -505,7 +505,7 @@ func TestStallWatcher_Check_OutputGrows(t *testing.T) {
 
 	w := &stallWatcher{
 		outputPath: path,
-		lastGrowth: time.Now(),
+		lastGrowth: time.Now(),  // REAL-TIME: stall threshold comparison
 		onStall:    func(summary, tail string) {},
 	}
 
@@ -524,7 +524,7 @@ func TestStallWatcher_Check_NoFile(t *testing.T) {
 
 	// TS: stat failure → empty catch () => {} — does NOT reset lastGrowth.
 	// If file never appears, stall should eventually trigger after threshold.
-	past := time.Now().Add(-60 * time.Second)
+	past := time.Now().Add(-60 * time.Second)  // REAL-TIME: stall threshold comparison
 	w := &stallWatcher{
 		outputPath: "/nonexistent/file",
 		lastGrowth: past,
@@ -569,7 +569,7 @@ func TestStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 	w := &stallWatcher{
 		outputPath: path,
 		lastSize:   int64(len(content)),               // already know the file size
-		lastGrowth: time.Now().Add(-60 * time.Second), // past threshold
+		lastGrowth: time.Now().Add(-60 * time.Second), // REAL-TIME: past threshold for stall comparison
 		onStall:    func(summary, tail string) { t.Error("should not call onStall for non-prompt") },
 	}
 
@@ -597,7 +597,7 @@ func TestStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 	w := &stallWatcher{
 		outputPath: path,
 		lastSize:   int64(len(content)),               // already know the file size
-		lastGrowth: time.Now().Add(-60 * time.Second), // past threshold
+		lastGrowth: time.Now().Add(-60 * time.Second), // REAL-TIME: past threshold for stall comparison
 		onStall: func(summary, tail string) {
 			stalled = true
 		},
@@ -625,7 +625,7 @@ func TestStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 	w := &stallWatcher{
 		outputPath: path,
 		lastSize:   int64(len(content)),
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
 	}
 
@@ -647,7 +647,7 @@ func TestStallWatcher_Check_UnderThreshold(t *testing.T) {
 
 	w := &stallWatcher{
 		outputPath: path,
-		lastGrowth: time.Now(), // just now — under threshold
+		lastGrowth: time.Now(), // REAL-TIME: just now — under threshold
 		onStall:    func(summary, tail string) { t.Error("should not stall under threshold") },
 	}
 
@@ -666,7 +666,7 @@ func TestStallWatcher_Check_CancelledAfterPrompt(t *testing.T) {
 
 	w := &stallWatcher{
 		outputPath: path,
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
 	}
 	w.cancelled.Store(true)
@@ -765,7 +765,7 @@ func TestStreamStallWatcher_Check_OutputGrows(t *testing.T) {
 
 	w := &streamStallWatcher{
 		task:       task,
-		lastGrowth: time.Now(),
+		lastGrowth: time.Now(),  // REAL-TIME: stall threshold comparison
 		onStall:    func(summary, tail string) {},
 	}
 
@@ -780,7 +780,7 @@ func TestStreamStallWatcher_Check_OutputGrows(t *testing.T) {
 
 func TestStreamStallWatcher_Check_NilOutput(t *testing.T) {
 	t.Parallel()
-	past := time.Now().Add(-60 * time.Second)
+	past := time.Now().Add(-60 * time.Second)  // REAL-TIME: stall threshold comparison
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: nil},
 		lastGrowth: past,
@@ -815,7 +815,7 @@ func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
 
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
-		lastGrowth: time.Now(), // just now — under threshold
+		lastGrowth: time.Now(), // REAL-TIME: just now — under threshold
 		onStall:    func(summary, tail string) { t.Error("should not stall") },
 	}
 
@@ -833,7 +833,7 @@ func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
 		lastSize:   100, // force no growth
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    func(summary, tail string) { t.Error("should not stall for non-prompt") },
 	}
 
@@ -855,7 +855,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
 		lastSize:   100, // force no growth
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall: func(summary, tail string) {
 			stalled = true
 		},
@@ -878,7 +878,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
 		lastSize:   100,
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
 	}
 
@@ -896,7 +896,7 @@ func TestStreamStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 	w := &streamStallWatcher{
 		task:       &BackgroundTask{Output: output},
 		lastSize:   100,
-		lastGrowth: time.Now().Add(-60 * time.Second),
+		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
 	}
 	w.cancelled.Store(true)

@@ -259,9 +259,9 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 			name: "safe_a", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
-				startTimes = append(startTimes, time.Now())
+				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify parallel execution timing
 				return &tool.ToolResult{Data: "a"}, nil
 			},
 		},
@@ -269,9 +269,9 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 			name: "safe_b", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
-				startTimes = append(startTimes, time.Now())
+				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify parallel execution timing
 				return &tool.ToolResult{Data: "b"}, nil
 			},
 		},
@@ -280,7 +280,7 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_a", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_b", Input: json.RawMessage(`{}`)},
 	}
-	start := time.Now()
+	start := time.Now() // REAL-TIME: needed to measure elapsed time for timing assertions
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
@@ -314,9 +314,9 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 			name: "unsafe_a", isSafe: false,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
-				timestamps = append(timestamps, time.Now())
+				timestamps = append(timestamps, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify serial execution timing
 				return &tool.ToolResult{Data: "a"}, nil
 			},
 		},
@@ -324,9 +324,9 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 			name: "unsafe_b", isSafe: false,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
-				timestamps = append(timestamps, time.Now())
+				timestamps = append(timestamps, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify serial execution timing
 				return &tool.ToolResult{Data: "b"}, nil
 			},
 		},
@@ -335,7 +335,7 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "unsafe_a", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_b", Input: json.RawMessage(`{}`)},
 	}
-	start := time.Now()
+	start := time.Now() // REAL-TIME: needed to measure elapsed time for timing assertions
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
@@ -371,7 +371,7 @@ func TestConcurrentToolLoop_MixedSafeUnsafe(t *testing.T) {
 				mu.Lock()
 				order = append(order, name)
 				mu.Unlock()
-				time.Sleep(30 * time.Millisecond)
+				time.Sleep(30 * time.Millisecond) // REAL-TIME: needed to verify mixed execution ordering
 				return &tool.ToolResult{Data: name}, nil
 			},
 		}
@@ -413,7 +413,7 @@ func TestConcurrentToolLoop_ResultsInOrder(t *testing.T) {
 		"slow": &concurrentTool{
 			name: "slow", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify result ordering despite different completion times
 				return &tool.ToolResult{Data: "slow"}, nil
 			},
 		},
@@ -452,7 +452,7 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 		"Bash": &concurrentTool{
 			name: "Bash", isSafe: true,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond) // REAL-TIME: needed to test Bash error kills sibling cancellation timing
 				return nil, errors.New("command failed")
 			},
 		},
@@ -473,7 +473,7 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Bash", Input: json.RawMessage(`{"command":"bad cmd"}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "safe_tool", Input: json.RawMessage(`{}`)},
 	}
-	start := time.Now()
+	start := time.Now() // REAL-TIME: needed to measure elapsed time for timing assertions
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(evt types.QueryEvent) {})
 	elapsed := time.Since(start)
 
@@ -915,7 +915,7 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 			name: "slow", isSafe: false,
 			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
 				close(started)
-				time.Sleep(5 * time.Second)
+				time.Sleep(5 * time.Second) // REAL-TIME: long sleep to test abort path (context cancelled before completion)
 				return &tool.ToolResult{Data: "should not reach"}, nil
 			},
 		},

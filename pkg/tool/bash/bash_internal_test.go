@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -1071,15 +1072,15 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 
 	// Poll for PID to be set by the goroutine
 	var pid int
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: polling deadline
+	for time.Now().Before(deadline) {  // REAL-TIME: polling deadline
 		task.mu.Lock()
 		pid = task.PID
 		task.mu.Unlock()
 		if pid != 0 {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		runtime.Gosched()
 	}
 
 	// Cleanup: kill the task regardless of test result
@@ -1126,7 +1127,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	// Give the goroutine time to start the command.
 	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
 	// before the process even starts, so the task will be TaskCompleted here.
-	time.Sleep(100 * time.Millisecond)
+	runtime.Gosched()
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
@@ -1174,14 +1175,14 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	}
 
 	// Wait for the command to actually start
-	time.Sleep(100 * time.Millisecond)
+	runtime.Gosched()
 
 	// Cancel the parent context — simulates the query lifecycle ending.
 	// The background task should NOT be affected.
 	parentCancel()
 
 	// Give cancellation time to propagate (if it's going to)
-	time.Sleep(100 * time.Millisecond)
+	runtime.Gosched()
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {

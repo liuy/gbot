@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -23,6 +24,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestFileTokenStore_Lifecycle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -110,6 +112,7 @@ func TestFileTokenStore_Lifecycle(t *testing.T) {
 	if err := store.DeleteTokens("nonexistent"); err != nil {
 		t.Errorf("DeleteTokens nonexistent: %v", err)
 	}
+	})
 }
 
 func TestFileTokenStore_ClientConfig(t *testing.T) {
@@ -648,6 +651,7 @@ func TestRefreshAuthorization_NilRefreshFunc(t *testing.T) {
 }
 
 func TestRefreshAuthorization_TokenStillValid(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -680,9 +684,11 @@ func TestRefreshAuthorization_TokenStillValid(t *testing.T) {
 	if refreshCalled {
 		t.Error("refresh should not be called when token is still valid")
 	}
+	})
 }
 
 func TestRefreshAuthorization_RefreshSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -729,9 +735,11 @@ func TestRefreshAuthorization_RefreshSuccess(t *testing.T) {
 	if saved.RefreshToken != "new-refresh" {
 		t.Errorf("saved RefreshToken = %q, want %q", saved.RefreshToken, "new-refresh")
 	}
+	})
 }
 
 func TestRefreshAuthorization_InvalidGrant(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -765,9 +773,11 @@ func TestRefreshAuthorization_InvalidGrant(t *testing.T) {
 	if saved.RefreshToken != "" {
 		t.Errorf("RefreshToken should be cleared, got %q", saved.RefreshToken)
 	}
+	})
 }
 
 func TestRefreshAuthorization_NoRefreshToken(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -790,6 +800,7 @@ func TestRefreshAuthorization_NoRefreshToken(t *testing.T) {
 	if tokens != nil {
 		t.Errorf("expected nil without refresh token, got %+v", tokens)
 	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -857,7 +868,7 @@ func TestInvalidateCredentials(t *testing.T) {
 		if err := store.WriteTokens("key", &OAuthTokenData{
 			AccessToken:  "access",
 			RefreshToken: "refresh",
-			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),	// REAL-TIME: t.Run subtests incompatible with synctest
 			ClientID:     "client",
 		}); err != nil {
 			t.Fatalf("WriteTokens: %v", err)
@@ -1110,6 +1121,7 @@ func TestMCPAuthHandler_TokensStepUp(t *testing.T) {
 }
 
 func TestMCPAuthHandler_TokensExpiredNoRefresh(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	h, store := newTestHandler(t)
 	if err := store.WriteTokens(h.ServerKey(), &OAuthTokenData{
 		AccessToken: "expired",
@@ -1125,6 +1137,7 @@ func TestMCPAuthHandler_TokensExpiredNoRefresh(t *testing.T) {
 	if got != nil {
 		t.Errorf("expected nil for expired token without refresh, got %+v", got)
 	}
+	})
 }
 
 func TestMCPAuthHandler_TokensNoData(t *testing.T) {
@@ -1434,6 +1447,7 @@ func TestRefreshLock_Concurrent(t *testing.T) {
 	wg.Add(goroutines)
 
 	acquired := make(chan int, goroutines)
+	release := make(chan struct{}) // signal goroutines to release locks
 	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
@@ -1442,10 +1456,11 @@ func TestRefreshLock_Concurrent(t *testing.T) {
 				return
 			}
 			acquired <- id
-			time.Sleep(50 * time.Millisecond)
+			<-release // wait for signal instead of sleeping
 			_ = lock.Release()
 		}(i)
 	}
+	close(release) // signal all goroutines to release
 	wg.Wait()
 	close(acquired)
 
@@ -1718,6 +1733,10 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 		TokenStore:   store,
 	}
 
+	// Use OnAuthURL to detect when the callback server is ready
+	serverReady := make(chan struct{})
+	config.OnAuthURL = func(_ string) { close(serverReady) }
+
 	// Start flow in background
 	errChan := make(chan error, 1)
 	go func() {
@@ -1725,8 +1744,8 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 		errChan <- err
 	}()
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for callback server to be ready (OnAuthURL fires after server starts)
+	<-serverReady
 
 	// Cancel context
 	cancel()
@@ -1747,6 +1766,7 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 // =========================================================================
 
 func TestRevokeServerTokens_SuccessfulRevocation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	// Use https:// server to satisfy the HTTPS check in RevokeServerTokens
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/metadata" {
@@ -1802,9 +1822,11 @@ func TestRevokeServerTokens_SuccessfulRevocation(t *testing.T) {
 	if readData != nil {
 		t.Errorf("ReadTokens after revocation = %+v, want nil", readData)
 	}
+	})
 }
 
 func TestRevokeServerTokens_RevocationFailsButTokensCleaned(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/metadata" {
 			w.Header().Set("Content-Type", "application/json")
@@ -1858,9 +1880,11 @@ func TestRevokeServerTokens_RevocationFailsButTokensCleaned(t *testing.T) {
 	if readData != nil {
 		t.Errorf("ReadTokens after failed revocation = %+v, want nil", readData)
 	}
+	})
 }
 
 func TestRevokeServerTokens_WithClientCredentials(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/metadata" {
 			w.Header().Set("Content-Type", "application/json")
@@ -1912,6 +1936,7 @@ func TestRevokeServerTokens_WithClientCredentials(t *testing.T) {
 	if err != nil {
 		t.Errorf("RevokeServerTokens() = %v, want nil", err)
 	}
+	})
 }
 
 // =========================================================================
@@ -2171,6 +2196,7 @@ func TestRedirectPortRange_WindowsVsNonWindows(t *testing.T) {
 // =========================================================================
 
 func TestRefreshAuthorization_Success(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -2229,6 +2255,7 @@ func TestRefreshAuthorization_Success(t *testing.T) {
 	if updatedData.RefreshToken != "new-refresh" {
 		t.Errorf("RefreshToken in store = %s, want new-refresh", updatedData.RefreshToken)
 	}
+	})
 }
 
 // =========================================================================
@@ -2236,6 +2263,7 @@ func TestRefreshAuthorization_Success(t *testing.T) {
 // =========================================================================
 
 func TestInvalidateCredentials_WithTokenData(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewFileTokenStore(tmpDir)
 	if err != nil {
@@ -2325,6 +2353,7 @@ func TestInvalidateCredentials_WithTokenData(t *testing.T) {
 	if readData.StepUpScope != "" {
 		t.Errorf("StepUpScope after InvalidateDiscovery = %s, want empty", readData.StepUpScope)
 	}
+	})
 }
 
 // =========================================================================
@@ -2538,6 +2567,7 @@ func TestMCPAuthHandler_CodeVerifierGetter(t *testing.T) {
 }
 
 func TestMCPAuthHandler_TokensGetter(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -2581,6 +2611,7 @@ func TestMCPAuthHandler_TokensGetter(t *testing.T) {
 	if tokens.TokenType != "Bearer" {
 		t.Errorf("TokenType = %s, want Bearer", tokens.TokenType)
 	}
+	})
 }
 
 // =========================================================================
@@ -2588,6 +2619,7 @@ func TestMCPAuthHandler_TokensGetter(t *testing.T) {
 // =========================================================================
 
 func TestMCPAuthHandler_SaveTokensEdgeCases(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -2625,6 +2657,7 @@ func TestMCPAuthHandler_SaveTokensEdgeCases(t *testing.T) {
 	if tokenData.ExpiresAt < expectedExpiry-1000 || tokenData.ExpiresAt > expectedExpiry+1000 {
 		t.Errorf("ExpiresAt = %d, want approximately %d", tokenData.ExpiresAt, expectedExpiry)
 	}
+	})
 }
 
 // =========================================================================
@@ -3112,10 +3145,12 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
 	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
 
+	serverReady := make(chan struct{})
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
+		OnAuthURL:    func(_ string) { close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3124,7 +3159,7 @@ func TestPerformMCPOAuthFlow_ErrorCallback(t *testing.T) {
 		errChan <- err
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	<-serverReady
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?error=access_denied&error_description=User+denied+access", port))
 	if err != nil {
@@ -3164,10 +3199,12 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 	_ = os.Setenv("MCP_OAUTH_CALLBACK_PORT", fmt.Sprintf("%d", port))
 	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
 
+	serverReady := make(chan struct{})
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
+		OnAuthURL:    func(_ string) { close(serverReady) },
 	}
 
 	errChan := make(chan error, 1)
@@ -3176,7 +3213,7 @@ func TestPerformMCPOAuthFlow_StateMismatch(t *testing.T) {
 		errChan <- err
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	<-serverReady
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/callback?code=some-code&state=wrong-state", port))
 	if err != nil {
@@ -3256,11 +3293,15 @@ func TestPerformMCPOAuthFlow_OnAuthURL(t *testing.T) {
 	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
 
 	var authURLCalled string
+	authURLReady := make(chan struct{})
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
-		OnAuthURL:    func(u string) { authURLCalled = u },
+		OnAuthURL: func(u string) {
+			authURLCalled = u
+			close(authURLReady)
+		},
 	}
 
 	errChan := make(chan error, 1)
@@ -3269,7 +3310,8 @@ func TestPerformMCPOAuthFlow_OnAuthURL(t *testing.T) {
 		errChan <- err
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Wait for OnAuthURL callback to fire (server is ready)
+	<-authURLReady
 	cancel()
 
 	<-errChan
@@ -3312,6 +3354,7 @@ func TestRefreshAuthorization_ReadTokensError(t *testing.T) {
 // --- RefreshAuthorization: transient error retry succeeds (line 643) ---
 
 func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	origSleep := authBackoffSleep
 	authBackoffSleep = func(d time.Duration) {} // instant for testing
 	defer func() { authBackoffSleep = origSleep }()
@@ -3353,11 +3396,13 @@ func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2 (1 transient + 1 success)", callCount)
 	}
+	})
 }
 
 // --- RefreshAuthorization: transient error retry exhausted (line 646) ---
 
 func TestRefreshAuthorization_TransientRetryExhausted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	origSleep := authBackoffSleep
 	authBackoffSleep = func(d time.Duration) {} // instant for testing
 	defer func() { authBackoffSleep = origSleep }()
@@ -3387,11 +3432,13 @@ func TestRefreshAuthorization_TransientRetryExhausted(t *testing.T) {
 	if tokens != nil {
 		t.Errorf("expected nil tokens after exhausted retries, got %+v", tokens)
 	}
+	})
 }
 
 // --- RefreshAuthorization: refreshFunc returns nil tokens (line 649-651) ---
 
 func TestRefreshAuthorization_RefreshReturnsNil(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3414,11 +3461,13 @@ func TestRefreshAuthorization_RefreshReturnsNil(t *testing.T) {
 	if tokens != nil {
 		t.Errorf("expected nil when refreshFunc returns nil, got %+v", tokens)
 	}
+	})
 }
 
 // --- RefreshAuthorization: WriteTokens error during save (line 660-661) ---
 
 func TestRefreshAuthorization_SaveError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows")
 	}
@@ -3451,6 +3500,7 @@ func TestRefreshAuthorization_SaveError(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to save refreshed tokens") {
 		t.Errorf("error = %v, want 'failed to save refreshed tokens'", err)
 	}
+	})
 }
 
 // --- RefreshAuthorization: no ExpiresAt (line 608) ---
@@ -3839,6 +3889,7 @@ func TestFindAvailablePort_FallbackOccupied(t *testing.T) {
 // --- MCPAuthHandler.Tokens: proactive refresh with refreshFunc (lines 1239-1261) ---
 
 func TestMCPAuthHandler_Tokens_ProactiveRefresh(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3883,11 +3934,13 @@ func TestMCPAuthHandler_Tokens_ProactiveRefresh(t *testing.T) {
 	if tokens.AccessToken != "refreshed-access" {
 		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "refreshed-access")
 	}
+	})
 }
 
 // --- MCPAuthHandler.Tokens: refresh already in progress (line 1259-1260) ---
 
 func TestMCPAuthHandler_Tokens_RefreshInProgress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3924,11 +3977,13 @@ func TestMCPAuthHandler_Tokens_RefreshInProgress(t *testing.T) {
 	if tokens.AccessToken != "expiring" {
 		t.Errorf("AccessToken = %q, want %q (current token when refresh in progress)", tokens.AccessToken, "expiring")
 	}
+	})
 }
 
 // --- MCPAuthHandler.Tokens: refresh returns nil, falls through (line 1256-1258) ---
 
 func TestMCPAuthHandler_Tokens_RefreshReturnsNil(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -3962,11 +4017,13 @@ func TestMCPAuthHandler_Tokens_RefreshReturnsNil(t *testing.T) {
 	if tokens.AccessToken != "expiring" {
 		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expiring")
 	}
+	})
 }
 
 // --- MCPAuthHandler.Tokens: step-up with all scopes already present ---
 
 func TestMCPAuthHandler_Tokens_StepUpAlreadyHasScopes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4001,6 +4058,7 @@ func TestMCPAuthHandler_Tokens_StepUpAlreadyHasScopes(t *testing.T) {
 	if tokens.AccessToken != "access" {
 		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "access")
 	}
+	})
 }
 
 // --- MCPAuthHandler.Tokens: ReadTokens error (line 1200-1201) ---
@@ -4029,6 +4087,7 @@ func TestMCPAuthHandler_Tokens_ReadError(t *testing.T) {
 // --- MCPAuthHandler.Tokens: expired with refresh token but no refreshFunc (line 1234-1262) ---
 
 func TestMCPAuthHandler_Tokens_ExpiredWithRefresh_NoRefreshFunc(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4058,6 +4117,7 @@ func TestMCPAuthHandler_Tokens_ExpiredWithRefresh_NoRefreshFunc(t *testing.T) {
 	if tokens.AccessToken != "expired-access" {
 		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expired-access")
 	}
+	})
 }
 
 // --- MCPAuthHandler.SaveTokens: ReadTokens error (line 1278-1279) ---
@@ -4220,6 +4280,7 @@ func TestMCPAuthHandler_DiscoveryState_NilDiscoveryStateInTokenData(t *testing.T
 // --- MCPAuthHandler.RefreshWithLock: token still valid (line 1368-1379) ---
 
 func TestMCPAuthHandler_RefreshWithLock_TokenStillValid(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4259,6 +4320,7 @@ func TestMCPAuthHandler_RefreshWithLock_TokenStillValid(t *testing.T) {
 	if refreshCalled {
 		t.Error("refreshFunc should not be called when token is still valid")
 	}
+	})
 }
 
 // --- MCPAuthHandler.RefreshWithLock: ReadTokens error (line 1365-1366) ---
@@ -4369,11 +4431,15 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 	defer func() { _ = os.Unsetenv("MCP_OAUTH_CALLBACK_PORT") }()
 
 	var capturedAuthURL string
+	serverReady := make(chan struct{})
 	config := OAuthFlowConfig{
 		ServerName:   "test-server",
 		ServerConfig: &SSEConfig{URL: "http://example.com/mcp"},
 		TokenStore:   store,
-		OnAuthURL:    func(u string) { capturedAuthURL = u },
+		OnAuthURL: func(u string) {
+			capturedAuthURL = u
+			close(serverReady)
+		},
 	}
 
 	resultChan := make(chan *OAuthFlowResult, 1)
@@ -4387,7 +4453,7 @@ func TestPerformMCPOAuthFlow_SuccessfulCodeCallback(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	<-serverReady
 
 	// We don't know the generated state, so we can't send a valid code.
 	// Instead, test by sending a callback that triggers the code path.
@@ -4548,6 +4614,7 @@ func TestRevokeServerTokens_BothTokensEmpty(t *testing.T) {
 // --- RefreshAuthorization: invalid_grant with WriteTokens error (line 636-638) ---
 
 func TestRefreshAuthorization_InvalidGrant_WriteTokensError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows")
 	}
@@ -4580,6 +4647,7 @@ func TestRefreshAuthorization_InvalidGrant_WriteTokensError(t *testing.T) {
 	if tokens != nil {
 		t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
 	}
+	})
 }
 
 // --- RevokeServerTokens: non-HTTPS metadata URL (line 997-998) ---
@@ -4656,6 +4724,7 @@ func TestRevokeToken_401NoAccessToken_NoRetry(t *testing.T) {
 // --- RefreshAuthorization: non-transient error returns immediately (line 646) ---
 
 func TestRefreshAuthorization_NonTransientErrorNoRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4686,11 +4755,13 @@ func TestRefreshAuthorization_NonTransientErrorNoRetry(t *testing.T) {
 	if callCount != 1 {
 		t.Errorf("callCount = %d, want 1 (no retry for non-transient)", callCount)
 	}
+	})
 }
 
 // --- RefreshAuthorization: new refresh token is saved (line 655-657) ---
 
 func TestRefreshAuthorization_RefreshTokenSavedOnSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileTokenStore(dir)
 	if err != nil {
@@ -4748,6 +4819,7 @@ func TestRefreshAuthorization_RefreshTokenSavedOnSuccess(t *testing.T) {
 	if saved.ExpiresAt <= 0 {
 		t.Errorf("saved ExpiresAt = %d, want positive", saved.ExpiresAt)
 	}
+	})
 }
 
 // --- FindAvailablePort: fallback port used when random ports exhausted (line 428-429) ---
@@ -4950,6 +5022,7 @@ func TestRedirectPortRange_AllPlatforms(t *testing.T) {
 // --- RefreshAuthorization: exponential backoff between retries (Step 1) ---
 
 func TestRefreshAuthorization_ExponentialBackoff(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
 	// Record sleep durations instead of actually sleeping
 	var delays []time.Duration
 	origSleep := authBackoffSleep
@@ -5005,6 +5078,7 @@ func TestRefreshAuthorization_ExponentialBackoff(t *testing.T) {
 	if delays[1] != 2000*time.Millisecond {
 		t.Errorf("delay[1] = %v, want 2s", delays[1])
 	}
+	})
 }
 
 func TestRefreshAuthorization_NoBackoffOnNonTransient(t *testing.T) {
@@ -5016,12 +5090,12 @@ func TestRefreshAuthorization_NoBackoffOnNonTransient(t *testing.T) {
 	if err := store.WriteTokens("key", &OAuthTokenData{
 		AccessToken:  "old",
 		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),	// REAL-TIME: needed for elapsed time measurement in NoBackoffOnNonTransient
 	}); err != nil {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	start := time.Now()
+	start := time.Now()	// REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
 	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
 		return nil, fmt.Errorf("permission denied")
 	})
@@ -5051,12 +5125,12 @@ func TestRefreshAuthorization_NoBackoffOnSuccess(t *testing.T) {
 	if err := store.WriteTokens("key", &OAuthTokenData{
 		AccessToken:  "old",
 		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),	// REAL-TIME: needed for elapsed time measurement in NoBackoffOnSuccess
 	}); err != nil {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	start := time.Now()
+	start := time.Now()	// REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
 	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
 		return &OAuthTokens{
 			AccessToken:  "new-token",
@@ -5257,12 +5331,14 @@ func TestExchangeAuthCode_500Error(t *testing.T) {
 }
 
 func TestExchangeAuthCode_CancelledContext(t *testing.T) {
+	respond := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
+		<-respond // block until signaled (test will cancel context first)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"access_token":"tok","token_type":"Bearer"}`)
 	}))
 	defer server.Close()
+	defer close(respond) // unblock server on cleanup
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

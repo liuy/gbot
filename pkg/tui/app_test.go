@@ -355,7 +355,7 @@ func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
 	app := newTestApp(mp)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for progress bar elapsed time during streaming simulation
 
 	// Step 1: notification arrives while streaming (Path A — ignored)
 	model, cmd := app.Update(notificationPendingMsg{})
@@ -828,7 +828,7 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for elapsed time display in streaming progress line
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
 	v := app.View()
@@ -2165,8 +2165,7 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
 
 	cmd := app.readEvents()
-	// Wait briefly for events to flow through Hub → TUIHandler → appCh
-	time.Sleep(100 * time.Millisecond)
+	// readEvents() blocks on appCh, so it waits for the hub goroutine to dispatch
 	msg := cmd()
 	// Should be either textDeltaMsg or queryEndMsg
 	switch msg.(type) {
@@ -2407,7 +2406,7 @@ func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for spinner animation timing during stream
 
 	// Receive text chunks
 	app.Update(textDeltaMsg{Text: "Hello "})
@@ -2445,7 +2444,7 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now().Add(-2 * time.Second)
+	app.progressStart = time.Now().Add(-2 * time.Second) // REAL-TIME: needed for elapsed time in completed stats line
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("response text")
 
@@ -2481,7 +2480,7 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for thinking state timing display
 
 	// Thinking starts
 	app.Update(thinkingStartMsg{})
@@ -2999,7 +2998,7 @@ func TestApp_View_StreamingToolBlink(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for tool blink progress display
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
 	app.toolBlink = true
@@ -3154,7 +3153,7 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
 
 	// Set pendingToolStart BEFORE calling Update so it's available synchronously
-	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond)
+	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond) // REAL-TIME: needed for tool elapsed time calculation
 
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
@@ -3187,7 +3186,7 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	// Simulate: user submits first query
 	app.repl.AddUserMessage("first query")
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-2 * time.Second)
+	app.progressStart = time.Now().Add(-2 * time.Second) // REAL-TIME: needed for stats scroll timing
 
 	// Streaming: assistant response
 	app.repl.AppendTextItem()
@@ -3254,7 +3253,7 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 
 	app.repl.AddUserMessage("hi")
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for stats block timing in message
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello back")
 	app.status.usage.InputTokens = 50
@@ -3295,7 +3294,7 @@ func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for stats line timing after stream complete
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello")
 
@@ -3344,7 +3343,7 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	app.height = 20 // small height to trigger scrolling (maxLines = 17)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for expanded tool view timing
 
 	// Tool with long output
 	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`)
@@ -3456,7 +3455,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for commit timing in tool collapse state
 	app.status.usage.InputTokens = 10
 	app.status.usage.OutputTokens = 5
 
@@ -3552,7 +3551,7 @@ func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
 	app.height = 15 // small height → maxLines = 12
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for truncation timing in assistant text preservation
 
 	// Tool with long output (takes many lines)
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
@@ -3594,7 +3593,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for commit preserves collapse state timing
 	app.status.usage.InputTokens = 10
 	app.status.usage.OutputTokens = 5
 
@@ -3634,7 +3633,7 @@ func TestApp_Scroll_WindowLimitsContent(t *testing.T) {
 	// Add 20 lines of plain text (not tool output, to avoid per-tool truncation)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for scroll window content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
 	app.markViewportDirty()
 
@@ -3668,7 +3667,7 @@ func TestApp_Scroll_AutoScrollToBottom(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for auto-scroll elapsed time display
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
 	app.markViewportDirty()
 
@@ -3695,7 +3694,7 @@ func TestApp_Scroll_PageUpPageDown(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for scroll page up/down content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -3730,7 +3729,7 @@ func TestApp_Scroll_MouseWheel(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for mouse wheel scroll content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 	_ = app.View()
@@ -3760,7 +3759,7 @@ func TestApp_Scroll_ResetOnSubmit(t *testing.T) {
 	// Add long content and scroll up
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for scroll reset on submit timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 	_ = app.View()
@@ -3804,7 +3803,7 @@ func TestApp_Scroll_IndicatorPosition(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for scroll indicator position timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -3843,7 +3842,7 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	// Create content where scrollTotal is just over maxContentLines.
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for scroll page number calculation timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 10))
 	app.markViewportDirty()
 
@@ -3875,7 +3874,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	// At bottom (offset=13): midLine=16, old formula 16/6+1=3 (wrong, should be 4)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for last page number correctness timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 19))
 	app.markViewportDirty()
 
@@ -3891,7 +3890,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	app2.height = 12
 	app2.repl.StartQuery()
 	app2.spinner.Start()
-	app2.progressStart = time.Now()
+	app2.progressStart = time.Now() // REAL-TIME: needed for second app instance page number timing
 	app2.repl.AppendChunk(strings.Repeat("line\n", 13))
 	app2.markViewportDirty()
 
@@ -3915,7 +3914,7 @@ func TestApp_Scroll_HalfPageScroll(t *testing.T) {
 	// 30 lines → 5 pages (viewLines=6)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for half-page scroll timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -3968,7 +3967,7 @@ func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
 	// Add short content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for short content scroll state timing
 	app.repl.AppendChunk("short response")
 	app.markViewportDirty()
 
@@ -3999,7 +3998,7 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	// Bug: userScrolled = 0>0 = false → View() auto-scrolls back.
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for PgUp overshoot userScrolled detection timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 9))
 	app.markViewportDirty()
 	_ = app.View() // populate scrollTotal
@@ -4037,7 +4036,7 @@ func TestApp_ProgressLine_NoTools(t *testing.T) {
 	app.height = 24
 	app.repl.streaming = true
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for progress line with no tools
 
 	v := app.View()
 	if strings.Contains(v, "tool") && strings.Contains(v, "tokens") {
@@ -4053,7 +4052,7 @@ func TestApp_ProgressLine_OneTool(t *testing.T) {
 	app.height = 24
 	app.repl.streaming = true
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for progress line with one tool
 
 	// Simulate one tool started
 	app.repl.toolCount = 1
@@ -4074,7 +4073,7 @@ func TestApp_ProgressLine_ThreeTools(t *testing.T) {
 	app.height = 24
 	app.repl.streaming = true
 	app.spinner.Start()
-	app.progressStart = time.Now()
+	app.progressStart = time.Now() // REAL-TIME: needed for progress line with three tools
 
 	// Simulate three tools started
 	app.repl.toolCount = 3
@@ -4231,7 +4230,7 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for query end context update elapsed time
 
 	// Simulate API response with 26000 tokens
 	app.updateRepl(usageMsg{InputTokens: 26000, OutputTokens: 100})
@@ -5087,7 +5086,7 @@ func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for blocking limit error timing
 
 	// Simulate blocking limit error from engine
 	app.updateRepl(queryEndMsg{
@@ -5122,7 +5121,7 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for engine total usage stats timing
 
 	// Simulate streaming: TUI sees per-turn values (overwritten each turn).
 	// Turn 1: 10k input, 500 output
@@ -5321,7 +5320,7 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for streaming abort error timing
 
 	// Simulate query end with streaming-phase AbortError
 	abortErr := &engine.AbortError{Phase: "streaming", Err: context.Canceled}
@@ -5351,7 +5350,7 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Now().Add(-1 * time.Second)
+	app.progressStart = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for tools abort error timing
 
 	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
 	app.updateRepl(queryEndMsg{Err: abortErr})
@@ -6041,7 +6040,7 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 
 	parentToolID := "tool-fork-parent-1"
 	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
-	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-2 * time.Second)
+	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-2 * time.Second) // REAL-TIME: needed for fork agent parent elapsed time
 
 	// Set parent as background (simulates toolEndMsg with IsBackground=true)
 	tcv := app.repl.findToolView(parentToolID)
@@ -6098,7 +6097,7 @@ func TestApp_QueryEndMsg_ForkAgent_ErrorMarksParentDone(t *testing.T) {
 
 	parentToolID := "tool-fork-err-1"
 	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
-	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-1 * time.Second)
+	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for fork agent error elapsed time
 
 	tcv := app.repl.findToolView(parentToolID)
 	tcv.IsBackground = true
@@ -6140,7 +6139,7 @@ func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
 	// Set up two independent fork agents
 	for _, id := range []string{"tool-fork-a", "tool-fork-b"} {
 		app.repl.PendingToolStarted(id, "Agent", "fork", "{}")
-		app.repl.pendingToolStart[id] = time.Now().Add(-1 * time.Second)
+		app.repl.pendingToolStart[id] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for multiple fork agents elapsed time
 		tcv := app.repl.findToolView(id)
 		tcv.IsBackground = true
 		app.repl.updateToolBlock(id, tcv)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/types"
@@ -167,9 +166,10 @@ func TestAdapter_GetCompleted(t *testing.T) {
 func TestAdapter_GetRunning(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
+	blockCh := make(chan struct{})
 	state, _ := reg.Spawn(context.Background(),
 		func(ctx context.Context) (*types.SubQueryResult, error) {
-			time.Sleep(5 * time.Second)
+			<-blockCh // block until test has read the status
 			return &types.SubQueryResult{Content: "slow"}, nil
 		},
 		nil, "slow task", "call_1",
@@ -187,6 +187,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 		t.Errorf("Output = %q, want empty for running task", info.Output)
 	}
 
+	close(blockCh) // unblock the goroutine
 	reg.Cancel(state.ID) // cleanup
 }
 

@@ -12,12 +12,16 @@ import (
 
 // mockRegistry implements Registry for testing.
 type mockRegistry struct {
-	mu    sync.Mutex
-	tasks map[string]*JobInfo
+	mu       sync.Mutex
+	tasks    map[string]*JobInfo
+	notifyCh chan string // signals when a task becomes terminal
 }
 
 func newMockRegistry() *mockRegistry {
-	return &mockRegistry{tasks: make(map[string]*JobInfo)}
+	return &mockRegistry{
+		tasks:    make(map[string]*JobInfo),
+		notifyCh: make(chan string, 16),
+	}
 }
 
 func (m *mockRegistry) Get(id string) (*JobInfo, bool) {
@@ -56,23 +60,43 @@ func (m *mockRegistry) List() []*JobInfo {
 }
 
 func (m *mockRegistry) Wait(id string) (int, error) {
-	// Poll until terminal
-	for range 50 {
-		m.mu.Lock()
-		t, ok := m.tasks[id]
-		if !ok {
-			m.mu.Unlock()
-			return -1, fmt.Errorf("not found: %s", id)
-		}
-		if isTerminal(t.Status) {
-			code := t.ExitCode
-			m.mu.Unlock()
-			return code, nil
-		}
+	// Check if already terminal
+	m.mu.Lock()
+	t, ok := m.tasks[id]
+	if !ok {
 		m.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
+		return -1, fmt.Errorf("not found: %s", id)
 	}
-	return -1, fmt.Errorf("timeout waiting for task %s", id)
+	if isTerminal(t.Status) {
+		code := t.ExitCode
+		m.mu.Unlock()
+		return code, nil
+	}
+	m.mu.Unlock()
+
+	// Wait for notification that a task became terminal
+	for {
+		select {
+		case notifiedID := <-m.notifyCh:
+			if notifiedID != id {
+				continue
+			}
+			m.mu.Lock()
+			t, ok := m.tasks[id]
+			if !ok {
+				m.mu.Unlock()
+				return -1, fmt.Errorf("not found: %s", id)
+			}
+			if isTerminal(t.Status) {
+				code := t.ExitCode
+				m.mu.Unlock()
+				return code, nil
+			}
+			m.mu.Unlock()
+		case <-time.After(5 * time.Second):
+			return -1, fmt.Errorf("timeout waiting for task %s", id)
+		}
+	}
 }
 
 func (m *mockRegistry) add(info *JobInfo) {
@@ -140,14 +164,14 @@ func TestJobOutput_BlockWait(t *testing.T) {
 		Command: "sleep 1",
 	})
 
-	// Complete the task after a short delay
+	// Complete the task and notify the Wait channel
 	go func() {
-		time.Sleep(200 * time.Millisecond)
 		reg.mu.Lock()
 		reg.tasks["bg-2"].Status = "completed"
 		reg.tasks["bg-2"].Output = "done\n"
 		reg.tasks["bg-2"].ExitCode = 0
 		reg.mu.Unlock()
+		reg.notifyCh <- "bg-2"
 	}()
 
 	tl := NewJobOutput(reg)

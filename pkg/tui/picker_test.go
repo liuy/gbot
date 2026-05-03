@@ -24,17 +24,17 @@ func TestSessionItem_Label(t *testing.T) {
 		want string
 	}{
 		{
-			SessionItem{SessionID: "abcdefgh-1234", Title: "My Session", UpdatedAt: time.Now()},
+			SessionItem{SessionID: "abcdefgh-1234", Title: "My Session", UpdatedAt: time.Now()},  // REAL-TIME: relativeTime display
 			func() string {
 				return fmt.Sprintf("%-20s %s", "My Session", "just now")
 			}(),
 		},
 		{
-			SessionItem{SessionID: "abcdefgh-1234", Title: "", UpdatedAt: time.Now()},
+			SessionItem{SessionID: "abcdefgh-1234", Title: "", UpdatedAt: time.Now()},  // REAL-TIME: relativeTime display
 			"abcdefgh             just now",
 		},
 		{
-			SessionItem{SessionID: "ab", Title: "", UpdatedAt: time.Now()},
+			SessionItem{SessionID: "ab", Title: "", UpdatedAt: time.Now()},  // REAL-TIME: relativeTime display
 			fmt.Sprintf("%-20s %s", "ab", "just now"),
 		},
 	}
@@ -174,8 +174,8 @@ func TestDialog_QKeyCancel(t *testing.T) {
 
 func TestDialog_View(t *testing.T) {
 	items := helperSessionItems([]SessionItem{
-		{SessionID: "s1", Title: "First", UpdatedAt: time.Now()},
-		{SessionID: "s2", Title: "Second", UpdatedAt: time.Now()},
+		{SessionID: "s1", Title: "First", UpdatedAt: time.Now()},  // REAL-TIME: relativeTime display
+		{SessionID: "s2", Title: "Second", UpdatedAt: time.Now()},  // REAL-TIME: relativeTime display
 	})
 	p := NewListPicker("Test Title", items)
 	view := p.View()
@@ -220,11 +220,11 @@ func TestRelativeTime(t *testing.T) {
 		t    time.Time
 		want string
 	}{
-		{"just now", time.Now().Add(-30 * time.Second), "just now"},
-		{"minutes ago", time.Now().Add(-5 * time.Minute), "5m ago"},
-		{"hours ago", time.Now().Add(-3 * time.Hour), "3h ago"},
-		{"yesterday", time.Now().Add(-30 * time.Hour), "yesterday"},
-		{"days ago", time.Now().Add(-72 * time.Hour), "3d ago"},
+		{"just now", time.Now().Add(-30 * time.Second), "just now"},  // REAL-TIME: relativeTime display
+		{"minutes ago", time.Now().Add(-5 * time.Minute), "5m ago"},  // REAL-TIME: relativeTime display
+		{"hours ago", time.Now().Add(-3 * time.Hour), "3h ago"},  // REAL-TIME: relativeTime display
+		{"yesterday", time.Now().Add(-30 * time.Hour), "yesterday"},  // REAL-TIME: relativeTime display
+		{"days ago", time.Now().Add(-72 * time.Hour), "3d ago"},  // REAL-TIME: relativeTime display
 	}
 
 	for _, tc := range tests {

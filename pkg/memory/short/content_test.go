@@ -141,7 +141,7 @@ func TestExtractTextFromJSON_Content(t *testing.T) {
 }
 
 func TestFilterUnresolvedToolUses(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name     string
@@ -223,7 +223,7 @@ func TestFilterUnresolvedToolUses(t *testing.T) {
 }
 
 func TestFilterOrphanedThinking(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name     string
@@ -375,7 +375,7 @@ func TestHasOnlyWhitespaceTextContent(t *testing.T) {
 }
 
 func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name          string
@@ -448,7 +448,7 @@ func TestFilterWhitespaceOnlyAssistant(t *testing.T) {
 }
 
 func TestMergeUserMessages(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name  string
@@ -630,7 +630,7 @@ func TestContentBlockToolResult(t *testing.T) {
 }
 
 func TestMergeUserMessages_NilMessages(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name string
@@ -668,7 +668,7 @@ func TestMergeUserMessages_NilMessages(t *testing.T) {
 }
 
 func TestFilterWhitespaceOnlyAssistant_WithMerge(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	// Test that adjacent user messages are properly merged after filtering
 	messages := []*TranscriptMessage{
@@ -712,7 +712,7 @@ func TestFilterWhitespaceOnlyAssistant_WithMerge(t *testing.T) {
 }
 
 func TestFilterOrphanedThinking_EdgeCases(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name     string
@@ -757,7 +757,7 @@ func TestFilterOrphanedThinking_EdgeCases(t *testing.T) {
 }
 
 func TestFilterUnresolvedToolUses_EdgeCases(t *testing.T) {
-	now := time.Now()
+	now := time.Now() // REAL-TIME: deterministic timestamp for test data
 
 	tests := []struct {
 		name     string

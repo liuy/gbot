@@ -229,7 +229,7 @@ func TestPendingToolDone_PerceivesHigherElapsed(t *testing.T) {
 	s := freshState()
 	s.PendingToolStarted("t1", "Bash", "ls", "{}")
 	// Wait a tiny bit so perceived > reported elapsed
-	time.Sleep(5 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond) // REAL-TIME: needed to test perceived elapsed time measurement
 	s.PendingToolDone("t1", "ok", false, 1*time.Nanosecond)
 
 	msgs := s.Messages()
@@ -932,7 +932,7 @@ func TestQueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}")
-	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second)
+	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second)  // REAL-TIME: pending tool start time
 
 	// Set parent as background
 	tcv := s.findToolView("tool-bg-1")

@@ -65,7 +65,7 @@ func TestTUIHandler_Coalescing_FlushesOnTimeWindow(t *testing.T) {
 	}
 
 	// Wait for the 100ms window to pass
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond) // REAL-TIME: waiting for TUIHandler's internal coalescing timer (100ms window)
 
 	// Send another text_delta — should trigger flush (window elapsed)
 	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "there"})
@@ -814,23 +814,29 @@ func TestIntegration_HubEventQueryEndNoQueryEndMsg(t *testing.T) {
 	// Simulate engine abort: hub dispatches EventQueryEnd
 	h.Dispatch(hub.Event{Type: types.EventQueryEnd})
 
-	// Wait for hub goroutine to dispatch
-	time.Sleep(20 * time.Millisecond)
-
-	// Drain appCh — should find queryEndMsg (sole completion signal)
+	// Drain appCh with timeout — should find queryEndMsg (sole completion signal)
+	// Poll until we get the event or timeout
 	found := false
-	for {
+	timeout := time.After(2 * time.Second)
+	for !found {
 		select {
 		case msg := <-handler.appCh:
 			if _, ok := msg.(queryEndMsg); ok {
 				found = true
 			}
-		default:
-			if !found {
-				t.Error("appCh should contain queryEndMsg from hub's EventQueryEnd")
-			}
-			return
+		case <-timeout:
+			t.Fatal("timed out waiting for queryEndMsg from hub dispatch")
 		}
+	}
+	if !found {
+		t.Error("appCh should contain queryEndMsg from hub's EventQueryEnd")
+	}
+
+	// Verify nothing else remains in the channel
+	select {
+	case <-handler.appCh:
+		t.Error("appCh should be empty after consuming queryEndMsg")
+	default:
 	}
 }
 

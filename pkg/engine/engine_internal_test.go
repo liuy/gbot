@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,20 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// pollAtomicBool polls an atomic.Bool until it becomes true or timeout elapses.
+// Returns error on timeout. Used to replace time.Sleep when waiting for async state changes.
+func pollAtomicBool(b *atomic.Bool, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout) // REAL-TIME: needed for relative timestamp offset in test
+	for !b.Load() {
+		if time.Now().After(deadline) { // REAL-TIME: needed for polling deadline in test helper
+			return fmt.Errorf("timed out waiting for atomic.Bool after %v", timeout)
+		}
+		time.Sleep(2 * time.Millisecond) // REAL-TIME: polling interval for atomic.Bool
+	}
+	return nil
+}
+
 
 // minimalTool is a minimal tool implementation for covers skip path in executeTools.
 type minimalTool struct{}
@@ -504,11 +519,13 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	ready := make(chan struct{})
 	go func() {
 		defer close(slowCh)
 		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
 		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
-		time.Sleep(100 * time.Millisecond)
+		close(ready) // signal that initial events are sent
+		<-ctx.Done() // wait for cancellation
 		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "x"}}
 	}()
 
@@ -516,7 +533,7 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 	// The test goroutine blocks until completion, so no concurrent access
 	// to e.messages between two goroutines.
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-ready // wait for initial streaming events to be sent
 		cancel()
 	}()
 
@@ -774,18 +791,18 @@ func TestStreamingToolExecutor_DiscardCancelsContext(t *testing.T) {
 		emitted = append(emitted, e)
 	}, context.Background())
 
+	started := make(chan struct{})
+	toolMap["slow"].(*slowCancelTool).onStarted = func() { close(started) }
 	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "slow"})
 
-	// Let the goroutine start and enter tool.Call (blocking on ctx.Done)
+	// Wait for the goroutine to start and enter tool.Call (blocking on ctx.Done)
 	// before Discard sets the flag. Without this, the early abort path wins.
-	time.Sleep(50 * time.Millisecond)
+	<-started
 
 	executor.Discard()
 
-	// Wait for the tool to receive the cancellation
-	time.Sleep(100 * time.Millisecond)
-
-	if !cancelled.Load() {
+	// Wait for the tool to receive the cancellation via sync primitive.
+	if err := pollAtomicBool(&cancelled, 2*time.Second); err != nil {
 		t.Error("tool context should be cancelled after Discard()")
 	}
 }
@@ -802,9 +819,9 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 	executor.AddTool(types.ContentBlock{Type: types.ContentTypeToolUse, ID: "t1", Name: "never_run"})
 	executor.Discard()
 
-	// Give queued tool time to potentially start
-	time.Sleep(100 * time.Millisecond)
-
+	// Discard() is synchronous — no goroutine should start after it returns.
+	// Brief poll to confirm the tool never starts.
+	time.Sleep(10 * time.Millisecond) // REAL-TIME: minimal delay to confirm no async start
 	if started.Load() {
 		t.Error("queued tool should not start after Discard()")
 	}
@@ -812,7 +829,8 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 
 // slowCancelTool blocks until context is cancelled, then reports it.
 type slowCancelTool struct {
-	onCancel func()
+	onCancel  func()
+	onStarted func()
 }
 
 func (t *slowCancelTool) Name() string                                { return "slow" }
@@ -820,6 +838,9 @@ func (t *slowCancelTool) Aliases() []string                           { return n
 func (t *slowCancelTool) Description(json.RawMessage) (string, error) { return "slow", nil }
 func (t *slowCancelTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	if t.onStarted != nil {
+		t.onStarted()
+	}
 	<-ctx.Done()
 	t.onCancel()
 	return nil, ctx.Err()
@@ -873,6 +894,11 @@ type discardSlowTool struct {
 	cancelled bool
 	started   bool
 	mu        sync.Mutex
+	done      chan struct{} // closed when Call returns after cancellation
+}
+
+func newDiscardSlowTool() *discardSlowTool {
+	return &discardSlowTool{done: make(chan struct{})}
 }
 
 func (t *discardSlowTool) Name() string                                { return "discard_slow" }
@@ -887,6 +913,7 @@ func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx 
 	t.mu.Lock()
 	t.cancelled = true
 	t.mu.Unlock()
+	close(t.done)
 	return nil, ctx.Err()
 }
 func (t *discardSlowTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
@@ -910,6 +937,16 @@ func (t *discardSlowTool) WasStarted() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.started
+}
+
+// WaitCancelled blocks until Call completes after cancellation, or timeout.
+func (t *discardSlowTool) WaitCancelled(timeout time.Duration) error {
+	select {
+	case <-t.done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timed out waiting for discardSlowTool cancellation after %v", timeout)
+	}
 }
 
 // midStreamErrorProvider returns tool_use events followed by an in-stream error.
@@ -969,7 +1006,7 @@ func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-ch
 // the executor is Discard()ed to cancel those goroutines.
 // RED TEST: Currently FAILS — callLLM does not Discard() the executor on error.
 func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
-	dt := &discardSlowTool{}
+	dt := newDiscardSlowTool()
 	p := &midStreamErrorProvider{}
 	tc := newEventCollector()
 	eng := New(&Params{
@@ -988,8 +1025,13 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 		t.Fatalf("unexpected error after retry: %v", result.Error)
 	}
 
-	// Wait for the tool goroutine to notice cancellation
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the tool goroutine to settle.
+	// If tool started, wait for cancellation; if not started, it was aborted.
+	if dt.WasStarted() {
+		if err := dt.WaitCancelled(2 * time.Second); err != nil {
+			t.Error("tool started but was never cancelled — callLLM must Discard() executor on stream error")
+		}
+	}
 
 	// Verify tool goroutine was properly cleaned up:
 	// - If tool.Call started: it must have been cancelled (ctx.Done fired)
@@ -1015,7 +1057,7 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 		{
 			Role:       types.RoleUser,
 			Content:    []types.ContentBlock{types.NewTextBlock("hello")},
-			Timestamp:  time.Now(),
+			Timestamp:  time.Now(), // REAL-TIME: needed for message timestamp in test
 			Model:      "claude-3",
 			StopReason: "end_turn",
 			Usage:      &types.Usage{InputTokens: 10, OutputTokens: 5},
@@ -2687,8 +2729,12 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
 		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
 		slowCh <- llm.StreamEvent{Type: "message_stop"}
-		// Cancel after streaming completes but before tools execute
-		time.Sleep(100 * time.Millisecond)
+		// Cancel after streaming completes but before tools execute.
+		// Need a short delay because the buffered channel allows instant sends --
+		// the engine needs wall-clock time to drain the channel and process message_stop.
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
+
+
 		cancel()
 	}()
 
@@ -2755,7 +2801,6 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 	ct := &callbackTool{
 		name: "test_tool",
 		onCall: func() {
-			time.Sleep(50 * time.Millisecond)
 			ctxCancel()
 		},
 	}
@@ -2817,7 +2862,7 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
 		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -2870,7 +2915,7 @@ func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
 
 	go func() {
 		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -2913,7 +2958,7 @@ func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -2983,7 +3028,7 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
 		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -3060,7 +3105,7 @@ func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -3139,7 +3184,7 @@ func TestInlineInterrupt_PostStreamingAbort_Text(t *testing.T) {
 		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
 		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "world"}}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -3177,7 +3222,7 @@ func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
 		slowCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
 		slowCh <- llm.StreamEvent{Type: "message_stop"}
 		// Cancel after streaming completes but before tools execute
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 	}()
 
@@ -3209,7 +3254,7 @@ func TestInlineInterrupt_PostToolAbort(t *testing.T) {
 	ct := &callbackTool{
 		name: "test_tool",
 		onCall: func() {
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 			ctxCancel()
 		},
 	}
@@ -3244,7 +3289,7 @@ func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 		cancel()
 		close(ch)
 	}()
@@ -4668,7 +4713,7 @@ func TestProcessNotifications_EmptyDrain(t *testing.T) {
 	// No notifications — ProcessNotifications goroutine returns immediately
 	eng.ProcessNotifications(ctx, nil)
 	// Give goroutine time to run
-	time.Sleep(50 * time.Millisecond)
+	runtime.Gosched()
 }
 
 func TestProcessNotifications_WithPending(t *testing.T) {

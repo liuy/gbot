@@ -67,7 +67,7 @@ func TestCleanupOldSessions(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	// Set mtime to past
-	oldTime := time.Now().Add(-48 * time.Hour)
+	oldTime := time.Now().Add(-48 * time.Hour)  // REAL-TIME: filesystem mtime comparison
 	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestCleanupOldSessions(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	cutoff := time.Now().Add(-24 * time.Hour)
+	cutoff := time.Now().Add(-24 * time.Hour)  // REAL-TIME: filesystem mtime comparison
 	cleaned, err := CleanupOldSessions(cutoff)
 	if err != nil {
 		t.Fatalf("CleanupOldSessions: %v", err)
@@ -104,7 +104,7 @@ func TestCleanupOldSessions_NoDir(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 	ResetDirCache()
 
-	cleaned, err := CleanupOldSessions(time.Now())
+	cleaned, err := CleanupOldSessions(time.Now())  // REAL-TIME: filesystem mtime comparison
 	if err != nil {
 		t.Fatalf("CleanupOldSessions with no sessions dir: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestCleanupOldSessions_WithNonDirEntry(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	cleaned, err := CleanupOldSessions(time.Now())
+	cleaned, err := CleanupOldSessions(time.Now())  // REAL-TIME: filesystem mtime comparison
 	if err != nil {
 		t.Fatalf("CleanupOldSessions: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCleanupOldSessions_WithNonDirEntry(t *testing.T) {
 func TestCleanupOldSessions_HomeError(t *testing.T) {
 	// Trigger os.UserHomeDir error (cleanup.go:33-35)
 	t.Setenv("HOME", "")
-	_, err := CleanupOldSessions(time.Now())
+	_, err := CleanupOldSessions(time.Now())  // REAL-TIME: filesystem mtime comparison
 	if err == nil {
 		t.Fatal("expected error when HOME is invalid")
 	}
@@ -163,7 +163,7 @@ func TestCleanupOldSessions_ReadDirError(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := CleanupOldSessions(time.Now())
+	_, err := CleanupOldSessions(time.Now())  // REAL-TIME: filesystem mtime comparison
 	if err == nil {
 		t.Fatal("expected error when sessions dir is a file")
 	}
@@ -185,14 +185,14 @@ func TestCleanupOldSessions_RemoveAllFailure(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	// Set mtime to past
-	oldTime := time.Now().Add(-48 * time.Hour)
+	oldTime := time.Now().Add(-48 * time.Hour)  // REAL-TIME: filesystem mtime comparison
 	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
 
 	// Make the sessions dir read-only to potentially interfere with RemoveAll
 	// This is a best-effort test - on some systems root can still delete
-	cutoff := time.Now().Add(-24 * time.Hour)
+	cutoff := time.Now().Add(-24 * time.Hour)  // REAL-TIME: filesystem mtime comparison
 	cleaned, err := CleanupOldSessions(cutoff)
 	if err != nil {
 		t.Fatalf("CleanupOldSessions: %v", err)
@@ -214,7 +214,7 @@ func TestCleanupOldSessions_SessionWithoutToolResults(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	cleaned, err := CleanupOldSessions(time.Now())
+	cleaned, err := CleanupOldSessions(time.Now())  // REAL-TIME: filesystem mtime comparison
 	if err != nil {
 		t.Fatalf("CleanupOldSessions: %v", err)
 	}
