@@ -133,6 +133,7 @@ type App struct {
 
 	// Task list panel (auto-shows when tasks exist)
 	taskListFn       taskListFn       // set from main.go to read tasks for display
+	autoResetFn      func() bool      // checked every render; returns true if reset happened
 	taskListCache    string           // rendered task list, rebuilt when dirty
 	taskListDirty    bool
 	killAllFn        func()           // set from main.go to kill all background tasks
@@ -213,6 +214,12 @@ func (a *App) SetInitialContext(usedTokens, contextWindow int) {
 func (a *App) SetTaskListFn(fn taskListFn) {
 	a.taskListFn = fn
 	a.taskListDirty = true
+}
+
+// SetAutoResetFn sets a function checked every render cycle.
+// Returns true when auto-reset triggers, forcing the task list cache to rebuild.
+func (a *App) SetAutoResetFn(fn func() bool) {
+	a.autoResetFn = fn
 }
 
 // SetKillAllFn sets the callback to kill all background tasks on double-press Escape.
@@ -397,6 +404,10 @@ func (a *App) View() string {
 	var taskPanel string
 	var taskPanelLines int
 	if a.taskListFn != nil {
+		// Auto-reset: checked every render cycle, bypasses cache.
+		if a.autoResetFn != nil && a.autoResetFn() {
+			a.taskListDirty = true
+		}
 		if a.taskListDirty {
 			a.taskListCache = a.renderTaskList()
 			a.taskListDirty = false

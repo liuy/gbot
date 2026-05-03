@@ -4,6 +4,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/liuy/gbot/pkg/tool/tasks"
 )
 
 func newTaskTestApp() *App {
@@ -156,4 +160,109 @@ func TestApp_TaskListAutoHide_NoTasks(t *testing.T) {
 	if strings.Contains(view, "[ ]") {
 		t.Errorf("View should not contain task panel when no tasks, got:\n%s", view)
 	}
+}
+
+func TestApp_TaskListAutoReset_E2E(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		taskList := tasks.NewList(dir)
+
+		// Create and complete 2 tasks.
+		_, _ = taskList.CreateTask("task 1", "", "", nil)
+		_, _ = taskList.CreateTask("task 2", "", "", nil)
+		completed := tasks.StatusCompleted
+		_, _, _ = taskList.UpdateTask("1", tasks.TaskUpdates{Status: &completed})
+		_, _, _ = taskList.UpdateTask("2", tasks.TaskUpdates{Status: &completed})
+
+		app := newTaskTestApp()
+		app.width = 80
+		app.height = 24
+		app.SetTaskListFn(func() []TaskSummary {
+			if taskList.ShouldResetCompleted(5 * time.Second) {
+				_ = taskList.ResetCompleted()
+				return nil
+			}
+			allTasks, _ := taskList.ListTasks()
+			var result []TaskSummary
+			for _, t := range allTasks {
+				result = append(result, TaskSummary{
+					ID:      t.ID,
+					Subject: t.Subject,
+					Status:  string(t.Status),
+				})
+			}
+			return result
+		})
+		app.SetAutoResetFn(func() bool {
+			if taskList.ShouldResetCompleted(5 * time.Second) {
+				_ = taskList.ResetCompleted()
+				return true
+			}
+			return false
+		})
+
+		// Render 1: tasks visible, cache populated, dirty cleared.
+		app.taskListDirty = true
+		view1 := app.View()
+		if !strings.Contains(view1, "task 1") {
+			t.Fatal("first render should show tasks")
+		}
+		// After first render, taskListDirty is false (cache is active).
+		if app.taskListDirty {
+			t.Fatal("cache should be clean after first render")
+		}
+
+		time.Sleep(5 * time.Second)
+
+		view2 := app.View()
+		if strings.Contains(view2, "task 1") {
+			t.Error("tasks should clear after 5s delay")
+		}
+	})
+}
+
+func TestApp_TaskListAutoReset_SessionResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Previous session: create and complete tasks.
+		l1 := tasks.NewList(dir)
+		_, _ = l1.CreateTask("task 1", "", "", nil)
+		_, _ = l1.CreateTask("task 2", "", "", nil)
+		completed := tasks.StatusCompleted
+		_, _, _ = l1.UpdateTask("1", tasks.TaskUpdates{Status: &completed})
+		_, _, _ = l1.UpdateTask("2", tasks.TaskUpdates{Status: &completed})
+
+		// New session: fresh List, allDoneSince lost.
+		l2 := tasks.NewList(dir)
+		app := newTaskTestApp()
+		app.width = 80
+		app.height = 24
+		app.SetAutoResetFn(func() bool {
+			if l2.ShouldResetCompleted(5 * time.Second) {
+				_ = l2.ResetCompleted()
+				return true
+			}
+			return false
+		})
+		app.SetTaskListFn(func() []TaskSummary {
+			allTasks, _ := l2.ListTasks()
+			var result []TaskSummary
+			for _, t := range allTasks {
+				result = append(result, TaskSummary{
+					ID:      t.ID,
+					Subject: t.Subject,
+					Status:  string(t.Status),
+				})
+			}
+			return result
+		})
+
+		// First render after restart: tasks should be cleared immediately.
+		app.taskListDirty = true
+		view1 := app.View()
+		if strings.Contains(view1, "task 1") {
+			t.Error("session resume should clear completed tasks immediately, not wait 5s")
+		}
+	})
 }

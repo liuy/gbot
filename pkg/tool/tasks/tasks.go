@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // TaskStatus represents the lifecycle state of a task.
@@ -68,8 +70,9 @@ const highWaterMarkFile = ".highwatermark"
 // List manages file-based task storage for a single session.
 // Source: utils/tasks.ts — module-level functions (createTask, getTask, etc.)
 type List struct {
-	mu  sync.Mutex
-	dir string // ~/.gbot/tasks/<session-id>/
+	mu           sync.Mutex
+	dir          string // ~/.gbot/tasks/<session-id>/
+	allDoneSince time.Time // Set when all tasks first become completed; used for auto-reset.
 }
 
 // NewList creates a List for the given pre-resolved directory path.
@@ -254,7 +257,93 @@ func (l *List) UpdateTask(id string, u TaskUpdates) (*Task, []string, error) {
 		}
 	}
 
+	// Trigger auto-reset check on any status change.
+	// Completing: may set allDoneSince. Uncompleting: clears it.
+	if u.Status != nil {
+		l.checkAutoReset()
+	}
+
 	return task, updatedFields, nil
+}
+
+// checkAutoReset tracks when all tasks first become completed.
+// Source: hooks/useTasksV2.ts:113-152
+func (l *List) checkAutoReset() {
+	tasks, err := l.listTasksLocked()
+	if err != nil || len(tasks) == 0 {
+		l.allDoneSince = time.Time{}
+		return
+	}
+	for _, t := range tasks {
+		if t.Status != StatusCompleted {
+			l.allDoneSince = time.Time{}
+			return
+		}
+	}
+	if l.allDoneSince.IsZero() {
+		l.allDoneSince = time.Now()
+	}
+}
+
+// ShouldResetCompleted reports whether all tasks are completed and delay has elapsed.
+// On first call, scans disk to initialize allDoneSince (handles session resume).
+// Source: hooks/useTasksV2.ts:129-136 — HIDE_DELAY_MS
+func (l *List) ShouldResetCompleted(delay time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.allDoneSince.IsZero() {
+		tasks, err := l.listTasksLocked()
+		if err != nil || len(tasks) == 0 {
+			return false
+		}
+		for _, t := range tasks {
+			if t.Status != StatusCompleted {
+				return false
+			}
+		}
+		// All completed on disk but allDoneSince not set — session resume.
+		// Clear immediately instead of starting a new countdown.
+		slog.Info("tasks: auto-reset from disk state", "count", len(tasks))
+		return true
+	}
+	return time.Since(l.allDoneSince) >= delay
+}
+
+// ResetCompleted deletes all task files after re-validating all are completed.
+// Source: utils/tasks.ts:147-188 — resetTaskList
+func (l *List) ResetCompleted() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	tasks, err := l.listTasksLocked()
+	if err != nil || len(tasks) == 0 {
+		return nil
+	}
+	for _, t := range tasks {
+		if t.Status != StatusCompleted {
+			return nil
+		}
+	}
+
+	highest, _ := l.findHighestTaskID()
+	if highest > 0 {
+		_ = l.writeHighWaterMark(highest)
+	}
+
+	slog.Info("tasks: auto-reset deleting completed tasks", "count", len(tasks), "highestID", highest)
+
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			_ = os.Remove(filepath.Join(l.dir, e.Name()))
+		}
+	}
+
+	l.allDoneSince = time.Time{}
+	return nil
 }
 
 // DeleteTask deletes a task and cascades cleanup of block references.

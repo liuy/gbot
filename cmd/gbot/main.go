@@ -388,6 +388,13 @@ func main() {
 		app.SetInitialContext(initialTokens, contextWindow)
 
 	// 8.6 Wire task list panel reader
+	app.SetAutoResetFn(func() bool {
+		if taskList.ShouldResetCompleted(5 * time.Second) {
+			_ = taskList.ResetCompleted()
+			return true
+		}
+		return false
+	})
 	app.SetTaskListFn(func() []tui.TaskSummary {
 		if taskList.Dir() == "" {
 			return nil

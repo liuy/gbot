@@ -138,6 +138,10 @@ type BackgroundTask struct {
 	AgentID string
 	// Notification callback — copied from registry at spawn time.
 	onNotify func(TaskNotification)
+	// evictAfter is set when the task enters a terminal state.
+	// EvictTerminal() removes tasks whose evictAfter has passed.
+	// Source: utils/task/framework.ts:213-249 — applyTaskOffsetsAndEvictions
+	evictAfter time.Time
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +434,7 @@ func (r *BackgroundTaskRegistry) Kill(id string) error {
 	task.EndTime = time.Now()
 	task.ExitCode = 128 + int(syscall.SIGKILL)
 	task.Interrupted = true
+	task.evictAfter = time.Now().Add(3 * time.Second) // Source: framework.ts:25 — STOPPED_DISPLAY_MS
 
 	// Send killed notification
 	notify := task.buildNotificationLocked("killed")
@@ -473,6 +478,7 @@ func (t *BackgroundTask) Complete(exitCode int, interrupted bool) {
 	} else {
 		t.Status = TaskFailed
 	}
+	t.evictAfter = time.Now().Add(3 * time.Second) // Source: framework.ts:25 — STOPPED_DISPLAY_MS
 
 	// Flush output
 	// Source: LocalShellTask.tsx:224 — flushAndCleanup(shellCommand)
@@ -647,4 +653,18 @@ func (r *BackgroundTaskRegistry) Remove(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tasks, id)
+}
+
+// EvictTerminal removes terminal tasks whose evictAfter deadline has passed.
+// Called lazily from the job adapter's List() method.
+// Source: utils/task/framework.ts:213-249 — applyTaskOffsetsAndEvictions
+func (r *BackgroundTaskRegistry) EvictTerminal() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for id, t := range r.tasks {
+		if !t.evictAfter.IsZero() && !now.Before(t.evictAfter) {
+			delete(r.tasks, id)
+		}
+	}
 }

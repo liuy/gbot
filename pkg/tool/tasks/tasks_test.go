@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // newTestList creates a List backed by a temp directory.
@@ -1548,5 +1549,355 @@ func TestAtomicWrite_RenameToNonEmptyDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rename") {
 		t.Errorf("error should mention rename, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auto-reset tests — Source: hooks/useTasksV2.ts:113-172
+// ---------------------------------------------------------------------------
+
+func TestCheckAutoReset_AllCompleted_SetsTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	_, _ = l.CreateTask("task 2", "", "", nil)
+
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+	_, _, _ = l.UpdateTask("2", TaskUpdates{Status: &completed})
+
+	if l.allDoneSince.IsZero() {
+		t.Error("allDoneSince should be set when all tasks completed")
+	}
+}
+
+func TestCheckAutoReset_NotAllCompleted_NoTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	_, _ = l.CreateTask("task 2", "", "", nil)
+
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+	// task 2 still pending
+
+	if !l.allDoneSince.IsZero() {
+		t.Error("allDoneSince should be zero when not all completed")
+	}
+}
+
+func TestCheckAutoReset_NewTaskNotAffectedByStaleTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+
+	if l.allDoneSince.IsZero() {
+		t.Fatal("expected allDoneSince to be set")
+	}
+
+	_, _ = l.CreateTask("task 2", "", "", nil)
+
+	err := l.ResetCompleted()
+	if err != nil {
+		t.Fatalf("ResetCompleted: %v", err)
+	}
+
+	tasks, _ := l.ListTasks()
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 tasks (reset blocked by pending task), got %d", len(tasks))
+	}
+}
+
+func TestShouldResetCompleted_ReturnsFalseWhenNotAllDone(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	if l.ShouldResetCompleted(0) {
+		t.Error("empty list should not trigger reset")
+	}
+}
+
+func TestShouldResetCompleted_ReturnsFalseWithinDelay(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+
+	if l.ShouldResetCompleted(10 * time.Second) {
+		t.Error("should not reset within delay period")
+	}
+}
+
+func TestShouldResetCompleted_ReturnsTrueAfterDelay(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+
+	l.mu.Lock()
+	l.allDoneSince = time.Now().Add(-10 * time.Second)
+	l.mu.Unlock()
+
+	if !l.ShouldResetCompleted(5 * time.Second) {
+		t.Error("should return true after delay has elapsed")
+	}
+}
+
+func TestResetCompleted_DeletesAllFiles(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	_, _ = l.CreateTask("task 2", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+	_, _, _ = l.UpdateTask("2", TaskUpdates{Status: &completed})
+
+	err := l.ResetCompleted()
+	if err != nil {
+		t.Fatalf("ResetCompleted failed: %v", err)
+	}
+
+	tasks, _ := l.ListTasks()
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks after reset, got %d", len(tasks))
+	}
+
+	if _, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("tasks dir should still exist: %v", err)
+	}
+	mark, _ := l.readHighWaterMark()
+	if mark < 2 {
+		t.Errorf("high water mark should be >= 2, got %d", mark)
+	}
+}
+
+func TestResetCompleted_NotAllCompleted_NoDelete(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	_, _ = l.CreateTask("task 2", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+	// task 2 still pending
+
+	err := l.ResetCompleted()
+	if err != nil {
+		t.Fatalf("ResetCompleted failed: %v", err)
+	}
+
+	tasks, _ := l.ListTasks()
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 tasks (not all completed), got %d", len(tasks))
+	}
+}
+
+func TestResetCompleted_EmptyList_NoError(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	err := l.ResetCompleted()
+	if err != nil {
+		t.Fatalf("ResetCompleted on empty list should not error: %v", err)
+	}
+}
+
+func TestResetCompleted_IDNotReused(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+
+	_ = l.ResetCompleted()
+
+	id, err := l.CreateTask("task 2", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask after reset: %v", err)
+	}
+	if id != "2" {
+		t.Errorf("expected ID 2 after reset (HWM preserved), got %q", id)
+	}
+}
+
+// TestAutoResetIntegration exercises the full auto-reset lifecycle.
+// Flow: create tasks → complete all → fake time elapsed → ShouldResetCompleted → ResetCompleted → verify cleanup.
+func TestAutoResetIntegration(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	// 1. Create 3 tasks.
+	_, err := l.CreateTask("design API", "write API spec", "Designing API", nil)
+	if err != nil {
+		t.Fatalf("CreateTask 1: %v", err)
+	}
+	_, err = l.CreateTask("implement", "write code", "Implementing", nil)
+	if err != nil {
+		t.Fatalf("CreateTask 2: %v", err)
+	}
+	_, err = l.CreateTask("write tests", "unit + integration", "Writing tests", nil)
+	if err != nil {
+		t.Fatalf("CreateTask 3: %v", err)
+	}
+
+	// 2. Complete all tasks — triggers checkAutoReset via UpdateTask.
+	completed := StatusCompleted
+	for _, id := range []string{"1", "2", "3"} {
+		task, updatedFields, err := l.UpdateTask(id, TaskUpdates{Status: &completed})
+		if err != nil {
+			t.Fatalf("UpdateTask %s: %v", id, err)
+		}
+		if task.Status != StatusCompleted {
+			t.Errorf("task %s should be completed, got %s", id, task.Status)
+		}
+		if !slices.Contains(updatedFields, "status") {
+			t.Errorf("task %s should report status in updatedFields", id)
+		}
+	}
+
+	// 3. Should not reset immediately (delay not elapsed).
+	if l.ShouldResetCompleted(5 * time.Second) {
+		t.Error("should not reset immediately after all completed")
+	}
+
+	// 4. Fake time elapsed: set allDoneSince to 6s ago.
+	l.mu.Lock()
+	l.allDoneSince = time.Now().Add(-6 * time.Second)
+	l.mu.Unlock()
+
+	if !l.ShouldResetCompleted(5 * time.Second) {
+		t.Error("should return true after 6s delay elapsed")
+	}
+
+	// 5. ResetCompleted — should delete all task files.
+	err = l.ResetCompleted()
+	if err != nil {
+		t.Fatalf("ResetCompleted: %v", err)
+	}
+
+	// 6. Verify all task files deleted.
+	tasks, err := l.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks after reset: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks after reset, got %d", len(tasks))
+	}
+
+	// 7. Verify high water mark preserved (next task gets ID 4, not 1).
+	id, err := l.CreateTask("new task", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask after reset: %v", err)
+	}
+	if id != "4" {
+		t.Errorf("expected ID 4 after reset (HWM preserved), got %q", id)
+	}
+
+	// 8. Verify allDoneSince was cleared — new incomplete task means no auto-reset.
+	if l.ShouldResetCompleted(0) {
+		t.Error("new incomplete task should prevent reset")
+	}
+}
+
+// TestAutoResetIntegration_PendingTaskBlocksReset verifies ResetCompleted re-validates
+// and refuses to delete when a pending task exists (TOCTOU protection).
+func TestAutoResetIntegration_PendingTaskBlocksReset(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	// Create and complete 1 task.
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+
+	// Fake time elapsed.
+	l.mu.Lock()
+	l.allDoneSince = time.Now().Add(-10 * time.Second)
+	l.mu.Unlock()
+
+	// Add a new pending task (doesn't trigger checkAutoReset, so allDoneSince stays set).
+	_, err := l.CreateTask("task 2", "", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// ShouldResetCompleted may return true (timestamp is old),
+	// but ResetCompleted re-validates all tasks are completed under lock.
+	if l.ShouldResetCompleted(5 * time.Second) {
+		err := l.ResetCompleted()
+		if err != nil {
+			t.Fatalf("ResetCompleted: %v", err)
+		}
+		tasks, _ := l.ListTasks()
+		if len(tasks) != 2 {
+			t.Errorf("expected 2 tasks (reset blocked by pending), got %d", len(tasks))
+		}
+	}
+}
+
+// TestAutoResetIntegration_UncompleteCancelsReset verifies that uncompleting a task
+// cancels the auto-reset (checkAutoReset clears allDoneSince on any status change).
+func TestAutoResetIntegration_UncompleteCancelsReset(t *testing.T) {
+	dir := t.TempDir()
+	l := NewList(dir)
+
+	// Create and complete 2 tasks.
+	_, _ = l.CreateTask("task 1", "", "", nil)
+	_, _ = l.CreateTask("task 2", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
+	_, _, _ = l.UpdateTask("2", TaskUpdates{Status: &completed})
+
+	// Uncomplete task 1 — checkAutoReset should clear allDoneSince.
+	pending := StatusPending
+	_, _, err := l.UpdateTask("1", TaskUpdates{Status: &pending})
+	if err != nil {
+		t.Fatalf("UpdateTask uncomplete: %v", err)
+	}
+
+	// Should not reset even with zero delay — allDoneSince was cleared.
+	if l.ShouldResetCompleted(0) {
+		t.Error("should not reset after uncompleting a task")
+	}
+}
+
+func TestAutoReset_SessionResume(t *testing.T) {
+	dir := t.TempDir()
+
+	l1 := NewList(dir)
+	_, _ = l1.CreateTask("task 1", "", "", nil)
+	_, _ = l1.CreateTask("task 2", "", "", nil)
+	completed := StatusCompleted
+	_, _, _ = l1.UpdateTask("1", TaskUpdates{Status: &completed})
+	_, _, _ = l1.UpdateTask("2", TaskUpdates{Status: &completed})
+
+	tasks, _ := l1.ListTasks()
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks on disk, got %d", len(tasks))
+	}
+
+	// Restart: fresh List, allDoneSince is zero.
+	l2 := NewList(dir)
+
+	// Session resume: all completed on disk → should return true immediately.
+	if !l2.ShouldResetCompleted(5 * time.Second) {
+		t.Error("session resume with all completed tasks should return true immediately")
+	}
+
+	_ = l2.ResetCompleted()
+	tasks2, _ := l2.ListTasks()
+	if len(tasks2) != 0 {
+		t.Errorf("expected 0 tasks after reset, got %d", len(tasks2))
 	}
 }

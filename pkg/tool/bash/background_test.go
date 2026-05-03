@@ -2,15 +2,16 @@ package bash
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
-	"errors"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool/job"
-	"time"
 )
 
 func TestNewBackgroundTaskRegistry(t *testing.T) {
@@ -1355,4 +1356,149 @@ func TestJobInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
 	if !errors.Is(err, job.ErrNotFound) {
 		t.Errorf("Wait should wrap job.ErrNotFound for MultiRegistry dispatch, got: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// EvictTerminal tests
+// ---------------------------------------------------------------------------
+
+func TestEvictTerminal_RemovesExpiredTasks(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+	task := reg.Spawn("sleep 1", 0, nil)
+	task.Complete(0, false)
+
+	// Manually set evictAfter to past
+	task.mu.Lock()
+	task.evictAfter = time.Now().Add(-1 * time.Second)
+	task.mu.Unlock()
+
+	reg.EvictTerminal()
+
+	if _, ok := reg.Get(task.ID); ok {
+		t.Error("expired task should be evicted")
+	}
+}
+
+func TestEvictTerminal_KeepsRunningTasks(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+	task := reg.Spawn("sleep 60", 0, nil)
+	// Running task — evictAfter is zero
+
+	reg.EvictTerminal()
+
+	if _, ok := reg.Get(task.ID); !ok {
+		t.Error("running task should not be evicted")
+	}
+}
+
+func TestEvictTerminal_KeepsTasksWithinGrace(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+	task := reg.Spawn("sleep 1", 0, nil)
+	task.Complete(0, false)
+
+	// evictAfter is set to ~3s in future by Complete()
+	reg.EvictTerminal()
+
+	if _, ok := reg.Get(task.ID); !ok {
+		t.Error("task within grace period should not be evicted")
+	}
+}
+
+func TestEvictTerminal_KillSetsEvictAfter(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+	task := reg.Spawn("sleep 60", 0, nil)
+
+	if err := reg.Kill(task.ID); err != nil {
+		t.Fatalf("Kill failed: %v", err)
+	}
+
+	task.mu.Lock()
+	evict := task.evictAfter
+	task.mu.Unlock()
+
+	if evict.IsZero() {
+		t.Error("Kill should set evictAfter")
+	}
+	if time.Until(evict) < 2*time.Second {
+		t.Error("evictAfter should be ~3s in the future")
+	}
+}
+
+func TestEvictTerminal_CompleteSetsEvictAfter(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+	task := reg.Spawn("sleep 1", 0, nil)
+
+	task.Complete(0, false)
+
+	task.mu.Lock()
+	evict := task.evictAfter
+	task.mu.Unlock()
+
+	if evict.IsZero() {
+		t.Error("Complete should set evictAfter")
+	}
+	if time.Until(evict) < 2*time.Second {
+		t.Error("evictAfter should be ~3s in the future")
+	}
+}
+
+func TestEvictTerminal_MultipleTasks(t *testing.T) {
+	reg := NewBackgroundTaskRegistry()
+
+	expired := reg.Spawn("echo 1", 0, nil)
+	expired.Complete(0, false)
+	expired.mu.Lock()
+	expired.evictAfter = time.Now().Add(-1 * time.Second)
+	expired.mu.Unlock()
+
+	fresh := reg.Spawn("echo 2", 0, nil)
+	fresh.Complete(0, false)
+	// fresh task has evictAfter ~3s in future
+
+	running := reg.Spawn("sleep 60", 0, nil)
+
+	reg.EvictTerminal()
+
+	if _, ok := reg.Get(expired.ID); ok {
+		t.Error("expired task should be evicted")
+	}
+	if _, ok := reg.Get(fresh.ID); !ok {
+		t.Error("fresh completed task should remain")
+	}
+	if _, ok := reg.Get(running.ID); !ok {
+		t.Error("running task should remain")
+	}
+}
+
+func TestAdapter_List_E2E_Eviction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		reg := NewBackgroundTaskRegistry()
+		adapter := NewJobInfoAdapter(reg)
+
+		task := reg.Spawn("echo hello", 0, NewStreamingOutput(nil))
+		task.Complete(0, false)
+
+		// Before 3s: task still visible via adapter.
+		list1 := adapter.List()
+		if len(list1) != 1 {
+			t.Fatalf("before 3s: expected 1 task, got %d", len(list1))
+		}
+		if list1[0].Status != "completed" {
+			t.Errorf("before 3s: expected completed, got %s", list1[0].Status)
+		}
+
+		// Advance fake clock by 3s.
+		time.Sleep(3 * time.Second)
+
+		// After 3s: adapter.List() triggers EvictTerminal -> task gone.
+		list2 := adapter.List()
+		if len(list2) != 0 {
+			t.Errorf("after 3s: expected 0 tasks, got %d", len(list2))
+		}
+
+		// Direct Get also confirms eviction.
+		if _, ok := reg.Get(task.ID); ok {
+			t.Error("task should be evicted from registry after 3s")
+		}
+	})
 }
