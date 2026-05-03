@@ -1359,10 +1359,10 @@ func TestJobInfoAdapter_WaitNotFound_WrapsErrNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// EvictTerminal tests
+// CleanupCompleted tests
 // ---------------------------------------------------------------------------
 
-func TestEvictTerminal_RemovesExpiredTasks(t *testing.T) {
+func TestCleanupCompleted_RemovesExpiredTasks(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 	task := reg.Spawn("sleep 1", 0, nil)
 	task.Complete(0, false)
@@ -1372,39 +1372,39 @@ func TestEvictTerminal_RemovesExpiredTasks(t *testing.T) {
 	task.evictAfter = time.Now().Add(-1 * time.Second)
 	task.mu.Unlock()
 
-	reg.EvictTerminal()
+	reg.CleanupCompleted()
 
 	if _, ok := reg.Get(task.ID); ok {
 		t.Error("expired task should be evicted")
 	}
 }
 
-func TestEvictTerminal_KeepsRunningTasks(t *testing.T) {
+func TestCleanupCompleted_KeepsRunningTasks(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 	task := reg.Spawn("sleep 60", 0, nil)
 	// Running task — evictAfter is zero
 
-	reg.EvictTerminal()
+	reg.CleanupCompleted()
 
 	if _, ok := reg.Get(task.ID); !ok {
 		t.Error("running task should not be evicted")
 	}
 }
 
-func TestEvictTerminal_KeepsTasksWithinGrace(t *testing.T) {
+func TestCleanupCompleted_KeepsTasksWithinGrace(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 	task := reg.Spawn("sleep 1", 0, nil)
 	task.Complete(0, false)
 
 	// evictAfter is set to ~3s in future by Complete()
-	reg.EvictTerminal()
+	reg.CleanupCompleted()
 
 	if _, ok := reg.Get(task.ID); !ok {
 		t.Error("task within grace period should not be evicted")
 	}
 }
 
-func TestEvictTerminal_KillSetsEvictAfter(t *testing.T) {
+func TestCleanupCompleted_KillSetsEvictAfter(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 	task := reg.Spawn("sleep 60", 0, nil)
 
@@ -1424,7 +1424,7 @@ func TestEvictTerminal_KillSetsEvictAfter(t *testing.T) {
 	}
 }
 
-func TestEvictTerminal_CompleteSetsEvictAfter(t *testing.T) {
+func TestCleanupCompleted_CompleteSetsEvictAfter(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 	task := reg.Spawn("sleep 1", 0, nil)
 
@@ -1442,7 +1442,7 @@ func TestEvictTerminal_CompleteSetsEvictAfter(t *testing.T) {
 	}
 }
 
-func TestEvictTerminal_MultipleTasks(t *testing.T) {
+func TestCleanupCompleted_MultipleTasks(t *testing.T) {
 	reg := NewBackgroundTaskRegistry()
 
 	expired := reg.Spawn("echo 1", 0, nil)
@@ -1457,7 +1457,7 @@ func TestEvictTerminal_MultipleTasks(t *testing.T) {
 
 	running := reg.Spawn("sleep 60", 0, nil)
 
-	reg.EvictTerminal()
+	reg.CleanupCompleted()
 
 	if _, ok := reg.Get(expired.ID); ok {
 		t.Error("expired task should be evicted")
@@ -1490,7 +1490,7 @@ func TestAdapter_List_E2E_Eviction(t *testing.T) {
 		// Advance fake clock by 3s.
 		time.Sleep(3 * time.Second)
 
-		// After 3s: adapter.List() triggers EvictTerminal -> task gone.
+		// After 3s: adapter.List() triggers CleanupCompleted -> task gone.
 		list2 := adapter.List()
 		if len(list2) != 0 {
 			t.Errorf("after 3s: expected 0 tasks, got %d", len(list2))

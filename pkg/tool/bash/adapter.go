@@ -41,7 +41,7 @@ func (a *JobInfoAdapter) Kill(id string) error {
 
 // List returns all tasks.
 func (a *JobInfoAdapter) List() []*job.JobInfo {
-	a.reg.EvictTerminal() // Lazy cleanup — matches ForkAgentRegistry pattern
+	a.reg.CleanupCompleted() // Lazy cleanup — matches ForkAgentRegistry pattern
 	tasks := a.reg.List()
 	result := make([]*job.JobInfo, len(tasks))
 	for i, bt := range tasks {

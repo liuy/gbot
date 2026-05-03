@@ -140,7 +140,7 @@ type BackgroundTask struct {
 	// Notification callback — copied from registry at spawn time.
 	onNotify func(TaskNotification)
 	// evictAfter is set when the task enters a terminal state.
-	// EvictTerminal() removes tasks whose evictAfter has passed.
+	// CleanupCompleted() removes tasks whose evictAfter has passed.
 	// Source: utils/task/framework.ts:213-249 — applyTaskOffsetsAndEvictions
 	evictAfter time.Time
 }
@@ -656,10 +656,10 @@ func (r *BackgroundTaskRegistry) Remove(id string) {
 	delete(r.tasks, id)
 }
 
-// EvictTerminal removes terminal tasks whose evictAfter deadline has passed.
+// CleanupCompleted removes terminal tasks whose evictAfter deadline has passed.
 // Called lazily from the job adapter's List() method.
 // Source: utils/task/framework.ts:213-249 — applyTaskOffsetsAndEvictions
-func (r *BackgroundTaskRegistry) EvictTerminal() {
+func (r *BackgroundTaskRegistry) CleanupCompleted() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
@@ -671,6 +671,6 @@ func (r *BackgroundTaskRegistry) EvictTerminal() {
 		}
 	}
 	if len(evicted) > 0 {
-		slog.Info("bash: evicted terminal background jobs", "count", len(evicted), "ids", evicted)
+		slog.Info("bash: cleaned up completed jobs", "count", len(evicted), "ids", evicted)
 	}
 }

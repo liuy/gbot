@@ -285,10 +285,10 @@ func (l *List) checkAutoReset() {
 	}
 }
 
-// ShouldResetCompleted reports whether all tasks are completed and delay has elapsed.
+// ShouldCleanupCompleted reports whether all tasks are completed and delay has elapsed.
 // On first call, scans disk to initialize allDoneSince (handles session resume).
 // Source: hooks/useTasksV2.ts:129-136 — HIDE_DELAY_MS
-func (l *List) ShouldResetCompleted(delay time.Duration) bool {
+func (l *List) ShouldCleanupCompleted(delay time.Duration) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.allDoneSince.IsZero() {
@@ -303,15 +303,15 @@ func (l *List) ShouldResetCompleted(delay time.Duration) bool {
 		}
 		// All completed on disk but allDoneSince not set — session resume.
 		// Clear immediately instead of starting a new countdown.
-		slog.Info("tasks: auto-reset from disk state", "count", len(tasks))
+		slog.Info("tasks: cleaned up completed tasks from disk state", "count", len(tasks))
 		return true
 	}
 	return time.Since(l.allDoneSince) >= delay
 }
 
-// ResetCompleted deletes all task files after re-validating all are completed.
+// CleanupCompleted deletes all task files after re-validating all are completed.
 // Source: utils/tasks.ts:147-188 — resetTaskList
-func (l *List) ResetCompleted() error {
+func (l *List) CleanupCompleted() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -330,7 +330,7 @@ func (l *List) ResetCompleted() error {
 		_ = l.writeHighWaterMark(highest)
 	}
 
-	slog.Info("tasks: auto-reset deleting completed tasks", "count", len(tasks), "highestID", highest)
+	slog.Info("tasks: cleaned up completed tasks", "count", len(tasks), "highestID", highest)
 
 	entries, err := os.ReadDir(l.dir)
 	if err != nil {

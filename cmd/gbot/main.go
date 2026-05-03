@@ -131,9 +131,9 @@ func main() {
 	agenttool.InitLoader(workingDir)
 	bashJobReg := bash.NewJobInfoAdapter(bash.DefaultRegistry())
 	forkJobReg := agentTool.JobAdapter()
-	compositeJobReg := job.NewMultiRegistry(bashJobReg, forkJobReg)
-	reg.MustRegister(job.NewJobOutput(compositeJobReg))
-	reg.MustRegister(job.NewJobStop(compositeJobReg))
+	jobReg := job.NewMultiRegistry(bashJobReg, forkJobReg)
+	reg.MustRegister(job.NewJobOutput(jobReg))
+	reg.MustRegister(job.NewJobStop(jobReg))
 
 	// 3.4 Register task list tools (dir resolved later when sessionID is available).
 	taskList := tasklist.NewList("")
@@ -388,9 +388,12 @@ func main() {
 		app.SetInitialContext(initialTokens, contextWindow)
 
 	// 8.6 Wire task list panel reader
-	app.SetAutoResetFn(func() bool {
-		if taskList.ShouldResetCompleted(5 * time.Second) {
-			_ = taskList.ResetCompleted()
+	app.SetAutoCleanupFn(func() bool {
+		// Clean up terminal jobs from bash and fork agent registries.
+		jobReg.CleanupCompleted()
+		// Clean up completed tasks if 5s has elapsed (or session resume).
+		if taskList.ShouldCleanupCompleted(5 * time.Second) {
+			_ = taskList.CleanupCompleted()
 			return true
 		}
 		return false
@@ -436,9 +439,9 @@ func main() {
 		return result
 	})
 	app.SetKillAllFn(func() {
-		for _, t := range compositeJobReg.List() {
+		for _, t := range jobReg.List() {
 			if t.Status == "running" {
-				_ = compositeJobReg.Kill(t.ID)
+				_ = jobReg.Kill(t.ID)
 			}
 		}
 	})

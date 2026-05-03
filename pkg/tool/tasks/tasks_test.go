@@ -1602,9 +1602,9 @@ func TestCheckAutoReset_NewTaskNotAffectedByStaleTimestamp(t *testing.T) {
 
 	_, _ = l.CreateTask("task 2", "", "", nil)
 
-	err := l.ResetCompleted()
+	err := l.CleanupCompleted()
 	if err != nil {
-		t.Fatalf("ResetCompleted: %v", err)
+		t.Fatalf("CleanupCompleted: %v", err)
 	}
 
 	tasks, _ := l.ListTasks()
@@ -1613,16 +1613,16 @@ func TestCheckAutoReset_NewTaskNotAffectedByStaleTimestamp(t *testing.T) {
 	}
 }
 
-func TestShouldResetCompleted_ReturnsFalseWhenNotAllDone(t *testing.T) {
+func TestShouldCleanupCompleted_ReturnsFalseWhenNotAllDone(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
-	if l.ShouldResetCompleted(0) {
+	if l.ShouldCleanupCompleted(0) {
 		t.Error("empty list should not trigger reset")
 	}
 }
 
-func TestShouldResetCompleted_ReturnsFalseWithinDelay(t *testing.T) {
+func TestShouldCleanupCompleted_ReturnsFalseWithinDelay(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
@@ -1630,12 +1630,12 @@ func TestShouldResetCompleted_ReturnsFalseWithinDelay(t *testing.T) {
 	completed := StatusCompleted
 	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
 
-	if l.ShouldResetCompleted(10 * time.Second) {
+	if l.ShouldCleanupCompleted(10 * time.Second) {
 		t.Error("should not reset within delay period")
 	}
 }
 
-func TestShouldResetCompleted_ReturnsTrueAfterDelay(t *testing.T) {
+func TestShouldCleanupCompleted_ReturnsTrueAfterDelay(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
@@ -1647,12 +1647,12 @@ func TestShouldResetCompleted_ReturnsTrueAfterDelay(t *testing.T) {
 	l.allDoneSince = time.Now().Add(-10 * time.Second)
 	l.mu.Unlock()
 
-	if !l.ShouldResetCompleted(5 * time.Second) {
+	if !l.ShouldCleanupCompleted(5 * time.Second) {
 		t.Error("should return true after delay has elapsed")
 	}
 }
 
-func TestResetCompleted_DeletesAllFiles(t *testing.T) {
+func TestCleanupCompleted_DeletesAllFiles(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
@@ -1662,9 +1662,9 @@ func TestResetCompleted_DeletesAllFiles(t *testing.T) {
 	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
 	_, _, _ = l.UpdateTask("2", TaskUpdates{Status: &completed})
 
-	err := l.ResetCompleted()
+	err := l.CleanupCompleted()
 	if err != nil {
-		t.Fatalf("ResetCompleted failed: %v", err)
+		t.Fatalf("CleanupCompleted failed: %v", err)
 	}
 
 	tasks, _ := l.ListTasks()
@@ -1681,7 +1681,7 @@ func TestResetCompleted_DeletesAllFiles(t *testing.T) {
 	}
 }
 
-func TestResetCompleted_NotAllCompleted_NoDelete(t *testing.T) {
+func TestCleanupCompleted_NotAllCompleted_NoDelete(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
@@ -1691,9 +1691,9 @@ func TestResetCompleted_NotAllCompleted_NoDelete(t *testing.T) {
 	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
 	// task 2 still pending
 
-	err := l.ResetCompleted()
+	err := l.CleanupCompleted()
 	if err != nil {
-		t.Fatalf("ResetCompleted failed: %v", err)
+		t.Fatalf("CleanupCompleted failed: %v", err)
 	}
 
 	tasks, _ := l.ListTasks()
@@ -1702,17 +1702,17 @@ func TestResetCompleted_NotAllCompleted_NoDelete(t *testing.T) {
 	}
 }
 
-func TestResetCompleted_EmptyList_NoError(t *testing.T) {
+func TestCleanupCompleted_EmptyList_NoError(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
-	err := l.ResetCompleted()
+	err := l.CleanupCompleted()
 	if err != nil {
-		t.Fatalf("ResetCompleted on empty list should not error: %v", err)
+		t.Fatalf("CleanupCompleted on empty list should not error: %v", err)
 	}
 }
 
-func TestResetCompleted_IDNotReused(t *testing.T) {
+func TestCleanupCompleted_IDNotReused(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
 
@@ -1720,7 +1720,7 @@ func TestResetCompleted_IDNotReused(t *testing.T) {
 	completed := StatusCompleted
 	_, _, _ = l.UpdateTask("1", TaskUpdates{Status: &completed})
 
-	_ = l.ResetCompleted()
+	_ = l.CleanupCompleted()
 
 	id, err := l.CreateTask("task 2", "", "", nil)
 	if err != nil {
@@ -1732,7 +1732,7 @@ func TestResetCompleted_IDNotReused(t *testing.T) {
 }
 
 // TestAutoResetIntegration exercises the full auto-reset lifecycle.
-// Flow: create tasks → complete all → fake time elapsed → ShouldResetCompleted → ResetCompleted → verify cleanup.
+// Flow: create tasks → complete all → fake time elapsed → ShouldCleanupCompleted → CleanupCompleted → verify cleanup.
 func TestAutoResetIntegration(t *testing.T) {
 	dir := t.TempDir()
 	l := NewList(dir)
@@ -1767,7 +1767,7 @@ func TestAutoResetIntegration(t *testing.T) {
 	}
 
 	// 3. Should not reset immediately (delay not elapsed).
-	if l.ShouldResetCompleted(5 * time.Second) {
+	if l.ShouldCleanupCompleted(5 * time.Second) {
 		t.Error("should not reset immediately after all completed")
 	}
 
@@ -1776,14 +1776,14 @@ func TestAutoResetIntegration(t *testing.T) {
 	l.allDoneSince = time.Now().Add(-6 * time.Second)
 	l.mu.Unlock()
 
-	if !l.ShouldResetCompleted(5 * time.Second) {
+	if !l.ShouldCleanupCompleted(5 * time.Second) {
 		t.Error("should return true after 6s delay elapsed")
 	}
 
-	// 5. ResetCompleted — should delete all task files.
-	err = l.ResetCompleted()
+	// 5. CleanupCompleted — should delete all task files.
+	err = l.CleanupCompleted()
 	if err != nil {
-		t.Fatalf("ResetCompleted: %v", err)
+		t.Fatalf("CleanupCompleted: %v", err)
 	}
 
 	// 6. Verify all task files deleted.
@@ -1805,12 +1805,12 @@ func TestAutoResetIntegration(t *testing.T) {
 	}
 
 	// 8. Verify allDoneSince was cleared — new incomplete task means no auto-reset.
-	if l.ShouldResetCompleted(0) {
+	if l.ShouldCleanupCompleted(0) {
 		t.Error("new incomplete task should prevent reset")
 	}
 }
 
-// TestAutoResetIntegration_PendingTaskBlocksReset verifies ResetCompleted re-validates
+// TestAutoResetIntegration_PendingTaskBlocksReset verifies CleanupCompleted re-validates
 // and refuses to delete when a pending task exists (TOCTOU protection).
 func TestAutoResetIntegration_PendingTaskBlocksReset(t *testing.T) {
 	dir := t.TempDir()
@@ -1832,12 +1832,12 @@ func TestAutoResetIntegration_PendingTaskBlocksReset(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	// ShouldResetCompleted may return true (timestamp is old),
-	// but ResetCompleted re-validates all tasks are completed under lock.
-	if l.ShouldResetCompleted(5 * time.Second) {
-		err := l.ResetCompleted()
+	// ShouldCleanupCompleted may return true (timestamp is old),
+	// but CleanupCompleted re-validates all tasks are completed under lock.
+	if l.ShouldCleanupCompleted(5 * time.Second) {
+		err := l.CleanupCompleted()
 		if err != nil {
-			t.Fatalf("ResetCompleted: %v", err)
+			t.Fatalf("CleanupCompleted: %v", err)
 		}
 		tasks, _ := l.ListTasks()
 		if len(tasks) != 2 {
@@ -1867,7 +1867,7 @@ func TestAutoResetIntegration_UncompleteCancelsReset(t *testing.T) {
 	}
 
 	// Should not reset even with zero delay — allDoneSince was cleared.
-	if l.ShouldResetCompleted(0) {
+	if l.ShouldCleanupCompleted(0) {
 		t.Error("should not reset after uncompleting a task")
 	}
 }
@@ -1891,11 +1891,11 @@ func TestAutoReset_SessionResume(t *testing.T) {
 	l2 := NewList(dir)
 
 	// Session resume: all completed on disk → should return true immediately.
-	if !l2.ShouldResetCompleted(5 * time.Second) {
+	if !l2.ShouldCleanupCompleted(5 * time.Second) {
 		t.Error("session resume with all completed tasks should return true immediately")
 	}
 
-	_ = l2.ResetCompleted()
+	_ = l2.CleanupCompleted()
 	tasks2, _ := l2.ListTasks()
 	if len(tasks2) != 0 {
 		t.Errorf("expected 0 tasks after reset, got %d", len(tasks2))

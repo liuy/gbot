@@ -111,3 +111,19 @@ func (m *MultiRegistry) Wait(id string) (int, error) {
 	}
 	return -1, fmt.Errorf("wait %q: %w", id, ErrNotFound)
 }
+
+// CleanupCompleted calls CleanupCompleted on all sub-registries that implement it.
+// This is the single entry point for cleaning up terminal jobs from all registries.
+// cleanupAware is implemented by bash adapter and fork adapter.
+type cleanupAware interface {
+	CleanupCompleted()
+}
+
+// CleanupCompleted calls CleanupCompleted on all sub-registries that expose it.
+func (m *MultiRegistry) CleanupCompleted() {
+	for _, reg := range m.registries {
+		if c, ok := reg.(cleanupAware); ok {
+			c.CleanupCompleted()
+		}
+	}
+}

@@ -178,8 +178,8 @@ func TestApp_TaskListAutoReset_E2E(t *testing.T) {
 		app.width = 80
 		app.height = 24
 		app.SetTaskListFn(func() []TaskSummary {
-			if taskList.ShouldResetCompleted(5 * time.Second) {
-				_ = taskList.ResetCompleted()
+			if taskList.ShouldCleanupCompleted(5 * time.Second) {
+				_ = taskList.CleanupCompleted()
 				return nil
 			}
 			allTasks, _ := taskList.ListTasks()
@@ -193,9 +193,9 @@ func TestApp_TaskListAutoReset_E2E(t *testing.T) {
 			}
 			return result
 		})
-		app.SetAutoResetFn(func() bool {
-			if taskList.ShouldResetCompleted(5 * time.Second) {
-				_ = taskList.ResetCompleted()
+		app.SetAutoCleanupFn(func() bool {
+			if taskList.ShouldCleanupCompleted(5 * time.Second) {
+				_ = taskList.CleanupCompleted()
 				return true
 			}
 			return false
@@ -238,9 +238,9 @@ func TestApp_TaskListAutoReset_SessionResume(t *testing.T) {
 		app := newTaskTestApp()
 		app.width = 80
 		app.height = 24
-		app.SetAutoResetFn(func() bool {
-			if l2.ShouldResetCompleted(5 * time.Second) {
-				_ = l2.ResetCompleted()
+		app.SetAutoCleanupFn(func() bool {
+			if l2.ShouldCleanupCompleted(5 * time.Second) {
+				_ = l2.CleanupCompleted()
 				return true
 			}
 			return false
