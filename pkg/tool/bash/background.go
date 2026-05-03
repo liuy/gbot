@@ -2,6 +2,7 @@ package bash
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"syscall"
@@ -662,9 +663,14 @@ func (r *BackgroundTaskRegistry) EvictTerminal() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
+	var evicted []string
 	for id, t := range r.tasks {
 		if !t.evictAfter.IsZero() && !now.Before(t.evictAfter) {
 			delete(r.tasks, id)
+			evicted = append(evicted, id)
 		}
+	}
+	if len(evicted) > 0 {
+		slog.Info("bash: evicted terminal background jobs", "count", len(evicted), "ids", evicted)
 	}
 }
