@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"time"
@@ -291,6 +292,14 @@ func (a *App) Init() tea.Cmd {
 }
 
 // Update handles bubbletea messages.
+// isInternalTeaMsg reports whether msg is a Bubble Tea framework-internal
+// message (e.g. printLineMessage from tea.Println). These are handled by the
+// renderer and don't need application-level processing.
+func isInternalTeaMsg(msg tea.Msg) bool {
+	t := reflect.TypeOf(msg)
+	return t != nil && t.PkgPath() == "github.com/charmbracelet/bubbletea"
+}
+
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Route to active dialog overlay when active.
 	// Dialog intercepts ALL keys (including Ctrl+C) to prevent unwanted actions.
@@ -347,7 +356,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 	default:
-		slog.Warn("tui:update:unhandled_msg", "msgType", fmt.Sprintf("%T", msg))
+		// Bubble Tea internal messages (e.g. printLineMessage from
+		// tea.Println) are handled by the renderer; suppress WARN for them.
+		if !isInternalTeaMsg(msg) {
+			slog.Warn("tui:update:unhandled_msg", "msgType", fmt.Sprintf("%T", msg))
+		}
 	}
 
 	return a, nil
