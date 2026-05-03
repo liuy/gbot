@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -767,3 +768,163 @@ func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 		t.Errorf("Tool name: got %s, want Read", converted.Content[1].Name)
 	}
 }
+
+func TestAutoCompactor_SummarizeMessages_Empty(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	sc := NewAutoCompactor(db, "sess", "model", &compactMockProvider{}, 1000)
+	got, err := sc.summarizeMessages(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("summarizeMessages(nil) error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("summarizeMessages(nil) = %q, want empty", got)
+	}
+}
+
+func TestAutoCompactor_SummarizeMessages_NoText(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	sc := NewAutoCompactor(db, "sess", "model", &compactMockProvider{}, 1000)
+	// Message with no text content (empty JSON array)
+	msgs := []*short.TranscriptMessage{{Type: "user", Content: "[]"}}
+	got, err := sc.summarizeMessages(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("summarizeMessages(no text) error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("summarizeMessages(no text) = %q, want empty", got)
+	}
+}
+
+func TestAutoCompactor_SummarizeMessages_LLMError(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
+	defer db.Close()
+	mp := &compactMockProvider{compactErr: fmt.Errorf("LLM unavailable")}
+	c := NewAutoCompactor(db, "sess", "model", mp, 1000)
+
+	msgs := []*short.TranscriptMessage{
+		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
+	}
+	_, err := c.summarizeMessages(context.Background(), msgs)
+	if err == nil {
+		t.Fatal("expected error from LLM failure")
+	}
+	if !strings.Contains(err.Error(), "summarize LLM call") {
+		t.Errorf("expected summarize error, got: %v", err)
+	}
+}
+
+func TestAutoCompactor_SummarizeMessages_EmptyResponse(t *testing.T) {
+	// Provider returns a response with no text content
+	tmpDir2 := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir2, "test.db"))
+	defer db.Close()
+	mp := &emptyResponseProvider{}
+	c := NewAutoCompactor(db, "sess", "model", mp, 1000)
+
+	msgs := []*short.TranscriptMessage{
+		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
+	}
+	_, err := c.summarizeMessages(context.Background(), msgs)
+	if err == nil {
+		t.Fatal("expected error for empty response")
+	}
+	if !strings.Contains(err.Error(), "no text in LLM response") {
+		t.Errorf("expected 'no text' error, got: %v", err)
+	}
+}
+
+type emptyResponseProvider struct{}
+
+func (e *emptyResponseProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	ch := make(chan llm.StreamEvent)
+	close(ch)
+	return ch, nil
+}
+func (e *emptyResponseProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return &llm.Response{ID: "empty", Content: []types.ContentBlock{}}, nil
+}
+
+func TestAutoCompactor_BuildResultMessages_NoBoundary(t *testing.T) {
+	tmpDir3 := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir3, "test.db"))
+	defer db.Close()
+	mp := &compactMockProvider{}
+	c := NewAutoCompactor(db, "sess", "model", mp, 50000)
+
+	pcr := &short.CompactResult{
+		BoundaryMarker: nil,
+		MessagesToKeep: []*short.TranscriptMessage{
+			{Type: "user", Content: `[{"type":"text","text":"kept"}]`},
+		},
+	}
+	msgs := c.buildResultMessages(pcr, "")
+	if len(msgs) < 1 {
+		t.Fatal("expected at least boundary message")
+	}
+	if !strings.Contains(msgs[0].Content[0].Text, "compacted") {
+		t.Errorf("expected default boundary text, got %q", msgs[0].Content[0].Text)
+	}
+}
+
+func TestAutoCompactor_BuildResultMessages_WithSummary(t *testing.T) {
+	tmpDir4 := t.TempDir()
+	db, _ := short.NewStore(filepath.Join(tmpDir4, "test.db"))
+	defer db.Close()
+	mp := &compactMockProvider{}
+	c := NewAutoCompactor(db, "sess", "model", mp, 50000)
+
+	pcr := &short.CompactResult{
+		BoundaryMarker: &short.TranscriptMessage{
+			Content: `[{"type":"text","text":"boundary text"}]`,
+		},
+		MessagesToKeep: []*short.TranscriptMessage{
+			{Type: "user", Content: `[{"type":"text","text":"kept"}]`},
+		},
+	}
+	msgs := c.buildResultMessages(pcr, "test summary")
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (boundary+summary+kept), got %d", len(msgs))
+	}
+}
+
+func TestShortMessageToEngine_Nil(t *testing.T) {
+	got := ShortMessageToEngine(nil)
+	if got.Role != "" || len(got.Content) != 0 {
+		t.Errorf("expected empty message for nil, got %+v", got)
+	}
+}
+
+func TestExtractTextFromShortContent_ToolUse(t *testing.T) {
+	content := `[{"type":"tool_use","name":"Bash"},{"type":"text","text":"output"}]`
+	got := extractTextFromShortContent(content)
+	if !strings.Contains(got, "[Bash]") {
+		t.Errorf("expected [Bash] in output, got %q", got)
+	}
+	if !strings.Contains(got, "output") {
+		t.Errorf("expected 'output', got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_ToolResult(t *testing.T) {
+	content := `[{"type":"tool_result","content":"\"result text\""}]`
+	got := extractTextFromShortContent(content)
+	// Content is a JSON string "\"result text\"" which unquotes to "result text" (with quotes)
+	if got != `"result text"` {
+		t.Errorf("expected '\"result text\"', got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_PlainText(t *testing.T) {
+	got := extractTextFromShortContent("just plain text")
+	if got != "just plain text" {
+		t.Errorf("expected 'just plain text', got %q", got)
+	}
+}
+

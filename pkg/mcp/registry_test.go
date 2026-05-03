@@ -2295,3 +2295,23 @@ func TestConnectAgentServers_InlineConnectsNoTools(t *testing.T) {
 		t.Errorf("cleanup: %v", err)
 	}
 }
+
+
+func TestRegistry_SetToolsForTest(t *testing.T) {
+	registry := NewRegistry(nil, ChangeCallbacks{})
+	defer registry.Close()
+
+	tools := []DiscoveredTool{
+		{Name: "tool1", ServerName: "srv1"},
+		{Name: "tool2", ServerName: "srv1"},
+	}
+	registry.SetToolsForTest(tools)
+
+	got := registry.GetTools()
+	if len(got) != 2 {
+		t.Errorf("GetTools() = %d, want 2", len(got))
+	}
+	if got[0].Name != "tool1" {
+		t.Errorf("got[0].Name = %q, want %q", got[0].Name, "tool1")
+	}
+}

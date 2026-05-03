@@ -420,8 +420,6 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 
 	suppressCompactWarning()
 
-	// Reset cached-MC state. Source: microCompact.ts:517
-	ResetMicrocompactState()
 
 	// Notify cache break detection. Source: microCompact.ts:525-527
 	llm.NotifyCacheDeletion(llm.PromptStateKey{
@@ -458,22 +456,4 @@ func MicrocompactMessages(messages []types.Message, querySource string, logger *
 // These align with TS behavior when feature('CACHED_MICROCOMPACT') === false.
 // ---------------------------------------------------------------------------
 
-// ConsumePendingCacheEdits returns pending cache edits. No-op: source unavailable.
-// Source: microCompact.ts:88-94
-func ConsumePendingCacheEdits() *PendingCacheEdits { return nil }
 
-// GetPinnedCacheEdits returns pinned cache edits. No-op: source unavailable.
-// Source: microCompact.ts:100-105
-func GetPinnedCacheEdits() []any { return nil }
-
-// PinCacheEdits pins cache edits. No-op: source unavailable.
-// Source: microCompact.ts:111-118
-func PinCacheEdits(int, any) {}
-
-// MarkToolsSentToAPIState marks tools as sent. No-op: source unavailable.
-// Source: microCompact.ts:124-128
-func MarkToolsSentToAPIState() {}
-
-// ResetMicrocompactState resets cached MC state. No-op: source unavailable.
-// Source: microCompact.ts:130-135
-func ResetMicrocompactState() {}

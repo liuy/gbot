@@ -654,23 +654,6 @@ func TestMicrocompactMessages_ClearsWarningSuppression(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// cachedMC stubs
-// ---------------------------------------------------------------------------
-
-func TestCachedMCStubs(t *testing.T) {
-	if ConsumePendingCacheEdits() != nil {
-		t.Error("ConsumePendingCacheEdits should return nil")
-	}
-	if GetPinnedCacheEdits() != nil {
-		t.Error("GetPinnedCacheEdits should return nil")
-	}
-	// No-op functions — just verify they don't panic
-	PinCacheEdits(0, nil)
-	MarkToolsSentToAPIState()
-	ResetMicrocompactState()
-}
-
-// ---------------------------------------------------------------------------
 // Logging integration
 // ---------------------------------------------------------------------------
 
@@ -838,11 +821,3 @@ func TestCollectCompactableToolIds_Order(t *testing.T) {
 	}
 }
 
-func TestNoOpStubs(t *testing.T) {
-	t.Parallel()
-
-	// These are intentional no-ops (source unavailable). Verify they don't panic.
-	PinCacheEdits(0, nil)
-	MarkToolsSentToAPIState()
-	ResetMicrocompactState()
-}

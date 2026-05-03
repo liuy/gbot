@@ -436,6 +436,17 @@ func (r *Registry) SetToolsForTest(tools []DiscoveredTool) {
 	r.tools = append([]DiscoveredTool(nil), tools...)
 }
 
+// SetConnectionForTest injects a ServerConnection into the registry for testing.
+func (r *Registry) SetConnectionForTest(name string, conn ServerConnection) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.connections == nil {
+		r.connections = make(map[string]ServerConnection)
+	}
+	r.connections[name] = conn
+}
+
+
 // GetCommands returns all discovered commands across all servers.
 func (r *Registry) GetCommands() []MCPCommand {
 	r.mu.RLock()

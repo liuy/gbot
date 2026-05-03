@@ -899,3 +899,23 @@ func TestListSessions_EmptySettings(t *testing.T) {
 		t.Error("empty-settings-session not found in results")
 	}
 }
+
+func TestUpdateContextTokens(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	ses, err := store.CreateSession("/test", "gpt-4")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// Initial tokens should be 0
+	if err := store.UpdateContextTokens(ses.SessionID, 100); err != nil {
+		t.Fatalf("UpdateContextTokens failed: %v", err)
+	}
+
+	// Update to new value
+	if err := store.UpdateContextTokens(ses.SessionID, 200); err != nil {
+		t.Fatalf("UpdateContextTokens update failed: %v", err)
+	}
+}

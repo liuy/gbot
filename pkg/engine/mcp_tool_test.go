@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---------------------------------------------------------------------------
@@ -336,5 +339,162 @@ func TestMCPTool_DestructiveProperties(t *testing.T) {
 	result := tl.CheckPermissions(nil, nil)
 	if _, ok := result.(types.PermissionAllowDecision); !ok {
 		t.Error("destructive MCP tools should still get allow decision from CheckPermissions")
+	}
+}
+
+func TestEngine_AllTools_WithMCPTools(t *testing.T) {
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+
+	// Inject MCP tool via SetToolsForTest
+	registry.SetToolsForTest([]mcp.DiscoveredTool{
+		{Name: "mcp__test__echo", OriginalName: "echo", ServerName: "test"},
+	})
+
+	eng := New(&Params{
+		MCPRegistry: registry,
+	})
+	defer eng.Close()
+
+	all := eng.AllTools()
+	if len(all) != 1 {
+		t.Errorf("expected 1 tool, got %d", len(all))
+	}
+	if _, ok := all["mcp__test__echo"]; !ok {
+		t.Error("expected mcp__test__echo in AllTools")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCPTool.Call — in-memory MCP server end-to-end test
+// ---------------------------------------------------------------------------
+
+// setupInMemoryEchoServer creates an in-memory MCP server with an echo tool,
+// connects a client, and returns the ConnectedServer ready for use.
+func setupInMemoryEchoServer(t *testing.T) *mcp.ConnectedServer {
+	t.Helper()
+	t1, t2 := mcpsdk.NewInMemoryTransports()
+
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{
+		Name: "test-server", Version: "1.0.0",
+	}, nil)
+
+	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Name: "echo", Description: "Echoes input",
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args map[string]any) (*mcpsdk.CallToolResult, any, error) {
+		text, _ := args["text"].(string)
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
+		}, nil, nil
+	})
+
+	go func() { _, _ = server.Connect(context.Background(), t1, nil) }()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-client", Version: "1.0"}, nil)
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	return &mcp.ConnectedServer{
+		Name:       "test-srv",
+		ServerInfo: &mcp.ServerInfo{Name: "test-server", Version: "1.0.0"},
+		Session:    session,
+	}
+}
+
+func TestMCPTool_Call_InMemoryServer_Success(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"text":"Hello MCP!"}`), nil)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if result.Data == nil {
+		t.Fatal("expected non-nil result data")
+	}
+	text, ok := result.Data.(string)
+	if !ok {
+		t.Fatalf("expected string data, got %T", result.Data)
+	}
+	if text != "Hello MCP!" {
+		t.Errorf("echo result = %q, want %q", text, "Hello MCP!")
+	}
+}
+
+func TestMCPTool_Call_InMemoryServer_InvalidInput(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	_, err := tl.Call(context.Background(), json.RawMessage(`{invalid json`), nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON input")
+	}
+	if !strings.Contains(err.Error(), "invalid input") {
+		t.Errorf("error should mention invalid input, got: %v", err)
+	}
+}
+
+func TestMCPTool_Call_InMemoryServer_EmptyInput(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	// Empty input should still work (args will be nil)
+	result, err := tl.Call(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Call with nil input failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+
+	// Inject a FailedServer (not *ConnectedServer) to test the type assertion path
+	registry.SetConnectionForTest("bad-srv", &mcp.FailedServer{Name: "bad-srv", Error: "connection failed"})
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__bad-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "bad-srv",
+	}, registry)
+
+	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
+	if err == nil {
+		t.Fatal("expected error for non-connected server")
+	}
+	if !strings.Contains(err.Error(), "not connected") {
+		t.Errorf("error should mention not connected, got: %v", err)
 	}
 }

@@ -14,10 +14,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // minimalTool is a minimal tool implementation for covers skip path in executeTools.
@@ -466,7 +471,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		Model:       "test",
 		TokenBudget: 999999,
 		MaxTurns:    50,
-		Dispatcher:   tc,
+		Dispatcher:  tc,
 	})
 
 	result := eng.QuerySync(context.Background(), "test", nil)
@@ -2116,8 +2121,10 @@ func TestMarshalToolOutput_BuildToolWithWireFormat(t *testing.T) {
 	t.Parallel()
 
 	tk := tool.BuildTool(tool.ToolDef{
-		Name_:        "WireFactory",
-		Call_:        func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "WireFactory",
+		Call_: func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return nil },
 		Description_: func(json.RawMessage) (string, error) { return "", nil },
 		FormatWireResult_: func(data any) string {
@@ -2153,8 +2160,10 @@ func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
 
 	// Standard tool without FormatWireResult_ uses double-wrapped JSON
 	tk := tool.BuildTool(tool.ToolDef{
-		Name_:        "DefaultFactory",
-		Call_:        func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "DefaultFactory",
+		Call_: func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return nil },
 		Description_: func(json.RawMessage) (string, error) { return "", nil },
 	})
@@ -2317,14 +2326,13 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	 eng.QuerySync(ctx, "do something", nil)
+	eng.QuerySync(ctx, "do something", nil)
 
 	for _, ev := range tc.FindEvents(types.EventToolEnd) {
 		if ev.ToolResult != nil && strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
 			compactDisplayOutput = ev.ToolResult.DisplayOutput
 		}
 	}
-
 
 	if compactDisplayOutput == "" {
 		t.Fatal("expected compact output event")
@@ -2778,308 +2786,308 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 	}
 }
 
-	// ---------------------------------------------------------------------------
-	// Post-loop abort tests (TDD for the !streamComplete cascade fix)
-	// Bug: when provider closes streamCh due to ctx cancel, for-range exits
-	// without triggering the select <-ctx.Done() guard inside the loop.
-	// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Post-loop abort tests (TDD for the !streamComplete cascade fix)
+// Bug: when provider closes streamCh due to ctx cancel, for-range exits
+// without triggering the select <-ctx.Done() guard inside the loop.
+// ---------------------------------------------------------------------------
 
-	func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
-		// Provider sends tool_use events but NOT message_stop, then ctx is cancelled
-		// and channel closed. Post-loop cascade should detect abort and generate
-		// synthetic tool_results for the orphaned tool_use block.
-		mp := &testProvider{}
-		ch := make(chan llm.StreamEvent, 20)
-		mp.addChannelResponse(ch)
+func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
+	// Provider sends tool_use events but NOT message_stop, then ctx is cancelled
+	// and channel closed. Post-loop cascade should detect abort and generate
+	// synthetic tool_results for the orphaned tool_use block.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
 
-		mt := &testTool{name: "Read"}
-		tc := newEventCollector()
-		eng := New(&Params{
-			Provider:   mp,
-			Tools:      []tool.Tool{mt},
-			Model:      "test",
-			Dispatcher: tc,
-		})
+	mt := &testTool{name: "Read"}
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test",
+		Dispatcher: tc,
+	})
 
-		ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 
-		go func() {
-			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
-			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
-			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-			ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-			close(ch)
-		}()
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
 
-		result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", nil)
 
-		if result.Error == nil {
-			t.Fatal("expected error from post-loop abort")
+	if result.Error == nil {
+		t.Fatal("expected error from post-loop abort")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+
+	// Verify synthetic tool_result was generated for the orphaned tool_use
+	hasSyntheticResult := false
+	for _, msg := range result.Messages {
+		for _, cb := range msg.Content {
+			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
+				hasSyntheticResult = true
+				var parsed string
+				if err := json.Unmarshal(cb.Content, &parsed); err != nil {
+					t.Fatalf("failed to parse synthetic tool_result: %v", err)
+				}
+				if !strings.Contains(parsed, "discarded") {
+					t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed)
+				}
+			}
 		}
+	}
+	if !hasSyntheticResult {
+		t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
+	}
+}
 
-		var ae *AbortError
-		if !errors.As(result.Error, &ae) {
-			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
-		}
-		if ae.Phase != "streaming" {
-			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
-		}
+func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
+	// Provider closes channel immediately after ctx is cancelled, before
+	// sending any content events. Should return AbortError with no messages.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 5)
+	mp.addChannelResponse(ch)
 
-		// Verify synthetic tool_result was generated for the orphaned tool_use
-		hasSyntheticResult := false
-		for _, msg := range result.Messages {
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+
+	if result.Error == nil {
+		t.Fatal("expected error from post-loop abort")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+
+	// No assistant message should be appended (no content received)
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+			t.Errorf("unexpected assistant message with %d content blocks (expected no content)", len(msg.Content))
+		}
+	}
+}
+
+func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
+	// Provider sends text content but NOT message_stop, then ctx cancelled.
+	// Should return AbortError with partial assistant message appended.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+
+	if result.Error == nil {
+		t.Fatal("expected error from post-loop abort")
+	}
+
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+
+	// Partial assistant message should be appended
+	hasAssistant := false
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+			hasAssistant = true
+			// Verify text content was preserved
+			found := false
 			for _, cb := range msg.Content {
-				if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
-					hasSyntheticResult = true
-					var parsed string
-					if err := json.Unmarshal(cb.Content, &parsed); err != nil {
-						t.Fatalf("failed to parse synthetic tool_result: %v", err)
-					}
-					if !strings.Contains(parsed, "discarded") {
-						t.Errorf("synthetic error = %q, want to contain 'discarded'", parsed)
-					}
+				if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "Hello") {
+					found = true
 				}
 			}
-		}
-		if !hasSyntheticResult {
-			t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
-		}
-	}
-
-	func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
-		// Provider closes channel immediately after ctx is cancelled, before
-		// sending any content events. Should return AbortError with no messages.
-		mp := &testProvider{}
-		ch := make(chan llm.StreamEvent, 5)
-		mp.addChannelResponse(ch)
-
-		tc := newEventCollector()
-		eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
-		ctx, cancel := context.WithCancel(context.Background())
-
-		go func() {
-			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-			close(ch)
-		}()
-
-		result := eng.QuerySync(ctx, "test", nil)
-
-		if result.Error == nil {
-			t.Fatal("expected error from post-loop abort")
-		}
-
-		var ae *AbortError
-		if !errors.As(result.Error, &ae) {
-			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
-		}
-		if ae.Phase != "streaming" {
-			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
-		}
-
-		// No assistant message should be appended (no content received)
-		for _, msg := range result.Messages {
-			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
-				t.Errorf("unexpected assistant message with %d content blocks (expected no content)", len(msg.Content))
+			if !found {
+				t.Error("assistant message missing partial text content")
 			}
 		}
 	}
+	if !hasAssistant {
+		t.Error("expected partial assistant message to be appended")
+	}
+}
 
-	func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
-		// Provider sends text content but NOT message_stop, then ctx cancelled.
-		// Should return AbortError with partial assistant message appended.
-		mp := &testProvider{}
-		ch := make(chan llm.StreamEvent, 20)
-		mp.addChannelResponse(ch)
+func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
+	// Gap 2 fix: mid-stream abort with tool_use but NO text/thinking.
+	// hasContent would be false, but contentBlocks is non-empty.
+	// The abort handler should still append the partial assistant message
+	// and generate synthetic tool_results.
+	//
+	// Simulate: events flow, then cancel fires, select guard catches it.
+	// We use an unbuffered channel to force synchronization: goroutine sends
+	// one event at a time, main goroutine consumes, cancel fires mid-stream.
+	mp := &testProvider{}
+	ch := make(chan llm.StreamEvent, 20)
+	mp.addChannelResponse(ch)
 
-		tc := newEventCollector()
-		eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
-		ctx, cancel := context.WithCancel(context.Background())
+	mt := &testTool{name: "Read"}
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test",
+		Dispatcher: tc,
+	})
 
-		go func() {
-			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
-			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "Hello "}}
-			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "wor"}}
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-			close(ch)
-		}()
+	ctx, cancel := context.WithCancel(context.Background())
 
-		result := eng.QuerySync(ctx, "test", nil)
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
 
-		if result.Error == nil {
-			t.Fatal("expected error from post-loop abort")
-		}
+	result := eng.QuerySync(ctx, "test", nil)
 
-		var ae *AbortError
-		if !errors.As(result.Error, &ae) {
-			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
-		}
-		if ae.Phase != "streaming" {
-			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
-		}
-
-		// Partial assistant message should be appended
-		hasAssistant := false
-		for _, msg := range result.Messages {
-			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
-				hasAssistant = true
-				// Verify text content was preserved
-				found := false
-				for _, cb := range msg.Content {
-					if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "Hello") {
-						found = true
-					}
-				}
-				if !found {
-					t.Error("assistant message missing partial text content")
-				}
-			}
-		}
-		if !hasAssistant {
-			t.Error("expected partial assistant message to be appended")
-		}
+	if result.Error == nil {
+		t.Fatal("expected error from abort")
 	}
 
-	func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
-		// Gap 2 fix: mid-stream abort with tool_use but NO text/thinking.
-		// hasContent would be false, but contentBlocks is non-empty.
-		// The abort handler should still append the partial assistant message
-		// and generate synthetic tool_results.
-		//
-		// Simulate: events flow, then cancel fires, select guard catches it.
-		// We use an unbuffered channel to force synchronization: goroutine sends
-		// one event at a time, main goroutine consumes, cancel fires mid-stream.
-		mp := &testProvider{}
-		ch := make(chan llm.StreamEvent, 20)
-		mp.addChannelResponse(ch)
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
 
-		mt := &testTool{name: "Read"}
-		tc := newEventCollector()
-		eng := New(&Params{
-			Provider:   mp,
-			Tools:      []tool.Tool{mt},
-			Model:      "test",
-			Dispatcher: tc,
-		})
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		go func() {
-			ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}}
-			ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Read"}}
-			ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"path":"/tmp/test"}`}}
-			ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-			close(ch)
-		}()
-
-		result := eng.QuerySync(ctx, "test", nil)
-
-		if result.Error == nil {
-			t.Fatal("expected error from abort")
-		}
-
-		var ae *AbortError
-		if !errors.As(result.Error, &ae) {
-			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
-		}
-		if ae.Phase != "streaming" {
-			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
-		}
-
-		// Verify partial assistant message was appended (this is the Gap 2 fix)
-		hasAssistant := false
-		for _, msg := range result.Messages {
-			if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
-				hasAssistant = true
-				for _, cb := range msg.Content {
-					switch {
-					case cb.Type == types.ContentTypeToolUse && cb.ID == "tu_1":
-						// expected tool_use block
-					case cb.Type == types.ContentTypeText && cb.Text == types.InterruptMessage:
-						// expected: inline interrupt message appended on abort
-					default:
-						t.Errorf("unexpected content block: type=%q id=%q text=%q", cb.Type, cb.ID, cb.Text)
-					}
-				}
-			}
-		}
-		if !hasAssistant {
-			t.Error("expected partial assistant message with tool_use block (Gap 2: contentBlocks non-empty should append)")
-		}
-
-		// Verify synthetic tool_result was generated
-		hasSynthetic := false
-		for _, msg := range result.Messages {
+	// Verify partial assistant message was appended (this is the Gap 2 fix)
+	hasAssistant := false
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleAssistant && len(msg.Content) > 0 {
+			hasAssistant = true
 			for _, cb := range msg.Content {
-				if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
-					hasSynthetic = true
+				switch {
+				case cb.Type == types.ContentTypeToolUse && cb.ID == "tu_1":
+					// expected tool_use block
+				case cb.Type == types.ContentTypeText && cb.Text == types.InterruptMessage:
+					// expected: inline interrupt message appended on abort
+				default:
+					t.Errorf("unexpected content block: type=%q id=%q text=%q", cb.Type, cb.ID, cb.Text)
 				}
 			}
 		}
-		if !hasSynthetic {
-			t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
-		}
+	}
+	if !hasAssistant {
+		t.Error("expected partial assistant message with tool_use block (Gap 2: contentBlocks non-empty should append)")
 	}
 
-	func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
-		// Gap 3 fix: cancel during reactive compact should return *AbortError,
-		// not the original API error (context overflow).
-		mp := &testProvider{}
-		// First response: context overflow error
-		overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
-		mp.addResponse(nil, overflowErr)
-		ch := make(chan llm.StreamEvent, 10)
-		mp.addChannelResponse(ch)
-
-		tc := newEventCollector()
-		eng := New(&Params{
-			Provider:   mp,
-			Model:      "test",
-			Dispatcher: tc,
-		})
-		eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{
-			ContextWindow: 100000,
-		})
-
-		ctx, cancel := context.WithCancel(context.Background())
-
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			cancel()
-			close(ch)
-		}()
-
-		result := eng.QuerySync(ctx, "test", nil)
-
-		if result.Error == nil {
-			t.Fatal("expected error")
-		}
-
-		// Should be *AbortError, not context overflow or raw context.Canceled
-		var ae *AbortError
-		if !errors.As(result.Error, &ae) {
-			t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
-		}
-		if ae.Phase != "streaming" {
-			t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	// Verify synthetic tool_result was generated
+	hasSynthetic := false
+	for _, msg := range result.Messages {
+		for _, cb := range msg.Content {
+			if cb.Type == types.ContentTypeToolResult && cb.ToolUseID == "tu_1" {
+				hasSynthetic = true
+			}
 		}
 	}
-
-	// blockingCompactor blocks on ctx until cancelled, then returns error.
-	type blockingCompactor struct{}
-
-	func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*CompactResult, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
+	if !hasSynthetic {
+		t.Error("expected synthetic tool_result for orphaned tool_use tu_1")
 	}
+}
+
+func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
+	// Gap 3 fix: cancel during reactive compact should return *AbortError,
+	// not the original API error (context overflow).
+	mp := &testProvider{}
+	// First response: context overflow error
+	overflowErr := &llm.APIError{Status: 400, ErrorCode: "prompt_too_long", Message: "context too long"}
+	mp.addResponse(nil, overflowErr)
+	ch := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(ch)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{
+		ContextWindow: 100000,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		close(ch)
+	}()
+
+	result := eng.QuerySync(ctx, "test", nil)
+
+	if result.Error == nil {
+		t.Fatal("expected error")
+	}
+
+	// Should be *AbortError, not context overflow or raw context.Canceled
+	var ae *AbortError
+	if !errors.As(result.Error, &ae) {
+		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+	if ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q", ae.Phase, "streaming")
+	}
+}
+
+// blockingCompactor blocks on ctx until cancelled, then returns error.
+type blockingCompactor struct{}
+
+func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*CompactResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
 
 // ---------------------------------------------------------------------------
 // TDD: appendInlineInterruptMessage — verify [Request interrupted by user]
@@ -3278,5 +3286,1431 @@ func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
 	}
 	if !hasInterruptMessage(msgs) {
 		t.Error("loop-top abort should have inline interrupt message on user message")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Previously 0% functions: setters/getters, MCPTool methods, microcompact no-ops
+// ---------------------------------------------------------------------------
+
+func TestEngine_SetRecordWriter(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{}
+	var called bool
+	eng.SetRecordWriter(func(records []toolresult.ContentReplacementRecord) {
+		called = true
+	})
+	eng.mu.Lock()
+	fn := eng.recordWriter
+	eng.mu.Unlock()
+	if fn == nil {
+		t.Fatal("recordWriter should be set")
+	}
+	fn(nil)
+	if !called {
+		t.Error("recordWriter callback should have been called")
+	}
+}
+
+func TestEngine_ContextWindow(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{autoCompactConfig: AutoCompactConfig{ContextWindow: 200000}}
+	if got := eng.ContextWindow(); got != 200000 {
+		t.Errorf("ContextWindow() = %d, want 200000", got)
+	}
+}
+
+func TestEngine_SetMaxTokens(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{}
+	eng.SetMaxTokens(8192)
+	eng.mu.Lock()
+	got := eng.maxTokens
+	eng.mu.Unlock()
+	if got != 8192 {
+		t.Errorf("maxTokens = %d, want 8192", got)
+	}
+}
+
+func TestEngine_SetDispatcher(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{}
+	var d noopDispatcher
+	eng.SetDispatcher(&d)
+	if eng.dispatcher == nil {
+		t.Error("dispatcher should be set")
+	}
+}
+
+func TestMCPTool_InterruptBehavior(t *testing.T) {
+	t.Parallel()
+	mt := &MCPTool{}
+	if mt.InterruptBehavior() != tool.InterruptCancel {
+		t.Errorf("InterruptBehavior() = %d, want InterruptCancel", mt.InterruptBehavior())
+	}
+}
+
+func TestExtractMCPText(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		content []mcpsdk.Content
+		want    string
+	}{
+		{"empty", nil, ""},
+		{"single text", []mcpsdk.Content{&mcpsdk.TextContent{Text: "hello"}}, "hello"},
+		{"multi text", []mcpsdk.Content{&mcpsdk.TextContent{Text: "a"}, &mcpsdk.TextContent{Text: "b"}}, "a\nb"},
+		{"non-text only", []mcpsdk.Content{&mcpsdk.ImageContent{}}, ""},
+		{"mixed", []mcpsdk.Content{&mcpsdk.TextContent{Text: "yes"}, &mcpsdk.ImageContent{}, &mcpsdk.TextContent{Text: "no"}}, "yes\nno"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractMCPText(&mcp.MCPToolCallResult{Content: tt.content})
+			if got != tt.want {
+				t.Errorf("extractMCPText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// noopDispatcher is a minimal EventDispatcher for tests.
+type noopDispatcher struct{}
+
+func (d *noopDispatcher) Dispatch(types.QueryEvent) {}
+
+func TestUserOrSubRejectMessage_SubEngine(t *testing.T) {
+	exec := &StreamingToolExecutor{}
+	exec.SetSubEngine(true)
+	if got := exec.userOrSubRejectMessage(); got != subAgentRejectMessage {
+		t.Errorf("userOrSubRejectMessage(subEngine) = %q, want %q", got, subAgentRejectMessage)
+	}
+}
+
+func TestUserOrSubRejectMessage_User(t *testing.T) {
+	exec := &StreamingToolExecutor{}
+	exec.SetSubEngine(false)
+	if got := exec.userOrSubRejectMessage(); got != userRejectMessage {
+		t.Errorf("userOrSubRejectMessage(user) = %q, want %q", got, userRejectMessage)
+	}
+}
+
+func TestApplyBudget_NilState(t *testing.T) {
+	eng := New(&Params{})
+	defer eng.Close()
+	// contentReplacementState is nil by default in this test setup
+	msgs := []types.Message{{Role: types.RoleUser}}
+	got := eng.applyBudget(msgs)
+	if len(got) != 1 {
+		t.Errorf("applyBudget(nil state) = %d msgs, want 1", len(got))
+	}
+}
+
+func TestExecuteTool_ToolNotFound(t *testing.T) {
+	rootCtx := t.Context()
+	exec := &StreamingToolExecutor{
+		toolMap: map[string]tool.Tool{},
+		rootCtx: rootCtx,
+	}
+	tt := &TrackedTool{
+		ID:   "test-id",
+		Name: "NonExistentTool",
+		done: make(chan struct{}),
+	}
+	exec.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Errorf("tt.resultBlocks is nil or empty for tool %s", tt.Name)
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Errorf("resultBlocks[0].IsError = false, want true (tool: %s)", tt.Name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// shouldAutoCompact — all early-return branches
+// ---------------------------------------------------------------------------
+
+func TestShouldAutoCompact_NilCompactor(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", AutoCompact: AutoCompactConfig{ContextWindow: 128000}})
+	if eng.shouldAutoCompact() {
+		t.Error("shouldAutoCompact with nil compactor should return false")
+	}
+	eng.Close()
+}
+
+func TestShouldAutoCompact_ZeroContextWindow(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", AutoCompact: AutoCompactConfig{ContextWindow: 0}})
+	eng.compactor = &AutoCompactor{}
+	if eng.shouldAutoCompact() {
+		t.Error("shouldAutoCompact with ContextWindow=0 should return false")
+	}
+	eng.Close()
+}
+
+func TestShouldAutoCompact_QuerySourceCompact(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", AutoCompact: AutoCompactConfig{ContextWindow: 128000}})
+	defer eng.Close()
+	eng.compactor = &AutoCompactor{}
+	// Create a sub-engine with agentType=compact → recursion guard
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:     map[string]tool.Tool{},
+		AgentType: "compact",
+	})
+	defer subEng.Close()
+	if subEng.shouldAutoCompact() {
+		t.Error("shouldAutoCompact with agentType=compact should return false")
+	}
+}
+
+func TestShouldAutoCompact_QuerySourceSessionMemory(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", AutoCompact: AutoCompactConfig{ContextWindow: 128000}})
+	defer eng.Close()
+	eng.compactor = &AutoCompactor{}
+	// Create a sub-engine with agentType=session_memory → recursion guard
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:     map[string]tool.Tool{},
+		AgentType: "session_memory",
+	})
+	defer subEng.Close()
+	if subEng.shouldAutoCompact() {
+		t.Error("shouldAutoCompact with agentType=session_memory should return false")
+	}
+}
+
+func TestShouldAutoCompact_CircuitBreaker(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test", AutoCompact: AutoCompactConfig{ContextWindow: 128000, MaxConsecutiveFailures: 3}})
+	eng.compactor = &AutoCompactor{}
+	eng.consecutiveCompactFailures = 3
+	if eng.shouldAutoCompact() {
+		t.Error("shouldAutoCompact with circuit breaker tripped should return false")
+	}
+	eng.Close()
+}
+
+// ---------------------------------------------------------------------------
+// runStopHook + fireCompactHooks with nil hooks
+// ---------------------------------------------------------------------------
+
+func TestRunStopHook_NilHooks(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+	result := eng.runStopHook(context.Background())
+	if result != nil {
+		t.Error("runStopHook with nil hooks should return nil")
+	}
+	eng.Close()
+}
+
+func TestFireCompactHooks_NilHooks(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+	eng.fireCompactHooks(context.Background(), "test", "pre")
+	eng.fireCompactHooks(context.Background(), "test", "post")
+}
+
+func TestAppendInlineInterruptMessage_EmptyMessages(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+	eng.appendInlineInterruptMessage()
+	eng.Close()
+}
+
+// ---------------------------------------------------------------------------
+// calculateToolResultTokens — object/block fallback
+// ---------------------------------------------------------------------------
+
+func TestCalculateToolResultTokens_UnknownJSON(t *testing.T) {
+	raw := json.RawMessage(`{"unknown":"structure"}`)
+	tokens := calculateToolResultTokens(raw)
+	if tokens <= 0 {
+		t.Errorf("calculateToolResultTokens(%q) = %d, want > 0", string(raw), tokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool additional paths
+// ---------------------------------------------------------------------------
+
+func TestExecuteTool_StreamingSuccess(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"stream_tool": &streamingSuccessTool{name: "stream_tool"},
+	}
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "stream_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	executor.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if tt.resultBlocks[0].IsError {
+		t.Error("expected non-error result")
+	}
+}
+
+func TestExecuteTool_NonStreamingError(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"err_tool": &nonStreamingSuccessTool{name: "err_tool", data: "should not see"},
+	}
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "err_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	// Overwrite to make Call return error
+	executor.toolMap["err_tool"] = &errorTool{name: "err_tool"}
+
+	executor.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Errorf("resultBlocks[0].IsError = false, want true (tool: %s)", tt.Name)
+	}
+}
+
+func TestExecuteTool_NilResult(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"nil_tool": &nilResultTool{name: "nil_tool"},
+	}
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "nil_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	executor.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+}
+
+func TestExecuteTool_SiblingAbort(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"abort_tool": &nonStreamingSuccessTool{name: "abort_tool", data: "ok"},
+	}
+
+	ctx := t.Context()
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, ctx)
+	// Mark hasErrored → sibling abort
+	executor.hasErrored = true
+
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "abort_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	executor.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Errorf("resultBlocks[0].IsError = %v, want true for sibling abort", tt.resultBlocks[0].IsError)
+	}
+}
+
+func TestExecuteTool_UserInterruptBlock(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"block_interrupt": &interruptBlockTool{name: "block_interrupt"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancelled
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, ctx)
+
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "block_interrupt",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	executor.executeTool(tt)
+	// InterruptBlock tools are NOT cancelled → should succeed
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if tt.resultBlocks[0].IsError {
+		t.Error("expected non-error for interrupt-block tool")
+	}
+}
+
+// Mock tool types
+
+type streamingSuccessTool struct{ name string }
+
+func (t *streamingSuccessTool) Name() string                                { return t.name }
+func (t *streamingSuccessTool) Aliases() []string                           { return nil }
+func (t *streamingSuccessTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *streamingSuccessTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *streamingSuccessTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "streamed"}, nil
+}
+func (t *streamingSuccessTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "non-streamed"}, nil
+}
+func (t *streamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *streamingSuccessTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *streamingSuccessTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *streamingSuccessTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *streamingSuccessTool) IsEnabled() bool                        { return true }
+func (t *streamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *streamingSuccessTool) Prompt() string          { return "" }
+func (t *streamingSuccessTool) RenderResult(any) string { return "streamed" }
+func (*streamingSuccessTool) MaxResultSize() int        { return 50000 }
+
+type errorTool struct{ name string }
+
+func (t *errorTool) Name() string                                { return t.name }
+func (t *errorTool) Aliases() []string                           { return nil }
+func (t *errorTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *errorTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *errorTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, errors.New("tool error")
+}
+func (t *errorTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *errorTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *errorTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *errorTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *errorTool) IsEnabled() bool                           { return true }
+func (t *errorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *errorTool) Prompt() string                            { return "" }
+func (t *errorTool) RenderResult(any) string                   { return "" }
+func (*errorTool) MaxResultSize() int                          { return 50000 }
+
+type nilResultTool struct{ name string }
+
+func (t *nilResultTool) Name() string                                { return t.name }
+func (t *nilResultTool) Aliases() []string                           { return nil }
+func (t *nilResultTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *nilResultTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *nilResultTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil
+}
+func (t *nilResultTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *nilResultTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *nilResultTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *nilResultTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *nilResultTool) IsEnabled() bool                           { return true }
+func (t *nilResultTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *nilResultTool) Prompt() string                            { return "" }
+func (t *nilResultTool) RenderResult(any) string                   { return "" }
+func (*nilResultTool) MaxResultSize() int                          { return 50000 }
+
+type interruptBlockTool struct{ name string }
+
+func (t *interruptBlockTool) Name() string                                { return t.name }
+func (t *interruptBlockTool) Aliases() []string                           { return nil }
+func (t *interruptBlockTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *interruptBlockTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *interruptBlockTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "executed"}, nil
+}
+func (t *interruptBlockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *interruptBlockTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *interruptBlockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *interruptBlockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *interruptBlockTool) IsEnabled() bool                           { return true }
+func (t *interruptBlockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
+func (t *interruptBlockTool) Prompt() string                            { return "" }
+func (t *interruptBlockTool) RenderResult(any) string                   { return "executed" }
+func (*interruptBlockTool) MaxResultSize() int                          { return 50000 }
+
+// ---------------------------------------------------------------------------
+// askUser — all return paths
+// ---------------------------------------------------------------------------
+
+func TestAskUser_SessionCacheHit(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(types.QueryEvent) {}, context.Background(),
+	)
+	exec.sessionAllowed = map[string]bool{"AskTool": true}
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk}
+	result := exec.askUser(tt, decision, "")
+	if result != types.UserDecisionAllow {
+		t.Errorf("session cache hit: expected Allow, got %v", result)
+	}
+}
+
+func TestAskUser_RootCtxDone(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediate cancel
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(types.QueryEvent) {}, ctx,
+	)
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
+	result := exec.askUser(tt, decision, "")
+	if result != types.UserDecisionDeny {
+		t.Errorf("rootCtx done: expected Deny, got %v", result)
+	}
+}
+
+func TestAskUser_SiblingCtxDone(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	rootCtx := t.Context()
+	siblingCtx, siblingCancel := context.WithCancelCause(rootCtx)
+	siblingCancel(errors.New("sibling cancelled"))
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(types.QueryEvent) {}, rootCtx,
+	)
+	exec.siblingCtx = siblingCtx
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
+	result := exec.askUser(tt, decision, "")
+	if result != types.UserDecisionDeny {
+		t.Errorf("siblingCtx done: expected Deny, got %v", result)
+	}
+}
+
+// TestAskUser_AllowAlways_CachesSession is already covered by TestAskUser_AllowAlways_CachesKey
+
+// ---------------------------------------------------------------------------
+// askUser with real response via mock emit
+// ---------------------------------------------------------------------------
+
+func TestAskUser_AllowResponse(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	chCh := make(chan chan types.PermissionUserDecision, 1)
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(evt types.QueryEvent) {
+			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+				select {
+				case chCh <- evt.PermissionAsk.ResponseCh:
+				default:
+				}
+			}
+		}, context.Background(),
+	)
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
+
+	go func() {
+		ch := <-chCh
+		ch <- types.UserDecisionAllow
+	}()
+
+	result := exec.askUser(tt, decision, "")
+	if result != types.UserDecisionAllow {
+		t.Errorf("expected Allow, got %v", result)
+	}
+}
+
+func TestAskUser_AllowAlways_CachesKey(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	chCh := make(chan chan types.PermissionUserDecision, 1)
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(evt types.QueryEvent) {
+			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+				select {
+				case chCh <- evt.PermissionAsk.ResponseCh:
+				default:
+				}
+			}
+		}, context.Background(),
+	)
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
+
+	go func() {
+		ch := <-chCh
+		ch <- types.UserDecisionAllowAlways
+	}()
+
+	result := exec.askUser(tt, decision, "matched_pattern")
+	if result != types.UserDecisionAllowAlways {
+		t.Errorf("expected AllowAlways, got %v", result)
+	}
+	// After AllowAlways, the cache should have the key
+	if exec.sessionAllowed == nil {
+		t.Error("sessionAllowed should be set after AllowAlways")
+	}
+	if !exec.sessionAllowed["AskTool:matched_pattern"] {
+		t.Error("sessionAllowed should have AskTool:matched_pattern")
+	}
+}
+
+func TestAskUser_ClosedChannel(t *testing.T) {
+	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
+	chCh := make(chan chan types.PermissionUserDecision, 1)
+	exec := NewStreamingToolExecutor(
+		map[string]tool.Tool{"AskTool": fakeTool},
+		nil, func(evt types.QueryEvent) {
+			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+				select {
+				case chCh <- evt.PermissionAsk.ResponseCh:
+				default:
+				}
+			}
+		}, context.Background(),
+	)
+	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
+	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
+
+	go func() {
+		ch := <-chCh
+		close(ch)
+	}()
+
+	result := exec.askUser(tt, decision, "")
+	if result != types.UserDecisionDeny {
+		t.Errorf("closed channel: expected Deny, got %v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runStopHook + fireCompactHooks with real hooks
+// ---------------------------------------------------------------------------
+
+func TestRunStopHook_WithHooks(t *testing.T) {
+	mp := &testProvider{}
+	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
+		"Stop": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "test-stop"}},
+		}},
+	}, &hookExecRecorder{})
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		Hooks:    fakeHooks,
+		Logger:   slog.Default(),
+	})
+	defer eng.Close()
+
+	result := eng.runStopHook(context.Background())
+	// Non-blocking hook returns nil result
+	if result != nil {
+		t.Errorf("runStopHook with non-blocking hook: expected nil result, got %+v", result)
+	}
+}
+
+func TestRunStopHook_WithHooksBlocking(t *testing.T) {
+	mp := &testProvider{}
+	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
+		"Stop": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "block-stop"}},
+		}},
+	}, &blockingHookExecRecorder{blockResult: &hooks.HookResult{
+		Outcome:  hooks.HookOutcomeBlocking,
+		Stderr:   "blocked by hook",
+		HookName: "block-stop",
+	}})
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		Hooks:    fakeHooks,
+		Logger:   slog.Default(),
+	})
+	defer eng.Close()
+
+	result := eng.runStopHook(context.Background())
+	if result == nil {
+		t.Fatal("runStopHook with blocking hook: expected non-nil result")
+	}
+	if result.Outcome != hooks.HookOutcomeBlocking {
+		t.Errorf("expected blocking outcome, got %v", result.Outcome)
+	}
+}
+
+func TestRunStopHook_Subagent(t *testing.T) {
+	mp := &testProvider{}
+	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
+		"SubagentStop": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "sub-stop"}},
+		}},
+	}, &hookExecRecorder{})
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		Hooks:    fakeHooks,
+		Logger:   slog.Default(),
+	})
+	defer eng.Close()
+
+	// Create sub-engine (isSubagent = true)
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:     map[string]tool.Tool{},
+		AgentType: "General",
+	})
+	defer subEng.Close()
+
+	result := subEng.runStopHook(context.Background())
+	if result != nil {
+		t.Errorf("runStopHook(subagent) with non-blocking: expected nil, got %+v", result)
+	}
+}
+
+func TestFireCompactHooks_WithPreAndPost(t *testing.T) {
+	mp := &testProvider{}
+	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
+		"PreCompact": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "pre-compact"}},
+		}},
+		"PostCompact": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "post-compact"}},
+		}},
+	}, &hookExecRecorder{})
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		Hooks:    fakeHooks,
+		Logger:   slog.Default(),
+	})
+	defer eng.Close()
+
+	eng.fireCompactHooks(context.Background(), "test_trigger", "pre")
+	eng.fireCompactHooks(context.Background(), "test_trigger", "post")
+}
+
+// ---------------------------------------------------------------------------
+// applyBudget — with contentReplacementState
+// ---------------------------------------------------------------------------
+
+func TestApplyBudget_WithContent(t *testing.T) {
+	mp := &testProvider{}
+	eng := New(&Params{Provider: mp, Model: "test"})
+	defer eng.Close()
+
+	// Set up contentReplacementState
+	eng.contentReplacementState = toolresult.NewContentReplacementState()
+	eng.sessionID = "test-session"
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      types.ContentTypeToolResult,
+					ToolUseID: "t1",
+					ID:        "r1",
+					Name:      "Bash",
+					Content:   json.RawMessage(`"some tool output that is long enough to trigger budget"`),
+				},
+			},
+		},
+	}
+
+	result := eng.applyBudget(msgs)
+	if len(result) != 1 {
+		t.Errorf("applyBudget with state: expected 1 msg, got %d", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MCPTool.Call — in-memory test server
+// ---------------------------------------------------------------------------
+
+func TestExecuteTool_StreamingError(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"stream_err": &streamingErrorTool{name: "stream_err"},
+	}
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "stream_err",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	executor.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Errorf("stream_err should produce error, got IsError=%v", tt.resultBlocks[0].IsError)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// streamingErrorTool — tool that returns error on ExecuteStream
+// ---------------------------------------------------------------------------
+
+type streamingErrorTool struct{ name string }
+
+type hookExecRecorder struct{}
+
+func (h *hookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration) hooks.HookResult {
+	return hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, HookName: command}
+}
+
+type blockingHookExecRecorder struct {
+	blockResult *hooks.HookResult
+}
+
+func (h *blockingHookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration) hooks.HookResult {
+	if h.blockResult != nil {
+		return *h.blockResult
+	}
+	return hooks.HookResult{Outcome: hooks.HookOutcomeBlocking, Stderr: "blocked", HookName: command}
+}
+
+func (t *streamingErrorTool) Name() string                                { return t.name }
+func (t *streamingErrorTool) Aliases() []string                           { return nil }
+func (t *streamingErrorTool) Description(json.RawMessage) (string, error) { return t.name, nil }
+func (t *streamingErrorTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (t *streamingErrorTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+	return nil, errors.New("stream error")
+}
+func (t *streamingErrorTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, errors.New("call error")
+}
+func (t *streamingErrorTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *streamingErrorTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *streamingErrorTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *streamingErrorTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *streamingErrorTool) IsEnabled() bool                           { return true }
+func (t *streamingErrorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *streamingErrorTool) Prompt() string                            { return "" }
+func (t *streamingErrorTool) RenderResult(any) string                   { return "error" }
+func (*streamingErrorTool) MaxResultSize() int                          { return 50000 }
+
+// ---------------------------------------------------------------------------
+// executeTool — PostToolUseHook failure path
+// ---------------------------------------------------------------------------
+
+func TestExecuteTool_PostToolUseHookFailure(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	// ToolWithStreaming that returns success, but PostToolUseHook logs an error
+	toolMap := map[string]tool.Tool{
+		"ok_tool": &streamingSuccessTool{name: "ok_tool"},
+	}
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+	exec.sessionID = "test-session"
+	// firePostToolUseHook with nil hooks is a no-op — covered by nil hooks path
+
+	tt := &TrackedTool{
+		ID:    "t1",
+		Name:  "ok_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block for ok_tool")
+	}
+	if tt.resultBlocks[0].IsError {
+		t.Error("ok_tool should not produce error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool — permission deny/ask paths
+// ---------------------------------------------------------------------------
+
+// mockPermChecker is a test double for permission.PermissionChecker.
+type mockPermChecker struct {
+	decision permission.Decision
+	hasRules bool
+}
+
+func (m *mockPermChecker) Check(_ string, _ json.RawMessage) permission.Decision {
+	return m.decision
+}
+func (m *mockPermChecker) HasRules() bool { return m.hasRules }
+
+func TestExecuteTool_PermissionDeny(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"deny_tool": &streamingSuccessTool{name: "deny_tool"},
+	}
+	rootCtx := t.Context()
+	sibCtx := t.Context()
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.siblingCtx = sibCtx
+	exec.sessionID = "test-session"
+	exec.permChecker = &mockPermChecker{
+		decision: permission.Decision{Action: permission.ActionDeny},
+		hasRules: true,
+	}
+
+	tt := &TrackedTool{
+		ID:    "t-deny",
+		Name:  "deny_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("result blocks empty for permission denied")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Fatalf("denied tool result should be error, got non-error block: %v", tt.resultBlocks[0])
+	}
+	found := false
+	for _, evt := range emitted {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("missing ToolEnd event for permission denied")
+	}
+}
+
+func TestExecuteTool_PermissionAsk_SessionCached(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"ask_tool": &streamingSuccessTool{name: "ask_tool"},
+	}
+	rootCtx := t.Context()
+	sibCtx := t.Context()
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.siblingCtx = sibCtx
+	exec.sessionID = "test-session"
+	exec.permChecker = &mockPermChecker{
+		decision: permission.Decision{Action: permission.ActionAsk},
+		hasRules: true,
+	}
+	// Pre-populate session cache so askUser returns allow without blocking
+	exec.sessionAllowed = map[string]bool{"ask_tool": true}
+
+	tt := &TrackedTool{
+		ID:    "t-ask",
+		Name:  "ask_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block")
+	}
+	if tt.resultBlocks[0].IsError {
+		t.Error("cached permission should allow tool execution")
+	}
+}
+
+func TestExecuteTool_PermissionAsk_Rejected(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+		if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+			evt.PermissionAsk.ResponseCh <- types.UserDecisionDeny
+		}
+	}
+
+	toolMap := map[string]tool.Tool{
+		"ask_tool": &streamingSuccessTool{name: "ask_tool"},
+	}
+	rootCtx := t.Context()
+	sibCtx := t.Context()
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.siblingCtx = sibCtx
+	exec.sessionID = "test-session"
+	exec.permChecker = &mockPermChecker{
+		decision: permission.Decision{Action: permission.ActionAsk},
+		hasRules: true,
+	}
+
+	tt := &TrackedTool{
+		ID:    "t-ask-rej",
+		Name:  "ask_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("result blocks empty for user deny")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Fatalf("user deny should produce error result, got: %v", tt.resultBlocks[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool — PreToolUse hook block path
+// ---------------------------------------------------------------------------
+
+func TestExecuteTool_PreToolUseHookBlock(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"hooked_tool": &streamingSuccessTool{name: "hooked_tool"},
+	}
+	rootCtx := t.Context()
+	sibCtx := t.Context()
+
+	fakeHooks := hooks.NewHooks(hooks.HooksConfig{
+		"PreToolUse": []hooks.HookMatcher{{
+			Matcher: "",
+			Hooks:   []hooks.HookConfig{{Type: hooks.HookTypeCommand, Command: "test-pre"}},
+		}},
+	}, &blockingHookExecRecorder{})
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.siblingCtx = sibCtx
+	exec.sessionID = "test-session"
+	exec.hooks = fakeHooks
+
+	tt := &TrackedTool{
+		ID:    "t-hook",
+		Name:  "hooked_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("result blocks empty for hook block")
+	}
+	if !tt.resultBlocks[0].IsError {
+		t.Fatalf("hook block should produce error result, got: %v", tt.resultBlocks[0])
+	}
+	found := false
+	for _, evt := range emitted {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && evt.ToolResult.IsError {
+			if strings.Contains(string(evt.ToolResult.Output), "PreToolUse hook") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected ToolEnd error event containing 'PreToolUse hook'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool — non-streaming nil result
+// ---------------------------------------------------------------------------
+
+type nilResultNonStreamingTool struct {
+	name string
+}
+
+func (t *nilResultNonStreamingTool) Name() string                                { return t.name }
+func (t *nilResultNonStreamingTool) Aliases() []string                           { return nil }
+func (t *nilResultNonStreamingTool) InputSchema() json.RawMessage                { return nil }
+func (t *nilResultNonStreamingTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (t *nilResultNonStreamingTool) IsEnabled() bool                             { return true }
+func (t *nilResultNonStreamingTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *nilResultNonStreamingTool) MaxResultSize() int      { return 50000 }
+func (t *nilResultNonStreamingTool) Prompt() string          { return "" }
+func (t *nilResultNonStreamingTool) RenderResult(any) string { return "" }
+func (t *nilResultNonStreamingTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil
+}
+func (t *nilResultNonStreamingTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *nilResultNonStreamingTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *nilResultNonStreamingTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *nilResultNonStreamingTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+
+func TestExecuteTool_NonStreamingNilResult(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"nil_tool": &nilResultNonStreamingTool{name: "nil_tool"},
+	}
+	rootCtx := t.Context()
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.sessionID = "test-session"
+
+	tt := &TrackedTool{
+		ID:    "t-nil",
+		Name:  "nil_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	if len(tt.resultBlocks) == 0 {
+		t.Fatal("expected result block for nil result")
+	}
+	if tt.resultBlocks[0].IsError {
+		t.Error("nil result should not be an error")
+	}
+	if string(tt.resultBlocks[0].Content) != "null" {
+		t.Errorf("expected 'null' content for nil result, got %q", string(tt.resultBlocks[0].Content))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeTool — isBackgroundResult path (non-streaming)
+// ---------------------------------------------------------------------------
+
+type backgroundNonStreamTool struct {
+	name string
+}
+
+func (t *backgroundNonStreamTool) Name() string                                { return t.name }
+func (t *backgroundNonStreamTool) Aliases() []string                           { return nil }
+func (t *backgroundNonStreamTool) InputSchema() json.RawMessage                { return nil }
+func (t *backgroundNonStreamTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (t *backgroundNonStreamTool) IsEnabled() bool                             { return true }
+func (t *backgroundNonStreamTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *backgroundNonStreamTool) MaxResultSize() int      { return 50000 }
+func (t *backgroundNonStreamTool) Prompt() string          { return "" }
+func (t *backgroundNonStreamTool) RenderResult(any) string { return "background done" }
+func (t *backgroundNonStreamTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}, nil
+}
+func (t *backgroundNonStreamTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *backgroundNonStreamTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *backgroundNonStreamTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *backgroundNonStreamTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+
+func TestExecuteTool_NonStreamingBackgroundResult(t *testing.T) {
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	toolMap := map[string]tool.Tool{
+		"bg_tool": &backgroundNonStreamTool{name: "bg_tool"},
+	}
+	rootCtx := t.Context()
+
+	exec := NewStreamingToolExecutor(toolMap, nil, emit, rootCtx)
+	exec.sessionID = "test-session"
+
+	tt := &TrackedTool{
+		ID:    "t-bg",
+		Name:  "bg_tool",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{}`),
+	}
+	exec.executeTool(tt)
+
+	found := false
+	for _, evt := range emitted {
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil {
+			if !evt.ToolResult.IsBackground {
+				t.Error("expected IsBackground=true for async-launched sub-query")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected ToolEnd event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyBudget — content replacement paths
+// ---------------------------------------------------------------------------
+
+func TestApplyBudget_WithContentReplacement(t *testing.T) {
+	eng := New(&Params{})
+	defer eng.Close()
+
+	originalContent := json.RawMessage(`{"output":"this is a very long output that should be truncated by the budget enforcement"}`)
+	eng.contentReplacementState = &toolresult.ContentReplacementState{
+		SeenIDs:      map[string]bool{"tc1": true},
+		Replacements: map[string]string{"tc1": "[truncated]"},
+	}
+
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{
+					Type:      "tool_result",
+					ToolUseID: "tc1",
+					Content:   originalContent,
+				},
+			},
+		},
+	}
+
+	result := eng.applyBudget(msgs)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result) == 0 || len(result[0].Content) == 0 {
+		t.Fatal("result has no content blocks")
+	}
+	got := string(result[0].Content[0].Content)
+	if got == string(originalContent) {
+		t.Error("content was not replaced by budget enforcement")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StreamingToolExecutor — buildToolCtx
+// ---------------------------------------------------------------------------
+
+func TestStreamingToolExecutor_BuildToolCtx(t *testing.T) {
+	rootCtx := t.Context()
+
+	emit := func(types.QueryEvent) {}
+	exec := NewStreamingToolExecutor(nil, nil, emit, rootCtx)
+	exec.sessionID = "test-session"
+
+	tctx := exec.buildToolCtx("tool-123")
+	if tctx == nil {
+		t.Fatal("expected non-nil ToolUseContext")
+	}
+	if tctx.ToolUseID != "tool-123" {
+		t.Errorf("expected ToolUseID=tool-123, got %q", tctx.ToolUseID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getToolDescription — input field extraction
+// ---------------------------------------------------------------------------
+
+func TestGetToolDescription_Command(t *testing.T) {
+	tt := &TrackedTool{
+		Name:  "Bash",
+		Input: json.RawMessage(`{"command":"ls -la /some/very/long/path/that/exceeds/40/chars"}`),
+	}
+	got := getToolDescription(tt)
+	if !strings.Contains(got, "Bash(") {
+		t.Errorf("expected Bash(...), got %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected truncation marker for >40 chars, got %q", got)
+	}
+}
+
+func TestGetToolDescription_FilePath(t *testing.T) {
+	tt := &TrackedTool{
+		Name:  "Read",
+		Input: json.RawMessage(`{"file_path":"/tmp/test.txt"}`),
+	}
+	got := getToolDescription(tt)
+	if got != "Read(/tmp/test.txt)" {
+		t.Errorf("expected Read(/tmp/test.txt), got %q", got)
+	}
+}
+
+func TestGetToolDescription_Pattern(t *testing.T) {
+	tt := &TrackedTool{
+		Name:  "Grep",
+		Input: json.RawMessage(`{"pattern":"TODO"}`),
+	}
+	got := getToolDescription(tt)
+	if got != "Grep(TODO)" {
+		t.Errorf("expected Grep(TODO), got %q", got)
+	}
+}
+
+func TestGetToolDescription_NoFields(t *testing.T) {
+	tt := &TrackedTool{
+		Name:  "Tool",
+		Input: json.RawMessage(`{"other":"value"}`),
+	}
+	got := getToolDescription(tt)
+	if got != "Tool" {
+		t.Errorf("expected Tool, got %q", got)
+	}
+}
+
+func TestGetToolDescription_InvalidJSON(t *testing.T) {
+	tt := &TrackedTool{
+		Name:  "Tool",
+		Input: json.RawMessage(`{bad`),
+	}
+	got := getToolDescription(tt)
+	if got != "Tool" {
+		t.Errorf("expected Tool for invalid JSON, got %q", got)
+	}
+}
+
+// chanDispatcher is a test EventDispatcher that sends events to a channel.
+type chanDispatcher struct {
+	ch chan<- types.QueryEvent
+}
+
+func (d *chanDispatcher) Dispatch(event types.QueryEvent) {
+	d.ch <- event
+}
+
+// ---------------------------------------------------------------------------
+// Query — async wrapper integration test
+// ---------------------------------------------------------------------------
+
+func TestQuery_EmitsQueryStart(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 10)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	mp := &mockProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "hi"}},
+		{Type: "message_stop"},
+	}, nil)
+
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: dispatcher,
+	})
+	defer eng.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eng.Query(ctx, "hello", nil)
+
+	// Wait for EventQueryStart
+	select {
+	case evt := <-eventCh:
+		if evt.Type != types.EventQueryStart {
+			t.Errorf("expected EventQueryStart, got %v", evt.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for EventQueryStart")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProcessNotifications — async wrapper integration test
+// ---------------------------------------------------------------------------
+
+func TestProcessNotifications_EmptyDrain(t *testing.T) {
+	eng := New(&Params{})
+	defer eng.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// No notifications — ProcessNotifications goroutine returns immediately
+	eng.ProcessNotifications(ctx, nil)
+	// Give goroutine time to run
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestProcessNotifications_WithPending(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 10)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	mp := &mockProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "ok"}},
+		{Type: "message_stop"},
+	}, nil)
+
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: dispatcher,
+	})
+	defer eng.Close()
+
+	// Push a notification
+	eng.EnqueueNotification(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("notification")},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	eng.ProcessNotifications(ctx, nil)
+
+	// Should emit EventQueryStart for the notification.
+	// Engine may emit notification_pending first — drain it.
+	var gotQueryStart bool
+	for !gotQueryStart {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryStart {
+				gotQueryStart = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for EventQueryStart from notification")
+		}
 	}
 }

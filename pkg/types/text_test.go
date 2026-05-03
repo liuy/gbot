@@ -2,6 +2,49 @@ package types
 
 import "testing"
 
+func TestEstimateTokens_Empty(t *testing.T) {
+	t.Parallel()
+	if got := EstimateTokens(""); got != 0 {
+		t.Errorf("EstimateTokens(%q) = %d, want 0", "", got)
+	}
+}
+
+func TestEstimateTokens_ASCII(t *testing.T) {
+	t.Parallel()
+	// "abcd" = 4 chars, non-CJK = 1 token per 4 chars = 1 token
+	got := EstimateTokens("abcd")
+	if got != 1 {
+		t.Errorf("EstimateTokens(%q) = %d, want 1", "abcd", got)
+	}
+}
+
+func TestEstimateTokens_CJK(t *testing.T) {
+	t.Parallel()
+	// "中文" = 2 CJK chars, 2 * 1.5 = 3 tokens
+	got := EstimateTokens("中文")
+	if got != 3 {
+		t.Errorf("EstimateTokens(%q) = %d, want 3", "中文", got)
+	}
+}
+
+func TestEstimateTokens_Mixed(t *testing.T) {
+	t.Parallel()
+	// "hi中" = 2 non-CJK + 1 CJK = 0 + 1 = 1 token
+	got := EstimateTokens("hi中")
+	if got != 1 {
+		t.Errorf("EstimateTokens(%q) = %d, want 1", "hi中", got)
+	}
+}
+
+func TestEstimateTokens_Long(t *testing.T) {
+	t.Parallel()
+	// 32 Latin chars = 8 tokens; 10 CJK chars = 15 tokens; total = 23
+	got := EstimateTokens("aaaaaaaaaabbbbbbbbbbccccccccccdd" + "中中中中中中中中中中")
+	if got != 23 {
+		t.Errorf("EstimateTokens(long mixed) = %d, want 22", got)
+	}
+}
+
 func TestIsCJK_CJKUnifiedIdeographs(t *testing.T) {
 	t.Parallel()
 	if !IsCJK('中') {
