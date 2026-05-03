@@ -1134,18 +1134,24 @@ func (e *Engine) handleStreamError(err error) types.LoopAction {
 }
 
 // computeSummary returns a human-readable summary for a tool invocation.
-// Uses tool.Description() when available, falls back to partial JSON extraction.
+// Fallback chain: ToolWithSummary → Description() → extractSummaryFromPartial.
 func (e *Engine) computeSummary(name string, input json.RawMessage) string {
 	if len(input) == 0 {
 		return ""
 	}
-	// Try tool.Description() first (works for complete JSON)
 	if t, ok := e.tools[name]; ok {
+		// 1. Try ToolWithSummary (MCP tools with SearchHint or param extraction)
+		if ts, ok := t.(tool.ToolWithSummary); ok {
+			if s := ts.Summary(input); s != "" {
+				return s
+			}
+		}
+		// 2. Fallback: Description() for built-in tools
 		if desc, err := t.Description(input); err == nil && desc != "" {
 			return desc
 		}
 	}
-	// Fallback: extract from partial JSON via string matching
+	// 3. Final: extract from partial JSON
 	return extractSummaryFromPartial(name, string(input))
 }
 
@@ -1160,6 +1166,12 @@ func extractSummaryFromPartial(name, partial string) string {
 		return extractJSONStringField(partial, "file_path", "", 40)
 	case "Glob", "Grep", "fileglob", "searchcode":
 		return extractJSONStringField(partial, "pattern", "", 40)
+	}
+	// MCP tools and unknown tools: try common param names
+	for _, field := range []string{"url", "query", "file_path", "pattern", "command", "path"} {
+		if v := extractJSONStringField(partial, field, "", 60); v != "" {
+			return v
+		}
 	}
 	return ""
 }

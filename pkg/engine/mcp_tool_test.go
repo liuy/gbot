@@ -321,6 +321,81 @@ func (s *stubTool) IsReadOnly(json.RawMessage) bool        { return false }
 func (s *stubTool) IsDestructive(json.RawMessage) bool     { return false }
 func (s *stubTool) IsConcurrencySafe(json.RawMessage) bool { return false }
 
+func TestMCPTool_Summary_WithSearchHint(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		SearchHint: "fetch web pages",
+	}, nil)
+
+	got := tl.Summary(nil)
+	if got != "fetch web pages" {
+		t.Errorf("Summary() = %q, want %q", got, "fetch web pages")
+	}
+}
+
+func TestMCPTool_Summary_ExtractsURL(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{}, nil)
+
+	got := tl.Summary(json.RawMessage(`{"url":"https://example.com/page"}`))
+	if got != "https://example.com/page" {
+		t.Errorf("Summary() = %q, want %q", got, "https://example.com/page")
+	}
+}
+
+func TestMCPTool_Summary_ExtractsQuery(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{}, nil)
+
+	got := tl.Summary(json.RawMessage(`{"query":"find files"}`))
+	if got != "find files" {
+		t.Errorf("Summary() = %q, want %q", got, "find files")
+	}
+}
+
+func TestMCPTool_Summary_EmptyInput(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{}, nil)
+
+	got := tl.Summary(nil)
+	if got != "" {
+		t.Errorf("Summary() = %q, want empty", got)
+	}
+}
+
+func TestMCPTool_Summary_SearchHintOverridesParams(t *testing.T) {
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		SearchHint: "search files",
+	}, nil)
+
+	got := tl.Summary(json.RawMessage(`{"url":"https://example.com"}`))
+	if got != "search files" {
+		t.Errorf("Summary() = %q, want SearchHint %q", got, "search files")
+	}
+}
+
+func TestExtractCommonParams(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"url field", `{"url":"https://example.com"}`, "https://example.com"},
+		{"query field", `{"query":"search term"}`, "search term"},
+		{"file_path field", `{"file_path":"/tmp/test.go"}`, "/tmp/test.go"},
+		{"pattern field", `{"pattern":"*.go"}`, "*.go"},
+		{"command field", `{"command":"ls -la"}`, "ls -la"},
+		{"path field", `{"path":"/home/user"}`, "/home/user"},
+		{"url priority over query", `{"url":"https://x.com","query":"test"}`, "https://x.com"},
+		{"no match", `{"something":"value"}`, ""},
+		{"empty input", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractCommonParams(tt.input)
+			if got != tt.want {
+				t.Errorf("extractCommonParams(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMCPTool_DestructiveProperties(t *testing.T) {
 	tl := NewMCPTool(mcp.DiscoveredTool{
 		Annotations: mcp.ToolAnnotations{

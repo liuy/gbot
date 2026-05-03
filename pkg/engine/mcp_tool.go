@@ -33,6 +33,11 @@ func NewMCPTool(info mcp.DiscoveredTool, registry *mcp.Registry) *MCPTool {
 	return &MCPTool{info: info, registry: registry}
 }
 
+// SearchHint returns a short, curated summary for the tool, or empty string if none.
+func (t *MCPTool) SearchHint() string {
+	return t.info.SearchHint
+}
+
 func (t *MCPTool) Name() string                 { return t.info.Name }
 func (t *MCPTool) Aliases() []string            { return nil }
 func (t *MCPTool) InputSchema() json.RawMessage { return t.info.InputSchema }
@@ -136,4 +141,23 @@ func (t *MCPTool) IsDestructive(_ json.RawMessage) bool {
 func (t *MCPTool) IsConcurrencySafe(_ json.RawMessage) bool {
 	// Remote MCP tools are concurrency-safe (they don't share local state).
 	return true
+}
+
+// Summary implements tool.ToolWithSummary.
+// Returns SearchHint (curated short text) or extracts common params from input.
+func (t *MCPTool) Summary(input json.RawMessage) string {
+	if t.info.SearchHint != "" {
+		return t.info.SearchHint
+	}
+	return extractCommonParams(string(input))
+}
+
+// extractCommonParams tries common parameter field names from potentially incomplete JSON.
+func extractCommonParams(input string) string {
+	for _, field := range []string{"url", "query", "file_path", "pattern", "command", "path"} {
+		if v := extractJSONStringField(input, field, "", 60); v != "" {
+			return v
+		}
+	}
+	return ""
 }

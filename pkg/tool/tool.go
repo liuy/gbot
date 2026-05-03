@@ -170,6 +170,15 @@ type ToolWithWireFormat interface {
 	FormatWireResult(data any) string
 }
 
+// ToolWithSummary is an optional interface for tools that provide custom
+// TUI header summaries. Tools implementing this interface return a short
+// string (e.g., a URL, file path, or command) for display in the tool card.
+// Source: Tool.ts:539 — getToolUseSummary?(input) string | null
+type ToolWithSummary interface {
+	Tool
+	Summary(input json.RawMessage) string
+}
+
 // ---------------------------------------------------------------------------
 // ToolDef — source: Tool.ts:707-792
 // ---------------------------------------------------------------------------
