@@ -47,10 +47,10 @@ func (m *minimalTool) Name() string                                { return "tes
 func (m *minimalTool) Aliases() []string                           { return nil }
 func (m *minimalTool) Description(json.RawMessage) (string, error) { return "test", nil }
 func (m *minimalTool) InputSchema() json.RawMessage                { return nil }
-func (m *minimalTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (m *minimalTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (m *minimalTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (m *minimalTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (m *minimalTool) IsReadOnly(json.RawMessage) bool        { return true }
@@ -716,10 +716,10 @@ func (t *nonStreamingSuccessTool) Name() string                                {
 func (t *nonStreamingSuccessTool) Aliases() []string                           { return nil }
 func (t *nonStreamingSuccessTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *nonStreamingSuccessTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *nonStreamingSuccessTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *nonStreamingSuccessTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: t.data}, nil
 }
-func (t *nonStreamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *nonStreamingSuccessTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *nonStreamingSuccessTool) IsReadOnly(json.RawMessage) bool        { return true }
@@ -837,7 +837,7 @@ func (t *slowCancelTool) Name() string                                { return "
 func (t *slowCancelTool) Aliases() []string                           { return nil }
 func (t *slowCancelTool) Description(json.RawMessage) (string, error) { return "slow", nil }
 func (t *slowCancelTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.onStarted != nil {
 		t.onStarted()
 	}
@@ -845,7 +845,7 @@ func (t *slowCancelTool) Call(ctx context.Context, input json.RawMessage, tctx *
 	t.onCancel()
 	return nil, ctx.Err()
 }
-func (t *slowCancelTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *slowCancelTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *slowCancelTool) IsReadOnly(json.RawMessage) bool           { return false }
@@ -867,11 +867,11 @@ func (t *neverRunTool) Name() string                                { return "ne
 func (t *neverRunTool) Aliases() []string                           { return nil }
 func (t *neverRunTool) Description(json.RawMessage) (string, error) { return "never_run", nil }
 func (t *neverRunTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *neverRunTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *neverRunTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	t.onStart()
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *neverRunTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *neverRunTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *neverRunTool) IsReadOnly(json.RawMessage) bool           { return false }
@@ -905,7 +905,7 @@ func (t *discardSlowTool) Name() string                                { return 
 func (t *discardSlowTool) Aliases() []string                           { return nil }
 func (t *discardSlowTool) Description(json.RawMessage) (string, error) { return "discard_slow", nil }
 func (t *discardSlowTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	t.mu.Lock()
 	t.started = true
 	t.mu.Unlock()
@@ -916,7 +916,7 @@ func (t *discardSlowTool) Call(ctx context.Context, input json.RawMessage, tctx 
 	close(t.done)
 	return nil, ctx.Err()
 }
-func (t *discardSlowTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *discardSlowTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *discardSlowTool) IsReadOnly(json.RawMessage) bool           { return false }
@@ -1581,7 +1581,7 @@ func (t *captureMessagesTool) Name() string                                { ret
 func (t *captureMessagesTool) Aliases() []string                           { return nil }
 func (t *captureMessagesTool) Description(json.RawMessage) (string, error) { return "capture", nil }
 func (t *captureMessagesTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *captureMessagesTool) Call(_ context.Context, _ json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *captureMessagesTool) Call(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if tctx != nil {
 		t.mu.Lock()
 		t.captured = tctx.Messages
@@ -1589,7 +1589,7 @@ func (t *captureMessagesTool) Call(_ context.Context, _ json.RawMessage, tctx *t
 	}
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *captureMessagesTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *captureMessagesTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *captureMessagesTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -1671,7 +1671,7 @@ func TestStreamingToolExecutor_SetMessages_WithExistingTctx(t *testing.T) {
 	captureTool := &captureMessagesTool{}
 	toolMap := map[string]tool.Tool{"capture": captureTool}
 
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		ToolUseID: "tu_parent",
 		Messages:  oldMessages,
 	}
@@ -2164,7 +2164,7 @@ func TestMarshalToolOutput_BuildToolWithWireFormat(t *testing.T) {
 
 	tk := tool.BuildTool(tool.ToolDef{
 		Name_: "WireFactory",
-		Call_: func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return nil, nil
 		},
 		InputSchema_: func() json.RawMessage { return nil },
@@ -2203,7 +2203,7 @@ func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
 	// Standard tool without FormatWireResult_ uses double-wrapped JSON
 	tk := tool.BuildTool(tool.ToolDef{
 		Name_: "DefaultFactory",
-		Call_: func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return nil, nil
 		},
 		InputSchema_: func() json.RawMessage { return nil },
@@ -2496,13 +2496,13 @@ func (t *callbackTool) Name() string                                { return t.n
 func (t *callbackTool) Aliases() []string                           { return nil }
 func (t *callbackTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *callbackTool) InputSchema() json.RawMessage                { return nil }
-func (t *callbackTool) Call(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *callbackTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.onCall != nil {
 		t.onCall()
 	}
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *callbackTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *callbackTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *callbackTool) IsReadOnly(json.RawMessage) bool        { return true }
@@ -3724,13 +3724,13 @@ func (t *streamingSuccessTool) Name() string                                { re
 func (t *streamingSuccessTool) Aliases() []string                           { return nil }
 func (t *streamingSuccessTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *streamingSuccessTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *streamingSuccessTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+func (t *streamingSuccessTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "streamed"}, nil
 }
-func (t *streamingSuccessTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *streamingSuccessTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "non-streamed"}, nil
 }
-func (t *streamingSuccessTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *streamingSuccessTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *streamingSuccessTool) IsReadOnly(json.RawMessage) bool        { return true }
@@ -3750,10 +3750,10 @@ func (t *errorTool) Name() string                                { return t.name
 func (t *errorTool) Aliases() []string                           { return nil }
 func (t *errorTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *errorTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *errorTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *errorTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, errors.New("tool error")
 }
-func (t *errorTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *errorTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *errorTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -3771,10 +3771,10 @@ func (t *nilResultTool) Name() string                                { return t.
 func (t *nilResultTool) Aliases() []string                           { return nil }
 func (t *nilResultTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *nilResultTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *nilResultTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *nilResultTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (t *nilResultTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *nilResultTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *nilResultTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -3792,10 +3792,10 @@ func (t *interruptBlockTool) Name() string                                { retu
 func (t *interruptBlockTool) Aliases() []string                           { return nil }
 func (t *interruptBlockTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *interruptBlockTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *interruptBlockTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *interruptBlockTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "executed"}, nil
 }
-func (t *interruptBlockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *interruptBlockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *interruptBlockTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -4160,13 +4160,13 @@ func (t *streamingErrorTool) Name() string                                { retu
 func (t *streamingErrorTool) Aliases() []string                           { return nil }
 func (t *streamingErrorTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *streamingErrorTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *streamingErrorTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+func (t *streamingErrorTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 	return nil, errors.New("stream error")
 }
-func (t *streamingErrorTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *streamingErrorTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, errors.New("call error")
 }
-func (t *streamingErrorTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *streamingErrorTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *streamingErrorTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -4422,10 +4422,10 @@ func (t *nilResultNonStreamingTool) InterruptBehavior() tool.InterruptBehavior {
 func (t *nilResultNonStreamingTool) MaxResultSize() int      { return 50000 }
 func (t *nilResultNonStreamingTool) Prompt() string          { return "" }
 func (t *nilResultNonStreamingTool) RenderResult(any) string { return "" }
-func (t *nilResultNonStreamingTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *nilResultNonStreamingTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (t *nilResultNonStreamingTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *nilResultNonStreamingTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *nilResultNonStreamingTool) IsReadOnly(json.RawMessage) bool        { return true }
@@ -4484,10 +4484,10 @@ func (t *backgroundNonStreamTool) InterruptBehavior() tool.InterruptBehavior {
 func (t *backgroundNonStreamTool) MaxResultSize() int      { return 50000 }
 func (t *backgroundNonStreamTool) Prompt() string          { return "" }
 func (t *backgroundNonStreamTool) RenderResult(any) string { return "background done" }
-func (t *backgroundNonStreamTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *backgroundNonStreamTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}, nil
 }
-func (t *backgroundNonStreamTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *backgroundNonStreamTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *backgroundNonStreamTool) IsReadOnly(json.RawMessage) bool        { return true }

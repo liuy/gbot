@@ -24,10 +24,10 @@ func (m *mockTool) Name() string                                                
 func (m *mockTool) Aliases() []string                                               { return nil }
 func (m *mockTool) Description(json.RawMessage) (string, error)                     { return "", nil }
 func (m *mockTool) InputSchema() json.RawMessage                                    { return nil }
-func (m *mockTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (m *mockTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (m *mockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (m *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (m *mockTool) IsReadOnly(json.RawMessage) bool      { return false }
@@ -387,7 +387,7 @@ func TestCallFork_DetachedContext(t *testing.T) {
 			types.NewToolUseBlock("call_fork_1", "Agent", json.RawMessage(`{}`)),
 		},
 	}
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		ToolUseID: "call_fork_1",
 		Messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("search")}},
@@ -453,7 +453,7 @@ func TestCallPassesToolUseID(t *testing.T) {
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it"}`)
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		ToolUseID: "call_abc123",
 	}
 	result, err := at.Call(context.Background(), input, tctx)
@@ -718,7 +718,7 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
 
 	input := json.RawMessage(`{"description":"bg task","prompt":"search code","run_in_background":true}`)
-	result, err := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_fork_1"})
+	result, err := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_fork_1"})
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
 	}
@@ -774,7 +774,7 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 
 	// subagent_type="Explore" should override default "fork"
 	input := json.RawMessage(`{"description":"explore","prompt":"search","run_in_background":true,"subagent_type":"Explore"}`)
-	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_exp"})
+	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_exp"})
 	sqr := result.Data.(*types.SubQueryResult)
 	at.forkReg.Wait(sqr.AgentID)
 
@@ -804,7 +804,7 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 
 	// name does NOT override subagent_type — name is only for SendMessage addressing
 	input := json.RawMessage(`{"description":"audit","prompt":"check","run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
-	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_audit"})
+	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_audit"})
 	sqr := result.Data.(*types.SubQueryResult)
 	at.forkReg.Wait(sqr.AgentID)
 
@@ -830,7 +830,7 @@ func TestCallFork_RecursiveGuard(t *testing.T) {
 	input := json.RawMessage(`{"description":"nested","prompt":"do it","run_in_background":true}`)
 
 	// Simulate being inside a fork child (messages contain fork-boilerplate)
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		ToolUseID: "call_nested",
 		Messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("<fork-boilerplate>STOP</fork-boilerplate>")}},
@@ -872,7 +872,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 	)
 
 	input := json.RawMessage(`{"description":"bg search","prompt":"find TODOs","run_in_background":true}`)
-	result, _ := at.Call(context.Background(), input, &types.ToolUseContext{ToolUseID: "call_notif"})
+	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_notif"})
 
 	// Wait for fork to complete via registry
 	sqr := result.Data.(*types.SubQueryResult)

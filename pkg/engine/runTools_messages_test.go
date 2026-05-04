@@ -22,7 +22,7 @@ func TestExecuteAllResult_NewMessagesCollected(t *testing.T) {
 		"msg_tool": tool.BuildTool(tool.ToolDef{
 			Name_:        "msg_tool",
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-			Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
 					Data:       "ok",
 					NewMessages: []types.Message{msg1, msg2},
@@ -64,7 +64,7 @@ func TestExecuteAllResult_NoNewMessages(t *testing.T) {
 		"no_msg_tool": tool.BuildTool(tool.ToolDef{
 			Name_:        "no_msg_tool",
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-			Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		}),
@@ -90,7 +90,7 @@ func TestExecuteAllResult_MultipleToolsWithMessages(t *testing.T) {
 		"a_tool": tool.BuildTool(tool.ToolDef{
 			Name_:        "a_tool",
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-			Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
 					Data:       "a",
 					NewMessages: []types.Message{
@@ -102,7 +102,7 @@ func TestExecuteAllResult_MultipleToolsWithMessages(t *testing.T) {
 		"b_tool": tool.BuildTool(tool.ToolDef{
 			Name_:        "b_tool",
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-			Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
 					Data:       "b",
 					NewMessages: []types.Message{
@@ -144,7 +144,7 @@ func TestExecuteAllResult_NilResultNoPanic(t *testing.T) {
 		"nil_tool": tool.BuildTool(tool.ToolDef{
 			Name_:        "nil_tool",
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-			Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, nil
 			},
 		}),

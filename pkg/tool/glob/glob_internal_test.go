@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 func TestExecute_GetwdFallback(t *testing.T) {
@@ -37,7 +37,7 @@ func TestExecute_InvalidGlobPattern(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 
 	// Use an invalid glob pattern that doublestar rejects
 	input := json.RawMessage(`{"pattern":"[invalid"}`)

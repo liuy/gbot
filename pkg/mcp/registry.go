@@ -507,6 +507,21 @@ func (r *Registry) GetConnection(serverName string) (ServerConnection, bool) {
 	return conn, ok
 }
 
+// PendingServerNames returns the names of servers that are still connecting.
+// Used by ToolSearch to inform the model about pending MCP servers.
+// Source: ToolSearchTool.ts:335-339 — getPendingServerNames()
+func (r *Registry) PendingServerNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var names []string
+	for name, conn := range r.connections {
+		if conn.ConnType() == "pending" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // GetConfigs returns all registered server configs.
 func (r *Registry) GetConfigs() map[string]ScopedMcpServerConfig {
 	r.mu.RLock()

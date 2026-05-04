@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // UpdateInput is the input schema for the TaskUpdate tool.
@@ -102,11 +101,13 @@ func NewTaskUpdate(list *List) tool.Tool {
 			}
 			return "#" + in.TaskID, nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskUpdate(list, input)
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:       true,
+		SearchHint_:        "update a task",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskUpdatePrompt(),
 		RenderResult_: func(data any) string {

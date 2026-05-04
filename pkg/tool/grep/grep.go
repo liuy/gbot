@@ -19,7 +19,6 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // Default cap on grep results when head_limit is unspecified.
@@ -190,7 +189,7 @@ func New() tool.Tool {
 
 // Execute searches file contents using ripgrep.
 // Source: GrepTool.ts:call() — 1:1 port.
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)

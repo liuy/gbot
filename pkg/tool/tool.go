@@ -13,6 +13,46 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// FileState — source: FileReadTool.ts — readFileState map entry
+// ---------------------------------------------------------------------------
+
+// FileState records what a file looked like when last read.
+// Used for deduplication (read same range again → file_unchanged stub)
+// and staleness detection (file changed on disk since read).
+// Source: FileReadTool.ts — readFileState map entry.
+type FileState struct {
+	Content       string // file content at read time
+	Timestamp     int64  // file mtime in milliseconds at read time
+	Offset        int    // offset used in this read (0 = no offset)
+	Limit         int    // limit used in this read (0 = no limit)
+	IsPartialView bool   // true if read was with offset/limit (partial)
+}
+
+// ---------------------------------------------------------------------------
+// ToolUseContext — source: Tool.ts:158-300
+// ---------------------------------------------------------------------------
+
+// ToolUseContext carries the execution context for each tool call.
+type ToolUseContext struct {
+	Ctx           context.Context
+	Options       ToolUseOptions
+	Messages      []types.Message
+	ToolUseID     string
+	WorkingDir    string
+	ReadFileState map[string]FileState // keyed by absolute file path
+}
+
+// ToolUseOptions holds the execution options.
+// Source: Tool.ts:159-179
+type ToolUseOptions struct {
+	Debug             bool
+	MainLoopModel     string
+	Verbose           bool
+	Tools             map[string]Tool // all tools map, aligned with TS options.tools
+	PendingMCPServers []string        // MCP pending server names
+}
+
+// ---------------------------------------------------------------------------
 // InterruptBehavior — source: Tool.ts:416
 // ---------------------------------------------------------------------------
 
@@ -69,11 +109,11 @@ type Tool interface {
 
 	// ── Execution ─────────────────────────────────────────
 	// Source: Tool.ts:379-385 — call(args, context, canUseTool, parentMessage, onProgress?)
-	Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error)
+	Call(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error)
 
 	// ── Permission ────────────────────────────────────────
 	// Source: Tool.ts:500-503
-	CheckPermissions(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult
+	CheckPermissions(input json.RawMessage, tctx *ToolUseContext) types.PermissionResult
 
 	// ── Behavioral Properties ─────────────────────────────
 	// Source: Tool.ts:404-434
@@ -112,7 +152,7 @@ type ToolResult struct {
 	// ContextModifier modifies the execution context for subsequent tools.
 	// Only honored for tools that aren't concurrency-safe.
 	// Source: StreamingToolExecutor.ts:388-395
-	ContextModifier func(*types.ToolUseContext) *types.ToolUseContext `json:"-"`
+	ContextModifier func(*ToolUseContext) *ToolUseContext `json:"-"`
 
 	// MCPMeta carries MCP protocol passthrough metadata.
 	MCPMeta *MCPMeta `json:"mcp_meta,omitempty"`
@@ -127,7 +167,7 @@ type MCPMeta struct {
 // ApplyContextModifier enforces the concurrency restriction.
 // Source: StreamingToolExecutor.ts:388-395
 // Concurrent-safe tools' context modifiers are silently ignored.
-func ApplyContextModifier(result *ToolResult, tctx *types.ToolUseContext, isConcurrencySafe bool) *types.ToolUseContext {
+func ApplyContextModifier(result *ToolResult, tctx *ToolUseContext, isConcurrencySafe bool) *ToolUseContext {
 	if result.ContextModifier == nil {
 		return tctx
 	}
@@ -159,7 +199,7 @@ type ProgressUpdate struct {
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
 type ToolWithStreaming interface {
 	Tool
-	ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
+	ExecuteStream(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
 }
 
 // ToolWithWireFormat is an optional interface for tools that need custom
@@ -179,6 +219,37 @@ type ToolWithSummary interface {
 	Summary(input json.RawMessage) string
 }
 
+// IsDeferredTool is an optional interface for tools that should be deferred
+// from the initial tool set and loaded on-demand via ToolSearch.
+// Source: TS prompt.ts:62-108 — isDeferredTool()
+type IsDeferredTool interface {
+	Tool
+	IsDeferred() bool
+}
+
+// ToolWithSearchHint is an optional interface for tools that provide a short
+// search hint for ToolSearch scoring.
+type ToolWithSearchHint interface {
+	Tool
+	SearchHint() string
+}
+
+// IsDeferred returns whether a tool should be deferred from the initial tool set.
+// Source: TS prompt.ts:62-108 — isDeferredTool()
+func IsDeferred(t Tool) bool {
+	d, ok := t.(IsDeferredTool)
+	return ok && d.IsDeferred()
+}
+
+// SearchHint returns the search hint for a tool, or empty string if none.
+func SearchHint(t Tool) string {
+	h, ok := t.(ToolWithSearchHint)
+	if !ok {
+		return ""
+	}
+	return h.SearchHint()
+}
+
 // ---------------------------------------------------------------------------
 // ToolDef — source: Tool.ts:707-792
 // ---------------------------------------------------------------------------
@@ -188,7 +259,7 @@ type ToolWithSummary interface {
 type ToolDef struct {
 	// Required fields (no defaults)
 	Name_       string
-	Call_       func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error)
+	Call_       func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error)
 	InputSchema_ func() json.RawMessage
 	Description_ func(input json.RawMessage) (string, error)
 
@@ -203,20 +274,24 @@ type ToolDef struct {
 	MaxResultSizeChars int                               // default: 50000
 
 	// Permission checking
-	CheckPermissions_ func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult
+	CheckPermissions_ func(input json.RawMessage, tctx *ToolUseContext) types.PermissionResult
 
 	// Result rendering
 	RenderResult_ func(data any) string // default: json.Marshal
 
 	// Optional streaming support
 	// If set, BuildTool returns a tool that also implements ToolWithStreaming.
-	ExecuteStream_ func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
+	ExecuteStream_ func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
 
 	// Optional wire format override for tool_result content sent to the LLM.
 	// If set, BuildTool returns a tool that also implements ToolWithWireFormat.
 	// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
 	FormatWireResult_ func(data any) string
-}
+
+		// Deferred loading
+		ShouldDefer_ bool   // mark tool as deferred for ToolSearch
+		SearchHint_  string // short description for search scoring
+	}
 
 // builtTool wraps a ToolDef with defaults applied.
 type builtTool struct {
@@ -233,7 +308,7 @@ type builtWireFormatTool struct {
 	builtTool
 }
 
-func (t *builtStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+func (t *builtStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 	return t.def.ExecuteStream_(ctx, input, tctx, onProgress)
 }
 
@@ -258,7 +333,7 @@ func BuildTool(def ToolDef) Tool {
 		def.IsEnabled_ = func() bool { return true }
 	}
 	if def.CheckPermissions_ == nil {
-		def.CheckPermissions_ = func(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+		def.CheckPermissions_ = func(json.RawMessage, *ToolUseContext) types.PermissionResult {
 			return types.PermissionAllowDecision{}
 		}
 	}
@@ -284,10 +359,10 @@ func (t *builtTool) Name() string                                          { ret
 func (t *builtTool) Aliases() []string                                     { return t.def.Aliases_ }
 func (t *builtTool) Description(input json.RawMessage) (string, error)     { return t.def.Description_(input) }
 func (t *builtTool) InputSchema() json.RawMessage                          { return t.def.InputSchema_() }
-func (t *builtTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+func (t *builtTool) Call(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 	return t.def.Call_(ctx, input, tctx)
 }
-func (t *builtTool) CheckPermissions(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+func (t *builtTool) CheckPermissions(input json.RawMessage, tctx *ToolUseContext) types.PermissionResult {
 	return t.def.CheckPermissions_(input, tctx)
 }
 func (t *builtTool) IsReadOnly(input json.RawMessage) bool      { return t.def.IsReadOnly_(input) }
@@ -299,3 +374,5 @@ func (t *builtTool) MaxResultSize() int                              { return t.
 
 func (t *builtTool) Prompt() string                             { return t.def.Prompt_ }
 func (t *builtTool) RenderResult(data any) string               { return t.def.RenderResult_(data) }
+func (t *builtTool) IsDeferred() bool                           { return t.def.ShouldDefer_ }
+func (t *builtTool) SearchHint() string                         { return t.def.SearchHint_ }

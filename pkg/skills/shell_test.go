@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,7 +21,7 @@ type mockExecutor struct {
 	errMsg   string
 }
 
-func (m *mockExecutor) Execute(_ *types.ToolUseContext, command string) (string, error) {
+func (m *mockExecutor) Execute(_ *tool.ToolUseContext, command string) (string, error) {
 	m.calls.Add(1)
 	if command == m.failCmd {
 		return "", &ShellCommandError{Pattern: command, Message: m.errMsg}

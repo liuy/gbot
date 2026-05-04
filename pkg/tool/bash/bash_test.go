@@ -10,7 +10,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -271,7 +270,7 @@ func TestExecute_WorkingDir(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	input := json.RawMessage(`{"command":"pwd"}`)
 	result, err := bash.Execute(context.Background(), input, tctx)
 	if err != nil {
@@ -551,7 +550,7 @@ func TestExecute_NilContext(t *testing.T) {
 func TestExecute_EmptyWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	tctx := &types.ToolUseContext{WorkingDir: ""}
+	tctx := &tool.ToolUseContext{WorkingDir: ""}
 	input := json.RawMessage(`{"command":"echo hello"}`)
 	result, err := bash.Execute(context.Background(), input, tctx)
 	if err != nil {
@@ -752,7 +751,7 @@ func TestExecute_WithToolContextCWD(t *testing.T) {
 
 	dir := t.TempDir()
 	input := json.RawMessage(`{"command":"pwd"}`)
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	result, err := bash.Execute(context.Background(), input, tctx)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)

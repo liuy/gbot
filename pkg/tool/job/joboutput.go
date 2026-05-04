@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // OutputInput is the input schema for the TaskOutput tool.
@@ -60,12 +59,14 @@ func NewJobOutput(reg Registry) tool.Tool {
 			}
 			return fmt.Sprintf("JobOutput(%s)", in.TaskID), nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeJobOutput(ctx, reg, input)
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:        true,
+		SearchHint_:         "read output/logs from a background task",
 		MaxResultSizeChars:   100000,
 		Prompt_: jobOutputPrompt(),
 		RenderResult_: func(data any) string {

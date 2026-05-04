@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // StopInput is the input schema for the TaskStop tool.
@@ -48,11 +47,13 @@ func NewJobStop(reg Registry) tool.Tool {
 			}
 			return fmt.Sprintf("Stop job %s", in.TaskID), nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeJobStop(reg, input)
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:        true,
+		SearchHint_:         "kill a running background task",
 		MaxResultSizeChars:   100000,
 		Prompt_: jobStopPrompt(),
 		RenderResult_: func(data any) string {

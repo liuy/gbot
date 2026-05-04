@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool/fileedit"
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 func TestNew(t *testing.T) {
@@ -637,8 +637,8 @@ func TestExecute_MustReadFirst_RejectsUnread(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("hello world\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"hello","new_string":"goodbye"}`)
 	_, err := fileedit.Execute(context.Background(), input, tctx)
@@ -661,8 +661,8 @@ func TestExecute_MustReadFirst_RejectsPartialRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			fp: {
 				Content:       "hello world\n",
 				Timestamp:     info.ModTime().UnixMilli(),
@@ -692,8 +692,8 @@ func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
 		t.Fatalf("Stat: %v", err)
 	}
 	oldMtime := info.ModTime().UnixMilli()
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			fp: {
 				Content:       "old content\n",
 				Timestamp:     oldMtime,
@@ -721,8 +721,8 @@ func TestExecute_MustReadFirst_AllowsNewFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "new.txt")
 	// File doesn't exist — no read required
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"","new_string":"hello new file\n"}`)
 	result, err := fileedit.Execute(context.Background(), input, tctx)
@@ -746,8 +746,8 @@ func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			fp: {
 				Content:       "hello world\n",
 				Timestamp:     info.ModTime().UnixMilli(),
@@ -846,9 +846,9 @@ func TestExecute_RelativePathWithWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		WorkingDir: dir,
-		ReadFileState: map[string]types.FileState{
+		ReadFileState: map[string]tool.FileState{
 			fp: {
 				Content:   "hello world\n",
 				Timestamp: info.ModTime().UnixMilli(),

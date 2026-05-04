@@ -11,7 +11,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -141,7 +140,7 @@ func New() tool.Tool {
 	})
 }
 
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)

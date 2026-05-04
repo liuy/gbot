@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // CreateInput is the input schema for the TaskCreate tool.
@@ -63,11 +62,13 @@ func NewTaskCreate(list *List) tool.Tool {
 			}
 			return in.Subject, nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskCreate(list, input)
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:       true,
+		SearchHint_:        "create a task in the task list",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskCreatePrompt(),
 		RenderResult_: func(data any) string {

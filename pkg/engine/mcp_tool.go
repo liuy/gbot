@@ -68,7 +68,7 @@ func (t *MCPTool) RenderResult(data any) string {
 
 // Call routes the tool invocation through MCP.
 // Source: client.ts:3029-3245 — callMCPTool
-func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Get connection from registry
 	conn, ok := t.registry.GetConnection(t.info.ServerName)
 	if !ok {
@@ -124,7 +124,7 @@ func extractMCPText(result *mcp.MCPToolCallResult) string {
 
 // CheckPermissions implements permission gating for MCP tools.
 // Source: TS getToolNameForPermissionCheck + destructiveHint prompt
-func (t *MCPTool) CheckPermissions(_ json.RawMessage, _ *types.ToolUseContext) types.PermissionResult {
+func (t *MCPTool) CheckPermissions(_ json.RawMessage, _ *tool.ToolUseContext) types.PermissionResult {
 	// MCP tools are allowed by default; destructive tools require confirmation
 	// handled at a higher level via the destructiveHint annotation.
 	return types.PermissionAllowDecision{}
@@ -136,6 +136,13 @@ func (t *MCPTool) IsReadOnly(_ json.RawMessage) bool {
 
 func (t *MCPTool) IsDestructive(_ json.RawMessage) bool {
 	return t.info.IsDestructive()
+}
+
+// IsDeferred implements IsDeferredTool interface.
+// MCP tools are deferred by default unless AlwaysLoad=true.
+// Source: TS prompt.ts:62-68 — alwaysLoad → false, isMcp → true
+func (t *MCPTool) IsDeferred() bool {
+	return !t.info.AlwaysLoad
 }
 
 func (t *MCPTool) IsConcurrencySafe(_ json.RawMessage) bool {

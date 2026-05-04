@@ -12,7 +12,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -398,8 +397,8 @@ func TestExecute_ContentChanged_NotRead(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("old"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","content":"new"}`)
 	_, err := filewrite.Execute(context.Background(), input, tctx)
@@ -421,8 +420,8 @@ func TestExecute_ContentChanged_ReadUnchanged(t *testing.T) {
 	}
 	info, _ := os.Stat(fp)
 	mtimeMs := info.ModTime().UnixMilli()
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:   "old",
 				Timestamp: mtimeMs,
@@ -453,8 +452,8 @@ func TestExecute_ContentChanged_Stale(t *testing.T) {
 	// Record old mtime
 	info, _ := os.Stat(fp)
 	oldMtime := info.ModTime().UnixMilli()
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:   "old",
 				Timestamp: oldMtime,
@@ -519,8 +518,8 @@ func TestExecute_UpdatesReadFileState(t *testing.T) {
 	// Record an old read state
 	info, _ := os.Stat(fp)
 	oldMtime := info.ModTime().UnixMilli()
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:   "old content",
 				Timestamp: oldMtime,
@@ -612,7 +611,7 @@ func TestExecute_ExpandsRelativePath(t *testing.T) {
 	fp := filepath.Join(dir, "rel.txt")
 
 	// Use ToolUseContext.WorkingDir to resolve relative path
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	// Write with relative path
 	input := json.RawMessage(`{"file_path":"rel.txt","content":"relative"}`)
 	result, err := filewrite.Execute(context.Background(), input, tctx)
@@ -646,8 +645,8 @@ func TestExecute_MustReadFirst_RejectsUnread(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No ReadFileState entry → must reject
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","content":"new"}`)
 	_, err := filewrite.Execute(context.Background(), input, tctx)
@@ -667,8 +666,8 @@ func TestExecute_MustReadFirst_RejectsPartialRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(fp)
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:       "existing",
 				Timestamp:     info.ModTime().UnixMilli(),
@@ -695,8 +694,8 @@ func TestExecute_Staleness_RejectsStaleRead(t *testing.T) {
 	}
 	info, _ := os.Stat(fp)
 	oldMtime := info.ModTime().UnixMilli()
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:       "old",
 				Timestamp:     oldMtime,
@@ -724,8 +723,8 @@ func TestExecute_MustReadFirst_AllowsNewFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "newfile.txt")
 	// File doesn't exist yet — no read required
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","content":"new file content"}`)
 	result, err := filewrite.Execute(context.Background(), input, tctx)
@@ -746,8 +745,8 @@ func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(fp)
-	tctx := &types.ToolUseContext{
-		ReadFileState: map[string]types.FileState{
+	tctx := &tool.ToolUseContext{
+		ReadFileState: map[string]tool.FileState{
 			expandPath(fp): {
 				Content:       "existing",
 				Timestamp:     info.ModTime().UnixMilli(),

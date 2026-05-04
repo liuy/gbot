@@ -145,7 +145,7 @@ func (m *mockProvider) addResponse(events []llm.StreamEvent, err error) {
 
 type mockTool struct {
 	name    string
-	callFn  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+	callFn  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
 	descFn  func(json.RawMessage) (string, error)
 	enabled bool
 }
@@ -161,13 +161,13 @@ func (t *mockTool) Description(input json.RawMessage) (string, error) {
 func (t *mockTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{}}`)
 }
-func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
 		return t.callFn(ctx, input, tctx)
 	}
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *mockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *mockTool) IsReadOnly(json.RawMessage) bool           { return true }
@@ -322,7 +322,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	mt := &mockTool{
 		name:    toolName,
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "file contents here"}, nil
 		},
 	}
@@ -380,7 +380,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 	mt := &mockTool{
 		name:    toolName,
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: globOutput{
 				Files: []string{"cmd/gbot/main.go"},
 				Count: 1,
@@ -465,7 +465,7 @@ func TestQuery_EventQueryEndCarriesErrorOnCancel(t *testing.T) {
 	mt := &mockTool{
 		name:    "slow_tool",
 		enabled: true,
-		callFn: func(ctx context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			close(blockStarted)
 			<-ctx.Done() // block until cancelled
 			return nil, ctx.Err()
@@ -546,7 +546,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	mt := &mockTool{
 		name:    "my_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "done"}, nil
 		},
 	}
@@ -663,7 +663,7 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 	mt := &mockTool{
 		name:    "fail_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return nil, errors.New("tool execution failed")
 		},
 	}
@@ -769,7 +769,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	mt := &mockTool{
 		name:    "disabled_tool",
 		enabled: false,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			callCount++
 			return &tool.ToolResult{Data: "should not be called"}, nil
 		},
@@ -1033,11 +1033,11 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Both tools executed."), nil)
 
 	var toolACalled, toolBCalled bool
-	toolA := &mockTool{name: "tool_a", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolA := &mockTool{name: "tool_a", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		toolACalled = true
 		return &tool.ToolResult{Data: "a_result"}, nil
 	}}
-	toolB := &mockTool{name: "tool_b", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolB := &mockTool{name: "tool_b", enabled: true, callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		toolBCalled = true
 		return &tool.ToolResult{Data: "b_result"}, nil
 	}}
@@ -2776,11 +2776,11 @@ func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "Done."), nil)
 
 	var readInput, bashInput json.RawMessage
-	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		readInput = input
 		return &tool.ToolResult{Data: "file content"}, nil
 	}}
-	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		bashInput = input
 		return &tool.ToolResult{Data: "file1\nfile2"}, nil
 	}}
@@ -2874,15 +2874,15 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "All done."), nil)
 
 	var inputs sync.Map
-	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolRead := &mockTool{name: "Read", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		inputs.Store("Read", input)
 		return &tool.ToolResult{Data: "contents"}, nil
 	}}
-	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolBash := &mockTool{name: "Bash", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		inputs.Store("Bash", input)
 		return &tool.ToolResult{Data: "ok"}, nil
 	}}
-	toolGrep := &mockTool{name: "Grep", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+	toolGrep := &mockTool{name: "Grep", enabled: true, callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 		inputs.Store("Grep", input)
 		return &tool.ToolResult{Data: "matches"}, nil
 	}}
@@ -2972,7 +2972,7 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 	mt := &mockTool{
 		name:    toolName,
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{
 				Data: skillOutputData("roast", "inline"),
 				NewMessages: []types.Message{

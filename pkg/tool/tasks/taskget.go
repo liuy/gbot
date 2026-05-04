@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // GetInput is the input schema for the TaskGet tool.
@@ -59,12 +58,14 @@ func NewTaskGet(list *List) tool.Tool {
 			}
 			return "#" + in.TaskID, nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskGet(list, input)
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:       true,
+		SearchHint_:        "retrieve a task by ID",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskGetPrompt(),
 		RenderResult_: func(data any) string {

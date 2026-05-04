@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/glob"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ func BenchmarkExecute_NoMatches(b *testing.B) {
 func BenchmarkExecute_WithToolUseContext(b *testing.B) {
 	dir := benchDir(b)
 	input := json.RawMessage(`{"pattern":"**/*.go"}`)
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 
 	b.ReportAllocs()
 	b.ResetTimer()

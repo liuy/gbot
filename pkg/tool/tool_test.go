@@ -18,7 +18,7 @@ func TestBuildToolDefaults(t *testing.T) {
 
 	def := tool.ToolDef{
 		Name_:  "TestTool",
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "ok"}, nil
 		},
 		InputSchema_: func() json.RawMessage {
@@ -89,7 +89,7 @@ func TestBuildToolWithOverrides(t *testing.T) {
 	def := tool.ToolDef{
 		Name_:  "Override",
 		Aliases_: []string{"ov"},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "done"}, nil
 		},
 		InputSchema_: func() json.RawMessage {
@@ -104,7 +104,7 @@ func TestBuildToolWithOverrides(t *testing.T) {
 		IsEnabled_: func() bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_: "I am override",
-		CheckPermissions_: func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+		CheckPermissions_: func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 			return types.PermissionDenyDecision{Message: "nope"}
 		},
 	}
@@ -150,7 +150,7 @@ func TestBuildToolCall(t *testing.T) {
 
 	def := tool.ToolDef{
 		Name_:  "CallTest",
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: map[string]any{"echo": string(input)}}, nil
 		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
@@ -180,7 +180,7 @@ func TestBuildToolCall(t *testing.T) {
 func TestApplyContextModifier_NilModifier(t *testing.T) {
 	t.Parallel()
 
-	tctx := &types.ToolUseContext{ToolUseID: "orig"}
+	tctx := &tool.ToolUseContext{ToolUseID: "orig"}
 	result := &tool.ToolResult{Data: "test"}
 
 	got := tool.ApplyContextModifier(result, tctx, false)
@@ -192,10 +192,10 @@ func TestApplyContextModifier_NilModifier(t *testing.T) {
 func TestApplyContextModifier_ConcurrencySafe_IgnoresModifier(t *testing.T) {
 	t.Parallel()
 
-	tctx := &types.ToolUseContext{ToolUseID: "orig", WorkingDir: "/old"}
+	tctx := &tool.ToolUseContext{ToolUseID: "orig", WorkingDir: "/old"}
 	result := &tool.ToolResult{
 		Data: "test",
-		ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+		ContextModifier: func(tctx *tool.ToolUseContext) *tool.ToolUseContext {
 			tctx.WorkingDir = "/modified"
 			return tctx
 		},
@@ -210,10 +210,10 @@ func TestApplyContextModifier_ConcurrencySafe_IgnoresModifier(t *testing.T) {
 func TestApplyContextModifier_SerialTool_AppliesModifier(t *testing.T) {
 	t.Parallel()
 
-	tctx := &types.ToolUseContext{ToolUseID: "orig", WorkingDir: "/old"}
+	tctx := &tool.ToolUseContext{ToolUseID: "orig", WorkingDir: "/old"}
 	result := &tool.ToolResult{
 		Data: "test",
-		ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+		ContextModifier: func(tctx *tool.ToolUseContext) *tool.ToolUseContext {
 			tctx.WorkingDir = "/modified"
 			return tctx
 		},
@@ -328,7 +328,7 @@ func TestBuildToolImplementsToolInterface(t *testing.T) {
 
 	built := tool.BuildTool(tool.ToolDef{
 		Name_:        "InterfaceCheck",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return nil },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	})
@@ -348,7 +348,7 @@ func TestBuildTool_DefaultRenderResult(t *testing.T) {
 	// When RenderResult_ is nil, BuildTool sets a default that json.Marshal's the data.
 	def := tool.ToolDef{
 		Name_:  "RenderTest",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 		// RenderResult_ intentionally nil — exercises default on lines 198-203
@@ -369,7 +369,7 @@ func TestBuildTool_DefaultRenderResult_NilData(t *testing.T) {
 
 	def := tool.ToolDef{
 		Name_:  "NilRender",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -386,7 +386,7 @@ func TestBuildTool_DefaultRenderResult_StringData(t *testing.T) {
 
 	def := tool.ToolDef{
 		Name_:  "StrRender",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -407,7 +407,7 @@ func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
 	// This test confirms the tool builds without panic when the field is left zero.
 	def := tool.ToolDef{
 		Name_:        "SizeTest",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -415,5 +415,35 @@ func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
 	tt := tool.BuildTool(def)
 	if tt.Name() != "SizeTest" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "SizeTest")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ToolUseContext
+// ---------------------------------------------------------------------------
+
+func TestToolUseContext(t *testing.T) {
+	t.Parallel()
+
+	tctx := &tool.ToolUseContext{
+		ToolUseID:  "tu-ctx-1",
+		WorkingDir: "/tmp",
+		Options: tool.ToolUseOptions{
+			Debug:   true,
+			Verbose: true,
+		},
+	}
+
+	if tctx.ToolUseID != "tu-ctx-1" {
+		t.Errorf("ToolUseID = %q, want %q", tctx.ToolUseID, "tu-ctx-1")
+	}
+	if tctx.WorkingDir != "/tmp" {
+		t.Errorf("WorkingDir = %q, want %q", tctx.WorkingDir, "/tmp")
+	}
+	if !tctx.Options.Debug {
+		t.Error("Options.Debug = false, want true")
+	}
+	if !tctx.Options.Verbose {
+		t.Error("Options.Verbose = false, want true")
 	}
 }

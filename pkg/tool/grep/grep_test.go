@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/grep"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ func TestGrepToolCall_WorkingDirFromContext(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	input := json.RawMessage(`{"pattern":"unique_marker_xyz"}`)
 	result, err := grep.Execute(context.Background(), input, tctx)
 	if err != nil {

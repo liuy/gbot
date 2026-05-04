@@ -780,8 +780,8 @@ func TestExecute_DedupSameRange(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
 
@@ -813,8 +813,8 @@ func TestExecute_DedupPartialNotSkipped(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `","offset":1,"limit":1}`)
 
@@ -846,8 +846,8 @@ func TestExecute_DedupDifferentOffset(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("line1\nline2\nline3\nline4\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 
 	// Read with offset=1
@@ -1247,7 +1247,7 @@ func TestExecute_DedupNilReadFileState(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("hello\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
+	tctx := &tool.ToolUseContext{
 		ReadFileState: nil,
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
@@ -1314,8 +1314,8 @@ func TestExpandPath_HomePath(t *testing.T) {
 	if err := os.WriteFile(fp, []byte("home content\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	tctx := &types.ToolUseContext{
-		ReadFileState: make(map[string]types.FileState),
+	tctx := &tool.ToolUseContext{
+		ReadFileState: make(map[string]tool.FileState),
 	}
 	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
 

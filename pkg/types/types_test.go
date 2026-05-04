@@ -613,36 +613,6 @@ func TestTotalInputTokens(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ToolUseContext
-// ---------------------------------------------------------------------------
-
-func TestToolUseContext(t *testing.T) {
-	t.Parallel()
-
-	tctx := &types.ToolUseContext{
-		ToolUseID:  "tu-ctx-1",
-		WorkingDir: "/tmp",
-		Options: types.ToolUseOptions{
-			Debug:   true,
-			Verbose: true,
-		},
-	}
-
-	if tctx.ToolUseID != "tu-ctx-1" {
-		t.Errorf("ToolUseID = %q, want %q", tctx.ToolUseID, "tu-ctx-1")
-	}
-	if tctx.WorkingDir != "/tmp" {
-		t.Errorf("WorkingDir = %q, want %q", tctx.WorkingDir, "/tmp")
-	}
-	if !tctx.Options.Debug {
-		t.Error("Options.Debug = false, want true")
-	}
-	if !tctx.Options.Verbose {
-		t.Error("Options.Verbose = false, want true")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // EventDispatcher (merged from events_test.go)
 // ---------------------------------------------------------------------------
 

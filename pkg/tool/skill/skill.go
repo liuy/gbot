@@ -151,8 +151,8 @@ func New(registry *skills.Registry) tool.Tool {
 
 // makeSkillCallFn returns the Call implementation.
 // Source: SkillTool.ts:580-780 — call()
-func makeSkillCallFn(registry *skills.Registry) func(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
-	return func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func makeSkillCallFn(registry *skills.Registry) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+	return func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 		var in skillInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return nil, fmt.Errorf("skill tool: invalid input: %w", err)
@@ -327,8 +327,8 @@ func formatCommandPermissions(allowedTools []string, model string) string {
 
 // makeSkillPermissionsFn returns the CheckPermissions implementation.
 // Source: SkillTool.ts:432-578 — checkPermissions
-func makeSkillPermissionsFn(registry *skills.Registry) func(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
-	return func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+func makeSkillPermissionsFn(registry *skills.Registry) func(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 		var in skillInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return types.PermissionAllowDecision{}

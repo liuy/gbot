@@ -16,20 +16,20 @@ import (
 // testTool implements tool.Tool for toolloop tests.
 type testTool struct {
 	name    string
-	callFn  func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+	callFn  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
 }
 
 func (t *testTool) Name() string                                                { return t.name }
 func (t *testTool) Aliases() []string                                           { return nil }
 func (t *testTool) Description(json.RawMessage) (string, error)                 { return t.name + " desc", nil }
 func (t *testTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
-func (t *testTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *testTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
 		return t.callFn(ctx, input, tctx)
 	}
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *testTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *testTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *testTool) IsReadOnly(json.RawMessage) bool            { return true }
@@ -51,10 +51,10 @@ func (b *blockTool) Name() string                                               
 func (b *blockTool) Aliases() []string                                           { return nil }
 func (b *blockTool) Description(json.RawMessage) (string, error)                 { return b.name, nil }
 func (b *blockTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
-func (b *blockTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (b *blockTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "completed"}, nil
 }
-func (b *blockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (b *blockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (b *blockTool) IsReadOnly(json.RawMessage) bool            { return true }
@@ -76,7 +76,7 @@ func (b *blockTool) RenderResult(any) string                      { return "" }
 type concurrentTool struct {
 	name   string
 	isSafe bool
-	callFn func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error)
+	callFn func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
 }
 
 func (t *concurrentTool) Name() string                        { return t.name }
@@ -85,13 +85,13 @@ func (t *concurrentTool) Description(json.RawMessage) (string, error) {
 	return t.name + " desc", nil
 }
 func (t *concurrentTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
-func (t *concurrentTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *concurrentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
 		return t.callFn(ctx, input, tctx)
 	}
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (t *concurrentTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (t *concurrentTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (t *concurrentTool) IsReadOnly(json.RawMessage) bool           { return t.isSafe }
@@ -107,10 +107,10 @@ func (t *concurrentTool) MaxResultSize() int { return 50000 }
 // streamingConcurrentTool implements both Tool and ToolWithStreaming.
 type streamingConcurrentTool struct {
 	concurrentTool
-	streamFn func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error)
+	streamFn func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error)
 }
 
-func (t *streamingConcurrentTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+func (t *streamingConcurrentTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 	if t.streamFn != nil {
 		return t.streamFn(ctx, input, tctx, onProgress)
 	}
@@ -182,7 +182,7 @@ func TestConcurrentToolLoop_ToolError(t *testing.T) {
 		"fail": &concurrentTool{
 			name:   "fail",
 			isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("tool crashed")
 			},
 		},
@@ -215,7 +215,7 @@ func TestConcurrentToolLoop_ToolErrorContentIsString(t *testing.T) {
 		"fail": &concurrentTool{
 			name:   "fail",
 			isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("tool crashed")
 			},
 		},
@@ -257,7 +257,7 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"safe_a": &concurrentTool{
 			name: "safe_a", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
 				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
@@ -267,7 +267,7 @@ func TestConcurrentToolLoop_SafeToolsRunInParallel(t *testing.T) {
 		},
 		"safe_b": &concurrentTool{
 			name: "safe_b", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
 				startTimes = append(startTimes, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
@@ -312,7 +312,7 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"unsafe_a": &concurrentTool{
 			name: "unsafe_a", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
 				timestamps = append(timestamps, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
@@ -322,7 +322,7 @@ func TestConcurrentToolLoop_UnsafeToolsAreSerial(t *testing.T) {
 		},
 		"unsafe_b": &concurrentTool{
 			name: "unsafe_b", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
 				timestamps = append(timestamps, time.Now()) // REAL-TIME: needed to verify concurrent/serial execution timing
 				mu.Unlock()
@@ -367,7 +367,7 @@ func TestConcurrentToolLoop_MixedSafeUnsafe(t *testing.T) {
 	makeTool := func(name string, isSafe bool) *concurrentTool {
 		return &concurrentTool{
 			name: name, isSafe: isSafe,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				mu.Lock()
 				order = append(order, name)
 				mu.Unlock()
@@ -412,14 +412,14 @@ func TestConcurrentToolLoop_ResultsInOrder(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"slow": &concurrentTool{
 			name: "slow", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to verify result ordering despite different completion times
 				return &tool.ToolResult{Data: "slow"}, nil
 			},
 		},
 		"fast": &concurrentTool{
 			name: "fast", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{Data: "fast"}, nil
 			},
 		},
@@ -451,14 +451,14 @@ func TestConcurrentToolLoop_BashErrorKillsRunningSiblings(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Bash": &concurrentTool{
 			name: "Bash", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				time.Sleep(10 * time.Millisecond) // REAL-TIME: needed to test Bash error kills sibling cancellation timing
 				return nil, errors.New("command failed")
 			},
 		},
 		"safe_tool": &concurrentTool{
 			name: "safe_tool", isSafe: true,
-			callFn: func(ctx context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				select {
 				case <-time.After(5 * time.Second):
 					return &tool.ToolResult{Data: "ok"}, nil
@@ -515,13 +515,13 @@ func TestConcurrentToolLoop_NonBashErrorNoKill(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"fail_tool": &concurrentTool{
 			name: "fail_tool", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("non-bash failure")
 			},
 		},
 		"safe_tool": &concurrentTool{
 			name: "safe_tool", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{Data: "ok"}, nil
 			},
 		},
@@ -613,10 +613,10 @@ func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"safe_mod": &concurrentTool{
 			name: "safe_mod", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
 					Data: "safe",
-					ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+					ContextModifier: func(tctx *tool.ToolUseContext) *tool.ToolUseContext {
 						safeModified = true
 						tctx.WorkingDir = "/safe-dir"
 						return tctx
@@ -626,10 +626,10 @@ func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
 		},
 		"unsafe_mod": &concurrentTool{
 			name: "unsafe_mod", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
 					Data: "unsafe",
-					ContextModifier: func(tctx *types.ToolUseContext) *types.ToolUseContext {
+					ContextModifier: func(tctx *tool.ToolUseContext) *tool.ToolUseContext {
 						tctx.WorkingDir = "/unsafe-dir"
 						return tctx
 					},
@@ -641,7 +641,7 @@ func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "safe_mod", Input: json.RawMessage(`{}`)},
 		{Type: types.ContentTypeToolUse, ID: "tu_2", Name: "unsafe_mod", Input: json.RawMessage(`{}`)},
 	}
-	tctx := &types.ToolUseContext{WorkingDir: "/original"}
+	tctx := &tool.ToolUseContext{WorkingDir: "/original"}
 	result := ConcurrentToolLoop(context.Background(), tools, blocks, tctx, func(evt types.QueryEvent) {})
 
 	if len(result.ToolResultBlocks) != 2 {
@@ -663,7 +663,7 @@ func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"streamer": &streamingConcurrentTool{
 			concurrentTool: concurrentTool{name: "streamer", isSafe: true},
-			streamFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+			streamFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2"}})
 				progressCalls++
 				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2", "line 3"}})
@@ -749,13 +749,13 @@ func TestConcurrentToolLoop_BashErrorBlocksQueuedSafe(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Bash": &concurrentTool{
 			name: "Bash", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("command failed")
 			},
 		},
 		"safe_tool": &concurrentTool{
 			name: "safe_tool", isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{Data: "should not run"}, nil
 			},
 		},
@@ -851,7 +851,7 @@ func TestConcurrentToolLoop_ToolErrorDisplayOutput(t *testing.T) {
 		"fail": &concurrentTool{
 			name:   "fail",
 			isSafe: true,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("specific failure X")
 			},
 		},
@@ -907,13 +907,13 @@ func TestConcurrentToolLoop_AbortDisplayOutput(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Bash": &concurrentTool{
 			name: "Bash", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return nil, errors.New("bash boom")
 			},
 		},
 		"slow": &concurrentTool{
 			name: "slow", isSafe: false,
-			callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 				close(started)
 				time.Sleep(5 * time.Second) // REAL-TIME: long sleep to test abort path (context cancelled before completion)
 				return &tool.ToolResult{Data: "should not reach"}, nil
@@ -980,7 +980,7 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 	var capturedIDs []string
 	var mu sync.Mutex
 	tools := map[string]tool.Tool{
-		"capture": &testTool{name: "capture", callFn: func(_ context.Context, _ json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		"capture": &testTool{name: "capture", callFn: func(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			id := ""
@@ -1028,3 +1028,61 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // ToolWithWireFormat tests
+
+func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
+	// When ToolSearch is active, calling a deferred tool that hasn't been
+	// discovered should produce an error hinting to use ToolSearch.
+	deferredTool := tool.BuildTool(tool.ToolDef{
+		Name_:         "mcp__fetch__get_markdown",
+		ShouldDefer_:  true,
+		InputSchema_:  func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_:  func(json.RawMessage) (string, error) { return "fetch markdown", nil },
+		Call_:         func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
+	})
+	toolSearchTool := tool.BuildTool(tool.ToolDef{
+		Name_:         "ToolSearch",
+		InputSchema_:  func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_:  func(json.RawMessage) (string, error) { return "search tools", nil },
+		Call_:         func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
+	})
+
+	// Full tool map (has deferred tool + ToolSearch)
+	fullTools := map[string]tool.Tool{
+		"ToolSearch":                toolSearchTool,
+		"mcp__fetch__get_markdown":  deferredTool,
+	}
+	// Filtered tool map (ToolSearch active, deferred not discovered)
+	filteredTools := map[string]tool.Tool{
+		"ToolSearch": toolSearchTool,
+	}
+	tctx := &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{
+			Tools: fullTools,
+		},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "mcp__fetch__get_markdown", Input: json.RawMessage(`{}`)},
+	}
+	result := ConcurrentToolLoop(context.Background(), filteredTools, blocks, tctx, func(evt types.QueryEvent) {})
+
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
+	}
+	if !result.ToolResultBlocks[0].IsError {
+		t.Fatal("expected error for deferred tool")
+	}
+	var parsed string
+	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &parsed); err != nil {
+		t.Fatalf("failed to parse error content: %v", err)
+	}
+	// Should hint to use ToolSearch
+	if !strings.Contains(parsed, "ToolSearch") {
+		t.Errorf("error should mention ToolSearch, got: %q", parsed)
+	}
+	if !strings.Contains(parsed, "select:mcp__fetch__get_markdown") {
+		t.Errorf("error should suggest select:tool_name, got: %q", parsed)
+	}
+}

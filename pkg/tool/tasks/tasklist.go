@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ListOutput is the output schema for the TaskList tool.
@@ -39,12 +38,14 @@ func NewTaskList(list *List) tool.Tool {
 		Description_: func(json.RawMessage) (string, error) {
 			return "List all tasks", nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeTaskList(list)
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
+		ShouldDefer_:       true,
+		SearchHint_:        "list all tasks",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskListPrompt(),
 		RenderResult_: func(data any) string {

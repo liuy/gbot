@@ -21,6 +21,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
+	"github.com/liuy/gbot/pkg/tool/toolsearch"
 	"github.com/liuy/gbot/pkg/types"
 
 	"github.com/google/uuid"
@@ -127,6 +128,13 @@ type Engine struct {
 	// TS: ContentReplacementState (toolResultStorage.ts:390-393)
 	contentReplacementState *toolresult.ContentReplacementState
 
+	// toolSearch tracks which deferred tools have been discovered via ToolSearch.
+	// When ToolSearch is active (any deferred tools exist),
+	// undiscovered deferred tools are omitted from the API request and listed by name
+	// in a synthetic user message prefix.
+	// Source: utils/toolSearch.ts — discoveredTools
+	toolSearch *toolSearchState
+
 	// recordWriter persists ContentReplacementRecords to transcript storage.
 	// Set via SetRecordWriter after engine construction when the store is available.
 	// TS: writeToTranscript callback in applyToolResultBudget (toolResultStorage.ts:924-936).
@@ -226,6 +234,7 @@ func New(p *Params) *Engine {
 		permissionChecker:       p.PermissionChecker,
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:         0,
+		toolSearch:             newToolSearchState(),
 	}
 }
 
@@ -644,6 +653,26 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Source: query.ts:1381 — getRemainingResults().
 		execResult := streamingExecutor.ExecuteAll(nil)
 
+
+		// ToolSearch: register any tools discovered by ToolSearch execution.
+		// Source: utils/toolSearch.ts — discovered tools are extracted from results
+		// and added to the active set for subsequent API calls.
+		if _, tsActive := e.tools[ToolSearchToolName]; tsActive {
+			streamingExecutor.mu.Lock()
+			for _, tt := range streamingExecutor.tools {
+				if tt.Name == ToolSearchToolName && tt.Result != nil && tt.Err == nil {
+					names := ExtractDiscoveredToolNamesFromResult(tt.Result.Data)
+					if len(names) > 0 {
+						e.toolSearch.DiscoverTools(names)
+						e.logger.Info("toolSearch:discovered",
+							"count", len(names),
+							"names", strings.Join(names, ","))
+					}
+				}
+			}
+			streamingExecutor.mu.Unlock()
+		}
+
 		// Add tool results as user message (MUST come before NewMessages).
 		// The Anthropic API requires tool_result to directly follow the
 		// assistant's tool_use block without intermediate user messages.
@@ -742,13 +771,12 @@ func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase str
 		e.hooks.PostCompact(ctx, input)
 	}
 }
-func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
-	e.refreshTools()
-	// Build tool definitions for API
-	var toolDefs []llm.ToolDef
-	for _, name := range e.toolOrder {
-		t, ok := e.tools[name]
-		if !ok || !t.IsEnabled() {
+
+// buildToolDefs converts a slice of tools into LLM tool definitions.
+func buildToolDefs(tools []tool.Tool) []llm.ToolDef {
+	defs := make([]llm.ToolDef, 0, len(tools))
+	for _, t := range tools {
+		if !t.IsEnabled() {
 			continue
 		}
 		schema := t.InputSchema()
@@ -756,12 +784,41 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 		if err != nil {
 			desc = t.Name()
 		}
-		toolDefs = append(toolDefs, llm.ToolDef{
+		defs = append(defs, llm.ToolDef{
 			Name:        t.Name(),
 			Description: desc,
 			InputSchema: schema,
 		})
 	}
+	return defs
+}
+func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
+	e.refreshTools()
+
+	// ToolSearch: check if filtering is active.
+	// Source: utils/toolSearch.ts — isToolSearchEnabled + extractDiscoveredToolNames
+	_, toolSearchActive := e.tools[ToolSearchToolName]
+	var deferredAnnouncement string
+	var activeTools []tool.Tool
+
+	if toolSearchActive {
+		var deferredNames []string
+		activeTools, deferredNames, _ = FilterToolsForRequest(e.tools, e.toolSearch, e.toolOrder)
+		deferredAnnouncement = DeferredToolsAnnouncement(deferredNames)
+	}
+
+	// Build tool definitions for API (filtered if ToolSearch is active).
+	var toolsToBuild []tool.Tool
+	if toolSearchActive && len(activeTools) > 0 {
+		toolsToBuild = activeTools
+	} else {
+		for _, name := range e.toolOrder {
+			if t, ok := e.tools[name]; ok && t.IsEnabled() {
+				toolsToBuild = append(toolsToBuild, t)
+			}
+		}
+	}
+	toolDefs := buildToolDefs(toolsToBuild)
 
 	e.logger.Info("callLLM:tools", "count", len(toolDefs), "names", func() string {
 		var names []string
@@ -778,6 +835,20 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 	// Replaces large tool results with previews when aggregate per-message
 	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
 	apiMessages = e.applyBudget(apiMessages)
+
+	// ToolSearch: prepend deferred tools announcement to first user message.
+	// Source: utils/toolSearch.ts — <available-deferred-tools> user message prefix
+	if toolSearchActive && deferredAnnouncement != "" && len(apiMessages) > 0 {
+		// Prepend as a synthetic user message at the beginning of the conversation
+		// so it doesn't disrupt the conversation flow.
+		prefixMsg := types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewTextBlock(deferredAnnouncement),
+			},
+		}
+		apiMessages = append([]types.Message{prefixMsg}, apiMessages...)
+	}
 
 	// Enable prompt caching: wrap system prompt into structured blocks
 	// so applyCacheControlToSystem can inject cache_control markers.
@@ -989,8 +1060,27 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 					// Source: query.ts:841-843 — addTool as soon as input is complete.
 					// Tools begin executing during LLM streaming, not after.
 					if streamingExecutor == nil {
+						// Build ToolUseContext with all tools and pending MCP servers.
+						// Previously passed nil, which forced each tool to create a
+						// minimal context without access to the full tool map.
+						// When ToolSearch is active, use filtered tool map so undiscovered
+						// deferred tools return "No such tool available" instead of executing.
+						executorToolMap := e.tools
+						if toolSearchActive && len(activeTools) > 0 {
+							executorToolMap = make(map[string]tool.Tool, len(activeTools))
+							for _, t := range activeTools {
+								executorToolMap[t.Name()] = t
+							}
+						}
+						baseTctx := &tool.ToolUseContext{
+							Ctx: ctx,
+							Options: tool.ToolUseOptions{
+								Tools:             e.tools,
+								PendingMCPServers: e.pendingMCPServerNames(),
+							},
+						}
 						streamingExecutor = NewStreamingToolExecutor(
-							e.tools, nil,
+							executorToolMap, baseTctx,
 							func(evt types.QueryEvent) { e.emitEvent(evt) },
 							ctx,
 						)
@@ -1459,6 +1549,20 @@ func (e *Engine) refreshTools() {
 		e.tools[t.Name()] = t
 	}
 
+	// Register ToolSearch when deferred tool count meets activation threshold.
+	// Source: utils/toolSearch.ts — shouldEnableToolSearch
+	deferredCount := 0
+	for _, t := range e.tools {
+		if tool.IsDeferred(t) {
+			deferredCount++
+		}
+	}
+	if deferredCount > 0 {
+		if _, exists := e.tools[ToolSearchToolName]; !exists {
+			e.tools[ToolSearchToolName] = toolsearch.New()
+		}
+	}
+
 	e.toolOrder = make([]string, 0, len(e.tools))
 	for name := range e.tools {
 		e.toolOrder = append(e.toolOrder, name)
@@ -1491,6 +1595,15 @@ func (e *Engine) AllTools() map[string]tool.Tool {
 		result[t.Name()] = t
 	}
 	return result
+}
+
+// pendingMCPServerNames returns the names of MCP servers that are still connecting.
+// Source: ToolSearchTool.ts:335-339 — getPendingServerNames()
+func (e *Engine) pendingMCPServerNames() []string {
+	if e.mcpRegistry == nil {
+		return nil
+	}
+	return e.mcpRegistry.PendingServerNames()
 }
 
 // Close shuts down the engine and its MCP registry.
@@ -1721,6 +1834,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		hooks:                   e.hooks,
 		permissionChecker:       e.permissionChecker,
 		contentReplacementState: toolresult.CloneContentReplacementState(e.contentReplacementState),
+			toolSearch:             newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
 	}
 }
 

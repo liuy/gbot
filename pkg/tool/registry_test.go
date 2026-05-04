@@ -21,10 +21,10 @@ func (m *mockTool) Name() string                                { return m.name 
 func (m *mockTool) Aliases() []string                           { return m.aliases }
 func (m *mockTool) Description(json.RawMessage) (string, error) { return "", nil }
 func (m *mockTool) InputSchema() json.RawMessage                { return nil }
-func (m *mockTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (m *mockTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (m *mockTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (m *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (m *mockTool) IsReadOnly(json.RawMessage) bool           { return false }

@@ -18,7 +18,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -601,7 +600,7 @@ func getStructuredPatch(oldContent, newContent string) []StructuredPatchHunk {
 
 // Execute writes content to a file.
 // Source: FileWriteTool.ts:call() — 1:1 port.
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -692,10 +691,10 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 	// Source: FileWriteTool.ts — readFileState.set(fullFilePath, {...})
 	if tctx != nil {
 		if tctx.ReadFileState == nil {
-			tctx.ReadFileState = make(map[string]types.FileState)
+			tctx.ReadFileState = make(map[string]tool.FileState)
 		}
 		mtimeMs, _ := getMtimeMs(fullFilePath)
-		tctx.ReadFileState[fullFilePath] = types.FileState{
+		tctx.ReadFileState[fullFilePath] = tool.FileState{
 			Content:   normalizedContent,
 			Timestamp: mtimeMs,
 		}

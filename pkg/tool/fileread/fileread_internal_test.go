@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -1067,7 +1067,7 @@ func TestExecute_TextFileReadFileStateNilMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	// tctx with nil ReadFileState → line 808-810 creates the map
-	tctx := &types.ToolUseContext{}
+	tctx := &tool.ToolUseContext{}
 	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
 	result, err := Execute(context.Background(), input, tctx)
 	if err != nil {

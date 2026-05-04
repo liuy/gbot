@@ -12,7 +12,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/glob"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -192,7 +191,7 @@ func TestExecute_WorkingDirFromContext(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	input := json.RawMessage(`{"pattern":"*.txt"}`)
 	result, err := glob.Execute(context.Background(), input, tctx)
 	if err != nil {

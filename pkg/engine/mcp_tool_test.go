@@ -311,10 +311,10 @@ func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.In
 func (s *stubTool) MaxResultSize() int                          { return 0 }
 func (s *stubTool) Prompt() string                              { return "" }
 func (s *stubTool) RenderResult(any) string                     { return "" }
-func (s *stubTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (s *stubTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (s *stubTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (s *stubTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (s *stubTool) IsReadOnly(json.RawMessage) bool        { return false }

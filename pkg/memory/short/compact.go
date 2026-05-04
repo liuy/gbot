@@ -26,6 +26,10 @@ type CompactMetadata struct {
 	MessagesSummarized int             `json:"messagesSummarized"`
 	UserContext       string           `json:"userContext"`
 	PreservedSegment  *PreservedSegment `json:"preservedSegment,omitempty"`
+	// PreCompactDiscoveredTools snapshots the tool search discovered set at compact
+	// time so RestoreToolSearchState can rebuild it after session resume.
+	// Source: toolSearch.ts — compactMetadata.preCompactDiscoveredTools
+	PreCompactDiscoveredTools []string `json:"preCompactDiscoveredTools,omitempty"`
 }
 
 // CreateCompactBoundaryMessage creates a compact boundary marker message.

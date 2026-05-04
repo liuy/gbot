@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ func TestExecute_WorkingDirFromToolUseContext(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	tctx := &types.ToolUseContext{WorkingDir: dir}
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
 	input := json.RawMessage(`{"pattern":"marker_token_12345"}`)
 	result, err := Execute(context.Background(), input, tctx)
 	if err != nil {
@@ -290,7 +290,7 @@ func TestExecute_NilToolUseContext_FallsBackToGetwd(t *testing.T) {
 func TestExecute_ToolUseContextEmptyWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	tctx := &types.ToolUseContext{WorkingDir: ""}
+	tctx := &tool.ToolUseContext{WorkingDir: ""}
 	input := json.RawMessage(`{"pattern":"xyzQwertyNoMatch123456"}`)
 	result, err := Execute(context.Background(), input, tctx)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,10 +74,10 @@ func TestToolWithStreaming_Interface(t *testing.T) {
 		Name_:        "TestStreaming",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 			return &ToolResult{Data: "ok"}, nil
 		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 			onProgress(ProgressUpdate{Lines: []string{"streaming"}, TotalLines: 1, TotalBytes: 9})
 			return &ToolResult{Data: "streamed"}, nil
 		},
@@ -106,7 +105,7 @@ func TestToolWithoutStreaming(t *testing.T) {
 		Name_:        "TestNonStreaming",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 			return &ToolResult{Data: "ok"}, nil
 		},
 	})
@@ -127,10 +126,10 @@ func TestToolWithStreaming_ProgressCallback(t *testing.T) {
 		Name_:        "TestProgress",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 			return &ToolResult{Data: "ok"}, nil
 		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 			onProgress(ProgressUpdate{Lines: []string{"line1"}, TotalLines: 1, TotalBytes: 5})
 			onProgress(ProgressUpdate{Lines: []string{"line1", "line2"}, TotalLines: 2, TotalBytes: 11})
 			return &ToolResult{Data: "done"}, nil
@@ -164,10 +163,10 @@ func TestToolWithStreaming_NilProgressCallback(t *testing.T) {
 		Name_:        "TestNilProgress",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 			return &ToolResult{Data: "ok"}, nil
 		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 			return &ToolResult{Data: "done"}, nil
 		},
 	})
@@ -190,10 +189,10 @@ func TestToolWithStreaming_StillImplementsTool(t *testing.T) {
 		Name_:        "TestBoth",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 			return &ToolResult{Data: "call-result"}, nil
 		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
 			return &ToolResult{Data: "stream-result"}, nil
 		},
 	})

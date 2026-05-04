@@ -16,7 +16,6 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // Maximum number of files returned by a single glob call.
@@ -94,7 +93,7 @@ func New() tool.Tool {
 
 // Execute finds files matching a glob pattern.
 // Source: GlobTool.ts:call() — 1:1 port.
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	start := time.Now()
 
 	var in Input

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestTruncate(t *testing.T) {
@@ -815,7 +814,7 @@ func TestExecuteStream_CWD(t *testing.T) {
 
 func TestExecuteStream_ToolUseContextCWD(t *testing.T) {
 	t.Parallel()
-	tctx := &types.ToolUseContext{WorkingDir: "/tmp"}
+	tctx := &tool.ToolUseContext{WorkingDir: "/tmp"}
 	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx, nil)
 	if err != nil {
 		t.Fatalf("ExecuteStream() error: %v", err)
@@ -919,7 +918,7 @@ func TestExecutePTYStreaming_CwdFileError(t *testing.T) {
 
 func TestExecuteStream_ToolUseContextWorkingDir(t *testing.T) {
 	t.Parallel()
-	tctx := &types.ToolUseContext{WorkingDir: "/tmp"}
+	tctx := &tool.ToolUseContext{WorkingDir: "/tmp"}
 	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx, nil)
 	if err != nil {
 		t.Fatalf("ExecuteStream() error: %v", err)

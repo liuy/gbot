@@ -182,7 +182,7 @@ func (t *AgentTool) InputSchema() json.RawMessage {
 
 // Call executes the sub-agent synchronously (or spawns fork agent in background).
 // Source: AgentTool.tsx:239-1261 — call() sync path
-func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.factory == nil {
 		return nil, fmt.Errorf("agent tool not initialized: sub-engine factory not set")
 	}
@@ -329,7 +329,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *types
 
 // CheckPermissions always allows — the engine handles permission checks
 // for the sub-agent's own tool calls.
-func (t *AgentTool) CheckPermissions(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+func (t *AgentTool) CheckPermissions(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 
@@ -406,7 +406,7 @@ const forkMaxTurns = 200
 
 // callFork spawns a background fork agent and returns immediately.
 // Source: AgentTool.tsx — fork path in call()
-func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	parentTools := t.parentTools()
 
 	// Split messages: find the triggering assistant message and context history

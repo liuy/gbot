@@ -877,10 +877,10 @@ func (d *denyTestTool) Name() string                        { return "TestTool" 
 func (d *denyTestTool) Aliases() []string                   { return nil }
 func (d *denyTestTool) Description(json.RawMessage) (string, error) { return "", nil }
 func (d *denyTestTool) InputSchema() json.RawMessage        { return json.RawMessage(`{}`) }
-func (d *denyTestTool) Call(context.Context, json.RawMessage, *types.ToolUseContext) (*tool.ToolResult, error) {
+func (d *denyTestTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "ok"}, nil
 }
-func (d *denyTestTool) CheckPermissions(json.RawMessage, *types.ToolUseContext) types.PermissionResult {
+func (d *denyTestTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
 func (d *denyTestTool) IsReadOnly(json.RawMessage) bool           { return false }

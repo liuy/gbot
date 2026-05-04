@@ -6,7 +6,6 @@
 package types
 
 import (
-	"context"
 	"encoding/json"
 	"time"
 )
@@ -200,40 +199,6 @@ type PermissionAskEvent struct {
 	RuleDetail string                 // matched rule description (e.g. "Bash(rm -rf *) from project")
 	AgentType  string                 // non-empty for sub-agent asks (e.g. "Explore")
 	ResponseCh chan PermissionUserDecision `json:"-"` // engine reads, TUI writes
-}
-
-// ---------------------------------------------------------------------------
-// ToolUseContext — source: Tool.ts:158-300
-// ---------------------------------------------------------------------------
-
-// FileState records what a file looked like when last read.
-// Used for deduplication (read same range again → file_unchanged stub)
-// and staleness detection (file changed on disk since read).
-// Source: FileReadTool.ts — readFileState map entry.
-type FileState struct {
-	Content       string // file content at read time
-	Timestamp     int64  // file mtime in milliseconds at read time
-	Offset        int    // offset used in this read (0 = no offset)
-	Limit         int    // limit used in this read (0 = no limit)
-	IsPartialView bool   // true if read was with offset/limit (partial)
-}
-
-// ToolUseContext carries the execution context for each tool call.
-type ToolUseContext struct {
-	Ctx           context.Context
-	Options       ToolUseOptions
-	Messages      []Message
-	ToolUseID     string
-	WorkingDir    string
-	ReadFileState map[string]FileState // keyed by absolute file path
-}
-
-// ToolUseOptions holds the execution options.
-// Source: Tool.ts:159-179
-type ToolUseOptions struct {
-	Debug         bool
-	MainLoopModel string
-	Verbose       bool
 }
 
 // ---------------------------------------------------------------------------

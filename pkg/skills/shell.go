@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ var inlinePattern = regexp.MustCompile(`(?m)(?:^|\s)!` + "`" + `([^` + "`" + `]+
 type ShellExecutor interface {
 	// Execute runs a shell command and returns stdout+stderr output.
 	// Returns an error if the command fails.
-	Execute(ctx *types.ToolUseContext, command string) (string, error)
+	Execute(ctx *tool.ToolUseContext, command string) (string, error)
 }
 
 // ExecuteShellBlocks finds and executes !`backtick` blocks and ```! code blocks
@@ -50,7 +50,7 @@ type ShellExecutor interface {
 // Each command execution is gated by the ShellExecutor's permission check.
 //
 // Source: promptShellExecution.ts:69-143 — executeShellCommandsInPrompt
-func ExecuteShellBlocks(content string, executor ShellExecutor, toolCtx *types.ToolUseContext, isMCP bool) (string, error) {
+func ExecuteShellBlocks(content string, executor ShellExecutor, toolCtx *tool.ToolUseContext, isMCP bool) (string, error) {
 	if isMCP {
 		// Security: MCP skills are remote and untrusted — never execute inline
 		// shell commands from their markdown body.

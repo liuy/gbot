@@ -20,7 +20,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 func init() {
@@ -114,7 +113,7 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 			}
 			return "", nil
 		},
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return execute(ctx, input, tctx, reg)
 		},
 		IsReadOnly_: func(input json.RawMessage) bool {
@@ -143,7 +142,7 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 30000,
 		Prompt_:            bashPrompt(),
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 			return executeStream(ctx, input, tctx, onProgress, reg)
 		},
 		RenderResult_: func(data any) string {
@@ -179,12 +178,12 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 }
 
 // Execute runs a bash command using the global default registry.
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return execute(ctx, input, tctx, DefaultRegistry())
 }
 
 // execute runs a bash command with the given registry.
-func execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -222,12 +221,12 @@ func execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseCont
 // ExecuteStream runs a bash command with streaming progress events.
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
 // ExecuteStream runs a bash command with streaming using the global default registry.
-func ExecuteStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
+func ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
 	return executeStream(ctx, input, tctx, onProgress, DefaultRegistry())
 }
 
 // executeStream runs a bash command with streaming and the given registry.
-func executeStream(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext, onProgress func(tool.ProgressUpdate), registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func executeStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate), registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)

@@ -12,7 +12,6 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -93,7 +92,7 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 	mt := &mockTool{
 		name:    "my_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			toolCalled = true
 			return &tool.ToolResult{Data: "should not reach here"}, nil
 		},
@@ -161,7 +160,7 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 	mt := &mockTool{
 		name:    "my_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			toolCalled = true
 			return &tool.ToolResult{Data: "success"}, nil
 		},
@@ -222,7 +221,7 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 	mt := &mockTool{
 		name:    "my_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "result"}, nil
 		},
 	}
@@ -284,7 +283,7 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 	mt := &mockTool{
 		name:    "my_tool",
 		enabled: true,
-		callFn: func(_ context.Context, _ json.RawMessage, _ *types.ToolUseContext) (*tool.ToolResult, error) {
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return nil, errors.New("something went wrong")
 		},
 	}

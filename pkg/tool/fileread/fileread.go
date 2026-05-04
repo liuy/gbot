@@ -386,7 +386,7 @@ func New() tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: -1, // -1 = no truncation (TS: Infinity)
-		CheckPermissions_: func(input json.RawMessage, tctx *types.ToolUseContext) types.PermissionResult {
+		CheckPermissions_: func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 			var in Input
 			if json.Unmarshal(input, &in) != nil {
 				return types.PermissionAllowDecision{}
@@ -484,7 +484,7 @@ func getMimeType(ext string) string {
 
 // Execute reads a file and returns its contents.
 // Source: FileReadTool.ts:call() — 1:1 port.
-func Execute(ctx context.Context, input json.RawMessage, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -708,7 +708,7 @@ func executePDF(ctx context.Context, in Input, info os.FileInfo) (*tool.ToolResu
 }
 
 // executeTextFile handles text file reading with deduplication.
-func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *types.ToolUseContext) (*tool.ToolResult, error) {
+func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Pre-read size check: refuse files larger than MaxFileReadBytes (256KB)
 	// when no explicit limit is provided. TS align: readFileInRange FileTooLargeError.
 	// Skipped when user specifies offset/limit — they know what they're asking for.
@@ -831,10 +831,10 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *type
 
 	if tctx != nil {
 		if tctx.ReadFileState == nil {
-			tctx.ReadFileState = make(map[string]types.FileState)
+			tctx.ReadFileState = make(map[string]tool.FileState)
 		}
 		mtimeMs, _ := getMtimeMs(in.FilePath)
-		tctx.ReadFileState[fullPath] = types.FileState{
+		tctx.ReadFileState[fullPath] = tool.FileState{
 			Content:       content,
 			Timestamp:     mtimeMs,
 			Offset:        in.Offset,

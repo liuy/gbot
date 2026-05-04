@@ -102,7 +102,7 @@ type StreamingToolExecutor struct {
 	tools     []*TrackedTool
 	toolMap   map[string]tool.Tool
 	emitEvent func(types.QueryEvent)
-	tctx      *types.ToolUseContext
+	tctx      *tool.ToolUseContext
 	messages  []types.Message // conversation history for tool context (set after assistant msg append)
 
 	// Three-tier abort (TS: abortController.ts, spec:3750-3810)
@@ -144,7 +144,7 @@ type StreamingToolExecutor struct {
 // Source: StreamingToolExecutor.ts:53-62 — constructor.
 func NewStreamingToolExecutor(
 	toolMap map[string]tool.Tool,
-	tctx *types.ToolUseContext,
+	tctx *tool.ToolUseContext,
 	emitEvent func(types.QueryEvent),
 	rootCtx context.Context,
 ) *StreamingToolExecutor {
@@ -280,8 +280,21 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 	t, ok := e.toolMap[block.Name]
 	if !ok {
-		// Source: StreamingToolExecutor.ts:78-100 — unknown tool → error result.
 		errMsg := fmt.Sprintf("No such tool available: %s", block.Name)
+		// When ToolSearch is active and the tool exists in the full map but
+		// is deferred, hint the model to use ToolSearch to discover its schema.
+		// Source: toolExecution.ts — buildSchemaNotSentHint
+		if e.tctx != nil && e.tctx.Options.Tools != nil {
+			if fullTool, exists := e.tctx.Options.Tools[block.Name]; exists && tool.IsDeferred(fullTool) {
+				if _, hasTS := e.toolMap[ToolSearchToolName]; hasTS {
+					errMsg = fmt.Sprintf(
+						"Tool %s is deferred and its schema has not been loaded. "+
+							"Call ToolSearch first with query \"select:%s\" to discover its parameters, then retry.",
+						block.Name, block.Name,
+					)
+				}
+			}
+		}
 		errBlock := CreateToolErrorBlock(block.ID, errMsg)
 		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
@@ -882,13 +895,13 @@ func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError boo
 		e.hooks.PostToolUse(e.siblingCtx, hookInput)
 	}
 }
-func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *types.ToolUseContext {
+func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseContext {
 	e.mu.Lock()
 	msgs := e.messages
 	e.mu.Unlock()
 
 	if e.tctx == nil {
-		return &types.ToolUseContext{ToolUseID: toolUseID, Messages: msgs}
+		return &tool.ToolUseContext{ToolUseID: toolUseID, Messages: msgs}
 	}
 	cp := *e.tctx
 	cp.ToolUseID = toolUseID
@@ -944,7 +957,7 @@ func ConcurrentToolLoop(
 	ctx context.Context,
 	tools map[string]tool.Tool,
 	blocks []types.ContentBlock,
-	tctx *types.ToolUseContext,
+	tctx *tool.ToolUseContext,
 	emitEvent func(types.QueryEvent),
 ) *ExecuteAllResult {
 	executor := NewStreamingToolExecutor(tools, tctx, emitEvent, ctx)
