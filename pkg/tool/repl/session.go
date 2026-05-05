@@ -394,6 +394,12 @@ func (s *Session) Reset() error {
 
 	s.stopPendingTimers()
 
+	// Clear store/load data
+	s.kv.Range(func(key, _ any) bool {
+		s.kv.Delete(key)
+		return true
+	})
+
 	if s.vm != nil {
 		_ = s.vm.Close()
 	}

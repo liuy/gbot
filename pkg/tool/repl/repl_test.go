@@ -3,8 +3,10 @@ package repl
 import (
 	"context"
 	"encoding/json"
-	"runtime"
+	"fmt"
+	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1177,4 +1179,1012 @@ func TestCall_CwdFallbackWhenWorkingDirEmpty(t *testing.T) {
 	if got != wd {
 		t.Errorf("cwd with empty WorkingDir: got %q, want %q (os.Getwd)", got, wd)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// REPLTool: Aliases, Description, InputSchema, property accessors
+// ---------------------------------------------------------------------------
+
+func TestAliases(t *testing.T) {
+	r := New()
+	if r.Aliases() != nil {
+		t.Errorf("expected nil aliases, got %v", r.Aliases())
+	}
+}
+
+func TestDescription(t *testing.T) {
+	r := New()
+
+	// nil input → detailed description
+	desc, err := r.Description(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "JavaScript") {
+		t.Errorf("nil: expected JS description, got %q", desc)
+	}
+
+	// null input → detailed description
+	desc, err = r.Description(json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "JavaScript") {
+		t.Errorf("null: expected JS description, got %q", desc)
+	}
+
+	// empty object → detailed description
+	desc, err = r.Description(json.RawMessage("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "JavaScript") {
+		t.Errorf("{}: expected JS description, got %q", desc)
+	}
+
+	// wait action
+	waitInput, _ := json.Marshal(replInput{Action: "wait"})
+	desc, err = r.Description(waitInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "Resume") {
+		t.Errorf("wait: expected 'Resume', got %q", desc)
+	}
+
+	// terminate action
+	termInput, _ := json.Marshal(replInput{Action: "terminate"})
+	desc, err = r.Description(termInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(desc, "Terminate") {
+		t.Errorf("terminate: expected 'Terminate', got %q", desc)
+	}
+
+	// with code → code as description
+	codeInput, _ := json.Marshal(replInput{Code: "console.log(42)"})
+	desc, err = r.Description(codeInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc != "console.log(42)" {
+		t.Errorf("code: expected code as description, got %q", desc)
+	}
+
+	// invalid json → fallback
+	desc, err = r.Description(json.RawMessage("not json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc != "Execute JavaScript code" {
+		t.Errorf("invalid json: expected fallback, got %q", desc)
+	}
+
+	// valid json but no action and no code → fallback
+	resetInput, _ := json.Marshal(replInput{Reset: true})
+	desc, err = r.Description(resetInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc != "Execute JavaScript code" {
+		t.Errorf("reset-only: expected fallback, got %q", desc)
+	}
+}
+
+func TestInputSchema(t *testing.T) {
+	r := New()
+	schema := r.InputSchema()
+	if !strings.Contains(string(schema), "properties") {
+		t.Errorf("expected schema with properties, got %q", string(schema))
+	}
+	if !strings.Contains(string(schema), "code") {
+		t.Errorf("expected schema with 'code', got %q", string(schema))
+	}
+}
+
+func TestREPLToolProperties(t *testing.T) {
+	r := New()
+	if r.IsReadOnly(nil) != false {
+		t.Error("IsReadOnly should return false")
+	}
+	if r.IsDestructive(nil) != false {
+		t.Error("IsDestructive should return false")
+	}
+	if r.IsConcurrencySafe(nil) != false {
+		t.Error("IsConcurrencySafe should return false")
+	}
+	if r.IsEnabled() != true {
+		t.Error("IsEnabled should return true")
+	}
+	if r.InterruptBehavior() != tool.InterruptCancel {
+		t.Errorf("InterruptBehavior should return InterruptCancel, got %v", r.InterruptBehavior())
+	}
+	if r.MaxResultSize() != 50000 {
+		t.Errorf("MaxResultSize should return 50000, got %d", r.MaxResultSize())
+	}
+}
+
+func TestRenderResult(t *testing.T) {
+	r := New()
+	if got := r.RenderResult(nil); got != "" {
+		t.Errorf("nil: expected empty string, got %q", got)
+	}
+	if got := r.RenderResult("hello"); got != "hello" {
+		t.Errorf("string: expected 'hello', got %q", got)
+	}
+	if got := r.RenderResult(42); got != "42" {
+		t.Errorf("int: expected '42', got %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Call dispatch edge cases
+// ---------------------------------------------------------------------------
+
+func TestREPLToolCallInvalidJSON(t *testing.T) {
+	r := New()
+	_, err := r.Call(context.Background(), json.RawMessage(`not json`), nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid REPL input") {
+		t.Errorf("expected 'invalid REPL input', got %v", err)
+	}
+}
+
+func TestREPLToolCallNoCodeNoAction(t *testing.T) {
+	r := New()
+	input, _ := json.Marshal(replInput{})
+	_, err := r.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error for empty input")
+	}
+	if !strings.Contains(err.Error(), "requires code input or an action") {
+		t.Errorf("expected 'requires code input or an action', got %v", err)
+	}
+}
+
+func TestREPLToolCallNilTctx(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	// No tctx → generateSessionID() + cwd fallback to os.Getwd()
+	input, _ := json.Marshal(replInput{Code: `console.log("auto session")`})
+	result, err := r.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "auto session") {
+		t.Errorf("expected 'auto session', got %q", result.Data)
+	}
+	r.Close()
+}
+
+func TestREPLToolResetNonexistentSession(t *testing.T) {
+	r := New()
+	input, _ := json.Marshal(replInput{Reset: true})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "no-such-session"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error for reset of nonexistent session, got %v", err)
+	}
+	if result.Data.(string) != "Session reset (new)" {
+		t.Errorf("expected 'Session reset (new)', got %q", result.Data)
+	}
+}
+
+func TestREPLToolNoToolExecutor(t *testing.T) {
+	r := New() // No SetToolExecutor
+	input, _ := json.Marshal(replInput{Code: `console.log("no executor")`})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "no-exec-test"},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "no executor") {
+		t.Errorf("expected 'no executor', got %q", result.Data)
+	}
+	r.CleanSession("no-exec-test")
+}
+
+func TestREPLToolToolExecutorError(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", fmt.Errorf("tool execution failed")
+	})
+	input, _ := json.Marshal(replInput{Code: `const r = tool("Fail", "{}"); console.log(r)`})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "tool-err-test"},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	output := result.Data.(string)
+	if !strings.Contains(output, "ERROR: tool execution failed") {
+		t.Errorf("expected error prefix in output, got %q", output)
+	}
+	r.CleanSession("tool-err-test")
+}
+
+// ---------------------------------------------------------------------------
+// handleWait edge cases: timeout and context cancel
+// ---------------------------------------------------------------------------
+
+func TestREPLToolWaitTimeout(t *testing.T) {
+	r := New()
+	sess, err := NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sessions.Store("timeout-test", sess)
+
+	// Mock timeAfter to fire immediately
+	origTimeAfter := timeAfter
+	timeAfter = func(d time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Time{}
+		return ch
+	}
+	defer func() { timeAfter = origTimeAfter }()
+
+	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "timeout-test"})
+	_, err = r.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("expected timeout error, got %v", err)
+	}
+	r.CleanSession("timeout-test")
+}
+
+func TestREPLToolWaitContextCancel(t *testing.T) {
+	r := New()
+	sess, err := NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sessions.Store("ctx-cancel-test", sess)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "ctx-cancel-test"})
+	go func() {
+		_, err := r.Call(ctx, input, nil)
+		done <- err
+	}()
+
+	runtime.Gosched() // yield to let goroutine enter handleWait
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error from context cancel")
+		}
+		if !strings.Contains(err.Error(), "context") {
+			t.Errorf("expected context error, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("wait did not return after context cancel")
+	}
+	r.CleanSession("ctx-cancel-test")
+}
+
+func TestREPLToolWaitResumeDefault(t *testing.T) {
+	r := New()
+	sess, err := NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sessions.Store("resume-default", sess)
+
+	// Fill resumeCh so the default branch fires in handleWait
+	sess.resumeCh <- struct{}{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "resume-default"})
+	_, err = r.Call(ctx, input, nil)
+	if err == nil {
+		t.Fatal("expected error (no yield available)")
+	}
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("expected context error, got %v", err)
+	}
+	r.CleanSession("resume-default")
+}
+
+// ---------------------------------------------------------------------------
+// handleExecute yield path (yield_control + ctx cancel → YIELDED result)
+// ---------------------------------------------------------------------------
+
+func TestREPLToolYieldExecutePath(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sessID := "yield-exec-path"
+
+	done := make(chan string, 1)
+	input, _ := json.Marshal(replInput{Code: `store("pre_yield", "1"); yield_control()`})
+	go func() {
+		result, _ := r.Call(ctx, input, &tool.ToolUseContext{
+			Options: tool.ToolUseOptions{SessionID: sessID},
+		})
+		if result != nil {
+			done <- result.Data.(string)
+		}
+	}()
+
+	// Wait for yield by polling kv store (don't consume yieldCh)
+	pollTimeout := time.After(3 * time.Second)
+	for {
+		if v, ok := r.sessions.Load(sessID); ok {
+			sess := v.(*Session)
+			if val, _ := sess.kv.Load("pre_yield"); val == "1" {
+				break
+			}
+		}
+		select {
+		case <-pollTimeout:
+			t.Fatal("timed out waiting for yield")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	// yield_control sends to yieldCh before blocking on resumeCh.
+	// Since C code is non-preemptible, yieldCh has data by the time
+	// our poll loop observes "pre_yield" in the kv store.
+
+	// Cancel context — yield_control returns, Execute completes,
+	// handleExecute reads yieldCh → "YIELDED|..."
+	cancel()
+
+	select {
+	case result := <-done:
+		if !strings.Contains(result, "YIELDED") {
+			t.Errorf("expected YIELDED result, got %q", result)
+		}
+		if !strings.Contains(result, sessID) {
+			t.Errorf("expected session ID in result, got %q", result)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Call did not return after yield + cancel")
+	}
+	r.CleanSession(sessID)
+}
+
+// ---------------------------------------------------------------------------
+// Session: console.error, double close, pending timers
+// ---------------------------------------------------------------------------
+
+func TestConsoleError(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(), `console.error("oops")`, "", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "[ERROR] oops") {
+		t.Errorf("expected '[ERROR] oops', got %q", output)
+	}
+}
+
+func TestDoubleClose(t *testing.T) {
+	s, err := NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s.Close() // Second close should not panic; hits s.closed early return
+}
+
+func TestResetWithPendingTimers(t *testing.T) {
+	s := newTestSession(t)
+	// Inject a pending timer directly (can't be created via Execute because
+	// drainPendingTimers always runs before Execute returns)
+	s.pendingTimers[1] = &timerEntry{
+		timer:    time.NewTimer(10 * time.Second),
+		fireTime: time.Time{}.Add(10 * time.Second),
+	}
+	if err := s.Reset(); err != nil {
+		t.Fatalf("Reset with pending timers: %v", err)
+	}
+	if len(s.pendingTimers) != 0 {
+		t.Errorf("pending timers should be cleared after reset, got %d", len(s.pendingTimers))
+	}
+}
+
+func TestStopPendingTimersWithEntries(t *testing.T) {
+	s := newTestSession(t)
+	s.pendingTimers[1] = &timerEntry{
+		timer:    time.NewTimer(10 * time.Second),
+		fireTime: time.Time{}.Add(10 * time.Second),
+	}
+	s.pendingTimers[2] = &timerEntry{
+		timer:    time.NewTimer(5 * time.Second),
+		fireTime: time.Time{}.Add(5 * time.Second),
+	}
+	s.stopPendingTimers()
+	if len(s.pendingTimers) != 0 {
+		t.Errorf("expected no pending timers, got %d", len(s.pendingTimers))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// drainPendingTimers: context cancel + callback errors
+// ---------------------------------------------------------------------------
+
+func TestDrainPendingTimersCtxCancel(t *testing.T) {
+	s := newTestSession(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	toolFn := mockToolFn(t, nil)
+
+	done := make(chan string, 1)
+	go func() {
+		output, _ := s.Execute(ctx, `setTimeout(function(){ store("fired", "yes") }, 5000); store("scheduled", "1")`, "", toolFn, 10000)
+		done <- output
+	}()
+
+	// Wait for JS to schedule the timer (poll kv store)
+	pollTimeout := time.After(3 * time.Second)
+	for {
+		if val, _ := s.kv.Load("scheduled"); val == "1" {
+			break
+		}
+		select {
+		case <-pollTimeout:
+			t.Fatal("timed out waiting for timer to be scheduled")
+		default:
+			runtime.Gosched()
+		}
+	}
+	cancel()
+
+	select {
+	case output := <-done:
+		if strings.Contains(output, "yes") {
+			t.Errorf("timer callback should not have fired after ctx cancel, got %q", output)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Execute didn't return after ctx cancel")
+	}
+}
+
+func TestDrainPendingTimersCallbackError(t *testing.T) {
+	s := newTestSession(t)
+	ctx := context.Background()
+	toolFn := mockToolFn(t, nil)
+
+	output, err := s.Execute(ctx, `
+		setTimeout(function() { throw new Error("timer callback error") }, 5);
+		console.log("main code")
+	`, "", toolFn, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "main code") {
+		t.Errorf("expected 'main code', got %q", output)
+	}
+	if !strings.Contains(output, "[Timer Error]") {
+		t.Errorf("expected timer error in output, got %q", output)
+	}
+	if !strings.Contains(output, "timer callback error") {
+		t.Errorf("expected 'timer callback error' in output, got %q", output)
+	}
+}
+
+func TestDrainPendingTimersMultipleCallbackErrors(t *testing.T) {
+	s := newTestSession(t)
+	ctx := context.Background()
+	toolFn := mockToolFn(t, nil)
+
+	output, err := s.Execute(ctx, `
+		setTimeout(function() { throw new Error("error1") }, 5);
+		setTimeout(function() { throw new Error("error2") }, 10);
+	`, "", toolFn, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "error1") {
+		t.Errorf("expected 'error1', got %q", output)
+	}
+	if !strings.Contains(output, "error2") {
+		t.Errorf("expected 'error2', got %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tool() when no toolFn is set
+// ---------------------------------------------------------------------------
+
+func TestToolFnNotAvailable(t *testing.T) {
+	s := newTestSession(t)
+	// Execute with nil toolFn — session.toolFn stays nil
+	output, err := s.Execute(context.Background(),
+		`const r = tool("Echo", "{}"); console.log(r)`,
+		"", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "ERROR: tool executor not available") {
+		t.Errorf("expected 'tool executor not available' error, got %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// toGoNative: int, int64, default (fmt.Sprintf fallback)
+// ---------------------------------------------------------------------------
+
+func TestToGoNativeExtended(t *testing.T) {
+	// int → float64
+	got := toGoNative(42)
+	if f, ok := got.(float64); !ok || f != 42.0 {
+		t.Errorf("int: expected float64(42), got %v", got)
+	}
+	// int64 → float64
+	got = toGoNative(int64(99))
+	if f, ok := got.(float64); !ok || f != 99.0 {
+		t.Errorf("int64: expected float64(99), got %v", got)
+	}
+	// default: complex → fmt.Sprintf fallback
+	got = toGoNative(complex(1, 2))
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("complex: expected string, got %T", got)
+	}
+	if !strings.Contains(s, "(") {
+		t.Errorf("complex: expected formatted complex number, got %q", s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// toInt64: int64, float64 NaN/negative/overflow, default
+// ---------------------------------------------------------------------------
+
+func TestToInt64Extended(t *testing.T) {
+	// int64
+	if got := toInt64(int64(42)); got != 42 {
+		t.Errorf("int64(42): expected 42, got %d", got)
+	}
+	// float64 NaN → 0
+	if got := toInt64(math.NaN()); got != 0 {
+		t.Errorf("NaN: expected 0, got %d", got)
+	}
+	// float64 negative → 0
+	if got := toInt64(-1.0); got != 0 {
+		t.Errorf("negative: expected 0, got %d", got)
+	}
+	// float64 overflow (> 1<<62) → 0
+	if got := toInt64(float64(1 << 63)); got != 0 {
+		t.Errorf("overflow: expected 0, got %d", got)
+	}
+	// default → 0
+	if got := toInt64("abc"); got != 0 {
+		t.Errorf("string: expected 0, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseUint: empty string, invalid character
+// ---------------------------------------------------------------------------
+
+func TestParseUintExtended(t *testing.T) {
+	// empty string
+	_, err := parseUint("")
+	if err == nil {
+		t.Error("empty: expected error")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty: expected 'empty' error, got %v", err)
+	}
+	// invalid character
+	_, err = parseUint("12a3")
+	if err == nil {
+		t.Error("invalid char: expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("invalid char: expected 'invalid character', got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool args: object (non-string) through tool()
+// ---------------------------------------------------------------------------
+
+func TestToolWithObjectArgs(t *testing.T) {
+	s := newTestSession(t)
+	toolFn := mockToolFn(t, map[string]string{
+		"Echo": `{"result": "ok"}`,
+	})
+
+	// Pass JS object (not a string) — hits default case in tool() args handling
+	output, err := s.Execute(context.Background(),
+		`const r = tool("Echo", {msg: "hi"}); console.log(r)`,
+		"", toolFn, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "ok") {
+		t.Errorf("expected tool result, got %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Remaining coverage: parsePragma via Call, toolExecutor success, closed session,
+// compile error, output+error, drainPendingTimers vm nil, toInt64 float64
+// ---------------------------------------------------------------------------
+
+func TestREPLToolCallInvalidPragma(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	// parsePragma rejects timeout below minimum → handleExecute returns error
+	input, _ := json.Marshal(replInput{Code: "// @timeout: 500\nconsole.log()"})
+	_, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "bad-pragma"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid pragma")
+	}
+	if !strings.Contains(err.Error(), "invalid @timeout") {
+		t.Errorf("expected 'invalid @timeout', got %v", err)
+	}
+}
+
+func TestREPLToolToolExecutorSuccess(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "tool result: " + name, nil
+	})
+	input, _ := json.Marshal(replInput{Code: `const r = tool("Echo", "{}"); console.log(r)`})
+	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "tool-ok-test"},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "tool result: Echo") {
+		t.Errorf("expected 'tool result: Echo', got %q", result.Data)
+	}
+	r.CleanSession("tool-ok-test")
+}
+
+func TestREPLToolExecuteOnClosedSession(t *testing.T) {
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	// Create a session via Call
+	input, _ := json.Marshal(replInput{Code: `console.log("setup")`})
+	_, err := r.Call(context.Background(), input, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "will-close"},
+	})
+	if err != nil {
+		t.Fatalf("Call 1: %v", err)
+	}
+	// Close session directly without removing from map
+	v, _ := r.sessions.Load("will-close")
+	v.(*Session).Close()
+
+	// Execute on closed session → "session closed" error
+	input2, _ := json.Marshal(replInput{Code: `console.log("after")`})
+	_, err = r.Call(context.Background(), input2, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "will-close"},
+	})
+	if err == nil {
+		t.Fatal("expected error executing on closed session")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("expected 'closed' error, got %v", err)
+	}
+	r.sessions.Delete("will-close")
+}
+
+func TestCompileError(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(), `invalid {{{js`, "", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute should not return Go error for JS compile error: %v", err)
+	}
+	if !strings.Contains(output, "[JS Error]") {
+		t.Errorf("expected JS error in output, got %q", output)
+	}
+}
+
+func TestOutputAndError(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(),
+		`console.log("before error"); throw new Error("boom")`,
+		"", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "before error") {
+		t.Errorf("expected 'before error', got %q", output)
+	}
+	if !strings.Contains(output, "[JS Error]") {
+		t.Errorf("expected '[JS Error]', got %q", output)
+	}
+	if !strings.Contains(output, "boom") {
+		t.Errorf("expected 'boom', got %q", output)
+	}
+	// Verify newline between console output and error
+	if !strings.Contains(output, "before error\n\n[JS Error]") {
+		t.Errorf("expected newline between output and error, got %q", output)
+	}
+}
+
+func TestDrainPendingTimersVMNil(t *testing.T) {
+	s := newTestSession(t)
+	// Timer(0) fires immediately — channel has value without waiting
+	timer := time.NewTimer(0)
+	// Yield to runtime so the timer can deliver to the channel
+	runtime.Gosched()
+	s.pendingTimers[1] = &timerEntry{
+		timer:    timer,
+		fireTime: time.Time{},
+	}
+	// Nil out the VM — drainPendingTimers hits the `s.vm == nil` guard
+	s.vm = nil
+	errors := s.drainPendingTimers(context.Background())
+	if errors != "" {
+		t.Errorf("expected no errors, got %q", errors)
+	}
+	if len(s.pendingTimers) != 0 {
+		t.Errorf("expected no pending timers, got %d", len(s.pendingTimers))
+	}
+}
+
+func TestToInt64Float64Normal(t *testing.T) {
+	// float64 normal return path — quickjs passes numbers as int64, not float64,
+	// so this path is never hit through JS execution
+	if got := toInt64(float64(42)); got != 42 {
+		t.Errorf("float64(42): expected 42, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests: full call chains through REPLTool.Call
+// ---------------------------------------------------------------------------
+
+func TestMultiTurnYieldConversation(t *testing.T) {
+	// Full chain: execute → yield → wait → continue → yield → wait → finish
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	ctx := context.Background()
+	sessID := "multi-turn-yield"
+
+	// Start JS that yields twice then finishes
+	done := make(chan string, 1)
+	input, _ := json.Marshal(replInput{Code: `
+		console.log("turn1")
+		yield_control()
+		console.log("turn2")
+		yield_control()
+		console.log("turn3")
+	`})
+	go func() {
+		result, _ := r.Call(ctx, input, &tool.ToolUseContext{
+			Options: tool.ToolUseOptions{SessionID: sessID},
+		})
+		if result != nil {
+			done <- result.Data.(string)
+		}
+	}()
+
+	// Wait for session creation
+	pollTimeout := time.After(5 * time.Second)
+	for {
+		if _, ok := r.sessions.Load(sessID); ok {
+			break
+		}
+		select {
+		case <-pollTimeout:
+			t.Fatal("session not created")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	// Turn 1: read first yield
+	waitInput, _ := json.Marshal(replInput{Action: "wait", SessionID: sessID})
+	result1, err := r.Call(ctx, waitInput, nil)
+	if err != nil {
+		t.Fatalf("wait 1: %v", err)
+	}
+	data1 := result1.Data.(string)
+	if !strings.Contains(data1, "YIELDED") {
+		t.Fatalf("wait 1: expected YIELDED, got %q", data1)
+	}
+	if !strings.Contains(data1, "turn1") {
+		t.Errorf("wait 1: expected 'turn1', got %q", data1)
+	}
+
+	// Turn 2: read second yield
+	result2, err := r.Call(ctx, waitInput, nil)
+	if err != nil {
+		t.Fatalf("wait 2: %v", err)
+	}
+	data2 := result2.Data.(string)
+	if !strings.Contains(data2, "YIELDED") {
+		t.Fatalf("wait 2: expected YIELDED, got %q", data2)
+	}
+	if !strings.Contains(data2, "turn2") {
+		t.Errorf("wait 2: expected 'turn2', got %q", data2)
+	}
+
+	// Wait for goroutine to finish — final output should include turn3
+	select {
+	case finalData := <-done:
+		if !strings.Contains(finalData, "turn3") {
+			t.Errorf("final: expected 'turn3', got %q", finalData)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution didn't complete after second resume")
+	}
+
+	r.CleanSession(sessID)
+}
+
+func TestCrossCallPersistence(t *testing.T) {
+	// Full chain: Call(store) → Call(load) → verify data survives across calls
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	ctx := context.Background()
+
+	// Call 1: store data
+	input1, _ := json.Marshal(replInput{Code: `store("cross_test", "survives")`})
+	_, err := r.Call(ctx, input1, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "persist-test"},
+	})
+	if err != nil {
+		t.Fatalf("store call: %v", err)
+	}
+
+	// Call 2: load and verify
+	input2, _ := json.Marshal(replInput{Code: `console.log(load("cross_test"))`})
+	result, err := r.Call(ctx, input2, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "persist-test"},
+	})
+	if err != nil {
+		t.Fatalf("load call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "survives") {
+		t.Errorf("expected 'survives' from cross-call load, got %q", result.Data)
+	}
+
+	// Call 3: overwrite and verify
+	input3, _ := json.Marshal(replInput{Code: `store("cross_test", "updated"); console.log(load("cross_test"))`})
+	result, err = r.Call(ctx, input3, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "persist-test"},
+	})
+	if err != nil {
+		t.Fatalf("update call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "updated") {
+		t.Errorf("expected 'updated' after overwrite, got %q", result.Data)
+	}
+
+	r.CleanSession("persist-test")
+}
+
+func TestConcurrentSessions(t *testing.T) {
+	// Two sessions running simultaneously — verify isolation
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	ctx := context.Background()
+
+	doneA := make(chan string, 1)
+	doneB := make(chan string, 1)
+
+	inputA, _ := json.Marshal(replInput{Code: `store("who", "A"); console.log(load("who"))`})
+	inputB, _ := json.Marshal(replInput{Code: `store("who", "B"); console.log(load("who"))`})
+
+	go func() {
+		result, _ := r.Call(ctx, inputA, &tool.ToolUseContext{
+			Options: tool.ToolUseOptions{SessionID: "concurrent-A"},
+		})
+		if result != nil {
+			doneA <- result.Data.(string)
+		}
+	}()
+
+	go func() {
+		result, _ := r.Call(ctx, inputB, &tool.ToolUseContext{
+			Options: tool.ToolUseOptions{SessionID: "concurrent-B"},
+		})
+		if result != nil {
+			doneB <- result.Data.(string)
+		}
+	}()
+
+	select {
+	case resultA := <-doneA:
+		if !strings.Contains(resultA, "A") {
+			t.Errorf("session A: expected 'A', got %q", resultA)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session A didn't complete")
+	}
+
+	select {
+	case resultB := <-doneB:
+		if !strings.Contains(resultB, "B") {
+			t.Errorf("session B: expected 'B', got %q", resultB)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session B didn't complete")
+	}
+
+	r.Close()
+}
+
+func TestResetClearsStateViaCall(t *testing.T) {
+	// Full chain: Call(store) → Call(load, verify) → Call(reset) → Call(load, verify gone)
+	r := New()
+	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
+		return "", nil
+	})
+	ctx := context.Background()
+
+	// Call 1: store data
+	input1, _ := json.Marshal(replInput{Code: `store("clear_test", "before_reset")`})
+	_, err := r.Call(ctx, input1, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
+	})
+	if err != nil {
+		t.Fatalf("store call: %v", err)
+	}
+
+	// Call 2: verify data exists
+	input2, _ := json.Marshal(replInput{Code: `console.log(load("clear_test"))`})
+	result, err := r.Call(ctx, input2, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
+	})
+	if err != nil {
+		t.Fatalf("load call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "before_reset") {
+		t.Fatalf("expected 'before_reset' before reset, got %q", result.Data)
+	}
+
+	// Call 3: reset
+	resetInput, _ := json.Marshal(replInput{Reset: true})
+	_, err = r.Call(ctx, resetInput, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
+	})
+	if err != nil {
+		t.Fatalf("reset call: %v", err)
+	}
+
+	// Call 4: verify data is gone
+	input4, _ := json.Marshal(replInput{Code: `const v = load("clear_test"); console.log(v === "" ? "cleared" : "leaked: " + v)`})
+	result, err = r.Call(ctx, input4, &tool.ToolUseContext{
+		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
+	})
+	if err != nil {
+		t.Fatalf("verify call: %v", err)
+	}
+	if !strings.Contains(result.Data.(string), "cleared") {
+		t.Errorf("expected 'cleared' after reset, got %q", result.Data)
+	}
+
+	r.CleanSession("reset-clear")
 }
