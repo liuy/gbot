@@ -4753,3 +4753,69 @@ func TestProcessNotifications_WithPending(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Engine.ExecuteTool — RenderResult integration
+// ---------------------------------------------------------------------------
+
+// renderResultTool returns structured data from Call() but formats it via RenderResult.
+// ExecuteTool must return the RenderResult output, not raw JSON.
+type renderResultTool struct {
+	name string
+}
+
+func (t *renderResultTool) Name() string                                    { return t.name }
+func (t *renderResultTool) Aliases() []string                               { return nil }
+func (t *renderResultTool) Description(json.RawMessage) (string, error)     { return "test", nil }
+func (t *renderResultTool) InputSchema() json.RawMessage                    { return nil }
+func (t *renderResultTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: map[string]any{"files": []string{"a.go", "b.go"}, "count": 2}}, nil
+}
+func (t *renderResultTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (t *renderResultTool) IsReadOnly(json.RawMessage) bool        { return true }
+func (t *renderResultTool) IsDestructive(json.RawMessage) bool     { return false }
+func (t *renderResultTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (t *renderResultTool) IsEnabled() bool                        { return true }
+func (t *renderResultTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (t *renderResultTool) MaxResultSize() int          { return 50000 }
+func (t *renderResultTool) Prompt() string              { return "" }
+func (t *renderResultTool) RenderResult(data any) string {
+	// Simulate a tool that formats structured data as plain text
+	m, ok := data.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", data)
+	}
+	files, _ := m["files"].([]string)
+	return strings.Join(files, "\n")
+}
+
+func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Tools:    []tool.Tool{&renderResultTool{name: "list_files"}},
+		Model:    "test",
+	})
+
+	sessionAllowed := make(map[string]bool)
+	var mu sync.Mutex
+
+	result, err := eng.ExecuteTool(context.Background(), "list_files", json.RawMessage(`{}`), sessionAllowed, &mu)
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+
+	// RenderResult formats as newline-separated file paths, NOT JSON.
+	if result != "a.go\nb.go" {
+		t.Errorf("ExecuteTool: got %q, want %q", result, "a.go\nb.go")
+	}
+	// Must NOT be JSON like {"count":2,"files":["a.go","b.go"]}
+	if strings.HasPrefix(result, "{") {
+		t.Errorf("ExecuteTool returned raw JSON, should use RenderResult")
+	}
+}

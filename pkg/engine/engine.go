@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/liuy/gbot/pkg/hooks"
@@ -60,6 +61,10 @@ type AutoCompactConfig struct {
 	// the circuit breaker trips and stops attempting proactive auto-compact. Default: 3.
 	MaxConsecutiveFailures int
 }
+
+// subEngineSeq generates unique suffixes for sub-engine session IDs.
+// Plan Issue 2: each sub-engine must have unique SessionID to isolate REPLTool sessions.
+var subEngineSeq atomic.Int64
 
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
@@ -117,6 +122,11 @@ type Engine struct {
 	// agentMetaDepth tracks nesting depth for sub-agent rendering.
 	// 0 = main engine, 1 = direct child, 2 = grandchild, etc.
 	agentMetaDepth int
+
+	// onCloseFn is called during Close() so callers (main.go) can wire
+	// session-scoped cleanup (e.g. REPL CleanSession) without Engine
+	// knowing about REPLTool directly.
+	onCloseFn func(sessionID string)
 
 	// permissionChecker evaluates permission rules for tool invocations.
 	// Nil when no permission rules are configured (default allow).
@@ -1077,6 +1087,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 							Options: tool.ToolUseOptions{
 								Tools:             e.tools,
 								PendingMCPServers: e.pendingMCPServerNames(),
+								SessionID:         e.sessionID,
 							},
 						}
 						streamingExecutor = NewStreamingToolExecutor(
@@ -1608,7 +1619,10 @@ func (e *Engine) pendingMCPServerNames() []string {
 
 // Close shuts down the engine and its MCP registry.
 func (e *Engine) Close() {
-	// SessionEnd hook — runs before MCP shutdown.
+	if e.onCloseFn != nil {
+		e.onCloseFn(e.sessionID)
+	}
+
 	if e.hooks != nil {
 		_ = e.hooks.SessionEnd(context.Background(), &hooks.HookInput{
 			HookEventName: string(hooks.HookSessionEnd),
@@ -1618,6 +1632,10 @@ func (e *Engine) Close() {
 	if e.mcpRegistry != nil {
 		_ = e.mcpRegistry.Close()
 	}
+}
+
+func (e *Engine) SetOnClose(fn func(sessionID string)) {
+	e.onCloseFn = fn
 }
 
 // MaxTokens returns the max tokens setting.
@@ -1691,6 +1709,13 @@ func (e *Engine) SetSessionID(id string) {
 	e.mu.Unlock()
 }
 
+// SessionID returns the current session ID.
+func (e *Engine) SessionID() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sessionID
+}
+
 // SetModel sets the model name for subsequent API calls.
 func (e *Engine) SetModel(model string) {
 	e.mu.Lock()
@@ -1744,13 +1769,6 @@ func (e *Engine) SetMaxTokens(n int) {
 	e.mu.Lock()
 	e.maxTokens = n
 	e.mu.Unlock()
-}
-
-// SessionID returns the current session ID.
-func (e *Engine) SessionID() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.sessionID
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,6 +1853,8 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		permissionChecker:       e.permissionChecker,
 		contentReplacementState: toolresult.CloneContentReplacementState(e.contentReplacementState),
 			toolSearch:             newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
+			sessionID:            e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
+			onCloseFn:            e.onCloseFn,
 	}
 }
 

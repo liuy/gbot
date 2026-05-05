@@ -347,7 +347,7 @@ var checkPatterns = []checkPattern{
 			},
 		},
 		{
-			Name:     "time.Now in test - use synctest.Test or injectable nowFunc",
+			Name:     "time.Now in test - use synctest.Test",
 			TestOnly: true,
 			Regex:    regexp.MustCompile(`time\.Now\(\)`),
 			Level:    "P3",

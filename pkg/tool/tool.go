@@ -51,6 +51,7 @@ type ToolUseOptions struct {
 	Verbose           bool
 	Tools             map[string]Tool // all tools map, aligned with TS options.tools
 	PendingMCPServers []string        // MCP pending server names
+	SessionID         string          // engine session ID for tool isolation (e.g., REPLTool sessions)
 }
 
 // ---------------------------------------------------------------------------

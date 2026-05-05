@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
+	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/tool/job"
 	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
 	"github.com/liuy/gbot/pkg/tui"
@@ -107,14 +109,14 @@ func main() {
 	// Resolve working directory early (needed for skill registry, MCP, and system prompt)
 	workingDir, _ := os.Getwd()
 
-	// 3.1 Initialize skill registry
+	// Skill registry
 	skillReg := skills.NewRegistry(workingDir)
 	if err := skillReg.Load(); err != nil {
 		slog.Warn("main: skill registry load failed", "error", err)
 	}
 	reg.MustRegister(skilltool.New(skillReg))
 
-	// 3.2 Register Agent tool early (factory wired after engine creation).
+	
 	// SetNotifyFn with stubs creates forkReg so JobAdapter() works.
 	agentTool := agenttool.New()
 	agentTool.SetWorkingDir(workingDir)
@@ -127,7 +129,11 @@ func main() {
 	)
 	reg.MustRegister(agentTool)
 
-	// 3.3 Register task management tools (needs agentTool.JobAdapter from SetNotifyFn).
+	
+	replTool := repl.New()
+	reg.MustRegister(replTool)
+
+	
 	agenttool.InitLoader(workingDir)
 	bashJobReg := bash.NewJobInfoAdapter(bash.DefaultRegistry())
 	forkJobReg := agentTool.JobAdapter()
@@ -135,14 +141,14 @@ func main() {
 	reg.MustRegister(job.NewJobOutput(jobReg))
 	reg.MustRegister(job.NewJobStop(jobReg))
 
-	// 3.4 Register task list tools (dir resolved later when sessionID is available).
+	
 	taskList := tasklist.NewList("")
 	reg.MustRegister(tasklist.NewTaskCreate(taskList))
 	reg.MustRegister(tasklist.NewTaskGet(taskList))
 	reg.MustRegister(tasklist.NewTaskList(taskList))
 	reg.MustRegister(tasklist.NewTaskUpdate(taskList))
 
-	// 4. Create engine — all 10 tools registered, ToolsProvider captures full set.
+	// Create engine
 	logger := slog.Default()
 	if cfg.Verbose {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -150,7 +156,7 @@ func main() {
 
 	h := hub.NewHub()
 
-	// 4.1 Initialize MCP registry from .mcp.json
+	// MCP registry
 	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{})
 	if err != nil {
 		slog.Warn("main: MCP initialization failed", "error", err)
@@ -158,7 +164,7 @@ func main() {
 
 	contextWindow, maxTokens := primaryProviderCfg.ResolveCapabilities(model)
 
-	// 4.2 Initialize hooks system
+	// Hooks system
 	var hooksConfig hooks.HooksConfig
 	if len(cfg.Hooks) > 0 {
 		if err := json.Unmarshal(cfg.Hooks, &hooksConfig); err != nil {
@@ -172,7 +178,7 @@ func main() {
 	}
 	hookSystem := hooks.NewHooks(hooksConfig, hookExecutor)
 
-	// 4.2b Load permission rules from user/project/local settings
+	// Permission rules
 	configDir, _ := config.ConfigDir()
 	permRules := permission.LoadConfig(configDir, workingDir)
 	var permChecker *permission.Checker
@@ -194,7 +200,11 @@ func main() {
 		PermissionChecker: permChecker,
 	})
 
-	// 4.3 Wire Agent factory (breaks circular dependency: tools → engine → tools).
+	eng.SetOnClose(func(sessionID string) {
+		replTool.CleanSession(sessionID)
+	})
+
+	// Wire agent factory
 	agentTool.SetFactory(
 		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 			startTime := time.Now()
@@ -238,7 +248,7 @@ func main() {
 		eng.Tools,
 	)
 
-	// 4.3b Wire MCP connect function for agent-specific MCP servers.
+	// Wire MCP connect
 	if mcpRegistry != nil {
 		agentTool.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
 			handle, err := mcpRegistry.ConnectAgentServers(ctx, agentID, rawSpecs)
@@ -256,7 +266,7 @@ func main() {
 		})
 	}
 
-	// 4.4 Replace stub SetNotifyFn with real callbacks.
+	// Wire notification callbacks
 	agentTool.SetNotifyFn(
 		func(xml string) {
 			eng.EnqueueNotification(types.Message{
@@ -267,6 +277,20 @@ func main() {
 		},
 		func() json.RawMessage { return eng.SystemPrompt() },
 	)
+
+		// Wire REPL tool executor
+		// Delegates to Engine.ExecuteTool which encapsulates the three-phase
+		// permission check shared with StreamingToolExecutor (runTools.go:609-695).
+		{
+			var replAskMu sync.Mutex
+			replSessionAllowed := make(map[string]bool)
+
+			replTool.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
+				return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
+			})
+		}
+
+
 
 	// Wire background task notifications into the engine's notification queue.
 	registry := bash.DefaultRegistry()
@@ -343,7 +367,7 @@ func main() {
 		}
 	}
 
-		// 7.4.5 Initialize task list storage dir (now that sessionID is known).
+		// Initialize task list storage
 		if sessionID != "" {
 			if dir, err := tasklist.TasksDir(sessionID); err == nil {
 				if err := taskList.SetDir(dir); err != nil {
@@ -354,7 +378,7 @@ func main() {
 			}
 		}
 
-		// 7.5 Wire auto-compact
+		// Wire auto-compact
 		if store != nil && sessionID != "" {
 			compactor := engine.NewAutoCompactor(store, sessionID, model, provider, contextWindow)
 			eng.SetCompactor(compactor, engine.AutoCompactConfig{
@@ -363,7 +387,7 @@ func main() {
 			})
 		}
 
-			// 7.6 Fire SessionStart hook
+			// Fire SessionStart hook
 			if sessionID != "" {
 				hookSystem.SessionStart(context.Background(), &hooks.HookInput{
 					HookEventName: string(hooks.HookSessionStart),
@@ -377,7 +401,7 @@ func main() {
 		app.SetProviders(providerMap, cfg)
 		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
 
-		// 8.5 Estimate initial context usage from system prompt + tools.
+		// Estimate initial context usage
 		// CJK-aware estimation. Corrected after first API response.
 		initialTokens := types.EstimateTokens(string(systemPrompt))
 		for _, t := range reg.EnabledTools() {
@@ -387,7 +411,7 @@ func main() {
 		}
 		app.SetInitialContext(initialTokens, contextWindow)
 
-	// 8.6 Wire task list panel reader
+	// Wire task list panel reader
 	app.SetAutoCleanupFn(func() bool {
 		// Clean up terminal jobs from bash and fork agent registries.
 		jobReg.CleanupCompleted()
@@ -454,7 +478,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Clean shutdown: close MCP connections
+	// Clean shutdown: close REPL sessions and MCP connections
+	replTool.Close()
 	eng.Close()
 }
 
