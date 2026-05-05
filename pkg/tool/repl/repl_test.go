@@ -1182,6 +1182,48 @@ func TestCall_CwdFallbackWhenWorkingDirEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// console.log multi-arg (standard JS API parity)
+// ---------------------------------------------------------------------------
+
+func TestConsoleLogMultipleArgs(t *testing.T) {
+	s, err := NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	// Standard JS: console.log("a", "b", 1) → "a b 1"
+	output, err := s.Execute(context.Background(), `console.log("a", "b", 1)`, "", nil, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := strings.TrimSpace(output)
+	want := "a b 1"
+	if got != want {
+		t.Errorf("console.log multi-arg: got %q, want %q", got, want)
+	}
+}
+
+func TestConsoleErrorMultipleArgs(t *testing.T) {
+	s, err := NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	// Standard JS: console.error("x", "y") → "[ERROR] x y"
+	output, err := s.Execute(context.Background(), `console.error("x", "y")`, "", nil, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := strings.TrimSpace(output)
+	want := "[ERROR] x y"
+	if got != want {
+		t.Errorf("console.error multi-arg: got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // REPLTool: Aliases, Description, InputSchema, property accessors
 // ---------------------------------------------------------------------------
 

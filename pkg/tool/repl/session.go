@@ -96,7 +96,10 @@ func (s *Session) registerGlobals() error {
 		return fmt.Errorf("register __consoleError: %w", err)
 	}
 
-	if _, err := vm.Eval("console = { log: __consoleLog, error: __consoleError }", quickjs.EvalGlobal); err != nil {
+	if _, err := vm.Eval(`console = {
+		log: function() { __consoleLog(Array.from(arguments).map(String).join(' ')) },
+		error: function() { __consoleError(Array.from(arguments).map(String).join(' ')) }
+	}`, quickjs.EvalGlobal); err != nil {
 		return fmt.Errorf("setup console: %w", err)
 	}
 
