@@ -224,7 +224,18 @@ func (s *Session) registerGlobals() error {
 
 // Execute runs JavaScript code in the session's QuickJS VM.
 // toolFn receives context for cancellation — threaded through to the injected toolExecutor.
-func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn func(ctx context.Context, name, argsJSON string) string, timeoutMs int64) (string, error) {
+func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn func(ctx context.Context, name, argsJSON string) string, timeoutMs int64) (output string, err error) {
+	// Catch panics from QuickJS C library — mark session unusable.
+	defer func() {
+		if r := recover(); r != nil {
+			s.mu.Lock()
+			s.closed = true
+			s.mu.Unlock()
+			output = fmt.Sprintf("[QuickJS fatal] %v", r)
+			err = nil
+		}
+	}()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -290,7 +301,7 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	}
 
 	// Build output — capture buf length before timer drain
-	output := buf.String()
+	output = buf.String()
 	bufLen := buf.Len()
 
 	if evalErr != nil && strings.Contains(evalErr.Error(), "__EXIT__") {

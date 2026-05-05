@@ -1787,3 +1787,66 @@ func TestResetClearsStateViaCall(t *testing.T) {
 
 	r.CleanSession("reset-clear")
 }
+
+// ---------------------------------------------------------------------------
+// QuickJS panic recovery
+// ---------------------------------------------------------------------------
+
+func TestExecuteRecoversFromQuickJSPanic(t *testing.T) {
+	// Promise.all + await with synchronous tool() calls is valid JS
+	// that has triggered nil pointer panics in QuickJS's C layer in production.
+	// Even if this exact code doesn't panic now, verify it executes correctly
+	// and that recover() protection is in place for future panics.
+	s, err := NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Close()
+
+	toolFn := func(_ context.Context, name, argsJSON string) string {
+		return "mock-result"
+	}
+
+	output, execErr := s.Execute(context.Background(),
+		`const results = await Promise.all([tool("Glob", JSON.stringify({pattern: "*"})), tool("Grep", JSON.stringify({pattern: "TODO"}))]);
+		console.log("got", results.length, "results");`,
+		"", toolFn, 10000)
+
+	if execErr != nil {
+		t.Fatalf("Execute: %v", execErr)
+	}
+	if !strings.Contains(output, "got 2 results") {
+		t.Errorf("expected 'got 2 results', got %q", output)
+	}
+	// Session must still be usable (not closed)
+	if s.closed {
+		t.Error("session should NOT be closed after successful execution")
+	}
+}
+
+func TestExecuteRecoversFromQuickJSPanic_panicPath(t *testing.T) {
+	// Verify that a panic inside Execute is caught and the session is marked closed.
+	// We force a panic by closing the VM externally and then executing code.
+	s, err := NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Close the VM directly (bypassing Session.Close to leave session in inconsistent state)
+	s.mu.Lock()
+	s.vm.Close()
+	s.mu.Unlock()
+
+	output, execErr := s.Execute(context.Background(), `console.log("hello")`, "", nil, 10000)
+
+	// Must NOT panic the test process
+	if execErr != nil {
+		t.Fatalf("Execute returned error (should be nil, output has fatal msg): %v", execErr)
+	}
+	if !strings.Contains(output, "[QuickJS fatal]") {
+		t.Errorf("expected '[QuickJS fatal]' in output, got %q", output)
+	}
+	if !s.closed {
+		t.Error("session should be marked closed after QuickJS panic")
+	}
+}
