@@ -21,7 +21,6 @@ const (
 	vmMemoryLimit  = 32 * 1024 * 1024 // 32MB per VM
 	defaultTimeout = 120000           // 120s default JS execution timeout
 	maxTimers      = 1000             // max concurrent setTimeout timers
-	waitTimeout    = 30 * time.Second // handleWait blocks for this long
 	minTimeout     = 1000             // minimum @timeout pragma value (ms)
 	maxTimeout     = 600000           // maximum @timeout pragma value (ms)
 )
@@ -35,8 +34,6 @@ type Session struct {
 	mu            sync.Mutex
 	currentBuf    *bytes.Buffer // swapped per Execute
 	kv            sync.Map      // store()/load() persistent storage
-	yieldCh       chan string   // JS→Go: buffered(1), yield_control sends output
-	resumeCh      chan struct{} // Go→JS: wait tool sends resume signal
 	ctx           context.Context
 	toolFn        func(ctx context.Context, name, argsJSON string) string // per-Execute tool executor
 	closed        bool
@@ -59,8 +56,6 @@ func NewSession() (*Session, error) {
 
 	s := &Session{
 		vm:            vm,
-		yieldCh:       make(chan string, 1),
-		resumeCh:      make(chan struct{}, 1),
 		pendingTimers: make(map[int64]*timerEntry),
 	}
 
@@ -126,26 +121,6 @@ func (s *Session) registerGlobals() error {
 		return s.toolFn(s.ctx, name, argsJSON)
 	}, false); err != nil {
 		return fmt.Errorf("register tool: %w", err)
-	}
-
-	// --- yield_control (deadlock protection: buffered yieldCh + select resumeCh/ctx.Done()) ---
-	if err := vm.RegisterFunc("yield_control", func() string {
-		var output string
-		if s.currentBuf != nil {
-			output = s.currentBuf.String()
-		}
-		select {
-		case s.yieldCh <- output:
-		default:
-		}
-		select {
-		case <-s.resumeCh:
-			return ""
-		case <-s.ctx.Done():
-			return "[ERROR: yield_control cancelled]"
-		}
-	}, false); err != nil {
-		return fmt.Errorf("register yield_control: %w", err)
 	}
 
 	// --- exit (throws to stop JS execution) ---
@@ -453,16 +428,6 @@ func (s *Session) stopPendingTimers() {
 		te.timer.Stop()
 		delete(s.pendingTimers, id)
 	}
-}
-
-// YieldCh returns the channel that receives output when yield_control() is called.
-func (s *Session) YieldCh() <-chan string {
-	return s.yieldCh
-}
-
-// ResumeCh returns the channel that resumes a yielded session.
-func (s *Session) ResumeCh() chan<- struct{} {
-	return s.resumeCh
 }
 
 // Interrupt sends an interrupt signal to the VM (for terminate action).

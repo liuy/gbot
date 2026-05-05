@@ -447,47 +447,6 @@ func TestParsePragmaTooLarge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// yield_control
-// ---------------------------------------------------------------------------
-
-func TestYieldControl(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	done := make(chan string, 1)
-	go func() {
-		output, _ := s.Execute(ctx, `console.log("before"); yield_control(); console.log("after")`, "", toolFn, 10000)
-		done <- output
-	}()
-
-	select {
-	case yielded := <-s.YieldCh():
-		if !strings.Contains(yielded, "before") {
-			t.Errorf("yielded output should contain 'before', got %q", yielded)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("yield_control did not yield")
-	}
-
-	select {
-	case s.ResumeCh() <- struct{}{}:
-	default:
-	}
-
-	select {
-	case output := <-done:
-		if !strings.Contains(output, "before") {
-			t.Errorf("final output should contain 'before', got %q", output)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Execute did not complete after resume")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // exit()
 // ---------------------------------------------------------------------------
 
@@ -821,7 +780,6 @@ func TestPromptContains(t *testing.T) {
 	checks := []string{
 		"tool(name, argsJSON)",
 		"console.log",
-		"yield_control()",
 		"exit()",
 		"store",
 		"load",
@@ -910,152 +868,6 @@ func TestCloseCleansAllSessions(t *testing.T) {
 			t.Errorf("session %q should be removed after Close()", id)
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Wait/Terminate integration tests
-// ---------------------------------------------------------------------------
-
-func TestREPLToolWaitSessionNotFound(t *testing.T) {
-	r := New()
-	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "nonexistent"})
-	_, err := r.Call(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("expected error for nonexistent session")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error should mention 'not found', got %q", err.Error())
-	}
-}
-
-func TestREPLToolTerminateSessionNotFound(t *testing.T) {
-	r := New()
-	input, _ := json.Marshal(replInput{Action: "terminate", SessionID: "nonexistent"})
-	_, err := r.Call(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("expected error for nonexistent session")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error should mention 'not found', got %q", err.Error())
-	}
-}
-
-func TestREPLToolWaitResumesYieldedSession(t *testing.T) {
-	r := New()
-	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
-		return "", nil
-	})
-
-	ctx := context.Background()
-	sessID := "wait-test"
-
-	// Start a yielding execution in a goroutine.
-	// Execute blocks at yield_control — yieldCh gets output but handleExecute
-	// can't consume it because it's blocked waiting for Execute to return.
-	done := make(chan string, 1)
-	input, _ := json.Marshal(replInput{Code: `console.log("yielding"); yield_control()`})
-	go func() {
-		result, _ := r.Call(ctx, input, &tool.ToolUseContext{
-			Options: tool.ToolUseOptions{SessionID: sessID},
-		})
-		if result != nil {
-			done <- result.Data.(string)
-		}
-	}()
-
-	// Wait for the session to appear (poll instead of fixed sleep)
-	pollTimeout := time.After(3 * time.Second)
-	for {
-		if _, ok := r.sessions.Load(sessID); ok {
-			break
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("timed out waiting for session to appear")
-		default:
-			runtime.Gosched()
-		}
-	}
-	if _, ok := r.sessions.Load(sessID); !ok {
-		t.Fatal("session should exist")
-	}
-
-	// Call wait action — sends resume + reads yield output from yieldCh
-	waitInput, _ := json.Marshal(replInput{Action: "wait", SessionID: sessID})
-	waitResult, err := r.Call(ctx, waitInput, nil)
-	if err != nil {
-		t.Fatalf("wait Call: %v", err)
-	}
-	waitData := waitResult.Data.(string)
-	if !strings.Contains(waitData, "YIELDED") {
-		t.Errorf("wait result should contain YIELDED, got %q", waitData)
-	}
-	if !strings.Contains(waitData, "yielding") {
-		t.Errorf("wait result should contain 'yielding', got %q", waitData)
-	}
-
-	r.CleanSession(sessID)
-}
-
-func TestREPLToolTerminateInterruptsSession(t *testing.T) {
-	r := New()
-	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
-		return "", nil
-	})
-
-	ctx := context.Background()
-	sessID := "terminate-test"
-
-	// Start an infinite loop execution.
-	// JS stores a flag before looping — we poll for it as a reliable signal.
-	done := make(chan error, 1)
-	input, _ := json.Marshal(replInput{Code: `store("running", "1"); while(true) { }`})
-	go func() {
-		_, err := r.Call(ctx, input, &tool.ToolUseContext{
-			Options: tool.ToolUseOptions{SessionID: sessID},
-		})
-		done <- err
-	}()
-
-	// Wait for JS eval to actually start (poll stored flag, not just session existence)
-	pollTimeout := time.After(3 * time.Second)
-	for {
-		if v, ok := r.sessions.Load(sessID); ok {
-			sess := v.(*Session)
-			if val, _ := sess.kv.Load("running"); val == "1" {
-				break
-			}
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("timed out waiting for JS eval to start")
-		default:
-			runtime.Gosched()
-		}
-	}
-	if _, ok := r.sessions.Load(sessID); !ok {
-		t.Fatal("session should exist")
-	}
-
-	// Terminate it
-	termInput, _ := json.Marshal(replInput{Action: "terminate", SessionID: sessID})
-	termResult, err := r.Call(ctx, termInput, nil)
-	if err != nil {
-		t.Fatalf("terminate Call: %v", err)
-	}
-	if termResult.Data.(string) != "Session terminated" {
-		t.Errorf("terminate should return 'Session terminated', got %q", termResult.Data)
-	}
-
-	// Wait for the execution to finish
-	select {
-	case <-done:
-		// Execution was interrupted as expected
-	case <-time.After(3 * time.Second):
-		t.Fatal("session execution did not terminate")
-	}
-
-	r.CleanSession(sessID)
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,26 +1076,6 @@ func TestDescription(t *testing.T) {
 		t.Errorf("{}: expected JS description, got %q", desc)
 	}
 
-	// wait action
-	waitInput, _ := json.Marshal(replInput{Action: "wait"})
-	desc, err = r.Description(waitInput)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(desc, "Resume") {
-		t.Errorf("wait: expected 'Resume', got %q", desc)
-	}
-
-	// terminate action
-	termInput, _ := json.Marshal(replInput{Action: "terminate"})
-	desc, err = r.Description(termInput)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(desc, "Terminate") {
-		t.Errorf("terminate: expected 'Terminate', got %q", desc)
-	}
-
 	// with code → code as description
 	codeInput, _ := json.Marshal(replInput{Code: "console.log(42)"})
 	desc, err = r.Description(codeInput)
@@ -1382,8 +1174,8 @@ func TestREPLToolCallNoCodeNoAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty input")
 	}
-	if !strings.Contains(err.Error(), "requires code input or an action") {
-		t.Errorf("expected 'requires code input or an action', got %v", err)
+	if !strings.Contains(err.Error(), "requires code input") {
+		t.Errorf("expected 'requires code input', got %v", err)
 	}
 }
 
@@ -1450,160 +1242,6 @@ func TestREPLToolToolExecutorError(t *testing.T) {
 		t.Errorf("expected error prefix in output, got %q", output)
 	}
 	r.CleanSession("tool-err-test")
-}
-
-// ---------------------------------------------------------------------------
-// handleWait edge cases: timeout and context cancel
-// ---------------------------------------------------------------------------
-
-func TestREPLToolWaitTimeout(t *testing.T) {
-	r := New()
-	sess, err := NewSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.sessions.Store("timeout-test", sess)
-
-	// Mock timeAfter to fire immediately
-	origTimeAfter := timeAfter
-	timeAfter = func(d time.Duration) <-chan time.Time {
-		ch := make(chan time.Time, 1)
-		ch <- time.Time{}
-		return ch
-	}
-	defer func() { timeAfter = origTimeAfter }()
-
-	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "timeout-test"})
-	_, err = r.Call(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
-	if !strings.Contains(err.Error(), "timeout") {
-		t.Errorf("expected timeout error, got %v", err)
-	}
-	r.CleanSession("timeout-test")
-}
-
-func TestREPLToolWaitContextCancel(t *testing.T) {
-	r := New()
-	sess, err := NewSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.sessions.Store("ctx-cancel-test", sess)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "ctx-cancel-test"})
-	go func() {
-		_, err := r.Call(ctx, input, nil)
-		done <- err
-	}()
-
-	runtime.Gosched() // yield to let goroutine enter handleWait
-	cancel()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected error from context cancel")
-		}
-		if !strings.Contains(err.Error(), "context") {
-			t.Errorf("expected context error, got %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("wait did not return after context cancel")
-	}
-	r.CleanSession("ctx-cancel-test")
-}
-
-func TestREPLToolWaitResumeDefault(t *testing.T) {
-	r := New()
-	sess, err := NewSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.sessions.Store("resume-default", sess)
-
-	// Fill resumeCh so the default branch fires in handleWait
-	sess.resumeCh <- struct{}{}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	input, _ := json.Marshal(replInput{Action: "wait", SessionID: "resume-default"})
-	_, err = r.Call(ctx, input, nil)
-	if err == nil {
-		t.Fatal("expected error (no yield available)")
-	}
-	if !strings.Contains(err.Error(), "context") {
-		t.Errorf("expected context error, got %v", err)
-	}
-	r.CleanSession("resume-default")
-}
-
-// ---------------------------------------------------------------------------
-// handleExecute yield path (yield_control + ctx cancel → YIELDED result)
-// ---------------------------------------------------------------------------
-
-func TestREPLToolYieldExecutePath(t *testing.T) {
-	r := New()
-	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
-		return "", nil
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	sessID := "yield-exec-path"
-
-	done := make(chan string, 1)
-	input, _ := json.Marshal(replInput{Code: `store("pre_yield", "1"); yield_control()`})
-	go func() {
-		result, _ := r.Call(ctx, input, &tool.ToolUseContext{
-			Options: tool.ToolUseOptions{SessionID: sessID},
-		})
-		if result != nil {
-			done <- result.Data.(string)
-		}
-	}()
-
-	// Wait for yield by polling kv store (don't consume yieldCh)
-	pollTimeout := time.After(3 * time.Second)
-	for {
-		if v, ok := r.sessions.Load(sessID); ok {
-			sess := v.(*Session)
-			if val, _ := sess.kv.Load("pre_yield"); val == "1" {
-				break
-			}
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("timed out waiting for yield")
-		default:
-			runtime.Gosched()
-		}
-	}
-
-	// yield_control sends to yieldCh before blocking on resumeCh.
-	// Since C code is non-preemptible, yieldCh has data by the time
-	// our poll loop observes "pre_yield" in the kv store.
-
-	// Cancel context — yield_control returns, Execute completes,
-	// handleExecute reads yieldCh → "YIELDED|..."
-	cancel()
-
-	select {
-	case result := <-done:
-		if !strings.Contains(result, "YIELDED") {
-			t.Errorf("expected YIELDED result, got %q", result)
-		}
-		if !strings.Contains(result, sessID) {
-			t.Errorf("expected session ID in result, got %q", result)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Call did not return after yield + cancel")
-	}
-	r.CleanSession(sessID)
 }
 
 // ---------------------------------------------------------------------------
@@ -1999,87 +1637,6 @@ func TestToInt64Float64Normal(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Integration tests: full call chains through REPLTool.Call
 // ---------------------------------------------------------------------------
-
-func TestMultiTurnYieldConversation(t *testing.T) {
-	// Full chain: execute → yield → wait → continue → yield → wait → finish
-	r := New()
-	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
-		return "", nil
-	})
-	ctx := context.Background()
-	sessID := "multi-turn-yield"
-
-	// Start JS that yields twice then finishes
-	done := make(chan string, 1)
-	input, _ := json.Marshal(replInput{Code: `
-		console.log("turn1")
-		yield_control()
-		console.log("turn2")
-		yield_control()
-		console.log("turn3")
-	`})
-	go func() {
-		result, _ := r.Call(ctx, input, &tool.ToolUseContext{
-			Options: tool.ToolUseOptions{SessionID: sessID},
-		})
-		if result != nil {
-			done <- result.Data.(string)
-		}
-	}()
-
-	// Wait for session creation
-	pollTimeout := time.After(5 * time.Second)
-	for {
-		if _, ok := r.sessions.Load(sessID); ok {
-			break
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("session not created")
-		default:
-			runtime.Gosched()
-		}
-	}
-
-	// Turn 1: read first yield
-	waitInput, _ := json.Marshal(replInput{Action: "wait", SessionID: sessID})
-	result1, err := r.Call(ctx, waitInput, nil)
-	if err != nil {
-		t.Fatalf("wait 1: %v", err)
-	}
-	data1 := result1.Data.(string)
-	if !strings.Contains(data1, "YIELDED") {
-		t.Fatalf("wait 1: expected YIELDED, got %q", data1)
-	}
-	if !strings.Contains(data1, "turn1") {
-		t.Errorf("wait 1: expected 'turn1', got %q", data1)
-	}
-
-	// Turn 2: read second yield
-	result2, err := r.Call(ctx, waitInput, nil)
-	if err != nil {
-		t.Fatalf("wait 2: %v", err)
-	}
-	data2 := result2.Data.(string)
-	if !strings.Contains(data2, "YIELDED") {
-		t.Fatalf("wait 2: expected YIELDED, got %q", data2)
-	}
-	if !strings.Contains(data2, "turn2") {
-		t.Errorf("wait 2: expected 'turn2', got %q", data2)
-	}
-
-	// Wait for goroutine to finish — final output should include turn3
-	select {
-	case finalData := <-done:
-		if !strings.Contains(finalData, "turn3") {
-			t.Errorf("final: expected 'turn3', got %q", finalData)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("execution didn't complete after second resume")
-	}
-
-	r.CleanSession(sessID)
-}
 
 func TestCrossCallPersistence(t *testing.T) {
 	// Full chain: Call(store) → Call(load) → verify data survives across calls

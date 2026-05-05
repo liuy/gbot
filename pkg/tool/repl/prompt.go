@@ -5,7 +5,7 @@ package repl
 // Detailed API reference and examples live in toolPrompt (system prompt contribution).
 const replDescription = `Run JavaScript code to orchestrate tool calls and data processing.
 Evaluates ES2023 in a QuickJS VM with top-level await. Call any gbot tool via tool(name, argsJSON).
-Supports console.log, store/load for cross-call persistence, yield_control for LLM handoff, setTimeout, and exit().
+Supports console.log, store/load for cross-call persistence, setTimeout, and exit().
 Variables do NOT persist across calls (module-scoped). Use store()/load() for cross-call data. Session store/load state persists; use reset: true to clear. Timeout via // @timeout: ms pragma.`
 
 // toolPrompt is the system prompt contribution for the REPL tool.
@@ -25,10 +25,6 @@ Call any gbot tool by name. Returns the tool's output as a string.
 ### console.log(msg)
 Output is captured and returned as the tool result (not written to stdout).
 Use console.log() to report results, progress, and intermediate values.
-
-### yield_control() → string
-Explicitly yield control back to the LLM. The current output is returned as the tool result in "YIELDED|sessionID|output" format. The LLM can then send "wait" to resume or "terminate" to stop.
-Use at logical breakpoints in long-running scripts.
 
 ### exit()
 Immediately end the script. Output collected so far is returned.
@@ -66,11 +62,6 @@ Top-level await works: const data = await Promise.resolve(42);
 
 Scripts execute within a session that persists across calls. store/load data survives between executions. Variables are module-scoped and do NOT persist — use store()/load() for cross-call data. Use reset: true to clear the session.
 
-When yield_control() returns "YIELDED|sessionID|output", resume with:
-  {"action": "wait", "session_id": "sessionID"}
-Terminate with:
-  {"action": "terminate", "session_id": "sessionID"}
-
 ## Examples
 
 // Batch file reads
@@ -88,10 +79,4 @@ const lines = raw.split("\n").filter(l => l.trim());
 store("todoCount", lines.length);
 console.log("Found " + lines.length + " TODOs");
 // Later calls can: load("todoCount")
-
-// Yield for LLM guidance
-const files = tool("Glob", JSON.stringify({pattern: "**/*.go"})).split("\n");
-console.log("Found " + files.length + " Go files");
-yield_control(); // Returns output to LLM, waits for "wait" to continue
-// ... continue processing after LLM reviews
 `
