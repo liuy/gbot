@@ -26,7 +26,7 @@ func TestExecuteNonPTY_Echo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal() error: %v", err)
 	}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestExecuteNonPTY_Stderr(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "echo error >&2", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestExecuteNonPTY_NonZeroExit(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "exit 42", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestExecuteNonPTY_NonZeroExit(t *testing.T) {
 
 func TestExecuteNonPTY_Timeout(t *testing.T) {
 	in := Input{Command: "sleep 60", Timeout: 100}
-	result, err := executeNonPTY(context.Background(), in, "", 100*time.Millisecond)
+	result, err := executeNonPTY(context.Background(), in, "", 100*time.Millisecond, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestExecuteNonPTY_WorkingDir(t *testing.T) {
 
 	dir := os.TempDir()
 	in := Input{Command: "pwd", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, dir, 10*time.Second)
+	result, err := executeNonPTY(context.Background(), in, dir, 10*time.Second, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestExecuteNonPTY_CommandFailure(t *testing.T) {
 	t.Parallel()
 
 	in := Input{Command: "nonexistent_command_xyz", Timeout: 10000}
-	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second)
+	result, err := executeNonPTY(context.Background(), in, "", 10*time.Second, NewStreamingOutput(nil), false, nil)
 	if err != nil {
 		t.Fatalf("executeNonPTY() error: %v", err)
 	}
@@ -124,17 +124,18 @@ func TestExecuteNonPTY_CommandFailure(t *testing.T) {
 
 func TestExecuteNonPTY_GenericError(t *testing.T) {
 	// Cancelled context → generic error path (not timeout, not ExitError)
+	// When context is already cancelled, cmd.Run() returns context.Canceled
+	// which is not an ExitError, so executeNonPTYSync returns it as an error.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	in := Input{Command: "echo hi", Timeout: 10000}
-	result, err := executeNonPTY(ctx, in, "", 10*time.Second)
-	if err != nil {
-		t.Fatalf("executeNonPTY() error: %v", err)
+	_, err := executeNonPTY(ctx, in, "", 10*time.Second, NewStreamingOutput(nil), false, nil)
+	if err == nil {
+		t.Fatal("expected error with cancelled context")
 	}
-	output := result.Data.(*Output)
-	if output.ExitCode == 0 {
-		t.Errorf("exit code 0 with cancelled context — expected non-zero or error")
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %v, want to contain 'context canceled'", err)
 	}
 }
 

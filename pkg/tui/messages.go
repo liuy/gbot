@@ -51,7 +51,7 @@ type toolParamDeltaMsg struct {
 }
 
 // toolOutputDeltaMsg carries streaming output lines from a tool in progress.
-// Source: BashTool streaming via ExecuteStream onProgress callback.
+// Source: BashTool streaming via OnProgress callback in ToolUseContext.
 type toolOutputDeltaMsg struct {
 	ToolUseID     string           // tool use ID
 	DisplayOutput string           // accumulated output lines

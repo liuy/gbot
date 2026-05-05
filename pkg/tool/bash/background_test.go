@@ -1295,9 +1295,9 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 	cmd := "echo stderr_capture_test >&2; sleep 10"
 	timeout := 100 * time.Millisecond
 
-	result, err := executeNonPTYStreamingAutoBg(context.Background(), Input{Command: cmd}, "", timeout, s, DefaultRegistry())
+	result, err := executeNonPTYAutoBg(context.Background(), Input{Command: cmd}, "", timeout, s, DefaultRegistry())
 	if err != nil {
-		t.Fatalf("executeNonPTYStreamingAutoBg() error: %v", err)
+		t.Fatalf("executeNonPTYAutoBg() error: %v", err)
 	}
 
 	output := result.Data.(*Output)

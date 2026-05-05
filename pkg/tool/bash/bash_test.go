@@ -444,9 +444,6 @@ func TestConstants(t *testing.T) {
 	if bash.MaxTimeout != 10*time.Minute {
 		t.Errorf("MaxTimeout = %v, want 10m", bash.MaxTimeout)
 	}
-	if bash.MaxOutputSize != 30000 {
-		t.Errorf("MaxOutputSize = %d, want %d", bash.MaxOutputSize, 30000)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -484,41 +481,6 @@ func TestDescription_Truncation(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Execute — trigger truncateOutput via large output
-// ---------------------------------------------------------------------------
-
-func TestExecute_LargeOutputTruncation(t *testing.T) {
-	t.Parallel()
-
-	// Generate output larger than MaxOutputSize to test truncation
-	input := json.RawMessage(`{"command":"python3 -c \"import sys; sys.stdout.write('x' * 11000000)\""}`)
-	result, err := bash.Execute(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Execute() error: %v", err)
-	}
-
-	output := result.Data.(*bash.Output)
-	// Output should be capped at MaxOutputSize + truncation message
-	if len(output.Stdout) > bash.MaxOutputSize+100 {
-		t.Errorf("Stdout length = %d, should be capped around %d", len(output.Stdout), bash.MaxOutputSize)
-	}
-}
-
-func TestExecute_LargeStderrTruncation(t *testing.T) {
-	t.Parallel()
-
-	input := json.RawMessage(`{"command":"python3 -c \"import sys; sys.stderr.write('x' * 11000000)\""}`)
-	result, err := bash.Execute(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Execute() error: %v", err)
-	}
-
-	output := result.Data.(*bash.Output)
-	if len(output.Stderr) > bash.MaxOutputSize+100 {
-		t.Errorf("Stderr length = %d, should be capped around %d", len(output.Stderr), bash.MaxOutputSize)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Execute — nil tctx falls back to os.Getwd()

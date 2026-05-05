@@ -104,19 +104,6 @@ func (t *concurrentTool) RenderResult(any) string                     { return "
 
 func (t *concurrentTool) MaxResultSize() int { return 50000 }
 
-// streamingConcurrentTool implements both Tool and ToolWithStreaming.
-type streamingConcurrentTool struct {
-	concurrentTool
-	streamFn func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error)
-}
-
-func (t *streamingConcurrentTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
-	if t.streamFn != nil {
-		return t.streamFn(ctx, input, tctx, onProgress)
-	}
-	return &tool.ToolResult{Data: "streamed"}, nil
-}
-
 func TestConcurrentToolLoop_SingleTool(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
@@ -657,17 +644,19 @@ func TestConcurrentToolLoop_ContextModifierOnlyForUnsafe(t *testing.T) {
 
 func TestConcurrentToolLoop_StreamingTool(t *testing.T) {
 	t.Parallel()
-	// Source: StreamingToolExecutor.ts:320-382 — ToolWithStreaming gets progress callbacks.
+	// Source: StreamingToolExecutor.ts:320-382 — tools use OnProgress in ToolUseContext.
 	var progressCalls int
 
 	tools := map[string]tool.Tool{
-		"streamer": &streamingConcurrentTool{
-			concurrentTool: concurrentTool{name: "streamer", isSafe: true},
-			streamFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
-				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2"}})
-				progressCalls++
-				onProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2", "line 3"}})
-				progressCalls++
+		"streamer": &concurrentTool{
+			name: "streamer", isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+				if tctx != nil && tctx.OnProgress != nil {
+					tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2"}})
+					progressCalls++
+					tctx.OnProgress(tool.ProgressUpdate{Lines: []string{"line 1", "line 2", "line 3"}})
+					progressCalls++
+				}
 				return &tool.ToolResult{Data: "streamed"}, nil
 			},
 		},

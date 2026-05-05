@@ -40,6 +40,7 @@ type ToolUseContext struct {
 	ToolUseID     string
 	WorkingDir    string
 	ReadFileState map[string]FileState // keyed by absolute file path
+	OnProgress    func(ProgressUpdate) // optional — engine sets this for streaming progress
 }
 
 // ToolUseOptions holds the execution options.
@@ -180,26 +181,16 @@ func ApplyContextModifier(result *ToolResult, tctx *ToolUseContext, isConcurrenc
 }
 
 // ---------------------------------------------------------------------------
-// ToolWithStreaming — optional interface for streaming tools
+// ProgressUpdate — streaming progress data
 // Source: BashTool.tsx:826 — runShellCommand() yields progress events.
 // ---------------------------------------------------------------------------
 
-// ProgressUpdate is sent during streaming tool execution.
-// Engine emits it as EventToolParamDelta for TUI display.
+// ProgressUpdate is sent during tool execution via OnProgress in ToolUseContext.
+// Engine emits it as EventToolOutputDelta for TUI display.
 type ProgressUpdate struct {
 	Lines      []string `json:"lines"`
 	TotalLines int      `json:"total_lines"`
 	TotalBytes int64    `json:"total_bytes"`
-}
-
-// ToolWithStreaming is an optional interface for tools that support streaming
-// progress events during execution. If a tool implements this interface, the
-// engine calls ExecuteStream instead of Call, providing a progress callback.
-//
-// Source: BashTool.tsx:826 — runShellCommand() yields progress events.
-type ToolWithStreaming interface {
-	Tool
-	ExecuteStream(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
 }
 
 // ToolWithWireFormat is an optional interface for tools that need custom
@@ -279,10 +270,6 @@ type ToolDef struct {
 	// Result rendering
 	RenderResult_ func(data any) string // default: json.Marshal
 
-	// Optional streaming support
-	// If set, BuildTool returns a tool that also implements ToolWithStreaming.
-	ExecuteStream_ func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error)
-
 	// Optional wire format override for tool_result content sent to the LLM.
 	// If set, BuildTool returns a tool that also implements ToolWithWireFormat.
 	// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
@@ -298,18 +285,9 @@ type builtTool struct {
 	def ToolDef
 }
 
-// builtStreamingTool wraps a ToolDef and also implements ToolWithStreaming.
-type builtStreamingTool struct {
-	builtTool
-}
-
 // builtWireFormatTool wraps a ToolDef and implements ToolWithWireFormat.
 type builtWireFormatTool struct {
 	builtTool
-}
-
-func (t *builtStreamingTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
-	return t.def.ExecuteStream_(ctx, input, tctx, onProgress)
 }
 
 func (t *builtWireFormatTool) FormatWireResult(data any) string {
@@ -345,9 +323,6 @@ func BuildTool(def ToolDef) Tool {
 			b, _ := json.Marshal(data)
 			return string(b)
 		}
-	}
-	if def.ExecuteStream_ != nil {
-		return &builtStreamingTool{builtTool{def: def}}
 	}
 	if def.FormatWireResult_ != nil {
 		return &builtWireFormatTool{builtTool{def: def}}

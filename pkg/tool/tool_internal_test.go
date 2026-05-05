@@ -63,153 +63,72 @@ func TestAddProp_UnmarshallableRequired(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ToolWithStreaming interface
+// OnProgress via ToolUseContext
 // ---------------------------------------------------------------------------
 
-func TestToolWithStreaming_Interface(t *testing.T) {
+func TestToolWithOnProgress(t *testing.T) {
 	t.Parallel()
 
 	schema := json.RawMessage(`{"type":"object"}`)
-	tl := BuildTool(ToolDef{
-		Name_:        "TestStreaming",
-		InputSchema_: func() json.RawMessage { return schema },
-		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
-			return &ToolResult{Data: "ok"}, nil
-		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
-			onProgress(ProgressUpdate{Lines: []string{"streaming"}, TotalLines: 1, TotalBytes: 9})
-			return &ToolResult{Data: "streamed"}, nil
-		},
-	})
-
-	st, ok := tl.(ToolWithStreaming)
-	if !ok {
-		t.Fatal("tool with ExecuteStream_ should implement ToolWithStreaming")
-	}
-
-	result, err := st.ExecuteStream(context.Background(), json.RawMessage(`{}`), nil, func(u ProgressUpdate) {})
-	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
-	}
-	if result.Data != "streamed" {
-		t.Errorf("ExecuteStream() data = %v, want streamed", result.Data)
-	}
-}
-
-func TestToolWithoutStreaming(t *testing.T) {
-	t.Parallel()
-
-	schema := json.RawMessage(`{"type":"object"}`)
-	tl := BuildTool(ToolDef{
-		Name_:        "TestNonStreaming",
-		InputSchema_: func() json.RawMessage { return schema },
-		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
-			return &ToolResult{Data: "ok"}, nil
-		},
-	})
-
-	_, ok := tl.(ToolWithStreaming)
-	if ok {
-		t.Error("tool without ExecuteStream_ should NOT implement ToolWithStreaming")
-	}
-}
-
-func TestToolWithStreaming_ProgressCallback(t *testing.T) {
-	t.Parallel()
-
-	schema := json.RawMessage(`{"type":"object"}`)
-	var updates []ProgressUpdate
+	var receivedUpdates []ProgressUpdate
 
 	tl := BuildTool(ToolDef{
 		Name_:        "TestProgress",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
-			return &ToolResult{Data: "ok"}, nil
-		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
-			onProgress(ProgressUpdate{Lines: []string{"line1"}, TotalLines: 1, TotalBytes: 5})
-			onProgress(ProgressUpdate{Lines: []string{"line1", "line2"}, TotalLines: 2, TotalBytes: 11})
+			if tctx != nil && tctx.OnProgress != nil {
+				tctx.OnProgress(ProgressUpdate{Lines: []string{"line1"}, TotalLines: 1, TotalBytes: 5})
+				tctx.OnProgress(ProgressUpdate{Lines: []string{"line1", "line2"}, TotalLines: 2, TotalBytes: 11})
+			}
 			return &ToolResult{Data: "done"}, nil
 		},
 	})
 
-	st := tl.(ToolWithStreaming)
-	_, err := st.ExecuteStream(context.Background(), json.RawMessage(`{}`), nil, func(u ProgressUpdate) {
-		updates = append(updates, u)
-	})
-	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
-	}
-
-	if len(updates) != 2 {
-		t.Fatalf("progress updates = %d, want 2", len(updates))
-	}
-	if updates[0].TotalLines != 1 {
-		t.Errorf("first update TotalLines = %d, want 1", updates[0].TotalLines)
-	}
-	if updates[1].TotalLines != 2 {
-		t.Errorf("second update TotalLines = %d, want 2", updates[1].TotalLines)
-	}
-}
-
-func TestToolWithStreaming_NilProgressCallback(t *testing.T) {
-	t.Parallel()
-
-	schema := json.RawMessage(`{"type":"object"}`)
-	tl := BuildTool(ToolDef{
-		Name_:        "TestNilProgress",
-		InputSchema_: func() json.RawMessage { return schema },
-		Description_: func(json.RawMessage) (string, error) { return "test", nil },
-		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
-			return &ToolResult{Data: "ok"}, nil
+	tctx := &ToolUseContext{
+		OnProgress: func(u ProgressUpdate) {
+			receivedUpdates = append(receivedUpdates, u)
 		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
-			return &ToolResult{Data: "done"}, nil
-		},
-	})
-
-	st := tl.(ToolWithStreaming)
-	result, err := st.ExecuteStream(context.Background(), json.RawMessage(`{}`), nil, nil)
+	}
+	result, err := tl.Call(context.Background(), json.RawMessage(`{}`), tctx)
 	if err != nil {
-		t.Fatalf("ExecuteStream() with nil callback error: %v", err)
+		t.Fatalf("Call() error: %v", err)
 	}
 	if result.Data != "done" {
-		t.Errorf("ExecuteStream() data = %v, want done", result.Data)
+		t.Errorf("Call() data = %v, want done", result.Data)
+	}
+
+	if len(receivedUpdates) != 2 {
+		t.Fatalf("progress updates = %d, want 2", len(receivedUpdates))
+	}
+	if receivedUpdates[0].TotalLines != 1 {
+		t.Errorf("first update TotalLines = %d, want 1", receivedUpdates[0].TotalLines)
+	}
+	if receivedUpdates[1].TotalLines != 2 {
+		t.Errorf("second update TotalLines = %d, want 2", receivedUpdates[1].TotalLines)
 	}
 }
 
-func TestToolWithStreaming_StillImplementsTool(t *testing.T) {
+func TestToolWithoutOnProgress(t *testing.T) {
 	t.Parallel()
 
 	schema := json.RawMessage(`{"type":"object"}`)
 	tl := BuildTool(ToolDef{
-		Name_:        "TestBoth",
+		Name_:        "TestNoProgress",
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(json.RawMessage) (string, error) { return "test", nil },
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
-			return &ToolResult{Data: "call-result"}, nil
-		},
-		ExecuteStream_: func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext, onProgress func(ProgressUpdate)) (*ToolResult, error) {
-			return &ToolResult{Data: "stream-result"}, nil
+			return &ToolResult{Data: "ok"}, nil
 		},
 	})
 
-	// Should implement base Tool interface
-	var _ Tool = tl //nolint // compile-time interface assertion
-
+	// Call without OnProgress — tool should still work fine
 	result, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
-	if result.Data != "call-result" {
-		t.Errorf("Call() data = %v, want call-result", result.Data)
-	}
-
-	if tl.Name() != "TestBoth" {
-		t.Errorf("Name() = %q, want TestBoth", tl.Name())
+	if result.Data != "ok" {
+		t.Errorf("Call() data = %v, want ok", result.Data)
 	}
 }
 

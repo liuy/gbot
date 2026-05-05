@@ -29,17 +29,16 @@ type StreamingUpdate struct {
 // Thread-safe for concurrent Write and Read operations.
 //
 // Two separate tracking mechanisms:
-//   - lines: full output buffer, capped at MaxOutputSize (for LLM consumption)
+//   - lines: full output buffer, uncapped (framework MaybePersistLargeToolResult handles large output)
 //   - lastLines: rolling window of last 20 lines, never capped (for TUI progress)
 //
-// Source: TaskOutput.ts — memory cap + rolling window, ShellCommand.ts — size watchdog
+// Source: TaskOutput.ts — rolling window, ShellCommand.ts — size watchdog
 type StreamingOutput struct {
 	mu          sync.Mutex
-	lines       []string // full output, capped at MaxOutputSize bytes
+	lines       []string // full output, no cap — framework handles large results
 	totalBytes  int64    // always tracks total bytes
 	totalLines  int      // always tracks complete line count (newlines seen)
 	lastLines   []string // rolling window of last 20 lines, never capped
-	exceeded    bool     // true if lines buffer reached MaxOutputSize
 	partialLine bool     // tracks mid-line state across Write calls
 	onProgress  func(StreamingUpdate)
 }
@@ -52,8 +51,7 @@ func NewStreamingOutput(onProgress func(StreamingUpdate)) *StreamingOutput {
 }
 
 // Write appends output data, splits on newlines, and calls onProgress.
-// After lines buffer exceeds MaxOutputSize, lines stops growing but lastLines
-// continues updating so TUI progress never stalls.
+// Framework MaybePersistLargeToolResult handles large output after command finishes.
 // Returns the number of bytes written (always len(p)) and any error.
 // Thread-safe.
 //
@@ -83,7 +81,7 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 
 		if s.partialLine {
 			// Append to existing partial line
-			if !s.exceeded && len(s.lines) > 0 {
+			if len(s.lines) > 0 {
 				s.lines[len(s.lines)-1] += text
 			}
 			if len(s.lastLines) > 0 {
@@ -91,9 +89,7 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 			}
 		} else {
 			// New line
-			if !s.exceeded {
-				s.lines = append(s.lines, text)
-			}
+			s.lines = append(s.lines, text)
 			s.lastLines = append(s.lastLines, text)
 		}
 
@@ -105,11 +101,6 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 		}
 	}
 
-	// Check cap for lines buffer after processing
-	// Source: outputLimits.ts — BASH_MAX_OUTPUT_DEFAULT = 30_000
-	if !s.exceeded && s.totalBytes > int64(MaxOutputSize) {
-		s.exceeded = true
-	}
 
 	// Always send progress (TUI needs continuous updates)
 	if s.onProgress != nil {
@@ -123,13 +114,6 @@ func (s *StreamingOutput) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Exceeded returns true if the output exceeded MaxOutputSize.
-func (s *StreamingOutput) Exceeded() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.exceeded
-}
-
 // LastLines returns the rolling window of recent lines joined with newlines.
 // Returns at most streamingLastLines (20) lines — much cheaper than Lines()
 // for cases that only need the tail (e.g., stall detection).
@@ -139,7 +123,7 @@ func (s *StreamingOutput) LastLines() string {
 	return strings.Join(s.lastLines, "\n")
 }
 
-// Lines returns all accumulated lines (up to MaxOutputSize).
+// Lines returns all accumulated lines.
 func (s *StreamingOutput) Lines() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

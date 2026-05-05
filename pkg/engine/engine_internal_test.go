@@ -3724,11 +3724,8 @@ func (t *streamingSuccessTool) Name() string                                { re
 func (t *streamingSuccessTool) Aliases() []string                           { return nil }
 func (t *streamingSuccessTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *streamingSuccessTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *streamingSuccessTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
-	return &tool.ToolResult{Data: "streamed"}, nil
-}
 func (t *streamingSuccessTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	return &tool.ToolResult{Data: "non-streamed"}, nil
+	return &tool.ToolResult{Data: "streamed"}, nil
 }
 func (t *streamingSuccessTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
@@ -4134,7 +4131,7 @@ func TestExecuteTool_StreamingError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// streamingErrorTool — tool that returns error on ExecuteStream
+// streamingErrorTool — tool that returns error on Call
 // ---------------------------------------------------------------------------
 
 type streamingErrorTool struct{ name string }
@@ -4160,9 +4157,6 @@ func (t *streamingErrorTool) Name() string                                { retu
 func (t *streamingErrorTool) Aliases() []string                           { return nil }
 func (t *streamingErrorTool) Description(json.RawMessage) (string, error) { return t.name, nil }
 func (t *streamingErrorTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
-func (t *streamingErrorTool) ExecuteStream(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext, onProgress func(tool.ProgressUpdate)) (*tool.ToolResult, error) {
-	return nil, errors.New("stream error")
-}
 func (t *streamingErrorTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, errors.New("call error")
 }
@@ -4188,7 +4182,7 @@ func TestExecuteTool_PostToolUseHookFailure(t *testing.T) {
 		emitted = append(emitted, evt)
 	}
 
-	// ToolWithStreaming that returns success, but PostToolUseHook logs an error
+	// Tool that returns success, but PostToolUseHook logs an error
 	toolMap := map[string]tool.Tool{
 		"ok_tool": &streamingSuccessTool{name: "ok_tool"},
 	}

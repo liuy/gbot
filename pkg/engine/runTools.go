@@ -722,60 +722,26 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			}
 		}
 
-	// Try streaming execution first (ToolWithStreaming interface).
+	// Unified execution: always call t.Call() with OnProgress set in ToolUseContext.
+	// Tools that support streaming (e.g., Bash) use tctx.OnProgress to emit
+	// EventToolOutputDelta events during execution. Non-streaming tools ignore it.
 	// Source: StreamingToolExecutor.ts:320-382 — runToolUse generator.
-	if streamer, ok := t.(tool.ToolWithStreaming); ok {
-		var lastDisplayOutput string
-		result, err := streamer.ExecuteStream(e.siblingCtx, tt.Input, toolCtx, func(u tool.ProgressUpdate) {
-			if len(u.Lines) > 0 {
-				display := strings.Join(u.Lines, "\n")
-				lastDisplayOutput = display
-				e.doEmit(types.QueryEvent{
-					Type: types.EventToolOutputDelta,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     tt.ID,
-						DisplayOutput: display,
-						Timing:        time.Since(start),
-					},
-				})
-			}
-		})
-		elapsed := time.Since(start)
-		tt.Duration = elapsed
-
-		if err != nil {
-			e.emitToolError(tt, err, elapsed)
-			return
+	var lastDisplayOutput string
+	toolCtx.OnProgress = func(u tool.ProgressUpdate) {
+		if len(u.Lines) > 0 {
+			display := strings.Join(u.Lines, "\n")
+			lastDisplayOutput = display
+			e.doEmit(types.QueryEvent{
+				Type: types.EventToolOutputDelta,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     tt.ID,
+					DisplayOutput: display,
+					Timing:        time.Since(start),
+				},
+			})
 		}
-
-		outputJSON := marshalToolOutput(t, result.Data, true)
-		pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
-		outputJSON = pr.Output
-		displayOutput := t.RenderResult(result.Data)
-		if displayOutput == "" && lastDisplayOutput != "" {
-			displayOutput = lastDisplayOutput
-		}
-		e.doEmit(types.QueryEvent{
-			Type: types.EventToolEnd,
-			ToolResult: &types.ToolResultEvent{
-				ToolUseID:     tt.ID,
-				Output:        outputJSON,
-				DisplayOutput: displayOutput,
-				Timing:        elapsed,
-				IsBackground:  isBackgroundResult(result.Data),
-			},
-		})
-		tt.Result = result
-		tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
-		if len(result.NewMessages) > 0 {
-			tt.newMessages = result.NewMessages
-		}
-		e.applyContextModifier(tt, result)
-		e.firePostToolUseHook(tt, false)
-		return
 	}
 
-	// Fallback: non-streaming Call().
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
 	elapsed := time.Since(start)
 	tt.Duration = elapsed
@@ -795,6 +761,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
 	outputJSON = pr.Output
 	displayOutput := t.RenderResult(result.Data)
+	if displayOutput == "" && lastDisplayOutput != "" {
+		displayOutput = lastDisplayOutput
+	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{

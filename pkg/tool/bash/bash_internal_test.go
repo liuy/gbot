@@ -40,32 +40,6 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestTruncateOutput(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		input   string
-		maxSize int
-		want    string
-	}{
-		{"small output", "hello", 10, "hello"},
-		{"exact size", "hello", 5, "hello"},
-		{"needs truncation", "hello world", 5, "hello\n\n... [1 lines truncated] ..."},
-		{"empty output", "", 5, ""},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := truncateOutput(tc.input, tc.maxSize)
-			if got != tc.want {
-				t.Errorf("truncateOutput(%q, %d) = %q, want %q", tc.input, tc.maxSize, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuildCommand(t *testing.T) {
 	t.Parallel()
 
@@ -308,22 +282,6 @@ func TestExecute_ForceNonPTY(t *testing.T) {
 	}
 }
 
-func TestExecutePTY_Error(t *testing.T) {
-	// Make ptyCommand fail by using non-existent shell
-	orig := shellCommand
-	shellCommand = "/nonexistent/shell/gbot-test-xyz"
-	defer func() { shellCommand = orig }()
-
-	in := Input{Command: "echo hello", Timeout: 10000}
-	_, err := executePTY(context.Background(), in, "", 10*time.Second)
-	if err == nil {
-		t.Fatal("expected error with non-existent shell")
-	}
-	if !strings.Contains(err.Error(), "start command") {
-		t.Errorf("error = %v, want 'start command'", err)
-	}
-}
-
 func TestBuildCommand_WithSessionEnv(t *testing.T) {
 	// Override sessionEnvScript to test the buildCommand branch
 	orig := sessionEnvScript
@@ -340,16 +298,20 @@ func TestBuildCommand_WithSessionEnv(t *testing.T) {
 	}
 }
 
-func TestBashExecuteStream_Echo(t *testing.T) {
+func TestExecute_WithProgress_Echo(t *testing.T) {
 	t.Parallel()
 
 	var updates []tool.ProgressUpdate
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo hello"}`), nil, func(u tool.ProgressUpdate) {
-		updates = append(updates, u)
-	})
+	tctx := &tool.ToolUseContext{
+		Ctx: context.Background(),
+		OnProgress: func(u tool.ProgressUpdate) {
+			updates = append(updates, u)
+		},
+	}
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo hello"}`), tctx)
 
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -371,16 +333,20 @@ func TestBashExecuteStream_Echo(t *testing.T) {
 	}
 }
 
-func TestBashExecuteStream_MultiLine(t *testing.T) {
+func TestExecute_WithProgress_MultiLine(t *testing.T) {
 	t.Parallel()
 
 	var lastUpdate tool.ProgressUpdate
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo line1; echo line2; echo line3"}`), nil, func(u tool.ProgressUpdate) {
-		lastUpdate = u
-	})
+	tctx := &tool.ToolUseContext{
+		Ctx: context.Background(),
+		OnProgress: func(u tool.ProgressUpdate) {
+			lastUpdate = u
+		},
+	}
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo line1; echo line2; echo line3"}`), tctx)
 
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -397,13 +363,17 @@ func TestBashExecuteStream_MultiLine(t *testing.T) {
 	}
 }
 
-func TestBashExecuteStream_ExitCode(t *testing.T) {
+func TestExecute_WithProgress_ExitCode(t *testing.T) {
 	t.Parallel()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"exit 42"}`), nil, func(u tool.ProgressUpdate) {})
+	tctx := &tool.ToolUseContext{
+		Ctx: context.Background(),
+		OnProgress: func(u tool.ProgressUpdate) {},
+	}
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 42"}`), tctx)
 
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -416,40 +386,14 @@ func TestBashExecuteStream_ExitCode(t *testing.T) {
 	}
 }
 
-func TestBashExecuteStream_EmptyCommand(t *testing.T) {
+func TestExecute_NilContext_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	_, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":""}`), nil, nil)
-
-	if err == nil {
-		t.Fatal("expected error for empty command")
-	}
-	if !strings.Contains(err.Error(), "command is required") {
-		t.Errorf("error = %v, want 'command is required'", err)
-	}
-}
-
-func TestBashExecuteStream_InvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	_, err := ExecuteStream(context.Background(), json.RawMessage(`invalid`), nil, nil)
-
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-	if !strings.Contains(err.Error(), "parse input") {
-		t.Errorf("error = %v, want 'parse input'", err)
-	}
-}
-
-func TestBashExecuteStream_NilProgressCallback(t *testing.T) {
-	t.Parallel()
-
-	// Should not panic with nil callback
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo safe"}`), nil, nil)
+	// Should not panic with nil tctx
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo safe"}`), nil)
 
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -462,30 +406,19 @@ func TestBashExecuteStream_NilProgressCallback(t *testing.T) {
 	}
 }
 
-func TestBashNew_ImplementsStreaming(t *testing.T) {
-	t.Parallel()
-
-	tl := New(nil)
-
-	_, ok := tl.(tool.ToolWithStreaming)
-	if !ok {
-		t.Error("Bash tool should implement ToolWithStreaming")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // run_in_background dispatch — covers spawnBackground
 // ---------------------------------------------------------------------------
 
-func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
+func TestExecute_RunInBackground_NonPTY(t *testing.T) {
 	// Force non-PTY mode for deterministic testing
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo bg-hello","run_in_background":true}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo bg-hello","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -533,14 +466,14 @@ func TestExecuteStream_RunInBackground_NonPTY(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_RunInBackground_CompletesWithOutput(t *testing.T) {
+func TestExecute_RunInBackground_CompletesWithOutput(t *testing.T) {
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg2")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo bg-output-123","run_in_background":true}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo bg-output-123","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -568,14 +501,14 @@ func TestExecuteStream_RunInBackground_CompletesWithOutput(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_RunInBackground_ExitError(t *testing.T) {
+func TestExecute_RunInBackground_ExitError(t *testing.T) {
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-bg3")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"exit 7","run_in_background":true}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 7","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -603,11 +536,11 @@ func TestExecuteStream_RunInBackground_ExitError(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
+func TestExecute_RunInBackground_PTY(t *testing.T) {
 	// Test PTY branch inside spawnBackground — don't force non-PTY mode
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo pty-bg-test","run_in_background":true}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo pty-bg-test","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -637,7 +570,7 @@ func TestExecuteStream_RunInBackground_PTY(t *testing.T) {
 // Integration test: bash spawnBackground ID must match registry + TaskStop
 // ---------------------------------------------------------------------------
 
-func TestExecuteStream_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
+func TestExecute_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
 	// Force non-PTY for deterministic behavior
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-id-match")
@@ -654,10 +587,10 @@ func TestExecuteStream_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
 		}
 	}()
 
-	// Step 1: Run a background task via ExecuteStream
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg task"}`), nil, nil)
+	// Step 1: Run a background task via Execute
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg task"}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out, ok := result.Data.(*Output)
@@ -730,10 +663,10 @@ func extractBgID(s string) string {
 }
 
 // ---------------------------------------------------------------------------
-// executeNonPTYStreaming coverage — force non-PTY mode
+// executeNonPTY coverage — force non-PTY mode
 // ---------------------------------------------------------------------------
 
-func TestExecuteStream_NonPTY(t *testing.T) {
+func TestExecute_NonPTY(t *testing.T) {
 	t.Parallel()
 	// Force non-PTY by overriding PTY check path
 	orig := PtmxCheckPath()
@@ -741,11 +674,15 @@ func TestExecuteStream_NonPTY(t *testing.T) {
 	defer func() { SetPtmxCheckPath(orig) }()
 
 	var updates []tool.ProgressUpdate
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo nonpty-echo"}`), nil, func(u tool.ProgressUpdate) {
-		updates = append(updates, u)
-	})
+	tctx := &tool.ToolUseContext{
+		Ctx: context.Background(),
+		OnProgress: func(u tool.ProgressUpdate) {
+			updates = append(updates, u)
+		},
+	}
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo nonpty-echo"}`), tctx)
 	if err != nil {
-		t.Fatalf("ExecuteStream() nonPTY error: %v", err)
+		t.Fatalf("Execute() nonPTY error: %v", err)
 	}
 	out, ok := result.Data.(*Output)
 	if !ok {
@@ -763,12 +700,12 @@ func TestExecuteStream_NonPTY(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ExecuteStream — uncovered branches
+// Execute — uncovered branches
 // ---------------------------------------------------------------------------
 
-func TestExecuteStream_InvalidJSON(t *testing.T) {
+func TestExecute_InvalidJSON2(t *testing.T) {
 	t.Parallel()
-	_, err := ExecuteStream(context.Background(), json.RawMessage(`{invalid json}`), nil, nil)
+	_, err := Execute(context.Background(), json.RawMessage(`{invalid json}`), nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -777,9 +714,9 @@ func TestExecuteStream_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_EmptyCommand(t *testing.T) {
+func TestExecute_EmptyCommand2(t *testing.T) {
 	t.Parallel()
-	_, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":""}`), nil, nil)
+	_, err := Execute(context.Background(), json.RawMessage(`{"command":""}`), nil)
 	if err == nil {
 		t.Fatal("expected error for empty command")
 	}
@@ -788,11 +725,11 @@ func TestExecuteStream_EmptyCommand(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_WithTimeout(t *testing.T) {
+func TestExecute_WithTimeout2(t *testing.T) {
 	t.Parallel()
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo timeout-test","timeout":5000}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo timeout-test","timeout":5000}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if out.ExitCode != 0 {
@@ -800,11 +737,11 @@ func TestExecuteStream_WithTimeout(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_CWD(t *testing.T) {
+func TestExecute_CWD2(t *testing.T) {
 	t.Parallel()
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"pwd","cwd":"/tmp"}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"pwd","cwd":"/tmp"}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if !strings.Contains(out.Stdout, "/tmp") {
@@ -812,12 +749,12 @@ func TestExecuteStream_CWD(t *testing.T) {
 	}
 }
 
-func TestExecuteStream_ToolUseContextCWD(t *testing.T) {
+func TestExecute_ToolUseContextCWD2(t *testing.T) {
 	t.Parallel()
 	tctx := &tool.ToolUseContext{WorkingDir: "/tmp"}
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if !strings.Contains(out.Stdout, "/tmp") {
@@ -826,18 +763,18 @@ func TestExecuteStream_ToolUseContextCWD(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executeNonPTYStreaming — timeout and error paths
+// executeNonPTY — timeout and error paths
 // ---------------------------------------------------------------------------
 
-func TestExecuteNonPTYStreaming_TimedOut(t *testing.T) {
+func TestExecuteNonPTY_TimedOut(t *testing.T) {
 	t.Parallel()
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/nonpty-timeout")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if !out.TimedOut {
@@ -845,15 +782,15 @@ func TestExecuteNonPTYStreaming_TimedOut(t *testing.T) {
 	}
 }
 
-func TestExecuteNonPTYStreaming_ExitError(t *testing.T) {
+func TestExecuteNonPTY_ExitError(t *testing.T) {
 	t.Parallel()
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/nonpty-exit")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"exit 5"}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 5"}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if out.ExitCode != 5 {
@@ -871,9 +808,9 @@ func TestSpawnBackground_NonPTY(t *testing.T) {
 	SetPtmxCheckPath("/nonexistent/ptmx/spawn-nonpty")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo spawn-nonpty","run_in_background":true}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo spawn-nonpty","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if !strings.Contains(out.Stdout, "Background task started") {
@@ -891,17 +828,17 @@ func TestSpawnBackground_NonPTY(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executePTYStreaming — uncovered paths
+// executePTY — uncovered paths
 // ---------------------------------------------------------------------------
 
-func TestExecutePTYStreaming_CwdFileError(t *testing.T) {
+func TestExecutePTY_CwdFileError(t *testing.T) {
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/pty-cwd-err")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo pty-cwd"}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo pty-cwd"}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out, ok := result.Data.(*Output)
 	if !ok {
@@ -913,15 +850,15 @@ func TestExecutePTYStreaming_CwdFileError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ExecuteStream — tctx.WorkingDir path (line 215-216)
+// Execute — tctx.WorkingDir path (line 215-216)
 // ---------------------------------------------------------------------------
 
-func TestExecuteStream_ToolUseContextWorkingDir(t *testing.T) {
+func TestExecute_ToolUseContextWorkingDir(t *testing.T) {
 	t.Parallel()
 	tctx := &tool.ToolUseContext{WorkingDir: "/tmp"}
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"pwd"}`), tctx)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if !strings.Contains(out.Stdout, "/tmp") {
@@ -930,18 +867,18 @@ func TestExecuteStream_ToolUseContextWorkingDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executePTYStreaming — err != nil path (line 265-267)
+// executePTY — err != nil path (line 265-267)
 // ---------------------------------------------------------------------------
 
-func TestExecutePTYStreaming_Error(t *testing.T) {
+func TestExecutePTY_PtyCommandError(t *testing.T) {
 	// Trigger error in ptyCommand by making shell non-existent
-	// This forces executePTYStreaming to return an error at line 265-267
+	// This forces executePTY to return an error at line 265-267
 	orig := shellCommand
 	shellCommand = "/nonexistent/shell/pty-error-test"
 	defer func() { shellCommand = orig }()
 
 	s := NewStreamingOutput(nil)
-	_, err := executePTYStreaming(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry())
+	_, err := executePTY(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry())
 	if err == nil {
 		t.Fatal("expected error with non-existent shell")
 	}
@@ -951,24 +888,24 @@ func TestExecutePTYStreaming_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executeNonPTYStreaming — generic error path (line 310-312)
+// executeNonPTY — generic error path (line 310-312)
 // cmd.Start() failure -> return nil, err
 // ---------------------------------------------------------------------------
 
 // cmd.Start() with bash -c always succeeds; bash itself is always found.
 // This test verifies the path but the error case (line 629) is unreachable
 // without invasive injection hooks. Kept for documentation.
-func TestExecuteNonPTYStreaming_StartError(t *testing.T) {
+func TestExecuteNonPTY_StartError(t *testing.T) {
 	t.Skip("unreachable without injection hooks - bash is always found")
 }
 
-func TestExecuteStream_TimeoutCap(t *testing.T) {
+func TestExecute_TimeoutCap(t *testing.T) {
 	t.Parallel()
-	result, err := ExecuteStream(context.Background(),
+	result, err := Execute(context.Background(),
 		json.RawMessage(`{"command":"echo timeout-cap","timeout":1000000000}`),
-		nil, nil)
+		nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if out.ExitCode != 0 {
@@ -977,11 +914,11 @@ func TestExecuteStream_TimeoutCap(t *testing.T) {
 }
 
 func TestSpawnBackground_PTYPath(t *testing.T) {
-	result, err := ExecuteStream(context.Background(),
+	result, err := Execute(context.Background(),
 		json.RawMessage(`{"command":"echo pty-bg-test","run_in_background":true}`),
-		nil, nil)
+		nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out, ok := result.Data.(*Output)
 	if !ok {
@@ -1007,17 +944,17 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executeNonPTYStreaming — non-ExitError path (line 310-311)
+// executeNonPTY — non-ExitError path (line 310-311)
 // ---------------------------------------------------------------------------
 
-func TestExecuteNonPTYStreaming_NonExitError(t *testing.T) {
+func TestExecuteNonPTY_NonExitError(t *testing.T) {
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/non-exit-err")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(), json.RawMessage(`{"command":"echo test"}`), nil, nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"echo test"}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
 	if out.ExitCode != 0 {
@@ -1058,9 +995,9 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	defer func() { defaultRegistry = orig }()
 
 	ctx := context.Background()
-	result, err := ExecuteStream(ctx, json.RawMessage(`{"command":"sleep 60","run_in_background":true}`), nil, nil)
+	result, err := Execute(ctx, json.RawMessage(`{"command":"sleep 60","run_in_background":true}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	tasks := freshRegistry.List()
@@ -1085,9 +1022,9 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	// Cleanup: kill the task regardless of test result
 	_ = freshRegistry.Kill(task.ID)
 
-	// Verify ExecuteStream returned a valid result
+	// Verify Execute returned a valid result
 	if result.Data == nil {
-		t.Fatal("ExecuteStream returned nil Data")
+		t.Fatal("Execute returned nil Data")
 	}
 
 	if pid == 0 {
@@ -1266,10 +1203,10 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 
 	// Command: "echo start; sleep 10" — first word is "echo", so auto-bg is allowed.
 	// Timeout: 100ms — the command will still be running when timeout fires.
-	result, err := ExecuteStream(context.Background(),
-		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil, nil)
+	result, err := Execute(context.Background(),
+		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -1315,10 +1252,10 @@ func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 
 	// Command: "echo start; sleep 10" — first word is "echo", so auto-bg is allowed.
 	// Timeout: 100ms — the command will still be running when timeout fires.
-	result, err := ExecuteStream(context.Background(),
-		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil, nil)
+	result, err := Execute(context.Background(),
+		json.RawMessage(`{"command":"echo start; sleep 10","timeout":100}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -1339,10 +1276,10 @@ func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 func TestAutoBackground_FastCommandNotBackgrounded(t *testing.T) {
 	t.Parallel()
 
-	result, err := ExecuteStream(context.Background(),
-		json.RawMessage(`{"command":"echo hello","timeout":5000}`), nil, nil)
+	result, err := Execute(context.Background(),
+		json.RawMessage(`{"command":"echo hello","timeout":5000}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -1363,10 +1300,10 @@ func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 	SetPtmxCheckPath("/nonexistent/ptmx/autobg-sleep")
 	defer func() { SetPtmxCheckPath(orig) }()
 
-	result, err := ExecuteStream(context.Background(),
-		json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil, nil)
+	result, err := Execute(context.Background(),
+		json.RawMessage(`{"command":"sleep 10","timeout":100}`), nil)
 	if err != nil {
-		t.Fatalf("ExecuteStream() error: %v", err)
+		t.Fatalf("Execute() error: %v", err)
 	}
 
 	out := result.Data.(*Output)
@@ -1421,10 +1358,10 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executeNonPTYStreamingAutoBg — cmd.Start() error path (bash.go:467-470)
+// executeNonPTYAutoBg — cmd.Start() error path (bash.go:467-470)
 // ---------------------------------------------------------------------------
 
-func TestExecuteNonPTYStreamingAutoBg_StartError(t *testing.T) {
+func TestExecuteNonPTYAutoBg_StartError(t *testing.T) {
 	// Force non-PTY mode
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-autobg-start")
@@ -1432,7 +1369,7 @@ func TestExecuteNonPTYStreamingAutoBg_StartError(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// Use a non-existent working directory to trigger cmd.Start() error
-	_, err := executeNonPTYStreamingAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry())
+	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry())
 	if err == nil {
 		t.Fatal("expected error with non-existent working directory")
 	}
@@ -1454,10 +1391,10 @@ func TestIsAutobackgroundingAllowed_TabOnly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executePTYStreamingSync — tmux environment overrides (bash.go:300-302)
+// executePTY — tmux environment overrides (bash.go:300-302)
 // ---------------------------------------------------------------------------
 
-func TestExecutePTYStreamingSync_TmuxOverrides(t *testing.T) {
+func TestExecutePTY_TmuxOverrides(t *testing.T) {
 	if !isPTYAvailable() {
 		t.Skip("PTY not available")
 	}
@@ -1475,10 +1412,12 @@ func TestExecutePTYStreamingSync_TmuxOverrides(t *testing.T) {
 	}
 	defer func() { execTmuxOverride = origOverride }()
 
+	// Call through executePTY which sets up all the internal params for executePTYSync
 	s := NewStreamingOutput(nil)
-	result, err := executePTYStreamingSync(context.Background(), Input{Command: "echo tmux-test"}, "", 10*time.Second, s)
+	in := Input{Command: "echo tmux-test", Timeout: 10000}
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil)
 	if err != nil {
-		t.Fatalf("executePTYStreamingSync() error: %v", err)
+		t.Fatalf("executePTY() error: %v", err)
 	}
 	output := result.Data.(*Output)
 	if !strings.Contains(output.Stdout, "tmux-test") {
@@ -1488,10 +1427,10 @@ func TestExecutePTYStreamingSync_TmuxOverrides(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// executePTYStreamingAutoBg — tmux environment overrides (bash.go:341-343)
+// executePTY — auto-bg path with tmux environment overrides (bash.go:341-343)
 // ---------------------------------------------------------------------------
 
-func TestExecutePTYStreamingAutoBg_TmuxOverrides(t *testing.T) {
+func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
 	if !isPTYAvailable() {
 		t.Skip("PTY not available")
 	}
@@ -1513,11 +1452,13 @@ func TestExecutePTYStreamingAutoBg_TmuxOverrides(t *testing.T) {
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
+	// Call through executePTY with shouldAutoBg=true and a fresh registry.
+	// The command completes before timeout, so it follows the sync path within executePTY.
 	s := NewStreamingOutput(nil)
-	// Fast command — completes before timeout
-	result, err := executePTYStreamingAutoBg(context.Background(), Input{Command: "echo tmux-autobg"}, "", 10*time.Second, s, freshReg)
+	in := Input{Command: "echo tmux-autobg", Timeout: 10000}
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg)
 	if err != nil {
-		t.Fatalf("executePTYStreamingAutoBg() error: %v", err)
+		t.Fatalf("executePTY() error: %v", err)
 	}
 	output := result.Data.(*Output)
 	if !strings.Contains(output.Stdout, "tmux-autobg") {
