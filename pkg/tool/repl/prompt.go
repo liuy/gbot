@@ -4,15 +4,15 @@ package repl
 // LLM sees this when deciding whether to use REPL.
 // Detailed API reference and examples live in toolPrompt (system prompt contribution).
 const replDescription = `Run JavaScript code to orchestrate tool calls and data processing.
-Evaluates ES2023 in a QuickJS VM with top-level await. Call any gbot tool via tool(name, argsJSON).
+Evaluates ES6+ with async/await support. Call any gbot tool via tool(name, argsJSON).
 Supports console.log, store/load for cross-call persistence, setTimeout, and exit().
-Variables do NOT persist across calls (module-scoped). Use store()/load() for cross-call data. Session store/load state persists; use reset: true to clear. Timeout via // @timeout: ms pragma.`
+Variables do NOT persist across calls (function-scoped). Use store()/load() for cross-call data. Session store/load state persists; use reset: true to clear. Timeout via // @timeout: ms pragma.`
 
 // toolPrompt is the system prompt contribution for the REPL tool.
 // Provides full API reference, examples, and session management details.
 const toolPrompt = `REPL — JavaScript execution environment for orchestrating gbot tools.
 
-Execute JavaScript (ES2023) code with access to gbot tools via the tool() API. Use this for complex multi-step operations, data transformation, and tool orchestration that would be awkward with individual tool calls.
+Execute JavaScript (ES6+) code with access to gbot tools via the tool() API. Use this for complex multi-step operations, data transformation, and tool orchestration that would be awkward with individual tool calls.
 
 ## API Reference
 
@@ -39,8 +39,8 @@ Persist data across multiple tool calls within the same session.
 Send a progress notification that appears in the output.
 
 ### setTimeout(callback, delayMs) → id
-Schedule a callback to run after delayMs milliseconds. Returns a numeric timer ID.
-- Callbacks fire synchronously during the same execution — output appears in the tool result.
+Schedule a callback to run after delayMs milliseconds. Returns a timer reference (truthy, unique per call).
+- Callbacks fire asynchronously but are drained before execution completes — output appears in the tool result.
 - clearTimeout(id) cancels a pending timer.
 - Timers execute in order of their delay; new timers registered from callbacks are also drained.
 
@@ -51,16 +51,16 @@ The current working directory, available as a global string.
 
 // @timeout: ms — optional pragma on the first line to set execution timeout.
 Default: 120000ms (120s). Range: 1000-600000ms (1s to 10min).
-Timeout measures JS CPU time only — time spent waiting for tool() responses (e.g., permission prompts) does NOT count.
+Timeout is wall-clock time including tool() wait — time spent waiting for tool() responses (e.g., permission prompts) counts.
 
-## ES2023 Support
+## ES6+ Support
 
 const/let, arrow functions, template literals, classes, async/await, Promise — all supported.
 Top-level await works: const data = await Promise.resolve(42);
 
 ## Session Management
 
-Scripts execute within a session that persists across calls. store/load data survives between executions. Variables are module-scoped and do NOT persist — use store()/load() for cross-call data. Use reset: true to clear the session.
+Scripts execute within a session that persists across calls. store/load data survives between executions. Variables are function-scoped and do NOT persist — use store()/load() for cross-call data. Use reset: true to clear the session.
 
 ## Examples
 
