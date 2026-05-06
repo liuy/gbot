@@ -4,7 +4,7 @@ package repl
 // LLM sees this when deciding whether to use REPL.
 // Detailed API reference and examples live in toolPrompt (system prompt contribution).
 const replDescription = `Run JavaScript code to orchestrate tool calls and data processing.
-Evaluates ES6+ with async/await support. Call any gbot tool via tool(name, argsJSON).
+Evaluates ES6+ with async/await support. Call any gbot tool via tool(name, args).
 Supports console.log, store/load for cross-call persistence, setTimeout, and exit().
 Variables do NOT persist across calls (function-scoped). Use store()/load() for cross-call data. Session store/load state persists; use reset: true to clear. Timeout via // @timeout: ms pragma.`
 
@@ -16,10 +16,10 @@ Execute JavaScript (ES6+) code with access to gbot tools via the tool() API. Use
 
 ## API Reference
 
-### tool(name, argsJSON) → string
+### tool(name, args) → string
 Call any gbot tool by name. Returns the tool's output as a string.
 - Check for errors: if the result starts with "ERROR:", the tool call failed.
-- argsJSON must be a JSON string: tool("Read", JSON.stringify({file_path: "/path/to/file"}))
+- args can be an object: tool("Read", {file_path: "/path/to/file"}) or a JSON string
 - tool() is synchronous from JS perspective (blocks until tool completes).
 
 ### console.log(msg)
@@ -67,15 +67,20 @@ Scripts execute within a session that persists across calls. store/load data sur
 // Batch file reads
 const files = ["/path/a.txt", "/path/b.txt", "/path/c.txt"];
 for (const f of files) {
-  const content = tool("Read", JSON.stringify({file_path: f}));
+  const content = tool("Read", {file_path: f});
   if (!content.startsWith("ERROR:")) {
     console.log(f + ": " + content.split("\n").length + " lines");
   }
 }
 
-// Complex data processing with persistence
-const raw = tool("Grep", JSON.stringify({pattern: "TODO", path: cwd}));
-const lines = raw.split("\n").filter(l => l.trim());
+// Parallel tool calls with Promise.all
+const [globResult, grepResult] = await Promise.all([
+  tool("Glob", {pattern: "**/*.go"}),
+  tool("Grep", {pattern: "TODO"})
+]);
+
+// Data processing with persistence
+const lines = grepResult.split("\n").filter(l => l.trim());
 store("todoCount", lines.length);
 console.log("Found " + lines.length + " TODOs");
 // Later calls can: load("todoCount")

@@ -782,7 +782,7 @@ func TestPromptContains(t *testing.T) {
 	p := r.Prompt()
 
 	checks := []string{
-		"tool(name, argsJSON)",
+		"tool(name, args)",
 		"console.log",
 		"exit()",
 		"store",
