@@ -15,11 +15,12 @@ Execute JavaScript (ES6+) code with access to gbot tools via the tool() API. Use
 
 ## API Reference
 
-### tool(name, args) → string
-Call any gbot tool by name. Returns the tool's output as a string.
+### tool(name, args) → string (synchronous)
+Call any gbot tool by name. Returns the tool's output as a string (NOT a Promise).
 - Throws on error: wrap in try/catch to handle failures.
 - args can be an object: tool("Read", {file_path: "/path/to/file"}) or a JSON string
-- tool() is synchronous from JS perspective (blocks until tool completes).
+- SYNCHRONOUS — blocks until tool completes. Do NOT chain .then() or .catch().
+- For parallel calls, use Promise.all([tool(...), tool(...)]) with await.
 
 ### console.log(msg)
 Output is captured and returned as the tool result (not written to stdout).
