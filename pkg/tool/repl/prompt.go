@@ -18,7 +18,7 @@ Execute JavaScript (ES6+) code with access to gbot tools via the tool() API. Use
 
 ### tool(name, args) → string
 Call any gbot tool by name. Returns the tool's output as a string.
-- Check for errors: if the result starts with "ERROR:", the tool call failed.
+- Throws on error: wrap in try/catch to handle failures.
 - args can be an object: tool("Read", {file_path: "/path/to/file"}) or a JSON string
 - tool() is synchronous from JS perspective (blocks until tool completes).
 
@@ -67,9 +67,11 @@ Scripts execute within a session that persists across calls. store/load data sur
 // Batch file reads
 const files = ["/path/a.txt", "/path/b.txt", "/path/c.txt"];
 for (const f of files) {
-  const content = tool("Read", {file_path: f});
-  if (!content.startsWith("ERROR:")) {
+  try {
+    const content = tool("Read", {file_path: f});
     console.log(f + ": " + content.split("\n").length + " lines");
+  } catch (e) {
+    console.log(f + ": " + e);
   }
 }
 

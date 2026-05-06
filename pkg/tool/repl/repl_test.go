@@ -255,13 +255,16 @@ func TestToolNotFound(t *testing.T) {
 	}
 
 	output, err := s.Execute(context.Background(),
-		`const r = tool("NoSuchTool", "{}"); console.log(r)`,
+		`try { tool("NoSuchTool", "{}"); console.log("missed") } catch(e) { console.log("caught: " + e) }`,
 		"", toolFn, 10000)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "ERROR:") {
-		t.Errorf("expected ERROR prefix for missing tool, got %q", output)
+	if !strings.Contains(output, "caught:") {
+		t.Errorf("expected tool error to be caught, got %q", output)
+	}
+	if !strings.Contains(output, "ERROR: tool NoSuchTool not found") {
+		t.Errorf("expected ERROR message in output, got %q", output)
 	}
 }
 
@@ -272,13 +275,13 @@ func TestToolErrorPrefix(t *testing.T) {
 	}
 
 	output, err := s.Execute(context.Background(),
-		`const r = tool("Fail", "{}"); if (r.startsWith("ERROR:")) { console.log("caught") } else { console.log("missed:" + r) }`,
+		`try { tool("Fail", "{}"); console.log("missed") } catch(e) { console.log("caught: " + e) }`,
 		"", toolFn, 10000)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "caught") {
-		t.Errorf("JS should detect ERROR: prefix, got %q", output)
+	if !strings.Contains(output, "caught:") {
+		t.Errorf("expected tool error to be caught via throw, got %q", output)
 	}
 }
 
@@ -1215,7 +1218,7 @@ func TestREPLToolToolExecutorError(t *testing.T) {
 	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
 		return "", fmt.Errorf("tool execution failed")
 	})
-	input, _ := json.Marshal(replInput{Code: `const r = tool("Fail", "{}"); console.log(r)`})
+	input, _ := json.Marshal(replInput{Code: `try { tool("Fail", "{}"); console.log("missed") } catch(e) { console.log(e) }`})
 	result, err := r.Call(context.Background(), input, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "tool-err-test"},
 	})
@@ -1322,12 +1325,12 @@ func TestToolFnNotAvailable(t *testing.T) {
 	s := newTestSession(t)
 	// Execute with nil toolFn — session.toolFn stays nil
 	output, err := s.Execute(context.Background(),
-		`const r = tool("Echo", "{}"); console.log(r)`,
+		`try { tool("Echo", "{}"); console.log("missed") } catch(e) { console.log(e) }`,
 		"", nil, 10000)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(output, "ERROR: tool executor not available") {
+	if !strings.Contains(output, "tool executor not available") {
 		t.Errorf("expected 'tool executor not available' error, got %q", output)
 	}
 }

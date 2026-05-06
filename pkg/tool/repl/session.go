@@ -101,15 +101,19 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 			default:
 				b, err := json.Marshal(v)
 				if err != nil {
-					return vm.ToValue("ERROR: failed to marshal tool args: " + err.Error())
+					panic(vm.ToValue("failed to marshal tool args: " + err.Error()))
 				}
 				argsJSON = string(b)
 			}
 		}
 		if s.toolFn == nil {
-			return vm.ToValue("ERROR: tool executor not available")
+			panic(vm.ToValue("tool executor not available"))
 		}
-		return vm.ToValue(s.toolFn(s.ctx, name, argsJSON))
+		result := s.toolFn(s.ctx, name, argsJSON)
+		if strings.HasPrefix(result, "ERROR: ") {
+			panic(vm.ToValue(result))
+		}
+		return vm.ToValue(result)
 	}); err != nil {
 		return fmt.Errorf("set tool: %w", err)
 	}
