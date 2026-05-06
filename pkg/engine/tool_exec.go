@@ -55,6 +55,7 @@ func (e *Engine) ExecuteTool(ctx context.Context, name string, args json.RawMess
 			Tools:     toolsMap,
 			SessionID: e.SessionID(),
 		},
+		UncappedOutput: true, // REPL sub-tool calls get full output
 	}
 
 	result, err := t.Call(ctx, args, tctx)

@@ -216,3 +216,69 @@ func TestIntegration_ExitCodePreservedAfterSpill(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 42", out.ExitCode)
 	}
 }
+
+// TestIntegration_ExecuteUncapped_ReturnsFullOutput tests that when
+// ToolUseContext.UncappedOutput is true, bash returns full output
+// beyond the normal 30KB cap.
+func TestIntegration_ExecuteUncapped_ReturnsFullOutput(t *testing.T) {
+	t.Parallel()
+
+	// Generate ~90KB of output (exceeds MaxOutputSize=30000)
+	tctx := &tool.ToolUseContext{
+		Ctx:            context.Background(),
+		UncappedOutput: true,
+	}
+
+	raw := json.RawMessage(`{"command": "seq 1 20000", "timeout": 30000}`)
+	result, err := Execute(context.Background(), raw, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("result.Data = %T, want *Output", result.Data)
+	}
+
+	if out.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
+	}
+
+	// Output should exceed the normal 30KB cap
+	if len(out.Stdout) <= MaxOutputSize {
+		t.Errorf("Stdout len = %d, should exceed MaxOutputSize=%d when uncapped", len(out.Stdout), MaxOutputSize)
+	}
+
+	// Verify all 20000 lines are present
+	lines := strings.Split(strings.TrimSpace(out.Stdout), "\n")
+	if len(lines) != 20000 {
+		t.Errorf("got %d lines, want 20000", len(lines))
+	}
+}
+
+// TestIntegration_ExecuteCapped_DefaultPath tests that without UncappedOutput,
+// output is still capped at MaxOutputSize (regression check).
+func TestIntegration_ExecuteCapped_DefaultPath(t *testing.T) {
+	t.Parallel()
+
+	// Same command but no UncappedOutput flag
+	raw := json.RawMessage(`{"command": "seq 1 2000", "timeout": 30000}`)
+	result, err := Execute(context.Background(), raw, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	out, ok := result.Data.(*Output)
+	if !ok {
+		t.Fatalf("result.Data = %T, want *Output", result.Data)
+	}
+
+	if out.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
+	}
+
+	// Output should be capped at MaxOutputSize
+	if len(out.Stdout) > MaxOutputSize+1000 {
+		t.Errorf("Stdout len = %d, should be capped around MaxOutputSize=%d", len(out.Stdout), MaxOutputSize)
+	}
+}

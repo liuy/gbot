@@ -878,7 +878,7 @@ func TestExecutePTY_PtyCommandError(t *testing.T) {
 	defer func() { shellCommand = orig }()
 
 	s := NewStreamingOutput(nil)
-	_, err := executePTY(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry())
+	_, err := executePTY(context.Background(), Input{Command: "echo pty-err", Timeout: 10000}, "", 5*time.Second, s, false, DefaultRegistry(), MaxOutputSize)
 	if err == nil {
 		t.Fatal("expected error with non-existent shell")
 	}
@@ -1369,7 +1369,7 @@ func TestExecuteNonPTYAutoBg_StartError(t *testing.T) {
 
 	s := NewStreamingOutput(nil)
 	// Use a non-existent working directory to trigger cmd.Start() error
-	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry())
+	_, err := executeNonPTYAutoBg(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, s, DefaultRegistry(), MaxOutputSize)
 	if err == nil {
 		t.Fatal("expected error with non-existent working directory")
 	}
@@ -1415,7 +1415,7 @@ func TestExecutePTY_TmuxOverrides(t *testing.T) {
 	// Call through executePTY which sets up all the internal params for executePTYSync
 	s := NewStreamingOutput(nil)
 	in := Input{Command: "echo tmux-test", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil)
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, false, nil, MaxOutputSize)
 	if err != nil {
 		t.Fatalf("executePTY() error: %v", err)
 	}
@@ -1456,7 +1456,7 @@ func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
 	// The command completes before timeout, so it follows the sync path within executePTY.
 	s := NewStreamingOutput(nil)
 	in := Input{Command: "echo tmux-autobg", Timeout: 10000}
-	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg)
+	result, err := executePTY(context.Background(), in, "", 10*time.Second, s, true, freshReg, MaxOutputSize)
 	if err != nil {
 		t.Fatalf("executePTY() error: %v", err)
 	}

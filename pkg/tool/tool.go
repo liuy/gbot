@@ -41,7 +41,12 @@ type ToolUseContext struct {
 	WorkingDir    string
 	ReadFileState map[string]FileState // keyed by absolute file path
 	OnProgress    func(ProgressUpdate) // optional — engine sets this for streaming progress
+	UncappedOutput bool                // bypass internal output capping (set for REPL sub-tool calls)
 }
+
+// MaxUncappedOutput is the safety limit for uncapped tool output reads (64MB).
+// Used when UncappedOutput is true — prevents OOM while allowing full intermediate results.
+const MaxUncappedOutput = 64 * 1024 * 1024
 
 // ToolUseOptions holds the execution options.
 // Source: Tool.ts:159-179

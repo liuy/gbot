@@ -712,7 +712,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 	// Pre-read size check: refuse files larger than MaxFileReadBytes (256KB)
 	// when no explicit limit is provided. TS align: readFileInRange FileTooLargeError.
 	// Skipped when user specifies offset/limit — they know what they're asking for.
-	if in.Limit == 0 && info.Size() > MaxFileReadBytes {
+	if in.Limit == 0 && info.Size() > MaxFileReadBytes && !(tctx != nil && tctx.UncappedOutput) {
 		return nil, fmt.Errorf("file content (%s) exceeds maximum allowed size (%s). Use offset and limit parameters to read specific portions of the file",
 			formatFileSize(int(info.Size())), formatFileSize(MaxFileReadBytes))
 	}
@@ -824,7 +824,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 
 	// Post-read token check: refuse content that exceeds MaxFileReadTokens.
 	// TS align: validateContentTokens MaxFileReadTokenExceededError.
-	if tokens := types.EstimateTokens(content); tokens > MaxFileReadTokens {
+	if tokens := types.EstimateTokens(content); tokens > MaxFileReadTokens && !(tctx != nil && tctx.UncappedOutput) {
 		return nil, fmt.Errorf("file content (~%d tokens) exceeds maximum allowed tokens (%d). Use offset and limit parameters to read specific portions of the file",
 			tokens, MaxFileReadTokens)
 	}

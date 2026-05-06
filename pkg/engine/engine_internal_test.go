@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 
@@ -4823,5 +4824,84 @@ func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 	// Must NOT be JSON like {"count":2,"files":["a.go","b.go"]}
 	if strings.HasPrefix(result, "{") {
 		t.Errorf("ExecuteTool returned raw JSON, should use RenderResult")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// REPL integration: ExecuteTool → real bash → uncapped output
+// Full call chain: Engine.ExecuteTool() → tool_exec.go sets UncappedOutput → bash.Execute() → ReadContent(64MB) → string
+// ---------------------------------------------------------------------------
+
+// TestExecuteTool_REPLUncappedOutput tests the full REPL→bash call chain.
+// Engine.ExecuteTool() must set UncappedOutput:true on the ToolUseContext,
+// causing bash to return full output (> 30KB) instead of the normal cap.
+func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Tools:    []tool.Tool{bash.New(nil)},
+		Model:    "test",
+	})
+
+	sessionAllowed := make(map[string]bool)
+	sessionAllowed["Bash"] = true // skip permission prompt
+	var mu sync.Mutex
+
+	// seq 1 20000 produces ~90KB, well above MaxOutputSize=30000
+	result, err := eng.ExecuteTool(
+		context.Background(),
+		"Bash",
+		json.RawMessage(`{"command":"seq 1 20000","timeout":30000}`),
+		sessionAllowed,
+		&mu,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+
+	// Result should contain all 20000 lines (not truncated at 30KB)
+	lines := strings.Split(strings.TrimSpace(result), "\n")
+	if len(lines) < 20000 {
+		t.Errorf("got %d lines, want >= 20000 (output was truncated)", len(lines))
+	}
+	if len(result) <= 30000 {
+		t.Errorf("result len = %d, should exceed MaxOutputSize=30000 for REPL path", len(result))
+	}
+}
+
+// TestExecuteTool_LLMPathStillCapped verifies that the engine path
+// (StreamingToolExecutor) still applies normal caps — only the REPL
+// ExecuteTool path should be uncapped.
+func TestExecuteTool_LLMPathStillCapped(t *testing.T) {
+	t.Parallel()
+
+
+	// Use StreamingToolExecutor (engine path, not REPL path)
+	toolMap := map[string]tool.Tool{"Bash": bash.New(nil)}
+	var emitted []types.QueryEvent
+	emit := func(evt types.QueryEvent) {
+		emitted = append(emitted, evt)
+	}
+
+	executor := NewStreamingToolExecutor(toolMap, nil, emit, context.Background())
+	blocks := []types.ContentBlock{
+		{
+			Type:  types.ContentTypeToolUse,
+			ID:    "t-capped",
+			Name:  "Bash",
+			Input: json.RawMessage(`{"command":"seq 1 20000","timeout":30000}`),
+		},
+	}
+
+	result := executor.ExecuteAll(blocks)
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result block, got %d", len(result.ToolResultBlocks))
+	}
+
+	content := result.ToolResultBlocks[0].Text
+	// Engine path should cap output (bash caps at 30KB + MaybePersistLargeToolResult)
+	if len(content) > 35000 {
+		t.Errorf("engine path result len = %d, should be capped around 30KB", len(content))
 	}
 }

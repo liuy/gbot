@@ -1600,3 +1600,69 @@ func TestExecute_MaxTokens_Exceeded(t *testing.T) {
 		t.Errorf("Error = %q, want suggestion to use offset/limit", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Uncapped output: ToolUseContext.UncappedOutput bypasses internal gates
+// ---------------------------------------------------------------------------
+
+// TestExecute_UncappedOutput_SkipsMaxSizeBytes verifies that a file exceeding
+// MaxFileReadBytes (256KB) succeeds when UncappedOutput is true.
+func TestExecute_UncappedOutput_SkipsMaxSizeBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "big.txt")
+	// 300KB file — exceeds 256KB limit
+	bigContent := strings.Repeat("x", 300*1024)
+	if err := os.WriteFile(fp, []byte(bigContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tctx := &tool.ToolUseContext{
+		Ctx:            context.Background(),
+		UncappedOutput: true,
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("with UncappedOutput, should succeed, got: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected full file content")
+	}
+}
+
+// TestExecute_UncappedOutput_SkipsMaxTokens verifies that a file exceeding
+// MaxFileReadTokens (25000 tokens) succeeds when UncappedOutput is true.
+func TestExecute_UncappedOutput_SkipsMaxTokens(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "dense.txt")
+	// ~120KB of text, under 256KB byte limit, but ~30K tokens > 25K limit
+	denseContent := strings.Repeat("a", 120*1024)
+	if err := os.WriteFile(fp, []byte(denseContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tctx := &tool.ToolUseContext{
+		Ctx:            context.Background(),
+		UncappedOutput: true,
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("with UncappedOutput, should succeed, got: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected full file content")
+	}
+}

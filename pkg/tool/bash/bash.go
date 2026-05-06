@@ -231,11 +231,17 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 	// Source: BashTool.tsx:880 — shouldAutoBackground
 	shouldAutoBg := isAutobackgroundingAllowed(in.Command)
 
+	// Determine output cap: uncapped for REPL sub-tool calls, normal cap otherwise.
+	outputCap := int64(MaxOutputSize)
+	if tctx != nil && tctx.UncappedOutput {
+		outputCap = tool.MaxUncappedOutput
+	}
+
 	// Run the command, capturing output into StreamingOutput
 	if isPTYAvailable() {
-		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry)
+		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
 	}
-	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry)
+	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
 }
 
 // executePTY runs a command in PTY mode with streaming output capture.
@@ -244,7 +250,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background task instead of being killed.
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
-func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry, outputCap int64) (*tool.ToolResult, error) {
 	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
 	cwdFile := buildCwdFilePath(id)
 	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
@@ -264,14 +270,14 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 	})
 
 	if shouldAutoBg {
-		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, id, cwdFile, wrappedCmd, baseEnv, screen)
+		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap)
 	}
-	return executePTYSync(ctx, in, cwd, timeout, s, id, cwdFile, wrappedCmd, baseEnv, screen)
+	return executePTYSync(ctx, in, cwd, timeout, s, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap)
 }
 
 // executePTYSync runs a PTY command synchronously.
 // When timeout fires, the process is killed and TimedOut=true is returned.
-func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen) (*tool.ToolResult, error) {
+func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64) (*tool.ToolResult, error) {
 	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
 		screen,
 		timeout,
@@ -286,7 +292,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 	newCwd := trackCwd(cwdFile, cwd)
 	_ = os.Remove(cwdFile)
 
-	stdout := s.ReadContent(MaxOutputSize)
+	stdout := s.ReadContent(outputCap)
 	s.Cleanup()
 
 	return &tool.ToolResult{
@@ -304,7 +310,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 //
 // Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
 // the actual timeout via a timer. When timeout fires, transitions to background.
-func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen) (*tool.ToolResult, error) {
+func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64) (*tool.ToolResult, error) {
 	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	ptyDone := make(chan struct{})
@@ -333,7 +339,7 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 		s.FinalUpdate()
 		newCwd := trackCwd(cwdFile, cwd)
 		_ = os.Remove(cwdFile)
-			stdout := s.ReadContent(MaxOutputSize)
+			stdout := s.ReadContent(outputCap)
 			s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
@@ -360,16 +366,16 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 // executeNonPTY runs a command without PTY (fallback mode) with streaming output capture.
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background task instead of being killed.
-func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func executeNonPTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry, outputCap int64) (*tool.ToolResult, error) {
 	if shouldAutoBg {
-		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry)
+		return executeNonPTYAutoBg(ctx, in, cwd, timeout, s, registry, outputCap)
 	}
-	return executeNonPTYSync(ctx, in, cwd, timeout, s)
+	return executeNonPTYSync(ctx, in, cwd, timeout, s, outputCap)
 }
 
 // executeNonPTYSync runs a non-PTY command synchronously.
 // When timeout fires, the process is killed and TimedOut=true is returned.
-func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput) (*tool.ToolResult, error) {
+func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, outputCap int64) (*tool.ToolResult, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("command %q exceeded %s", in.Command, timeout))
 	defer cancel()
 
@@ -399,7 +405,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 		}
 	}
 
-	stdout := s.ReadContent(MaxOutputSize)
+	stdout := s.ReadContent(outputCap)
 	s.Cleanup()
 
 	return &tool.ToolResult{
@@ -419,7 +425,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 // When timeout fires, the process transitions to a background task instead of
 // being killed. The foreground result returns immediately with BackgroundTaskID set.
 // The process continues running; when it exits, task.Complete is called.
-func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, outputCap int64) (*tool.ToolResult, error) {
 	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	taskCtx, taskCancel := context.WithCancel(context.Background())
@@ -461,7 +467,7 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 				exitCode = exitErr.ExitCode()
 			}
 		}
-			stdout := s.ReadContent(MaxOutputSize)
+			stdout := s.ReadContent(outputCap)
 			s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
