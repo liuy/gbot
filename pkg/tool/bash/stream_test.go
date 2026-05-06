@@ -653,3 +653,335 @@ func TestStreamingOutput_ReplaceLastLineProgress(t *testing.T) {
 		t.Errorf("lines[0] = %q, want %q", lines[0], "Done!")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Spill-to-disk tests
+// ---------------------------------------------------------------------------
+
+func TestStreamingOutputSpillToDisk(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write > spillThreshold to trigger spill
+	chunk := strings.Repeat("x", 1024) + "\n" // 1025 bytes per line
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("Spilled() = false, want true after exceeding spillThreshold")
+	}
+
+	// Verify content is readable (capped at MaxOutputSize)
+	content := s.ReadContent(MaxOutputSize)
+	if len(content) == 0 {
+		t.Error("ReadContent() returned empty string after spill")
+	}
+	if !strings.Contains(content, "xxx") {
+		t.Error("ReadContent() should contain the written data")
+	}
+
+	s.Cleanup()
+
+	// After cleanup, Spilled should still return true (state doesn't change)
+	if !s.Spilled() {
+		t.Error("Spilled() should still return true after Cleanup()")
+	}
+}
+
+func TestStreamingOutputNoSpillForSmallOutput(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+	mustWrite(t, s, []byte("hello world\n"))
+
+	if s.Spilled() {
+		t.Error("Spilled() = true for small output, want false")
+	}
+
+	lines := s.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("Lines() = %d, want 1", len(lines))
+	}
+	if lines[0] != "hello world" {
+		t.Errorf("lines[0] = %q, want %q", lines[0], "hello world")
+	}
+}
+
+func TestStreamingOutputReadContentCapped(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write enough to spill
+	chunk := strings.Repeat("a", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// ReadContent with small cap
+	content := s.ReadContent(100)
+	if len(content) > 100+50 { // allow some slack for truncation message
+		t.Errorf("ReadContent(100) returned %d bytes, should be capped around 100", len(content))
+	}
+	if !strings.Contains(content, "truncated") {
+		t.Error("ReadContent(100) should contain truncation notice for large output")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputReadContentFull(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+	mustWrite(t, s, []byte("short content\n"))
+
+	content := s.ReadContent(1024)
+	if content != "short content" {
+		t.Errorf("ReadContent(1024) = %q, want %q", content, "short content")
+	}
+}
+
+func TestStreamingOutputCleanup(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write enough to spill
+	chunk := strings.Repeat("y", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// Cleanup should not panic even when called
+	s.Cleanup()
+
+	// Double cleanup should be safe
+	s.Cleanup()
+}
+
+func TestStreamingOutputReplaceLastLineAfterSpill(t *testing.T) {
+	t.Parallel()
+
+	var lastUpdate StreamingUpdate
+	s := NewStreamingOutput(func(u StreamingUpdate) {
+		lastUpdate = u
+	})
+
+	// Write enough to spill
+	chunk := strings.Repeat("z", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// ReplaceLastLine should still work after spill
+	s.ReplaceLastLine("replaced-line")
+
+	if len(lastUpdate.Lines) == 0 {
+		t.Fatal("lastUpdate.Lines is empty after ReplaceLastLine")
+	}
+	if lastUpdate.Lines[len(lastUpdate.Lines)-1] != "replaced-line" {
+		t.Errorf("last line = %q, want %q", lastUpdate.Lines[len(lastUpdate.Lines)-1], "replaced-line")
+	}
+
+	// Lines() should return nil after spill
+	if s.Lines() != nil {
+		t.Error("Lines() should return nil after spill")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputLastLinesAfterSpill(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write enough to spill
+	chunk := strings.Repeat("w", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// Write a distinctive line after spill
+	mustWrite(t, s, []byte("distinctive-after-spill\n"))
+
+	lastLines := s.LastLines()
+	if !strings.Contains(lastLines, "distinctive-after-spill") {
+		t.Errorf("LastLines() should contain line written after spill, got: %q", lastLines)
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputLinesReturnsNilAfterSpill(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Before spill, Lines() returns content
+	mustWrite(t, s, []byte("before\n"))
+	if s.Lines() == nil {
+		t.Fatal("Lines() should not be nil before spill")
+	}
+
+	// Write enough to spill
+	chunk := strings.Repeat("q", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	if s.Lines() != nil {
+		t.Error("Lines() should return nil after spill")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputExactSpillBoundary(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write just below spillThreshold — should NOT spill
+	oneBelow := make([]byte, spillThreshold-1)
+	for i := range oneBelow {
+		if i%100 == 99 {
+			oneBelow[i] = '\n'
+		} else {
+			oneBelow[i] = 'a'
+		}
+	}
+	mustWrite(t, s, oneBelow)
+
+	if s.Spilled() {
+		t.Error("Spilled() = true below spillThreshold, want false")
+	}
+
+	// Write one more byte to reach exactly threshold — should spill
+	mustWrite(t, s, []byte("\n"))
+
+	if !s.Spilled() {
+		t.Error("Spilled() = false at exactly spillThreshold, want true")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputStringAfterSpill(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write enough to spill
+	chunk := strings.Repeat("s", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// String() should work after spill (capped read)
+	got := s.String()
+	if len(got) == 0 {
+		t.Error("String() returned empty after spill")
+	}
+	if !strings.Contains(got, "sss") {
+		t.Error("String() should contain the written data")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputReadContentSpilledSmallCap(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write exactly enough to spill (threshold, not much more)
+	chunk := strings.Repeat("b", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 2
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// ReadContent with large cap (bigger than file) — covers non-truncated path
+	content := s.ReadContent(spillThreshold * 2)
+	if len(content) == 0 {
+		t.Error("ReadContent() should return content")
+	}
+	// Since cap is bigger than file, should NOT have truncation message
+	if strings.Contains(content, "truncated") {
+		t.Error("ReadContent() should not contain truncation notice when cap > file size")
+	}
+
+	s.Cleanup()
+}
+
+func TestStreamingOutputReplaceLastLineEmptyAfterSpill(t *testing.T) {
+	t.Parallel()
+
+	s := NewStreamingOutput(nil)
+
+	// Write enough to spill
+	chunk := strings.Repeat("r", 1024) + "\n"
+	chunksNeeded := int(spillThreshold/int64(len(chunk))) + 1
+	for range chunksNeeded {
+		mustWrite(t, s, []byte(chunk))
+	}
+
+	if !s.Spilled() {
+		t.Fatal("expected spill")
+	}
+
+	// Clear lastLines to test empty branch
+	s.mu.Lock()
+	s.lastLines = nil
+	s.mu.Unlock()
+
+	// ReplaceLastLine on empty lastLines after spill — should append
+	s.ReplaceLastLine("appended-line")
+
+	got := s.LastLines()
+	if got != "appended-line" {
+		t.Errorf("LastLines() = %q, want %q", got, "appended-line")
+	}
+
+	s.Cleanup()
+}

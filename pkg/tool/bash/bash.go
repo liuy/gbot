@@ -286,9 +286,12 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 	newCwd := trackCwd(cwdFile, cwd)
 	_ = os.Remove(cwdFile)
 
+	stdout := s.ReadContent(MaxOutputSize)
+	s.Cleanup()
+
 	return &tool.ToolResult{
 		Data: &Output{
-			Stdout:   s.String(),
+			Stdout:   stdout,
 			ExitCode: exitCode,
 			TimedOut: interrupted,
 			CWD:      newCwd,
@@ -330,9 +333,11 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 		s.FinalUpdate()
 		newCwd := trackCwd(cwdFile, cwd)
 		_ = os.Remove(cwdFile)
+			stdout := s.ReadContent(MaxOutputSize)
+			s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
-				Stdout:   s.String(),
+				Stdout:   stdout,
 				ExitCode: ptyExitCode,
 				TimedOut: ptyInterrupted,
 				CWD:      newCwd,
@@ -345,6 +350,7 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 		return transitionToBackground(registry, in.Command, int(ptyPID.Load()), s, in, cwd, func(task *BackgroundTask) {
 			<-ptyDone
 			s.FinalUpdate()
+			s.Cleanup()
 			task.Complete(ptyExitCode, ptyInterrupted)
 			_ = os.Remove(cwdFile)
 		})
@@ -393,9 +399,12 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 		}
 	}
 
+	stdout := s.ReadContent(MaxOutputSize)
+	s.Cleanup()
+
 	return &tool.ToolResult{
 		Data: &Output{
-			Stdout:   s.String(),
+			Stdout:   stdout,
 			Stderr:   stderr.String(),
 			ExitCode: exitCode,
 			TimedOut: interrupted,
@@ -452,9 +461,11 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 				exitCode = exitErr.ExitCode()
 			}
 		}
+			stdout := s.ReadContent(MaxOutputSize)
+			s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
-				Stdout:   s.String(),
+				Stdout:   stdout,
 				Stderr:   stderr.String(),
 				ExitCode: exitCode,
 				CWD:      cwd,
@@ -478,6 +489,7 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 				_, _ = s.Write(stderr.Bytes())
 			}
 			s.FinalUpdate()
+			s.Cleanup()
 			task.Complete(exitCode, false)
 		})
 	}
@@ -694,6 +706,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 
 			// Wait for ptyCommand to finish before completing the task
 			<-ptyDone
+			s.Cleanup()
 			task.Complete(ptyExitCode, taskCtx.Err() == context.Canceled)
 			_ = os.Remove(cwdFile)
 		}()
@@ -731,7 +744,9 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 				}
 			}
 
+			s.Cleanup()
 			task.Complete(exitCode, taskCtx.Err() == context.Canceled)
+			s.Cleanup()
 		}()
 	}
 
