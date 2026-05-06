@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -174,7 +176,8 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 			if s.currentBuf.Len() > 0 {
 				s.currentBuf.WriteByte('\n')
 			}
-			fmt.Fprintf(s.currentBuf, "[JS Error] %s\n", msg)
+			adjusted := adjustStackLines(msg, 2)
+			fmt.Fprintf(s.currentBuf, "[JS Error] %s\n", adjusted)
 		}
 		return goja.Undefined()
 	}); err != nil {
@@ -369,6 +372,27 @@ func jsValueToString(v goja.Value) string {
 		}
 		return string(b)
 	}
+}
+
+// adjustStackLines adjusts line numbers in a JS stack trace by subtracting offset.
+// The async IIFE wrapper adds 2 lines before user code, so goja reports
+// line N+2 for user code at line N. This function corrects the numbers.
+var stackLineRe = regexp.MustCompile(`(<eval>:)(\d+)`)
+var parenOffsetRe = regexp.MustCompile(`(<eval>:\d+:\d+)\(\d+\)`)
+
+func adjustStackLines(msg string, offset int) string {
+	// Strip goja internal offset suffix: <eval>:3:7(14) → <eval>:3:7
+	msg = parenOffsetRe.ReplaceAllString(msg, "${1}")
+	return stackLineRe.ReplaceAllStringFunc(msg, func(match string) string {
+		parts := stackLineRe.FindStringSubmatch(match)
+		if len(parts) == 3 {
+			if n, err := strconv.Atoi(parts[2]); err == nil {
+				adjusted := max(n-offset, 1)
+				return parts[1] + strconv.Itoa(adjusted)
+			}
+		}
+		return match
+	})
 }
 
 func toGoNative(value any) any {

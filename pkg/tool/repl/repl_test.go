@@ -1513,6 +1513,33 @@ func TestOutputAndError(t *testing.T) {
 	}
 }
 
+func TestErrorStackTraceAdjustsLineNumbers(t *testing.T) {
+	// User code starts at line 3 inside the async IIFE wrapper (2 header lines).
+	// Stack traces should show adjusted line numbers, not the raw wrapper-internal ones.
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(),
+		"console.log(\"line1\")\nconsole.log(\"line2\")\nthrow new Error(\"line3\")",
+		"", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "[JS Error]") {
+		t.Fatalf("expected [JS Error], got %q", output)
+	}
+	// The throw is on user code line 3 — wrapper adds 2 lines, so raw is line 5.
+	// After adjustment, should show line 3, not line 5.
+	if strings.Contains(output, ":5:") {
+		t.Errorf("stack trace should NOT show raw wrapper line 5, got %q", output)
+	}
+	if !strings.Contains(output, ":3:") {
+		t.Errorf("stack trace should show adjusted line 3, got %q", output)
+	}
+	// goja appends internal offset like (2) — should be stripped for readability.
+	if strings.Contains(output, ":3:") && strings.Contains(output, "(2)") {
+		t.Errorf("stack trace should NOT contain internal goja offset (N), got %q", output)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests: full call chains through REPLTool.Call
 // ---------------------------------------------------------------------------
