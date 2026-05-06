@@ -722,6 +722,29 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			}
 		}
 
+	// Re-check: Discard may have been called between getAbortReason and here.
+	// Without this, a goroutine launched by processQueue can pass the abort check
+	// before Discard() sets the flag, then race to call t.Call().
+	// Only check discarded — other cancellation reasons are properly handled
+	// by getAbortReason (e.g., InterruptBlock tools must not be cancelled here).
+	e.mu.Lock()
+	if e.discarded {
+		e.mu.Unlock()
+		errBlock := CreateSyntheticErrorBlock(tt.ID, AbortReasonStreamingFallback)
+		e.doEmit(types.QueryEvent{
+			Type: types.EventToolEnd,
+			ToolResult: &types.ToolResultEvent{
+				ToolUseID:     tt.ID,
+				Output:        errBlock.Content,
+				DisplayOutput: extractErrMsg(errBlock.Content),
+				IsError:       true,
+			},
+		})
+		tt.resultBlocks = []types.ContentBlock{errBlock}
+		return
+	}
+	e.mu.Unlock()
+
 	// Unified execution: always call t.Call() with OnProgress set in ToolUseContext.
 	// Tools that support streaming (e.g., Bash) use tctx.OnProgress to emit
 	// EventToolOutputDelta events during execution. Non-streaming tools ignore it.

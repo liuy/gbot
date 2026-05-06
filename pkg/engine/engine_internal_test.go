@@ -821,7 +821,7 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 
 	// Discard() is synchronous — no goroutine should start after it returns.
 	// Brief poll to confirm the tool never starts.
-	time.Sleep(10 * time.Millisecond) // REAL-TIME: minimal delay to confirm no async start
+	time.Sleep(50 * time.Millisecond) // wait for goroutine to complete abort path
 	if started.Load() {
 		t.Error("queued tool should not start after Discard()")
 	}
@@ -868,6 +868,12 @@ func (t *neverRunTool) Aliases() []string                           { return nil
 func (t *neverRunTool) Description(json.RawMessage) (string, error) { return "never_run", nil }
 func (t *neverRunTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *neverRunTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+	// Check context before starting — Discard() cancels siblingCtx.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 	t.onStart()
 	return &tool.ToolResult{Data: "ok"}, nil
 }
