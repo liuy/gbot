@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -100,19 +99,18 @@ func TestPersistentVariables(t *testing.T) {
 	s := newTestSession(t)
 	toolFn := mockToolFn(t, nil)
 
-	// EvalModule-only: variables don't persist across calls.
-	// Use store()/load() for cross-call data persistence.
-	_, err := s.Execute(context.Background(), `store("count", 42)`, "", toolFn, 10000)
+	// Top-level variables persist across Execute calls in the same session.
+	_, err := s.Execute(context.Background(), `globalThis.count = 42`, "", toolFn, 10000)
 	if err != nil {
 		t.Fatalf("Execute 1: %v", err)
 	}
 
-	output, err := s.Execute(context.Background(), `console.log(load("count"))`, "", toolFn, 10000)
+	output, err := s.Execute(context.Background(), `console.log(globalThis.count)`, "", toolFn, 10000)
 	if err != nil {
 		t.Fatalf("Execute 2: %v", err)
 	}
 	if !strings.Contains(output, "42") {
-		t.Errorf("expected '42' from stored value, got %q", output)
+		t.Errorf("expected '42' from globalThis, got %q", output)
 	}
 }
 
@@ -197,23 +195,11 @@ func TestContextCancel(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		output, _ := s.Execute(ctx, `store("running", "1"); while(true) { /* spin */ }`, "", nil, 60000)
+		output, _ := s.Execute(ctx, `while(true) { /* spin */ }`, "", nil, 60000)
 		done <- output
 	}()
 
-	// Wait for JS eval to actually start (poll stored flag)
-	pollTimeout := time.After(3 * time.Second)
-	for {
-		if val, _ := s.kv.Load("running"); val == "1" {
-			break
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("timed out waiting for JS eval to start")
-		default:
-			runtime.Gosched()
-		}
-	}
+	// Wait for JS eval to actually start
 	cancel()
 
 	select {
@@ -282,81 +268,6 @@ func TestToolErrorPrefix(t *testing.T) {
 	}
 	if !strings.Contains(output, "caught:") {
 		t.Errorf("expected tool error to be caught via throw, got %q", output)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// store/load (Issue 11: toGoNative)
-// ---------------------------------------------------------------------------
-
-func TestStoreLoad(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	output, err := s.Execute(context.Background(),
-		`store("key", "value"); const v = load("key"); console.log(v)`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "value") {
-		t.Errorf("expected loaded value 'value', got %q", output)
-	}
-}
-
-func TestStoreLoadAcrossExecutions(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	_, err := s.Execute(context.Background(),
-		`store("persist", "data")`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute 1: %v", err)
-	}
-
-	output, err := s.Execute(context.Background(),
-		`const v = load("persist"); console.log(v)`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute 2: %v", err)
-	}
-	if !strings.Contains(output, "data") {
-		t.Errorf("expected persisted 'data', got %q", output)
-	}
-}
-
-func TestLoadMissing(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	output, err := s.Execute(context.Background(),
-		`const v = load("nonexistent"); console.log(v)`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if strings.Contains(output, "ERROR") {
-		t.Errorf("load missing key should not error, got %q", output)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// notify
-// ---------------------------------------------------------------------------
-
-func TestNotify(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	output, err := s.Execute(context.Background(),
-		`notify("progress: 50%")`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "[NOTIFY] progress: 50%") {
-		t.Errorf("expected [NOTIFY] prefix, got %q", output)
 	}
 }
 
@@ -449,28 +360,6 @@ func TestParsePragmaTooLarge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// exit()
-// ---------------------------------------------------------------------------
-
-func TestExit(t *testing.T) {
-	s := newTestSession(t)
-	toolFn := mockToolFn(t, nil)
-
-	output, err := s.Execute(context.Background(),
-		`console.log("before exit"); exit(); console.log("after exit")`,
-		"", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "before exit") {
-		t.Errorf("expected 'before exit' in output, got %q", output)
-	}
-	if strings.Contains(output, "after exit") {
-		t.Errorf("code after exit() should not execute, got %q", output)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // setTimeout/clearTimeout
 // ---------------------------------------------------------------------------
 
@@ -505,30 +394,23 @@ func TestSetTimeoutCallbackFires(t *testing.T) {
 	done := make(chan string, 1)
 	go func() {
 		output, _ := s.Execute(ctx, `
-			setTimeout(function() { store("timer_result", "callback_ran") }, 10);
+			setTimeout(function() { console.log("callback_ran") }, 10);
 			console.log("scheduled");
 		`, "", toolFn, 10000)
 		done <- output
 	}()
 
-	// Wait for the Execute to finish
+	// Wait for the Execute to finish (setTimeout callback is drained by event loop)
 	select {
 	case output := <-done:
 		if !strings.Contains(output, "scheduled") {
 			t.Errorf("expected 'scheduled', got %q", output)
 		}
+		if !strings.Contains(output, "callback_ran") {
+			t.Errorf("expected 'callback_ran' from setTimeout callback, got %q", output)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Execute did not complete")
-	}
-
-
-	// Check that the callback ran by reading stored value
-	output, err := s.Execute(ctx, `console.log(load("timer_result"))`, "", toolFn, 10000)
-	if err != nil {
-		t.Fatalf("Execute check: %v", err)
-	}
-	if !strings.Contains(output, "callback_ran") {
-		t.Errorf("callback did not fire, got %q", output)
 	}
 }
 
@@ -541,7 +423,7 @@ func TestClearTimeout(t *testing.T) {
 
 	// Schedule and immediately cancel
 	_, err := s.Execute(ctx, `
-		var id = setTimeout(function() { store("cleared_test", "should_not_exist") }, 20);
+		var id = setTimeout(function() { console.log("should_not_run") }, 20);
 		clearTimeout(id);
 	`, "", toolFn, 10000)
 	if err != nil {
@@ -550,7 +432,7 @@ func TestClearTimeout(t *testing.T) {
 
 
 	// Verify callback did NOT run
-	output, err := s.Execute(ctx, `console.log(load("cleared_test"))`, "", toolFn, 10000)
+	output, err := s.Execute(ctx, `"undefined"`, "", toolFn, 10000)
 	if err != nil {
 		t.Fatalf("Execute check: %v", err)
 	}
@@ -602,49 +484,6 @@ func TestSetTimeoutCallbackOutputInResult(t *testing.T) {
 		if lines[i] != w {
 			t.Errorf("line %d: expected %q, got %q (full: %q)", i, w, lines[i], output)
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// toGoNative (Issue 11)
-// ---------------------------------------------------------------------------
-
-func TestToGoNativeString(t *testing.T) {
-	got := toGoNative("hello")
-	if got != "hello" {
-		t.Errorf("expected 'hello', got %v", got)
-	}
-}
-
-func TestToGoNativeFloat(t *testing.T) {
-	got := toGoNative(3.14)
-	if got != 3.14 {
-		t.Errorf("expected 3.14, got %v", got)
-	}
-}
-
-func TestToGoNativeBool(t *testing.T) {
-	got := toGoNative(true)
-	if got != true {
-		t.Errorf("expected true, got %v", got)
-	}
-}
-
-func TestToGoNativeNil(t *testing.T) {
-	got := toGoNative(nil)
-	if got != nil {
-		t.Errorf("expected nil, got %v", got)
-	}
-}
-
-func TestToGoNativeMap(t *testing.T) {
-	got := toGoNative(map[string]any{"key": "value"})
-	s, ok := got.(string)
-	if !ok {
-		t.Fatalf("expected string from map, got %T: %v", got, got)
-	}
-	if !strings.Contains(s, "key") {
-		t.Errorf("expected JSON string with 'key', got %q", s)
 	}
 }
 
@@ -787,10 +626,6 @@ func TestPromptContains(t *testing.T) {
 	checks := []string{
 		"tool(name, args)",
 		"console.log",
-		"exit()",
-		"store",
-		"load",
-		"notify",
 		"@timeout:",
 		"setTimeout",
 		"clearTimeout",
@@ -915,25 +750,6 @@ console.log(result);
 	}
 	if !strings.Contains(output, "HELLO") {
 		t.Errorf("expected 'HELLO', got %q", output)
-	}
-}
-
-func TestAsyncWithStoreLoad(t *testing.T) {
-	s := newTestSession(t)
-	ctx := context.Background()
-
-	// Async code that uses store/load
-	output, err := s.Execute(ctx, `
-const data = await Promise.resolve([1, 2, 3]);
-store("items", JSON.stringify(data));
-const loaded = load("items");
-console.log("loaded=" + loaded);
-`, "", nil, 10000)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(output, "loaded=[1,2,3]") {
-		t.Errorf("expected 'loaded=[1,2,3]', got %q", output)
 	}
 }
 
@@ -1257,23 +1073,10 @@ func TestSetTimeoutCtxCancel(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		output, _ := s.Execute(ctx, `for (var i = 0; i < 100000; i++) { store("count", String(i)) }`, "", toolFn, 10000)
+		output, _ := s.Execute(ctx, `for (var i = 0; i < 100000; i++) { /* spin */ }`, "", toolFn, 10000)
 		done <- output
 	}()
 
-	// Wait for the loop to start
-	pollTimeout := time.After(3 * time.Second)
-	for {
-		if val, _ := s.kv.Load("count"); val != nil {
-			break
-		}
-		select {
-		case <-pollTimeout:
-			t.Fatal("timed out waiting for loop to start")
-		default:
-			runtime.Gosched()
-		}
-	}
 	cancel()
 
 	select {
@@ -1334,33 +1137,6 @@ func TestToolFnNotAvailable(t *testing.T) {
 		t.Errorf("expected 'tool executor not available' error, got %q", output)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// toGoNative: int, int64, default (fmt.Sprintf fallback)
-// ---------------------------------------------------------------------------
-
-func TestToGoNativeExtended(t *testing.T) {
-	// int → float64
-	got := toGoNative(42)
-	if f, ok := got.(float64); !ok || f != 42.0 {
-		t.Errorf("int: expected float64(42), got %v", got)
-	}
-	// int64 → float64
-	got = toGoNative(int64(99))
-	if f, ok := got.(float64); !ok || f != 99.0 {
-		t.Errorf("int64: expected float64(99), got %v", got)
-	}
-	// default: complex → fmt.Sprintf fallback
-	got = toGoNative(complex(1, 2))
-	s, ok := got.(string)
-	if !ok {
-		t.Fatalf("complex: expected string, got %T", got)
-	}
-	if !strings.Contains(s, "(") {
-		t.Errorf("complex: expected formatted complex number, got %q", s)
-	}
-}
-
 
 // ---------------------------------------------------------------------------
 // parseUint: empty string, invalid character
@@ -1545,36 +1321,36 @@ func TestErrorStackTraceAdjustsLineNumbers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCrossCallPersistence(t *testing.T) {
-	// Full chain: Call(store) → Call(load) → verify data survives across calls
+	// Full chain: set top-level var → read across calls → overwrite
 	r := New()
 	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
 		return "", nil
 	})
 	ctx := context.Background()
 
-	// Call 1: store data
-	input1, _ := json.Marshal(replInput{Code: `store("cross_test", "survives")`})
+	// Call 1: set top-level variable
+	input1, _ := json.Marshal(replInput{Code: `globalThis.cross_test = "survives"`})
 	_, err := r.Call(ctx, input1, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "persist-test"},
 	})
 	if err != nil {
-		t.Fatalf("store call: %v", err)
+		t.Fatalf("set globalThis: %v", err)
 	}
 
-	// Call 2: load and verify
-	input2, _ := json.Marshal(replInput{Code: `console.log(load("cross_test"))`})
+	// Call 2: read and verify
+	input2, _ := json.Marshal(replInput{Code: `console.log(globalThis.cross_test)`})
 	result, err := r.Call(ctx, input2, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "persist-test"},
 	})
 	if err != nil {
-		t.Fatalf("load call: %v", err)
+		t.Fatalf("read call: %v", err)
 	}
 	if !strings.Contains(result.Data.(string), "survives") {
-		t.Errorf("expected 'survives' from cross-call load, got %q", result.Data)
+		t.Errorf("expected 'survives' from cross-call variable, got %q", result.Data)
 	}
 
 	// Call 3: overwrite and verify
-	input3, _ := json.Marshal(replInput{Code: `store("cross_test", "updated"); console.log(load("cross_test"))`})
+	input3, _ := json.Marshal(replInput{Code: `cross_test = "updated"; console.log(globalThis.cross_test)`})
 	result, err = r.Call(ctx, input3, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "persist-test"},
 	})
@@ -1599,8 +1375,8 @@ func TestConcurrentSessions(t *testing.T) {
 	doneA := make(chan string, 1)
 	doneB := make(chan string, 1)
 
-	inputA, _ := json.Marshal(replInput{Code: `store("who", "A"); console.log(load("who"))`})
-	inputB, _ := json.Marshal(replInput{Code: `store("who", "B"); console.log(load("who"))`})
+	inputA, _ := json.Marshal(replInput{Code: `globalThis.who = "A"; console.log(globalThis.who)`})
+	inputB, _ := json.Marshal(replInput{Code: `globalThis.who = "B"; console.log(globalThis.who)`})
 
 	go func() {
 		result, _ := r.Call(ctx, inputA, &tool.ToolUseContext{
@@ -1642,29 +1418,29 @@ func TestConcurrentSessions(t *testing.T) {
 }
 
 func TestResetClearsStateViaCall(t *testing.T) {
-	// Full chain: Call(store) → Call(load, verify) → Call(reset) → Call(load, verify gone)
+	// Full chain: set var → verify → reset → verify gone
 	r := New()
 	r.SetToolExecutor(func(_ context.Context, name string, args json.RawMessage) (string, error) {
 		return "", nil
 	})
 	ctx := context.Background()
 
-	// Call 1: store data
-	input1, _ := json.Marshal(replInput{Code: `store("clear_test", "before_reset")`})
+	// Call 1: set top-level variable
+	input1, _ := json.Marshal(replInput{Code: `globalThis.clear_test = "before_reset"`})
 	_, err := r.Call(ctx, input1, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
 	})
 	if err != nil {
-		t.Fatalf("store call: %v", err)
+		t.Fatalf("set globalThis: %v", err)
 	}
 
-	// Call 2: verify data exists
-	input2, _ := json.Marshal(replInput{Code: `console.log(load("clear_test"))`})
+	// Call 2: verify variable exists
+	input2, _ := json.Marshal(replInput{Code: `console.log(globalThis.clear_test)`})
 	result, err := r.Call(ctx, input2, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
 	})
 	if err != nil {
-		t.Fatalf("load call: %v", err)
+		t.Fatalf("verify globalThis: %v", err)
 	}
 	if !strings.Contains(result.Data.(string), "before_reset") {
 		t.Fatalf("expected 'before_reset' before reset, got %q", result.Data)
@@ -1676,16 +1452,16 @@ func TestResetClearsStateViaCall(t *testing.T) {
 		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
 	})
 	if err != nil {
-		t.Fatalf("reset call: %v", err)
+		t.Fatalf("reset globalThis: %v", err)
 	}
 
-	// Call 4: verify data is gone
-	input4, _ := json.Marshal(replInput{Code: `const v = load("clear_test"); console.log(v === undefined ? "cleared" : "leaked: " + v)`})
+	// Call 4: verify variable is gone after reset
+	input4, _ := json.Marshal(replInput{Code: `console.log(globalThis.clear_test === undefined ? "cleared" : "leaked: " + globalThis.clear_test)`})
 	result, err = r.Call(ctx, input4, &tool.ToolUseContext{
 		Options: tool.ToolUseOptions{SessionID: "reset-clear"},
 	})
 	if err != nil {
-		t.Fatalf("verify call: %v", err)
+		t.Fatalf("verify globalThis: %v", err)
 	}
 	if !strings.Contains(result.Data.(string), "cleared") {
 		t.Errorf("expected 'cleared' after reset, got %q", result.Data)
@@ -1727,9 +1503,8 @@ const results = await Promise.all([
 ]);
 console.log("files:", results[0].split("\n").length);
 console.log("todos:", results[1].split("\n").length);
-store("fileCount", String(results[0].split("\n").length));
-const loaded = load("fileCount");
-console.log("loaded:", loaded);
+	globalThis.fileCount = results[0].split("\n").length;
+console.log("saved:", globalThis.fileCount);
 `
 
 	output, execErr := s.Execute(context.Background(), code, "", toolFn, 30000)
@@ -1743,8 +1518,8 @@ console.log("loaded:", loaded);
 	if !strings.Contains(output, "todos: 2") {
 		t.Errorf("expected 'todos: 2', got %q", output)
 	}
-	if !strings.Contains(output, "loaded: 3") {
-		t.Errorf("expected 'loaded: 3', got %q", output)
+	if !strings.Contains(output, "saved: 3") {
+		t.Errorf("expected 'saved: 3', got %q", output)
 	}
 }
 

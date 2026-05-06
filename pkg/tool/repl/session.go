@@ -33,7 +33,6 @@ type Session struct {
 	vm         *goja.Runtime
 	mu         sync.Mutex
 	currentBuf *bytes.Buffer // swapped per Execute
-	kv         sync.Map      // store()/load() persistent storage
 	ctx        context.Context
 	toolFn     func(ctx context.Context, name, argsJSON string) string // per-Execute tool executor
 	closed     bool
@@ -120,52 +119,6 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 		return fmt.Errorf("set tool: %w", err)
 	}
 
-	// --- exit (throws to stop JS execution) ---
-	if err := vm.Set("exit", func(call goja.FunctionCall) goja.Value {
-		panic(vm.ToValue("__EXIT__"))
-	}); err != nil {
-		return fmt.Errorf("set exit: %w", err)
-	}
-
-	// --- store/load ---
-	if err := vm.Set("store", func(call goja.FunctionCall) goja.Value {
-		key := call.Argument(0).String()
-		val := call.Argument(1).Export()
-		s.kv.Store(key, toGoNative(val))
-		return goja.Undefined()
-	}); err != nil {
-		return fmt.Errorf("set store: %w", err)
-	}
-
-	if err := vm.Set("load", func(call goja.FunctionCall) goja.Value {
-		key := call.Argument(0).String()
-		v, ok := s.kv.Load(key)
-		if !ok {
-			return goja.Undefined()
-		}
-		switch val := v.(type) {
-		case string:
-			return vm.ToValue(val)
-		default:
-			b, _ := json.Marshal(val)
-			return vm.ToValue(string(b))
-		}
-	}); err != nil {
-		return fmt.Errorf("set load: %w", err)
-	}
-
-	// --- notify ---
-	if err := vm.Set("notify", func(call goja.FunctionCall) goja.Value {
-		value := call.Argument(0).String()
-		if s.currentBuf != nil {
-			s.currentBuf.WriteString("[NOTIFY] ")
-			s.currentBuf.WriteString(value)
-			s.currentBuf.WriteByte('\n')
-		}
-		return goja.Undefined()
-	}); err != nil {
-		return fmt.Errorf("set notify: %w", err)
-	}
 
 	// setTimeout/clearTimeout provided by eventloop — no manual registration needed.
 
@@ -248,7 +201,7 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 		}
 
 		// Wrap in async IIFE with try/catch — enables top-level await and captures errors.
-		wrapped := "(async () => {\ntry {\n" + code + "\n} catch(e) {\nif (String(e) === \"__EXIT__\") return;\n__reportError(e instanceof Error ? e.stack || e.message : String(e));\n}\n})()"
+		wrapped := "(async () => {\ntry {\n" + code + "\n} catch(e) {\n__reportError(e instanceof Error ? e.stack || e.message : String(e));\n}\n})()"
 		_, evalErr = vm.RunString(wrapped)
 	})
 
@@ -258,9 +211,6 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	// Build output.
 	output = buf.String()
 	if evalErr != nil {
-		if isExitError(evalErr) {
-			return output, nil
-		}
 		if output != "" {
 			output += "\n"
 		}
@@ -279,30 +229,11 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	return output, nil
 }
 
-// isExitError checks if the error is from the exit() function.
-func isExitError(err error) bool {
-	ex, ok := err.(*goja.Exception)
-	if !ok {
-		return false
-	}
-	val := ex.Value()
-	if val == nil {
-		return false
-	}
-	s, ok := val.Export().(string)
-	return ok && s == "__EXIT__"
-}
 
 // Reset clears the session by creating a new event loop and VM.
 func (s *Session) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// Clear store/load data
-	s.kv.Range(func(key, _ any) bool {
-		s.kv.Delete(key)
-		return true
-	})
 
 	// Create new event loop (old one is GC'd)
 	s.loop = eventloop.NewEventLoop(eventloop.EnableConsole(false))
@@ -333,11 +264,6 @@ func (s *Session) Close() {
 	if s.closed {
 		return
 	}
-
-	s.kv.Range(func(key, _ any) bool {
-		s.kv.Delete(key)
-		return true
-	})
 	s.toolFn = nil
 	s.closed = true
 }
@@ -395,29 +321,6 @@ func adjustStackLines(msg string, offset int) string {
 	})
 }
 
-func toGoNative(value any) any {
-	if value == nil {
-		return nil
-	}
-	switch v := value.(type) {
-	case string:
-		return v
-	case float64:
-		return v
-	case bool:
-		return v
-	case int:
-		return float64(v)
-	case int64:
-		return float64(v)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("%v", v)
-		}
-		return string(b)
-	}
-}
 
 func parsePragma(code string) (cleanCode string, timeoutMs int64, err error) {
 	timeoutMs = defaultTimeout

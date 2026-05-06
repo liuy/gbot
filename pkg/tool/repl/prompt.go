@@ -5,8 +5,7 @@ package repl
 // Detailed API reference and examples live in toolPrompt (system prompt contribution).
 const replDescription = `Run JavaScript code to orchestrate tool calls and data processing.
 Evaluates ES6+ with async/await support. Call any gbot tool via tool(name, args).
-Supports console.log, store/load for cross-call persistence, setTimeout, and exit().
-Variables do NOT persist across calls (function-scoped). Use store()/load() for cross-call data. Session store/load state persists; use reset: true to clear. Timeout via // @timeout: ms pragma.`
+Supports console.log, setTimeout/clearTimeout. Use globalThis for cross-call data persistence. Timeout via // @timeout: ms pragma.`
 
 // toolPrompt is the system prompt contribution for the REPL tool.
 // Provides full API reference, examples, and session management details.
@@ -25,18 +24,6 @@ Call any gbot tool by name. Returns the tool's output as a string.
 ### console.log(msg)
 Output is captured and returned as the tool result (not written to stdout).
 Use console.log() to report results, progress, and intermediate values.
-
-### exit()
-Immediately end the script. Output collected so far is returned.
-
-### store(key, value) / load(key) → value
-Persist data across multiple tool calls within the same session.
-- store("key", "value") saves the value
-- load("key") retrieves it (returns undefined if not found)
-- Values survive across multiple code executions in the same session
-
-### notify(value)
-Send a progress notification that appears in the output.
 
 ### setTimeout(callback, delayMs) → id
 Schedule a callback to run after delayMs milliseconds. Returns a timer reference (truthy, unique per call).
@@ -60,7 +47,11 @@ Top-level await works: const data = await Promise.resolve(42);
 
 ## Session Management
 
-Scripts execute within a session that persists across calls. store/load data survives between executions. Variables are function-scoped and do NOT persist — use store()/load() for cross-call data. Use reset: true to clear the session.
+Scripts execute within a session backed by a persistent JavaScript VM. Variable declarations (var/let/const) are scoped to each execution and do NOT persist across calls. To persist data across calls, assign to globalThis:
+- globalThis.x = 42 — save value
+- globalThis.x — retrieve value (undefined if not set)
+- Properties on globalThis survive across executions within the same session.
+Use reset: true to clear the session and start fresh.
 
 ## Examples
 
@@ -81,9 +72,26 @@ const [globResult, grepResult] = await Promise.all([
   tool("Grep", {pattern: "TODO"})
 ]);
 
-// Data processing with persistence
+// Data processing with cross-call persistence
 const lines = grepResult.split("\n").filter(l => l.trim());
-store("todoCount", lines.length);
+globalThis.todoCount = lines.length;
 console.log("Found " + lines.length + " TODOs");
-// Later calls can: load("todoCount")
+// Later calls can access: globalThis.todoCount
+
+// RLM pattern: REPL filters + Agent classifies semantically + REPL aggregates
+// E.g. "Among users 101-200, how many entries ask about a person?"
+const data = tool("Read", {file_path: "entries.txt"});
+const filtered = data.split("\n").filter(l => /^User: (1\d{2}|200)\b/.test(l));
+console.log("Filtered to " + filtered.length + " entries");
+// Partition into chunks, classify each with Agent, sum results
+const chunks = [];
+for (let i = 0; i < filtered.length; i += 50) chunks.push(filtered.slice(i, i + 50));
+let total = 0;
+for (const chunk of chunks) {
+  const result = tool("Agent", {
+    prompt: "Count how many of these entries ask about a specific person. Reply with ONLY a number:\n" + chunk.join("\n")
+  });
+  total += parseInt(result) || 0;
+}
+console.log("Entries about a person: " + total);
 `
