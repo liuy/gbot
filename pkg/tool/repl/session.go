@@ -63,8 +63,8 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 	if err := consoleObj.Set("log", func(call goja.FunctionCall) goja.Value {
 		if s.currentBuf != nil {
 			parts := make([]string, len(call.Arguments))
-			for i := range parts {
-				parts[i] = call.Arguments[i].String()
+			for i, arg := range call.Arguments {
+				parts[i] = jsValueToString(arg)
 			}
 			fmt.Fprintf(s.currentBuf, "%s\n", strings.Join(parts, " "))
 		}
@@ -343,6 +343,31 @@ func (s *Session) Close() {
 func (s *Session) Interrupt() {
 	if s.vm != nil {
 		s.vm.Interrupt("interrupted")
+	}
+}
+
+// jsValueToString converts a goja Value to a human-readable string.
+// Objects/arrays are JSON-serialized; primitives use their string representation.
+func jsValueToString(v goja.Value) string {
+	if goja.IsUndefined(v) {
+		return "undefined"
+	}
+	if goja.IsNull(v) {
+		return "null"
+	}
+	exported := v.Export()
+	switch val := exported.(type) {
+	case string:
+		return val
+	case float64, int, int64, bool:
+		return v.String()
+	default:
+		// Objects, arrays, maps — JSON serialize
+		b, err := json.Marshal(val)
+		if err != nil {
+			return v.String()
+		}
+		return string(b)
 	}
 }
 
