@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,12 +79,22 @@ type ClientManager struct {
 	provider TransportProvider
 	trusted  bool
 	auth     authCacheStore
+	workDir  string // working directory for ListRoots — Source: client.ts:1009-1018
 
 	// Notification callbacks — called when server sends list_changed notifications.
 	// Source: useManageMCPConnections.ts:618-751
 	onResourceChanged func(serverName string)
 	onToolChanged     func(serverName string)
 	onCommandChanged  func(serverName string)
+
+	// Elicitation handler — late-binding via atomic pointer.
+	// Source: client.ts:1191-1197 — default cancel when no UI.
+	elicitationUI atomic.Pointer[ElicitationUI]
+
+	// Sampling handler — late-binding via atomic pointer.
+	// Source: TS doesn't implement; gbot differentiation.
+	samplingProvider atomic.Pointer[SamplingProvider]
+	samplingModel    string // model to use for sampling requests
 }
 
 // NewClientManager creates a new connection manager.
@@ -120,6 +132,15 @@ func (cm *ClientManager) SetOnCommandChanged(fn func(serverName string)) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.onCommandChanged = fn
+}
+
+// SetWorkDir sets the working directory used for ListRoots responses.
+// Source: client.ts:1009-1018 — returns file://${cwd} as single root.
+// Must be called before ConnectToServer for roots to be advertised.
+func (cm *ClientManager) SetWorkDir(dir string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.workDir = dir
 }
 
 // ConnectToServer connects to an MCP server with memoized single-flight.
@@ -212,6 +233,13 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 				onCommandChanged(name)
 			}
 		},
+		// Source: client.ts:1191-1197 — ElicitationHandler (default cancel when no UI)
+		ElicitationHandler: cm.makeElicitationHandler(name),
+	}
+
+	// Source: sampling — CreateMessageHandler (only when provider is set)
+	if cm.samplingProvider.Load() != nil {
+		opts.CreateMessageHandler = cm.makeSamplingHandler(name)
 	}
 
 	client := mcp.NewClient(
@@ -222,6 +250,16 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 		},
 		opts,
 	)
+
+	// Source: client.ts:1009-1018 — register ListRoots handler.
+	// Returns file://${workDir} as single root. Skip if workDir is empty.
+	cm.mu.Lock()
+	wd := cm.workDir
+	cm.mu.Unlock()
+	if wd != "" {
+		slog.Info("mcp: registered ListRoots handler", "server", name, "root", "file://"+wd)
+		client.AddRoots(&mcp.Root{URI: "file://" + wd})
+	}
 
 	// Source: client.ts:1020-1077 — connect with timeout
 	timeout := getConnectionTimeout()
@@ -267,7 +305,7 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 	cleanup := func() error {
 		// Source: client.ts:1426-1557 — process cleanup escalation for stdio
 		if cmd != nil && cmd.Process != nil {
-			processCleanupEscalation(cmd.Process)
+			ProcessCleanupEscalation(cmd.Process)
 		}
 		return session.Close()
 	}
@@ -530,11 +568,6 @@ func ProcessCleanupEscalation(proc *os.Process) {
 
 	// Step 3: SIGKILL — Source: client.ts:1523-1524
 	_ = syscall.Kill(pid, syscall.SIGKILL)
-}
-
-// processCleanupEscalation is the unexported alias used by cleanup functions.
-func processCleanupEscalation(proc *os.Process) {
-	ProcessCleanupEscalation(proc)
 }
 
 // processExists checks if a process with the given PID is still running.

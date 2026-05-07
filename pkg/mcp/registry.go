@@ -13,7 +13,6 @@ import (
 	"maps"
 	"math/rand"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -22,59 +21,13 @@ import (
 // Reconnection constants — Source: useManageMCPConnections.ts:16-18
 // ---------------------------------------------------------------------------
 
-const (
-	// maxReconnectAttempts is the maximum number of automatic reconnection attempts.
-	// Source: useManageMCPConnections.ts:16 — MAX_RECONNECT_ATTEMPTS
-	maxReconnectAttempts = MaxReconnectAttempts
-
-	// initialBackoff is the initial backoff duration for reconnection.
-	// Source: useManageMCPConnections.ts:17 — INITIAL_BACKOFF_MS
-	initialBackoff = time.Duration(InitialBackoffMs) * time.Millisecond
-
-	// maxBackoff is the maximum backoff duration for reconnection.
-	// Source: useManageMCPConnections.ts:18 — MAX_BACKOFF_MS
-	maxBackoff = time.Duration(MaxBackoffMs) * time.Millisecond
-)
-
 var (
 	// shutdownGracePeriod is the time to wait for graceful shutdown before forcing.
 	shutdownGracePeriod = 5 * time.Second
 
 	// reconnectMinBackoff is the minimum backoff for ScheduleReconnect (tests can override).
-	reconnectMinBackoff = initialBackoff
+	reconnectMinBackoff = time.Duration(InitialBackoffMs) * time.Millisecond
 )
-
-// ---------------------------------------------------------------------------
-// Batch size constants — Source: client.ts:552-561
-// ---------------------------------------------------------------------------
-
-const (
-	// localBatchDefault is the default concurrency for local (stdio/sdk) servers.
-	// Source: client.ts:552-554 — MCP_SERVER_CONNECTION_BATCH_SIZE
-	localBatchDefault = 3
-
-	// remoteBatchDefault is the default concurrency for remote (sse/http/ws) servers.
-	// Source: client.ts:556-561 — MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE
-	remoteBatchDefault = 20
-)
-
-func getLocalBatchSize() int {
-	if v := os.Getenv("MCP_SERVER_CONNECTION_BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return localBatchDefault
-}
-
-func getRemoteBatchSize() int {
-	if v := os.Getenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
-	}
-	return remoteBatchDefault
-}
 
 // ---------------------------------------------------------------------------
 // Change callbacks — Source: useManageMCPConnections.ts:618-752
@@ -146,6 +99,11 @@ type Registry struct {
 
 	// Callbacks
 	callbacks ChangeCallbacks
+
+	// Config hot-reload
+	configWatcher *ConfigWatcher
+	reloadMu      sync.Mutex // guards handleConfigReload from concurrent execution
+	configDir     string     // cwd for re-reading configs
 }
 
 // NewRegistry creates a new MCP server registry.
@@ -265,8 +223,8 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 	// Source: client.ts:2388-2402 — Promise.all([processBatched(local), processBatched(remote)])
 	var groupWg sync.WaitGroup
 	groupWg.Add(2)
-	go func() { defer groupWg.Done(); processGroup(local, getLocalBatchSize()) }()
-	go func() { defer groupWg.Done(); processGroup(remote, getRemoteBatchSize()) }()
+	go func() { defer groupWg.Done(); processGroup(local, GetLocalBatchSize()) }()
+	go func() { defer groupWg.Done(); processGroup(remote, GetRemoteBatchSize()) }()
 	groupWg.Wait()
 
 	// Batch discovery for all connected servers
@@ -495,7 +453,9 @@ func LoadAndConnectMCP(ctx context.Context, cwd string, provider TransportProvid
 	}
 
 	mgr := NewClientManager(provider, true, "")
+	mgr.SetWorkDir(cwd)
 	registry := NewRegistry(mgr, ChangeCallbacks{})
+	registry.configDir = cwd
 
 	results := registry.ConnectAll(ctx, configs)
 
@@ -807,6 +767,11 @@ func (r *Registry) closeInner() error {
 	// Cancel the registry context to stop reconnection attempts
 	r.cancel()
 
+	// Stop config watcher if running
+	if r.configWatcher != nil {
+		r.configWatcher.Stop()
+	}
+
 	r.mu.Lock()
 	// Cancel all reconnect timers
 	for name, timer := range r.reconnectTimers {
@@ -892,13 +857,13 @@ func (r *Registry) ScheduleReconnect(serverName string, attempt int) {
 	}
 	r.mu.RUnlock()
 
-	if attempt >= maxReconnectAttempts {
+	if attempt >= MaxReconnectAttempts {
 		return
 	}
 
 	// Exponential backoff with jitter
 	// Source: useManageMCPConnections.ts:834 — Math.min(INITIAL * 2^attempt, MAX)
-	backoff := min(reconnectMinBackoff*time.Duration(1<<uint(attempt)), maxBackoff)
+	backoff := min(reconnectMinBackoff*time.Duration(1<<uint(attempt)), time.Duration(MaxBackoffMs)*time.Millisecond)
 	// Add jitter (±50%)
 	jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
 	backoff = backoff/2 + jitter
@@ -1031,5 +996,152 @@ func (r *Registry) handleCommandNotification(serverName string) {
 	r.mu.Unlock()
 	if r.callbacks.OnCommandsChanged != nil {
 		r.callbacks.OnCommandsChanged(serverName, commands)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config hot-reload — Source: chokidar watch + React effect
+// ---------------------------------------------------------------------------
+
+// StartConfigWatch starts watching .mcp.json for changes and auto-reloads.
+// Must be called after LoadAndConnectMCP. The watcher runs in a background goroutine.
+// Source: TS chokidar + /reload-plugins + React effect re-run.
+func (r *Registry) StartConfigWatch() error {
+	if r.configDir == "" {
+		return nil
+	}
+
+	configPath := r.configDir + "/.mcp.json"
+	watcher, err := NewConfigWatcher(func() {
+		r.handleConfigReload()
+	})
+	if err != nil {
+		return fmt.Errorf("mcp: create config watcher: %w", err)
+	}
+
+	// Watch the config file. Also watch the directory — file recreation
+	// (common in atomic writes) shows as a Rename+Create sequence that
+	// requires watching the parent directory to detect.
+	if err := watcher.AddPath(r.configDir); err != nil {
+		watcher.Stop()
+		return fmt.Errorf("mcp: watch config dir %q: %w", r.configDir, err)
+	}
+	// Also watch the file itself if it exists
+	if _, err := os.Stat(configPath); err == nil {
+		if err := watcher.AddPath(configPath); err != nil {
+			slog.Warn("mcp: failed to watch config file directly", "path", configPath, "error", err)
+		}
+	}
+
+	r.configWatcher = watcher
+	go watcher.Start()
+	slog.Info("mcp: config hot-reload enabled", "dir", r.configDir)
+	return nil
+}
+
+// handleConfigReload re-reads configs and reconciles server connections.
+// Source: TS React effect re-run + /reload-plugins.
+//
+// Uses reloadMu to prevent concurrent reloads. If a reload is already in
+// progress, the next one is skipped (the debounce timer handles coalescing).
+func (r *Registry) handleConfigReload() {
+	if !r.reloadMu.TryLock() {
+		slog.Debug("mcp: config reload already in progress, skipping")
+		return
+	}
+	defer r.reloadMu.Unlock()
+
+	// Re-read configs from disk
+	configs, _ := GetProjectMcpConfigsFromCwd(r.configDir)
+
+	r.mu.Lock()
+	oldConfigs := r.configs
+	r.mu.Unlock()
+
+	// Diff: find added, removed, changed servers
+	type diffEntry struct {
+		name   string
+		config ScopedMcpServerConfig
+	}
+
+	var added, changed []diffEntry
+	var removed []string
+
+	newSet := make(map[string]bool)
+	for name, cfg := range configs {
+		newSet[name] = true
+		r.mu.RLock()
+		oldCfg, existed := oldConfigs[name]
+		r.mu.RUnlock()
+
+		if !existed {
+			added = append(added, diffEntry{name, cfg})
+		} else if !AreMcpConfigsEqual(oldCfg, cfg) {
+			changed = append(changed, diffEntry{name, cfg})
+		}
+	}
+
+	for name := range oldConfigs {
+		if !newSet[name] {
+			removed = append(removed, name)
+		}
+	}
+
+	if len(added) == 0 && len(removed) == 0 && len(changed) == 0 {
+		return // no changes detected
+	}
+
+	slog.Info("mcp: config reload", "added", len(added), "removed", len(removed), "changed", len(changed))
+
+	// Disconnect removed servers (best-effort, errors logged by Disconnect)
+	for _, name := range removed {
+		_ = r.Disconnect(name)
+		slog.Info("mcp: disconnected removed server", "server", name)
+	}
+
+	// Reconnect changed servers
+	for _, entry := range changed {
+		_ = r.Disconnect(entry.name)
+		r.connectSingle(context.Background(), entry.name, entry.config)
+		slog.Info("mcp: reconnected changed server", "server", entry.name)
+	}
+
+	// Connect added servers
+	for _, entry := range added {
+		r.connectSingle(context.Background(), entry.name, entry.config)
+		slog.Info("mcp: connected new server", "server", entry.name)
+	}
+
+	// Update configs and rebuild
+	r.mu.Lock()
+	r.configs = configs
+	r.rebuildAggregatesLocked()
+	r.mu.Unlock()
+
+	// Notify callbacks
+	if r.callbacks.OnToolsChanged != nil {
+		r.callbacks.OnToolsChanged("", nil) // empty server name signals full refresh
+	}
+}
+
+// connectSingle connects to a single server and updates registry state.
+func (r *Registry) connectSingle(ctx context.Context, name string, cfg ScopedMcpServerConfig) {
+	conn, err := r.manager.ConnectToServer(ctx, name, cfg)
+	if err != nil {
+		slog.Warn("mcp: config reload connect failed", "server", name, "error", err)
+		return
+	}
+
+	r.mu.Lock()
+	r.connections[name] = conn
+	r.configs[name] = cfg
+	r.mu.Unlock()
+
+	// Discover tools/resources/commands for the new connection
+	// These functions populate the caches internally.
+	if cs, ok := conn.(*ConnectedServer); ok {
+		_, _ = FetchToolsForServer(ctx, cs, r.toolCache)
+		_, _ = FetchResourcesForServer(ctx, cs, r.resourceCache)
+		_, _ = FetchCommandsForServer(ctx, cs, r.commandCache)
 	}
 }

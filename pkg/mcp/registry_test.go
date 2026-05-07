@@ -642,7 +642,7 @@ func TestRegistry_ScheduleReconnect_MaxAttempts(t *testing.T) {
 	}
 	r.mu.Unlock()
 
-	r.ScheduleReconnect("remote", maxReconnectAttempts)
+	r.ScheduleReconnect("remote", MaxReconnectAttempts)
 	r.mu.RLock()
 	_, hasTimer := r.reconnectTimers["remote"]
 	r.mu.RUnlock()
@@ -909,16 +909,16 @@ func TestRegistry_BackoffCalculation(t *testing.T) {
 		attempt  int
 		expected time.Duration
 	}{
-		{0, initialBackoff},       // 1 * 2^0 = 1s
-		{1, initialBackoff * 2},   // 1 * 2^1 = 2s
-		{2, initialBackoff * 4},   // 1 * 2^2 = 4s
-		{5, maxBackoff},           // 1 * 2^5 = 32s, capped at 30s
+		{0, reconnectMinBackoff},           // 1 * 2^0 = 1s
+		{1, reconnectMinBackoff * 2},       // 1 * 2^1 = 2s
+		{2, reconnectMinBackoff * 4},       // 1 * 2^2 = 4s
+		{5, time.Duration(MaxBackoffMs) * time.Millisecond}, // 1 * 2^5 = 32s, capped at 30s
 	}
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("attempt_%d", tt.attempt), func(t *testing.T) {
-			raw := initialBackoff * time.Duration(1<<uint(tt.attempt))
-			capped := min(raw, maxBackoff)
+			raw := reconnectMinBackoff * time.Duration(1<<uint(tt.attempt))
+			capped := min(raw, time.Duration(MaxBackoffMs)*time.Millisecond)
 			if capped != tt.expected {
 				t.Errorf("attempt %d: got %v, want %v", tt.attempt, capped, tt.expected)
 			}
@@ -1904,34 +1904,34 @@ func TestConnectAll_MixedLocalRemote(t *testing.T) {
 }
 
 func TestGetBatchSizeDefaults(t *testing.T) {
-	if v := getLocalBatchSize(); v != localBatchDefault {
-		t.Errorf("default local batch = %d, want %d", v, localBatchDefault)
+	if v := GetLocalBatchSize(); v != 3 {
+		t.Errorf("default local batch = %d, want 3", v)
 	}
-	if v := getRemoteBatchSize(); v != remoteBatchDefault {
-		t.Errorf("default remote batch = %d, want %d", v, remoteBatchDefault)
+	if v := GetRemoteBatchSize(); v != 20 {
+		t.Errorf("default remote batch = %d, want 20", v)
 	}
 }
 
 func TestGetBatchSizeFromEnv(t *testing.T) {
 	t.Setenv("MCP_SERVER_CONNECTION_BATCH_SIZE", "5")
-	if v := getLocalBatchSize(); v != 5 {
+	if v := GetLocalBatchSize(); v != 5 {
 		t.Errorf("env local batch = %d, want 5", v)
 	}
 
 	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "10")
-	if v := getRemoteBatchSize(); v != 10 {
+	if v := GetRemoteBatchSize(); v != 10 {
 		t.Errorf("env remote batch = %d, want 10", v)
 	}
 }
 
 func TestGetBatchSizeInvalidEnv(t *testing.T) {
 	t.Setenv("MCP_SERVER_CONNECTION_BATCH_SIZE", "invalid")
-	if v := getLocalBatchSize(); v != localBatchDefault {
+	if v := GetLocalBatchSize(); v != 3 {
 		t.Errorf("invalid env should use default, got %d", v)
 	}
 
 	t.Setenv("MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE", "-1")
-	if v := getRemoteBatchSize(); v != remoteBatchDefault {
+	if v := GetRemoteBatchSize(); v != 20 {
 		t.Errorf("negative env should use default, got %d", v)
 	}
 }

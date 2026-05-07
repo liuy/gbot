@@ -961,8 +961,8 @@ func TestProcessCleanupEscalation_Unexported(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	// Call the unexported version
-	processCleanupEscalation(cmd.Process)
+	// Call ProcessCleanupEscalation directly
+	ProcessCleanupEscalation(cmd.Process)
 
 	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
 

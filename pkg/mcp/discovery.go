@@ -137,9 +137,11 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUC
 	// Source: client.ts:1766-1990 — convert SDK tools to DiscoveredTool
 	tools := make([]DiscoveredTool, 0, len(result.Tools))
 	for _, tool := range result.Tools {
-		qualifiedName := BuildMcpToolName(conn.Name, tool.Name)
+		// Source: sanitization.ts — sanitize tool metadata from untrusted server
+		sanitizedName := sanitizeString(tool.Name)
+		qualifiedName := BuildMcpToolName(conn.Name, sanitizedName)
 
-		desc := tool.Description
+		desc := sanitizeString(tool.Description)
 		// Source: client.ts:1790-1793 — description truncation
 		if len(desc) > MaxMCPDescriptionLength {
 			desc = desc[:MaxMCPDescriptionLength] + "… [truncated]"
@@ -157,7 +159,7 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUC
 		var alwaysLoad bool
 		if tool.Meta != nil {
 			if v, ok := tool.Meta["anthropic/searchHint"].(string); ok {
-				searchHint = strings.Join(strings.Fields(v), " ") // collapse whitespace
+				searchHint = sanitizeString(strings.Join(strings.Fields(v), " ")) // collapse whitespace
 			}
 			if _, ok := tool.Meta["anthropic/alwaysLoad"].(bool); ok {
 				alwaysLoad = true
@@ -168,10 +170,11 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUC
 		if tool.InputSchema != nil {
 			inputSchema, _ = json.Marshal(tool.InputSchema)
 		}
+		inputSchema = sanitizeJSON(inputSchema)
 
 		tools = append(tools, DiscoveredTool{
 			Name:         qualifiedName,
-			OriginalName: tool.Name,
+			OriginalName: sanitizedName,
 			ServerName:   conn.Name,
 			Description:  desc,
 			InputSchema:  inputSchema,
@@ -221,10 +224,10 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 	resources := make([]ServerResource, 0, len(result.Resources))
 	for _, r := range result.Resources {
 		resources = append(resources, ServerResource{
-			URI:         r.URI,
-			Name:        r.Name,
-			Description: r.Description,
-			MimeType:    r.MIMEType,
+			URI:         sanitizeString(r.URI),
+			Name:        sanitizeString(r.Name),
+			Description: sanitizeString(r.Description),
+			MimeType:    sanitizeString(r.MIMEType),
 			Server:      conn.Name,
 		})
 	}
@@ -267,15 +270,16 @@ func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *L
 
 	commands := make([]MCPCommand, 0, len(result.Prompts))
 	for _, p := range result.Prompts {
+		sanitizedName := sanitizeString(p.Name)
 		cmd := MCPCommand{
-			Name:        "mcp__" + conn.Name + "__" + p.Name,
-			Description: p.Description,
+			Name:        "mcp__" + conn.Name + "__" + sanitizedName,
+			Description: sanitizeString(p.Description),
 			ServerName:  conn.Name,
 		}
 		for _, arg := range p.Arguments {
 			cmd.Arguments = append(cmd.Arguments, MCPCommandArg{
-				Name:        arg.Name,
-				Description: arg.Description,
+				Name:        sanitizeString(arg.Name),
+				Description: sanitizeString(arg.Description),
 				Required:    arg.Required,
 			})
 		}
