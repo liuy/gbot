@@ -822,10 +822,12 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 
 	// Discard() is synchronous — no goroutine should start after it returns.
 	// Brief poll to confirm the tool never starts.
-	time.Sleep(50 * time.Millisecond) // wait for goroutine to complete abort path
-	if started.Load() {
-		t.Error("queued tool should not start after Discard()")
-	}
+	// Discard() is synchronous — no goroutine should start after it returns.
+		// Yield scheduler to let any pending goroutines run, then assert.
+		runtime.Gosched()
+		if started.Load() {
+			t.Error("queued tool should not start after Discard()")
+		}
 }
 
 // slowCancelTool blocks until context is cancelled, then reports it.
