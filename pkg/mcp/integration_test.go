@@ -377,7 +377,14 @@ func TestIntegration_LoadAndConnectMCP(t *testing.T) {
 		t.Error("expected 'hello' tool to be discovered")
 	}
 
-	t.Logf("✓ wireup: .mcp.json → config → Registry → %d tools discovered", len(tools))
+	// 6. Verify config watcher was started (hot-reload enabled)
+	if registry.configWatcher == nil {
+		t.Error("expected configWatcher to be started after LoadAndConnectMCP")
+	} else {
+		defer registry.configWatcher.Stop()
+	}
+
+	t.Logf("✓ wireup: .mcp.json → config → Registry → %d tools discovered, config watcher started", len(tools))
 }
 
 // TestIntegration_LoadAndConnectMCP_NoConfig verifies nil return when no .mcp.json exists.

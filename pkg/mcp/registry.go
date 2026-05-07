@@ -474,6 +474,12 @@ func LoadAndConnectMCP(ctx context.Context, cwd string, provider TransportProvid
 	}
 	slog.Info("mcp: startup complete", "connected", connected, "failed", failed, "total", len(configs))
 
+	// Start config watcher for hot-reload (TS: plugin config effect re-run).
+	// Safe to call even if configDir is empty; it handles that gracefully.
+	if err := registry.StartConfigWatch(); err != nil {
+		slog.Warn("mcp: failed to start config watcher", "error", err)
+	}
+
 	return registry, nil
 }
 
