@@ -1249,3 +1249,64 @@ func TestFileAuthCache_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	// No race detector failures = success
 }
+
+// ---------------------------------------------------------------------------
+// Notification callbacks — resources/tools/commands list_changed
+// ---------------------------------------------------------------------------
+
+func TestClientManager_ResourceListChangedNotification(t *testing.T) {
+	server, t2 := setupInMemoryServer(t)
+
+	// Register initial resource (so server reports resources capability)
+	server.AddResource(&mcp.Resource{
+		URI:      "test://initial",
+		Name:     "initial",
+		MIMEType: "text/plain",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{
+				{URI: "test://initial", MIMEType: "text/plain", Text: "initial"},
+			},
+		}, nil
+	})
+
+	notificationReceived := make(chan string, 1)
+
+	provider := &countingProvider{}
+	provider.setTransport(t2)
+
+	cm := NewClientManager(provider, false, "")
+	cm.SetOnResourceChanged(func(serverName string) {
+		select {
+		case notificationReceived <- serverName:
+		default:
+		}
+	})
+
+	_, err := cm.ConnectToServer(context.Background(), "test-server", makeTestConfig())
+	if err != nil {
+		t.Fatalf("ConnectToServer: %v", err)
+	}
+
+	// Add a new resource — server should send resources/list_changed notification
+	server.AddResource(&mcp.Resource{
+		URI:      "test://added",
+		Name:     "added",
+		MIMEType: "text/plain",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{
+				{URI: "test://added", MIMEType: "text/plain", Text: "added"},
+			},
+		}, nil
+	})
+
+	select {
+	case name := <-notificationReceived:
+		if name != "test-server" {
+			t.Errorf("notification callback received serverName = %q, want %q", name, "test-server")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout: ResourceListChangedHandler was not called — ClientManager is not wiring up notification callbacks")
+	}
+}

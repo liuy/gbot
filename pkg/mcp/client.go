@@ -77,6 +77,12 @@ type ClientManager struct {
 	provider TransportProvider
 	trusted  bool
 	auth     authCacheStore
+
+	// Notification callbacks — called when server sends list_changed notifications.
+	// Source: useManageMCPConnections.ts:618-751
+	onResourceChanged func(serverName string)
+	onToolChanged     func(serverName string)
+	onCommandChanged  func(serverName string)
 }
 
 // NewClientManager creates a new connection manager.
@@ -93,6 +99,27 @@ func NewClientManager(provider TransportProvider, trusted bool, configDir string
 		cm.auth.loadFromFile()
 	}
 	return cm
+}
+
+// SetOnResourceChanged sets the callback for notifications/resources/list_changed.
+func (cm *ClientManager) SetOnResourceChanged(fn func(serverName string)) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.onResourceChanged = fn
+}
+
+// SetOnToolChanged sets the callback for notifications/tools/list_changed.
+func (cm *ClientManager) SetOnToolChanged(fn func(serverName string)) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.onToolChanged = fn
+}
+
+// SetOnCommandChanged sets the callback for notifications/prompts/list_changed.
+func (cm *ClientManager) SetOnCommandChanged(fn func(serverName string)) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.onCommandChanged = fn
 }
 
 // ConnectToServer connects to an MCP server with memoized single-flight.
@@ -161,13 +188,39 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 	}
 
 	// Source: client.ts:985-1002 — create SDK Client
+	// Register notification handlers for list_changed notifications.
+	// Source: useManageMCPConnections.ts:618-751
+	cm.mu.Lock()
+	onResourceChanged := cm.onResourceChanged
+	onToolChanged := cm.onToolChanged
+	onCommandChanged := cm.onCommandChanged
+	cm.mu.Unlock()
+
+	opts := &mcp.ClientOptions{
+		ResourceListChangedHandler: func(ctx context.Context, req *mcp.ResourceListChangedRequest) {
+			if onResourceChanged != nil {
+				onResourceChanged(name)
+			}
+		},
+		ToolListChangedHandler: func(ctx context.Context, req *mcp.ToolListChangedRequest) {
+			if onToolChanged != nil {
+				onToolChanged(name)
+			}
+		},
+		PromptListChangedHandler: func(ctx context.Context, req *mcp.PromptListChangedRequest) {
+			if onCommandChanged != nil {
+				onCommandChanged(name)
+			}
+		},
+	}
+
 	client := mcp.NewClient(
 		&mcp.Implementation{
 			Name:    "gbot",
 			Title:   "gbot",
 			Version: "0.1.0",
 		},
-		nil, // default capabilities
+		opts,
 	)
 
 	// Source: client.ts:1020-1077 — connect with timeout

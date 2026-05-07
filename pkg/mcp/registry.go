@@ -151,7 +151,7 @@ type Registry struct {
 // NewRegistry creates a new MCP server registry.
 func NewRegistry(manager *ClientManager, callbacks ChangeCallbacks) *Registry {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Registry{
+	r := &Registry{
 		manager:         manager,
 		configs:         make(map[string]ScopedMcpServerConfig),
 		connections:     make(map[string]ServerConnection),
@@ -164,6 +164,16 @@ func NewRegistry(manager *ClientManager, callbacks ChangeCallbacks) *Registry {
 		cancel:          cancel,
 		callbacks:       callbacks,
 	}
+
+	// Wire up notification callbacks from ClientManager.
+	// Source: useManageMCPConnections.ts:618-751 — list_changed handlers
+	if manager != nil {
+		manager.SetOnResourceChanged(r.handleResourceNotification)
+		manager.SetOnToolChanged(r.handleToolNotification)
+		manager.SetOnCommandChanged(r.handleCommandNotification)
+	}
+
+	return r
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +456,14 @@ func (r *Registry) SetConnectionForTest(name string, conn ServerConnection) {
 	r.connections[name] = conn
 }
 
+// PutResourceCacheForTest pre-populates the resource cache for testing from external packages.
+func (r *Registry) PutResourceCacheForTest(serverName string, resources []ServerResource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resourceCache.Put(serverName, resources)
+	r.resources = append(r.resources, resources...)
+}
+
 
 // GetCommands returns all discovered commands across all servers.
 func (r *Registry) GetCommands() []MCPCommand {
@@ -505,6 +523,22 @@ func (r *Registry) GetConnection(serverName string) (ServerConnection, bool) {
 	defer r.mu.RUnlock()
 	conn, ok := r.connections[serverName]
 	return conn, ok
+}
+
+// HasResourceSupport returns true if any connected server supports resources.
+// Used by engine to conditionally register resource tools.
+// Source: client.ts:2169 — supportsResources = !!client.capabilities?.resources
+func (r *Registry) HasResourceSupport() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, conn := range r.connections {
+		if cs, ok := conn.(*ConnectedServer); ok {
+			if cs.Capabilities != nil && cs.Capabilities.Resources != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // PendingServerNames returns the names of servers that are still connecting.
@@ -920,5 +954,82 @@ func (r *Registry) rebuildAggregatesLocked() {
 				r.commands = append(r.commands, commands...)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Notification handlers — list_changed from MCP servers
+// Source: useManageMCPConnections.ts:618-751
+// ---------------------------------------------------------------------------
+
+// handleResourceNotification handles notifications/resources/list_changed.
+func (r *Registry) handleResourceNotification(serverName string) {
+	r.mu.RLock()
+	conn, ok := r.connections[serverName]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	cs, ok := conn.(*ConnectedServer)
+	if !ok {
+		return
+	}
+	resources, err := OnResourcesChanged(r.ctx, cs, r.resourceCache)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.rebuildAggregatesLocked()
+	r.mu.Unlock()
+	if r.callbacks.OnResourcesChanged != nil {
+		r.callbacks.OnResourcesChanged(serverName, resources)
+	}
+}
+
+// handleToolNotification handles notifications/tools/list_changed.
+func (r *Registry) handleToolNotification(serverName string) {
+	r.mu.RLock()
+	conn, ok := r.connections[serverName]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	cs, ok := conn.(*ConnectedServer)
+	if !ok {
+		return
+	}
+	tools, err := OnToolsChanged(r.ctx, cs, r.toolCache)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.rebuildAggregatesLocked()
+	r.mu.Unlock()
+	if r.callbacks.OnToolsChanged != nil {
+		r.callbacks.OnToolsChanged(serverName, tools)
+	}
+}
+
+// handleCommandNotification handles notifications/prompts/list_changed.
+func (r *Registry) handleCommandNotification(serverName string) {
+	r.mu.RLock()
+	conn, ok := r.connections[serverName]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	cs, ok := conn.(*ConnectedServer)
+	if !ok {
+		return
+	}
+	commands, err := OnCommandsChanged(r.ctx, cs, r.commandCache)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	r.rebuildAggregatesLocked()
+	r.mu.Unlock()
+	if r.callbacks.OnCommandsChanged != nil {
+		r.callbacks.OnCommandsChanged(serverName, commands)
 	}
 }

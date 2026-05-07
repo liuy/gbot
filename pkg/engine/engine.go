@@ -21,6 +21,7 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
 	"github.com/liuy/gbot/pkg/types"
@@ -1558,6 +1559,20 @@ func (e *Engine) refreshTools() {
 	// Merge MCP tools from registry into the tool map.
 	for _, t := range e.MCPTools() {
 		e.tools[t.Name()] = t
+	}
+
+	// Register MCP resource tools only when at least one server supports resources.
+	// Source: client.ts:2171-2198 — conditional tool injection.
+	// gbot unifies into one path — refreshTools rebuilds from scratch each call.
+	if e.mcpRegistry != nil && e.mcpRegistry.HasResourceSupport() {
+		// Name-collision guard: don't register if an MCP server already provides these tools.
+		// Source: client.ts:2183-2190 — toolMatchesName check
+		if _, exists := e.tools["ListMcpResourcesTool"]; !exists {
+			e.tools["ListMcpResourcesTool"] = mcpresource.NewListMcpResourcesTool(e.mcpRegistry)
+		}
+		if _, exists := e.tools["ReadMcpResourceTool"]; !exists {
+			e.tools["ReadMcpResourceTool"] = mcpresource.NewReadMcpResourceTool(e.mcpRegistry)
+		}
 	}
 
 	// Register ToolSearch when deferred tool count meets activation threshold.
