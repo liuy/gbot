@@ -68,7 +68,7 @@ func (t *MCPTool) RenderResult(data any) string {
 
 // Call routes the tool invocation through MCP.
 // Source: client.ts:3029-3245 — callMCPTool
-func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	// Get connection from registry
 	conn, ok := t.registry.GetConnection(t.info.ServerName)
 	if !ok {
@@ -87,11 +87,25 @@ func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, _ *tool.ToolU
 		}
 	}
 
+	// Build OnProgress closure if tctx provides one.
+	// Routes MCP progress notifications → engine's EventToolOutputDelta → TUI update.
+	var onProgress func(mcp.MCPProgress)
+	if tctx != nil && tctx.OnProgress != nil {
+		onProgress = func(p mcp.MCPProgress) {
+			msg := mcp.FormatMCPProgress(p)
+			if msg == "" {
+				return // skip empty progress updates
+			}
+			tctx.OnProgress(tool.ProgressUpdate{Lines: []string{msg}})
+		}
+	}
+
 	// Call through MCP protocol
 	result, err := mcp.CallMCPTool(ctx, mcp.CallMCPToolParams{
-		Server:   cs,
-		ToolName: t.info.OriginalName,
-		Args:     args,
+		Server:     cs,
+		ToolName:   t.info.OriginalName,
+		Args:       args,
+		OnProgress: onProgress,
 	})
 	if err != nil {
 		return nil, err

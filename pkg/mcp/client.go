@@ -235,6 +235,18 @@ func (cm *ClientManager) connectInner(ctx context.Context, name string, serverRe
 		},
 		// Source: client.ts:1191-1197 — ElicitationHandler (default cancel when no UI)
 		ElicitationHandler: cm.makeElicitationHandler(name),
+		// Progress notification handler — routes to per-call callbacks via token registry.
+		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
+			token, ok := req.Params.ProgressToken.(string)
+			if !ok {
+				return
+			}
+			dispatchProgress(token, MCPProgress{
+				Progress:        req.Params.Progress,
+				Total:           req.Params.Total,
+				ProgressMessage: req.Params.Message,
+			})
+		},
 	}
 
 	// Source: sampling — CreateMessageHandler (only when provider is set)

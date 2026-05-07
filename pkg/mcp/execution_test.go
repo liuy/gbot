@@ -13,6 +13,7 @@ import (
 	"image/png"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1870,5 +1871,257 @@ func TestTransformResultContent_ImageResizeErrorFallback(t *testing.T) {
 	expected := base64.StdEncoding.EncodeToString([]byte("not-a-real-image"))
 	if results[0].RawData != expected {
 		t.Error("fallback should use original data")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatMCPProgress
+// ---------------------------------------------------------------------------
+
+func TestFormatMCPProgress(t *testing.T) {
+	tests := []struct {
+		name string
+		p    MCPProgress
+		want string
+	}{
+		{
+			name: "message and total",
+			p:    MCPProgress{ProgressMessage: "processing", Progress: 3, Total: 5},
+			want: "processing (3/5)",
+		},
+		{
+			name: "message only",
+			p:    MCPProgress{ProgressMessage: "working..."},
+			want: "working...",
+		},
+		{
+			name: "total only",
+			p:    MCPProgress{Progress: 7, Total: 10},
+			want: "7/10",
+		},
+		{
+			name: "empty",
+			p:    MCPProgress{},
+			want: "",
+		},
+		{
+			name: "progress without total or message",
+			p:    MCPProgress{Progress: 42},
+			want: "",
+		},
+		{
+			name: "message with zero progress and total",
+			p:    MCPProgress{ProgressMessage: "starting", Progress: 0, Total: 0},
+			want: "starting",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatMCPProgress(tt.p)
+			if got != tt.want {
+				t.Errorf("FormatMCPProgress() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Progress token registry
+// ---------------------------------------------------------------------------
+
+func TestDispatchProgress_NotFound(t *testing.T) {
+	// Dispatching with a non-existent token should return false, not panic
+	found := dispatchProgress("nonexistent-token", MCPProgress{Progress: 1})
+	if found {
+		t.Error("expected false for non-existent token")
+	}
+}
+
+func TestRegisterUnregisterProgress(t *testing.T) {
+	token := "test-token-123"
+	called := false
+	cb := func(p MCPProgress) { called = true }
+
+	registerProgress(token, cb)
+
+	// Should dispatch to the callback
+	found := dispatchProgress(token, MCPProgress{Progress: 1})
+	if !found {
+		t.Fatal("expected to find registered token")
+	}
+	if !called {
+		t.Error("expected callback to be called")
+	}
+
+	unregisterProgress(token)
+
+	// After unregister, should not find the token
+	called = false
+	found = dispatchProgress(token, MCPProgress{Progress: 2})
+	if found {
+		t.Error("expected token to be unregistered")
+	}
+	if called {
+		t.Error("expected callback NOT to be called after unregister")
+	}
+}
+
+func TestDispatchProgress_MultipleTokens(t *testing.T) {
+	var calls []string
+	registerProgress("token-1", func(p MCPProgress) { calls = append(calls, "token-1:"+p.ProgressMessage) })
+	registerProgress("token-2", func(p MCPProgress) { calls = append(calls, "token-2:"+p.ProgressMessage) })
+	defer unregisterProgress("token-1")
+	defer unregisterProgress("token-2")
+
+	dispatchProgress("token-1", MCPProgress{ProgressMessage: "hello"})
+	dispatchProgress("token-2", MCPProgress{ProgressMessage: "world"})
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0] != "token-1:hello" {
+		t.Errorf("first call = %q, want %q", calls[0], "token-1:hello")
+	}
+	if calls[1] != "token-2:world" {
+		t.Errorf("second call = %q, want %q", calls[1], "token-2:world")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallMCPTool — end-to-end progress notification test
+// ---------------------------------------------------------------------------
+
+func TestCallMCPTool_ProgressNotifications(t *testing.T) {
+	server, t2 := setupInMemoryServer(t)
+
+	// Tool that sends progress notifications
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "progress_tool",
+		Description: "Sends progress",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		if token := req.Params.GetProgressToken(); token != nil {
+			for i := range 3 {
+				_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+					ProgressToken: token,
+					Progress:      float64(i + 1),
+					Total:         3,
+					Message:       fmt.Sprintf("step %d", i+1),
+				})
+			}
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
+		}, nil, nil
+	})
+
+	// Create client with ProgressNotificationHandler (same as connectInner)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(ctx context.Context, req *mcp.ProgressNotificationClientRequest) {
+			token, ok := req.Params.ProgressToken.(string)
+			if !ok {
+				return
+			}
+			dispatchProgress(token, MCPProgress{
+				Progress:        req.Params.Progress,
+				Total:           req.Params.Total,
+				ProgressMessage: req.Params.Message,
+			})
+		},
+	})
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	conn := &ConnectedServer{
+		Name:    "test-server",
+		Session: session,
+		Config:  ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
+	}
+
+	// Track progress callbacks — mutex protects concurrent access from SDK reader goroutine
+	var mu sync.Mutex
+	var progressCalls []string
+	result, err := CallMCPTool(context.Background(), CallMCPToolParams{
+		Server:   conn,
+		ToolName: "progress_tool",
+		Args:     map[string]any{},
+		OnProgress: func(p MCPProgress) {
+			msg := FormatMCPProgress(p)
+			mu.Lock()
+			progressCalls = append(progressCalls, msg)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallMCPTool: %v", err)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(result.Content))
+	}
+
+	// Verify progress notifications were received
+	mu.Lock()
+	calls := make([]string, len(progressCalls))
+	copy(calls, progressCalls)
+	mu.Unlock()
+
+	if len(calls) == 0 {
+		t.Fatal("expected progress notifications to be received")
+	}
+	if len(calls) != 3 {
+		t.Errorf("expected 3 progress calls, got %d: %v", len(calls), calls)
+	}
+	if calls[0] != "step 1 (1/3)" {
+		t.Errorf("first progress = %q, want %q", calls[0], "step 1 (1/3)")
+	}
+	if calls[2] != "step 3 (3/3)" {
+		t.Errorf("third progress = %q, want %q", calls[2], "step 3 (3/3)")
+	}
+}
+
+func TestCallMCPTool_NoProgressWithoutCallback(t *testing.T) {
+	server, t2 := setupInMemoryServer(t)
+
+	toolCalled := false
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "no_progress_tool",
+		Description: "No progress",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		toolCalled = true
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
+		}, nil, nil
+	})
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	conn := &ConnectedServer{
+		Name:    "test-server",
+		Session: session,
+		Config:  ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
+	}
+
+	// Call without OnProgress — should work fine, no token registered
+	result, err := CallMCPTool(context.Background(), CallMCPToolParams{
+		Server:   conn,
+		ToolName: "no_progress_tool",
+		Args:     map[string]any{},
+		// OnProgress is nil — no progress token should be set
+	})
+	if err != nil {
+		t.Fatalf("CallMCPTool: %v", err)
+	}
+	if !toolCalled {
+		t.Error("expected tool to be called")
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content, got %d", len(result.Content))
 	}
 }

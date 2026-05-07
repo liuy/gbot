@@ -573,3 +573,74 @@ func TestMCPTool_Call_NotConnectedServer(t *testing.T) {
 		t.Errorf("error should mention not connected, got: %v", err)
 	}
 }
+
+func TestMCPTool_Call_NilToolUseContext(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	// nil tctx should work — OnProgress is nil, no progress token registered
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"text":"hello"}`), nil)
+	if err != nil {
+		t.Fatalf("Call with nil tctx failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	text, ok := result.Data.(string)
+	if !ok {
+		t.Fatalf("expected string data, got %T", result.Data)
+	}
+	if text != "hello" {
+		t.Errorf("result = %q, want %q", text, "hello")
+	}
+}
+
+func TestMCPTool_Call_WithToolUseContext_NoProgress(t *testing.T) {
+	cs := setupInMemoryEchoServer(t)
+
+	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
+	defer registry.Close()
+	registry.SetConnectionForTest("test-srv", cs)
+
+	tl := NewMCPTool(mcp.DiscoveredTool{
+		Name:         "mcp__test-srv__echo",
+		OriginalName: "echo",
+		ServerName:   "test-srv",
+	}, registry)
+
+	// tctx with OnProgress set, but the echo tool doesn't send progress
+	progressCalled := false
+	tctx := &tool.ToolUseContext{
+		OnProgress: func(u tool.ProgressUpdate) {
+			progressCalled = true
+		},
+	}
+
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"text":"hello"}`), tctx)
+	if err != nil {
+		t.Fatalf("Call failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	text, ok := result.Data.(string)
+	if !ok {
+		t.Fatalf("expected string data, got %T", result.Data)
+	}
+	if text != "hello" {
+		t.Errorf("result = %q, want %q", text, "hello")
+	}
+	// Echo tool doesn't send progress, so OnProgress should not be called
+	if progressCalled {
+		t.Error("OnProgress should not be called for a tool that doesn't send progress")
+	}
+}

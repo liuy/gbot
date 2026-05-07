@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -749,11 +750,11 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// Tools that support streaming (e.g., Bash) use tctx.OnProgress to emit
 	// EventToolOutputDelta events during execution. Non-streaming tools ignore it.
 	// Source: StreamingToolExecutor.ts:320-382 — runToolUse generator.
-	var lastDisplayOutput string
+	var lastDisplayOutput atomic.Pointer[string]
 	toolCtx.OnProgress = func(u tool.ProgressUpdate) {
 		if len(u.Lines) > 0 {
 			display := strings.Join(u.Lines, "\n")
-			lastDisplayOutput = display
+			lastDisplayOutput.Store(&display)
 			e.doEmit(types.QueryEvent{
 				Type: types.EventToolOutputDelta,
 				ToolResult: &types.ToolResultEvent{
@@ -784,8 +785,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
 	outputJSON = pr.Output
 	displayOutput := t.RenderResult(result.Data)
-	if displayOutput == "" && lastDisplayOutput != "" {
-		displayOutput = lastDisplayOutput
+	if displayOutput == "" {
+		if p := lastDisplayOutput.Load(); p != nil && *p != "" {
+			displayOutput = *p
+		}
 	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,

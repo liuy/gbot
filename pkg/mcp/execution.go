@@ -6,18 +6,24 @@
 package mcp
 
 import (
-	"context"
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,10 +32,6 @@ import (
 	"golang.org/x/image/draw"
 	// gif, jpeg, png registered by image.Decode; webp needs explicit import
 	_ "golang.org/x/image/webp"
-
-	"image"
-	"image/jpeg"
-	"image/png"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,60 @@ type MCPProgress struct {
 	Progress        float64
 	Total           float64
 	ProgressMessage string
+}
+
+// ---------------------------------------------------------------------------
+// Progress token registry — routes SDK client-level notifications to per-call callbacks
+// Source: Go SDK has client-level ProgressNotificationHandler, not per-call like TS.
+// We use sync.Map to map progressToken → callback, bridging the gap.
+// ---------------------------------------------------------------------------
+
+// progressRegistry maps progress token (string) → func(MCPProgress).
+// Tokens are registered before CallTool and unregistered after return.
+var progressRegistry sync.Map
+
+func registerProgress(token string, cb func(MCPProgress)) {
+	progressRegistry.Store(token, cb)
+}
+
+func unregisterProgress(token string) {
+	progressRegistry.Delete(token)
+}
+
+// dispatchProgress looks up a progress token and calls the registered callback.
+// Returns false if the token is not found (e.g., already unregistered after CallTool returned).
+func dispatchProgress(tokenStr string, p MCPProgress) bool {
+	v, ok := progressRegistry.Load(tokenStr)
+	if !ok {
+		return false
+	}
+	cb, ok := v.(func(MCPProgress))
+	if !ok {
+		// Defensive: corrupted registry entry — clean up
+		slog.Error("mcp: invalid progress callback type in registry", "token", tokenStr)
+		progressRegistry.Delete(tokenStr)
+		return false
+	}
+	cb(p)
+	return true
+}
+
+// formatMCPProgress formats an MCPProgress into a human-readable string.
+// Returns empty string if there's nothing to display (caller should skip the update).
+func FormatMCPProgress(p MCPProgress) string {
+	hasMsg := p.ProgressMessage != ""
+	hasTotal := p.Total > 0
+
+	switch {
+	case hasMsg && hasTotal:
+		return fmt.Sprintf("%s (%.0f/%.0f)", p.ProgressMessage, p.Progress, p.Total)
+	case hasMsg:
+		return p.ProgressMessage
+	case hasTotal:
+		return fmt.Sprintf("%.0f/%.0f", p.Progress, p.Total)
+	default:
+		return ""
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -118,9 +174,20 @@ func CallMCPTool(ctx context.Context, params CallMCPToolParams) (*MCPToolCallRes
 		Meta:      params.Meta,
 	}
 
-	// Note: Go SDK handles progress at the Client level via
-	// ProgressNotificationHandler, not per-call. The OnProgress
-	// callback is preserved in the params for future wiring.
+	// Register progress token if OnProgress callback is provided.
+	// Go SDK handles progress at the Client level via ProgressNotificationHandler,
+	// so we use a sync.Map registry to route notifications to the correct callback.
+	if params.OnProgress != nil {
+		tokenBytes := make([]byte, 16)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return nil, fmt.Errorf("mcp: failed to generate progress token: %w", err)
+		}
+		token := hex.EncodeToString(tokenBytes)
+		registerProgress(token, params.OnProgress)
+		defer unregisterProgress(token)
+		callParams.SetProgressToken(token)
+	}
+
 	result, err := params.Server.Session.CallTool(ctx, callParams)
 	if err != nil {
 		// Source: client.ts:3196-3208 — auth error detection
