@@ -13,10 +13,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ListMcpResourcesTool adapter tests
+// ListMcpResources adapter tests
 // ---------------------------------------------------------------------------
 
-func TestListMcpResourcesToolAdapter_Call(t *testing.T) {
+func TestListMcpResourcesAdapter_Call(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("server-a", &gbotmcp.ConnectedServer{
 		Name:    "server-a",
@@ -29,10 +29,10 @@ func TestListMcpResourcesToolAdapter_Call(t *testing.T) {
 		Config:  gbotmcp.ScopedMcpServerConfig{Config: &gbotmcp.StdioConfig{Command: "test"}, Scope: gbotmcp.ScopeUser},
 	})
 
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
-	if tt.Name() != "ListMcpResourcesTool" {
-		t.Fatalf("Name() = %q, want %q", tt.Name(), "ListMcpResourcesTool")
+	if tt.Name() != "ListMcpResources" {
+		t.Fatalf("Name() = %q, want %q", tt.Name(), "ListMcpResources")
 	}
 	if !tt.IsReadOnly(nil) {
 		t.Error("expected IsReadOnly = true")
@@ -62,7 +62,7 @@ func TestListMcpResourcesToolAdapter_Call(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesToolAdapter_FilterByServer(t *testing.T) {
+func TestListMcpResourcesAdapter_FilterByServer(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("server-a", &gbotmcp.ConnectedServer{
 		Name:    "server-a",
@@ -70,7 +70,7 @@ func TestListMcpResourcesToolAdapter_FilterByServer(t *testing.T) {
 		Config:  gbotmcp.ScopedMcpServerConfig{Config: &gbotmcp.StdioConfig{Command: "test"}, Scope: gbotmcp.ScopeUser},
 	})
 
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	// Filter to a specific server
 	input := json.RawMessage(`{"server": "server-a"}`)
@@ -85,10 +85,10 @@ func TestListMcpResourcesToolAdapter_FilterByServer(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesToolAdapter_ServerNotFound(t *testing.T) {
+func TestListMcpResourcesAdapter_ServerNotFound(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 	input := json.RawMessage(`{"server": "nonexistent"}`)
 	_, err := tt.Call(context.Background(), input, nil)
 	if err == nil {
@@ -99,9 +99,9 @@ func TestListMcpResourcesToolAdapter_ServerNotFound(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesToolAdapter_InvalidJSON(t *testing.T) {
+func TestListMcpResourcesAdapter_InvalidJSON(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	_, err := tt.Call(context.Background(), json.RawMessage(`{invalid`), nil)
 	if err == nil {
@@ -112,9 +112,9 @@ func TestListMcpResourcesToolAdapter_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesToolAdapter_EmptyInput(t *testing.T) {
+func TestListMcpResourcesAdapter_EmptyInput(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	result, err := tt.Call(context.Background(), json.RawMessage(``), nil)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestListMcpResourcesToolAdapter_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesToolAdapter_WithCachedResources(t *testing.T) {
+func TestListMcpResourcesAdapter_WithCachedResources(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("s1", &gbotmcp.ConnectedServer{
 		Name:    "s1",
@@ -140,23 +140,23 @@ func TestListMcpResourcesToolAdapter_WithCachedResources(t *testing.T) {
 		{URI: "test://1", Name: "res1", Server: "s1"},
 	})
 
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 	result, err := tt.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
 	rendered := tt.RenderResult(result.Data)
-	if !strings.Contains(rendered, `"uri"`) {
+	if !strings.Contains(rendered, "test://1") {
 		t.Errorf("should contain resource URI, got: %q", rendered)
 	}
-	if !strings.Contains(rendered, "test://1") {
-		t.Errorf("should contain cached resource, got: %q", rendered)
+	if !strings.Contains(rendered, "s1") {
+		t.Errorf("should contain server name, got: %q", rendered)
 	}
 }
 
-func TestListMcpResourcesToolAdapter_DescriptionAndPrompt(t *testing.T) {
+func TestListMcpResourcesAdapter_DescriptionAndPrompt(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	desc, err := tt.Description(nil)
 	if err != nil {
@@ -173,10 +173,10 @@ func TestListMcpResourcesToolAdapter_DescriptionAndPrompt(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ReadMcpResourceTool adapter tests
+// ReadMcpResource adapter tests
 // ---------------------------------------------------------------------------
 
-func TestReadMcpResourceToolAdapter_Call(t *testing.T) {
+func TestReadMcpResourceAdapter_Call(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("s1", &gbotmcp.ConnectedServer{
 		Name:         "s1",
@@ -185,10 +185,10 @@ func TestReadMcpResourceToolAdapter_Call(t *testing.T) {
 		Capabilities: nil,
 	})
 
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
-	if tt.Name() != "ReadMcpResourceTool" {
-		t.Fatalf("Name() = %q, want %q", tt.Name(), "ReadMcpResourceTool")
+	if tt.Name() != "ReadMcpResource" {
+		t.Fatalf("Name() = %q, want %q", tt.Name(), "ReadMcpResource")
 	}
 	if !tt.IsReadOnly(nil) {
 		t.Error("expected IsReadOnly = true")
@@ -204,9 +204,9 @@ func TestReadMcpResourceToolAdapter_Call(t *testing.T) {
 	}
 }
 
-func TestReadMcpResourceToolAdapter_MissingRequiredParams(t *testing.T) {
+func TestReadMcpResourceAdapter_MissingRequiredParams(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	// Missing server
 	_, err := tt.Call(context.Background(), json.RawMessage(`{"uri": "test://x"}`), nil)
@@ -245,9 +245,9 @@ func TestReadMcpResourceToolAdapter_MissingRequiredParams(t *testing.T) {
 	}
 }
 
-func TestReadMcpResourceToolAdapter_ServerNotFound(t *testing.T) {
+func TestReadMcpResourceAdapter_ServerNotFound(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	input := json.RawMessage(`{"server": "nonexistent", "uri": "test://x"}`)
 	_, err := tt.Call(context.Background(), input, nil)
@@ -259,9 +259,9 @@ func TestReadMcpResourceToolAdapter_ServerNotFound(t *testing.T) {
 	}
 }
 
-func TestReadMcpResourceToolAdapter_DescriptionAndSchema(t *testing.T) {
+func TestReadMcpResourceAdapter_DescriptionAndSchema(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	desc, err := tt.Description(nil)
 	if err != nil {
@@ -307,7 +307,7 @@ func TestReadMcpResourceToolAdapter_DescriptionAndSchema(t *testing.T) {
 
 func TestRenderResourceResult_EmptyListMessage(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	// Call with no connections → empty resources
 	result, err := tt.Call(context.Background(), json.RawMessage(`{}`), nil)
@@ -333,19 +333,22 @@ func TestRenderResourceResult_NonEmptyResources(t *testing.T) {
 		{URI: "test://1", Name: "res1", Server: "s1"},
 	})
 
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 	result, err := tt.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
 
 	rendered := tt.RenderResult(result.Data)
-	// Should be pretty-printed JSON
+	// Should be human-readable format with server name and URI
 	if !strings.Contains(rendered, "test://1") {
 		t.Errorf("should contain resource URI, got: %q", rendered)
 	}
-	if !strings.HasPrefix(rendered, "[") {
-		t.Errorf("should start with '[', got: %q", rendered[:1])
+	if !strings.Contains(rendered, "s1") {
+		t.Errorf("should contain server name, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "1 resources") {
+		t.Errorf("should contain resource count, got: %q", rendered)
 	}
 }
 
@@ -353,9 +356,9 @@ func TestRenderResourceResult_NonEmptyResources(t *testing.T) {
 // renderResourceResult branch coverage
 // ---------------------------------------------------------------------------
 
-func TestRenderResourceResult_NilData_ReadMcpResourceTool(t *testing.T) {
+func TestRenderResourceResult_NilData_ReadMcpResource(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	// RenderResult with nil data — exercises !isEmptyFriendly nil branch
 	result := tt.RenderResult(nil)
@@ -366,7 +369,7 @@ func TestRenderResourceResult_NilData_ReadMcpResourceTool(t *testing.T) {
 
 func TestRenderResourceResult_EmptyResourceContentSlice(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	// RenderResult with empty []ResourceContent — exercises "[]" branch
 	result := tt.RenderResult([]gbotmcp.ResourceContent{})
@@ -377,7 +380,7 @@ func TestRenderResourceResult_EmptyResourceContentSlice(t *testing.T) {
 
 func TestRenderResourceResult_ResourceContentWithData(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	contents := []gbotmcp.ResourceContent{
 		{URI: "test://1", MimeType: "text/plain", Text: "hello"},
@@ -391,13 +394,13 @@ func TestRenderResourceResult_ResourceContentWithData(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesTool_FormatWireResult(t *testing.T) {
+func TestListMcpResources_FormatWireResult(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	wf, ok := tt.(tool.ToolWithWireFormat)
 	if !ok {
-		t.Fatal("ListMcpResourcesTool should implement ToolWithWireFormat")
+		t.Fatal("ListMcpResources should implement ToolWithWireFormat")
 	}
 
 	// nil data with isEmptyFriendly → friendly message
@@ -423,10 +426,10 @@ func TestListMcpResourcesTool_FormatWireResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ReadMcpResourceTool successful call through adapter (covers success path)
+// ReadMcpResource successful call through adapter (covers success path)
 // ---------------------------------------------------------------------------
 
-func TestReadMcpResourceToolAdapter_SuccessfulCall(t *testing.T) {
+func TestReadMcpResourceAdapter_SuccessfulCall(t *testing.T) {
 	t1, t2 := mcp.NewInMemoryTransports()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
 	go func() {
@@ -462,7 +465,7 @@ func TestReadMcpResourceToolAdapter_SuccessfulCall(t *testing.T) {
 		},
 	})
 
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 	input := json.RawMessage(`{"server": "test-server", "uri": "test://hello"}`)
 	result, err := tt.Call(context.Background(), input, nil)
 	if err != nil {
@@ -487,7 +490,7 @@ func TestReadMcpResourceToolAdapter_SuccessfulCall(t *testing.T) {
 
 func TestRenderResourceResult_CompactJSONFallback(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	result := tt.RenderResult(make(chan int))
 	if result != "" {
@@ -499,9 +502,9 @@ func TestRenderResourceResult_CompactJSONFallback(t *testing.T) {
 // Additional property coverage for both tools
 // ---------------------------------------------------------------------------
 
-func TestReadMcpResourceTool_AllProperties(t *testing.T) {
+func TestReadMcpResource_AllProperties(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewReadMcpResourceTool(reg)
+	tt := NewReadMcpResource(reg)
 
 	// Exercise all property lambdas
 	desc, err := tt.Description(nil)
@@ -544,9 +547,9 @@ func TestReadMcpResourceTool_AllProperties(t *testing.T) {
 	}
 }
 
-func TestListMcpResourcesTool_AllProperties(t *testing.T) {
+func TestListMcpResources_AllProperties(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
-	tt := NewListMcpResourcesTool(reg)
+	tt := NewListMcpResources(reg)
 
 	// Exercise all property lambdas
 	desc, err := tt.Description(nil)

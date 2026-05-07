@@ -86,7 +86,7 @@ func FilterToolsForRequest(
 	tools map[string]tool.Tool,
 	state *toolSearchState,
 	toolOrder []string,
-) (activeTools []tool.Tool, deferredNames []string, activated bool) {
+) (activeTools []tool.Tool, deferredTools []tool.Tool, activated bool) {
 	// Step 1: Count deferred tools.
 	deferredCount := 0
 	for _, t := range tools {
@@ -124,35 +124,46 @@ func FilterToolsForRequest(
 			// ToolSearch itself is always active (even though it may be in the map).
 			activeTools = append(activeTools, t)
 		} else {
-			// Undiscovered deferred tools — list by name for announcement.
-			deferredNames = append(deferredNames, name)
+			// Undiscovered deferred tools — include full tool for announcement with hints.
+			deferredTools = append(deferredTools, t)
 		}
 	}
 
-	return activeTools, deferredNames, true
+	return activeTools, deferredTools, true
 }
 
 // DeferredToolsAnnouncement generates a synthetic user message prefix
-// listing deferred tool names. This informs the model which tools are
+// listing deferred tools with their search hints. This informs the model which tools are
 // available but need to be loaded via ToolSearch.
 // Source: tools/ToolSearchTool/prompt.ts — formatDeferredToolLine
 //
 // Format:
 //
 //	<available-deferred-tools>
-//	tool_name_1
-//	tool_name_2
+//	tool_name_1: short description
+//	tool_name_2: short description
 //	...
 //	</available-deferred-tools>
-func DeferredToolsAnnouncement(names []string) string {
-	if len(names) == 0 {
+func DeferredToolsAnnouncement(deferred []tool.Tool) string {
+	if len(deferred) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("<available-deferred-tools>\n")
-	for _, name := range names {
-		sb.WriteString(name)
-		sb.WriteByte('\n')
+	for _, t := range deferred {
+		hint := tool.SearchHint(t)
+		if hint == "" {
+			// Fallback to Description when no SearchHint is available.
+			if desc, err := t.Description(nil); err == nil && desc != "" {
+				hint = desc
+			}
+		}
+		if hint != "" {
+			fmt.Fprintf(&sb, "%s: %s\n", t.Name(), hint)
+		} else {
+			sb.WriteString(t.Name())
+			sb.WriteByte('\n')
+		}
 	}
 	sb.WriteString("</available-deferred-tools>")
 	return sb.String()

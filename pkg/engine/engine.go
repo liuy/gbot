@@ -813,9 +813,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 	var activeTools []tool.Tool
 
 	if toolSearchActive {
-		var deferredNames []string
-		activeTools, deferredNames, _ = FilterToolsForRequest(e.tools, e.toolSearch, e.toolOrder)
-		deferredAnnouncement = DeferredToolsAnnouncement(deferredNames)
+		var deferredTools []tool.Tool
+		activeTools, deferredTools, _ = FilterToolsForRequest(e.tools, e.toolSearch, e.toolOrder)
+		deferredAnnouncement = DeferredToolsAnnouncement(deferredTools)
 	}
 
 	// Build tool definitions for API (filtered if ToolSearch is active).
@@ -1567,11 +1567,11 @@ func (e *Engine) refreshTools() {
 	if e.mcpRegistry != nil && e.mcpRegistry.HasResourceSupport() {
 		// Name-collision guard: don't register if an MCP server already provides these tools.
 		// Source: client.ts:2183-2190 — toolMatchesName check
-		if _, exists := e.tools["ListMcpResourcesTool"]; !exists {
-			e.tools["ListMcpResourcesTool"] = mcpresource.NewListMcpResourcesTool(e.mcpRegistry)
+		if _, exists := e.tools["ListMcpResources"]; !exists {
+			e.tools["ListMcpResources"] = mcpresource.NewListMcpResources(e.mcpRegistry)
 		}
-		if _, exists := e.tools["ReadMcpResourceTool"]; !exists {
-			e.tools["ReadMcpResourceTool"] = mcpresource.NewReadMcpResourceTool(e.mcpRegistry)
+		if _, exists := e.tools["ReadMcpResource"]; !exists {
+			e.tools["ReadMcpResource"] = mcpresource.NewReadMcpResource(e.mcpRegistry)
 		}
 	}
 

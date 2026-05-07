@@ -114,7 +114,7 @@ func TestResourceTools_ColdStart_NoRegistry(t *testing.T) {
 
 	tools := eng.Tools()
 	for name := range tools {
-		if name == "ListMcpResourcesTool" || name == "ReadMcpResourceTool" {
+		if name == "ListMcpResources" || name == "ReadMcpResource" {
 			t.Errorf("resource tools should NOT be registered without registry, found %q", name)
 		}
 	}
@@ -138,7 +138,7 @@ func TestResourceTools_ColdStart_NoResourceSupport(t *testing.T) {
 
 	tools := eng.Tools()
 	for name := range tools {
-		if name == "ListMcpResourcesTool" || name == "ReadMcpResourceTool" {
+		if name == "ListMcpResources" || name == "ReadMcpResource" {
 			t.Errorf("resource tools should NOT be registered without resource support, found %q", name)
 		}
 	}
@@ -156,24 +156,24 @@ func TestResourceTools_HotPath_ListAndReadResources(t *testing.T) {
 	tools := eng.Tools()
 	var listTool, readTool tool.Tool
 	for name, t := range tools {
-		if name == "ListMcpResourcesTool" {
+		if name == "ListMcpResources" {
 			listTool = t
 		}
-		if name == "ReadMcpResourceTool" {
+		if name == "ReadMcpResource" {
 			readTool = t
 		}
 	}
 	if listTool == nil {
-		t.Fatal("ListMcpResourcesTool not registered")
+		t.Fatal("ListMcpResources not registered")
 	}
 	if readTool == nil {
-		t.Fatal("ReadMcpResourceTool not registered")
+		t.Fatal("ReadMcpResource not registered")
 	}
 
 	// Chain step 1: List resources with server filter → verify the real MCP server responds
 	listResult, err := listTool.Call(context.Background(), json.RawMessage(`{"server": "resource-server"}`), nil)
 	if err != nil {
-		t.Fatalf("ListMcpResourcesTool.Call error: %v", err)
+		t.Fatalf("ListMcpResources.Call error: %v", err)
 	}
 	rendered := listTool.RenderResult(listResult.Data)
 	if !strings.Contains(rendered, "test://hello") {
@@ -187,7 +187,7 @@ func TestResourceTools_HotPath_ListAndReadResources(t *testing.T) {
 	readInput := json.RawMessage(`{"server": "resource-server", "uri": "test://hello"}`)
 	readResult, err := readTool.Call(context.Background(), readInput, nil)
 	if err != nil {
-		t.Fatalf("ReadMcpResourceTool.Call error: %v", err)
+		t.Fatalf("ReadMcpResource.Call error: %v", err)
 	}
 	readRendered := readTool.RenderResult(readResult.Data)
 	if !strings.Contains(readRendered, "Hello from MCP!") {
@@ -209,13 +209,13 @@ func TestResourceTools_IdempotentListResources(t *testing.T) {
 
 	var listTool tool.Tool
 	for name, t := range eng.Tools() {
-		if name == "ListMcpResourcesTool" {
+		if name == "ListMcpResources" {
 			listTool = t
 			break
 		}
 	}
 	if listTool == nil {
-		t.Fatal("ListMcpResourcesTool not found")
+		t.Fatal("ListMcpResources not found")
 	}
 
 	// First call — cache miss, fetches from server
@@ -248,8 +248,8 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 
 	// Phase 1: No resource support → no tools
 	eng.refreshTools()
-	if toolExists(eng, "ListMcpResourcesTool") {
-		t.Error("should not have ListMcpResourcesTool initially")
+	if toolExists(eng, "ListMcpResources") {
+		t.Error("should not have ListMcpResources initially")
 	}
 
 	// Phase 2: Add a server with resource support
@@ -277,11 +277,11 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 
 	// Refresh → tools should appear
 	eng.refreshTools()
-	if !toolExists(eng, "ListMcpResourcesTool") {
-		t.Error("should have ListMcpResourcesTool after adding resource server")
+	if !toolExists(eng, "ListMcpResources") {
+		t.Error("should have ListMcpResources after adding resource server")
 	}
-	if !toolExists(eng, "ReadMcpResourceTool") {
-		t.Error("should have ReadMcpResourceTool after adding resource server")
+	if !toolExists(eng, "ReadMcpResource") {
+		t.Error("should have ReadMcpResource after adding resource server")
 	}
 }
 
@@ -294,7 +294,7 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 
 	// Pre-register a tool with the same name using BuildTool
 	collisionTool := tool.BuildTool(tool.ToolDef{
-		Name_:        "ListMcpResourcesTool",
+		Name_:        "ListMcpResources",
 		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(json.RawMessage) (string, error) { return "", nil },
@@ -305,7 +305,7 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 		Model:    "test",
 		ToolsProvider: func() map[string]tool.Tool {
 			return map[string]tool.Tool{
-				"ListMcpResourcesTool": collisionTool,
+				"ListMcpResources": collisionTool,
 			}
 		},
 		MCPRegistry: reg,
@@ -315,9 +315,9 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 
 	// The original tool should NOT be overwritten
 	found := eng.Tools()
-	tt := findToolByName(found, "ListMcpResourcesTool")
+	tt := findToolByName(found, "ListMcpResources")
 	if tt == nil {
-		t.Fatal("ListMcpResourcesTool should exist")
+		t.Fatal("ListMcpResources should exist")
 	}
 	// Our collision tool has empty description, MCP resource tool has non-empty
 	desc, _ := tt.Description(nil)
@@ -325,9 +325,9 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 		t.Error("collision tool should have empty description, but got non-empty — tool was overwritten!")
 	}
 
-	// ReadMcpResourceTool should still be registered (no collision)
-	if !toolExists(eng, "ReadMcpResourceTool") {
-		t.Error("ReadMcpResourceTool should still be registered when only ListMcpResourcesTool collides")
+	// ReadMcpResource should still be registered (no collision)
+	if !toolExists(eng, "ReadMcpResource") {
+		t.Error("ReadMcpResource should still be registered when only ListMcpResources collides")
 	}
 }
 
@@ -342,13 +342,13 @@ func TestResourceTools_BinaryResourcePersisted(t *testing.T) {
 
 	var readTool tool.Tool
 	for name, t := range eng.Tools() {
-		if name == "ReadMcpResourceTool" {
+		if name == "ReadMcpResource" {
 			readTool = t
 			break
 		}
 	}
 	if readTool == nil {
-		t.Fatal("ReadMcpResourceTool not found")
+		t.Fatal("ReadMcpResource not found")
 	}
 
 	input := json.RawMessage(`{"server": "resource-server", "uri": "test://data.bin"}`)

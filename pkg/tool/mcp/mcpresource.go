@@ -1,14 +1,16 @@
 // Package mcp provides tool.Tool adapters for MCP resource operations
-// (ListMcpResourcesTool and ReadMcpResourceTool).
+// (ListMcpResources and ReadMcpResource).
 //
-// Source: src/tools/ListMcpResourcesTool/ListMcpResourcesTool.ts (123 lines)
-// Source: src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts (158 lines)
+// Source: src/tools/ListMcpResources/ListMcpResources.ts (123 lines)
+// Source: src/tools/ReadMcpResource/ReadMcpResource.ts (158 lines)
 package mcp
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	gbotmcp "github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
@@ -16,7 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ListMcpResourcesTool — Source: ListMcpResourcesTool.ts:40-123
+// ListMcpResources — Source: ListMcpResources.ts:40-123
 // ---------------------------------------------------------------------------
 
 const listMcpResourcesDescription = "List available resources from configured MCP servers"
@@ -31,10 +33,10 @@ var listMcpResourcesInputSchema = json.RawMessage(`{
   }
 }`)
 
-// NewListMcpResourcesTool creates the ListMcpResourcesTool adapter.
-func NewListMcpResourcesTool(reg *gbotmcp.Registry) tool.Tool {
+// NewListMcpResources creates the ListMcpResources adapter.
+func NewListMcpResources(reg *gbotmcp.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "ListMcpResourcesTool",
+		Name_:        "ListMcpResources",
 		Aliases_:     []string{},
 		InputSchema_: func() json.RawMessage { return listMcpResourcesInputSchema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -74,10 +76,10 @@ func NewListMcpResourcesTool(reg *gbotmcp.Registry) tool.Tool {
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 100_000,
 		RenderResult_: func(data any) string {
-			return renderResourceResult(data, true)
+			return renderListResourcesTUI(data)
 		},
 		FormatWireResult_: func(data any) string {
-			return renderResourceResult(data, true)
+			return renderResourceResultJSON(data)
 		},
 		ShouldDefer_: true,
 		SearchHint_:  "list resources from connected MCP servers",
@@ -85,7 +87,7 @@ func NewListMcpResourcesTool(reg *gbotmcp.Registry) tool.Tool {
 }
 
 // ---------------------------------------------------------------------------
-// ReadMcpResourceTool — Source: ReadMcpResourceTool.ts:49-158
+// ReadMcpResource — Source: ReadMcpResource.ts:49-158
 // ---------------------------------------------------------------------------
 
 const readMcpResourceDescription = "Read a resource from an MCP server"
@@ -105,10 +107,10 @@ var readMcpResourceInputSchema = json.RawMessage(`{
   "required": ["server", "uri"]
 }`)
 
-// NewReadMcpResourceTool creates the ReadMcpResourceTool adapter.
-func NewReadMcpResourceTool(reg *gbotmcp.Registry) tool.Tool {
+// NewReadMcpResource creates the ReadMcpResource adapter.
+func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        "ReadMcpResourceTool",
+		Name_:        "ReadMcpResource",
 		Aliases_:     []string{},
 		InputSchema_: func() json.RawMessage { return readMcpResourceInputSchema },
 		Description_: func(input json.RawMessage) (string, error) {
@@ -159,10 +161,10 @@ func NewReadMcpResourceTool(reg *gbotmcp.Registry) tool.Tool {
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 100_000,
 		RenderResult_: func(data any) string {
-			return renderResourceResult(data, false)
+			return renderReadResourceTUI(data)
 		},
 		FormatWireResult_: func(data any) string {
-			return renderResourceResult(data, false)
+			return renderResourceResultJSON(data)
 		},
 		ShouldDefer_: true,
 		SearchHint_:  "read a specific MCP resource by URI",
@@ -174,21 +176,19 @@ func NewReadMcpResourceTool(reg *gbotmcp.Registry) tool.Tool {
 // ---------------------------------------------------------------------------
 
 // emptyResourcesMessage matches TS mapToolResultToToolResultBlockParam for empty results.
-// Source: ListMcpResourcesTool.ts:114
+// Source: ListMcpResources.ts:114
 const emptyResourcesMessage = "No resources found. MCP servers may still provide tools even if they have no resources."
 
-// renderResourceResult renders tool result data as JSON (pretty-printed).
-// For ListMcpResourcesTool with empty results, returns a friendly message instead.
-func renderResourceResult(data any, isEmptyFriendly bool) string {
+// renderResourceResultJSON renders tool result data as JSON (pretty-printed).
+// Used by FormatWireResult_ for LLM consumption.
+// For empty results, returns a friendly message instead.
+func renderResourceResultJSON(data any) string {
 	if data == nil {
-		if isEmptyFriendly {
-			return emptyResourcesMessage
-		}
-		return ""
+		return emptyResourcesMessage
 	}
 
 	// Check for empty slice
-	if slice, ok := data.([]gbotmcp.ServerResource); ok && len(slice) == 0 && isEmptyFriendly {
+	if slice, ok := data.([]gbotmcp.ServerResource); ok && len(slice) == 0 {
 		return emptyResourcesMessage
 	}
 	if slice, ok := data.([]gbotmcp.ResourceContent); ok && len(slice) == 0 {
@@ -197,8 +197,85 @@ func renderResourceResult(data any, isEmptyFriendly bool) string {
 
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		// Fallback to compact JSON
 		b, _ = json.Marshal(data)
 	}
 	return string(b)
+}
+
+// renderListResourcesTUI renders resource list for TUI display.
+// Groups resources by server, shows URI and MIME type per line.
+func renderListResourcesTUI(data any) string {
+	if data == nil {
+		return emptyResourcesMessage
+	}
+
+	resources, ok := data.([]gbotmcp.ServerResource)
+	if !ok {
+		return emptyResourcesMessage
+	}
+	if len(resources) == 0 {
+		return emptyResourcesMessage
+	}
+
+	// Group by server
+	groups := make(map[string][]gbotmcp.ServerResource)
+	servers := make([]string, 0, 4)
+	for _, r := range resources {
+		if _, exists := groups[r.Server]; !exists {
+			servers = append(servers, r.Server)
+		}
+		groups[r.Server] = append(groups[r.Server], r)
+	}
+	sort.Strings(servers)
+
+	var sb strings.Builder
+	totalCount := 0
+	for _, srv := range servers {
+		res := groups[srv]
+		totalCount += len(res)
+		fmt.Fprintf(&sb, "%s (%d resources):\n", srv, len(res))
+		for _, r := range res {
+			mime := ""
+			if r.MimeType != "" {
+				mime = " (" + r.MimeType + ")"
+			}
+			fmt.Fprintf(&sb, "  %s%s\n", r.URI, mime)
+		}
+	}
+	fmt.Fprintf(&sb, "(%d resources from %d servers)", totalCount, len(servers))
+	return sb.String()
+}
+
+// renderReadResourceTUI renders resource content for TUI display.
+// Shows header with URI and MIME type, then content text.
+func renderReadResourceTUI(data any) string {
+	if data == nil {
+		return ""
+	}
+
+	contents, ok := data.([]gbotmcp.ResourceContent)
+	if !ok {
+		return ""
+	}
+	if len(contents) == 0 {
+		return "[]"
+	}
+
+	var sb strings.Builder
+	for _, c := range contents {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		prefix := ""
+		if c.MimeType != "" {
+			prefix = " (" + c.MimeType + ")"
+		}
+		fmt.Fprintf(&sb, "[%s]%s\n", c.URI, prefix)
+		if c.Text != "" {
+			sb.WriteString(c.Text)
+		} else if c.BlobSavedTo != "" {
+			fmt.Fprintf(&sb, "(binary content saved to %s)", c.BlobSavedTo)
+		}
+	}
+	return sb.String()
 }

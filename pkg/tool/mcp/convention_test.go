@@ -34,18 +34,18 @@ func validateToolConventions(t *testing.T, name string, desc string, prompt stri
 func TestToolConventions(t *testing.T) {
 	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
 
-	listTool := NewListMcpResourcesTool(reg)
-	readTool := NewReadMcpResourceTool(reg)
+	listTool := NewListMcpResources(reg)
+	readTool := NewReadMcpResource(reg)
 
-	t.Run("ListMcpResourcesTool", func(t *testing.T) {
+	t.Run("ListMcpResources", func(t *testing.T) {
 		desc, err := listTool.Description(nil)
 		if err != nil {
 			t.Fatalf("Description_(nil) error: %v", err)
 		}
-		validateToolConventions(t, "ListMcpResourcesTool", desc, listTool.Prompt())
+		validateToolConventions(t, "ListMcpResources", desc, listTool.Prompt())
 	})
 
-	t.Run("ListMcpResourcesTool_with_input", func(t *testing.T) {
+	t.Run("ListMcpResources_with_input", func(t *testing.T) {
 		desc, err := listTool.Description(json.RawMessage(`{"server":"everything"}`))
 		if err != nil {
 			t.Fatalf("Description_ error: %v", err)
@@ -55,7 +55,7 @@ func TestToolConventions(t *testing.T) {
 		}
 	})
 
-	t.Run("ListMcpResourcesTool_empty_server", func(t *testing.T) {
+	t.Run("ListMcpResources_empty_server", func(t *testing.T) {
 		desc, err := listTool.Description(json.RawMessage(`{"server":""}`))
 		if err != nil {
 			t.Fatalf("Description_ error: %v", err)
@@ -65,15 +65,15 @@ func TestToolConventions(t *testing.T) {
 		}
 	})
 
-	t.Run("ReadMcpResourceTool_nil_input", func(t *testing.T) {
+	t.Run("ReadMcpResource_nil_input", func(t *testing.T) {
 		desc, err := readTool.Description(nil)
 		if err != nil {
 			t.Fatalf("Description_(nil) error: %v", err)
 		}
-		validateToolConventions(t, "ReadMcpResourceTool(nil)", desc, readTool.Prompt())
+		validateToolConventions(t, "ReadMcpResource(nil)", desc, readTool.Prompt())
 	})
 
-	t.Run("ReadMcpResourceTool_with_input", func(t *testing.T) {
+	t.Run("ReadMcpResource_with_input", func(t *testing.T) {
 		desc, err := readTool.Description(json.RawMessage(`{"server":"everything","uri":"test://res"}`))
 		if err != nil {
 			t.Fatalf("Description_ error: %v", err)
@@ -83,11 +83,11 @@ func TestToolConventions(t *testing.T) {
 		}
 	})
 
-	t.Run("ReadMcpResourceTool_empty_input", func(t *testing.T) {
+	t.Run("ReadMcpResource_empty_input", func(t *testing.T) {
 		desc, err := readTool.Description(json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("Description_({}) error: %v", err)
 		}
-		validateToolConventions(t, "ReadMcpResourceTool({})", desc, readTool.Prompt())
+		validateToolConventions(t, "ReadMcpResource({})", desc, readTool.Prompt())
 	})
 }

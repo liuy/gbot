@@ -297,8 +297,8 @@ func TestFilterToolsForRequest_AlwaysLoadMCPNotDeferred(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeferredToolsAnnouncement(t *testing.T) {
-	names := []string{"TaskList", "TaskUpdate", "mcp__server__tool1"}
-	result := DeferredToolsAnnouncement(names)
+	tools := []tool.Tool{deferredStubTool("TaskList"), deferredStubTool("TaskUpdate"), deferredStubTool("mcp__server__tool1")}
+	result := DeferredToolsAnnouncement(tools)
 
 	if !strings.Contains(result, "<available-deferred-tools>") {
 		t.Error("expected opening tag")
@@ -312,17 +312,48 @@ func TestDeferredToolsAnnouncement(t *testing.T) {
 	if !strings.Contains(result, "mcp__server__tool1") {
 		t.Error("expected mcp__server__tool1 in announcement")
 	}
+	// Verify hints are included
+	if !strings.Contains(result, "search hint for TaskList") {
+		t.Error("expected search hint for TaskList")
+	}
+}
+
+func TestDeferredToolsAnnouncement_MCPToolFallbackToDescription(t *testing.T) {
+	// MCP tool without SearchHint but with Description should show Description.
+	mcpNoHint := deferredMCPTool("mcp__server__fetch") // has Description but no SearchHint
+	result := DeferredToolsAnnouncement([]tool.Tool{mcpNoHint})
+
+	if !strings.Contains(result, "mcp__server__fetch:") {
+		t.Error("expected tool name with colon separator for description fallback")
+	}
+	if !strings.Contains(result, "mcp__server__fetch MCP tool") {
+		t.Errorf("expected Description as fallback, got:\n%s", result)
+	}
+}
+
+func TestDeferredToolsAnnouncement_SearchHintPreferred(t *testing.T) {
+	// When both SearchHint and Description exist, SearchHint should win.
+	builtWithHint := deferredStubTool("TaskList")
+	mcpNoHint := deferredMCPTool("mcp__server__tool1")
+	result := DeferredToolsAnnouncement([]tool.Tool{builtWithHint, mcpNoHint})
+
+	if !strings.Contains(result, "search hint for TaskList") {
+		t.Error("expected SearchHint for built-in tool")
+	}
+	if !strings.Contains(result, "mcp__server__tool1 MCP tool") {
+		t.Errorf("expected Description fallback for MCP tool, got:\n%s", result)
+	}
 }
 
 func TestDeferredToolsAnnouncement_Empty(t *testing.T) {
 	result := DeferredToolsAnnouncement(nil)
 	if result != "" {
-		t.Errorf("expected empty announcement for nil names, got %q", result)
+		t.Errorf("expected empty announcement for nil, got %q", result)
 	}
 
-	result = DeferredToolsAnnouncement([]string{})
+	result = DeferredToolsAnnouncement([]tool.Tool{})
 	if result != "" {
-		t.Errorf("expected empty announcement for empty names, got %q", result)
+		t.Errorf("expected empty announcement for empty slice, got %q", result)
 	}
 }
 
