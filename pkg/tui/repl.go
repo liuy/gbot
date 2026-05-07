@@ -185,13 +185,27 @@ func (s *ReplState) AppendTextItem() {
 	m.Blocks = append(m.Blocks, ContentBlock{Type: BlockText, Text: ""})
 }
 
+// formatToolDisplayName converts raw tool names to user-facing display names.
+// MCP tools: "mcp__fetch__get_raw_text" → "fetch - get_raw_text (MCP)"
+// Built-in tools: returned as-is.
+func formatToolDisplayName(name string) string {
+	if !strings.HasPrefix(name, "mcp__") {
+		return name
+	}
+	parts := strings.SplitN(name, "__", 3)
+	if len(parts) < 3 {
+		return name
+	}
+	return parts[1] + " - " + parts[2] + " (MCP)"
+}
+
 // PendingToolStarted records a new in-progress tool call.
 func (s *ReplState) PendingToolStarted(id, name, summary, input string) {
 	m := s.lastMsg()
 	if m == nil {
 		return
 	}
-	tcv := &ToolCallView{ID: id, Name: name, Summary: summary, Input: input, Done: false}
+	tcv := &ToolCallView{ID: id, Name: formatToolDisplayName(name), Summary: summary, Input: input, Done: false}
 	s.pendingTool[id] = tcv
 	s.toolCount++
 	s.pendingToolStart[id] = time.Now()
