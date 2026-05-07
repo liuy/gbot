@@ -85,7 +85,7 @@ func TestListMcpResources_ServerNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent server")
 	}
-	if !strings.Contains(err.Error(), `Server "nonexistent" not found`) {
+	if !strings.Contains(err.Error(), `server "nonexistent" not found`) {
 		t.Errorf("error = %q, want server not found message", err.Error())
 	}
 	if !strings.Contains(err.Error(), "existing") {
@@ -241,7 +241,7 @@ func TestReadMcpResource_BinaryContent(t *testing.T) {
 		t.Errorf("Text should contain MIME type, got %q", contents[0].Text)
 	}
 
-	defer os.Remove(contents[0].BlobSavedTo)
+	defer func() { _ = os.Remove(contents[0].BlobSavedTo) }()
 }
 
 func TestReadMcpResource_ServerNotFound(t *testing.T) {
@@ -255,7 +255,7 @@ func TestReadMcpResource_ServerNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent server")
 	}
-	if !strings.Contains(err.Error(), `Server "nonexistent" not found`) {
+	if !strings.Contains(err.Error(), `server "nonexistent" not found`) {
 		t.Errorf("error = %q, want server not found message", err.Error())
 	}
 	if !strings.Contains(err.Error(), "existing") {
@@ -411,7 +411,7 @@ func TestReadMcpResource_MultipleContentBlocks(t *testing.T) {
 		t.Errorf("contents[1].Text should contain 'Binary content', got %q", contents[1].Text)
 	}
 
-	defer os.Remove(contents[1].BlobSavedTo)
+	defer func() { _ = os.Remove(contents[1].BlobSavedTo) }()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +425,7 @@ func TestPersistBinaryContent_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer os.Remove(fp)
+	defer func() { _ = os.Remove(fp) }()
 
 	if !strings.HasSuffix(fp, ".pdf") {
 		t.Errorf("filepath = %q, should end with .pdf", fp)
@@ -446,7 +446,7 @@ func TestPersistBinaryContent_Success(t *testing.T) {
 func TestPersistBinaryContent_PersistIDFormat(t *testing.T) {
 	id := fmt.Sprintf("mcp-resource-%d-0-abc123", 1000000)
 	fp, _, _ := persistBinaryContent([]byte("x"), "text/plain", id)
-	defer os.Remove(fp)
+	defer func() { _ = os.Remove(fp) }()
 
 	expected := filepath.Join(os.TempDir(), "mcp-resource-1000000-0-abc123.txt")
 	if fp != expected {

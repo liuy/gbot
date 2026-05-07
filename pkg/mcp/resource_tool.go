@@ -36,7 +36,7 @@ func ListMcpResources(ctx context.Context, reg *Registry, serverName string) ([]
 		if !ok {
 			// Source: ListMcpResourcesTool.ts:74-76 — include available server names for self-correction
 			available := availableServerNames(reg)
-			return nil, fmt.Errorf("Server %q not found. Available servers: %s", serverName, strings.Join(available, ", "))
+			return nil, fmt.Errorf("server %q not found. Available servers: %s", serverName, strings.Join(available, ", "))
 		}
 		// Source: ListMcpResourcesTool.ts:86 — client.type !== 'connected' → return []
 		cs, ok := conn.(*ConnectedServer)
@@ -88,17 +88,17 @@ func ReadMcpResource(ctx context.Context, reg *Registry, serverName, uri string)
 	conn, ok := reg.GetConnection(serverName)
 	if !ok {
 		available := availableServerNames(reg)
-		return nil, fmt.Errorf("Server %q not found. Available servers: %s", serverName, strings.Join(available, ", "))
+		return nil, fmt.Errorf("server %q not found. Available servers: %s", serverName, strings.Join(available, ", "))
 	}
 
 	cs, ok := conn.(*ConnectedServer)
 	if !ok {
-		return nil, fmt.Errorf("Server %q is not connected", serverName)
+		return nil, fmt.Errorf("server %q is not connected", serverName)
 	}
 
 	// Source: ReadMcpResourceTool.ts:90-92 — fast-fail before RPC
 	if cs.Capabilities == nil || cs.Capabilities.Resources == nil {
-		return nil, fmt.Errorf("Server %q does not support resources", serverName)
+		return nil, fmt.Errorf("server %q does not support resources", serverName)
 	}
 
 	// Source: ReadMcpResourceTool.ts:95-101 — resources/read RPC

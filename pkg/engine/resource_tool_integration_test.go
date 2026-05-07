@@ -69,7 +69,7 @@ func setupResourceServer(t *testing.T) (*mcpsdk.Server, *mcp.Registry) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { session.Close() })
+	t.Cleanup(func() { _ = session.Close() })
 
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("resource-server", &mcp.ConnectedServer{
@@ -256,7 +256,7 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 	t1, t2 := mcpsdk.NewInMemoryTransports()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "new-server", Version: "1.0"}, nil)
 	go func() {
-		server.Connect(context.Background(), t1, nil)
+		_, _ = server.Connect(context.Background(), t1, nil)
 	}()
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-client", Version: "1.0"}, nil)
@@ -264,7 +264,7 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { session.Close() })
+	t.Cleanup(func() { _ = session.Close() })
 
 	reg.SetConnectionForTest("new-server", &mcp.ConnectedServer{
 		Name:    "new-server",

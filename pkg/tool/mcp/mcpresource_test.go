@@ -94,7 +94,7 @@ func TestListMcpResourcesToolAdapter_ServerNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent server")
 	}
-	if !strings.Contains(err.Error(), `Server "nonexistent" not found`) {
+	if !strings.Contains(err.Error(), `server "nonexistent" not found`) {
 		t.Errorf("error = %q, want server not found", err.Error())
 	}
 }
@@ -254,7 +254,7 @@ func TestReadMcpResourceToolAdapter_ServerNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent server")
 	}
-	if !strings.Contains(err.Error(), `Server "nonexistent" not found`) {
+	if !strings.Contains(err.Error(), `server "nonexistent" not found`) {
 		t.Errorf("error = %q, want server not found", err.Error())
 	}
 }
@@ -430,7 +430,7 @@ func TestReadMcpResourceToolAdapter_SuccessfulCall(t *testing.T) {
 	t1, t2 := mcp.NewInMemoryTransports()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
 	go func() {
-		server.Connect(context.Background(), t1, nil)
+		_, _ = server.Connect(context.Background(), t1, nil)
 	}()
 
 	server.AddResource(&mcp.Resource{
