@@ -1669,6 +1669,7 @@ func (e *Engine) Reset() {
 	e.messages = nil
 	e.turnCount = 0
 	e.ContextTokens = 0
+	e.toolSearch = newToolSearchState()
 	e.mu.Unlock()
 }
 
@@ -1709,6 +1710,7 @@ func (e *Engine) appendMessages(msgs []types.Message) {
 func (e *Engine) setMessages(msgs []types.Message) {
 	e.mu.Lock()
 	e.messages = msgs
+	RestoreToolSearchState(msgs, e.toolSearch)
 	e.mu.Unlock()
 }
 
