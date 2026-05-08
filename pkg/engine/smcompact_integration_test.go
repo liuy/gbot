@@ -1,0 +1,487 @@
+package engine
+
+// smcompact_integration_test.go contains chain tests for the full
+// Session Memory → SM-compact pipeline.
+//
+// Test design principles applied:
+//   - Test call chains, not functions: entry → hook → extract → compact → observable output
+//   - Simulate real boundaries: real filesystem, real Store, mock LLM only
+//   - Three scenarios: cold start, hot path, recovery (stale extraction)
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/liuy/gbot/pkg/memory/long"
+	"github.com/liuy/gbot/pkg/memory/session"
+	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
+)
+
+// ---------------------------------------------------------------------------
+// Integration Test 1: Full chain — extract → SM-compact → verify
+// ---------------------------------------------------------------------------
+
+// TestSMCompact_Integration_ExtractThenCompact verifies the full pipeline:
+//
+//	Engine turn → extraction writes session memory file
+//	→ next turn exceeds threshold → runCompact() → TrySMCompact() reads file → success
+//
+// Observable output: CompactResult contains session memory content,
+// engine messages are reduced, boundary marker is present.
+func TestSMCompact_Integration_ExtractThenCompact(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a mock extraction function that writes real content to the file
+	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+		content := `# Session Notes
+
+## Session Title
+Testing SM-compact integration
+
+## Current State
+Full chain test: extract → compact → verify
+
+## Files and Functions
+smcompact_integration_test.go — chain tests
+`
+		return os.WriteFile(targetPath, []byte(content), 0644)
+	}
+
+	sm := session.New(session.Config{
+		MinTokensToInit:        50,
+		MinTokensBetweenUpdate: 25,
+		ExtractionTimeoutMs:    5000,
+		ExtractionStaleMs:      60000,
+	}, tmpDir, extractFn, slog.Default())
+
+	// Set up engine with real Store + real AutoCompactor
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	p := &integrationProvider{}
+	// Turn response (after compact)
+	p.addStream(textStreamEvents("test-model", "Turn after SM-compact."), nil)
+
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+
+	eng := New(&Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		AutoCompact: AutoCompactConfig{
+			ContextWindow: 500, // low threshold to trigger compact
+		},
+		Logger: slog.Default(),
+	})
+
+	// Wire session memory — this registers the post-turn hook
+	eng.SetSessionMemory(sm)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Step 1: Run extraction directly (simulates what the post-turn hook does)
+	// This avoids the async goroutine race condition while testing the same chain.
+	msgs := makeLargeMessages(5, 50)
+	if err := sm.Extract(ctx, msgs, 250); err != nil {
+		t.Fatalf("extraction failed: %v", err)
+	}
+
+	// Verify session memory file was created with real content
+	data, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatalf("session memory file not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Testing SM-compact integration") {
+		t.Errorf("session memory content missing expected text, got: %s", content[:min(200, len(content))])
+	}
+
+	// Step 2: Set large messages and query → engine should auto-compact using SM-compact
+	// 20 messages × 50 tokens = 1000 tokens > 90% of ContextWindow(500)
+	eng.SetMessages(makeLargeMessages(20, 50))
+	result := eng.QuerySync(ctx, "turn 1", nil)
+	if result.Error != nil {
+		t.Fatalf("query failed: %v", result.Error)
+	}
+
+	// Verify SM-compact was used: messages should contain session memory summary.
+	// After compact, engine adds user query + assistant response, so total may
+	// equal original count. The key observable is the SM-compact summary content.
+	finalMsgs := eng.Messages()
+	foundSMSummary := false
+	for _, msg := range finalMsgs {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeText {
+				if strings.Contains(block.Text, "session memory") &&
+					strings.Contains(block.Text, "Testing SM-compact integration") {
+					foundSMSummary = true
+				}
+			}
+		}
+	}
+	if !foundSMSummary {
+		t.Error("SM-compact summary not found in final messages — LLM compact was used instead")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration Test 2: Cold start — no file → extraction creates it
+// ---------------------------------------------------------------------------
+
+// TestSessionMemory_Integration_ColdStart verifies the cold-start scenario:
+//
+//	No session memory file exists → first extraction creates from template
+//	→ second extraction updates with real content
+//
+// Observable output: file exists after extraction, content is real (not template).
+func TestSessionMemory_Integration_ColdStart(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	// Intentionally do NOT create the memory directory or file
+
+	extractionCount := 0
+	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+		extractionCount++
+		// First extraction: file is created from template by ensureFile()
+		// We write real content to simulate what the sub-agent would do
+		content := `# Session Notes
+
+## Session Title
+Cold start test — first extraction
+
+## Current State
+File was created from template and now has real content
+`
+		return os.WriteFile(targetPath, []byte(content), 0644)
+	}
+
+	sm := session.New(session.Config{
+		MinTokensToInit:        50,
+		MinTokensBetweenUpdate: 25,
+		ExtractionTimeoutMs:    5000,
+		ExtractionStaleMs:      60000,
+	}, tmpDir, extractFn, slog.Default())
+
+	ctx := context.Background()
+
+	// Cold start: no file, no state
+	if !sm.IsEmpty() {
+		t.Error("expected IsEmpty=true before any extraction (cold start)")
+	}
+
+	// Trigger extraction
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}},
+	}
+
+	// ShouldExtract with enough tokens → true
+	if !sm.ShouldExtract(100, msgs) {
+		t.Fatal("ShouldExtract should return true for cold start with enough tokens")
+	}
+
+	// Run extraction — should create the file
+	if err := sm.Extract(ctx, msgs, 100); err != nil {
+		t.Fatalf("Extract failed on cold start: %v", err)
+	}
+
+	if extractionCount != 1 {
+		t.Errorf("expected 1 extraction call, got %d", extractionCount)
+	}
+
+	// Verify file was created
+	notesPath := filepath.Join(long.GetMemoryPath(tmpDir), session.SessionMemoryFileName)
+	data, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatalf("session memory file not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Cold start test") {
+		t.Errorf("file content should be from extraction, got: %s", content[:min(200, len(content))])
+	}
+
+	// IsEmpty should now return false
+	if sm.IsEmpty() {
+		t.Error("expected IsEmpty=false after extraction with real content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration Test 3: Recovery — stale extraction → recovery → next works
+// ---------------------------------------------------------------------------
+
+// TestSessionMemory_Integration_StaleRecovery verifies the recovery scenario:
+//
+//	Extraction starts but stalls (simulates crash/hang)
+//	→ stale threshold exceeded → recovery resets state
+//	→ next extraction succeeds
+//
+// Observable output: after recovery, extraction runs and writes file.
+func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+
+	blockCh := make(chan struct{})
+	firstCall := true
+	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+		if firstCall {
+			firstCall = false
+			<-blockCh // block forever (simulates crash)
+		}
+		return os.WriteFile(targetPath, []byte("## Session Title\nRecovered content\n"), 0644)
+	}
+
+	sm := session.New(session.Config{
+		MinTokensToInit:        50,
+		MinTokensBetweenUpdate: 25,
+		ExtractionTimeoutMs:    5000,
+		ExtractionStaleMs:      100, // very short stale threshold
+	}, tmpDir, extractFn, slog.Default())
+
+	ctx := context.Background()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+
+	// Start first extraction (will hang)
+	sm.ShouldExtract(100, msgs) // initialize
+	go func() {
+		_ = sm.Extract(ctx, msgs, 100)
+	}()
+
+	// Wait for extraction goroutine to start, then for stale threshold (100ms) to pass.
+	// Real time is needed because we're testing time-based staleness detection.
+	<-time.After(200 * time.Millisecond)
+
+	// Now WaitForExtraction should detect stale and recover
+	if err := sm.WaitForExtraction(); err != nil {
+		t.Fatalf("WaitForExtraction should recover from stale: %v", err)
+	}
+
+	// Unblock the hung extraction (it's already been abandoned)
+	close(blockCh)
+
+	// Next extraction should succeed after recovery
+	sm.Reset() // reset to allow re-extraction
+	if !sm.ShouldExtract(200, msgs) {
+		t.Fatal("ShouldExtract should return true after recovery")
+	}
+
+	if err := sm.Extract(ctx, msgs, 200); err != nil {
+		t.Fatalf("post-recovery Extract failed: %v", err)
+	}
+
+	// Verify file was written with recovery content
+	data, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatalf("file not written after recovery: %v", err)
+	}
+	if !strings.Contains(string(data), "Recovered content") {
+		t.Errorf("expected recovery content, got: %s", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration Test 4: Hot path — extraction → update → SM-compact
+// ---------------------------------------------------------------------------
+
+// TestSessionMemory_Integration_HotPath verifies the normal hot path:
+//
+//	1. Write initial session memory content
+//	2. SM-compact uses it → produces compact result
+//	3. Update session memory with new content
+//	4. SM-compact uses updated content → produces different result
+//
+// Observable output: compact results reflect the current session memory content.
+func TestSessionMemory_Integration_HotPath(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+
+	// Write initial content
+	initialContent := "## Session Title\nHot path test\n## Current State\nInitial state\n"
+	if err := os.WriteFile(notesPath, []byte(initialContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up compactor
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	p := &integrationProvider{}
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+
+	msgs := makeLargeMessages(20, 500)
+
+	// SM-compact round 1: uses initial content
+	result1, err := compactor.TrySMCompact(msgs, sm)
+	if err != nil {
+		t.Fatalf("first TrySMCompact failed: %v", err)
+	}
+	if result1 == nil {
+		t.Fatal("first TrySMCompact should succeed with initial content")
+	}
+	if !strings.Contains(result1.Summary, "Initial state") {
+		t.Errorf("first summary should contain initial content, got: %s", result1.Summary[:min(200, len(result1.Summary))])
+	}
+
+	// Update session memory (simulates extraction writing new content)
+	updatedContent := "## Session Title\nHot path test\n## Current State\nUpdated state after more work\n"
+	if err := os.WriteFile(notesPath, []byte(updatedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// SM-compact round 2: uses updated content
+	msgs2 := makeLargeMessages(25, 500)
+	result2, err := compactor.TrySMCompact(msgs2, sm)
+	if err != nil {
+		t.Fatalf("second TrySMCompact failed: %v", err)
+	}
+	if result2 == nil {
+		t.Fatal("second TrySMCompact should succeed with updated content")
+	}
+	if !strings.Contains(result2.Summary, "Updated state after more work") {
+		t.Errorf("second summary should contain updated content, got: %s", result2.Summary[:min(200, len(result2.Summary))])
+	}
+
+	// Results should differ (content changed)
+	if result1.Summary == result2.Summary {
+		t.Error("summaries should differ after session memory update")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration Test 5: SM-compact falls back to LLM compact when empty
+// ---------------------------------------------------------------------------
+
+// TestSMCompact_Integration_FallbackToLLM verifies the fallback behavior:
+//
+//	Session memory exists but is empty (template only)
+//	→ TrySMCompact returns nil
+//	→ runCompact falls back to LLM summarization
+//	→ compact succeeds with LLM summary
+//
+// Observable output: compact produces LLM summary, not session memory summary.
+func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+
+	// Write template-only content (empty)
+	if err := os.WriteFile(notesPath, []byte(session.DefaultTemplate), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	p := &integrationProvider{}
+	p.addStream(textStreamEvents("test-model", "Response after LLM compact."), nil)
+
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+
+	eng := New(&Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		AutoCompact: AutoCompactConfig{
+			ContextWindow: 500,
+		},
+		Logger: slog.Default(),
+	})
+	eng.SetSessionMemory(sm)
+
+	// Set messages that exceed threshold
+	eng.SetMessages(makeLargeMessages(20, 50))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error != nil {
+		t.Fatalf("query failed: %v", result.Error)
+	}
+
+	// Verify compact happened: FormatCompactSummary converts <summary> tags to
+	// "Summary:" text, and the wrapper adds "continued from a previous conversation".
+	// After compact, engine adds assistant response so message count may equal original.
+	finalMsgs := eng.Messages()
+
+	// Verify LLM compact ran (not SM-compact).
+	// SM-compact produces "session memory" text; LLM compact produces "Summary:" text
+	// (after FormatCompactSummary strips <summary> tags).
+	foundLLMSummary := false
+	for _, msg := range finalMsgs {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeText {
+				if strings.Contains(block.Text, "Summary:") &&
+					strings.Contains(block.Text, "Test summary of conversation") {
+					foundLLMSummary = true
+				}
+			}
+		}
+	}
+	if !foundLLMSummary {
+		t.Error("expected LLM summary (Summary: text) since session memory was empty")
+	}
+}
