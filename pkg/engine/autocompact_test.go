@@ -523,14 +523,14 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	}
 
 	result, err := sc.Compact(context.Background(), msgs)
-	if err != nil {
-		t.Fatalf("Compact failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error for too few messages (<=minKeep=4)")
 	}
-	if len(result.Messages) != 3 {
-		t.Errorf("expected 3 messages (no compact needed), got %d", len(result.Messages))
+	if !strings.Contains(err.Error(), "nothing to compact") {
+		t.Errorf("error should mention 'nothing to compact', got: %v", err)
 	}
-	if mp.compactCallCount != 0 {
-		t.Errorf("no LLM call expected for <4 messages, got %d", mp.compactCallCount)
+	if result != nil {
+		t.Errorf("expected nil result on error, got %+v", result)
 	}
 }
 
@@ -575,7 +575,106 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	}
 }
 
-func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
+// TestCompactor_Compact_NothingToCompact_ReturnsError verifies that when
+// findKeepFrom determines all messages should be kept (nothing to compact),
+// Compact returns an error instead of a fake "success" with zero delta.
+// This aligns with TS where autocompact returns wasCompacted:false for no-ops.
+func TestCompactor_Compact_NothingToCompact_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	mp := &compactMockProvider{}
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+
+	// 3 messages ≤ minKeep(4) → findKeepFrom returns len(messages) → "nothing to compact"
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("continue")}},
+	}
+
+	_, err = sc.Compact(context.Background(), msgs)
+	if err == nil {
+		t.Fatal("expected error when nothing to compact (≤4 messages)")
+	}
+	if !strings.Contains(err.Error(), "nothing to compact") {
+		t.Errorf("error should mention 'nothing to compact', got: %v", err)
+	}
+	if mp.compactCallCount != 0 {
+		t.Errorf("no LLM call expected, got %d", mp.compactCallCount)
+	}
+}
+
+// TestCompactor_Compact_EmptyHeadText_ReturnsError verifies that when
+// head messages have no extractable text, Compact returns an error
+// instead of a no-op "success" with empty summary.
+func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	// Create a session so RecordCompact can succeed
+	session, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	mp := &compactMockProvider{}
+	// Small contextWindow → lower keep target
+	sc := NewAutoCompactor(store, session.SessionID, "test-model", mp, 10000)
+
+	// Build messages where head (first ~8) have only non-text blocks that
+	// extractTextFromShortContent skips. Use thinking blocks (type "thinking")
+	// which are ignored by the extractor.
+	msgs := []types.Message{}
+
+	// Head: 8 messages with thinking blocks (not extracted by extractTextFromShortContent)
+	for i := range 4 {
+		msgs = append(msgs, types.Message{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("thinking %d", i)}},
+		})
+		msgs = append(msgs, types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("response %d", i)}},
+		})
+	}
+	// Tail: 2 messages with real text (kept by findKeepFrom)
+	msgs = append(msgs, types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 5000))},
+	})
+	msgs = append(msgs, types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("continue")},
+	})
+
+	_, err = sc.Compact(context.Background(), msgs)
+	if err == nil {
+		t.Fatal("expected error when head messages have no extractable text")
+	}
+	if !strings.Contains(err.Error(), "no extractable text") {
+		t.Errorf("error should mention 'no extractable text', got: %v", err)
+	}
+	if mp.compactCallCount != 0 {
+		t.Errorf("no LLM call expected for empty head text, got %d", mp.compactCallCount)
+	}
+}
+
+func TestCompactor_Compact_LLMErrors_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -591,15 +690,20 @@ func TestCompactor_Compact_LLMErrors_FallsBack(t *testing.T) {
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
-	if err != nil {
-		t.Fatalf("Compact should not return error on LLM failure (graceful fallback): %v", err)
+	if err == nil {
+		t.Fatal("expected error when LLM call fails")
 	}
-
-	if len(result.Messages) == 0 {
-		t.Error("expected at least boundary message after fallback")
+	if !strings.Contains(err.Error(), "summarize failed") {
+		t.Errorf("error should mention 'summarize failed', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "LLM unavailable") {
+		t.Errorf("error should wrap LLM error, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result on error, got %+v", result)
 	}
 	if mp.compactCallCount == 0 {
-		t.Error("expected LLM call attempt even on failure")
+		t.Error("expected LLM call attempt")
 	}
 }
 
@@ -793,8 +897,11 @@ func TestAutoCompactor_SummarizeMessages_NoText(t *testing.T) {
 	// Message with no text content (empty JSON array)
 	msgs := []*short.TranscriptMessage{{Type: "user", Content: "[]"}}
 	got, err := sc.summarizeMessages(context.Background(), msgs)
-	if err != nil {
-		t.Fatalf("summarizeMessages(no text) error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for no extractable text in head messages")
+	}
+	if !strings.Contains(err.Error(), "no extractable text") {
+		t.Errorf("error should mention 'no extractable text', got: %v", err)
 	}
 	if got != "" {
 		t.Errorf("summarizeMessages(no text) = %q, want empty", got)

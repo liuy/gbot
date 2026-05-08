@@ -85,22 +85,14 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	// (contextWindow / 5, clamped to [2K, 60K]).
 	keepFrom := c.findKeepFrom(shortMsgs)
 	if keepFrom >= len(shortMsgs) {
-		// Nothing to compact — keep all messages
-		return &CompactResult{
-			BeforeTokens:   beforeTokens,
-			BeforeMessages: len(messages),
-			AfterTokens:    beforeTokens,
-			Messages:       messages,
-		}, nil
+		// Nothing to compact — keep all messages.
+		// Return error so the engine treats this as a no-op (doesn't skip
+		// blocking limit, increments circuit breaker).
+		return nil, fmt.Errorf("nothing to compact: all messages within keep target")
 	}
 	if keepFrom <= 1 {
-		// Need at least 1 message to keep
-		return &CompactResult{
-			BeforeTokens:   beforeTokens,
-			BeforeMessages: len(messages),
-			AfterTokens:    beforeTokens,
-			Messages:       messages,
-		}, nil
+		// Need at least 1 message to keep.
+		return nil, fmt.Errorf("nothing to compact: too few messages to keep")
 	}
 
 	// Call PartialCompact: creates boundary marker + splits head/tail
@@ -114,15 +106,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	headMsgs := shortMsgs[:keepFrom]
 	summaryText, err := c.summarizeMessages(ctx, headMsgs)
 	if err != nil {
-		c.logger.Warn("summarizeMessages failed", "error", err)
-		// Fall back: return messages without summary (better than failing entirely)
-		built := c.buildResultMessages(pcr, "")
-		return &CompactResult{
-			BeforeTokens:   beforeTokens,
-			BeforeMessages: len(messages),
-			AfterTokens:    EstimateMessagesTokens(built),
-			Messages:       built,
-		}, nil
+		return nil, fmt.Errorf("summarize failed: %w", err)
 	}
 
 	// Record compact in database (write boundary + summary to store)
@@ -190,7 +174,9 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 
 	conversationText := strings.TrimSpace(sb.String())
 	if conversationText == "" {
-		return "", nil
+		// No extractable text in head messages — can't summarize.
+		// Return error so the engine treats this as a no-op.
+		return "", fmt.Errorf("no extractable text in head messages for summarization")
 	}
 
 	// Build the summarization request

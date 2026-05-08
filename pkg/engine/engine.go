@@ -378,6 +378,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 	reactiveCompactDone := false
 
 	for e.maxTurns == 0 || e.turnCount < e.maxTurns {
+		compactSucceeded := false
+
 		// Stage 4: Loop-top abort check.
 		// Source: query.ts — context cancellation check at loop top.
 		if err := ShouldAbort(ctx, "streaming"); err != nil {
@@ -398,12 +400,75 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 		}
 
-		// Blocking limit: refuse API call if context exceeds safe threshold.
-		// TS align: query.ts blocking limit check — effectiveWindow - 3000.
-		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
+		// Pre-turn auto-compact: check before API call, like TS.
+		// TS align: query.ts auto-compact runs before blocking limit.
+		// Uses ContextTokens from previous turn (set after API response).
+		if e.shouldAutoCompact() {
+			compactID := "compact-auto-" + uuid.New().String()[:8]
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventToolStart,
+				ToolUse: &types.ToolUseEvent{
+					ID:      compactID,
+					Name:    "Compact",
+					Summary: "Compacting conversation...",
+				},
+			})
+			e.emitEvent(types.QueryEvent{
+				Type:    types.EventToolRun,
+				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+			})
+			e.fireCompactHooks(ctx, "auto", "pre")
+			result, compactErr := e.runCompact(ctx, "pre-turn compact")
+			if compactErr != nil {
+				e.emitEvent(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: fmt.Sprintf("Compact failed: %v", compactErr),
+						IsError:       true,
+					},
+				})
+				e.mu.Lock()
+				e.consecutiveCompactFailures++
+				failures := e.consecutiveCompactFailures
+				e.mu.Unlock()
+				e.logger.Warn("pre-turn auto-compact failed",
+					"error", compactErr,
+					"consecutiveFailures", failures)
+			} else {
+				// Only count as success if compact actually reduced tokens.
+				// AutoCompactor can return a no-op result (BeforeTokens == AfterTokens)
+				// when head messages have no extractable text. In that case, don't
+				// skip the blocking limit — it serves as a safety net.
+				if result.BeforeTokens > result.AfterTokens {
+					compactSucceeded = true
+				}
+				e.mu.Lock()
+				if compactSucceeded {
+					e.consecutiveCompactFailures = 0
+				} else {
+					e.consecutiveCompactFailures++
+				}
+				e.mu.Unlock()
+				e.emitEvent(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     compactID,
+						DisplayOutput: formatCompactOutput(result),
+					},
+				})
+				e.logger.Info("pre-turn auto-compact succeeded",
+					"messages", len(result.Messages))
+				e.fireCompactHooks(ctx, "auto", "post")
+			}
+		}
 
-		// if still too large, the API will overflow and reactive compact handles it.
-		if !e.isSubagent && e.autoCompactConfig.ContextWindow > 0 {
+		// Blocking limit: refuse API call if context exceeds safe threshold.
+		// TS align: query.ts:628-636 — skip blocking limit when compact
+		// produced a result (!compactionResult). Only block when compact
+		// didn't succeed this turn.
+		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
+		if !e.isSubagent && !compactSucceeded && e.autoCompactConfig.ContextWindow > 0 {
 			reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
 			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
 			blockingLimit := effectiveWindow - manualCompactBufferTokens
@@ -572,61 +637,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 		}
 
-		// Post-turn compact: check after API response using accurate token data.
-		// ContextTokens was just updated from the API response, giving us the
-		// exact context size. If it exceeds the threshold, compact before continuing.
-		if e.shouldAutoCompact() {
-			compactID := "compact-auto-" + uuid.New().String()[:8]
-			e.emitEvent(types.QueryEvent{
-				Type: types.EventToolStart,
-				ToolUse: &types.ToolUseEvent{
-					ID:      compactID,
-					Name:    "Compact",
-					Summary: "Compacting conversation...",
-				},
-			})
-			e.emitEvent(types.QueryEvent{
-				Type:    types.EventToolRun,
-				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
-			})
-			e.fireCompactHooks(ctx, "auto", "pre")
-			result, compactErr := e.runCompact(ctx, "post-turn compact")
-			if compactErr != nil {
-				e.emitEvent(types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     compactID,
-						DisplayOutput: fmt.Sprintf("Compact failed: %v", compactErr),
-						IsError:       true,
-					},
-				})
-				e.mu.Lock()
-				e.consecutiveCompactFailures++
-				failures := e.consecutiveCompactFailures
-				e.mu.Unlock()
-				e.logger.Warn("post-turn auto-compact failed",
-					"error", compactErr,
-					"consecutiveFailures", failures)
-			} else {
-				e.mu.Lock()
-				e.consecutiveCompactFailures = 0
-				e.mu.Unlock()
-				e.emitEvent(types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     compactID,
-						DisplayOutput: formatCompactOutput(result),
-					},
-				})
-				e.logger.Info("post-turn auto-compact succeeded",
-					"messages", len(result.Messages))
-				e.fireCompactHooks(ctx, "auto", "post")
-				// Update executor messages after compact.
-				if streamingExecutor != nil {
-					streamingExecutor.SetMessages(e.messages)
-				}
-			}
-		}
+
 
 		// Stage 20: No-tool-use terminal path
 		if streamingExecutor == nil {

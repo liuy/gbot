@@ -2242,13 +2242,13 @@ func TestMarshalToolOutput_BuildToolWithoutWireFormat(t *testing.T) {
 
 // TestQuery_PostTurnCompact_Succeeds verifies that post-turn compact runs after
 // API response and the query completes successfully.
-func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
+func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 	t.Parallel()
 
 	tmp := &testProvider{}
-	// API response with large InputTokens triggers post-turn compact
+	// API response after compact — InputTokens reflects compacted context.
 	events := []llm.StreamEvent{
-		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 32000}}},
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 4000}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
 		{Type: "content_block_stop", Index: 0},
 		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
@@ -2261,7 +2261,7 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 		fn: func(_ context.Context, messages []types.Message) (*CompactResult, error) {
 			compactCalled = true
 			return &CompactResult{
-				BeforeTokens:   32000,
+				BeforeTokens:   35000,
 				AfterTokens:    4000,
 				BeforeMessages: len(messages),
 				Messages: []types.Message{
@@ -2284,8 +2284,8 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// Pre-load messages and set ContextTokens below blocking limit
-	// so the API call can proceed.
+	// Pre-load messages and set ContextTokens above auto-compact threshold
+	// so pre-turn compact triggers before the API call.
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
@@ -2293,7 +2293,7 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 		}))
 	}
 	eng.mu.Lock()
-	eng.ContextTokens = 1000
+	eng.ContextTokens = 35000
 	eng.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2302,7 +2302,7 @@ func TestQuery_PostTurnCompact_Succeeds(t *testing.T) {
 	result := eng.QuerySync(ctx, "do something", nil)
 
 	if !compactCalled {
-		t.Fatal("post-turn compact should have been called")
+		t.Fatal("pre-turn compact should have been called")
 	}
 	if result.Error != nil {
 		t.Fatalf("expected success, got: %v", result.Error)
@@ -2318,15 +2318,15 @@ func (c *funcCompactor) Compact(ctx context.Context, messages []types.Message) (
 	return c.fn(ctx, messages)
 }
 
-// TestQuery_PostTurnCompact_UsesRealAPITokens verifies that post-turn compact
-// output shows the real API input tokens from the response usage, not heuristic.
-func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
+// TestQuery_PreTurnCompact_UsesRealAPITokens verifies that pre-turn compact
+// output shows the real ContextTokens, not the heuristic from the compactor.
+func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	t.Parallel()
 
 	tmp := &testProvider{}
-	// API response with large InputTokens triggers post-turn compact
+	// API response after compact — InputTokens reflects compacted context.
 	events := []llm.StreamEvent{
-		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 35000}}},
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 4000}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
 		{Type: "content_block_stop", Index: 0},
 		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
@@ -2362,8 +2362,9 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// Pre-load messages and set ContextTokens below blocking limit.
-	// API response will report large InputTokens triggering post-turn compact.
+	// Pre-load messages and set ContextTokens above auto-compact threshold.
+	// Pre-turn compact uses ContextTokens (35000) as realTokens.
+	// Compact delta = 10000-4000 = 6000, display: 35.0k → 29.0k
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
@@ -2371,7 +2372,7 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 		}))
 	}
 	eng.mu.Lock()
-	eng.ContextTokens = 1000
+	eng.ContextTokens = 35000
 	eng.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2389,10 +2390,400 @@ func TestQuery_PostTurnCompact_UsesRealAPITokens(t *testing.T) {
 		t.Fatal("expected compact output event")
 	}
 
-	// Post-turn compact uses ContextTokens from API response (35005 = 35000 + 5).
+	// Pre-turn compact uses ContextTokens directly (35000).
 	// Compact delta = 10000-4000 = 6000, display: 35.0k → 29.0k
 	if !strings.Contains(compactDisplayOutput, "token: 35.0k → 29.0k") {
-		t.Errorf("expected compact output to show real API tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
+		t.Errorf("expected compact output to show real tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pre-turn auto-compact: compact runs BEFORE blocking limit (TS align)
+// These tests verify the reorder: shouldAutoCompact → blocking limit → callLLM
+// ---------------------------------------------------------------------------
+
+// TestQuery_PreTurnCompact_Succeeds verifies that when context exceeds both
+// the auto-compact threshold and the blocking limit, the engine runs compact
+// FIRST and then skips the blocking limit, allowing the API call to proceed.
+//
+// With current (broken) code: blocking limit fires first → query fails with
+// "Prompt is too long". After fix: compact runs first → blocking limit skipped → query succeeds.
+func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 4000}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: "ok"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(events, nil)
+
+	compactCalled := false
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+			compactCalled = true
+			return &CompactResult{
+				BeforeTokens:   35000,
+				AfterTokens:    4000,
+				BeforeMessages: len(msgs),
+				Messages: []types.Message{
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("boundary")}},
+					{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("summary")}},
+				},
+			}, nil
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-load messages + set ContextTokens ABOVE both thresholds.
+	// With ContextWindow=50000, MaxTokens=16000:
+	//   effectiveWindow = 50000 - 16000 = 34000
+	//   autoCompactThreshold = 34000 - max(34000*7/100, 3000) = 34000 - 3000 = 31000
+	//   blockingLimit = 34000 - 3000 = 31000
+	// Setting ContextTokens=35000 triggers both auto-compact AND blocking limit.
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "do something", nil)
+
+	// Critical assertions:
+	if !compactCalled {
+		t.Fatal("pre-turn compact should have been called before blocking limit")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected success (compact should reduce context before blocking limit), got: %v", result.Error)
+	}
+
+	// Verify compact events were emitted
+	var foundToolStart, foundToolEnd bool
+	for _, evt := range tc.events {
+		if evt.Type == types.EventToolStart && evt.ToolUse != nil && evt.ToolUse.Name == "Compact" {
+			foundToolStart = true
+		}
+		if evt.Type == types.EventToolEnd && evt.ToolResult != nil && !evt.ToolResult.IsError {
+			foundToolEnd = true
+		}
+	}
+	if !foundToolStart {
+		t.Error("expected Compact ToolStart event")
+	}
+	if !foundToolEnd {
+		t.Error("expected Compact ToolEnd event (success)")
+	}
+}
+
+// TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires verifies that when
+// compact fails, compactSucceeded stays false and the blocking limit fires as
+// a safety net. This is the recovery scenario from the test-design skill.
+func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// API response — shouldn't be reached because blocking limit should fire.
+	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			return nil, errors.New("compact failed: LLM error")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// ContextTokens above both auto-compact threshold and blocking limit.
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "do something", nil)
+
+	if result.Error == nil {
+		t.Fatal("expected blocking limit error after compact failure")
+	}
+	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
+		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	}
+}
+
+// TestQuery_PreTurnCompact_ColdStart_NoCompact verifies that on the first turn
+// with ContextTokens=0 and empty messages, no compact triggers and the query
+// proceeds normally. This is the cold start scenario.
+func TestQuery_PreTurnCompact_ColdStart_NoCompact(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Hello!"), nil)
+
+	compactCalled := false
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			compactCalled = true
+			return nil, errors.New("should not be called")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+	// ContextTokens defaults to 0 — cold start.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "hello", nil)
+
+	if compactCalled {
+		t.Error("compact should not be called on cold start with small context")
+	}
+	if result.Error != nil {
+		t.Fatalf("expected success, got: %v", result.Error)
+	}
+}
+
+// TestQuery_PreTurnCompact_StillOverLimit verifies that when compact succeeds
+// but context remains above the blocking limit, the query still proceeds
+// (compactSucceeded=true → skip blocking limit). The API call may 413, which
+// reactive compact handles. This is the edge case from the test-design skill.
+func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// API response — succeeds even though context is still large (mock doesn't enforce limits).
+	mp.addResponse(textStreamEvents("test-model", "OK despite large context."), nil)
+
+	compactCalled := false
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+			compactCalled = true
+			return &CompactResult{
+				// Compact barely reduces: 35000 → 33000 (still over blocking limit 31000).
+				BeforeTokens:   35000,
+				AfterTokens:    33000,
+				BeforeMessages: len(msgs),
+				Messages:       msgs, // Return same messages (simulates minimal reduction).
+			}, nil
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "do something", nil)
+
+	if !compactCalled {
+		t.Fatal("pre-turn compact should have been called")
+	}
+	// compactSucceeded=true → blocking limit skipped → API call proceeds.
+	// In real usage, the API might 413 and reactive compact handles it.
+	// Here the mock succeeds, so query should succeed.
+	if result.Error != nil {
+		t.Fatalf("expected success (compact succeeded, blocking limit skipped), got: %v", result.Error)
+	}
+}
+
+// TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit verifies that after
+// consecutiveCompactFailures reaches the limit, shouldAutoCompact() returns
+// false, compact doesn't run, and the blocking limit fires as safety net.
+func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// API response — shouldn't be reached.
+	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			return nil, errors.New("compact failed")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Pre-set circuit breaker as if 3 failures already happened.
+	eng.mu.Lock()
+	eng.consecutiveCompactFailures = 3
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+		}))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "do something", nil)
+
+	if result.Error == nil {
+		t.Fatal("expected blocking limit error when circuit breaker tripped")
+	}
+	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
+		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	}
+}
+
+// TestQuery_BlockingLimit_WithCompactor_NoCompactTriggered is removed — it's
+// redundant with TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit.
+// Analysis: auto-compact threshold ≤ blocking limit for all window sizes,
+// so the only way compact doesn't trigger while over blocking limit is when
+// shouldAutoCompact returns false (circuit breaker, no compactor, sub-agent).
+// Those cases are already covered by other tests.
+
+// TestQuery_PreTurnCompact_NoOp_BlockingLimitFires verifies that when compact
+// "succeeds" but doesn't actually reduce tokens (BeforeTokens == AfterTokens),
+// the blocking limit still fires. This catches the real bug where the
+// AutoCompactor returns a no-op result (empty text in head messages → no LLM
+// call → zero delta) but compactSucceeded was set to true, causing the blocking
+// limit to be skipped while context keeps growing.
+func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// API response — shouldn't be reached because blocking limit should fire.
+	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+			// Simulate AutoCompactor no-op: returns same messages with no token reduction.
+			return &CompactResult{
+				BeforeTokens:   35000,
+				AfterTokens:    35000, // Same! No reduction.
+				BeforeMessages: len(msgs),
+				Messages:       msgs, // Original messages unchanged.
+			}, nil
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	for range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "do something", nil)
+
+	// No-op compact should NOT skip the blocking limit.
+	if result.Error == nil {
+		t.Fatal("expected blocking limit error when compact was a no-op (BeforeTokens == AfterTokens)")
+	}
+	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
+		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	}
+
+	// Verify compact DID run (it was attempted, just didn't help).
+	var compactAttempted bool
+	for _, evt := range tc.events {
+		if evt.Type == types.EventToolStart && evt.ToolUse != nil && evt.ToolUse.Name == "Compact" {
+			compactAttempted = true
+		}
+	}
+	if !compactAttempted {
+		t.Error("compact should have been attempted")
 	}
 }
 

@@ -106,7 +106,9 @@ type mockResponse struct {
 }
 
 func (m *mockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
-	return nil, errors.New("not implemented")
+	return &llm.Response{
+		Content: []types.ContentBlock{types.NewTextBlock("Summary of conversation.")},
+	}, nil
 }
 
 func (m *mockProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
