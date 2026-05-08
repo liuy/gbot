@@ -64,8 +64,12 @@ func (b *Builder) Build() (json.RawMessage, error) {
 		buf.WriteString(b.GBOTMDContent)
 	}
 
-	// 5. Memory files
-	if len(b.MemoryFiles) > 0 {
+	// 5. Memory — typed-memory prompt with full instructions
+	if memPrompt := FormatMemoryPrompt(b.WorkingDir); memPrompt != "" {
+		buf.WriteString("\n\n")
+		buf.WriteString(memPrompt)
+	} else if len(b.MemoryFiles) > 0 {
+		// Fallback: legacy format when typed-memory is disabled
 		buf.WriteString(FormatMemorySection(b.MemoryFiles))
 	}
 

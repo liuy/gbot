@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/liuy/gbot/pkg/context"
+	"github.com/liuy/gbot/pkg/memory/long"
 )
 
 func TestLoadMemoryFiles_Empty(t *testing.T) {
@@ -22,7 +23,7 @@ func TestLoadMemoryFiles_Empty(t *testing.T) {
 func TestLoadMemoryFiles_SingleFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestLoadMemoryFiles_SingleFile(t *testing.T) {
 func TestLoadMemoryFiles_MultipleFiles(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestLoadMemoryFiles_MultipleFiles(t *testing.T) {
 func TestLoadMemoryFiles_SkipsNonMarkdown(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func TestLoadMemoryFiles_SkipsNonMarkdown(t *testing.T) {
 func TestLoadMemoryFiles_SkipsEmptyFiles(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestLoadMemoryFiles_SkipsEmptyFiles(t *testing.T) {
 func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -140,42 +141,70 @@ func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
 	}
 }
 
-func TestLoadMemoryFiles_SkipsDuplicates(t *testing.T) {
-	// NOT parallel: modifies HOME env var
-	// Create a home dir and a working dir under it so they overlap
-	homeDir := filepath.Join(t.TempDir(), "home")
-	workDir := filepath.Join(homeDir, "project")
-	memDir := filepath.Join(homeDir, ".gbot", "memory")
+func TestLoadMemoryFiles_MigratesFromLegacyPath(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := "legacy content"
+	if err := os.WriteFile(filepath.Join(legacyDir, "old.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file after migration, got %d", len(files))
+	}
+	// Migration adds frontmatter but preserves original content
+	if !strings.Contains(files[0].Content, content) {
+		t.Errorf("expected content to contain %q, got %q", content, files[0].Content)
+	}
+	if !strings.HasPrefix(files[0].Content, "---\n") {
+		t.Error("expected frontmatter from migration")
+	}
+	if !strings.Contains(files[0].Content, "Migrated from legacy memory") {
+		t.Error("expected migration description in frontmatter")
+	}
+}
+
+func TestLoadMemoryFiles_MigrationSkipsWhenNewPathHasContent(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	content := "deduplicated content"
-	if err := os.WriteFile(filepath.Join(memDir, "shared.md"), []byte(content), 0644); err != nil {
+	// Write directly to new path — migration should be skipped
+	if err := os.WriteFile(filepath.Join(memDir, "new.md"), []byte("new content"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Set HOME so LoadMemoryFiles scans both home and working dir
-	origHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", homeDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
-
-	// workingDir is under homeDir, so the same file appears in both scans
-	files := context.LoadMemoryFiles(workDir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file (deduplicated), got %d", len(files))
+	// Also create legacy file — should be ignored since new path already has content
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	if files[0].Content != content {
-		t.Errorf("expected %q, got %q", content, files[0].Content)
+	if err := os.WriteFile(filepath.Join(legacyDir, "legacy.md"), []byte("legacy"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (only new path), got %d", len(files))
+	}
+	if files[0].Content != "new content" {
+		t.Errorf("expected 'new content', got %q", files[0].Content)
 	}
 }
 
 func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
 	t.Parallel()
-	// Create a file and make it unreadable via chmod 0000.
-	// ReadDir will see it but ReadFile will fail with permission denied.
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -198,74 +227,19 @@ func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
 
 func TestLoadMemoryFiles_NonExistentDir(t *testing.T) {
 	t.Parallel()
-	// Pass a path that doesn't exist at all — os.ReadDir fails, continues
+	// Pass a path that doesn't exist at all — os.ReadDir fails, returns nil
 	files := context.LoadMemoryFiles("/nonexistent/path/that/does/not/exist")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files for nonexistent dir, got %d", len(files))
 	}
 }
 
-func TestLoadMemoryFiles_DeduplicationAcrossDirs(t *testing.T) {
-	t.Parallel()
-	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(memDir, "shared.md"), []byte("shared content"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// LoadMemoryFiles scans both workingDir/.gbot/memory and ~/.gbot/memory.
-	// With tmpDir, only tmpDir/.gbot/memory exists — should load exactly once.
-	files := context.LoadMemoryFiles(tmpDir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
-	}
-	if files[0].Content != "shared content" {
-		t.Errorf("expected 'shared content', got %q", files[0].Content)
-	}
-}
-
-func TestLoadMemoryFiles_SeenDedup(t *testing.T) {
-	// NOT parallel: modifies HOME env var
-	// When workingDir == homeDir, the same memory dir is scanned twice.
-	// The seen map should prevent duplicate entries.
-	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	content := "seen dedup content"
-	if err := os.WriteFile(filepath.Join(memDir, "unique.md"), []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Set HOME to tmpDir so both scans hit the same memory dir
-	origHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", origHome) }()
-
-	files := context.LoadMemoryFiles(tmpDir)
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file (seen dedup), got %d", len(files))
-	}
-	if files[0].Content != content {
-		t.Errorf("expected %q, got %q", content, files[0].Content)
-	}
-}
-
 func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
 	t.Parallel()
 	// filepath.Abs on an already-absolute path never errors — it just
-	// returns the path. This test creates a scenario where LoadMemoryFiles
-	// processes a file to ensure the happy path through filepath.Abs is
-	// covered. The error path at memory.go:48-49 is structurally unreachable
-	// since filepath.Join produces absolute paths from memoryDirs().
+	// returns the path. This test verifies the happy path through filepath.Abs.
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +251,6 @@ func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
-	// Verify the path is absolute
 	if !filepath.IsAbs(files[0].Path) {
 		t.Errorf("expected absolute path, got %q", files[0].Path)
 	}
@@ -286,7 +259,7 @@ func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
 func TestLoadMemoryFiles_MarkdownExtensions(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
-	memDir := filepath.Join(tmpDir, ".gbot", "memory")
+	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +328,8 @@ func TestFormatMemorySection_HomePathTilde(t *testing.T) {
 }
 
 func TestBuild_WithMemoryFiles(t *testing.T) {
-	t.Parallel()
+	// Disable typed-memory to test the legacy MemoryFiles path
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
 	b := context.NewBuilder("/work")
 	b.MemoryFiles = []context.MemoryFile{
 		{Path: "/work/.gbot/memory/test.md", Content: "Remember this"},
@@ -376,5 +350,28 @@ func TestBuild_WithMemoryFiles(t *testing.T) {
 	}
 	if !strings.Contains(promptStr, "Remember this") {
 		t.Error("built prompt missing memory content")
+	}
+}
+
+func TestBuild_WithTypedMemory(t *testing.T) {
+	// Enable typed-memory (env=0 means enabled)
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	b := context.NewBuilder("/work")
+
+	result, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	var promptStr string
+	if err := json.Unmarshal(result, &promptStr); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+
+	if !strings.Contains(promptStr, "Types of memory") {
+		t.Error("built prompt missing typed-memory section")
+	}
+	if !strings.Contains(promptStr, "What NOT to save") {
+		t.Error("built prompt missing 'What NOT to save' section")
 	}
 }
