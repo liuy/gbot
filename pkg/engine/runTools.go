@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/hooks"
-	"log/slog"
-	"runtime/debug"
+	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/permission"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -636,7 +639,12 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
 		// The checker is a system component — if it panics (e.g. nil interface trap),
 		// silently disable it and let the tool execute, rather than failing the tool.
-		if e.permChecker != nil {
+
+		// Memory path bypass: auto-allow writes to the memory directory.
+		// TS: isAutoMemPath (filesystem.ts:1572-1581) — write carve-out for auto-memory.
+		if isMemoryPathWrite(tt.Name, tt.Input) {
+			// Skip permission check — memory dir writes are always allowed.
+		} else if e.permChecker != nil {
 			var decision permission.Decision
 			func() {
 				defer func() {
@@ -1021,6 +1029,34 @@ func ConcurrentToolLoop(
 ) *ExecuteAllResult {
 	executor := NewStreamingToolExecutor(tools, tctx, emitEvent, ctx)
 	return executor.ExecuteAll(blocks)
+}
+
+// isMemoryPathWrite checks if a tool call is a Write to the auto-memory directory.
+// When true, the permission check is bypassed — memory writes are always allowed.
+// TS: isAutoMemPath bypass (filesystem.ts:1572-1581)
+func isMemoryPathWrite(toolName string, input json.RawMessage) bool {
+	if toolName != "Write" || !long.IsAutoMemoryEnabled() {
+		return false
+	}
+
+	var writeInput struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(input, &writeInput); err != nil || writeInput.FilePath == "" {
+		return false
+	}
+
+	absPath, err := filepath.Abs(writeInput.FilePath)
+	if err != nil {
+		return false
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+
+	return long.IsMemoryPath(cwd, absPath)
 }
 
 

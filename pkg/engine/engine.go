@@ -27,6 +27,8 @@ import (
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
 	"github.com/liuy/gbot/pkg/types"
 
+	"github.com/liuy/gbot/pkg/memory/session"
+
 	"github.com/google/uuid"
 )
 
@@ -37,6 +39,13 @@ import (
 type Compactor interface {
 	Compact(ctx context.Context, messages []types.Message) (*CompactResult, error)
 }
+
+// PostTurnHook is called after each successful turn in the agentic loop.
+// TS source: utils/hooks/postSamplingHooks.ts — PostSamplingHook.
+// Only fires on the main engine (not sub-agents), and only when auto-compact
+// is enabled (ContextWindow > 0), matching TS behavior where session memory
+// depends on auto-compact.
+type PostTurnHook func(ctx context.Context, messages []types.Message, currentTokens int, querySource string)
 
 // TS auto-compact constants.
 // Source: services/compact/autoCompact.ts
@@ -105,6 +114,16 @@ type Engine struct {
 	compactor                  Compactor
 	autoCompactConfig          AutoCompactConfig
 	consecutiveCompactFailures int
+
+	// postTurnHooks are called after each successful agentic turn.
+	// TS source: utils/hooks/postSamplingHooks.ts — postSamplingHooks array.
+	// Session memory extraction registers here.
+	postTurnHooks []PostTurnHook
+
+	// sessionMemory manages background session notes extraction.
+	// TS source: services/SessionMemory/sessionMemory.ts.
+	// nil when session memory is disabled (auto-compact off or not configured).
+	sessionMemory *session.SessionMemory
 
 	// ContextTokens stores the context token count from the last API response.
 	// Value = TotalInputTokens() + OutputTokens (input + cache + output of last turn).
@@ -680,10 +699,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 				})
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.turnCount++
+				e.firePostTurnHooks(ctx)
 				continue
 			}
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
+			e.firePostTurnHooks(ctx)
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
 				InputTokens:              totalUsage.InputTokens,
 				OutputTokens:             totalUsage.OutputTokens,
@@ -763,6 +784,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 
 		// Stage 25-26: Turn counting
 		e.turnCount++
+
+		// Post-turn hooks (session memory extraction, etc.)
+		// TS: executePostSamplingHooks in query.ts after each sampling step.
+		e.firePostTurnHooks(ctx)
 	}
 
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
@@ -1479,9 +1504,34 @@ func (e *Engine) shouldAutoCompact() bool {
 func (e *Engine) runCompact(ctx context.Context, logLabel string) (*CompactResult, error) {
 	e.mu.RLock()
 	realTokens := e.ContextTokens
+	sm := e.sessionMemory
+	comp := e.compactor
 	e.mu.RUnlock()
 
-	result, err := e.compactor.Compact(ctx, e.Messages())
+	// Try SM-compact first if session memory is available.
+	// TS source: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
+	if sm != nil {
+		if ac, ok := comp.(*AutoCompactor); ok {
+			if result, _ := ac.TrySMCompact(e.Messages(), sm); result != nil {
+				// SM-compact succeeded
+				messageDelta := result.BeforeTokens - result.AfterTokens
+				e.mu.Lock()
+				e.messages = result.Messages
+				e.ContextTokens = e.ContextTokens - messageDelta
+				if e.ContextTokens < 0 {
+					e.logger.Error(logLabel+": contextTokens went negative (sm-compact)",
+						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
+				}
+				e.mu.Unlock()
+				result.BeforeTokens = realTokens
+				result.AfterTokens = realTokens - messageDelta
+				return result, nil
+			}
+		}
+	}
+
+	// Fall back to LLM summarization compact
+	result, err := comp.Compact(ctx, e.Messages())
 	if err != nil {
 		return nil, err
 	}
@@ -1885,6 +1935,41 @@ func (e *Engine) SetCompactor(c Compactor, cfg AutoCompactConfig) {
 	e.mu.Unlock()
 }
 
+// RegisterPostTurnHook adds a hook to be called after each successful agentic turn.
+// TS source: registerPostSamplingHook in postSamplingHooks.ts.
+func (e *Engine) RegisterPostTurnHook(hook PostTurnHook) {
+	e.mu.Lock()
+	e.postTurnHooks = append(e.postTurnHooks, hook)
+	e.mu.Unlock()
+}
+
+// firePostTurnHooks calls all registered post-turn hooks.
+// Only fires when auto-compact is enabled (ContextWindow > 0), matching TS behavior
+// where session memory depends on auto-compact. Hooks run sequentially; errors are
+// logged but do not abort the loop (fire-and-forget).
+// TS source: executePostSamplingHooks in postSamplingHooks.ts.
+func (e *Engine) firePostTurnHooks(ctx context.Context) {
+	if e.isSubagent || e.autoCompactConfig.ContextWindow <= 0 {
+		return
+	}
+	e.mu.RLock()
+	hooks := make([]PostTurnHook, len(e.postTurnHooks))
+	copy(hooks, e.postTurnHooks)
+	msgs := e.messages
+	src := e.querySource()
+	e.mu.RUnlock()
+	for _, hook := range hooks {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					e.logger.Warn("post-turn hook panicked", "error", r)
+				}
+			}()
+			hook(ctx, msgs, e.ContextTokens, src)
+		}()
+	}
+}
+
 // SetRecordWriter configures the callback for persisting ContentReplacementRecords.
 // TS: writeToTranscript callback (toolResultStorage.ts:924-936).
 func (e *Engine) SetRecordWriter(fn func([]toolresult.ContentReplacementRecord)) {
@@ -1900,6 +1985,47 @@ func (e *Engine) UpdateAutoCompactConfig(cfg AutoCompactConfig) {
 	e.mu.Lock()
 	e.autoCompactConfig = cfg
 	e.mu.Unlock()
+}
+
+// SetSessionMemory configures the session memory manager for this engine.
+// Also registers the session memory extraction as a post-turn hook.
+// TS source: sessionMemory.ts:357 — initSessionMemory.
+func (e *Engine) SetSessionMemory(sm *session.SessionMemory) {
+	e.mu.Lock()
+	e.sessionMemory = sm
+	e.mu.Unlock()
+
+	if sm != nil {
+		e.RegisterPostTurnHook(func(ctx context.Context, messages []types.Message, currentTokens int, querySource string) {
+			// Only extract on main thread — TS: querySource check
+			if !isMainThreadSource(querySource) {
+				return
+			}
+			if !sm.ShouldExtract(currentTokens, messages) {
+				return
+			}
+			// Count tool calls in last assistant turn
+			toolCalls := 0
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == types.RoleAssistant {
+					for _, block := range messages[i].Content {
+						if block.Type == types.ContentTypeToolUse {
+							toolCalls++
+						}
+					}
+					break
+				}
+			}
+			sm.RecordToolCalls(toolCalls)
+
+			// Run extraction asynchronously — TS: extractSessionMemory runs in background via runForkedAgent
+			go func() {
+				if err := sm.Extract(ctx, messages, currentTokens); err != nil {
+					e.logger.Warn("session memory extraction failed", "error", err)
+				}
+			}()
+		})
+	}
 }
 
 // ContextWindow returns the configured context window size in tokens.
@@ -2019,6 +2145,14 @@ func isBuiltInAgent(agentType string) bool {
 func (e *Engine) querySource() string {
 	if !e.isSubagent {
 		return QuerySourceReplMainThread
+	}
+	// Forked agents with recursion guards — must return their dedicated
+	// QuerySource constant so shouldAutoCompact can prevent deadlocks.
+	if e.agentType == "compact" {
+		return QuerySourceCompact
+	}
+	if e.agentType == "session_memory" {
+		return QuerySourceSessionMemory
 	}
 	if isBuiltInAgent(e.agentType) {
 		return "agent:builtin:" + e.agentType
