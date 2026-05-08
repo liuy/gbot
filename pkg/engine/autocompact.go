@@ -256,7 +256,63 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 		msgs = append(msgs, converted)
 	}
 
+	// Remove orphaned tool_results: tool_result blocks whose tool_use was in
+	// the removed head. The API rejects tool_results without matching tool_use.
+	msgs = removeOrphanedToolResults(msgs)
+
 	return msgs
+}
+
+// removeOrphanedToolResults strips tool_result blocks whose tool_use_id has no
+// matching tool_use block in the message array. After compact, the head (removed)
+// may contain tool_use blocks whose tool_result is in the tail (kept). The API
+// rejects tool_results without matching tool_use, so we must remove them.
+func removeOrphanedToolResults(msgs []types.Message) []types.Message {
+	// Collect all tool_use IDs.
+	toolUseIDs := make(map[string]bool)
+	for _, msg := range msgs {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse {
+				toolUseIDs[block.ID] = true
+			}
+		}
+	}
+
+	// Walk messages, strip orphaned tool_results.
+	changed := false
+	result := make([]types.Message, len(msgs))
+	for i, msg := range msgs {
+		result[i] = msg
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		hasOrphan := false
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult && !toolUseIDs[block.ToolUseID] {
+				hasOrphan = true
+				break
+			}
+		}
+		if !hasOrphan {
+			continue
+		}
+		// Rebuild content without orphaned blocks.
+		newContent := make([]types.ContentBlock, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult && !toolUseIDs[block.ToolUseID] {
+				continue // skip orphan
+			}
+			newContent = append(newContent, block)
+		}
+		result[i] = msg
+		result[i].Content = newContent
+		changed = true
+	}
+
+	if !changed {
+		return msgs
+	}
+	return result
 }
 
 // extractTextFromShortContent extracts readable text from a short.TranscriptMessage's JSON content.

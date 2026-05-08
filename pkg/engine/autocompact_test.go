@@ -1035,3 +1035,80 @@ func TestExtractTextFromShortContent_PlainText(t *testing.T) {
 	}
 }
 
+
+// TestBuildResultMessages_RemovesOrphanedToolResults verifies that after compact,
+// tool_result blocks whose tool_use was removed are stripped.
+// This reproduces the production bug: "tool result's tool id not found".
+func TestBuildResultMessages_RemovesOrphanedToolResults(t *testing.T) {
+	t.Parallel()
+
+	compactor := &AutoCompactor{}
+
+	// Simulate compact result where head had the tool_use but tail has the tool_result.
+	// The kept messages have:
+	//   - user msg with tool_result (tool_use_id="orphan_1") — no matching tool_use
+	//   - assistant msg with tool_use (id="kept_1")
+	//   - user msg with tool_result (tool_use_id="kept_1") — has matching tool_use
+	kept := []*short.TranscriptMessage{
+		{
+			UUID:  "u1",
+			Type:  "user",
+			Content: `[{"type":"tool_result","tool_use_id":"orphan_1","content":"\"old data\""}]`,
+		},
+		{
+			UUID:  "a1",
+			Type:  "assistant",
+			Content: `[{"type":"tool_use","id":"kept_1","name":"Bash","input":"{\"command\":\"ls\"}"}]`,
+		},
+		{
+			UUID:  "u2",
+			Type:  "user",
+			Content: `[{"type":"tool_result","tool_use_id":"kept_1","content":"\"kept data\""}]`,
+		},
+	}
+
+	pcr := &short.CompactResult{
+		BoundaryMarker: &short.TranscriptMessage{
+			UUID:    "boundary",
+			Type:    "user",
+			Content: `[{"type":"text","text":"Previous conversation compacted"}]`,
+		},
+		MessagesToKeep: kept,
+	}
+
+	result := compactor.buildResultMessages(pcr, "summary text")
+
+	// Collect all tool_use IDs in result
+	toolUseIDs := make(map[string]bool)
+	for _, msg := range result {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse {
+				toolUseIDs[block.ID] = true
+			}
+		}
+	}
+
+	// Check: no orphaned tool_results
+	for _, msg := range result {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult {
+				if !toolUseIDs[block.ToolUseID] {
+					t.Errorf("orphaned tool_result: tool_use_id=%q has no matching tool_use block", block.ToolUseID)
+				}
+			}
+		}
+	}
+
+	// Check: valid tool_result is preserved
+	foundKept := false
+	for _, msg := range result {
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult && block.ToolUseID == "kept_1" {
+				foundKept = true
+			}
+		}
+	}
+	if !foundKept {
+		t.Error("tool_result for kept_1 should be preserved")
+	}
+}
