@@ -19,6 +19,7 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
@@ -448,6 +449,26 @@ func main() {
 				ContextWindow:          contextWindow,
 				MaxConsecutiveFailures: 3,
 			})
+		}
+
+		// Wire session memory extraction
+		// TS source: services/SessionMemory/sessionMemory.ts
+		if store != nil && sessionID != "" && contextWindow > 0 {
+			smCfg := session.DefaultConfig()
+			extractFn := func(ctx context.Context, prompt string, notesPath string) error {
+				editTool := fileedit.New()
+				subEng := eng.NewSubEngine(engine.SubEngineOptions{
+					Tools:     map[string]tool.Tool{"Edit": editTool},
+					AgentType: "session_memory",
+				})
+				defer subEng.Close()
+
+				sysPrompt, _ := json.Marshal(prompt)
+				result := subEng.QuerySync(ctx, "", sysPrompt)
+				return result.Error
+			}
+			sm := session.New(smCfg, workingDir, extractFn, slog.Default())
+			eng.SetSessionMemory(sm)
 		}
 
 			// Fire SessionStart hook
