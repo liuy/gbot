@@ -19,16 +19,18 @@ func TestHookEventNameValues(t *testing.T) {
 		HookPostToolUse:        true,
 		HookPostToolUseFailure: true,
 		HookStop:               true,
+		HookSubagentStart:      true,
 		HookSubagentStop:       true,
 		HookStopFailure:        true,
+		HookPermissionRequest:  true,
 		HookUserPromptSubmit:   true,
 		HookSessionStart:       true,
 		HookSessionEnd:         true,
 		HookPreCompact:         true,
 		HookPostCompact:        true,
 	}
-	if len(events) != 11 {
-		t.Errorf("expected 11 hook events, got %d", len(events))
+	if len(events) != 13 {
+		t.Errorf("expected 13 hook events, got %d", len(events))
 	}
 	// Verify string values match TS exactly (PascalCase, no underscores)
 	for ev := range events {

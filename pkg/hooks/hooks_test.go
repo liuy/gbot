@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,15 +22,16 @@ type HookRecorder struct {
 }
 
 type recorderCall struct {
-	command string
-	input   *HookInput
-	timeout time.Duration
+	command  string
+	input    *HookInput
+	timeout  time.Duration
+	extraEnv []string
 }
 
-func (r *HookRecorder) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration) HookResult {
+func (r *HookRecorder) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration, extraEnv []string) HookResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, recorderCall{command, input, timeout})
+	r.calls = append(r.calls, recorderCall{command, input, timeout, extraEnv})
 	if r.index < len(r.results) {
 		result := r.results[r.index]
 		r.index++
@@ -1473,7 +1475,7 @@ type recordingExecutor struct {
 	fn func(ctx context.Context, command string, input *HookInput, timeout time.Duration) HookResult
 }
 
-func (r *recordingExecutor) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration) HookResult {
+func (r *recordingExecutor) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration, extraEnv []string) HookResult {
 	return r.fn(ctx, command, input, timeout)
 }
 
@@ -1658,5 +1660,49 @@ func TestOnceKey_WithModel(t *testing.T) {
 	key2 := onceKey(HookPreToolUse, "Bash", cfg2)
 	if key1 == key2 {
 		t.Error("different models should produce different keys")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plugin env injection — pluginRoot → extraEnv dispatch
+// ---------------------------------------------------------------------------
+
+func TestDispatch_PluginRoot_InjectsExtraEnv(t *testing.T) {
+	rec := &HookRecorder{
+		results: []HookResult{{Outcome: HookOutcomeSuccess}},
+	}
+	config := HooksConfig{
+		"PreToolUse": []HookMatcher{
+			{
+				Matcher:    "Bash",
+				PluginRoot: "/home/user/.gbot/plugins/my-plugin",
+				Hooks: []HookConfig{
+					{Type: HookTypeCommand, Command: "my-hook.sh"},
+				},
+			},
+		},
+	}
+	h := NewHooks(config, rec)
+	decision, results := h.PreToolUse(context.Background(), &HookInput{
+		HookEventName: "PreToolUse",
+		ToolName:      "Bash",
+	})
+	if decision != HookDecisionPassthrough {
+		t.Errorf("decision = %v, want Passthrough", decision)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results count = %d, want 1", len(results))
+	}
+	calls := rec.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("call count = %d, want 1", len(calls))
+	}
+	gotEnv := calls[0].extraEnv
+	if len(gotEnv) == 0 {
+		t.Fatal("extraEnv is empty — GBOT_PLUGIN_ROOT not injected (buildCompiledMatchersFrom bug?)")
+	}
+	found := slices.Contains(gotEnv, "GBOT_PLUGIN_ROOT=/home/user/.gbot/plugins/my-plugin")
+	if !found {
+		t.Errorf("extraEnv = %v, want to contain GBOT_PLUGIN_ROOT=/home/user/.gbot/plugins/my-plugin", gotEnv)
 	}
 }

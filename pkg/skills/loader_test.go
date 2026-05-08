@@ -662,12 +662,58 @@ func TestLoadUserSkills_HomeDirExists(t *testing.T) {
 	}
 }
 
-func TestLoadBundledSkills(t *testing.T) {
+
+// ---------------------------------------------------------------------------
+// RegisterPluginSkills — plugin skills are discoverable
+// ---------------------------------------------------------------------------
+
+func TestRegisterPluginSkills_Discoverable(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry(t.TempDir())
-	skills := reg.loadBundledSkills()
-	if skills != nil {
-		t.Errorf("loadBundledSkills should return nil, got %d", len(skills))
+	// Load built-in skills (empty in test)
+	if err := reg.Load(); err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	pluginSkills := []types.SkillCommand{
+		{
+			Name:        "my-plugin:autopilot",
+			Description: "Run in autonomous mode",
+			Type:        "prompt",
+			Source:      types.SkillSourcePlugin,
+			LoadedFrom:  "plugin",
+			SkillRoot:   "/plugins/my-plugin",
+			PluginInfo:  &types.PluginSkillInfo{PluginName: "my-plugin"},
+		},
+	}
+	reg.RegisterPluginSkills(pluginSkills)
+
+	// Verify FindSkill discovers the plugin skill
+	found := reg.FindSkill("my-plugin:autopilot")
+	if found == nil {
+		t.Fatal("FindSkill('my-plugin:autopilot') returned nil")
+	}
+	if found.Name != "my-plugin:autopilot" {
+		t.Errorf("found.Name = %q, want 'my-plugin:autopilot'", found.Name)
+	}
+	if found.Source != types.SkillSourcePlugin {
+		t.Errorf("found.Source = %v, want SkillSourcePlugin", found.Source)
+	}
+	if found.PluginInfo == nil || found.PluginInfo.PluginName != "my-plugin" {
+		t.Errorf("found.PluginInfo = %v, want PluginName='my-plugin'", found.PluginInfo)
+	}
+
+	// Verify it appears in GetSkillToolSkills
+	toolSkills := reg.GetSkillToolSkills()
+	foundInTool := false
+	for _, s := range toolSkills {
+		if s.Name == "my-plugin:autopilot" {
+			foundInTool = true
+			break
+		}
+	}
+	if !foundInTool {
+		t.Error("plugin skill not found in GetSkillToolSkills results")
 	}
 }

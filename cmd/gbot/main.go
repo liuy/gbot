@@ -24,6 +24,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/permission"
+	"github.com/liuy/gbot/pkg/plugins"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -135,6 +136,13 @@ func main() {
 
 	
 	agenttool.InitLoader(workingDir)
+
+	// Plugin system — discover and load plugins before MCP/hooks/skills
+	loadedPlugins, pluginErr := plugins.LoadAndInitialize(context.Background(), workingDir)
+	if pluginErr != nil {
+		slog.Warn("main: plugin loading failed", "error", pluginErr)
+	}
+
 	bashJobReg := bash.NewJobInfoAdapter(bash.DefaultRegistry())
 	forkJobReg := agentTool.JobAdapter()
 	jobReg := job.NewMultiRegistry(bashJobReg, forkJobReg)
@@ -157,7 +165,11 @@ func main() {
 	h := hub.NewHub()
 
 	// MCP registry
-	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{})
+	var pluginServers map[string]mcp.ScopedMcpServerConfig
+	if loadedPlugins != nil {
+		pluginServers = loadedPlugins.McpServers
+	}
+	mcpRegistry, err := mcp.LoadAndConnectMCP(context.Background(), workingDir, mcp.TransportFactory{}, pluginServers)
 	if err != nil {
 		slog.Warn("main: MCP initialization failed", "error", err)
 	}
@@ -177,6 +189,19 @@ func main() {
 		},
 	}
 	hookSystem := hooks.NewHooks(hooksConfig, hookExecutor)
+
+	// Merge plugin hooks, skills, and agents
+	if loadedPlugins != nil {
+		if len(loadedPlugins.Hooks) > 0 {
+			hooksConfig = plugins.MergeHooks(hooksConfig, loadedPlugins.Hooks)
+			hookSystem.ReloadConfig(hooksConfig)
+		}
+		// Plugin env vars are injected per-hook via extraEnv in dispatch(),
+		// not via shared hookExecutor.Env, to avoid cross-plugin pollution.
+		_ = loadedPlugins.EnvVars
+		skillReg.RegisterPluginSkills(loadedPlugins.Skills)
+		agenttool.GlobalLoader().RegisterPluginAgents(loadedPlugins.Agents)
+	}
 
 	// Permission rules
 	configDir, _ := config.ConfigDir()
@@ -216,6 +241,23 @@ func main() {
 				ParentToolUseID: opts.ParentToolUseID,
 				AgentType:       opts.AgentType,
 			})
+
+			// Fire SubagentStart hook — collect additional context from plugins.
+			// Source: runAgent.ts:530-555
+			hookInput := &hooks.HookInput{
+				HookEventName: "SubagentStart",
+				AgentID:       subEng.SessionID(),
+				AgentType:     opts.AgentType,
+			}
+			for _, r := range hookSystem.SubagentStart(ctx, hookInput) {
+				if r.AdditionalContext != "" {
+				opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
+				})
+				}
+			}
+
 			messages := opts.UserContextMessages
 			if opts.Prompt != "" {
 				messages = append(messages, types.Message{

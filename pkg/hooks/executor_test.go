@@ -15,7 +15,7 @@ import (
 
 func TestExecuteHook_Exit0_Success(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "echo hello", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "echo hello", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Errorf("Outcome = %v, want HookOutcomeSuccess", result.Outcome)
 	}
@@ -26,7 +26,7 @@ func TestExecuteHook_Exit0_Success(t *testing.T) {
 
 func TestExecuteHook_Exit2_Blocking(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "echo blocked >&2 && exit 2", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "echo blocked >&2 && exit 2", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeBlocking {
 		t.Errorf("Outcome = %v, want HookOutcomeBlocking", result.Outcome)
 	}
@@ -37,7 +37,7 @@ func TestExecuteHook_Exit2_Blocking(t *testing.T) {
 
 func TestExecuteHook_Exit1_NonBlockingError(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "echo oops >&2 && exit 1", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "echo oops >&2 && exit 1", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeNonBlockingError {
 		t.Errorf("Outcome = %v, want HookOutcomeNonBlockingError", result.Outcome)
 	}
@@ -48,7 +48,7 @@ func TestExecuteHook_Exit1_NonBlockingError(t *testing.T) {
 
 func TestExecuteHook_Exit3_NonBlockingError(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "exit 3", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "exit 3", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeNonBlockingError {
 		t.Errorf("Outcome = %v, want HookOutcomeNonBlockingError for exit 3", result.Outcome)
 	}
@@ -67,7 +67,7 @@ func TestExecuteHook_StdinContainsHookInput(t *testing.T) {
 		SessionID:     "test-session",
 	}
 	// Command that echoes stdin back to stdout
-	result := e.ExecuteHook(context.Background(), "cat", input, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "cat", input, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Fatalf("Outcome = %v, want Success", result.Outcome)
 	}
@@ -97,7 +97,7 @@ func TestExecuteHook_StdoutJSONDecideBlock(t *testing.T) {
 	e := &CommandExecutor{}
 	result := e.ExecuteHook(context.Background(),
 		`echo '{"decision":"block","reason":"unsafe command"}'`,
-		&HookInput{}, 10*time.Second)
+		&HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeBlocking {
 		t.Errorf("Outcome = %v, want HookOutcomeBlocking", result.Outcome)
 	}
@@ -116,7 +116,7 @@ func TestExecuteHook_StdoutJSONDecideApprove(t *testing.T) {
 	e := &CommandExecutor{}
 	result := e.ExecuteHook(context.Background(),
 		`echo '{"decision":"approve"}'`,
-		&HookInput{}, 10*time.Second)
+		&HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Errorf("Outcome = %v, want HookOutcomeSuccess", result.Outcome)
 	}
@@ -132,7 +132,7 @@ func TestExecuteHook_StdoutJSONContinueFalse(t *testing.T) {
 	e := &CommandExecutor{}
 	result := e.ExecuteHook(context.Background(),
 		`echo '{"continue":false,"stopReason":"blocked by policy"}'`,
-		&HookInput{}, 10*time.Second)
+		&HookInput{}, 10*time.Second, nil)
 	if !result.PreventContinuation {
 		t.Error("PreventContinuation = false, want true")
 	}
@@ -145,7 +145,7 @@ func TestExecuteHook_StdoutJSONSystemMessage(t *testing.T) {
 	e := &CommandExecutor{}
 	result := e.ExecuteHook(context.Background(),
 		`echo '{"systemMessage":"Running in restricted mode"}'`,
-		&HookInput{}, 10*time.Second)
+		&HookInput{}, 10*time.Second, nil)
 	if result.SystemMessage != "Running in restricted mode" {
 		t.Errorf("SystemMessage = %q, want 'Running in restricted mode'", result.SystemMessage)
 	}
@@ -154,7 +154,7 @@ func TestExecuteHook_StdoutJSONSystemMessage(t *testing.T) {
 func TestExecuteHook_StdoutNonJSON(t *testing.T) {
 	// Non-JSON stdout is fine — Output stays nil
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "echo 'just plain text'", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "echo 'just plain text'", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Errorf("Outcome = %v, want Success", result.Outcome)
 	}
@@ -170,7 +170,7 @@ func TestExecuteHook_StdoutNonJSON(t *testing.T) {
 func TestExecuteHook_Timeout(t *testing.T) {
 	e := &CommandExecutor{}
 	// Command that sleeps longer than timeout
-	result := e.ExecuteHook(context.Background(), "sleep 10", &HookInput{}, 100*time.Millisecond)
+	result := e.ExecuteHook(context.Background(), "sleep 10", &HookInput{}, 100*time.Millisecond, nil)
 	if result.Outcome != HookOutcomeTimeout {
 		t.Errorf("Outcome = %v, want HookOutcomeTimeout", result.Outcome)
 	}
@@ -187,7 +187,7 @@ func TestExecuteHook_ContextCancelled(t *testing.T) {
 		time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to ensure command has started before cancellation
 		cancel()
 	}()
-	result := e.ExecuteHook(ctx, "sleep 10", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(ctx, "sleep 10", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeCancelled {
 		t.Errorf("Outcome = %v, want HookOutcomeCancelled", result.Outcome)
 	}
@@ -206,7 +206,7 @@ func TestExecuteHook_EnvInjection(t *testing.T) {
 	}
 	result := e.ExecuteHook(context.Background(),
 		"echo $GBOT_PROJECT_DIR && echo $GBOT_SESSION_ID",
-		&HookInput{}, 10*time.Second)
+		&HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Fatalf("Outcome = %v, want Success", result.Outcome)
 	}
@@ -224,7 +224,7 @@ func TestExecuteHook_EnvInjection(t *testing.T) {
 
 func TestExecuteHook_HookName(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "echo hello", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "echo hello", &HookInput{}, 10*time.Second, nil)
 	if result.HookName != "echo hello" {
 		t.Errorf("HookName = %q, want 'echo hello'", result.HookName)
 	}
@@ -236,7 +236,7 @@ func TestExecuteHook_HookName(t *testing.T) {
 
 func TestExecuteHook_EmptyCommand(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "true", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "true", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeSuccess {
 		t.Errorf("Outcome = %v, want Success for 'true'", result.Outcome)
 	}
@@ -244,7 +244,7 @@ func TestExecuteHook_EmptyCommand(t *testing.T) {
 
 func TestExecuteHook_CommandNotFound(t *testing.T) {
 	e := &CommandExecutor{}
-	result := e.ExecuteHook(context.Background(), "nonexistent_command_xyz", &HookInput{}, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "nonexistent_command_xyz", &HookInput{}, 10*time.Second, nil)
 	if result.Outcome != HookOutcomeNonBlockingError {
 		t.Errorf("Outcome = %v, want NonBlockingError for nonexistent command", result.Outcome)
 	}
@@ -253,7 +253,7 @@ func TestExecuteHook_CommandNotFound(t *testing.T) {
 func TestExecuteHook_NilInput(t *testing.T) {
 	e := &CommandExecutor{}
 	// nil input should not panic — json.Marshal(nil HookInput) produces {}
-	result := e.ExecuteHook(context.Background(), "cat", nil, 10*time.Second)
+	result := e.ExecuteHook(context.Background(), "cat", nil, 10*time.Second, nil)
 	// cat reads {} from stdin, outputs nothing, exits 0 → Success
 	if result.Outcome != HookOutcomeSuccess {
 		t.Errorf("Outcome = %v, want Success for nil input with cat", result.Outcome)

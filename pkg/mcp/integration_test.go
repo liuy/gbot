@@ -348,7 +348,7 @@ func TestIntegration_LoadAndConnectMCP(t *testing.T) {
 	provider.mu.Unlock()
 
 	// 4. Call the wireup function (doesn't exist yet → compile error = RED)
-	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, provider)
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, provider, nil)
 	if err != nil {
 		t.Fatalf("LoadAndConnectMCP: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestIntegration_LoadAndConnectMCP(t *testing.T) {
 func TestIntegration_LoadAndConnectMCP_NoConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{})
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestIntegration_LoadAndConnectMCP_EmptyConfig(t *testing.T) {
 		t.Fatalf("write .mcp.json: %v", err)
 	}
 
-	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{})
+	registry, err := LoadAndConnectMCP(context.Background(), tmpDir, TransportFactory{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

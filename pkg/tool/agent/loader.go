@@ -877,3 +877,29 @@ func InitLoader(cwd string) {
 	globalLoader = NewLoader(cwd)
 	// Lazy loading — don't call Load() here
 }
+
+// GlobalLoader returns the singleton agent loader initialized by InitLoader.
+func GlobalLoader() *Loader {
+	return globalLoader
+}
+
+// RegisterPluginAgents registers agents loaded from plugins.
+// Appends to the internal list and re-resolves override priorities.
+//
+// Invariant: must be called after Load/ensureLoaded has populated l.cached.
+// The l.once.Do(func(){}) marks once as triggered so subsequent ensureLoaded()
+// calls won't re-read from disk and overwrite plugin agents. If l.cached is nil
+// (called before any Load), l.load() is called as a safety net under the write lock.
+func (l *Loader) RegisterPluginAgents(agents []types.AgentDefinition) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.once.Do(func() {}) // mark once as triggered (no-op if already done by Load/ensureLoaded)
+	if l.cached == nil {
+		l.load() // safe: we hold the write lock
+	}
+	// Convert value slice to pointer slice for compatibility with cached field.
+	for i := range agents {
+		l.cached = append(l.cached, &agents[i])
+	}
+	l.cached = getActiveAgentsFromList(l.cached)
+}

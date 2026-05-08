@@ -31,7 +31,7 @@ type hookCall struct {
 	input   *hooks.HookInput
 }
 
-func (r *integrationHookRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration) hooks.HookResult {
+func (r *integrationHookRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration, extraEnv []string) hooks.HookResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, hookCall{event: input.HookEventName, command: command, input: input})

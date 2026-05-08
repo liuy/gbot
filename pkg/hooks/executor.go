@@ -33,7 +33,7 @@ type CommandExecutor struct {
 //   - other non-zero → HookOutcomeNonBlockingError
 //   - timeout → HookOutcomeTimeout (passthrough behavior)
 //   - context cancellation → HookOutcomeCancelled
-func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration) HookResult {
+func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration, extraEnv []string) HookResult {
 	// Serialize input as JSON for stdin.
 	// Source: hooks.ts — hook input passed via stdin pipe.
 	inputJSON, err := json.Marshal(input)
@@ -59,9 +59,10 @@ func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input
 	// Source: hooks.ts — shell execution via $SHELL (bash).
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 
-	// Set environment: inherit parent + inject extra vars.
-	if len(e.Env) > 0 {
+	// Set environment: inherit parent + inject extra vars + plugin extraEnv.
+	if len(e.Env) > 0 || len(extraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), e.Env...)
+		cmd.Env = append(cmd.Env, extraEnv...)
 	}
 
 	// Pipe stdin for hook input JSON.
@@ -149,6 +150,9 @@ func (e *CommandExecutor) ExecuteHook(ctx context.Context, command string, input
 			}
 			if output.SystemMessage != "" {
 				result.SystemMessage = output.SystemMessage
+			}
+			if output.AdditionalContext != "" {
+				result.AdditionalContext = output.AdditionalContext
 			}
 			if output.Continue != nil && !*output.Continue {
 				result.PreventContinuation = true

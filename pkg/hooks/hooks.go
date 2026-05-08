@@ -39,9 +39,10 @@ type Hooks struct {
 
 // compiledMatcher is a pre-compiled pattern function with its hooks.
 type compiledMatcher struct {
-	pattern string
-	matchFn func(string) bool
-	hooks   []HookConfig
+	pattern    string
+	matchFn    func(string) bool
+	hooks      []HookConfig
+	pluginRoot string // from HookMatcher.PluginRoot
 }
 
 // NewHooks creates a new Hooks facade with the given config and executor.
@@ -111,9 +112,10 @@ func buildCompiledMatchersFrom(cfg HooksConfig) map[string][]compiledMatcher {
 		compiled := make([]compiledMatcher, 0, len(matchers))
 		for _, m := range matchers {
 			compiled = append(compiled, compiledMatcher{
-				pattern: m.Matcher,
-				matchFn: CompileMatcher(m.Matcher),
-				hooks:   m.Hooks,
+				pattern:    m.Matcher,
+				matchFn:    CompileMatcher(m.Matcher),
+				hooks:      m.Hooks,
+				pluginRoot: m.PluginRoot,
 			})
 		}
 		result[event] = compiled
@@ -168,6 +170,18 @@ func (h *Hooks) Stop(ctx context.Context, input *HookInput) *HookResult {
 func (h *Hooks) SubagentStop(ctx context.Context, input *HookInput) *HookResult {
 	results := h.dispatch(ctx, HookSubagentStop, input)
 	return findBlockingResult(results)
+}
+
+// SubagentStart runs when a sub-agent starts.
+// Source: coreSchemas.ts:540-547 — SubagentStartHookInputSchema.
+func (h *Hooks) SubagentStart(ctx context.Context, input *HookInput) []HookResult {
+	return h.dispatch(ctx, HookSubagentStart, input)
+}
+
+// PermissionRequest runs before a permission prompt is shown to the user.
+// Source: coreSchemas.ts:425-428 — PermissionRequestHookInputSchema.
+func (h *Hooks) PermissionRequest(ctx context.Context, input *HookInput) []HookResult {
+	return h.dispatch(ctx, HookPermissionRequest, input)
 }
 
 // StopFailure runs when turn ends due to API error.
@@ -245,7 +259,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 			// Async hooks run in background, don't block dispatch.
 			// Source: hooks.ts:995-1030 — async/asyncRewake path.
 			if hookCfg.Async || hookCfg.AsyncRewake {
-				h.runAsyncHook(ctx, exec, pe, ae, hookCfg, input, timeout)
+				h.runAsyncHook(ctx, exec, pe, ae, hookCfg, input, timeout, cm.pluginRoot)
 				continue
 			}
 
@@ -255,7 +269,12 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 				if exec == nil {
 					continue
 				}
-				result = exec.ExecuteHook(ctx, hookCfg.Command, input, timeout)
+				// Build extraEnv from plugin context
+				var extraEnv []string
+				if cm.pluginRoot != "" {
+					extraEnv = []string{"GBOT_PLUGIN_ROOT=" + cm.pluginRoot}
+				}
+				result = exec.ExecuteHook(ctx, hookCfg.Command, input, timeout, extraEnv)
 			case HookTypePrompt:
 				if pe == nil {
 					continue
@@ -378,13 +397,18 @@ func (h *Hooks) runAsyncHook(
 	hookCfg HookConfig,
 	input *HookInput,
 	timeout time.Duration,
+	pluginRoot string,
 ) {
 	go func() {
 		var result HookResult
 		switch hookCfg.Type {
 		case HookTypeCommand:
 			if exec != nil {
-				result = exec.ExecuteHook(ctx, hookCfg.Command, input, timeout)
+				var extraEnv []string
+				if pluginRoot != "" {
+					extraEnv = []string{"GBOT_PLUGIN_ROOT=" + pluginRoot}
+				}
+				result = exec.ExecuteHook(ctx, hookCfg.Command, input, timeout, extraEnv)
 			}
 		case HookTypePrompt:
 			if pe != nil {

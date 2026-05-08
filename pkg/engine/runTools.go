@@ -632,6 +632,34 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 				// Phase 2: bare-tool ask
 				if decision.Action == permission.ActionAsk {
+					// Fire PermissionRequest hook — plugins can auto-allow/deny.
+					// Source: interactiveHandler.ts:412 — executePermissionRequestHooks
+					if e.hooks != nil {
+						hookInput := &hooks.HookInput{
+							HookEventName: "PermissionRequest",
+							ToolName:      tt.Name,
+						}
+						for _, r := range e.hooks.PermissionRequest(context.Background(), hookInput) {
+							if r.Output != nil && r.Output.Decision == "allow" {
+								continue // hook approved, skip askUser — fall through to Phase 3
+							}
+							if r.Output != nil && r.Output.Decision == "block" {
+								errMsg := ruleDenyMessage(tt.Name)
+								errBytes, _ := json.Marshal(errMsg)
+								e.doEmit(types.QueryEvent{
+									Type: types.EventToolEnd,
+									ToolResult: &types.ToolResultEvent{
+										ToolUseID:     tt.ID,
+										Output:        errBytes,
+										DisplayOutput: errMsg,
+										IsError:       true,
+									},
+								})
+								tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+								return
+							}
+						}
+					}
 					userDecision := e.askUser(tt, decision, "")
 					if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
 						errMsg := e.userOrSubRejectMessage()

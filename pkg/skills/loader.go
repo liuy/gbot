@@ -64,10 +64,7 @@ func NewRegistry(cwd string) *Registry {
 func (r *Registry) Load() error {
 	var allSkills []types.SkillCommand
 
-	// Source 1: Bundled skills (embed.FS)
-	// TS: bundledSkills — registered via registerBundledSkill
-	bundled := r.loadBundledSkills()
-	allSkills = append(allSkills, bundled...)
+	// Source 1: Bundled skills are registered separately via RegisterBundledSkill.
 
 	// Source 2: Managed skills (policy)
 	// TS: managedSkills — loadSkillsDir.ts:686-688
@@ -106,7 +103,6 @@ func (r *Registry) Load() error {
 	slog.Info("skills: loaded",
 		"total", len(unconditional),
 		"conditional", len(r.conditional),
-		"bundled", len(bundled),
 		"managed", len(managed),
 		"user", len(user),
 		"project", len(project),
@@ -145,7 +141,7 @@ func (r *Registry) GetSkillToolSkills() []types.SkillCommand {
 		}
 		// Filter: source != "builtin" (gbot doesn't have builtin source)
 		// Filter: loadedFrom == "bundled" || "skills" || hasUserSpecifiedDesc || whenToUse
-		if cmd.LoadedFrom == "bundled" || cmd.LoadedFrom == "skills" {
+		if cmd.LoadedFrom == "bundled" || cmd.LoadedFrom == "skills" || cmd.LoadedFrom == "plugin" {
 			result = append(result, cmd)
 			continue
 		}
@@ -183,14 +179,6 @@ func (r *Registry) HasSkill(name string) bool {
 // ---------------------------------------------------------------------------
 // Discovery sources
 // ---------------------------------------------------------------------------
-
-// loadBundledSkills loads skills from the bundled (embedded) skill set.
-// TS: bundledSkills — registered at startup, not from filesystem.
-// gbot: returns empty for now; bundled skills will be added via RegisterBundledSkill.
-func (r *Registry) loadBundledSkills() []types.SkillCommand {
-	// Bundled skills are registered separately via RegisterBundledSkill.
-	return nil
-}
 
 // loadManagedSkills loads skills from the policy directory.
 // Source: loadSkillsDir.ts:686-688 — managedSkillsDir
@@ -445,4 +433,11 @@ func sortDirsDeepestFirst(dirs []string) {
 		return strings.Count(dirs[i], string(filepath.Separator)) >
 			strings.Count(dirs[j], string(filepath.Separator))
 	})
+}
+
+// RegisterPluginSkills registers skills loaded from plugins.
+func (r *Registry) RegisterPluginSkills(skills []types.SkillCommand) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skills = append(r.skills, skills...)
 }

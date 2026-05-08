@@ -28,8 +28,10 @@ const (
 	HookPostToolUse        HookEventName = "PostToolUse"
 	HookPostToolUseFailure HookEventName = "PostToolUseFailure"
 	HookStop               HookEventName = "Stop"
+	HookSubagentStart      HookEventName = "SubagentStart"
 	HookSubagentStop       HookEventName = "SubagentStop"
 	HookStopFailure        HookEventName = "StopFailure"
+	HookPermissionRequest  HookEventName = "PermissionRequest"
 	HookUserPromptSubmit   HookEventName = "UserPromptSubmit"
 	HookSessionStart       HookEventName = "SessionStart"
 	HookSessionEnd         HookEventName = "SessionEnd"
@@ -82,6 +84,9 @@ type HookConfig struct {
 type HookMatcher struct {
 	Matcher string       `json:"matcher,omitempty"` // exact/pipe/regex pattern (empty = match all)
 	Hooks   []HookConfig `json:"hooks"`
+	// PluginRoot is set by the plugin loader for env injection at dispatch time.
+	// When non-empty, GBOT_PLUGIN_ROOT is passed as extraEnv to ExecuteHook.
+	PluginRoot string `json:"-"`
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +144,7 @@ type HookOutput struct {
 	Continue          *bool           `json:"continue,omitempty"`          // default: true
 	StopReason        string          `json:"stopReason,omitempty"`
 	SystemMessage     string          `json:"systemMessage,omitempty"`
-
+	AdditionalContext string          `json:"additionalContext,omitempty"` // SubagentStart/SessionStart
 }
 
 
@@ -192,6 +197,7 @@ type HookResult struct {
 	PreventContinuation bool        // Source: preventContinuation field
 	StopReason          string      // Source: stopReason field
 	SystemMessage       string      // Source: systemMessage to inject
+	AdditionalContext   string      // Source: SubagentStart/SessionStart additionalContext field
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +238,7 @@ func (d HookDecision) String() string {
 // HookExecutor executes a hook command (shell, stdin/stdout, exit codes).
 // Production: CommandExecutor. Tests: HookRecorder.
 type HookExecutor interface {
-	ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration) HookResult
+	ExecuteHook(ctx context.Context, command string, input *HookInput, timeout time.Duration, extraEnv []string) HookResult
 }
 
 // PromptExecutor executes a single LLM call for prompt hook evaluation.

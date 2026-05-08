@@ -4147,7 +4147,7 @@ type streamingErrorTool struct{ name string }
 
 type hookExecRecorder struct{}
 
-func (h *hookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration) hooks.HookResult {
+func (h *hookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration, extraEnv []string) hooks.HookResult {
 	return hooks.HookResult{Outcome: hooks.HookOutcomeSuccess, HookName: command}
 }
 
@@ -4155,7 +4155,7 @@ type blockingHookExecRecorder struct {
 	blockResult *hooks.HookResult
 }
 
-func (h *blockingHookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration) hooks.HookResult {
+func (h *blockingHookExecRecorder) ExecuteHook(ctx context.Context, command string, input *hooks.HookInput, timeout time.Duration, extraEnv []string) hooks.HookResult {
 	if h.blockResult != nil {
 		return *h.blockResult
 	}

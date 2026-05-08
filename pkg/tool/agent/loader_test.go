@@ -1331,3 +1331,53 @@ func TestParseMcpServersRaw_NilItemInArray(t *testing.T) {
 		t.Errorf("second: got %q, want server-b", ref)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RegisterPluginAgents — plugin agents are registered with override resolution
+// ---------------------------------------------------------------------------
+
+func TestRegisterPluginAgents_OverrideResolution(t *testing.T) {
+	loader := NewLoader(t.TempDir())
+	loader.Load()
+
+	// Get baseline: should have built-in agents
+	builtInCount := len(loader.cached)
+	if builtInCount == 0 {
+		t.Fatal("expected built-in agents after Load()")
+	}
+
+	// Register a plugin agent
+	pluginAgents := []types.AgentDefinition{
+		{
+			AgentType:    "my-plugin:executor",
+			WhenToUse:    "Plugin executor agent",
+			SystemPrompt: func() string { return "You are a plugin executor." },
+			Source:       types.AgentSourcePlugin,
+		},
+	}
+	loader.RegisterPluginAgents(pluginAgents)
+
+	// Verify plugin agent was added
+	found := false
+	for _, a := range loader.cached {
+		if a.AgentType == "my-plugin:executor" {
+			found = true
+			if a.Source != types.AgentSourcePlugin {
+				t.Errorf("Source = %v, want AgentSourcePlugin", a.Source)
+			}
+			if a.WhenToUse != "Plugin executor agent" {
+				t.Errorf("WhenToUse = %q, want 'Plugin executor agent'", a.WhenToUse)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("plugin agent 'my-plugin:executor' not found in cached agents")
+	}
+
+	// Verify built-in agents still present
+	// (registering a plugin agent with different name shouldn't remove built-ins)
+	if len(loader.cached) < builtInCount {
+		t.Errorf("cached agents count = %d, want >= %d (built-ins preserved)", len(loader.cached), builtInCount)
+	}
+}
