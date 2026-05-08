@@ -3,6 +3,8 @@ package hooks
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -400,6 +402,11 @@ func (h *Hooks) runAsyncHook(
 	pluginRoot string,
 ) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("hooks: panic in async hook", "error", r, "stack", string(debug.Stack()))
+			}
+		}()
 		var result HookResult
 		switch hookCfg.Type {
 		case HookTypeCommand:

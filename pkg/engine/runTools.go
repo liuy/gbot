@@ -11,6 +11,8 @@ import (
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/hooks"
+	"log/slog"
+	"runtime/debug"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
@@ -548,6 +550,9 @@ func getToolDescription(tt *TrackedTool) string {
 // executeTool runs a single tool to completion. Called as a goroutine.
 // Source: StreamingToolExecutor.ts:265-405 — executeTool().
 func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
+	// Cleanup defer registered FIRST so it runs LAST (LIFO order).
+	// This ensures recovery (second defer) runs first and sets resultBlocks
+	// BEFORE this defer closes tt.done.
 	defer func() {
 		e.mu.Lock()
 		if tt.Status != StatusCompleted {
@@ -557,6 +562,25 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		close(tt.done)
 		// Source: StreamingToolExecutor.ts:402-404 — processQueue after completion.
 		e.processQueue()
+	}()
+	// Panic recovery: registered SECOND so it runs FIRST (LIFO order).
+	// Sets resultBlocks before the cleanup defer closes tt.done.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("engine: panic in executeTool", "tool", tt.Name, "error", r, "stack", string(debug.Stack()))
+			errMsg := fmt.Sprintf("internal error in tool %s: %v", tt.Name, r)
+			errBytes, _ := json.Marshal(errMsg)
+			e.doEmit(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     tt.ID,
+					Output:        errBytes,
+					DisplayOutput: errMsg,
+					IsError:       true,
+				},
+			})
+			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+		}
 	}()
 
 	// Look up tool definition first (needed for interrupt behavior check).
@@ -610,8 +634,20 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		// ── Permission check (before hooks) ──
 		// Source: toolExecution.ts — hasPermissionsToUseTool runs before hooks.
 		// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
+		// The checker is a system component — if it panics (e.g. nil interface trap),
+		// silently disable it and let the tool execute, rather than failing the tool.
 		if e.permChecker != nil {
-			decision := e.permChecker.Check(tt.Name, tt.Input)
+			var decision permission.Decision
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("engine: permChecker.Check panicked, disabling", "tool", tt.Name, "error", r)
+						e.permChecker = nil
+						decision = permission.Decision{Action: permission.ActionAllow}
+					}
+				}()
+				decision = e.permChecker.Check(tt.Name, tt.Input)
+			}()
 
 			// Phase 1: bare-tool deny (rule-based, no user interaction)
 			if decision.Action == permission.ActionDeny {

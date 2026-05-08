@@ -607,3 +607,18 @@ func TestStringFieldFromAny(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSkill_DefaultTypeIsPrompt(t *testing.T) {
+	content := `---
+name: autopilot
+description: Full autonomous execution
+---
+Body`
+	skill := ParseSkill("test-skill", "/fake/SKILL.md", content, types.SkillSourcePlugin)
+	if skill == nil {
+		t.Fatal("ParseSkill returned nil")
+	}
+	if skill.Type != "prompt" {
+		t.Errorf("Type = %q, want %q (default for all skills)", skill.Type, "prompt")
+	}
+}

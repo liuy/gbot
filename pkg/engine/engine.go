@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"maps"
 	"slices"
 	"strings"
@@ -268,6 +269,12 @@ func (e *Engine) EnqueueNotification(msg types.Message) {
 // Source: query.ts:queryLoop() — the while(true) agentic loop.
 func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt json.RawMessage) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("engine: panic in queryLoop", "error", r, "stack", string(debug.Stack()))
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("internal error: %v", r)})
+			}
+		}()
 		e.queryLoop(ctx, userMessage, systemPrompt)
 	}()
 }
@@ -276,6 +283,12 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt jso
 // This is Path B — equivalent to TS's between-turn new query() invocation.
 func (e *Engine) ProcessNotifications(ctx context.Context, systemPrompt json.RawMessage) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("engine: panic in ProcessNotifications", "error", r, "stack", string(debug.Stack()))
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("internal error: %v", r)})
+			}
+		}()
 		pending := e.notifications.Drain()
 		if len(pending) == 0 {
 			return

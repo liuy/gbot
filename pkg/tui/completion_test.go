@@ -314,7 +314,7 @@ func TestCompletions_Render_SelectedHighlight(t *testing.T) {
 	}
 	// Selected line should differ from unstyled plain text
 	// (lipgloss may or may not emit ANSI in test environments)
-	plainLine := "  /model      Switch model"
+	plainLine := "  /model - Switch model"
 	if stripANSI(lines[1]) != plainLine {
 		t.Errorf("second line content = %q, want %q", stripANSI(lines[1]), plainLine)
 	}
@@ -464,19 +464,22 @@ func TestCompletions_Dismiss_Idempotent(t *testing.T) {
 	}
 }
 
-// TestCompletions_Update_MaxItemsCap verifies the maxCompletionItems cap
-// by temporarily injecting extra commands into the package-level sortedCommands.
-func TestCompletions_Update_MaxItemsCap(t *testing.T) {
-	// Save and restore sortedCommands + commandDefs
+// TestCompletions_Update_MaxItemsCap verifies that all matching items are stored
+// (no hard cap). Display limiting is handled by Render's maxHeight, not by
+// truncating the item list.
+func TestCompletions_Update_NoCapOnItems(t *testing.T) {
+	// Save and restore sortedCommands + commandDefs + skillDefs
 	origCommands := sortedCommands
 	origDefs := commandDefs
+	origSkills := skillDefs
 	t.Cleanup(func() {
 		sortedCommands = origCommands
 		commandDefs = origDefs
+		skillDefs = origSkills
 	})
 
-	// Inject 7 commands (exceeds maxCompletionItems=5)
-	commandDefs = map[string]CommandDef{
+	// Inject 10 commands — all must be available for scrolling
+	injectCommands := map[string]CommandDef{
 		"aaa": {Description: "A", HasArgs: false},
 		"bbb": {Description: "B", HasArgs: false},
 		"ccc": {Description: "C", HasArgs: false},
@@ -484,8 +487,13 @@ func TestCompletions_Update_MaxItemsCap(t *testing.T) {
 		"eee": {Description: "E", HasArgs: false},
 		"fff": {Description: "F", HasArgs: false},
 		"ggg": {Description: "G", HasArgs: false},
+		"hhh": {Description: "H", HasArgs: false},
+		"iii": {Description: "I", HasArgs: false},
+		"jjj": {Description: "J", HasArgs: false},
 	}
-	sortedCommands = []string{"aaa", "bbb", "ccc", "ddd", "eee", "fff", "ggg"}
+	commandDefs = injectCommands
+	skillDefs = nil
+	sortedCommands = AllCommands()
 
 	c := NewCompletions()
 	c.Update("/", true)
@@ -494,14 +502,102 @@ func TestCompletions_Update_MaxItemsCap(t *testing.T) {
 		t.Fatal("expected visible")
 	}
 	items := c.Items()
-	if len(items) != 5 {
-		t.Fatalf("expected 5 items (capped), got %d", len(items))
+	if len(items) != 10 {
+		t.Fatalf("expected all 10 items (no cap), got %d", len(items))
 	}
-	// Must be first 5 alphabetically
-	expected := []string{"aaa", "bbb", "ccc", "ddd", "eee"}
-	for i, exp := range expected {
-		if items[i].Name != exp {
-			t.Errorf("item[%d] = %q, want %q", i, items[i].Name, exp)
-		}
+}
+
+// TestCompletions_Render_ViewportScrolling verifies that Render shows a viewport
+// window around the selected item, not always from index 0.
+func TestCompletions_Render_ViewportScrolling(t *testing.T) {
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	// 10 commands, render viewport of 3
+	commandDefs = map[string]CommandDef{
+		"aaa": {Description: "A", HasArgs: false},
+		"bbb": {Description: "B", HasArgs: false},
+		"ccc": {Description: "C", HasArgs: false},
+		"ddd": {Description: "D", HasArgs: false},
+		"eee": {Description: "E", HasArgs: false},
+		"fff": {Description: "F", HasArgs: false},
+		"ggg": {Description: "G", HasArgs: false},
+		"hhh": {Description: "H", HasArgs: false},
+		"iii": {Description: "I", HasArgs: false},
+		"jjj": {Description: "J", HasArgs: false},
+	}
+	skillDefs = nil
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/", true)
+
+	// Scroll to index 5 (fff)
+	for range 5 {
+		c.SelectNext()
+	}
+	if c.SelectedIndex() != 5 {
+		t.Fatalf("index = %d, want 5", c.SelectedIndex())
+	}
+
+	// Render with maxHeight=3 — viewport should show items around index 5
+	view := c.Render(80, 3)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 rendered lines, got %d", len(lines))
+	}
+
+	// The viewport should contain "fff" (the selected item), NOT "aaa"
+	viewText := stripANSI(view)
+	if !strings.Contains(viewText, "fff") {
+		t.Errorf("viewport should contain selected item 'fff', got: %s", viewText)
+	}
+	if strings.Contains(viewText, "aaa") {
+		t.Errorf("viewport should not contain item 'aaa' (scrolled past), got: %s", viewText)
+	}
+}
+
+// TestCompletions_Render_MaxVisibleRows verifies that Render caps display to
+// maxVisibleCompletions rows even when terminal has room for more.
+func TestCompletions_Render_MaxVisibleRows(t *testing.T) {
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	// 10 commands, but render should show at most maxVisibleCompletions (5)
+	commandDefs = map[string]CommandDef{
+		"aaa": {Description: "A", HasArgs: false},
+		"bbb": {Description: "B", HasArgs: false},
+		"ccc": {Description: "C", HasArgs: false},
+		"ddd": {Description: "D", HasArgs: false},
+		"eee": {Description: "E", HasArgs: false},
+		"fff": {Description: "F", HasArgs: false},
+		"ggg": {Description: "G", HasArgs: false},
+		"hhh": {Description: "H", HasArgs: false},
+		"iii": {Description: "I", HasArgs: false},
+		"jjj": {Description: "J", HasArgs: false},
+	}
+	skillDefs = nil
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/", true)
+
+	// Render with large maxHeight (simulating big terminal)
+	view := c.Render(80, 30)
+	lines := strings.Split(view, "\n")
+	if len(lines) != maxVisibleCompletions {
+		t.Fatalf("expected %d visible rows, got %d", maxVisibleCompletions, len(lines))
 	}
 }

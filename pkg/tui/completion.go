@@ -14,15 +14,9 @@ var (
 	styleCompletionNormal   = lipgloss.NewStyle()
 )
 
-// maxCompletionItems is the maximum number of suggestions to show.
-const maxCompletionItems = 5
-
-// sortedCommands is pre-sorted at init time to avoid re-sorting on every Update().
-var sortedCommands []string
-
-func init() {
-	sortedCommands = AllCommands()
-}
+// maxVisibleCompletions is the maximum number of rows shown in the dropdown.
+// Scrolling reveals additional items beyond this window.
+const maxVisibleCompletions = 5
 
 // Completion represents a single suggestion item.
 type Completion struct {
@@ -34,7 +28,7 @@ type Completion struct {
 // Completions holds the active completion state.
 type Completions struct {
 	items   []Completion
-	index   int  // selected index, 0-based
+	index   int // selected index, 0-based
 	visible bool
 }
 
@@ -46,13 +40,13 @@ func NewCompletions() *Completions {
 // Update regenerates completions for the given input text.
 //
 // Algorithm (aligned with TS generateCommandSuggestions):
-//   1. text must start with "/" and cursorAtEnd must be true
-//   2. Query = text after "/" up to first space (exclusive)
-//   3. If text contains space → dismiss (user is typing args)
-//   4. Non-ASCII in query → dismiss (IME guard)
-//   5. If query == "": return all commands, alphabetical, max 5
-//   6. If query != "": filter by HasPrefix, alphabetical, max 5
-//   7. No matches → dismiss
+//  1. text must start with "/" and cursorAtEnd must be true
+//  2. Query = text after "/" up to first space (exclusive)
+//  3. If text contains space → dismiss (user is typing args)
+//  4. Non-ASCII in query → dismiss (IME guard)
+//  5. If query == "": return all commands, alphabetical, max 5
+//  6. If query != "": filter by HasPrefix, alphabetical, max 5
+//  7. No matches → dismiss
 func (c *Completions) Update(text string, cursorAtEnd bool) {
 	// Guard: must start with "/" and cursor at end
 	if !cursorAtEnd || !strings.HasPrefix(text, "/") {
@@ -79,16 +73,16 @@ func (c *Completions) Update(text string, cursorAtEnd bool) {
 	// Filter commands by prefix
 	var matched []Completion
 	for _, name := range sortedCommands {
-		def := commandDefs[name]
+		def, ok := getCommandDef(name)
+		if !ok {
+			continue
+		}
 		if query == "" || strings.HasPrefix(name, query) {
 			matched = append(matched, Completion{
 				Name:        name,
 				Description: def.Description,
 				HasArgs:     def.HasArgs,
 			})
-			if len(matched) >= maxCompletionItems {
-				break
-			}
 		}
 	}
 
@@ -158,32 +152,45 @@ func (c *Completions) SelectedIndex() int {
 
 // Render builds the dropdown view string.
 // maxHeight limits the number of visible rows (for small terminals).
+// The viewport scrolls so that the selected item is always visible.
 func (c *Completions) Render(width int, maxHeight int) string {
 	if !c.visible || len(c.items) == 0 {
 		return ""
 	}
 
-	// Limit items to maxHeight
-	count := len(c.items)
-	if maxHeight > 0 && count > maxHeight {
-		count = maxHeight
+	// Determine viewport size: min(total, maxVisibleCompletions, maxHeight)
+	total := len(c.items)
+	viewport := min(total, maxVisibleCompletions)
+	if maxHeight > 0 && viewport > maxHeight {
+		viewport = maxHeight
+	}
+
+	// Compute viewport start so that c.index is visible
+	start := 0
+	if total > viewport {
+		// Scroll to keep selected item in view
+		start = max(c.index-viewport/2, 0)
+		if start+viewport > total {
+			start = total - viewport
+		}
 	}
 
 	var b strings.Builder
-	for i := 0; i < count; i++ {
-		item := c.items[i]
-		// Format: "  /name    Description"
-		label := fmt.Sprintf("  /%-10s %s", item.Name, item.Description)
+	for i := range viewport {
+		idx := start + i
+		item := c.items[idx]
+		// Format: "  /name - Description"
+		label := fmt.Sprintf("  /%s - %s", item.Name, item.Description)
 		if len(label) > width {
 			label = label[:width]
 		}
 
-		if i == c.index {
+		if idx == c.index {
 			b.WriteString(styleCompletionSelected.Render(label))
 		} else {
 			b.WriteString(styleCompletionNormal.Render(label))
 		}
-		if i < count-1 {
+		if i < viewport-1 {
 			b.WriteByte('\n')
 		}
 	}
@@ -196,4 +203,3 @@ func (c *Completions) dismiss() {
 	c.index = 0
 	c.visible = false
 }
-

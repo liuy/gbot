@@ -717,3 +717,46 @@ func TestRegisterPluginSkills_Discoverable(t *testing.T) {
 		t.Error("plugin skill not found in GetSkillToolSkills results")
 	}
 }
+
+func TestRegisterPluginSkills_VisibleInSkillTool(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry(t.TempDir())
+	if err := reg.Load(); err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	pluginSkills := []types.SkillCommand{
+		{
+			Name:         "test-plugin:autopilot",
+			DisplayName:  "autopilot",
+			Description:  "Full autonomous execution",
+			Type:         "prompt",
+			LoadedFrom:   "plugin",
+			Source:       types.SkillSourcePlugin,
+		},
+	}
+	reg.RegisterPluginSkills(pluginSkills)
+
+	// Must appear in GetSkillToolSkills (the / list)
+	visible := reg.GetSkillToolSkills()
+	found := false
+	for _, s := range visible {
+		if s.Name == "test-plugin:autopilot" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("plugin skill not visible in GetSkillToolSkills; got %d skills: %v", len(visible), skillNames(visible))
+	}
+
+	// Must be findable by name
+	skill := reg.FindSkill("test-plugin:autopilot")
+	if skill == nil {
+		t.Fatal("FindSkill(\"test-plugin:autopilot\") returned nil")
+	}
+	if skill.Name != "test-plugin:autopilot" {
+		t.Errorf("FindSkill name = %q, want %q", skill.Name, "test-plugin:autopilot")
+	}
+}

@@ -201,6 +201,19 @@ func main() {
 		_ = loadedPlugins.EnvVars
 		skillReg.RegisterPluginSkills(loadedPlugins.Skills)
 		agenttool.GlobalLoader().RegisterPluginAgents(loadedPlugins.Agents)
+
+		// Register plugin skills for TUI slash command completion.
+		// Skills appear in the / dropdown but fall through to engine as user messages.
+		if skillCmds := skillReg.GetSkillToolSkills(); len(skillCmds) > 0 {
+			slashCmds := make(map[string]tui.CommandDef, len(skillCmds))
+			for _, sc := range skillCmds {
+				slashCmds[sc.Name] = tui.CommandDef{
+					Description: sc.Description,
+					HasArgs:     true,
+				}
+			}
+			tui.RegisterSlashCommands(slashCmds)
+		}
 	}
 
 	// Permission rules
@@ -210,6 +223,14 @@ func main() {
 	if len(permRules) > 0 {
 		permChecker = permission.NewChecker(permRules)
 		slog.Info("main: permission rules loaded", "count", len(permRules))
+	}
+
+	// Guard: only pass permChecker if non-nil to avoid Go nil interface trap.
+	// nil *Checker assigned to PermissionChecker interface is non-nil as interface
+	// but panics on method calls.
+	var permCheckerIface permission.PermissionChecker
+	if permChecker != nil {
+		permCheckerIface = permChecker
 	}
 
 	eng := engine.New(&engine.Params{
@@ -222,7 +243,7 @@ func main() {
 		Dispatcher:       h,
 		MCPRegistry:      mcpRegistry,
 		Hooks:            hookSystem,
-		PermissionChecker: permChecker,
+		PermissionChecker: permCheckerIface,
 	})
 
 	eng.SetOnClose(func(sessionID string) {

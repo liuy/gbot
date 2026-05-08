@@ -31,6 +31,88 @@ func TestCommandDefs_HasDescription(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// RegisterSlashCommands — dynamic skill registration for tab completion
+// ---------------------------------------------------------------------------
+
+func TestRegisterSlashCommands_AddsToAllCommands(t *testing.T) {
+	RegisterSlashCommands(map[string]CommandDef{
+		"commit":                     {Description: "Create a commit", HasArgs: true},
+		"oh-my-claudecode:autopilot": {Description: "Run autopilot mode", HasArgs: true},
+	})
+	defer ResetSlashCommands()
+
+	cmds := AllCommands()
+
+	// Builtin commands must still be present
+	for _, builtin := range []string{"session", "clear", "model"} {
+		if !slices.Contains(cmds, builtin) {
+			t.Errorf("builtin command %q missing from AllCommands", builtin)
+		}
+	}
+
+	// Plugin skills must appear
+	if !slices.Contains(cmds, "commit") {
+		t.Error("expected 'commit' in AllCommands after RegisterSlashCommands")
+	}
+	if !slices.Contains(cmds, "oh-my-claudecode:autopilot") {
+		t.Error("expected 'oh-my-claudecode:autopilot' in AllCommands after RegisterSlashCommands")
+	}
+}
+
+func TestRegisterSlashCommands_NotDispatched(t *testing.T) {
+	// Skills registered for completion must NOT be dispatched by LookupSlashCommand.
+	// They should fall through to the engine as regular user messages.
+	RegisterSlashCommands(map[string]CommandDef{
+		"commit": {Description: "Create a commit", HasArgs: true},
+	})
+	defer ResetSlashCommands()
+
+	_, ok := LookupSlashCommand("/commit")
+	if ok {
+		t.Error("LookupSlashCommand should not match registered skill commands — they must fall through to engine")
+	}
+
+	// Builtins still work
+	_, ok = LookupSlashCommand("/clear")
+	if !ok {
+		t.Error("LookupSlashCommand should still match builtin commands")
+	}
+}
+
+func TestResetSlashCommands_ClearsSkills(t *testing.T) {
+	RegisterSlashCommands(map[string]CommandDef{
+		"commit": {Description: "Create a commit", HasArgs: true},
+	})
+	ResetSlashCommands()
+
+	cmds := AllCommands()
+	if slices.Contains(cmds, "commit") {
+		t.Error("expected 'commit' to be cleared after ResetSlashCommands")
+	}
+	if !slices.Contains(cmds, "clear") {
+		t.Error("expected builtin 'clear' to remain after ResetSlashCommands")
+	}
+}
+
+func TestRegisterSlashCommands_Idempotent(t *testing.T) {
+	RegisterSlashCommands(map[string]CommandDef{
+		"commit": {Description: "v1", HasArgs: true},
+	})
+	RegisterSlashCommands(map[string]CommandDef{
+		"commit": {Description: "v2", HasArgs: false},
+	})
+	defer ResetSlashCommands()
+
+	def, ok := getCommandDef("commit")
+	if !ok {
+		t.Fatal("expected 'commit' to be registered")
+	}
+	if def.Description != "v2" {
+		t.Errorf("expected last-write wins, got description %q", def.Description)
+	}
+}
+
 func TestLookupSlashCommand(t *testing.T) {
 	tests := []struct {
 		input    string
