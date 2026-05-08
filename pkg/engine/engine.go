@@ -630,15 +630,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 
 			// Stage 18: Post-streaming abort check.
 			// Source: query.ts:1015-1029 — consume getRemainingResults or yieldMissingToolResultBlocks.
-			// Must generate synthetic tool_results for all tool_use blocks in the
-			// assistant message to prevent API 400 errors on the next turn.
+			// appendInlineInterruptMessage now also generates synthetic tool_results.
 			if err := ShouldAbort(ctx, "streaming"); err != nil {
 				e.appendInlineInterruptMessage()
 				streamingExecutor.Discard()
-				syntheticBlocks := SyntheticToolResultsForBlocks(resp.Content, nil, AbortReasonUserInterrupted)
-				if len(syntheticBlocks) > 0 {
-					e.appendMessage(types.Message{Role: types.RoleUser, Content: syntheticBlocks})
-				}
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
 					InputTokens:              totalUsage.InputTokens,
@@ -1761,7 +1756,12 @@ func (e *Engine) appendMessage(msg types.Message) {
 // appendInlineInterruptMessage appends the interrupt message to the last
 // assistant message's content, searching backwards. This handles the case
 // where tool results were appended after the assistant message.
-// Source: TS createUserInterruptionMessage.
+// Also generates synthetic tool_result blocks for any orphaned tool_use
+// blocks (tool_use without matching tool_result) to prevent API errors.
+//
+// Source: TS createUserInterruptionMessage + yieldMissingToolResultBlocks
+// (query.ts:1015-1029) — generates synthetic tool_result blocks for all
+// tool_use blocks in assistant messages when the abort signal fires.
 func (e *Engine) appendInlineInterruptMessage() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1775,6 +1775,57 @@ func (e *Engine) appendInlineInterruptMessage() {
 		"role", last.Role,
 		"total_messages", len(e.messages),
 		"content_blocks", len(last.Content))
+
+	// TS align: yieldMissingToolResultBlocks (query.ts:123-149).
+	// For each assistant message, find tool_use blocks that lack a matching
+	// tool_result and generate synthetic error tool_results for them.
+	e.appendSyntheticToolResultsLocked()
+}
+
+// appendSyntheticToolResultsLocked generates synthetic tool_result blocks for
+// any tool_use blocks in assistant messages that don't have a matching
+// tool_result in subsequent user messages. Must be called with e.mu held.
+func (e *Engine) appendSyntheticToolResultsLocked() {
+	// Collect all tool_use IDs that already have matching tool_results.
+	hasResult := make(map[string]bool)
+	for _, msg := range e.messages {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult {
+				hasResult[block.ToolUseID] = true
+			}
+		}
+	}
+
+	// Find orphaned tool_use IDs from all assistant messages.
+	var orphans []string
+	for _, msg := range e.messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse && !hasResult[block.ID] {
+				orphans = append(orphans, block.ID)
+			}
+		}
+	}
+
+	if len(orphans) == 0 {
+		return
+	}
+
+	// Build synthetic tool_result blocks for all orphaned tool_use IDs.
+	blocks := make([]types.ContentBlock, 0, len(orphans))
+	for _, id := range orphans {
+		blocks = append(blocks, CreateSyntheticErrorBlock(id, AbortReasonUserInterrupted))
+	}
+
+	e.messages = append(e.messages, types.Message{
+		Role:    types.RoleUser,
+		Content: blocks,
+	})
 }
 
 // appendMessages adds multiple messages to the history under Lock.
