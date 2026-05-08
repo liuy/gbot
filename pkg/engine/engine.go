@@ -463,6 +463,24 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 		}
 
+
+		// Token-based pruning: when auto-compact failed and context is at blocking
+		// limit, try clearing old compactable tool result content as last resort.
+		// gbot equivalent of TS Cached Microcompact (which uses Anthropic cache_editing).
+		if !e.isSubagent && !compactSucceeded && e.autoCompactConfig.ContextWindow > 0 {
+			if pruned := e.maybeTokenPrune(); pruned != nil {
+				e.logger.Info("engine:token_prune",
+					"cleared", pruned.Cleared,
+					"tokens_saved", pruned.TokensSaved)
+				e.mu.Lock()
+				e.ContextTokens -= pruned.TokensSaved
+				if e.ContextTokens < 0 {
+					e.ContextTokens = 0
+				}
+				e.mu.Unlock()
+			}
+		}
+
 		// Blocking limit: refuse API call if context exceeds safe threshold.
 		// TS align: query.ts:628-636 — skip blocking limit when compact
 		// produced a result (!compactionResult). Only block when compact
@@ -1376,6 +1394,42 @@ func (e *Engine) currentInputTokens() int {
 	// messages were loaded from DB without an assistant response (rare).
 	// Can't determine delta boundary, so return the precise value as-is.
 	return last
+}
+
+// maybeTokenPrune attempts token-based tool result pruning when the context
+// is approaching the blocking limit and auto-compact could not help.
+// Returns nil if pruning is not needed or not possible.
+func (e *Engine) maybeTokenPrune() *TokenPruneResult {
+	config := getTokenPruneConfig()
+	if !config.Enabled {
+		return nil
+	}
+
+	// Compute token budget (same as blocking limit threshold)
+	reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
+	effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
+	tokenBudget := effectiveWindow - manualCompactBufferTokens
+
+	currentTokens := e.currentInputTokens()
+	if currentTokens <= tokenBudget {
+		return nil
+	}
+
+	result := maybeTokenBasedMicrocompact(
+		e.Messages(),
+		currentTokens,
+		tokenBudget,
+		config,
+		e.querySource(),
+		e.logger,
+	)
+	if result == nil {
+		return nil
+	}
+
+	// Apply pruned messages to engine state
+	e.setMessages(result.Messages)
+	return result
 }
 
 // shouldAutoCompact returns true if proactive auto-compact should be triggered.

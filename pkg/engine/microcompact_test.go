@@ -795,6 +795,216 @@ func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Token-based microcompact tests
+// ---------------------------------------------------------------------------
+
+func TestTokenBasedMicrocompact_UnderBudget(t *testing.T) {
+	t.Parallel()
+	// Tokens under budget → return nil
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"small"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(msgs, 100, 1000, TokenPruneConfig{Enabled: true, KeepRecent: 5}, QuerySourceReplMainThread, nil)
+	if result != nil {
+		t.Error("expected nil when under budget")
+	}
+}
+
+func TestTokenBasedMicrocompact_OverBudget_ClearsOld(t *testing.T) {
+	t.Parallel()
+	// 7 Read results, KeepRecent=2 → clear 5 oldest, keep 2 newest
+	// currentTokens=50000 > tokenBudget=10000 → triggers pruning
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t3", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t4", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t5", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t6", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t7", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"content 1"`), false),
+			types.NewToolResultBlock("t2", json.RawMessage(`"content 2"`), false),
+			types.NewToolResultBlock("t3", json.RawMessage(`"content 3"`), false),
+			types.NewToolResultBlock("t4", json.RawMessage(`"content 4"`), false),
+			types.NewToolResultBlock("t5", json.RawMessage(`"content 5"`), false),
+			types.NewToolResultBlock("t6", json.RawMessage(`"content 6"`), false),
+			types.NewToolResultBlock("t7", json.RawMessage(`"content 7"`), false),
+		}},
+	}
+
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 2}, QuerySourceReplMainThread, nil)
+	if result == nil {
+		t.Fatal("expected pruning result")
+	}
+	if result.Cleared != 5 {
+		t.Errorf("cleared %d, want 5", result.Cleared)
+	}
+	if result.TokensSaved <= 0 {
+		t.Error("expected positive tokensSaved")
+	}
+
+	// Verify: t1-t5 cleared, t6-t7 kept
+	userMsg := result.Messages[1]
+	clearedIDs := map[string]bool{"t1": true, "t2": true, "t3": true, "t4": true, "t5": true}
+	keptIDs := map[string]bool{"t6": true, "t7": true}
+	for _, block := range userMsg.Content {
+		if block.Type != types.ContentTypeToolResult {
+			continue
+		}
+		content := string(block.Content)
+		isCleared := content == `"[Old tool result content cleared]"`
+		if clearedIDs[block.ToolUseID] {
+			if !isCleared {
+				t.Errorf("tool %s should be cleared, got content: %s", block.ToolUseID, content)
+			}
+		}
+		if keptIDs[block.ToolUseID] {
+			if isCleared {
+				t.Errorf("tool %s should be kept, got cleared", block.ToolUseID)
+			}
+		}
+	}
+}
+
+func TestTokenBasedMicrocompact_SkipsPersisted(t *testing.T) {
+	t.Parallel()
+	// Persisted results should not be cleared.
+	// 3 tools: t1 persisted (in clear set), t2 normal (in clear set), t3 kept (KeepRecent=1).
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t3", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"<persisted-output>big content</persisted-output>"`), false),
+			types.NewToolResultBlock("t2", json.RawMessage(`"normal content"`), false),
+			types.NewToolResultBlock("t3", json.RawMessage(`"content 3"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 1}, QuerySourceReplMainThread, nil)
+	if result == nil {
+		t.Fatal("expected pruning result")
+	}
+	// KeepRecent=1: keep t3, clear t1+t2.
+	// t1 is persisted -> skipped (not cleared).
+	// t2 is normal -> cleared.
+	if result.Cleared != 1 {
+		t.Errorf("cleared %d, want 1 (t1 persisted skipped, t2 cleared)", result.Cleared)
+	}
+	// Verify t1 content unchanged (still has persisted-output)
+	for _, block := range result.Messages[1].Content {
+		if block.Type == types.ContentTypeToolResult && block.ToolUseID == "t1" {
+			if !bytes.Contains(block.Content, []byte("persisted-output")) {
+				t.Error("persisted result t1 should not be cleared")
+			}
+		}
+	}
+}
+
+func TestTokenBasedMicrocompact_SkipsAlreadyCleared(t *testing.T) {
+	t.Parallel()
+	// Already-cleared results should not be double-processed
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t3", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"[Old tool result content cleared]"`), false),
+			types.NewToolResultBlock("t2", json.RawMessage(`"content 2"`), false),
+			types.NewToolResultBlock("t3", json.RawMessage(`"content 3"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 1}, QuerySourceReplMainThread, nil)
+	if result == nil {
+		t.Fatal("expected pruning result")
+	}
+	// KeepRecent=1: keep t3, clear t1+t2. t1 already cleared → skip. t2 cleared.
+	if result.Cleared != 1 {
+		t.Errorf("cleared %d, want 1 (t1 already cleared, t2 cleared now)", result.Cleared)
+	}
+}
+
+func TestTokenBasedMicrocompact_NoCompactableTools(t *testing.T) {
+	t.Parallel()
+	// No compactable tools → nothing to clear
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Agent", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"agent result"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 5}, QuerySourceReplMainThread, nil)
+	if result != nil {
+		t.Error("expected nil when no compactable tools")
+	}
+}
+
+func TestTokenBasedMicrocompact_AllAlreadyCleared(t *testing.T) {
+	t.Parallel()
+	// All results already cleared → tokensSaved=0 → return nil
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"[Old tool result content cleared]"`), false),
+			types.NewToolResultBlock("t2", json.RawMessage(`"[Old tool result content cleared]"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 0}, QuerySourceReplMainThread, nil)
+	if result != nil {
+		t.Error("expected nil when all already cleared")
+	}
+}
+
+func TestTokenBasedMicrocompact_SubAgentExcluded(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"content"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(msgs, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 0}, QuerySourceCompact, nil)
+	if result != nil {
+		t.Error("expected nil for non-main-thread query source")
+	}
+}
+
+func TestTokenBasedMicrocompact_SingleToolResult(t *testing.T) {
+	t.Parallel()
+	// Only 1 result, KeepRecent=5 → kept, nothing to clear
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("t1", json.RawMessage(`"content"`), false),
+		}},
+	}
+	result := maybeTokenBasedMicrocompact(messages, 50000, 10000, TokenPruneConfig{Enabled: true, KeepRecent: 5}, QuerySourceReplMainThread, nil)
+	if result != nil {
+		t.Error("expected nil when only 1 result (≤ KeepRecent)")
+	}
+}
+
 func TestCollectCompactableToolIds_Order(t *testing.T) {
 	// Verify encounter order across multiple messages
 	messages := []types.Message{

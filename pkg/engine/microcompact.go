@@ -114,9 +114,27 @@ type TimeBasedMCConfig struct {
 	KeepRecent          int  // keep this many most-recent compactable tool results (default 5)
 }
 
+// TokenPruneConfig controls token-based pruning behavior.
+// Token-based pruning clears old tool result content when token count
+// exceeds the blocking limit and auto-compact cannot help (all messages
+// are "recent"). This is the gbot equivalent of TS Cached Microcompact
+// (which uses Anthropic cache_editing, not available for MiniMax).
+type TokenPruneConfig struct {
+	Enabled    bool
+	KeepRecent int // keep this many most-recent compactable tool results (default 5)
+}
+
+// TokenPruneResult carries the result of token-based tool result pruning.
+type TokenPruneResult struct {
+	Messages    []types.Message
+	TokensSaved int
+	Cleared     int // number of tool results cleared
+}
+
 // MicrocompactConfig holds all runtime microcompact settings.
 type MicrocompactConfig struct {
-	TimeBased TimeBasedMCConfig
+	TimeBased  TimeBasedMCConfig
+	TokenBased TokenPruneConfig
 }
 
 var defaultMicrocompactConfig = MicrocompactConfig{
@@ -125,10 +143,18 @@ var defaultMicrocompactConfig = MicrocompactConfig{
 		GapThresholdMinutes: 60,
 		KeepRecent:          5,
 	},
+	TokenBased: TokenPruneConfig{
+		Enabled:    true,
+		KeepRecent: 5,
+	},
 }
 
 func getMicrocompactConfig() MicrocompactConfig {
 	return defaultMicrocompactConfig
+}
+
+func getTokenPruneConfig() TokenPruneConfig {
+	return getMicrocompactConfig().TokenBased
 }
 
 func getTimeBasedMCConfig() TimeBasedMCConfig {
@@ -390,7 +416,8 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 			}
 			if block.Type == types.ContentTypeToolResult &&
 				clearSet[block.ToolUseID] &&
-				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` {
+				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` &&
+					string(block.Content) != `"`+TokenPrunedMessage+`"` {
 				tokensSaved += calculateToolResultTokens(block.Content)
 				newContent[j].Content = json.RawMessage(`"` + TimeBasedMCClearedMessage + `"`)
 				touched = true
@@ -427,6 +454,119 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 	})
 
 	return &MicrocompactResult{Messages: result}
+}
+
+// ---------------------------------------------------------------------------
+// Token-based microcompact — gbot equivalent of TS Cached Microcompact
+// ---------------------------------------------------------------------------
+
+// TokenPrunedMessage replaces tool_result content when cleared by token pressure.
+// Distinct from TimeBasedMCClearedMessage so logs can distinguish the trigger.
+const TokenPrunedMessage = "[Old tool result content cleared]"
+
+// maybeTokenBasedMicrocompact clears old compactable tool result content when
+// the token count exceeds the budget. Unlike time-based microcompact (60 min gap),
+// this fires purely on token pressure, making it effective for sessions with many
+// recent large tool results where auto-compact cannot help.
+//
+// Returns nil when no clearing happens (under budget, wrong source, nothing to clear).
+func maybeTokenBasedMicrocompact(
+	messages []types.Message,
+	currentTokens int,
+	tokenBudget int,
+	config TokenPruneConfig,
+	querySource string,
+	logger *slog.Logger,
+) *TokenPruneResult {
+	if !config.Enabled || currentTokens <= tokenBudget {
+		return nil
+	}
+	if !isMainThreadSource(querySource) {
+		return nil
+	}
+
+	compactableIds := collectCompactableToolIds(messages)
+	keepRecent := max(config.KeepRecent, 1) // Floor at 1 to avoid clearing everything
+
+	// Build keep/clear sets — same pattern as maybeTimeBasedMicrocompact
+	keepCount := min(keepRecent, len(compactableIds))
+	keepFrom := len(compactableIds) - keepCount
+	keepSet := make(map[string]bool, keepCount)
+	for _, id := range compactableIds[keepFrom:] {
+		keepSet[id] = true
+	}
+	clearSet := make(map[string]bool)
+	for _, id := range compactableIds {
+		if !keepSet[id] {
+			clearSet[id] = true
+		}
+	}
+
+	if len(clearSet) == 0 {
+		return nil
+	}
+
+	// Walk messages and clear tool_result content.
+	tokensSaved := 0
+	cleared := 0
+	result := make([]types.Message, len(messages))
+	for i := range messages {
+		result[i] = messages[i]
+		if messages[i].Role != types.RoleUser {
+			continue
+		}
+
+		touched := false
+		newContent := make([]types.ContentBlock, len(messages[i].Content))
+		for j, block := range messages[i].Content {
+			newContent[j] = block
+			if block.Type == types.ContentTypeToolResult &&
+				bytes.Contains(block.Content, toolresult.PersistedOutputTagBytes) {
+				// Skip persisted results — they contain compact previews.
+				continue
+			}
+			if block.Type == types.ContentTypeToolResult &&
+				clearSet[block.ToolUseID] &&
+				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` &&
+				string(block.Content) != `"`+TokenPrunedMessage+`"` {
+				tokensSaved += calculateToolResultTokens(block.Content)
+				newContent[j].Content = json.RawMessage(`"` + TokenPrunedMessage + `"`)
+				cleared++
+				touched = true
+			}
+		}
+
+		if touched {
+			result[i] = messages[i]
+			result[i].Content = newContent
+		}
+	}
+
+	if tokensSaved == 0 {
+		return nil
+	}
+
+	if logger != nil {
+		logger.Info("engine:token_based_mc",
+			"current_tokens", currentTokens,
+			"budget", tokenBudget,
+			"cleared", cleared,
+			"kept", len(keepSet),
+			"tokens_saved", tokensSaved,
+		)
+	}
+
+	suppressCompactWarning()
+
+	llm.NotifyCacheDeletion(llm.PromptStateKey{
+		QuerySource: querySource,
+	})
+
+	return &TokenPruneResult{
+		Messages:    result,
+		TokensSaved: tokensSaved,
+		Cleared:     cleared,
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -5298,3 +5298,259 @@ func TestExecuteTool_LLMPathStillCapped(t *testing.T) {
 		t.Errorf("engine path result len = %d, should be capped around 30KB", len(content))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Token-based pruning integration tests
+// ---------------------------------------------------------------------------
+
+// TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided verifies THE key
+// scenario: compact fails (all messages recent) -> token pruning clears old
+// tool results -> blocking limit skipped -> API call succeeds.
+func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
+	t.Parallel()
+
+	tmp := &testProvider{}
+	tmp.addResponse(textStreamEvents("test-model", "Success after prune"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			return nil, errors.New("nothing to compact: all messages within keep target")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Build messages with compactable tool results (Read).
+	// 8 Read results x ~5K tokens each -> 40K tokens total.
+	// With ContextWindow=50000, MaxTokens=16000:
+	//   effectiveWindow = 50000 - 16000 = 34000
+	//   blockingLimit = 34000 - 3000 = 31000
+	// Setting ContextTokens=35000 triggers both auto-compact and blocking limit.
+	// Compact fails -> token prune should clear old Read results -> tokens drop.
+	//
+	// Use recent timestamps so time-based microcompact does NOT fire (gap < 60 min).
+	// Only token-based prune should handle this case.
+	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	for i := range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
+			},
+			Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+		}))
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 10000)+`"`), false),
+			},
+			Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "continue", nil)
+
+	if result.Error != nil {
+		t.Fatalf("expected success (token prune should reduce context), got: %v", result.Error)
+	}
+	// Verify API was called (compact failed but pruning reduced context enough)
+	if len(result.Messages) == 0 {
+		t.Error("expected messages in result")
+	}
+}
+
+// TestQuery_TokenPrune_StillOverLimit verifies that when pruning reduces
+// tokens but not enough, the blocking limit still fires correctly.
+func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
+	t.Parallel()
+
+	tmp := &testProvider{}
+	tmp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			return nil, errors.New("nothing to compact")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// Only 2 Read results -> pruning keeps KeepRecent=5 -> nothing to clear.
+	// Blocking limit still fires.
+	for i := range 2 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{}`)),
+			},
+		}))
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 16000)+`"`), false),
+			},
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "continue", nil)
+	if result.Error == nil {
+		t.Fatal("expected blocking limit to fire (pruning clears nothing)")
+	}
+	if !strings.Contains(result.Error.Error(), "too long") {
+		t.Errorf("expected 'too long' error, got: %v", result.Error)
+	}
+}
+
+	// TestQuery_TokenPrune_UnderThreshold verifies that when context is below
+	// the blocking limit, token pruning does not fire and the API call succeeds normally.
+	func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
+		t.Parallel()
+
+		tmp := &testProvider{}
+		tmp.addResponse(textStreamEvents("test-model", "normal response"), nil)
+
+		compactor := &funcCompactor{
+			fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+				return nil, errors.New("nothing to compact")
+			},
+		}
+
+		tc := newEventCollector()
+		eng := New(&Params{
+			Provider:   tmp,
+			Model:      "test-model",
+			MaxTokens:  16000,
+			Dispatcher: tc,
+		})
+		eng.SetCompactor(compactor, AutoCompactConfig{
+			ContextWindow:          50000,
+			MaxConsecutiveFailures: 3,
+		})
+
+		// 3 Read results — context well below blocking limit (31000).
+		now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+		for i := range 3 {
+			eng.SetMessages(append(eng.Messages(), types.Message{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
+				},
+				Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
+			}))
+			eng.SetMessages(append(eng.Messages(), types.Message{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 1000)+`"`), false),
+				},
+				Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
+			}))
+		}
+		eng.mu.Lock()
+		eng.ContextTokens = 10000
+		eng.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result := eng.QuerySync(ctx, "continue", nil)
+		if result.Error != nil {
+			t.Fatalf("expected success (context under threshold), got: %v", result.Error)
+		}
+		if len(result.Messages) == 0 {
+			t.Error("expected messages in result")
+		}
+	}
+
+	// TestQuery_TokenPrune_SubAgentExempt verifies that sub-agents do not trigger
+	// token-based pruning (same as they are exempt from blocking limit).
+	func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
+		t.Parallel()
+
+		tmp := &testProvider{}
+		tmp.addResponse(textStreamEvents("test-model", "sub-agent response"), nil)
+
+		compactor := &funcCompactor{
+			fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+				return nil, errors.New("nothing to compact")
+			},
+		}
+
+		tc := newEventCollector()
+		eng := New(&Params{
+			Provider:   tmp,
+			Model:      "test-model",
+			MaxTokens:  16000,
+			Dispatcher: tc,
+		})
+		eng.isSubagent = true
+		eng.SetCompactor(compactor, AutoCompactConfig{
+			ContextWindow:          50000,
+			MaxConsecutiveFailures: 3,
+		})
+
+		// 8 Read results with high context — would trigger prune on main thread.
+		now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+		for i := range 8 {
+			eng.SetMessages(append(eng.Messages(), types.Message{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
+				},
+				Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+			}))
+			eng.SetMessages(append(eng.Messages(), types.Message{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 10000)+`"`), false),
+				},
+				Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+			}))
+		}
+		eng.mu.Lock()
+		eng.ContextTokens = 35000
+		eng.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result := eng.QuerySync(ctx, "continue", nil)
+		// Sub-agent is exempt from blocking limit too, so this should succeed.
+		if result.Error != nil {
+			t.Fatalf("sub-agent should be exempt from blocking, got: %v", result.Error)
+		}
+		if len(result.Messages) == 0 {
+			t.Error("expected messages in result")
+		}
+	}
