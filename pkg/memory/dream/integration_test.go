@@ -22,7 +22,7 @@ func setupIntegrationStore(t *testing.T) *short.Store {
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -50,7 +50,7 @@ func setLockAge(t *testing.T, memoryDir string, age time.Duration) {
 	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	oldTime := time.Now().Add(-age)
+	oldTime := time.Now().Add(-age) // REAL-TIME: set lock file age
 	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
 		t.Fatal(err)
 	}
@@ -59,9 +59,9 @@ func setLockAge(t *testing.T, memoryDir string, age time.Duration) {
 // waitForEvents polls until dispatcher has at least n events or deadline.
 func waitForEvents(t *testing.T, d *mockDispatcher, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(d.Events()) < n {
-		time.Sleep(10 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second) // REAL-TIME: polling deadline
+	for time.Now().Before(deadline) && len(d.Events()) < n { // REAL-TIME: poll condition
+		time.Sleep(10 * time.Millisecond) // REAL-TIME: polling for async event dispatch
 	}
 }
 
@@ -199,7 +199,7 @@ func TestIntegration_Recovery_StaleLock(t *testing.T) {
 	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(deadPID)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	oldTime := time.Now().Add(-25 * time.Hour)
+	oldTime := time.Now().Add(-25 * time.Hour) // REAL-TIME: stale lock timestamp
 	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestIntegration_Recovery_FailedConsolidation(t *testing.T) {
 	createSessions(t, store, projectDir, 6)
 	setLockAge(t, memoryDir, 25*time.Hour)
 
-	priorTime := time.Now().Add(-25 * time.Hour)
+	priorTime := time.Now().Add(-25 * time.Hour) // REAL-TIME: prior lock timestamp
 
 	dispatcher := &mockDispatcher{}
 	runFn := func(ctx context.Context, prompt string) error {
@@ -338,7 +338,7 @@ func TestIntegration_CtxCancellation(t *testing.T) {
 	mgr.RunPostTurn(ctx, nil, 0, "")
 
 	// Give a brief window for any goroutine to launch
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond) // REAL-TIME: brief window for goroutine launch
 
 	if runCalled {
 		t.Error("DreamRunFn should not be called when context is already cancelled")

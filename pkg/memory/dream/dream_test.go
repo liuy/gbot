@@ -2,9 +2,11 @@ package dream
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,12 +30,24 @@ func (m *mockSessionLister) SessionsTouchedSince(projectDir string, since time.T
 type mockDispatcher struct {
 	mu     sync.Mutex
 	events []types.QueryEvent
+	done   chan struct{} // closed when len(events) reaches target
+	target int          // event count to close done
 }
 
 func (m *mockDispatcher) Dispatch(event types.QueryEvent) {
 	m.mu.Lock()
 	m.events = append(m.events, event)
+	count := len(m.events)
+	d := m.done
+	target := m.target
 	m.mu.Unlock()
+	if d != nil && count >= target {
+		select {
+		case <-d:
+		default:
+			close(d)
+		}
+	}
 }
 
 func (m *mockDispatcher) Events() []types.QueryEvent {
@@ -45,8 +59,7 @@ func (m *mockDispatcher) Events() []types.QueryEvent {
 // --- ShouldDream gate tests ---
 
 func TestShouldDream_Disabled(t *testing.T) {
-	os.Setenv("GBOT_AUTO_DREAM", "false")
-	defer os.Unsetenv("GBOT_AUTO_DREAM")
+	t.Setenv("GBOT_AUTO_DREAM", "false")
 
 	tmpDir := t.TempDir()
 	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
@@ -58,7 +71,6 @@ func TestShouldDream_Disabled(t *testing.T) {
 }
 
 func TestShouldDream_TimeGateNotElapsed(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 
 	// Create lock file with recent mtime (< 24h ago)
@@ -66,7 +78,7 @@ func TestShouldDream_TimeGateNotElapsed(t *testing.T) {
 	if err := os.WriteFile(lockPath, []byte("test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recent := time.Now().Add(-1 * time.Hour) // REALTIME: testing time-based gate behavior
+	recent := time.Now().Add(-1 * time.Hour) // REAL-TIME: testing time-based gate behavior
 	if err := os.Chtimes(lockPath, recent, recent); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +92,6 @@ func TestShouldDream_TimeGateNotElapsed(t *testing.T) {
 }
 
 func TestShouldDream_ScanThrottle(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 
 	// No lock file → time gate passes (0 mtime = very old)
@@ -88,7 +99,7 @@ func TestShouldDream_ScanThrottle(t *testing.T) {
 		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
 
 	// First call sets lastScanAt
-	m.lastScanAt = time.Now() // REALTIME: testing scan throttle behavior
+	m.lastScanAt = time.Now() // REAL-TIME: testing scan throttle behavior
 
 	should, _, _, _ := m.ShouldDream(context.Background())
 	if should {
@@ -97,7 +108,6 @@ func TestShouldDream_ScanThrottle(t *testing.T) {
 }
 
 func TestShouldDream_SessionGateTooFew(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 	// No lock file → time gate passes
 
@@ -106,7 +116,7 @@ func TestShouldDream_SessionGateTooFew(t *testing.T) {
 		lister, nil, &mockDispatcher{}, slog.Default())
 
 	// Set lastScanAt far enough back
-	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REALTIME: testing scan throttle bypass
+	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
 	should, _, _, _ := m.ShouldDream(context.Background())
 	if should {
@@ -115,7 +125,6 @@ func TestShouldDream_SessionGateTooFew(t *testing.T) {
 }
 
 func TestShouldDream_AllGatesPass(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 	// No lock file → time gate passes (lastConsolidatedAt = 0 = epoch)
 
@@ -124,7 +133,7 @@ func TestShouldDream_AllGatesPass(t *testing.T) {
 		lister, nil, &mockDispatcher{}, slog.Default())
 
 	// Set lastScanAt far enough back
-	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REALTIME: testing scan throttle bypass
+	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
 	should, ids, priorMtime, err := m.ShouldDream(context.Background())
 	if err != nil {
@@ -141,42 +150,43 @@ func TestShouldDream_AllGatesPass(t *testing.T) {
 	}
 }
 
-func TestShouldDream_LockHeld(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
+func TestShouldDream_LockHeldByLivePID(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create fresh lock held by this process
-	lockPath := filepath.Join(tmpDir, lockFileName)
-	if err := os.WriteFile(lockPath, []byte("0"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now() // REALTIME: testing lock file mtime
-	if err := os.Chtimes(lockPath, now, now); err != nil {
-		t.Fatal(err)
-	}
+	// Manager A acquires the lock first (MinHours=0, MinSessions=0 bypass gates 2-4)
+	listerA := &mockSessionLister{ids: []string{"s1"}}
+	mgrA := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", "sid-a",
+		listerA, nil, &mockDispatcher{}, slog.Default())
+	mgrA.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
-	lister := &mockSessionLister{ids: []string{"s1", "s2", "s3", "s4", "s5"}}
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
-		lister, nil, &mockDispatcher{}, nil)
-	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REALTIME: testing scan throttle bypass
-
-	// Lock is held by PID 0 (likely dead or non-existent) but mtime is recent.
-	// PID 0 check: syscall.Kill(0, 0) succeeds on Linux (signals process group).
-	// So this test verifies the lock held path.
-	should, _, _, _ := m.ShouldDream(context.Background())
-	// Result depends on whether PID 0 is considered alive.
-	// On Linux, PID 0 is always alive (init), so lock should be held.
+	should, _, priorMtime, err := mgrA.ShouldDream(context.Background())
+	if err != nil {
+		t.Fatalf("manager A should acquire: %v", err)
+	}
 	if !should {
-		// PID 0 is alive → lock held → should return false. This is expected.
-		// But if PID 0 is dead → reclaims → should return true.
-		// This is platform-dependent, so just verify no crash.
+		t.Fatal("manager A should succeed — no prior lock")
 	}
+
+	// Manager B tries — should fail because A holds the lock with our live PID
+	listerB := &mockSessionLister{ids: []string{"s1", "s2", "s3", "s4", "s5"}}
+	mgrB := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", "sid-b",
+		listerB, nil, &mockDispatcher{}, slog.Default())
+	mgrB.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
+
+	shouldB, _, _, err := mgrB.ShouldDream(context.Background())
+	if err != nil {
+		t.Fatalf("manager B ShouldDream: %v", err)
+	}
+	if shouldB {
+		t.Error("manager B should NOT acquire — lock held by manager A's live PID")
+	}
+
+	RollbackConsolidationLock(tmpDir, priorMtime)
 }
 
 // --- Execute tests ---
 
 func TestExecute_EmitsVirtualToolEvents(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 
 	var runCalled atomic.Bool
@@ -220,12 +230,11 @@ func TestExecute_EmitsVirtualToolEvents(t *testing.T) {
 }
 
 func TestExecute_RollbackOnFailure(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 
 	// Create lock file with known mtime for rollback
 	lockPath := filepath.Join(tmpDir, lockFileName)
-	priorTime := time.Now().Add(-1 * time.Hour) // REALTIME: testing rollback timing
+	priorTime := time.Now().Add(-1 * time.Hour) // REAL-TIME: testing rollback timing
 	if err := os.WriteFile(lockPath, []byte("test"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +292,6 @@ func TestRunPostTurn_OnlyMainThread(t *testing.T) {
 }
 
 func TestRunPostTurn_ConcurrentGuard(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
 	dispatcher := &mockDispatcher{}
 
@@ -304,9 +312,8 @@ func TestRunPostTurn_ConcurrentGuard(t *testing.T) {
 }
 
 func TestRunPostTurn_SetsRunningOnExecute(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
-	dispatcher := &mockDispatcher{}
+	dispatcher := &mockDispatcher{done: make(chan struct{}), target: 3}
 
 	executed := make(chan struct{})
 	runFn := func(ctx context.Context, prompt string) error {
@@ -317,42 +324,32 @@ func TestRunPostTurn_SetsRunningOnExecute(t *testing.T) {
 	// No lock file → time passes, sessions enough, lock acquires
 	m := NewManager(Config{MinHours: 0, MinSessions: 1}, tmpDir, "/project", "sid",
 		&mockSessionLister{ids: []string{"s1"}}, runFn, dispatcher, slog.Default())
-	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REALTIME: testing scan throttle bypass
+	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
 	m.RunPostTurn(context.Background(), nil, 0, "")
 
-	// Wait for goroutine to complete
+	// Wait for all 3 virtual tool events (ToolStart, ToolRun, ToolEnd)
 	select {
-	case <-executed:
-		// Good — Execute ran
+	case <-dispatcher.done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Execute should have run within 5 seconds")
+		t.Fatal("Execute should have dispatched 3 events within 5 seconds")
 	}
 
-	// Wait for deferred cleanup with timeout to avoid flaky tests
-	timeout := time.After(2 * time.Second)
-	for {
-		m.mu.Lock()
-		stillRunning := m.running
-		m.mu.Unlock()
-		if !stillRunning {
-			break
-		}
-		select {
-		case <-timeout:
-			t.Fatal("Execute did not complete within 2 seconds")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+	// Yield to let deferred cleanup (running = false) execute
+	runtime.Gosched()
+	m.mu.Lock()
+	stillRunning := m.running
+	m.mu.Unlock()
+	if stillRunning {
+		t.Error("running should be false after Execute completes")
 	}
 }
 
 // --- Chain test: full pipeline ---
 
 func TestChain_FullPipeline(t *testing.T) {
-	os.Unsetenv("GBOT_AUTO_DREAM")
 	tmpDir := t.TempDir()
-	dispatcher := &mockDispatcher{}
+	dispatcher := &mockDispatcher{done: make(chan struct{}), target: 3}
 
 	var runCalled atomic.Bool
 	var capturedPrompt string
@@ -369,11 +366,13 @@ func TestChain_FullPipeline(t *testing.T) {
 	// Run the full pipeline via RunPostTurn (main thread)
 	m.RunPostTurn(context.Background(), nil, 0, "")
 
-	// Wait for completion via dispatcher events (avoids race on m.running)
-	deadline := time.Now().Add(5 * time.Second) // REALTIME: testing goroutine completion timeout
-	for time.Now().Before(deadline) && len(dispatcher.Events()) < 3 { // REALTIME: testing event polling loop
-		time.Sleep(10 * time.Millisecond)
+	// Wait for all 3 virtual tool events
+	select {
+	case <-dispatcher.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute should have dispatched 3 events within 5 seconds")
 	}
+	runtime.Gosched() // yield for deferred cleanup
 
 	if !runCalled.Load() {
 		t.Fatal("DreamRunFn should have been called")
@@ -403,5 +402,136 @@ func TestChain_FullPipeline(t *testing.T) {
 	}
 	if dispatcher.Events()[0].ToolUse.Name != "Dream" {
 		t.Errorf("tool name = %q, want Dream", dispatcher.Events()[0].ToolUse.Name)
+	}
+}
+
+// lockErrorLister changes lock file permissions when called, causing TryAcquire to fail.
+type lockErrorLister struct {
+	ids     []string
+	memDir  string
+	changed bool
+}
+
+func (l *lockErrorLister) SessionsTouchedSince(projectDir string, since time.Time, excludeSID string) ([]string, error) {
+	if !l.changed {
+		lockPath := filepath.Join(l.memDir, lockFileName)
+		_ = os.Chmod(lockPath, 0o444) // make read-only so WriteFile fails in TryAcquire
+		l.changed = true
+	}
+	return l.ids, nil
+}
+
+func TestShouldDream_ReadLastConsolidatedAtError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// memoryDir is a regular file → stat of lock file under it fails with ENOTDIR
+	memDir := filepath.Join(tmpDir, "notadir")
+	if err := os.WriteFile(memDir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, memDir, "/project", "sid",
+		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
+	should, _, _, err := m.ShouldDream(context.Background())
+	if should {
+		t.Error("ShouldDream should return false on stat error")
+	}
+	if err != nil {
+		t.Errorf("ShouldDream should swallow error, got: %v", err)
+	}
+}
+
+func TestShouldDream_SessionsTouchedSinceError(t *testing.T) {
+	tmpDir := t.TempDir()
+	// No lock file → time gate passes (lastConsolidatedAt = 0 = epoch)
+
+	lister := &mockSessionLister{err: errors.New("db connection lost")}
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+		lister, nil, &mockDispatcher{}, slog.Default())
+	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
+
+	should, _, _, err := m.ShouldDream(context.Background())
+	if should {
+		t.Error("ShouldDream should return false on SessionsTouchedSince error")
+	}
+	if err != nil {
+		t.Errorf("ShouldDream should swallow error, got: %v", err)
+	}
+}
+
+func TestShouldDream_LockAcquireError(t *testing.T) {
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, lockFileName)
+
+	// Create stale lock file (passes time gate)
+	oldTime := time.Now().Add(-2 * time.Hour) // REAL-TIME: set stale lock age
+	if err := os.WriteFile(lockPath, []byte("99999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(lockPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lister chmods lock file to read-only → TryAcquire WriteFile fails
+	lister := &lockErrorLister{
+		ids:    []string{"s1", "s2", "s3", "s4", "s5", "s6"},
+		memDir: tmpDir,
+	}
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+		lister, nil, &mockDispatcher{}, slog.Default())
+	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
+
+	should, _, _, err := m.ShouldDream(context.Background())
+	if should {
+		t.Error("ShouldDream should return false on lock acquire error")
+	}
+	if err != nil {
+		t.Errorf("ShouldDream should swallow error, got: %v", err)
+	}
+
+	// Restore for cleanup
+	_ = os.Chmod(lockPath, 0o644)
+}
+
+func TestExecute_PanicRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create lock file with known mtime for rollback
+	lockPath := filepath.Join(tmpDir, lockFileName)
+	priorTime := time.Now().Add(-1 * time.Hour) // REAL-TIME: testing rollback timing
+	if err := os.WriteFile(lockPath, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(lockPath, priorTime, priorTime); err != nil {
+		t.Fatal(err)
+	}
+
+	runFn := func(ctx context.Context, prompt string) error {
+		panic("test panic")
+	}
+	dispatcher := &mockDispatcher{}
+
+	m := NewManager(DefaultConfig(), tmpDir, "/project", "sid",
+		&mockSessionLister{}, runFn, dispatcher, slog.Default())
+
+	// Should not crash — deferred recovery catches the panic
+	m.Execute(context.Background(), []string{"s1"}, priorTime.UnixMilli())
+
+	// Verify running was reset
+	m.mu.Lock()
+	stillRunning := m.running
+	m.mu.Unlock()
+	if stillRunning {
+		t.Error("running should be false after panic recovery")
+	}
+
+	// Verify rollback occurred (mtime rewound)
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatalf("lock file should exist after rollback: %v", err)
+	}
+	diff := info.ModTime().Sub(priorTime)
+	if diff < -time.Second || diff > time.Second {
+		t.Errorf("rollback should rewind mtime to ~%v, got %v", priorTime, info.ModTime())
 	}
 }

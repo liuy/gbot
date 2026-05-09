@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+// setTempHome redirects HOME to a temp subdirectory so .gbot paths
+// don't pollute the real user's ~/.gbot/projects/.
+func setTempHome(t *testing.T) {
+	t.Helper()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0755); err != nil {
+		t.Fatalf("create temp home: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+}
+
 func TestParseMemoryType(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -234,7 +245,7 @@ func TestGetMemoryPath_ContainsProjectsDir(t *testing.T) {
 }
 
 func TestEnsureMemoryDir_CreatesDir(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmp := t.TempDir()
 	err := EnsureMemoryDir(tmp)
 	if err != nil {
@@ -247,7 +258,7 @@ func TestEnsureMemoryDir_CreatesDir(t *testing.T) {
 }
 
 func TestEnsureMemoryDir_Idempotent(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmp := t.TempDir()
 	if err := EnsureMemoryDir(tmp); err != nil {
 		t.Fatalf("first call failed: %v", err)
@@ -539,11 +550,17 @@ func TestBuildMemoryPrompt_EmptyDir(t *testing.T) {
 
 func TestBuildMemoryPrompt_WithContent(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	tmp := t.TempDir()
 
-	// Create a memory file and index entry
-	_ = WriteMemoryFile(tmp, "test", MemoryTypeUser, "Test memory", "Some content")
-	_ = UpdateMemoryIndex(tmp, "test.md", "Test memory")
+	if err := EnsureMemoryDir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	memDir := GetMemoryPath(tmp)
+
+	// Write to the COMPUTED memory dir, not tmp directly
+	_ = WriteMemoryFile(memDir, "test", MemoryTypeUser, "Test memory", "Some content")
+	_ = UpdateMemoryIndex(memDir, "test.md", "Test memory")
 
 	prompt := BuildMemoryPrompt(tmp)
 	if prompt == "" {
@@ -552,8 +569,8 @@ func TestBuildMemoryPrompt_WithContent(t *testing.T) {
 	if !strings.Contains(prompt, "What NOT to save") {
 		t.Error("prompt missing 'What NOT to save' section")
 	}
-	if !strings.Contains(prompt, "Before recommending") {
-		t.Error("prompt missing 'Before recommending' section")
+	if !strings.Contains(prompt, "Test memory") {
+		t.Error("prompt should contain loaded memory content")
 	}
 }
 
@@ -796,6 +813,7 @@ func TestGetMemoryPath_HomeFallback(t *testing.T) {
 
 func TestBuildMemoryPrompt_WithContentAtComputedPath(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	tmp := t.TempDir()
 
 	// Ensure memory dir exists and write content to the COMPUTED entrypoint
@@ -822,6 +840,7 @@ func TestBuildMemoryPrompt_WithContentAtComputedPath(t *testing.T) {
 
 func TestBuildMemoryPrompt_WithTruncation(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	tmp := t.TempDir()
 
 	if err := EnsureMemoryDir(tmp); err != nil {
@@ -849,6 +868,7 @@ func TestBuildMemoryPrompt_WithTruncation(t *testing.T) {
 
 func TestBuildMemoryPrompt_ReadFileError(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	tmp := t.TempDir()
 
 	// Ensure memory dir exists, then make MEMORY.md a directory (causes ReadFile error)
@@ -871,6 +891,7 @@ func TestBuildMemoryPrompt_ReadFileError(t *testing.T) {
 
 func TestBuildMemoryPrompt_EmptyContent(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	tmp := t.TempDir()
 
 	if err := EnsureMemoryDir(tmp); err != nil {
@@ -1564,10 +1585,10 @@ func TestChain_RemoveThenLoad(t *testing.T) {
 	}
 
 	// Observable: MEMORY.md no longer mentions removed file
-	if strings.Contains(idx.Raw, "remove_me") {
+	if i := strings.Index(idx.Raw, "remove_me"); i >= 0 {
 		t.Error("MEMORY.md should not contain removed file reference")
 	}
-	if !strings.Contains(idx.Raw, "keep_me") {
+	if i := strings.Index(idx.Raw, "keep_me"); i < 0 {
 		t.Error("MEMORY.md should still contain kept file reference")
 	}
 
@@ -1637,6 +1658,7 @@ func TestChain_UpdateContentThenLoad(t *testing.T) {
 // section containing our index entries.
 func TestChain_WriteIndexPrompt(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
+	setTempHome(t)
 	workingDir := t.TempDir()
 
 	// Write files to the computed memory directory

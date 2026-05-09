@@ -936,20 +936,26 @@ func TestSessionsTouchedSince_ReturnsRecent(t *testing.T) {
 	projectDir := "/test/project"
 
 	// Create sessions with different timestamps
-	oldTime := time.Now().Add(-48 * time.Hour)
-	recentTime := time.Now().Add(-1 * time.Hour)
+	oldTime := time.Now().Add(-48 * time.Hour)   // REAL-TIME: set session age for time-based query
+	recentTime := time.Now().Add(-1 * time.Hour) // REAL-TIME: set session age for time-based query
 
 	// Old session — should NOT be returned
 	s1, _ := store.CreateSession(projectDir, "model")
-	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID)
+	if _, err := store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID); err != nil {
+		t.Fatalf("update timestamp: %v", err)
+	}
 
 	// Recent sessions — should be returned
 	s2, _ := store.CreateSession(projectDir, "model")
-	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s2.SessionID)
+	if _, err := store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s2.SessionID); err != nil {
+		t.Fatalf("update timestamp: %v", err)
+	}
 	s3, _ := store.CreateSession(projectDir, "model")
-	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s3.SessionID)
+	if _, err := store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s3.SessionID); err != nil {
+		t.Fatalf("update timestamp: %v", err)
+	}
 
-	since := time.Now().Add(-2 * time.Hour)
+	since := time.Now().Add(-2 * time.Hour) // REAL-TIME: query cutoff for touched-since test
 	ids, err := store.SessionsTouchedSince(projectDir, since, "")
 	if err != nil {
 		t.Fatalf("SessionsTouchedSince failed: %v", err)
@@ -973,7 +979,7 @@ func TestSessionsTouchedSince_ExcludesCurrent(t *testing.T) {
 	s1, _ := store.CreateSession(projectDir, "model")
 	s2, _ := store.CreateSession(projectDir, "model")
 
-	since := time.Now().Add(-1 * time.Hour)
+	since := time.Now().Add(-1 * time.Hour) // REAL-TIME: query cutoff for touched-since test
 	ids, err := store.SessionsTouchedSince(projectDir, since, s1.SessionID)
 	if err != nil {
 		t.Fatalf("SessionsTouchedSince failed: %v", err)
@@ -999,10 +1005,12 @@ func TestSessionsTouchedSince_NoneRecent(t *testing.T) {
 
 	// Create session with old timestamp
 	s1, _ := store.CreateSession(projectDir, "model")
-	oldTime := time.Now().Add(-48 * time.Hour)
-	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID)
+	oldTime := time.Now().Add(-48 * time.Hour) // REAL-TIME: set old session age
+	if _, err := store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID); err != nil {
+		t.Fatalf("update timestamp: %v", err)
+	}
 
-	since := time.Now().Add(-1 * time.Hour)
+	since := time.Now().Add(-1 * time.Hour) // REAL-TIME: query cutoff for none-recent test
 	ids, err := store.SessionsTouchedSince(projectDir, since, "")
 	if err != nil {
 		t.Fatalf("SessionsTouchedSince failed: %v", err)

@@ -364,6 +364,23 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
+		{
+			Name:     "PID 0 in test - use real PID or two competing managers",
+			TestOnly: true,
+			Regex:    regexp.MustCompile(`\[\]byte\("0"\)`),
+			Level:    "P1",
+			Exempt: func(match string, lines []string, lineIdx int) bool {
+				trimmed := strings.TrimSpace(lines[lineIdx])
+				if strings.HasPrefix(trimmed, "//") {
+					return true
+				}
+				// Only flag WriteFile/Write calls (PID simulation in lock files)
+				if !strings.Contains(trimmed, "WriteFile") && !strings.Contains(trimmed, ".Write(") {
+					return true // not a file write - likely data content
+				}
+				return false
+			},
+		},
 }
 
 // isInComment checks if the match is inside a // comment.
