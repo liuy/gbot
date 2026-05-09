@@ -123,6 +123,7 @@ func (s *Store) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_dir);
 	CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_sessions_project_updated ON sessions(project_dir, updated_at);
 
 	CREATE TABLE IF NOT EXISTS messages (
 		seq               INTEGER PRIMARY KEY AUTOINCREMENT,

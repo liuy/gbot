@@ -919,3 +919,95 @@ func TestUpdateContextTokens(t *testing.T) {
 		t.Fatalf("UpdateContextTokens update failed: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SessionsTouchedSince tests
+// ---------------------------------------------------------------------------
+
+func TestSessionsTouchedSince_ReturnsRecent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	projectDir := "/test/project"
+
+	// Create sessions with different timestamps
+	oldTime := time.Now().Add(-48 * time.Hour)
+	recentTime := time.Now().Add(-1 * time.Hour)
+
+	// Old session — should NOT be returned
+	s1, _ := store.CreateSession(projectDir, "model")
+	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID)
+
+	// Recent sessions — should be returned
+	s2, _ := store.CreateSession(projectDir, "model")
+	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s2.SessionID)
+	s3, _ := store.CreateSession(projectDir, "model")
+	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", recentTime, s3.SessionID)
+
+	since := time.Now().Add(-2 * time.Hour)
+	ids, err := store.SessionsTouchedSince(projectDir, since, "")
+	if err != nil {
+		t.Fatalf("SessionsTouchedSince failed: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 recent sessions, got %d: %v", len(ids), ids)
+	}
+}
+
+func TestSessionsTouchedSince_ExcludesCurrent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	projectDir := "/test/project"
+
+	s1, _ := store.CreateSession(projectDir, "model")
+	s2, _ := store.CreateSession(projectDir, "model")
+
+	since := time.Now().Add(-1 * time.Hour)
+	ids, err := store.SessionsTouchedSince(projectDir, since, s1.SessionID)
+	if err != nil {
+		t.Fatalf("SessionsTouchedSince failed: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 session (excluding current), got %d", len(ids))
+	}
+	if ids[0] != s2.SessionID {
+		t.Errorf("expected session %s, got %s", s2.SessionID, ids[0])
+	}
+}
+
+func TestSessionsTouchedSince_NoneRecent(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	projectDir := "/test/project"
+
+	// Create session with old timestamp
+	s1, _ := store.CreateSession(projectDir, "model")
+	oldTime := time.Now().Add(-48 * time.Hour)
+	store.db.Exec("UPDATE sessions SET updated_at = ? WHERE session_id = ?", oldTime, s1.SessionID)
+
+	since := time.Now().Add(-1 * time.Hour)
+	ids, err := store.SessionsTouchedSince(projectDir, since, "")
+	if err != nil {
+		t.Fatalf("SessionsTouchedSince failed: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(ids))
+	}
+}

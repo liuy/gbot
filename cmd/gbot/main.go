@@ -19,6 +19,8 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/memory/dream"
+	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/hooks"
@@ -469,6 +471,38 @@ func main() {
 			}
 			sm := session.New(smCfg, workingDir, extractFn, slog.Default())
 			eng.SetSessionMemory(sm)
+		}
+
+		// Wire dream mode (auto memory consolidation)
+		// TS source: services/autoDream/autoDream.ts
+		if dream.IsEnabled() && store != nil && sessionID != "" && contextWindow > 0 {
+			dreamCfg := dream.DefaultConfig()
+			dreamRunFn := func(ctx context.Context, prompt string) error {
+				// 5min timeout to prevent runaway dream sub-agents
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				dreamTools := map[string]tool.Tool{
+					"Read":  fileread.New(),
+					"Edit":  fileedit.New(),
+					"Write": filewrite.New(),
+					"Grep":  grep.New(),
+					"Glob":  glob.New(),
+				}
+				subEng := eng.NewSubEngine(engine.SubEngineOptions{
+					Tools:     dreamTools,
+					AgentType: "auto_dream",
+					MaxTurns:  30,
+				})
+				defer subEng.Close()
+				sysPrompt, _ := json.Marshal(prompt)
+				result := subEng.QuerySync(ctx, "", sysPrompt)
+				return result.Error
+			}
+
+			memoryDir := long.GetMemoryPath(workingDir)
+			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, sessionID,
+				store, dreamRunFn, eng.Dispatcher(), slog.Default())
+			eng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
 		}
 
 			// Fire SessionStart hook

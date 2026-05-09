@@ -195,6 +195,31 @@ func (s *Store) UpdateSessionTimestamp(sessionID string) error {
 	return nil
 }
 
+// SessionsTouchedSince returns session IDs with updated_at > since for a project.
+// Used by dream consolidation to count new sessions since last run.
+// Excludes excludeSID (the current session).
+// Note: updated_at column is TIMESTAMP (RFC3339 via SQLite driver), not Unix ms.
+func (s *Store) SessionsTouchedSince(projectDir string, since time.Time, excludeSID string) ([]string, error) {
+	rows, err := s.db.Query(
+		"SELECT session_id FROM sessions WHERE project_dir = ? AND updated_at > ? AND session_id != ?",
+		projectDir, since, excludeSID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions touched since: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan session id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // DeleteSession deletes a session and all its messages (cascade).
 func (s *Store) DeleteSession(sessionID string) error {
 

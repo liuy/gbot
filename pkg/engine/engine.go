@@ -1472,7 +1472,7 @@ func (e *Engine) shouldAutoCompact() bool {
 	// that would deadlock if they triggered another compact.
 	// Source: TS autoCompact.ts:169-172
 	src := e.querySource()
-	if src == QuerySourceCompact || src == QuerySourceSessionMemory {
+	if src == QuerySourceCompact || src == QuerySourceSessionMemory || src == QuerySourceAutoDream {
 		return false
 	}
 	// Circuit breaker
@@ -2154,6 +2154,9 @@ func (e *Engine) querySource() string {
 	if e.agentType == "session_memory" {
 		return QuerySourceSessionMemory
 	}
+	if e.agentType == "auto_dream" {
+		return QuerySourceAutoDream
+	}
 	if isBuiltInAgent(e.agentType) {
 		return "agent:builtin:" + e.agentType
 	}
@@ -2197,4 +2200,9 @@ func subMaxTurns(n int) int {
 // It allows tests to observe events dispatched by the engine.
 func (e *Engine) SetDispatcher(d types.EventDispatcher) {
 	e.dispatcher = d
+}
+
+// Dispatcher returns the event dispatcher for virtual tool events (e.g. dream).
+func (e *Engine) Dispatcher() types.EventDispatcher {
+	return e.dispatcher
 }

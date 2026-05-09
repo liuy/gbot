@@ -58,6 +58,11 @@ const QuerySourceCompact = "compact"
 // Source: TS services/SessionMemory/sessionMemory.ts — querySource: 'session_memory'
 const QuerySourceSessionMemory = "session_memory"
 
+// QuerySourceAutoDream identifies the dream consolidation sub-agent.
+// Used as recursion guard — dream agents must not trigger compact.
+// Source: TS services/autoDream/autoDream.ts — querySource: 'auto_dream'
+const QuerySourceAutoDream = "auto_dream"
+
 // compactableTools maps gbot tool names to microcompact eligibility.
 // Source: microCompact.ts:41-50 — COMPACTABLE_TOOLS set.
 // MAINTENANCE: When adding a new compactable tool, update this map and
