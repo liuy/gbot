@@ -69,10 +69,16 @@ func (t *MCPTool) RenderResult(data any) string {
 // Call routes the tool invocation through MCP.
 // Source: client.ts:3029-3245 — callMCPTool
 func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	// Get connection from registry
+	// Get connection from registry, with single reconnect attempt on "not found".
+	// This handles the case where a config reload or transient disconnect removed
+	// the connection — Reconnect re-establishes it from the stored config.
 	conn, ok := t.registry.GetConnection(t.info.ServerName)
 	if !ok {
-		return nil, fmt.Errorf("mcp: server %q not found", t.info.ServerName)
+		var reconnectErr error
+		conn, reconnectErr = t.registry.Reconnect(ctx, t.info.ServerName)
+		if reconnectErr != nil {
+			return nil, fmt.Errorf("mcp: server %q not found (reconnect failed: %w)", t.info.ServerName, reconnectErr)
+		}
 	}
 	cs, ok := conn.(*mcp.ConnectedServer)
 	if !ok {

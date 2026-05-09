@@ -131,7 +131,7 @@ func TestMCPTool_CheckPermissions(t *testing.T) {
 	}
 }
 
-func TestMCPTool_Call_ServerNotFound(t *testing.T) {
+func TestMCPTool_Call_ServerNotFound_TriesReconnect(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
 	defer registry.Close()
 
@@ -145,8 +145,12 @@ func TestMCPTool_Call_ServerNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing server")
 	}
-	if err.Error() != `mcp: server "test" not found` {
+	// Should attempt reconnect before giving up
+	if !strings.Contains(err.Error(), `server "test" not found`) {
 		t.Errorf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "reconnect failed") {
+		t.Errorf("error should mention reconnect attempt: %v", err)
 	}
 }
 
@@ -168,13 +172,17 @@ func TestMCPTool_Call_ServerNotConnected(t *testing.T) {
 		ServerName:   "test",
 	}, registry)
 
-	// The config is not registered, so GetConnection returns not found
+	// The config is not registered, so GetConnection returns not found.
+	// Call should attempt reconnect (which also fails), then report.
 	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error for missing server")
 	}
-	if err.Error() != `mcp: server "test" not found` {
+	if !strings.Contains(err.Error(), `server "test" not found`) {
 		t.Errorf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "reconnect failed") {
+		t.Errorf("error should mention reconnect attempt: %v", err)
 	}
 }
 

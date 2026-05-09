@@ -11,6 +11,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1001,5 +1002,124 @@ func TestIntegration_ConfigReload_RemoveServer(t *testing.T) {
 	}
 	if hasSrv2After {
 		t.Error("srv2 should be disconnected after removal from config")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Config reload: plugin servers must survive reload (only project .mcp.json is re-read)
+// ---------------------------------------------------------------------------
+
+func TestIntegration_ConfigReload_PreservesPluginServers(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set up plugin MCP server on in-memory transport
+	t1a, t2a := mcp.NewInMemoryTransports()
+	pluginSrv := mcp.NewServer(&mcp.Implementation{Name: "plugin-srv", Version: "1.0"}, nil)
+	mcp.AddTool(pluginSrv, &mcp.Tool{Name: "plugin_tool", Description: "Plugin tool"}, echoHandler)
+	go func() { _, _ = pluginSrv.Connect(context.Background(), t1a, nil) }()
+
+	// Set up project MCP server on in-memory transport
+	t1b, t2b := mcp.NewInMemoryTransports()
+	projectSrv := mcp.NewServer(&mcp.Implementation{Name: "project-srv", Version: "1.0"}, nil)
+	mcp.AddTool(projectSrv, &mcp.Tool{Name: "project_tool", Description: "Project tool"}, echoHandler)
+	go func() { _, _ = projectSrv.Connect(context.Background(), t1b, nil) }()
+
+	provider := newInMemoryProvider()
+	provider.mu.Lock()
+	provider.transports["plugin:some-plugin:srv"] = t2a
+	provider.transports["project-srv"] = t2b
+	provider.mu.Unlock()
+
+	mgr := NewClientManager(provider, true, "")
+	registry := NewRegistry(mgr, ChangeCallbacks{})
+	registry.configDir = tmpDir
+	defer registry.Close()
+
+	// Write project config with only the project server
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"project-srv":{"command":"echo"}}}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Initial load: project config + plugin server
+	projectConfigs, _ := GetProjectMcpConfigsFromCwd(tmpDir)
+	allConfigs := make(map[string]ScopedMcpServerConfig)
+	maps.Copy(allConfigs, projectConfigs)
+	// Add plugin server (simulating what main.go does via LoadAndConnectMCP)
+	allConfigs["plugin:some-plugin:srv"] = ScopedMcpServerConfig{
+		Config:       &StdioConfig{Command: "node"},
+		Scope:        ScopeDynamic,
+		PluginSource: "plugin:some-plugin:srv",
+	}
+	registry.ConnectAll(context.Background(), allConfigs)
+
+	// Verify both connected
+	registry.mu.RLock()
+	_, hasPlugin := registry.connections["plugin:some-plugin:srv"]
+	_, hasProject := registry.connections["project-srv"]
+	registry.mu.RUnlock()
+	if !hasPlugin {
+		t.Fatal("plugin server should be connected after initial load")
+	}
+	if !hasProject {
+		t.Fatal("project server should be connected after initial load")
+	}
+
+	// Trigger config reload (project .mcp.json unchanged, but reload fires)
+	registry.handleConfigReload()
+
+	// Verify plugin server is STILL connected (not removed by reload)
+	registry.mu.RLock()
+	_, hasPluginAfter := registry.connections["plugin:some-plugin:srv"]
+	_, hasProjectAfter := registry.connections["project-srv"]
+	registry.mu.RUnlock()
+	if !hasPluginAfter {
+		t.Error("plugin server should survive config reload — it must be preserved")
+	}
+	if !hasProjectAfter {
+		t.Error("project server should still be connected after reload")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StartConfigWatch: should not watch when no .mcp.json exists
+// ---------------------------------------------------------------------------
+
+func TestStartConfigWatch_NoConfigFile_NoWatcher(t *testing.T) {
+	tmpDir := t.TempDir()
+	// No .mcp.json created — watcher should not start
+
+	registry := NewRegistry(nil, ChangeCallbacks{})
+	registry.configDir = tmpDir
+	defer registry.Close()
+
+	err := registry.StartConfigWatch()
+	if err != nil {
+		t.Fatalf("StartConfigWatch should not error: %v", err)
+	}
+
+	if registry.configWatcher != nil {
+		t.Error("configWatcher should be nil when no .mcp.json exists — no file to watch")
+	}
+}
+
+func TestStartConfigWatch_WithConfigFile_StartsWatcher(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	registry := NewRegistry(nil, ChangeCallbacks{})
+	registry.configDir = tmpDir
+	defer registry.Close()
+
+	err := registry.StartConfigWatch()
+	if err != nil {
+		t.Fatalf("StartConfigWatch should not error: %v", err)
+	}
+
+	if registry.configWatcher == nil {
+		t.Error("configWatcher should be created when .mcp.json exists")
 	}
 }

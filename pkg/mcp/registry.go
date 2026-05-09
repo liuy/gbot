@@ -1021,6 +1021,15 @@ func (r *Registry) StartConfigWatch() error {
 	}
 
 	configPath := r.configDir + "/.mcp.json"
+
+	// Don't start watcher if there's no config file to watch.
+	// Watching the directory unconditionally would trigger reloads on
+	// every file change (go build, test outputs, etc.), which is wasteful
+	// and dangerous — it could disconnect plugin servers.
+	if _, err := os.Stat(configPath); err != nil {
+		return nil
+	}
+
 	watcher, err := NewConfigWatcher(func() {
 		r.handleConfigReload()
 	})
@@ -1035,11 +1044,8 @@ func (r *Registry) StartConfigWatch() error {
 		watcher.Stop()
 		return fmt.Errorf("mcp: watch config dir %q: %w", r.configDir, err)
 	}
-	// Also watch the file itself if it exists
-	if _, err := os.Stat(configPath); err == nil {
-		if err := watcher.AddPath(configPath); err != nil {
-			slog.Warn("mcp: failed to watch config file directly", "path", configPath, "error", err)
-		}
+	if err := watcher.AddPath(configPath); err != nil {
+		slog.Warn("mcp: failed to watch config file directly", "path", configPath, "error", err)
 	}
 
 	r.configWatcher = watcher
@@ -1060,12 +1066,23 @@ func (r *Registry) handleConfigReload() {
 	}
 	defer r.reloadMu.Unlock()
 
-	// Re-read configs from disk
+	// Re-read configs from disk (project .mcp.json only — plugin servers are preserved below)
 	configs, _ := GetProjectMcpConfigsFromCwd(r.configDir)
 
 	r.mu.Lock()
 	oldConfigs := r.configs
 	r.mu.Unlock()
+
+	// Preserve plugin servers: GetProjectMcpConfigsFromCwd only returns project-level
+	// configs. Plugin servers (identified by PluginSource) must be carried forward
+	// from oldConfigs so they are not treated as "removed" on every reload.
+	for name, oldCfg := range oldConfigs {
+		if oldCfg.PluginSource != "" {
+			if _, inNew := configs[name]; !inNew {
+				configs[name] = oldCfg
+			}
+		}
+	}
 
 	// Diff: find added, removed, changed servers
 	type diffEntry struct {
