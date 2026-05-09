@@ -1037,15 +1037,9 @@ func (r *Registry) StartConfigWatch() error {
 		return fmt.Errorf("mcp: create config watcher: %w", err)
 	}
 
-	// Watch the config file. Also watch the directory — file recreation
-	// (common in atomic writes) shows as a Rename+Create sequence that
-	// requires watching the parent directory to detect.
-	if err := watcher.AddPath(r.configDir); err != nil {
-		watcher.Stop()
-		return fmt.Errorf("mcp: watch config dir %q: %w", r.configDir, err)
-	}
 	if err := watcher.AddPath(configPath); err != nil {
-		slog.Warn("mcp: failed to watch config file directly", "path", configPath, "error", err)
+		watcher.Stop()
+		return fmt.Errorf("mcp: watch config file %q: %w", configPath, err)
 	}
 
 	r.configWatcher = watcher

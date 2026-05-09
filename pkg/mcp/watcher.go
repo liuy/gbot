@@ -1,59 +1,60 @@
 // Package mcp implements the MCP (Model Context Protocol) client infrastructure.
 //
 // This file: Config hot-reload — watches .mcp.json for changes and reloads servers.
-// Source: chokidar in TS + React effect re-run pattern.
+// Source: TS fs.watchFile (polling) for global config freshness.
 //
-// gbot uses fsnotify with 500ms debounce for CLI-friendly config watching.
+// gbot uses polling with stat mtime comparison.
+// Atomic writes (write temp → rename) produce new mtimes naturally,
+// no need to watch parent directories.
 package mcp
 
 import (
 	"log/slog"
+	"os"
 	"sync"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 // ---------------------------------------------------------------------------
-// ConfigWatcher — file-based config change detection
-// Source: chokidar watch + /reload-plugins + React effect
+// ConfigWatcher — polling-based config change detection
+// Source: TS fs.watchFile polling + React effect re-run
 // ---------------------------------------------------------------------------
 
 // ConfigWatcher monitors config files and triggers a reload callback on changes.
-// Uses fsnotify with debounce to coalesce rapid writes (e.g., git checkout).
+// Uses polling with stat mtime comparison.
+//
+// Advantages:
+//   - Zero noise: only checks the specific file, not the entire directory
+//   - Handles atomic writes naturally (new file = new mtime)
+//   - Cross-platform: no inotify/FSEvents/Kqueue differences
+//   - Simple: one stat syscall per interval (microsecond-scale)
 type ConfigWatcher struct {
-	watcher  *fsnotify.Watcher
+	paths    []string
+	mtimes   map[string]time.Time
 	onReload func()
-	debounce time.Duration
+	interval time.Duration
 	done     chan struct{}
 	once     sync.Once
 
-	// mu protects the pending timer
-	mu    sync.Mutex
-	timer *time.Timer
+	mu sync.Mutex
 }
 
 // ConfigWatcherOpt configures a ConfigWatcher.
 type ConfigWatcherOpt func(*ConfigWatcher)
 
-// WithDebounce sets the debounce duration. Default is 500ms.
-func WithDebounce(d time.Duration) ConfigWatcherOpt {
-	return func(cw *ConfigWatcher) { cw.debounce = d }
+// WithInterval sets the polling interval. Default is 2 seconds.
+func WithInterval(d time.Duration) ConfigWatcherOpt {
+	return func(cw *ConfigWatcher) { cw.interval = d }
 }
 
 // NewConfigWatcher creates a config file watcher.
-// onReload is called when a watched file changes (after debounce).
+// onReload is called when a watched file's mtime changes.
 func NewConfigWatcher(onReload func(), opts ...ConfigWatcherOpt) (*ConfigWatcher, error) {
-	fw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
-	}
-
 	cw := &ConfigWatcher{
-		watcher:  fw,
 		onReload: onReload,
-		debounce: 500 * time.Millisecond,
+		interval: 2 * time.Second,
 		done:     make(chan struct{}),
+		mtimes:   make(map[string]time.Time),
 	}
 
 	for _, opt := range opts {
@@ -63,66 +64,69 @@ func NewConfigWatcher(onReload func(), opts ...ConfigWatcherOpt) (*ConfigWatcher
 	return cw, nil
 }
 
-// AddPath adds a file or directory to watch.
+// AddPath adds a file path to watch. Captures current mtime as baseline.
+// If the file doesn't exist, the baseline is empty — file creation will be
+// detected on the next poll.
 func (cw *ConfigWatcher) AddPath(path string) error {
-	return cw.watcher.Add(path)
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	cw.paths = append(cw.paths, path)
+	if info, err := os.Stat(path); err == nil {
+		cw.mtimes[path] = info.ModTime()
+	}
+	return nil
 }
 
-// Start begins watching for file changes.
+// Start begins polling for file changes.
 // Blocks until Stop is called. Should be run in a goroutine.
 func (cw *ConfigWatcher) Start() {
-	cw.runEventLoop(cw.watcher.Events, cw.watcher.Errors)
-}
+	ticker := time.NewTicker(cw.interval)
+	defer ticker.Stop()
 
-// runEventLoop processes file events and errors from the given channels.
-// Extracted from Start for testability — tests can inject mock channels.
-func (cw *ConfigWatcher) runEventLoop(events <-chan fsnotify.Event, errors <-chan error) {
 	for {
 		select {
 		case <-cw.done:
 			return
-		case event, ok := <-events:
-			if !ok {
-				return
+		case <-ticker.C:
+			if cw.checkChanged() {
+				slog.Info("mcp: config file changed, reloading")
+				cw.onReload()
 			}
-			// Only trigger on Write, Create, Rename, Remove events
-			if event.Has(fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove) {
-				cw.scheduleReload()
-			}
-		case err, ok := <-errors:
-			if !ok {
-				return
-			}
-			slog.Warn("mcp: config watcher error", "error", err)
 		}
 	}
 }
 
-// scheduleReload debounces rapid file events into a single reload.
-func (cw *ConfigWatcher) scheduleReload() {
+// checkChanged compares current mtimes against saved baselines.
+// Returns true if any watched file changed (created, modified, or deleted).
+func (cw *ConfigWatcher) checkChanged() bool {
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
 
-	if cw.timer != nil {
-		cw.timer.Stop()
+	for _, path := range cw.paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			// File gone — if we had a previous mtime, it changed
+			_, had := cw.mtimes[path]
+			if had {
+				delete(cw.mtimes, path)
+				return true
+			}
+			// File was never there, still not there → no change
+			continue
+		}
+		newMtime := info.ModTime()
+		oldMtime, had := cw.mtimes[path]
+		cw.mtimes[path] = newMtime
+		if !had || newMtime.After(oldMtime) {
+			return true
+		}
 	}
-	cw.timer = time.AfterFunc(cw.debounce, func() {
-		slog.Info("mcp: config file changed, reloading")
-		cw.onReload()
-	})
+	return false
 }
 
-// Stop stops the watcher and waits for the event loop to exit.
+// Stop stops the watcher.
 func (cw *ConfigWatcher) Stop() {
 	cw.once.Do(func() {
-		// Stop pending debounce timer
-		cw.mu.Lock()
-		if cw.timer != nil {
-			cw.timer.Stop()
-		}
-		cw.mu.Unlock()
-
 		close(cw.done)
-		_ = cw.watcher.Close()
 	})
 }
