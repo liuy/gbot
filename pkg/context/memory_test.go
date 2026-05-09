@@ -11,8 +11,17 @@ import (
 	"github.com/liuy/gbot/pkg/memory/long"
 )
 
+func setTempHome(t *testing.T) {
+	t.Helper()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0755); err != nil {
+		t.Fatalf("create temp home: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+}
+
 func TestLoadMemoryFiles_Empty(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	files := context.LoadMemoryFiles(tmpDir)
 	if len(files) != 0 {
@@ -21,7 +30,7 @@ func TestLoadMemoryFiles_Empty(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SingleFile(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -43,7 +52,7 @@ func TestLoadMemoryFiles_SingleFile(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_MultipleFiles(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -72,7 +81,7 @@ func TestLoadMemoryFiles_MultipleFiles(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SkipsNonMarkdown(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -99,7 +108,7 @@ func TestLoadMemoryFiles_SkipsNonMarkdown(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SkipsEmptyFiles(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -123,7 +132,7 @@ func TestLoadMemoryFiles_SkipsEmptyFiles(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -142,7 +151,7 @@ func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_MigratesFromLegacyPath(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
 	if err := os.MkdirAll(legacyDir, 0755); err != nil {
@@ -171,7 +180,7 @@ func TestLoadMemoryFiles_MigratesFromLegacyPath(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_MigrationSkipsWhenNewPathHasContent(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -202,7 +211,7 @@ func TestLoadMemoryFiles_MigrationSkipsWhenNewPathHasContent(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -226,7 +235,7 @@ func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_NonExistentDir(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	// Pass a path that doesn't exist at all — os.ReadDir fails, returns nil
 	files := context.LoadMemoryFiles("/nonexistent/path/that/does/not/exist")
 	if len(files) != 0 {
@@ -235,7 +244,7 @@ func TestLoadMemoryFiles_NonExistentDir(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	// filepath.Abs on an already-absolute path never errors — it just
 	// returns the path. This test verifies the happy path through filepath.Abs.
 	tmpDir := t.TempDir()
@@ -257,7 +266,7 @@ func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
 }
 
 func TestLoadMemoryFiles_MarkdownExtensions(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {

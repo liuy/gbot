@@ -59,6 +59,7 @@ func TestTrySMCompact_NilSessionMemory(t *testing.T) {
 }
 
 func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -90,6 +91,7 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 }
 
 func TestTrySMCompact_WithRealContent(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -165,6 +167,7 @@ smcompact_test.go — test file
 }
 
 func TestTrySMCompact_TooFewMessages(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -199,6 +202,7 @@ func TestTrySMCompact_TooFewMessages(t *testing.T) {
 }
 
 func TestTrySMCompact_NoFile(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	// Don't create the memory file
 
@@ -301,6 +305,7 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 // --- Integration: SetSessionMemory + post-turn hook ---
 
 func TestSetSessionMemory_RegistersHook(t *testing.T) {
+	setTempHome(t)
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
 
@@ -405,6 +410,7 @@ func extractFirstTextBlock(msg types.Message) (string, bool) {
 // --- SM-compact coverage gap tests ---
 
 func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -456,6 +462,7 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 }
 
 func TestTrySMCompact_EmptyMessages(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {

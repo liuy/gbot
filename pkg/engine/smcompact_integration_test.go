@@ -23,6 +23,15 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func setTempHome(t *testing.T) {
+	t.Helper()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0755); err != nil {
+		t.Fatalf("create temp home: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+}
+
 // ---------------------------------------------------------------------------
 // Integration Test 1: Full chain — extract → SM-compact → verify
 // ---------------------------------------------------------------------------
@@ -35,7 +44,7 @@ import (
 // Observable output: CompactResult contains session memory content,
 // engine messages are reduced, boundary marker is present.
 func TestSMCompact_Integration_ExtractThenCompact(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
@@ -158,7 +167,7 @@ smcompact_integration_test.go — chain tests
 //
 // Observable output: file exists after extraction, content is real (not template).
 func TestSessionMemory_Integration_ColdStart(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 
 	tmpDir := t.TempDir()
 	// Intentionally do NOT create the memory directory or file
@@ -242,7 +251,7 @@ File was created from template and now has real content
 //
 // Observable output: after recovery, extraction runs and writes file.
 func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
@@ -324,7 +333,7 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 //
 // Observable output: compact results reflect the current session memory content.
 func TestSessionMemory_Integration_HotPath(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
@@ -408,7 +417,7 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 //
 // Observable output: compact produces LLM summary, not session memory summary.
 func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)

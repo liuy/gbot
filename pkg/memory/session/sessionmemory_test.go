@@ -14,10 +14,19 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func setTempHome(t *testing.T) {
+	t.Helper()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0755); err != nil {
+		t.Fatalf("create temp home: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+}
+
 // --- ShouldExtract ---
 
 func TestShouldExtract_BelowInitThreshold(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -28,7 +37,7 @@ func TestShouldExtract_BelowInitThreshold(t *testing.T) {
 }
 
 func TestShouldExtract_InitAtThreshold_NaturalBreak(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	// No tool calls in last assistant turn → natural break
 	msgs := []types.Message{
@@ -42,7 +51,7 @@ func TestShouldExtract_InitAtThreshold_NaturalBreak(t *testing.T) {
 }
 
 func TestShouldExtract_InitAtThreshold_HasToolCalls_NoToolCallThreshold(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	// Last assistant has tool_use → NOT a natural break
 	msgs := []types.Message{
@@ -59,7 +68,7 @@ func TestShouldExtract_InitAtThreshold_HasToolCalls_NoToolCallThreshold(t *testi
 }
 
 func TestShouldExtract_InitAtThreshold_ToolCallThresholdMet(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -76,7 +85,7 @@ func TestShouldExtract_InitAtThreshold_ToolCallThresholdMet(t *testing.T) {
 }
 
 func TestShouldExtract_AfterInit_TokenGrowthInsufficient(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -96,7 +105,7 @@ func TestShouldExtract_AfterInit_TokenGrowthInsufficient(t *testing.T) {
 }
 
 func TestShouldExtract_AfterInit_TokenGrowthSufficient_NaturalBreak(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -117,7 +126,7 @@ func TestShouldExtract_AfterInit_TokenGrowthSufficient_NaturalBreak(t *testing.T
 }
 
 func TestShouldExtract_AfterInit_TokenGrowthSufficient_HasToolCalls_NoThreshold(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -141,6 +150,7 @@ func TestShouldExtract_AfterInit_TokenGrowthSufficient_HasToolCalls_NoThreshold(
 // --- Extract ---
 
 func TestExtract_CreatesFileAndCallsExtractFn(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	var called bool
 	extractFn := func(ctx context.Context, prompt string, notesPath string) error {
@@ -180,6 +190,7 @@ func TestExtract_CreatesFileAndCallsExtractFn(t *testing.T) {
 }
 
 func TestExtract_ExtractFnFailure(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	extractFn := func(ctx context.Context, prompt string, notesPath string) error {
 		return os.ErrPermission
@@ -201,6 +212,7 @@ func TestExtract_ExtractFnFailure(t *testing.T) {
 }
 
 func TestExtract_ContextCancellation(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	extractFn := func(ctx context.Context, prompt string, notesPath string) error {
 		return context.Canceled
@@ -227,6 +239,7 @@ func TestExtract_ContextCancellation(t *testing.T) {
 }
 
 func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	blockCh := make(chan struct{})
 	callCount := 0
@@ -275,7 +288,7 @@ func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
 // --- WaitForExtraction ---
 
 func TestWaitForExtraction_NotExtracting(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	// Not extracting → returns immediately
 	if err := sm.WaitForExtraction(); err != nil {
@@ -284,6 +297,7 @@ func TestWaitForExtraction_NotExtracting(t *testing.T) {
 }
 
 func TestWaitForExtraction_WaitsForCompletion(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	releaseCh := make(chan struct{})
 
@@ -331,6 +345,7 @@ func TestWaitForExtraction_WaitsForCompletion(t *testing.T) {
 }
 
 func TestWaitForExtraction_StaleRecovery(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(Config{
 		MinTokensToInit:        100,
@@ -352,6 +367,7 @@ func TestWaitForExtraction_StaleRecovery(t *testing.T) {
 }
 
 func TestWaitForExtraction_Timeout(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	blockCh := make(chan struct{})
 
@@ -397,7 +413,7 @@ func TestWaitForExtraction_Timeout(t *testing.T) {
 // --- IsEmpty ---
 
 func TestIsEmpty_NoFile(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 	if !sm.IsEmpty() {
 		t.Error("should be empty when file doesn't exist")
@@ -405,6 +421,7 @@ func TestIsEmpty_NoFile(t *testing.T) {
 }
 
 func TestIsEmpty_TemplateOnly(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -422,6 +439,7 @@ func TestIsEmpty_TemplateOnly(t *testing.T) {
 }
 
 func TestIsEmpty_RealContent(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -442,7 +460,7 @@ func TestIsEmpty_RealContent(t *testing.T) {
 // --- RecordToolCalls ---
 
 func TestRecordToolCalls(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 
 	sm.RecordToolCalls(3)
@@ -460,6 +478,7 @@ func TestRecordToolCalls(t *testing.T) {
 // --- Reset ---
 
 func TestReset(t *testing.T) {
+	setTempHome(t)
 	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
 
 	// Set some state
@@ -497,7 +516,7 @@ func TestReset(t *testing.T) {
 // --- NotesPath ---
 
 func TestNotesPath(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	sm := New(DefaultConfig(), "/tmp/workdir", nil, nil)
 	path := sm.NotesPath()
 
@@ -511,7 +530,7 @@ func TestNotesPath(t *testing.T) {
 // --- LoadSessionMemoryContent ---
 
 func TestLoadSessionMemoryContent_NoFile(t *testing.T) {
-	t.Parallel()
+	setTempHome(t)
 	content := LoadSessionMemoryContent(t.TempDir())
 	if content != "" {
 		t.Errorf("expected empty string for missing file, got %q", content)
@@ -519,6 +538,7 @@ func TestLoadSessionMemoryContent_NoFile(t *testing.T) {
 }
 
 func TestLoadSessionMemoryContent_WithFile(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	memDir := long.GetMemoryPath(tmpDir)
 	if err := os.MkdirAll(memDir, 0755); err != nil {
@@ -539,6 +559,7 @@ func TestLoadSessionMemoryContent_WithFile(t *testing.T) {
 // --- ensureFile ---
 
 func TestEnsureFile_CreatesFromTemplate(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(DefaultConfig(), tmpDir, nil, nil)
 
@@ -556,6 +577,7 @@ func TestEnsureFile_CreatesFromTemplate(t *testing.T) {
 }
 
 func TestEnsureFile_Idempotent(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(DefaultConfig(), tmpDir, nil, nil)
 
@@ -621,6 +643,7 @@ func TestLastAssistantHasToolCalls_SkipsUserMessages(t *testing.T) {
 // --- Coverage gap tests ---
 
 func TestExtract_StaleRecovery(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	var called bool
 	extractFn := func(ctx context.Context, prompt string, notesPath string) error {
@@ -655,6 +678,7 @@ func TestExtract_StaleRecovery(t *testing.T) {
 }
 
 func TestExtract_ReadFileError(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(DefaultConfig(), tmpDir, nil, slog.Default())
 
@@ -688,6 +712,7 @@ func TestExtract_ReadFileError(t *testing.T) {
 }
 
 func TestEnsureFile_MkdirAllError(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(DefaultConfig(), tmpDir, nil, nil)
 
@@ -714,6 +739,7 @@ func TestEnsureFile_MkdirAllError(t *testing.T) {
 }
 
 func TestWaitForExtraction_StaleRecovery_WithChannel(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(Config{
 		MinTokensToInit:        100,
@@ -746,6 +772,7 @@ func TestWaitForExtraction_StaleRecovery_WithChannel(t *testing.T) {
 }
 
 func TestExtract_EnsureFileFailure(t *testing.T) {
+	setTempHome(t)
 	tmpDir := t.TempDir()
 	sm := New(DefaultConfig(), tmpDir, nil, slog.Default())
 
