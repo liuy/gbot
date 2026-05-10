@@ -693,3 +693,142 @@ func TestHasRecordsAtOrAfter(t *testing.T) {
 		t.Error("turn 5 should not match (no record >= 5)")
 	}
 }
+
+// TestRestoreToIndex_SameFileMultipleEditsSameTurn verifies that when the same
+// file is edited multiple times within a single turn (same turnIndex), rewind
+// restores the file to the state BEFORE the first edit (original pre-edit content),
+// not an intermediate version.
+//
+// Uses LoadRecords with reversed version order to simulate sort.Slice instability
+// (sort.Slice is not stable — for equal keys, element order is undefined).
+//
+// Issue: restoreFilesLocked sorts only by turnIndex, not by (turnIndex, version).
+// When records have the same turnIndex but are in reverse version order,
+// the "first" record picked may be the wrong one (highest version instead of lowest).
+func TestRestoreToIndex_SameFileMultipleEditsSameTurn(t *testing.T) {
+	tmp := t.TempDir()
+	backupDir := filepath.Join(tmp, "backups")
+	tr := NewTracker(backupDir)
+	file := filepath.Join(tmp, "file.go")
+
+	// Content versions
+	v1 := []byte("package main // v1\n")
+	v2 := []byte("package main // v2\n")
+	v3 := []byte("package main // v3\n")
+	v4 := []byte("package main // v4\n")
+
+	// Create backup files on disk manually
+	hash := fileHash(file)
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(backupDir, hash+"@v1"), v1)
+	mustWriteFile(t, filepath.Join(backupDir, hash+"@v2"), v2)
+	mustWriteFile(t, filepath.Join(backupDir, hash+"@v3"), v3)
+
+	// Load records in REVERSE version order (simulates sort.Slice instability)
+	// This is the worst case: the first record for turnIndex=2 has version=3 (v3 content).
+	// If restore picks this, it restores v3 instead of v1 — wrong!
+	tr.LoadRecords([]BackupRecord{
+		{FilePath: file, BackupName: hash + "@v3", Version: 3, TurnIndex: 2},
+		{FilePath: file, BackupName: hash + "@v2", Version: 2, TurnIndex: 2},
+		{FilePath: file, BackupName: hash + "@v1", Version: 1, TurnIndex: 2},
+	})
+
+	// File is currently at v4 (post-all-edits)
+	mustWriteFile(t, file, v4)
+
+	// --- Execute: rewind to turn 2 ---
+	restored, err := tr.RestoreToIndex(2)
+	if err != nil {
+		t.Fatalf("RestoreToIndex: %v", err)
+	}
+
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored file, got %d: %v", len(restored), restored)
+	}
+
+	// --- Verify: must restore v1 (pre-first-edit), NOT v3 (pre-last-edit) ---
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read file after rewind: %v", err)
+	}
+	if string(data) != string(v1) {
+		t.Errorf("ISSUE: file after rewind = %q, want %q (original pre-edit content, not intermediate)", string(data), string(v1))
+	}
+}
+
+// TestRestoreToIndex_MultipleFilesMultipleEditsSameTurn verifies that when
+// multiple files are each edited multiple times within the same turn,
+// rewind restores ALL files to their pre-first-edit states.
+//
+// Scenario: turn 2 edits fileA (v1→v2→v3) and fileB (x→y→z).
+// Rewind to turn 2 should restore fileA=v1, fileB=x.
+func TestRestoreToIndex_MultipleFilesMultipleEditsSameTurn(t *testing.T) {
+	tmp := t.TempDir()
+	backupDir := filepath.Join(tmp, "backups")
+	tr := NewTracker(backupDir)
+
+	fileA := filepath.Join(tmp, "a.go")
+	fileB := filepath.Join(tmp, "b.go")
+
+	// Content versions for fileA
+	aV1 := []byte("package a // v1\n")
+	aV2 := []byte("package a // v2\n")
+	aV3 := []byte("package a // v3\n")
+
+	// Content versions for fileB
+	bV1 := []byte("package b // v1\n")
+	bV2 := []byte("package b // v2\n")
+	bV3 := []byte("package b // v3\n")
+
+	// Create backup files
+	hashA := fileHash(fileA)
+	hashB := fileHash(fileB)
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(backupDir, hashA+"@v1"), aV1)
+	mustWriteFile(t, filepath.Join(backupDir, hashA+"@v2"), aV2)
+	mustWriteFile(t, filepath.Join(backupDir, hashB+"@v1"), bV1)
+	mustWriteFile(t, filepath.Join(backupDir, hashB+"@v2"), bV2)
+
+	// Load records in reverse version order for both files (worst case)
+	tr.LoadRecords([]BackupRecord{
+		{FilePath: fileA, BackupName: hashA + "@v2", Version: 2, TurnIndex: 2},
+		{FilePath: fileA, BackupName: hashA + "@v1", Version: 1, TurnIndex: 2},
+		{FilePath: fileB, BackupName: hashB + "@v2", Version: 2, TurnIndex: 2},
+		{FilePath: fileB, BackupName: hashB + "@v1", Version: 1, TurnIndex: 2},
+	})
+
+	// Current state: both at v3
+	mustWriteFile(t, fileA, aV3)
+	mustWriteFile(t, fileB, bV3)
+
+	// --- Execute: rewind to turn 2 ---
+	restored, err := tr.RestoreToIndex(2)
+	if err != nil {
+		t.Fatalf("RestoreToIndex: %v", err)
+	}
+
+	if len(restored) != 2 {
+		t.Fatalf("expected 2 restored files, got %d: %v", len(restored), restored)
+	}
+
+	// --- Verify: both files at pre-first-edit state ---
+	dataA, err := os.ReadFile(fileA)
+	if err != nil {
+		t.Fatalf("read fileA: %v", err)
+	}
+	if string(dataA) != string(aV1) {
+		t.Errorf("fileA after rewind = %q, want %q", string(dataA), string(aV1))
+	}
+
+	dataB, err := os.ReadFile(fileB)
+	if err != nil {
+		t.Fatalf("read fileB: %v", err)
+	}
+	if string(dataB) != string(bV1) {
+		t.Errorf("fileB after rewind = %q, want %q", string(dataB), string(bV1))
+	}
+}

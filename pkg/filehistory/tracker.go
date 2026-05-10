@@ -137,9 +137,14 @@ func (t *Tracker) restoreFilesLocked(targetIndex int) []string {
 	var restored []string
 
 	for filePath, records := range byFile {
-		// Sort by turnIndex ascending
+		// Sort by turnIndex ascending, then version ascending as tiebreaker.
+		// Same turnIndex + same file means multiple edits in one turn;
+		// lowest version = original pre-edit content.
 		sort.Slice(records, func(i, j int) bool {
-			return records[i].TurnIndex < records[j].TurnIndex
+			if records[i].TurnIndex != records[j].TurnIndex {
+				return records[i].TurnIndex < records[j].TurnIndex
+			}
+			return records[i].Version < records[j].Version
 		})
 
 		// Find the earliest record with turnIndex >= targetIndex
