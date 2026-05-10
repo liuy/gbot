@@ -1308,7 +1308,7 @@ func TestChain_BashFileBackup_EmptyWorkingDir_NoBackupRecorded(t *testing.T) {
 	bashTool := &testTool{
 		name: "Bash",
 		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-			os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
+			_ = os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
 			return &tool.ToolResult{Data: "ok"}, nil
 		},
 	}
@@ -1357,7 +1357,7 @@ func TestChain_BashFileBackup_WithWorkingDir_BackupRecorded(t *testing.T) {
 	bashTool := &testTool{
 		name: "Bash",
 		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
-			os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
+			_ = os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
 			return &tool.ToolResult{Data: "ok"}, nil
 		},
 	}

@@ -856,8 +856,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	if tt.Name == "Bash" && e.fileHistory != nil && toolCtx.WorkingDir != "" {
 		if snap, snapErr := filehistory.TakeSnapshot(toolCtx.WorkingDir); snapErr == nil {
 					bashSnap = snap
-		} else {
-				}
+		}
 	}
 
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
@@ -901,8 +900,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		// Detect file changes after Bash execution and record backups
 		if bashSnap != nil {
 					e.recordBashFileBackups(toolCtx.WorkingDir, bashSnap)
-		} else {
-				}
+		}
 	}
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
 	if len(result.NewMessages) > 0 {
