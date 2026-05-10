@@ -1920,10 +1920,26 @@ type RewindResult struct {
 	RestoredFiles []string // files restored to pre-edit state
 }
 
+// RewindScope controls what RewindToScoped affects.
+type RewindScope int
+
+const (
+	RewindAll          RewindScope = iota // messages + files (default, same as RewindTo)
+	RewindMessagesOnly                    // truncate messages + records, keep files
+	RewindFilesOnly                       // restore files, keep messages
+)
+
 // RewindTo truncates conversation to messages[:idx] and restores file history.
+// Equivalent to RewindToScoped(idx, RewindAll).
 // Returns RewindResult with info about what was restored, or error if idx is invalid.
 // Thread-safe: acquires Engine lock internally.
 func (e *Engine) RewindTo(idx int) (*RewindResult, error) {
+	return e.RewindToScoped(idx, RewindAll)
+}
+
+// RewindToScoped rewinds the conversation and/or files based on scope.
+// Thread-safe: acquires Engine lock internally.
+func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1933,19 +1949,40 @@ func (e *Engine) RewindTo(idx int) (*RewindResult, error) {
 
 	result := &RewindResult{}
 
-	// 1. Truncate messages + rebuild toolSearch
-	e.messages = e.messages[:idx]
-	RestoreToolSearchState(e.messages, e.toolSearch)
-	result.MessageCount = len(e.messages)
+	switch scope {
+	case RewindAll, RewindMessagesOnly:
+		// Truncate messages + rebuild toolSearch
+		e.messages = e.messages[:idx]
+		RestoreToolSearchState(e.messages, e.toolSearch)
+		result.MessageCount = len(e.messages)
+	}
 
-	// 2. Restore file history (if enabled)
+	if scope == RewindAll || scope == RewindFilesOnly {
+		result.MessageCount = len(e.messages)
+	}
+
+	// Restore file history
 	if e.fileHistory != nil {
-		restored, err := e.fileHistory.RestoreToIndex(idx)
-		if err != nil {
-			// Log but don't fail — message rewind is more important than file restore
-			e.logger.Error("engine:rewind:file_restore_failed", "err", err)
-		} else {
-			result.RestoredFiles = restored
+		switch scope {
+		case RewindAll:
+			// Restore files + truncate records
+			restored, err := e.fileHistory.RestoreToIndex(idx)
+			if err != nil {
+				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
+			} else {
+				result.RestoredFiles = restored
+			}
+		case RewindFilesOnly:
+			// Restore files without truncating records
+			restored, err := e.fileHistory.RestoreFilesOnly(idx)
+			if err != nil {
+				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
+			} else {
+				result.RestoredFiles = restored
+			}
+		case RewindMessagesOnly:
+			// Don't restore files, but truncate orphaned records
+			e.fileHistory.TruncateRecords(idx)
 		}
 	}
 

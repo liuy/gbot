@@ -535,3 +535,161 @@ func assertFileContent(t *testing.T, path, want string) {
 		t.Errorf("%s content = %q, want %q", filepath.Base(path), string(data), want)
 	}
 }
+
+// --- RestoreFilesOnly tests ---
+
+// TestRestoreFilesOnly_RestoresFilesWithoutTruncatingRecords verifies that
+// RestoreFilesOnly restores file content but keeps all backup records intact.
+// This is used by "Restore code only" option in /rewind.
+func TestRestoreFilesOnly_RestoresFilesWithoutTruncatingRecords(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+	targetFile := filepath.Join(t.TempDir(), "test.go")
+
+	// v0 → v1 → v2
+	mustWriteFile(t, targetFile, []byte("v0"))
+	if err := tr.RecordBackup(targetFile, []byte("v0"), 1); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, targetFile, []byte("v1"))
+	if err := tr.RecordBackup(targetFile, []byte("v1"), 2); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, targetFile, []byte("v2"))
+
+	// RestoreFilesOnly to turn 1: file becomes "v0", records stay intact
+	restored, err := tr.RestoreFilesOnly(1)
+	if err != nil {
+		t.Fatalf("RestoreFilesOnly(1): %v", err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored, got %d", len(restored))
+	}
+	assertFileContent(t, targetFile, "v0")
+
+	// Records should NOT be truncated — both records still present
+	records := tr.Records()
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records (not truncated), got %d", len(records))
+	}
+}
+
+// TestRestoreFilesOnly_DeletesCreatedFiles verifies that files created during
+// the rewound turns are deleted even with files-only restore.
+func TestRestoreFilesOnly_DeletesCreatedFiles(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+	targetFile := filepath.Join(t.TempDir(), "new.go")
+
+	mustWriteFile(t, targetFile, []byte("new content"))
+	if err := tr.RecordBackup(targetFile, nil, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := tr.RestoreFilesOnly(2)
+	if err != nil {
+		t.Fatalf("RestoreFilesOnly(2): %v", err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored, got %d", len(restored))
+	}
+	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+		t.Error("file should have been deleted (created during rewound turns)")
+	}
+	// Records still present
+	if len(tr.Records()) != 1 {
+		t.Errorf("expected 1 record (not truncated), got %d", len(tr.Records()))
+	}
+}
+
+// TestRestoreFilesOnly_NoRecordsForTarget does nothing when no records match.
+func TestRestoreFilesOnly_NoRecordsForTarget(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	restored, err := tr.RestoreFilesOnly(5)
+	if err != nil {
+		t.Fatalf("RestoreFilesOnly(5): %v", err)
+	}
+	if len(restored) != 0 {
+		t.Errorf("expected 0 restored, got %d", len(restored))
+	}
+}
+
+// TestRestoreFilesOnly_SubsequentRestoreToIndexStillWorks verifies that after
+// RestoreFilesOnly, a subsequent RestoreToIndex can still use the preserved records.
+func TestRestoreFilesOnly_SubsequentRestoreToIndexStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+	targetFile := filepath.Join(t.TempDir(), "test.go")
+
+	mustWriteFile(t, targetFile, []byte("v0"))
+	if err := tr.RecordBackup(targetFile, []byte("v0"), 1); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, targetFile, []byte("v1"))
+	if err := tr.RecordBackup(targetFile, []byte("v1"), 2); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, targetFile, []byte("v2"))
+
+	// First: RestoreFilesOnly to turn 1 — file = "v0", records intact
+	_, err := tr.RestoreFilesOnly(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, targetFile, "v0")
+
+	// Re-edit the file to simulate user continuing to edit
+	mustWriteFile(t, targetFile, []byte("v0_reedited"))
+
+	// Second: RestoreToIndex to turn 1 — should still work using preserved records
+	restored, err := tr.RestoreToIndex(1)
+	if err != nil {
+		t.Fatalf("RestoreToIndex(1): %v", err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored, got %d", len(restored))
+	}
+	assertFileContent(t, targetFile, "v0")
+	// Now records should be truncated
+	if len(tr.Records()) != 0 {
+		t.Errorf("expected 0 records after RestoreToIndex, got %d", len(tr.Records()))
+	}
+}
+
+// --- HasRecordsAtOrAfter tests ---
+
+// TestHasRecordsAtOrAfter is used by TUI to decide whether to show the
+// "Restore code" option in the rewind confirmation dialog.
+func TestHasRecordsAtOrAfter(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	if tr.HasRecordsAtOrAfter(1) {
+		t.Error("expected false with no records")
+	}
+
+	if err := tr.RecordBackup("/tmp/a.go", []byte("a"), 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.RecordBackup("/tmp/b.go", []byte("b"), 4); err != nil {
+		t.Fatal(err)
+	}
+
+	if !tr.HasRecordsAtOrAfter(1) {
+		t.Error("turn 1 should match (record at turn 2 >= 1)")
+	}
+	if !tr.HasRecordsAtOrAfter(2) {
+		t.Error("turn 2 should match (record at turn 2)")
+	}
+	if !tr.HasRecordsAtOrAfter(3) {
+		t.Error("turn 3 should match (record at turn 4 >= 3)")
+	}
+	if !tr.HasRecordsAtOrAfter(4) {
+		t.Error("turn 4 should match (record at turn 4)")
+	}
+	if tr.HasRecordsAtOrAfter(5) {
+		t.Error("turn 5 should not match (no record >= 5)")
+	}
+}

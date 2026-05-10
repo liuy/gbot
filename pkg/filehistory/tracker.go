@@ -99,6 +99,35 @@ func (t *Tracker) RestoreToIndex(targetIndex int) ([]string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	restored := t.restoreFilesLocked(targetIndex)
+	t.truncateRecordsLocked(targetIndex)
+	return restored, nil
+}
+
+// RestoreFilesOnly restores files to their state at targetIndex without
+// truncating backup records. Used by "Restore code only" /rewind option.
+func (t *Tracker) RestoreFilesOnly(targetIndex int) ([]string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.restoreFilesLocked(targetIndex), nil
+}
+
+// HasRecordsAtOrAfter returns true if any backup record has turnIndex >= targetIndex.
+// Used by TUI to decide whether to show the "Restore code" option.
+func (t *Tracker) HasRecordsAtOrAfter(targetIndex int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, r := range t.records {
+		if r.TurnIndex >= targetIndex {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreFilesLocked restores all files to their state at targetIndex.
+// Must be called with t.mu held.
+func (t *Tracker) restoreFilesLocked(targetIndex int) []string {
 	// Group records by filePath
 	byFile := make(map[string][]BackupRecord)
 	for _, r := range t.records {
@@ -148,10 +177,7 @@ func (t *Tracker) RestoreToIndex(targetIndex int) ([]string, error) {
 		}
 	}
 
-	// Truncate in-memory records
-	t.truncateRecordsLocked(targetIndex)
-
-	return restored, nil
+	return restored
 }
 
 // Records returns a copy of all backup records (for persistence).

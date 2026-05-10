@@ -593,6 +593,7 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 		store:            store,
 		sessionID:        sessionID,
 		lastPersistedIdx: 4,
+		fileHistory:      tracker,
 	}
 	a.width = 80
 
@@ -606,6 +607,14 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	a.activeDialog.cursor = 0
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
+
+		// Scope dialog appears because fileHistory has backups
+		if app.activeDialog != nil {
+			app.activeDialog.done = true
+			app.activeDialog.cursor = 0 // "Restore code and conversation"
+			model, _ = app.onDialogDone(app.activeDialog)
+			app = model.(*App)
+		}
 
 	// Verify store was truncated
 	remaining, _ := store.LoadMessages(sessionID)
@@ -662,3 +671,187 @@ func TestHandleRewind_RewindToError(t *testing.T) {
 	}
 }
 
+// --- Second dialog tests (scope selection) ---
+
+// TestHandleRewind_NoFileChanges_SkipsScopeDialog verifies that when no
+// fileHistory is set, rewind behaves as before (no scope dialog).
+func TestHandleRewind_NoFileChanges_SkipsScopeDialog(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("bye")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 0,
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	// Select first user message (index 0)
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 0
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// No fileHistory set -> no scope dialog, direct RewindAll
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(engMsgs))
+	}
+	if app.input.Value() != "hello" {
+		t.Errorf("input = %q, want %q", app.input.Value(), "hello")
+	}
+}
+
+// setupRewindWithFileChanges creates a test app with engine, tracker, and file edit
+// ready for the first dialog callback.
+func setupRewindWithFileChanges(t *testing.T) (*App, string) {
+	t.Helper()
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "test.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	eng := newTestEngine()
+	eng.SetFileHistory(tracker)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit")}, Timestamp: testTime},
+	})
+
+	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
+	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 0,
+		fileHistory:    tracker,
+	}
+	a.width = 80
+
+	// First dialog: select second user message (cursor=1 -> index 2)
+	_ = a.handleRewind(nil)
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 1
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	return app, testFile
+}
+
+func TestHandleRewind_WithFileChanges_ShowsScopeDialog(t *testing.T) {
+	app, _ := setupRewindWithFileChanges(t)
+
+	if app.activeDialog == nil {
+		t.Fatal("expected second dialog (scope selector) when file changes exist")
+	}
+	opts := app.activeDialog.options
+	if len(opts) < 3 {
+		t.Fatalf("expected at least 3 scope options, got %d: %v", len(opts), formatOpts(opts))
+	}
+}
+
+func TestHandleRewind_ScopeBoth(t *testing.T) {
+	app, testFile := setupRewindWithFileChanges(t)
+
+	scopeDialog := app.activeDialog
+	scopeDialog.done = true
+	scopeDialog.cursor = 0 // "Restore code and conversation"
+	model, _ := app.onDialogDone(scopeDialog)
+	app = model.(*App)
+
+	eng := app.engine
+	if len(eng.Messages()) != 2 {
+		t.Errorf("expected 2 messages (kept [0..1]), got %d", len(eng.Messages()))
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("file = %q, want %q", string(data), "original")
+	}
+}
+
+func TestHandleRewind_ScopeConversationOnly(t *testing.T) {
+	app, testFile := setupRewindWithFileChanges(t)
+
+	scopeDialog := app.activeDialog
+	scopeDialog.done = true
+	scopeDialog.cursor = 1 // "Restore conversation"
+	model, _ := app.onDialogDone(scopeDialog)
+	app = model.(*App)
+
+	if len(app.engine.Messages()) != 2 {
+		t.Errorf("expected 2 messages (kept [0..1]), got %d", len(app.engine.Messages()))
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "modified" {
+		t.Errorf("file = %q, want %q (should NOT be restored)", string(data), "modified")
+	}
+}
+
+func TestHandleRewind_ScopeCodeOnly(t *testing.T) {
+	app, testFile := setupRewindWithFileChanges(t)
+
+	scopeDialog := app.activeDialog
+	scopeDialog.done = true
+	scopeDialog.cursor = 2 // "Restore code"
+	model, _ := app.onDialogDone(scopeDialog)
+	app = model.(*App)
+
+	if len(app.engine.Messages()) != 3 {
+		t.Errorf("expected 3 messages (not truncated), got %d", len(app.engine.Messages()))
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("file = %q, want %q", string(data), "original")
+	}
+}
+
+func TestHandleRewind_ScopeCancel(t *testing.T) {
+	app, testFile := setupRewindWithFileChanges(t)
+
+	scopeDialog := app.activeDialog
+	scopeDialog.aborted = true
+	model, _ := app.onDialogDone(scopeDialog)
+	app = model.(*App)
+
+	if len(app.engine.Messages()) != 3 {
+		t.Errorf("expected 3 messages (unchanged), got %d", len(app.engine.Messages()))
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "modified" {
+		t.Errorf("file = %q, want %q (unchanged)", string(data), "modified")
+	}
+}
+
+func formatOpts(opts []DialogOption) string {
+	var labels []string
+	for _, o := range opts {
+		labels = append(labels, o.Label)
+	}
+	return fmt.Sprintf("%v", labels)
+}

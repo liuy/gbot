@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -173,6 +174,9 @@ func (a *App) tryAutoRewind() bool {
 // ---------------------------------------------------------------------------
 
 // handleRewind opens a message picker dialog to select a rewind target.
+// If the selected rewind point has file changes, a second dialog lets the user
+// choose between restoring code only, conversation only, or both.
+// Source: TS /rewind → MessageSelector.tsx → getRestoreOptions
 func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 	if a.repl.IsStreaming() {
 		return commitCmd
@@ -208,34 +212,75 @@ func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 		}
 		idx := indices[d.SelectedIndex()]
 
-		result, err := a.engine.RewindTo(idx)
-		if err != nil {
-			slog.Error("tui:rewind:engine_failed", "err", err)
-			return a, a.readEvents()
+		// Check if file changes exist for the selected rewind point
+		hasFileChanges := a.fileHistory != nil && a.fileHistory.HasRecordsAtOrAfter(idx)
+
+		if !hasFileChanges {
+			// No file changes — rewind messages only directly
+			return a.executeRewind(idx, engine.RewindMessagesOnly, msgs)
 		}
 
-		if len(result.RestoredFiles) > 0 {
-			slog.Info("tui:rewind:files_restored", "count", len(result.RestoredFiles), "files", result.RestoredFiles)
+		// File changes exist — show scope selection dialog
+		// Source: TS MessageSelector.tsx getRestoreOptions — canRestoreCode_0 check
+		scopeOpts := []DialogOption{
+			{Label: "Restore code and conversation"},
+			{Label: "Restore conversation"},
+			{Label: "Restore code"},
+			{Label: "Cancel"},
 		}
 
-		// Sync persistence: truncate store from the rewound-to index
+		a.activeDialog = NewDialog("What do you want to restore?", scopeOpts)
+		a.activeDialog.width = a.width
+
+		a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
+			if d.Aborted() {
+				return a, a.readEvents()
+			}
+			selected := d.SelectedIndex()
+			switch selected {
+			case 0: // Restore code and conversation
+				return a.executeRewind(idx, engine.RewindAll, msgs)
+			case 1: // Restore conversation only
+				return a.executeRewind(idx, engine.RewindMessagesOnly, msgs)
+			case 2: // Restore code only
+				return a.executeRewind(idx, engine.RewindFilesOnly, msgs)
+			default: // Cancel
+				return a, a.readEvents()
+			}
+		}
+		return a, a.readEvents()
+	}
+	return commitCmd
+}
+
+// executeRewind performs the actual rewind with the given scope.
+// Source: TS MessageSelector.tsx onSelectRestoreOption
+func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []types.Message) (tea.Model, tea.Cmd) {
+	result, err := a.engine.RewindToScoped(idx, scope)
+	if err != nil {
+		slog.Error("tui:rewind:engine_failed", "err", err)
+		return a, a.readEvents()
+	}
+
+	if len(result.RestoredFiles) > 0 {
+		slog.Info("tui:rewind:files_restored", "count", len(result.RestoredFiles), "files", result.RestoredFiles)
+	}
+
+	// Sync persistence for message-affecting scopes
+	if scope == engine.RewindAll || scope == engine.RewindMessagesOnly {
 		if a.store != nil && a.sessionID != "" && idx < a.lastPersistedIdx {
 			_ = a.store.TruncateMessagesFromIndex(a.sessionID, idx)
 			a.lastPersistedIdx = idx
 		}
-
 		// Reset TUI messages — rewind changes engine messages, rebuild from scratch
 		*a.repl = *NewReplState()
 		a.committedCount = 0
-
-		// Restore input text from the selected message for resubmission.
-		// Source: TS restoreMessageSync → textForResubmit → setInputValue
-		selectedText := firstTextBlockContent(msgs[idx])
+		// Restore input text from the selected message for resubmission
+		selectedText := firstTextBlockContent(originalMsgs[idx])
 		a.input.SetValue(selectedText)
-		a.markViewportDirty()
-
-		slog.Info("tui:rewind", "to_index", idx, "message_count", result.MessageCount)
-		return a, a.readEvents()
 	}
-	return commitCmd
+
+	a.markViewportDirty()
+	slog.Info("tui:rewind", "to_index", idx, "scope", scope, "message_count", result.MessageCount)
+	return a, a.readEvents()
 }

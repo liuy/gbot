@@ -66,6 +66,7 @@ func setupRewindIntegration(t *testing.T) (*App, *short.Store, *filehistory.Trac
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
+		fileHistory:      tracker,
 	}
 	a.width = 80
 
@@ -188,6 +189,15 @@ func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
 
+	// Scope dialog appears because fileHistory has backups
+	if app.activeDialog == nil {
+		t.Fatal("expected scope dialog after message selection (has file changes)")
+	}
+	app.activeDialog.done = true
+	app.activeDialog.cursor = 0 // "Restore code and conversation"
+	model, _ = app.onDialogDone(app.activeDialog)
+	app = model.(*App)
+
 	// --- Verify observable output ---
 
 	// Engine messages should be empty (rewound to idx 0)
@@ -255,6 +265,15 @@ func TestIntegration_Rewind_DeletesCreatedFiles(t *testing.T) {
 	a.activeDialog.cursor = 0
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
+
+	// Scope dialog appears because fileHistory has backups
+	if app.activeDialog == nil {
+		t.Fatal("expected scope dialog after message selection (has file changes)")
+	}
+	app.activeDialog.done = true
+	app.activeDialog.cursor = 0 // "Restore code and conversation"
+	model, _ = app.onDialogDone(app.activeDialog)
+	app = model.(*App)
 
 	// --- Verify: created file should be deleted ---
 	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
@@ -424,6 +443,15 @@ func TestIntegration_Rewind_MultipleEdits_CorrectVersion(t *testing.T) {
 	a.activeDialog.cursor = 1 // indices[1]=2
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
+
+	// Scope dialog appears because fileHistory has backups at turn 2
+	if app.activeDialog == nil {
+		t.Fatal("expected scope dialog after message selection (has file changes)")
+	}
+	app.activeDialog.done = true
+	app.activeDialog.cursor = 0 // "Restore code and conversation"
+	model, _ = app.onDialogDone(app.activeDialog)
+	app = model.(*App)
 
 	// --- Verify: file should be restored to v1 (pre-edit at turn 2) ---
 	restored, err := os.ReadFile(testFile)

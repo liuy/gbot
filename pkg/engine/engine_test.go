@@ -3295,6 +3295,193 @@ func TestRewindTo_NoFileHistory(t *testing.T) {
 	}
 }
 
+// --- RewindScope tests ---
+
+// TestRewindToScoped_MessagesOnly truncates messages but does not restore files.
+func TestRewindToScoped_MessagesOnly(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "test.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetFileHistory(tracker)
+
+	// Set up 4 messages: user, assistant, user, assistant
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
+
+	// Record a file edit at turn 2 (index of second user message)
+	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
+	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind messages only to index 2 — keep files as-is
+	result, err := eng.RewindToScoped(2, RewindMessagesOnly)
+	if err != nil {
+		t.Fatalf("RewindToScoped: %v", err)
+	}
+	if result.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", result.MessageCount)
+	}
+	// Files should NOT be restored
+	if len(result.RestoredFiles) != 0 {
+		t.Errorf("RestoredFiles should be empty for MessagesOnly, got %v", result.RestoredFiles)
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "modified" {
+		t.Errorf("file = %q, want %q — file should NOT be restored with MessagesOnly", string(data), "modified")
+	}
+	// Messages should be truncated
+	msgs := eng.Messages()
+	if len(msgs) != 2 {
+		t.Errorf("len(Messages) = %d, want 2", len(msgs))
+	}
+}
+
+// TestRewindToScoped_FilesOnly restores files but does not truncate messages.
+func TestRewindToScoped_FilesOnly(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "test.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetFileHistory(tracker)
+
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
+
+	// Record a file edit at turn 2
+	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
+	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind files only to index 2 — keep messages as-is
+	result, err := eng.RewindToScoped(2, RewindFilesOnly)
+	if err != nil {
+		t.Fatalf("RewindToScoped: %v", err)
+	}
+	// Files should be restored
+	if len(result.RestoredFiles) != 1 || result.RestoredFiles[0] != testFile {
+		t.Errorf("RestoredFiles = %v, want [%s]", result.RestoredFiles, testFile)
+	}
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("file = %q, want %q", string(data), "original")
+	}
+	// Messages should NOT be truncated
+	msgs := eng.Messages()
+	if len(msgs) != 4 {
+		t.Errorf("len(Messages) = %d, want 4 — messages should NOT be truncated with FilesOnly", len(msgs))
+	}
+	// MessageCount should reflect unchanged messages
+	if result.MessageCount != 4 {
+		t.Errorf("MessageCount = %d, want 4", result.MessageCount)
+	}
+}
+
+// TestRewindToScoped_All behaves the same as RewindTo (both messages + files).
+func TestRewindToScoped_All(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "test.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetFileHistory(tracker)
+
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
+
+	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
+	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := eng.RewindToScoped(2, RewindAll)
+	if err != nil {
+		t.Fatalf("RewindToScoped: %v", err)
+	}
+	if result.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", result.MessageCount)
+	}
+	if len(result.RestoredFiles) != 1 {
+		t.Errorf("RestoredFiles = %v, want 1 file", result.RestoredFiles)
+	}
+	assertFileContentEngine(t, testFile, "original")
+	if len(eng.Messages()) != 2 {
+		t.Errorf("len(Messages) = %d, want 2", len(eng.Messages()))
+	}
+}
+
+// TestRewindToScoped_InvalidIndex returns error for out-of-range index.
+func TestRewindToScoped_InvalidIndex(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+	})
+	_, err := eng.RewindToScoped(5, RewindAll)
+	if err == nil {
+		t.Fatal("expected error for out-of-range index")
+		if !strings.Contains(err.Error(), "out of range") {
+			t.Errorf("error should mention out of range, got: %v", err)
+		}
+	}
+}
+
+// TestRewindToScoped_NoFileHistory does not panic without fileHistory.
+func TestRewindToScoped_NoFileHistory(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+	})
+	result, err := eng.RewindToScoped(1, RewindMessagesOnly)
+	if err != nil {
+		t.Fatalf("RewindToScoped: %v", err)
+	}
+	if result.MessageCount != 1 {
+		t.Errorf("MessageCount = %d, want 1", result.MessageCount)
+	}
+}
+
+func assertFileContentEngine(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != want {
+		t.Errorf("%s content = %q, want %q", filepath.Base(path), string(data), want)
+	}
+}
 // TestChain_BashBackupViaQuery verifies the full call chain:
 // Engine.Params.WorkingDir → baseTctx → executor snapshot → Bash modifies file →
 // detect changes → record backup → RewindTo → file restored to original content.
