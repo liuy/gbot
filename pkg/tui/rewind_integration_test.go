@@ -576,3 +576,118 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 		t.Errorf("RestoredFiles = %v, want [%s]", result.RestoredFiles, testFile)
 	}
 }
+
+func TestIntegration_BashFileMonitor_ModifiedFile(t *testing.T) {
+	// TakeSnapshot captures file state, then Bash modifies the file.
+	// DetectChanges should return BeforeContent with the ORIGINAL content
+	// so RecordBackup can save it and RewindTo can restore.
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "config.txt")
+	originalContent := []byte("v1\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// 1. Take snapshot before Bash modifies the file
+	snap, err := filehistory.TakeSnapshot(tmp)
+	if err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+
+	// 2. Bash "modifies" the file (different size to ensure mtime/size detection)
+	modifiedContent := []byte("version-two\n")
+	if err := os.WriteFile(testFile, modifiedContent, 0o644); err != nil {
+		t.Fatalf("write modified: %v", err)
+	}
+
+	// 3. Detect changes
+	changes, err := filehistory.DetectChanges(tmp, snap)
+	if err != nil {
+		t.Fatalf("DetectChanges: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+
+	// BeforeContent must be the original content
+	if changes[0].BeforeContent == nil {
+		t.Fatalf("BeforeContent is nil, cannot restore modified file on rewind!")
+	}
+	if string(changes[0].BeforeContent) != string(originalContent) {
+		t.Errorf("BeforeContent = %q, want %q", string(changes[0].BeforeContent), string(originalContent))
+	}
+
+	// 4. Record backup and verify rewind restores the file
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	if err := tracker.RecordBackup(testFile, changes[0].BeforeContent, 0); err != nil {
+		t.Fatalf("RecordBackup: %v", err)
+	}
+
+	restored, err := tracker.RestoreToIndex(0)
+	if err != nil {
+		t.Fatalf("RestoreToIndex: %v", err)
+	}
+	if len(restored) != 1 {
+		t.Errorf("restored %d files, want 1", len(restored))
+	}
+
+	actual, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if string(actual) != string(originalContent) {
+		t.Errorf("file = %q, want %q", string(actual), string(originalContent))
+	}
+}
+
+func TestIntegration_BashFileMonitor_NewFile(t *testing.T) {
+	// Bash creates a new file. DetectChanges should return BeforeContent=nil.
+	// On rewind, the file should be deleted.
+	tmp := t.TempDir()
+
+	// 1. Snapshot of empty directory
+	snap, err := filehistory.TakeSnapshot(tmp)
+	if err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+
+	// 2. Bash "creates" a new file
+	newFile := filepath.Join(tmp, "new.txt")
+	if err := os.WriteFile(newFile, []byte("created\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	// 3. Detect changes
+	changes, err := filehistory.DetectChanges(tmp, snap)
+	if err != nil {
+		t.Fatalf("DetectChanges: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Path != newFile {
+		t.Errorf("Path = %q, want %q", changes[0].Path, newFile)
+	}
+	if changes[0].BeforeContent != nil {
+		t.Errorf("BeforeContent should be nil for new files, got %q", string(changes[0].BeforeContent))
+	}
+
+	// 4. Record backup with nil content, rewind should delete the file
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	if err := tracker.RecordBackup(newFile, nil, 0); err != nil {
+		t.Fatalf("RecordBackup: %v", err)
+	}
+
+	restored, err := tracker.RestoreToIndex(0)
+	if err != nil {
+		t.Fatalf("RestoreToIndex: %v", err)
+	}
+	if len(restored) != 1 {
+		t.Errorf("restored %d files, want 1", len(restored))
+	}
+
+	// File should be deleted after rewind
+	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
+		t.Errorf("new file should be deleted after rewind, err=%v", err)
+	}
+}

@@ -112,9 +112,9 @@ func TestDetectChanges_ModifiedFile(t *testing.T) {
 	if changes[0].Path != file {
 		t.Errorf("expected path %s, got %s", file, changes[0].Path)
 	}
-	// BeforeContent is nil in lazy snapshot mode — content not stored in snapshot
-	if changes[0].BeforeContent != nil {
-		t.Errorf("expected nil BeforeContent (lazy snapshot), got %q", string(changes[0].BeforeContent))
+	// BeforeContent is the original content from the snapshot
+	if string(changes[0].BeforeContent) != "before" {
+		t.Errorf("expected BeforeContent 'before', got %q", string(changes[0].BeforeContent))
 	}
 	if string(changes[0].AfterContent) != "after content change" {
 		t.Errorf("expected after content 'after content change', got %q", string(changes[0].AfterContent))
@@ -177,9 +177,9 @@ func TestDetectChanges_DeletedFile(t *testing.T) {
 	if changes[0].Path != file {
 		t.Errorf("expected deleted file path, got %s", changes[0].Path)
 	}
-	// BeforeContent is nil in lazy snapshot mode
-	if changes[0].BeforeContent != nil {
-		t.Errorf("expected nil BeforeContent (lazy snapshot), got %q", string(changes[0].BeforeContent))
+	// BeforeContent is the original content from the snapshot
+	if string(changes[0].BeforeContent) != "will be deleted" {
+		t.Errorf("expected BeforeContent 'will be deleted', got %q", string(changes[0].BeforeContent))
 	}
 	if changes[0].AfterContent != nil {
 		t.Errorf("expected nil AfterContent for deleted file, got %q", string(changes[0].AfterContent))

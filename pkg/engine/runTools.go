@@ -851,6 +851,14 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		}
 	}
 
+	// Take filesystem snapshot before Bash execution for file history tracking
+	var bashSnap map[string]*filehistory.FileSnapshot
+	if tt.Name == "Bash" && e.fileHistory != nil && toolCtx.WorkingDir != "" {
+		if snap, snapErr := filehistory.TakeSnapshot(toolCtx.WorkingDir); snapErr == nil {
+			bashSnap = snap
+		}
+	}
+
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
 	elapsed := time.Since(start)
 	tt.Duration = elapsed
@@ -889,6 +897,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// Record file backup for rewind/restore (Edit/Write tools only)
 	if e.fileHistory != nil {
 		e.recordFileBackup(tt)
+		// Detect file changes after Bash execution and record backups
+		if bashSnap != nil {
+			e.recordBashFileBackups(toolCtx.WorkingDir, bashSnap)
+		}
 	}
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
 	if len(result.NewMessages) > 0 {
@@ -1118,5 +1130,37 @@ func (e *StreamingToolExecutor) recordFileBackup(tt *TrackedTool) {
 	}
 	if err := e.fileHistory.RecordBackup(filePath, content, turnIdx); err != nil {
 		slog.Warn("filehistory:record_failed", "file", filePath, "err", err)
+	}
+}
+
+// recordBashFileBackups detects file changes after Bash execution and records backups.
+// snap is the snapshot taken before Bash ran. workingDir is the Bash tool's working directory.
+func (e *StreamingToolExecutor) recordBashFileBackups(workingDir string, snap map[string]*filehistory.FileSnapshot) {
+	if e.fileHistory == nil {
+		return
+	}
+
+	changes, err := filehistory.DetectChanges(workingDir, snap)
+	if err != nil {
+		slog.Warn("filehistory:bash:detect_changes_failed", "err", err)
+		return
+	}
+
+	// Find turn index = last user message index
+	turnIdx := -1
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		if e.messages[i].Role == types.RoleUser {
+			turnIdx = i
+			break
+		}
+	}
+	if turnIdx < 0 {
+		return
+	}
+
+	for _, ch := range changes {
+		if err := e.fileHistory.RecordBackup(ch.Path, ch.BeforeContent, turnIdx); err != nil {
+			slog.Warn("filehistory:bash:record_failed", "file", ch.Path, "err", err)
+		}
 	}
 }
