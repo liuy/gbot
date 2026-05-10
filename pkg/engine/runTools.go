@@ -855,8 +855,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	var bashSnap map[string]*filehistory.FileSnapshot
 	if tt.Name == "Bash" && e.fileHistory != nil && toolCtx.WorkingDir != "" {
 		if snap, snapErr := filehistory.TakeSnapshot(toolCtx.WorkingDir); snapErr == nil {
-			bashSnap = snap
-		}
+					bashSnap = snap
+		} else {
+				}
 	}
 
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
@@ -899,8 +900,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		e.recordFileBackup(tt)
 		// Detect file changes after Bash execution and record backups
 		if bashSnap != nil {
-			e.recordBashFileBackups(toolCtx.WorkingDir, bashSnap)
-		}
+					e.recordBashFileBackups(toolCtx.WorkingDir, bashSnap)
+		} else {
+				}
 	}
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
 	if len(result.NewMessages) > 0 {
@@ -1159,7 +1161,7 @@ func (e *StreamingToolExecutor) recordBashFileBackups(workingDir string, snap ma
 	}
 
 	for _, ch := range changes {
-		if err := e.fileHistory.RecordBackup(ch.Path, ch.BeforeContent, turnIdx); err != nil {
+			if err := e.fileHistory.RecordBackup(ch.Path, ch.BeforeContent, turnIdx); err != nil {
 			slog.Warn("filehistory:bash:record_failed", "file", ch.Path, "err", err)
 		}
 	}

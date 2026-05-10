@@ -3294,3 +3294,79 @@ func TestRewindTo_NoFileHistory(t *testing.T) {
 	}
 }
 
+// TestChain_BashBackupViaQuery verifies the full call chain:
+// Engine.Params.WorkingDir → baseTctx → executor snapshot → Bash modifies file →
+// detect changes → record backup → RewindTo → file restored to original content.
+func TestChain_BashBackupViaQuery(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "data.txt")
+	originalContent := []byte("v1\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Bash mock tool that modifies a file (different size to trigger detection)
+	bashTool := &mockTool{
+		name:    "Bash",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			os.WriteFile(testFile, []byte("modified-by-bash-tool\n"), 0o644)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	eventCh := make(chan types.QueryEvent, 50)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Bash", `{"command":"echo >> data.txt"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{bashTool},
+		Model:      "test",
+		Dispatcher: dispatcher,
+		WorkingDir: tmp,
+	})
+	defer eng.Close()
+	eng.SetFileHistory(tracker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	eng.Query(ctx, "modify data.txt", nil)
+
+	// Drain events until query ends
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryEnd {
+				goto queryDone
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for EventQueryEnd")
+		}
+	}
+queryDone:
+
+	// Rewind to 0 to restore all files to pre-Bash state
+	result, err := eng.RewindTo(0)
+	if err != nil {
+		t.Fatalf("RewindTo: %v", err)
+	}
+
+	if len(result.RestoredFiles) != 1 || result.RestoredFiles[0] != testFile {
+		t.Fatalf("RestoredFiles = %v, want [%s]", result.RestoredFiles, testFile)
+	}
+
+	// Verify the file is restored to original content
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != string(originalContent) {
+		t.Errorf("file = %q, want %q — bash modification was not restored!", string(data), string(originalContent))
+	}
+}

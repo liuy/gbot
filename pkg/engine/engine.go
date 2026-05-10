@@ -94,6 +94,7 @@ type Engine struct {
 	tokenBudget   int
 	turnCount     int
 	dispatcher    types.EventDispatcher
+	workingDir    string
 	notifications *notificationQueue
 	systemPrompt  json.RawMessage // stored system prompt for fork agent access
 
@@ -194,6 +195,7 @@ type Params struct {
 	MCPRegistry       *mcp.Registry
 	Hooks             *hooks.Hooks
 	PermissionChecker permission.PermissionChecker
+	WorkingDir        string // working directory for file history snapshots
 }
 
 // QueryResult is the final result of a query.
@@ -269,6 +271,7 @@ func New(p *Params) *Engine {
 		mcpRegistry:             p.MCPRegistry,
 		hooks:                   p.Hooks,
 		permissionChecker:       p.PermissionChecker,
+		workingDir:              p.WorkingDir,
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:         0,
 		toolSearch:             newToolSearchState(),
@@ -1149,6 +1152,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 						}
 						baseTctx := &tool.ToolUseContext{
 							Ctx: ctx,
+							WorkingDir: e.workingDir,
 							Options: tool.ToolUseOptions{
 								Tools:             e.tools,
 								PendingMCPServers: e.pendingMCPServerNames(),

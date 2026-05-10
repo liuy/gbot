@@ -242,6 +242,7 @@ func main() {
 		MCPRegistry:      mcpRegistry,
 		Hooks:            hookSystem,
 		PermissionChecker: permCheckerIface,
+		WorkingDir:        workingDir,
 	})
 
 	eng.SetOnClose(func(sessionID string) {

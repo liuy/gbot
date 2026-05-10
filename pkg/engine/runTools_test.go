@@ -1292,3 +1292,113 @@ func TestRecordBashFileBackups_NoChanges(t *testing.T) {
 		t.Errorf("expected 0 backup records when no changes, got %d", len(records))
 	}
 }
+
+// TestChain_BashFileBackup verifies the full executeTool chain for Bash tools:
+// StreamingToolExecutor → buildToolCtx → snapshot → tool call → detect changes → record backup.
+// This test uses an empty WorkingDir (matching current production behavior in engine.go)
+// to demonstrate that file backups are NOT recorded when WorkingDir is unset.
+func TestChain_BashFileBackup_EmptyWorkingDir_NoBackupRecorded(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "data.txt")
+	if err := os.WriteFile(testFile, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Bash-like tool that modifies a file
+	bashTool := &testTool{
+		name: "Bash",
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	// Create executor WITHOUT WorkingDir (matches engine.go production behavior)
+	toolMap := map[string]tool.Tool{"Bash": bashTool}
+	tctx := &tool.ToolUseContext{} // WorkingDir is empty
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
+	e.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "run bash"}}},
+	})
+	e.SetFileHistory(tracker)
+
+	result := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_1", Name: "Bash", Input: json.RawMessage(`{}`)},
+	})
+	if len(result.ToolResultBlocks) == 0 {
+		t.Fatal("expected tool result blocks")
+	}
+
+	// Verify: NO backup records because WorkingDir was empty (the production bug)
+	records := tracker.Records()
+	if len(records) != 0 {
+		t.Fatalf("expected 0 backup records with empty WorkingDir, got %d (snapshot was taken?)", len(records))
+	}
+
+	// Verify: file was NOT restored to original
+	data, _ := os.ReadFile(testFile)
+	if string(data) != "modified by bash\n" {
+		t.Fatalf("file should still be modified, got %q", string(data))
+	}
+}
+
+// TestChain_BashFileBackup_WithWorkingDir_BackupRecorded verifies that when
+// WorkingDir IS set on tctx, the full chain works: snapshot → detect → record backup.
+func TestChain_BashFileBackup_WithWorkingDir_BackupRecorded(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "data.txt")
+	originalContent := []byte("original\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	bashTool := &testTool{
+		name: "Bash",
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			os.WriteFile(testFile, []byte("modified by bash\n"), 0o644)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	// Create executor WITH WorkingDir set
+	toolMap := map[string]tool.Tool{"Bash": bashTool}
+	tctx := &tool.ToolUseContext{WorkingDir: tmp}
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	e := NewStreamingToolExecutor(toolMap, tctx, func(_ types.QueryEvent) {}, context.Background())
+	e.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "run bash"}}},
+	})
+	e.SetFileHistory(tracker)
+
+	result := e.ExecuteAll([]types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tool_2", Name: "Bash", Input: json.RawMessage(`{}`)},
+	})
+	if len(result.ToolResultBlocks) == 0 {
+		t.Fatal("expected tool result blocks")
+	}
+
+	// Verify: backup WAS recorded because WorkingDir was set
+	records := tracker.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 backup record, got %d", len(records))
+	}
+	if records[0].FilePath != testFile {
+		t.Errorf("FilePath = %q, want %q", records[0].FilePath, testFile)
+	}
+	if records[0].BackupName == "" {
+		t.Error("expected non-empty BackupName for modified file")
+	}
+
+	// Verify: backup contains original content
+	backupPath := filepath.Join(tmp, ".backups", records[0].BackupName)
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(data) != string(originalContent) {
+		t.Errorf("backup = %q, want %q", string(data), string(originalContent))
+	}
+}
