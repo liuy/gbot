@@ -297,7 +297,7 @@ func TestIntegration_MultiToolWorkflow(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Wireup integration test: .mcp.json → config → Registry → tools
 // Tests the full startup path that main.go should follow.
-// RED: calls LoadAndConnectMCP which doesn't exist yet.
+
 // ---------------------------------------------------------------------------
 
 // TestIntegration_LoadAndConnectMCP verifies the full startup wireup:

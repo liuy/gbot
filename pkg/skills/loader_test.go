@@ -662,7 +662,6 @@ func TestLoadUserSkills_HomeDirExists(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // RegisterPluginSkills — plugin skills are discoverable
 // ---------------------------------------------------------------------------

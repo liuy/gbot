@@ -476,7 +476,7 @@ func TestGetForkChildren_QueryError(t *testing.T) {
 // copy inherited messages back to the parent. Only NEW messages created in the child
 // after forking should be merged.
 //
-// BUG: The current MergeForkBack query selects ALL non-sidechain child messages
+//The current MergeForkBack query selects ALL non-sidechain child messages
 // without filtering out inherited ones, causing duplicates in the parent.
 func TestMergeForkBack_NoDuplicateInheritedMessages(t *testing.T) {
 	store := openTestStore(t)

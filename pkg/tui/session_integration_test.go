@@ -59,12 +59,10 @@ func persistTestMessages(t *testing.T, a *App) {
 	a.persistTurn()
 }
 
-// ------- RED PHASE: these tests should fail before the fix -------
-
 // TestIntegration_PickerShowsAllSessionsAfterFork verifies the core bug:
 // after /session title (fork), /session (picker) must show BOTH sessions.
 //
-// BUG: openPicker used ListSessions("") while sessions were created with
+//openPicker used ListSessions("") while sessions were created with
 // real projectDir, so the picker found zero sessions.
 func TestIntegration_PickerShowsAllSessionsAfterFork(t *testing.T) {
 	a, store, projectDir := newIntegrationApp(t)
@@ -689,7 +687,6 @@ func TestIntegration_PickerCancelAborts(t *testing.T) {
 	if _, ok := model.(*App); !ok {
 		t.Fatal("handleSessionPickerDone should return *App")
 	}
-
 
 	if a.sessionID != originalID {
 		t.Errorf("sessionID should not change on cancel, got %q want %q", a.sessionID, originalID)

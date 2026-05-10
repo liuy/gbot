@@ -82,13 +82,6 @@ func TestCreateToolErrorBlock(t *testing.T) {
 		t.Error("expected IsError to be true")
 	}
 
-
-
-
-
-
-
-
 }
 
 func TestCreateSyntheticErrorBlock_UserInterrupted(t *testing.T) {

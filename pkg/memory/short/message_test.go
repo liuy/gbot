@@ -1890,7 +1890,6 @@ func TestRemoveMessageByUUID_DeleteTriggerError(t *testing.T) {
 	}
 }
 
-
 func TestTruncateMessagesFromIndex_Basic(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"

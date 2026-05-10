@@ -488,7 +488,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 		}
 
-
 		// Token-based pruning: when auto-compact failed and context is at blocking
 		// limit, try clearing old compactable tool result content as last resort.
 		// gbot equivalent of TS Cached Microcompact (which uses Anthropic cache_editing).
@@ -675,8 +674,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			}
 		}
 
-
-
 		// Stage 20: No-tool-use terminal path
 		if streamingExecutor == nil {
 			// Before exiting, check if notifications arrived during this
@@ -727,7 +724,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Stage 21: Wait for stream-started tools to complete, collect results.
 		// Source: query.ts:1381 — getRemainingResults().
 		execResult := streamingExecutor.ExecuteAll(nil)
-
 
 		// ToolSearch: register any tools discovered by ToolSearch execution.
 		// Source: utils/toolSearch.ts — discovered tools are extracted from results

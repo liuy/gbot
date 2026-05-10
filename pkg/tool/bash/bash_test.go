@@ -481,7 +481,6 @@ func TestDescription_Truncation(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Execute — nil tctx falls back to os.Getwd()
 // ---------------------------------------------------------------------------
@@ -565,7 +564,7 @@ func TestExecute_CancelledContext(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Description — empty command returns empty string (line 97)
+// Description: empty command returns empty string (line 97)
 // ---------------------------------------------------------------------------
 
 func TestDescription_EmptyCommand(t *testing.T) {

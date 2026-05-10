@@ -480,7 +480,6 @@ func TestIsInForkChild_EmptyMessages(t *testing.T) {
 	}
 }
 
-
 func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
@@ -518,7 +517,6 @@ func TestForkRegistry_SpawnPanicRecovery(t *testing.T) {
 	}
 }
 
-
 func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 	t.Parallel()
 	reg := NewForkAgentRegistry()
@@ -552,7 +550,6 @@ func TestForkRegistry_SpawnCancelledWithPartialResult(t *testing.T) {
 		t.Errorf("expected partial content, got %q", final.Result.Content)
 	}
 }
-
 
 func TestForkAgentJobAdapter_Get_DoesNotRemoveCompletedAgent(t *testing.T) {
 	t.Parallel()

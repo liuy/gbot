@@ -1041,7 +1041,7 @@ func TestStatusBar_View_DefaultModel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// prefixUserLine — empty
+// prefixUserLine: empty
 // ---------------------------------------------------------------------------
 
 func TestPrefixUserLine_Empty(t *testing.T) {
@@ -1874,7 +1874,7 @@ func TestInput_PrevWord_SpacesOnlyBeforeCursor(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// renderLineSingle — empty lines
+// renderLineSingle: empty lines
 // ---------------------------------------------------------------------------
 
 func TestInput_RenderLineSingle_EmptyRunes(t *testing.T) {
@@ -2136,7 +2136,7 @@ func TestMarkdownRender_Softbreak(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown — empty table
+// Markdown: empty table
 // ---------------------------------------------------------------------------
 
 func TestMarkdownRender_EmptyTable(t *testing.T) {
@@ -2716,7 +2716,6 @@ func TestRenderToolCall_NestedDepth2_ChildAgentHasPrefix(t *testing.T) {
 	}
 	t.Errorf("should find 'Plan' in output, got:\n%s", stripped)
 }
-
 
 // ---------------------------------------------------------------------------
 // renderToolCall — IsBackground label

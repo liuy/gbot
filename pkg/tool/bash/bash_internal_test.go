@@ -984,7 +984,7 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // spawnBackground — PID must be set for Kill to work
-// Bug: PTY path hardcodes task.PID = 0, making Kill a no-op
+//PTY path hardcodes task.PID = 0, making Kill a no-op
 // ---------------------------------------------------------------------------
 
 func TestSpawnBackground_PIDNotZero(t *testing.T) {
@@ -1082,7 +1082,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	}
 
 	if status != TaskRunning {
-		t.Errorf("BUG: task status = %q (exit code %d), want TaskRunning — "+
+		t.Errorf("task status = %q (exit code %d), want TaskRunning — "+
 			"background task should not complete immediately (PTY sync bug) or "+
 			"be killed by parent context (context lifecycle bug)",
 			status, exitCode)
@@ -1137,7 +1137,7 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	}
 
 	if status != TaskRunning {
-		t.Errorf("BUG: task status = %q (exit code %d) after parent context cancelled, want TaskRunning — "+
+		t.Errorf("task status = %q (exit code %d) after parent context cancelled, want TaskRunning — "+
 			"background task context should be independent of parent context",
 			status, exitCode)
 	}

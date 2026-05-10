@@ -1049,7 +1049,7 @@ func TestIsTerminalTaskStatus(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Bug fix: Kill() must set ExitCode to 137 (SIGKILL = 128+9)
+//  Kill() must set ExitCode to 137 (SIGKILL = 128+9)
 // ---------------------------------------------------------------------------
 
 func TestBackgroundTaskRegistry_Kill_SetsExitCode137(t *testing.T) {
@@ -1075,7 +1075,7 @@ func TestBackgroundTaskRegistry_Kill_SetsExitCode137(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Bug fix: notification for killed task should include exit code
+//  notification for killed task should include exit code
 // ---------------------------------------------------------------------------
 
 func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) {
@@ -1109,7 +1109,7 @@ func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// Bug fix: adapter exposes correct exit code for killed task
+//  adapter exposes correct exit code for killed task
 // ---------------------------------------------------------------------------
 
 func TestJobInfoAdapter_KilledTask_ExitCode137(t *testing.T) {
@@ -1285,7 +1285,7 @@ func TestJobInfoAdapter_GetWithOutput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TDD: stderr should not be dropped when auto-backgrounding
+//  stderr should not be dropped when auto-backgrounding
 // ---------------------------------------------------------------------------
 
 func TestAutoBackground_StderrNotDropped(t *testing.T) {
@@ -1328,7 +1328,6 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
-
 
 // ---------------------------------------------------------------------------
 // ErrNotFound wrapping — MultiRegistry relies on errors.Is(err, job.ErrNotFound)

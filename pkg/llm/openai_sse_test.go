@@ -19,7 +19,6 @@ func sseBody(lines ...string) io.Reader {
 	return strings.NewReader(strings.Join(lines, "\n") + "\n")
 }
 
-
 // collectEvents calls parseOpenAISSE in a goroutine and collects all events.
 func collectEvents(ctx context.Context, provider *OpenAIProvider, body io.Reader) []StreamEvent {
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
@@ -847,7 +846,7 @@ func TestOpenAISSE_SSEComment(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 16. EmptyLines — empty lines are skipped
+// 16. EmptyLines: empty lines are skipped
 // ---------------------------------------------------------------------------
 
 func TestOpenAISSE_EmptyLines(t *testing.T) {

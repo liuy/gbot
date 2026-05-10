@@ -625,7 +625,6 @@ func TestExecute_PreservesPermissions(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Task #20: Must-read-first + staleness rejection
 // ---------------------------------------------------------------------------
@@ -804,7 +803,6 @@ func TestExecute_DesanitizeMatchesFunctionResults(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Task #20: Structured patch output
 // ---------------------------------------------------------------------------
-
 
 func TestExecute_StructuredPatchOutput(t *testing.T) {
 	t.Parallel()

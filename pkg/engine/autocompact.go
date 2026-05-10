@@ -28,7 +28,6 @@ type CompactResult struct {
 	Messages       []types.Message // post-compact message array
 }
 
-
 // formatCompactOutput builds the display text for a successful compact result.
 // Structure: stats line first (fills collapse preview), then summary content.
 func formatCompactOutput(result *CompactResult) string {

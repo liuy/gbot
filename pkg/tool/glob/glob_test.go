@@ -349,7 +349,7 @@ func TestOutputJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Gap fix: output JSON field names must match TS (filenames, numFiles)
+// Gap: output JSON field names must match TS (filenames, numFiles)
 // ---------------------------------------------------------------------------
 
 func TestOutput_JSONFieldNames(t *testing.T) {

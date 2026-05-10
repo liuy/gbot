@@ -1446,7 +1446,7 @@ func TestHashMcpConfig_MarshalErrorReturnsEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HashMcpConfig — empty PluginSource not included
+// HashMcpConfig: empty PluginSource not included
 // ---------------------------------------------------------------------------
 
 func TestHashMcpConfig_EmptyPluginSourceNotIncluded(t *testing.T) {

@@ -552,7 +552,6 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-
 	// Verify compact happened: final messages should be fewer than the 10 we set
 	// (compact replaces them with a summary + boundary marker).
 	// The 10 original messages + 1 user msg + 1 response = 12 without compact.
@@ -636,7 +635,6 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
-
 
 	// Verify the response came from the retry (second API call after compact)
 	foundRecovery := false

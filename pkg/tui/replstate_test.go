@@ -891,7 +891,6 @@ func TestGrandchildTextDelta(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // toolEndMsg with IsBackground — card stays Done=false
 // ---------------------------------------------------------------------------

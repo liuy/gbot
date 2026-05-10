@@ -483,7 +483,7 @@ func TestParseStringOrArray_NilSplitFn(t *testing.T) {
 		t.Errorf("single string: got %v, want [hello]", got)
 	}
 
-	// nil splitFn — empty string returns nil
+	// nil splitFn: empty string returns nil
 	got2 := parseStringOrArray("", nil)
 	if got2 != nil {
 		t.Errorf("empty string: got %v, want nil", got2)

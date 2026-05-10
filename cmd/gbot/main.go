@@ -106,7 +106,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	// 3. Create tools
 	reg := createTools()
 
@@ -120,7 +119,6 @@ func main() {
 	}
 	reg.MustRegister(skilltool.New(skillReg))
 
-	
 	// SetNotifyFn with stubs creates forkReg so JobAdapter() works.
 	agentTool := agenttool.New()
 	agentTool.SetWorkingDir(workingDir)
@@ -133,11 +131,9 @@ func main() {
 	)
 	reg.MustRegister(agentTool)
 
-	
 	replTool := repl.New()
 	reg.MustRegister(replTool)
 
-	
 	agenttool.InitLoader(workingDir)
 
 	// Plugin system — discover and load plugins before MCP/hooks/skills
@@ -152,7 +148,6 @@ func main() {
 	reg.MustRegister(job.NewJobOutput(jobReg))
 	reg.MustRegister(job.NewJobStop(jobReg))
 
-	
 	taskList := tasklist.NewList("")
 	reg.MustRegister(tasklist.NewTaskCreate(taskList))
 	reg.MustRegister(tasklist.NewTaskGet(taskList))
@@ -355,8 +350,6 @@ func main() {
 				return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
 			})
 		}
-
-
 
 	// Wire background task notifications into the engine's notification queue.
 	registry := bash.DefaultRegistry()
@@ -654,8 +647,6 @@ func loadConfig() (*config.Config, error) {
 	return config.Load()
 }
 
-
-
 // createTools instantiates all core tools and registers them.
 func createTools() *tool.Registry {
 	reg := tool.NewRegistry()
@@ -672,7 +663,6 @@ func createTools() *tool.Registry {
 
 	return reg
 }
-
 
 // buildSystemPrompt builds the system prompt using the context builder.
 func buildSystemPrompt(workingDir string, reg *tool.Registry, skillReg *skills.Registry, contextWindow int) json.RawMessage {

@@ -773,8 +773,8 @@ func TestSetSubEngine_Integration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPermissionDeny_ResultBlock_MarshalsWithNewline(t *testing.T) {
-	// RED: executeTool deny path produces result blocks that must marshal.
-	// Bug: []byte(errMsg) with literal \n fails json.Marshal.
+
+	//[]byte(errMsg) with literal \n fails json.Marshal.
 	permChecker := permission.NewChecker([]permission.Rule{{
 		Value:  permission.RuleValue{ToolName: "TestTool"},
 		Action: permission.ActionDeny,
@@ -810,7 +810,6 @@ func TestPermissionDeny_ResultBlock_MarshalsWithNewline(t *testing.T) {
 		}
 	}
 }
-
 
 func TestPermissionDeny_UserRejectMessage(t *testing.T) {
 	// Ask rule -> user denies -> message should be user-reject, not rule-deny.

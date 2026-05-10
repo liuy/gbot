@@ -273,7 +273,6 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 	})
 }
 
-
 // engineMessagesToViews converts engine messages to TUI MessageViews for display.
 // Used on session resume to populate repl.messages from persisted state.
 func engineMessagesToViews(msgs []types.Message) []MessageView {

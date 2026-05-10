@@ -600,7 +600,6 @@ func TestExecTmux_OverrideNotMatched(t *testing.T) {
 	}
 }
 
-
 // --- doInitialize fallback paths via execTmuxOverride ---
 
 func TestDoInitialize_FallbackPaths(t *testing.T) {
@@ -707,7 +706,6 @@ func TestDoInitialize_FallbackPaths(t *testing.T) {
 		})
 	}
 }
-
 
 func TestKillTmuxServer_Error(t *testing.T) {
 	resetSocketState()

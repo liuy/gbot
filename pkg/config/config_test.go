@@ -24,8 +24,6 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-
-
 func TestLoad_InvalidTimeoutEnv(t *testing.T) {
 	_ = os.Setenv("HOME", t.TempDir())
 	defer func() { _ = os.Unsetenv("HOME") }()
@@ -410,7 +408,7 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 }
 
 func TestLoad_NegativeTimeoutEnv(t *testing.T) {
-	// BUG: fmt.Sscanf with %d parses negative values like "-1" successfully.
+	//fmt.Sscanf with %d parses negative values like "-1" successfully.
 	// A negative timeout is nonsensical and should be rejected or clamped.
 	_ = os.Setenv("HOME", t.TempDir())
 	defer func() { _ = os.Unsetenv("HOME") }()
@@ -428,7 +426,7 @@ func TestLoad_NegativeTimeoutEnv(t *testing.T) {
 	// Negative timeout should be rejected and default kept, but currently
 	// the code accepts it — this test documents the actual behavior.
 	if cfg.APITimeoutMS == -1 {
-		t.Errorf("BUG: negative timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
+		t.Errorf("negative timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
 	}
 }
 
@@ -449,7 +447,7 @@ func TestLoad_ZeroTimeoutEnv(t *testing.T) {
 	}
 
 	if cfg.APITimeoutMS == 0 {
-		t.Errorf("BUG: zero timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
+		t.Errorf("zero timeout accepted, got APITimeoutMS=%d, should reject or clamp to default 300000", cfg.APITimeoutMS)
 	}
 }
 

@@ -731,7 +731,6 @@ func TestClientCompileTimeChecks(t *testing.T) {
 // error, ProcessCleanupEscalation signal escalation, processCleanupEscalation
 // ===========================================================================
 
-
 // TestClientManager_ConnectToServer_ConnectInnerSDKFail tests connectInner when
 // the SDK client.Connect fails (e.g. cancelled context), returning a FailedServer.
 func TestClientManager_ConnectToServer_ConnectInnerSDKFail(t *testing.T) {

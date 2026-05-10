@@ -8,7 +8,6 @@ import (
 	"testing"
 )
 
-
 func TestGetSessionDir_HomeError(t *testing.T) {
 	t.Setenv("HOME", "")
 	_, err := GetSessionDir("test")

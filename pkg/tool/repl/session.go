@@ -119,7 +119,6 @@ func (s *Session) registerGlobals(vm *goja.Runtime) error {
 		return fmt.Errorf("set tool: %w", err)
 	}
 
-
 	// setTimeout/clearTimeout provided by eventloop — no manual registration needed.
 
 	// --- __reportError (internal, used by async IIFE wrapper) ---
@@ -229,7 +228,6 @@ func (s *Session) Execute(ctx context.Context, code string, cwd string, toolFn f
 	return output, nil
 }
 
-
 // Reset clears the session by creating a new event loop and VM.
 func (s *Session) Reset() error {
 	s.mu.Lock()
@@ -320,7 +318,6 @@ func adjustStackLines(msg string, offset int) string {
 		return match
 	})
 }
-
 
 func parsePragma(code string) (cleanCode string, timeoutMs int64, err error) {
 	timeoutMs = defaultTimeout

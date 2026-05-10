@@ -1798,7 +1798,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 }
 
 // TestQuery_TurnEndAfterToolEnd verifies that turn_end comes AFTER tool_end
-// within each round. Previous bug: turn_end was emitted right after callLLM()
+// within each round.turn_end was emitted right after callLLM()
 // returned, before tool execution, making the ordering turn_end→tool_end.
 func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	t.Parallel()
@@ -2772,7 +2772,7 @@ func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
 	events := []llm.StreamEvent{
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 10}}},
 		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
-		// No content_block_delta — empty text block
+		// No content_block_delta: empty text block
 		{Type: "content_block_stop", Index: 0},
 		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 0}},
 		{Type: "message_stop"},
@@ -3156,8 +3156,8 @@ func contentBlockTypes(blocks []types.ContentBlock) []string {
 
 // TestAllTools_AllToolsRegisteredBeforeEngine verifies that when all tools
 // are registered before New(), AllTools() returns the correct count.
-// Root cause of "11 tools vs 14 tools" bug: main.go used to register
-// Agent/TaskOutput/TaskStop after New(). Fix: register all tools first.
+// Root cause of "11 tools vs 14 tools"main.go used to register
+// Agent/TaskOutput/TaskStop after New().  register all tools first.
 func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	t.Parallel()
 

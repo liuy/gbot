@@ -10,7 +10,7 @@ import (
 // ---------------------------------------------------------------------------
 // Classifier functions — IsRetryable, IsRateLimit, etc.
 //
-// BUG: These use direct type assertion err.(*APIError) which fails when the
+//These use direct type assertion err.(*APIError) which fails when the
 // error is wrapped (e.g., fmt.Errorf("stream request: %w", err)).
 // The engine wraps provider errors in callLLM, so retryable errors that
 // exhaust provider-level retries are treated as terminal by the engine.
@@ -26,7 +26,7 @@ func TestIsRetryable_DirectAPIError(t *testing.T) {
 
 func TestIsRetryable_WrappedAPIError(t *testing.T) {
 	t.Parallel()
-	// BUG: before fix, wrapped errors return false because err.(*APIError) fails
+	// before fix, wrapped errors return false because err.(*APIError) fails
 	inner := &llm.APIError{Message: "rate limited", Status: 429, Retryable: true}
 	wrapped := fmt.Errorf("stream request: %w", inner)
 	if !llm.IsRetryable(wrapped) {

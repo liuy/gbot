@@ -88,7 +88,6 @@ var skillInputSchema = json.RawMessage(`{
   "required": ["skill"]
 }`)
 
-
 // New creates a new SkillTool using the BuildTool factory pattern.
 // Source: SkillTool.ts:331 — buildTool({...})
 // Uses BuildTool factory, matching pkg/tool/bash/ etc.

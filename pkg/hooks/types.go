@@ -147,7 +147,6 @@ type HookOutput struct {
 	AdditionalContext string          `json:"additionalContext,omitempty"` // SubagentStart/SessionStart
 }
 
-
 // ---------------------------------------------------------------------------
 // HookOutcome — source: hooks.ts exit code semantics
 // ---------------------------------------------------------------------------

@@ -40,7 +40,6 @@ func pollAtomicBool(b *atomic.Bool, timeout time.Duration) error {
 	return nil
 }
 
-
 // minimalTool is a minimal tool implementation for covers skip path in executeTools.
 type minimalTool struct{}
 
@@ -2407,7 +2406,7 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 // FIRST and then skips the blocking limit, allowing the API call to proceed.
 //
 // With current (broken) code: blocking limit fires first → query fails with
-// "Prompt is too long". After fix: compact runs first → blocking limit skipped → query succeeds.
+// "Prompt is too long". compact runs first → blocking limit skipped → query succeeds.
 func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	t.Parallel()
 
@@ -3134,7 +3133,6 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		// the engine needs wall-clock time to drain the channel and process message_stop.
 		time.Sleep(5 * time.Millisecond) // REAL-TIME: needed for engine to process buffered stream events before cancel
 
-
 		cancel()
 	}()
 
@@ -3232,8 +3230,8 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Post-loop abort tests (TDD for the !streamComplete cascade fix)
-// Bug: when provider closes streamCh due to ctx cancel, for-range exits
+// Post-loop abort tests: !streamComplete cascade
+// When provider closes streamCh due to ctx cancel, for-range exits
 // without triggering the select <-ctx.Done() guard inside the loop.
 // ---------------------------------------------------------------------------
 
@@ -3400,7 +3398,7 @@ func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
 }
 
 func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
-	// Gap 2 fix: mid-stream abort with tool_use but NO text/thinking.
+	// Gap 2: mid-stream abort with tool_use but NO text/thinking.
 	// hasContent would be false, but contentBlocks is non-empty.
 	// The abort handler should still append the partial assistant message
 	// and generate synthetic tool_results.
@@ -3483,7 +3481,7 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 }
 
 func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
-	// Gap 3 fix: cancel during reactive compact should return *AbortError,
+	// Gap 3: cancel during reactive compact should return *AbortError,
 	// not the original API error (context overflow).
 	mp := &testProvider{}
 	// First response: context overflow error
@@ -3535,7 +3533,7 @@ func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*Co
 }
 
 // ---------------------------------------------------------------------------
-// TDD: appendInlineInterruptMessage — verify [Request interrupted by user]
+//  appendInlineInterruptMessage — verify [Request interrupted by user]
 // appears in the last assistant message for all 3 abort paths, and does NOT
 // appear for loop-top abort.
 // ---------------------------------------------------------------------------
@@ -5268,7 +5266,6 @@ func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
 // ExecuteTool path should be uncapped.
 func TestExecuteTool_LLMPathStillCapped(t *testing.T) {
 	t.Parallel()
-
 
 	// Use StreamingToolExecutor (engine path, not REPL path)
 	toolMap := map[string]tool.Tool{"Bash": bash.New(nil)}

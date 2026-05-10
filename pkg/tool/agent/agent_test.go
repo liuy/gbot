@@ -221,7 +221,6 @@ func TestResultExtractionNoText(t *testing.T) {
 	}
 }
 
-
 func TestResultExtractionInterruptOnUserMessage(t *testing.T) {
 	// Sub-agent was interrupted — interrupt marker is on user message (tool_result).
 	// FinalizeResult should detect it and return interrupted message, not "completed".
@@ -1177,7 +1176,7 @@ func TestCall_UserContextMessages_EmptyClaudeMd(t *testing.T) {
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
 	at.SetWorkingDir("/tmp")
-	// No SetGBOTMDContent — empty by default
+	// No SetGBOTMDContent: empty by default
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1421,7 +1420,6 @@ func TestFormatGitStatusForSystemPrompt(t *testing.T) {
 		})
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Step 6: Skill preloading integration tests

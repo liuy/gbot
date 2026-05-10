@@ -268,7 +268,6 @@ func TestNewStore_GseFailure(t *testing.T) {
 	t.Skip("requires mocking gse.LoadDict")
 }
 
-
 // Lines 53-55: NewStore — sql.Open error
 func TestNewStore_SQLOpenError(t *testing.T) {
 	// Use an invalid database path that will fail to open
@@ -338,7 +337,6 @@ func TestNewStore_PragmaError_V2(t *testing.T) {
 		t.Errorf("error should mention pragma/open/SQL, got: %v", errStr)
 	}
 }
-
 
 // writeGarbageFile writes random bytes to a file to corrupt it for error-path testing.
 func writeGarbageFile(path string) error {

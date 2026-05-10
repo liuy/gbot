@@ -339,7 +339,6 @@ func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
 	s.updateToolBlock(parentID, tcv)
 }
 
-
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
 func (s *ReplState) FinishStream(err error) {
@@ -528,7 +527,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case queryEndMsg:
 		// Sub-agent queryEnd: do NOT finish the main query stream.
 		// Only the main engine's queryEnd (Agent == nil) should trigger FinishStream.
-		// Bug: sub-engine's EventQueryEnd was flowing through without agent metadata,
+		// sub-engine's EventQueryEnd was flowing through without agent metadata,
 		// causing FinishStream to cancel the main query's context mid-loop.
 		if m.Agent != nil {
 			// Fork agent completed: mark parent card as Done.

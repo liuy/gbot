@@ -138,7 +138,7 @@ func TestToolWithoutOnProgress(t *testing.T) {
 
 func TestLcsDP_MatchInMiddle(t *testing.T) {
 	t.Parallel()
-	// BUG: before fix, lcsDP compares direction values (0/1/2) instead of DP scores.
+	//before fix, lcsDP compares direction values (0/1/2) instead of DP scores.
 	// This causes backtrack to never follow diagonal matches.
 	// Expected: match "c\n" at (oldIdx:1, newIdx:1)
 	result := lcsDP([]string{"b\n", "c\n"}, []string{"x\n", "c\n", "y\n"})

@@ -70,7 +70,6 @@ func (b *blockTool) Prompt() string                             { return "" }
 func (b *blockTool) MaxResultSize() int { return 50000 }
 func (b *blockTool) RenderResult(any) string                      { return "" }
 
-
 // ---------------------------------------------------------------------------
 // StreamingToolExecutor tests — source: StreamingToolExecutor.ts
 // ---------------------------------------------------------------------------
@@ -197,7 +196,6 @@ func TestConcurrentToolLoop_ToolError(t *testing.T) {
 		t.Errorf("expected 'tool crashed', got %q", errMsg)
 	}
 }
-
 
 func TestConcurrentToolLoop_ToolErrorContentIsString(t *testing.T) {
 	t.Parallel()
@@ -1016,7 +1014,6 @@ func TestConcurrentToolLoop_ToolUseIDInContext(t *testing.T) {
 		}
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // ToolWithWireFormat tests

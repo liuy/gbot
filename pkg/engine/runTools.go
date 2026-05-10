@@ -905,7 +905,6 @@ func isBackgroundResult(data any) bool {
 	return ok && sqr.AsyncLaunched
 }
 
-
 // marshalToolOutput serializes a tool result for sending to the LLM.
 // If the tool implements ToolWithWireFormat, its custom format is used.
 // Otherwise, doubleWrap=true wraps the result as a JSON string (streaming/concurrent),

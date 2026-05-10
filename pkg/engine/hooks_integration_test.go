@@ -366,7 +366,6 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-
 	// Stop hook should have been called at least once
 	calls := rec.Calls()
 	stopCount := 0

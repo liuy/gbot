@@ -256,7 +256,7 @@ func TestEngine_AllTools_MergesStaticAndMCP(t *testing.T) {
 // MCP tools from the registry in the engine's tool map.
 // This is the wireup that connects Registry → Engine → callLLM tool list.
 //
-// BUG: Currently refreshTools() only rebuilds from toolsProvider (built-in tools)
+//Currently refreshTools() only rebuilds from toolsProvider (built-in tools)
 // and ignores mcpRegistry. This test should FAIL until that is fixed.
 func TestEngine_RefreshTools_MergesMCPTools(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
@@ -292,7 +292,6 @@ func TestEngine_RefreshTools_MergesMCPTools(t *testing.T) {
 		t.Error("built-in tool 'Bash' missing from engine.tools after refreshTools")
 	}
 
-	// RED: MCP tool should be present but currently refreshTools ignores registry
 	if _, ok := eng.tools["mcp__echo-srv__echo"]; !ok {
 		t.Error("MCP tool 'mcp__echo-srv__echo' missing from engine.tools after refreshTools — " +
 			"refreshTools() does not merge MCP tools from registry")

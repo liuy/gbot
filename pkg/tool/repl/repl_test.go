@@ -430,7 +430,6 @@ func TestClearTimeout(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-
 	// Verify callback did NOT run
 	output, err := s.Execute(ctx, `"undefined"`, "", toolFn, 10000)
 	if err != nil {
@@ -762,7 +761,7 @@ func TestCwdAccessibleFromModule(t *testing.T) {
 	ctx := context.Background()
 
 	// cwd must be accessible from ES module code (EvalModule).
-	// Bug: var cwd in EvalGlobal is NOT visible from module scope.
+	//var cwd in EvalGlobal is NOT visible from module scope.
 	output, err := s.Execute(ctx, `console.log(cwd);`, "/home/test/dir", nil, 10000)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -791,7 +790,7 @@ func TestCwdFallbackToGetwd(t *testing.T) {
 }
 
 func TestCall_CwdFallbackWhenWorkingDirEmpty(t *testing.T) {
-	// Bug: handleExecute uses tctx.WorkingDir for cwd, but the engine
+	//handleExecute uses tctx.WorkingDir for cwd, but the engine
 	// never sets WorkingDir on ToolUseContext. When WorkingDir is empty,
 	// cwd must fall back to os.Getwd(), matching Bash/Grep/Glob tools.
 	r := New()

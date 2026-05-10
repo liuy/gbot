@@ -864,7 +864,7 @@ func TestUnmarshalServerConfig_StdioNoType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MarshalJSON — empty pluginSource branch
+// MarshalJSON: empty pluginSource branch
 // ---------------------------------------------------------------------------
 
 func TestScopedMcpServerConfig_MarshalJSON_EmptyPluginSource(t *testing.T) {

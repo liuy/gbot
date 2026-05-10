@@ -674,7 +674,7 @@ func TestGetSession_QueryError(t *testing.T) {
 
 // Lines 88-93: GetSession — invalid settings JSON
 
-// Lines 91-93: GetSession — empty settings JSON
+// Lines 91-93: GetSession: empty settings JSON
 func TestGetSession_EmptySettings(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"

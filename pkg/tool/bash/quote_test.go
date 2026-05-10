@@ -8,15 +8,14 @@ import (
 
 // ---------------------------------------------------------------------------
 // Integration tests: buildCommand with proper quoting
-// These demonstrate real bugs in the current %q-based quoting.
-// RED: these fail because eval "cmd" expands variables before eval runs.
-// GREEN: after switching to eval 'cmd' (single-quote wrapping).
+// Demonstrates issues with current %q-based quoting.
+
 // ---------------------------------------------------------------------------
 
 func TestBuildCommand_VariableExpansion(t *testing.T) {
 	t.Parallel()
-	// Bug: eval "FOO=bar; echo $FOO" → $FOO expanded before eval, outputs empty
-	// Fix: eval 'FOO=bar; echo $FOO' → $FOO preserved for eval, outputs "bar"
+	// eval "FOO=bar; echo $FOO" → $FOO expanded before eval, outputs empty
+	//  eval 'FOO=bar; echo $FOO' → $FOO preserved for eval, outputs "bar"
 	cmd := buildCommand("FOO=bar; echo $FOO", nil, "/tmp/cwd-test")
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
@@ -30,8 +29,8 @@ func TestBuildCommand_VariableExpansion(t *testing.T) {
 
 func TestBuildCommand_Heredoc(t *testing.T) {
 	t.Parallel()
-	// Bug: eval "cat <<EOF\nhello\nEOF" → newlines escaped to \n, heredoc breaks
-	// Fix: eval 'cat <<EOF\nhello\nEOF' → newlines preserved, heredoc works
+	// eval "cat <<EOF\nhello\nEOF" → newlines escaped to \n, heredoc breaks
+	//  eval 'cat <<EOF\nhello\nEOF' → newlines preserved, heredoc works
 	cmd := buildCommand("cat <<EOF\nhello world\nEOF", nil, "/tmp/cwd-test")
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {

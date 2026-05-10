@@ -2314,7 +2314,6 @@ func TestConnectAgentServers_InlineConnectsNoTools(t *testing.T) {
 	}
 }
 
-
 func TestRegistry_SetToolsForTest(t *testing.T) {
 	registry := NewRegistry(nil, ChangeCallbacks{})
 	defer registry.Close()

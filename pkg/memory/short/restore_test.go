@@ -903,7 +903,7 @@ func TestComputeStandaloneAgentContext_AgentColorOnly(t *testing.T) {
 	}
 }
 
-// Line 233-235: ComputeStandaloneAgentContext — empty messages list
+// Line 233-235: ComputeStandaloneAgentContext: empty messages list
 func TestComputeStandaloneAgentContext_EmptyMessagesWithAttachment(t *testing.T) {
 	messages := []*TranscriptMessage{
 		{

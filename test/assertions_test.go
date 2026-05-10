@@ -382,9 +382,14 @@ var checkPatterns = []checkPattern{
 			},
 		},
 			{
-				Name:     "verbose TDD/BUG story comment in test",
+				Name:     "verbose TDD/BUG/Fix story comment",
+				Regex:    regexp.MustCompile(`(?i)(TDD\s*(RED|GREEN|:)|\bBug:\s|//\s*(RED|GREEN):\s|\bFix:\s|//\s*-+\s*(RED|GREEN)\s+PHASE)`),
+				Level:    "P3",
+			},
+			{
+				Name:     "verbose em-dash phrase in test",
 				TestOnly: true,
-				Regex:    regexp.MustCompile(`(?i)(TDD\s*(RED|GREEN)|Bug:\s|//\s*RED:|\x{2014}\s*(cannot|broken|empty|nothing|duplicates?|shows?))`),
+				Regex:    regexp.MustCompile(`\x{2014}\s*(cannot|broken|empty|nothing|duplicates?|shows?)`),
 				Level:    "P3",
 			},
 	}
@@ -452,6 +457,21 @@ func scanFile(t *testing.T, path, projectRoot string) int {
 			issues++
 		}
 	}
+
+		// Structural check: consecutive blank lines in test files only.
+		// Skip the last element (trailing empty from Split on "\n").
+		if strings.HasSuffix(path, ".go") {
+			end := len(lines)
+			if end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+				end--
+			}
+			for i := 1; i < end; i++ {
+				if strings.TrimSpace(lines[i]) == "" && strings.TrimSpace(lines[i-1]) == "" {
+					t.Errorf("%s:%d P3: consecutive blank line", rel, i+1)
+					issues++
+				}
+			}
+		}
 
 	return issues
 }

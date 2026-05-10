@@ -325,7 +325,6 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
 
-
 	if mc.CallCount() == 0 {
 		t.Error("reactive auto-compact should have been triggered on prompt_too_long")
 	}
@@ -369,7 +368,6 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 	if !strings.Contains(result.Error.Error(), "too long") {
 		t.Errorf("error should mention too long, got: %v", result.Error)
 	}
-
 
 	if mc.CallCount() != 1 {
 		t.Errorf("expected 1 compact call (reactive, no second retry), got %d", mc.CallCount())
@@ -1035,10 +1033,9 @@ func TestExtractTextFromShortContent_PlainText(t *testing.T) {
 	}
 }
 
-
 // TestBuildResultMessages_RemovesOrphanedToolResults verifies that after compact,
 // tool_result blocks whose tool_use was removed are stripped.
-// This reproduces the production bug: "tool result's tool id not found".
+// This reproduces the production"tool result's tool id not found".
 func TestBuildResultMessages_RemovesOrphanedToolResults(t *testing.T) {
 	t.Parallel()
 

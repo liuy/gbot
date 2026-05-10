@@ -454,7 +454,6 @@ func TestReconstructForSubagentResume_MergesParent(t *testing.T) {
 	}
 }
 
-
 func TestEnforceToolResultBudget_FrozenAndFresh(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
@@ -606,7 +605,6 @@ func TestReconstructContentReplacementState_RecordNotInMessages(t *testing.T) {
 		t.Error("record for ID not in messages should be ignored")
 	}
 }
-
 
 func TestContentSize_Fallback(t *testing.T) {
 	// Non-string, non-array content falls through to len(content)

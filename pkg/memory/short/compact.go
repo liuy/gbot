@@ -798,7 +798,6 @@ func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID,
 	// Marshal back
 	contentBytes, _ := json.Marshal(contentMap)
 
-
 	boundary.Content = string(contentBytes)
 	return nil
 }

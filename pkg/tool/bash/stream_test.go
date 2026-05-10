@@ -105,7 +105,6 @@ func TestStreamingOutput_RollingWindow(t *testing.T) {
 	}
 }
 
-
 func TestStreamingOutput_NilCallback(t *testing.T) {
 	t.Parallel()
 
@@ -424,15 +423,6 @@ func TestStreamingOutput_LinesClone(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
-
-
-
 func TestStreamingLastLines(t *testing.T) {
 	t.Parallel()
 
@@ -555,7 +545,6 @@ func TestStreamingOutput_LastLines_Empty(t *testing.T) {
 		t.Errorf("LastLines() on empty = %q, want empty", got)
 	}
 }
-
 
 func TestStreamingOutput_ReplaceLastLine(t *testing.T) {
 	t.Parallel()

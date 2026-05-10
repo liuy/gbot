@@ -1102,7 +1102,7 @@ func TestApp_UpdateRepl_AgentToolStart(t *testing.T) {
 
 // TestApp_UpdateRepl_AgentToolParamDelta verifies that toolParamDeltaMsg events
 // update the summary of the last running tool entry.
-// TDD RED: tool_start with empty summary → tool_param_delta with summary → summary updated.
+// tool_start with empty summary → tool_param_delta with summary → summary updated.
 func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -2212,7 +2212,6 @@ func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 	})
 	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
 	app.tuiHandler = h
-
 
 	// Send a buffered event first
 	h.appCh <- textDeltaMsg{Text: "late event"}
@@ -3831,7 +3830,7 @@ func TestApp_Scroll_IndicatorPosition(t *testing.T) {
 }
 
 // TestApp_Scroll_PageNumberChanges verifies the page number actually changes
-// when scrolling. Previous bug: used scrollOffset/viewLines which stayed at 1
+// when scrolling. Used scrollOffset/viewLines which stayed at 1
 // when maxOffset < viewLines (e.g. scrollTotal=73, viewLines=40, maxOff=33).
 func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	t.Parallel()
@@ -3862,7 +3861,7 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 
 // TestApp_Scroll_LastPageNumberCorrect verifies that when scrolled to the bottom,
 // the page indicator shows totalPages (not one less).
-// Bug: midLine formula gave wrong page when scrollTotal wasn't an even multiple
+// MidLine formula gave wrong page when scrollTotal wasn't an even multiple
 // of viewLines (e.g. scrollTotal=19, viewLines=6 → showed 3/4 instead of 4/4).
 func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	t.Parallel()
@@ -3904,7 +3903,7 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 // matching TS behavior (Math.floor(viewportHeight/2)). This ensures:
 // 1. No page skipping (each PgUp changes page number by at most 1)
 // 2. 50% overlap between consecutive views (context preserved)
-// Previous bug: full-page scroll with off-by-one caused page skipping.
+// Full-page scroll with off-by-one caused page skipping.
 func TestApp_Scroll_HalfPageScroll(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -3995,7 +3994,7 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	// Create content where half-page scroll exactly reaches offset 0.
 	// 9 lines: scrollTotal=9, maxOff=9-6=3, halfPage=3.
 	// PgUp from bottom: 3-3=0 → clamped to 0.
-	// Bug: userScrolled = 0>0 = false → View() auto-scrolls back.
+	// userScrolled = 0>0 = false → View() auto-scrolls back.
 	app.repl.StartQuery()
 	app.spinner.Start()
 	app.progressStart = time.Now() // REAL-TIME: needed for PgUp overshoot userScrolled detection timing
@@ -4249,7 +4248,6 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 	}
 }
 
-
 // TestApp_UsageMsg_SetContextUsesLatestTurn verifies that SetContext receives
 // the latest turn's input+output (context size), not the accumulated billing total.
 func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
@@ -4273,7 +4271,6 @@ func TestApp_UsageMsg_SetContextUsesLatestTurn(t *testing.T) {
 			app.status.contextUsed, wantT2, app.status.usage.TotalInputTokens())
 	}
 }
-
 
 // TestApp_AgentUsageMsg_DoesNotUpdateSetContext verifies that usageMsg with Agent
 // does NOT change the context bar beyond what the main model already set.
@@ -4614,7 +4611,6 @@ func TestApp_ReadEvents_IdleModeWithStop(t *testing.T) {
 		t.Fatalf("expected idleAbortedMsg, got %T", msg)
 	}
 }
-
 
 func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
@@ -5514,7 +5510,7 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 	}
 
 	// --- Step 3: Sub-agent tool output arrives ---
-	// BUG: toolOutputDeltaMsg has no Agent field.
+	// toolOutputDeltaMsg has no Agent field.
 	// PendingToolOutput searches pendingTool["sub_grep1"] → NOT FOUND (it's in parent.Blocks).
 	// The output is silently LOST.
 	app.updateRepl(toolOutputDeltaMsg{
@@ -6025,7 +6021,6 @@ func TestApp_QueryEndMsg_SubAgent_DoesNotCancelMainContext(t *testing.T) {
 	cancel()
 }
 
-
 // ---------------------------------------------------------------------------
 // queryEndMsg from fork agent — marks parent card Done via updateRepl
 // ---------------------------------------------------------------------------
@@ -6081,7 +6076,6 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 		t.Errorf("parent Elapsed should be >= 1s, got %v", parent.Elapsed)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Fork agent error + multiple agents tests
@@ -6182,7 +6176,6 @@ func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
 		t.Error("tool-fork-b should be Done after its queryEndMsg")
 	}
 }
-
 
 func TestApp_SetKillAllFn(t *testing.T) {
 	t.Parallel()

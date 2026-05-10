@@ -155,7 +155,6 @@ func TestIsToolResultContentEmpty(t *testing.T) {
 	}
 }
 
-
 func TestMaybePersistLargeToolResult_EmptyOutput(t *testing.T) {
 	output := mustMarshal("")
 	result := MaybePersistLargeToolResult(output, "Bash", 50000, "tool-empty", "test-session")

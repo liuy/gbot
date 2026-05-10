@@ -170,7 +170,7 @@ func TestConvertEventToMsg_EventQueryStart_NilMessage(t *testing.T) {
 		Type:    types.EventQueryStart,
 		Message: nil,
 	})
-	// nil Message should still return nil — nothing to display
+	// nil Message should still return nil: nothing to display
 	if msg != nil {
 		t.Errorf("EventQueryStart with nil Message should return nil, got %T", msg)
 	}

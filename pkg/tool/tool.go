@@ -110,7 +110,6 @@ type Tool interface {
 		// Renders tool result data as a human-readable string for TUI display.
 		RenderResult(data any) string
 
-
 	// ── Schema ────────────────────────────────────────────
 	InputSchema() json.RawMessage
 

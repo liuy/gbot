@@ -218,7 +218,6 @@ func (s *Store) TruncateMessagesFromIndex(sessionID string, index int) error {
 	return tx.Commit()
 }
 
-
 // MessageExists checks if a message with the given UUID exists in the session.
 // TS align: doesMessageExistInSession (sessionStorage.ts:1590-1596)
 func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {

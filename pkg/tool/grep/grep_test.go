@@ -738,7 +738,7 @@ func TestApplyHeadLimit_OffsetBeyondLength(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Gap fix: head_limit defaults to 250 when not set
+// Gap  head_limit defaults to 250 when not set
 // ---------------------------------------------------------------------------
 
 func TestGrepToolCall_DefaultHeadLimit250(t *testing.T) {
@@ -766,7 +766,7 @@ func TestGrepToolCall_DefaultHeadLimit250(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Gap fix: -C works as alias for context
+// Gap  -C works as alias for context
 // ---------------------------------------------------------------------------
 
 func TestGrepToolCall_ContextCAlias(t *testing.T) {

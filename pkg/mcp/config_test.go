@@ -3111,7 +3111,6 @@ func TestParseMcpConfig_EnvExpansion(t *testing.T) {
 	}
 }
 
-
 // --- stringSlicesEqual + SetMcpServerEnabled fixes (Step 2) ---
 
 func TestStringSlicesEqual(t *testing.T) {

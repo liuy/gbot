@@ -127,7 +127,6 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 		lastChainUUID = newUUID
 	}
 
-
 	return tx.Commit()
 }
 
@@ -255,7 +254,6 @@ func (s *Store) MergeForkBack(childSessionID string) error {
 
 		lastChainUUID = newUUID
 	}
-
 
 	return tx.Commit()
 }

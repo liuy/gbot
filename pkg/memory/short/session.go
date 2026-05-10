@@ -160,7 +160,6 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 		sessions = append(sessions, &ses)
 	}
 
-
 	return sessions, nil
 }
 

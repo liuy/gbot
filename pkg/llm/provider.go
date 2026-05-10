@@ -301,7 +301,6 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-
 // SystemBlockParam represents a single system prompt block.
 // Source: Anthropic API system parameter (array variant).
 type SystemBlockParam struct {

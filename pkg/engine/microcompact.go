@@ -452,7 +452,6 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 
 	suppressCompactWarning()
 
-
 	// Notify cache break detection. Source: microCompact.ts:525-527
 	llm.NotifyCacheDeletion(llm.PromptStateKey{
 		QuerySource: querySource,
@@ -600,5 +599,4 @@ func MicrocompactMessages(messages []types.Message, querySource string, logger *
 // NOT IMPLEMENTED: cachedMicrocompact.ts source does not exist (feature gate).
 // These align with TS behavior when feature('CACHED_MICROCOMPACT') === false.
 // ---------------------------------------------------------------------------
-
 
