@@ -151,56 +151,72 @@ func TestSaveContentReplacementRecords_Accumulates(t *testing.T) {
 
 // --- File Backup Records ---
 
-func TestSaveLoadFileBackupRecords(t *testing.T) {
+func TestSaveLoadFileHistoryState(t *testing.T) {
 	store := newRecordsTestStore(t)
 	sessionID := "test-session"
 
-	records := []filehistory.BackupRecord{
-		{FilePath: "/tmp/a.go", BackupName: "abc123@v1", Version: 1, TurnIndex: 2},
-		{FilePath: "/tmp/b.go", BackupName: "def456@v1", Version: 1, TurnIndex: 3},
+	state := filehistory.FileHistoryState{
+		Snapshots: []filehistory.FileHistorySnapshot{
+			{MessageID: "", TrackedFileBackups: map[string]filehistory.FileHistoryBackup{}},
+			{
+				MessageID: "msg-1",
+				TrackedFileBackups: map[string]filehistory.FileHistoryBackup{
+					"/tmp/a.go": {BackupFileName: "abc123@v1", Version: 1},
+				},
+			},
+		},
+		TrackedFiles:     map[string]bool{"/tmp/a.go": true},
+		SnapshotSequence: 1,
 	}
 
-	err := store.SaveFileBackupRecords(sessionID, records)
+	err := store.SaveFileHistoryState(sessionID, state)
 	if err != nil {
-		t.Fatalf("SaveFileBackupRecords: %v", err)
+		t.Fatalf("SaveFileHistoryState: %v", err)
 	}
 
-	loaded, err := store.LoadFileBackupRecords(sessionID)
+	loaded, err := store.LoadFileHistoryState(sessionID)
 	if err != nil {
-		t.Fatalf("LoadFileBackupRecords: %v", err)
+		t.Fatalf("LoadFileHistoryState: %v", err)
 	}
-	if len(loaded) != 2 {
-		t.Fatalf("expected 2 records, got %d", len(loaded))
+	if loaded.SnapshotSequence != 1 {
+		t.Errorf("SnapshotSequence = %d, want 1", loaded.SnapshotSequence)
 	}
-	if loaded[0].FilePath != "/tmp/a.go" {
-		t.Errorf("record 0 FilePath = %q, want /tmp/a.go", loaded[0].FilePath)
+	if len(loaded.Snapshots) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(loaded.Snapshots))
 	}
-	if loaded[0].TurnIndex != 2 {
-		t.Errorf("record 0 TurnIndex = %d, want 2", loaded[0].TurnIndex)
+	if loaded.Snapshots[1].MessageID != "msg-1" {
+		t.Errorf("snapshot 1 MessageID = %q, want msg-1", loaded.Snapshots[1].MessageID)
 	}
-	if loaded[1].FilePath != "/tmp/b.go" {
-		t.Errorf("record 1 FilePath = %q, want /tmp/b.go", loaded[1].FilePath)
+	backup, ok := loaded.Snapshots[1].TrackedFileBackups["/tmp/a.go"]
+	if !ok {
+		t.Fatal("expected /tmp/a.go in snapshot 1 trackedFileBackups")
+	}
+	if backup.BackupFileName != "abc123@v1" {
+		t.Errorf("BackupFileName = %q, want abc123@v1", backup.BackupFileName)
+	}
+	if !loaded.TrackedFiles["/tmp/a.go"] {
+		t.Error("expected /tmp/a.go in tracked files")
 	}
 }
 
-func TestLoadFileBackupRecords_Empty(t *testing.T) {
+func TestLoadFileHistoryState_Empty(t *testing.T) {
 	store := newRecordsTestStore(t)
 
-	loaded, err := store.LoadFileBackupRecords("nonexistent-session")
+	loaded, err := store.LoadFileHistoryState("nonexistent-session")
 	if err != nil {
-		t.Fatalf("LoadFileBackupRecords: %v", err)
+		t.Fatalf("LoadFileHistoryState: %v", err)
 	}
-	if len(loaded) != 0 {
-		t.Errorf("expected 0 records for nonexistent session, got %d", len(loaded))
+	if loaded != nil {
+		t.Errorf("expected nil for nonexistent session, got %+v", loaded)
 	}
 }
 
-func TestSaveFileBackupRecords_Empty(t *testing.T) {
+func TestSaveFileHistoryState_Empty(t *testing.T) {
 	store := newRecordsTestStore(t)
 	sessionID := "test-session"
 
-	err := store.SaveFileBackupRecords(sessionID, nil)
+	err := store.SaveFileHistoryState(sessionID, filehistory.FileHistoryState{})
 	if err != nil {
-		t.Fatalf("SaveFileBackupRecords(nil) should not error, got: %v", err)
+		t.Fatalf("SaveFileHistoryState(empty) should not error, got: %v", err)
 	}
 }

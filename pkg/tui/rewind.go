@@ -212,8 +212,14 @@ func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 		}
 		idx := indices[d.SelectedIndex()]
 
-		// Check if file changes exist for the selected rewind point
-		hasFileChanges := a.fileHistory != nil && a.fileHistory.HasRecordsAtOrAfter(idx)
+		// TS align: MessageSelector.tsx uses preselectedMessage.uuid directly
+		// for fileHistoryGetDiffStats. No fallback, no backwards search.
+		var hasFileChanges bool
+		if a.fileHistory != nil && idx < len(msgs) {
+			checkMsgID := msgs[idx].ID
+			hasFileChanges = a.fileHistory.HasChangesAtMessage(checkMsgID)
+			slog.Info("tui:rewind_filecheck", "idx", idx, "checkMsgID", checkMsgID, "hasFileChanges", hasFileChanges)
+		}
 
 		if !hasFileChanges {
 			// No file changes — rewind messages only directly

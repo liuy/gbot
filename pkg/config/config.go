@@ -220,7 +220,7 @@ func (c *Config) Save() error {
 
 	// Read existing file as raw JSON map
 	raw := make(map[string]json.RawMessage)
-	if existing, _ := os.ReadFile(path); err == nil {
+	if existing, readErr := os.ReadFile(path); readErr == nil {
 		if err := json.Unmarshal(existing, &raw); err != nil {
 			raw = make(map[string]json.RawMessage) // corrupted file — start fresh
 		}

@@ -3217,24 +3217,34 @@ func TestRewindTo_BasicTruncate(t *testing.T) {
 func TestRewindTo_WithFileRestore(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 
-	dir := t.TempDir()
-	tracker := filehistory.NewTracker(dir)
+	backupDir := t.TempDir()
+	tracker := filehistory.NewTracker(backupDir)
 	eng.SetFileHistory(tracker)
 
-	// Create a temp file and record a backup
+	// Create a temp file with "original" content
 	tmpFile := filepath.Join(t.TempDir(), "test.go")
 	if err := os.WriteFile(tmpFile, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := tracker.RecordBackup(tmpFile, []byte("original"), 1); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+
+	// TrackEdit reads "original" from disk → creates v1 backup of "original".
+	// MakeSnapshot captures post-edit state (still "original" since no edit happened yet).
+	// RewindTo(0) → rewindSnapshotID="" (no user messages in messages[:0])
+	// → Rewind("") → restores from initial snapshot which has v1 backup = "original".
+	if err := tracker.TrackEdit(tmpFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
 	}
+	if err := tracker.MakeSnapshot("rewind-uuid-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+
+	// NOW modify after snapshot — file on disk becomes "modified"
 	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{ID: "rewind-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
 	})
 
@@ -3246,7 +3256,10 @@ func TestRewindTo_WithFileRestore(t *testing.T) {
 		t.Errorf("RestoredFiles = %v, want 1 file", result.RestoredFiles)
 	}
 
-	data, _ := os.ReadFile(tmpFile)
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
 	if string(data) != "original" {
 		t.Errorf("file content = %q, want %q", string(data), "original")
 	}
@@ -3309,19 +3322,30 @@ func TestRewindToScoped_MessagesOnly(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 	eng.SetFileHistory(tracker)
 
-	// Set up 4 messages: user, assistant, user, assistant
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
-	})
+	// TrackEdit reads "original" from disk → v1 backup = "original".
+	// MakeSnapshot("0") captures post-edit state (still "original").
+	// RewindToScoped(2, MessagesOnly) with messages=[user,asst,user,asst] (no IDs)
+	// → last user in messages[:2] is messages[0] → rewindSnapshotID="0" (fallback)
+	// → MessagesOnly: does NOT call Rewind, just truncates snapshots.
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("scope-msg-uuid-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
 
-	// Record a file edit at turn 2 (index of second user message)
-	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
-	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+	// NOW modify after snapshot
+	if err := os.WriteFile(testFile, []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	// Set up 4 messages: user, assistant, user, assistant
+	eng.SetMessages([]types.Message{
+		{ID: "scope-msg-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{ID: "scope-msg-uuid-2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
 
 	// Rewind messages only to index 2 — keep files as-is
 	result, err := eng.RewindToScoped(2, RewindMessagesOnly)
@@ -3361,20 +3385,30 @@ func TestRewindToScoped_FilesOnly(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 	eng.SetFileHistory(tracker)
 
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
-	})
+	// TrackEdit reads "original" from disk → v1 backup = "original".
+	// MakeSnapshot("0") captures post-edit state (still "original").
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("filesonly-uuid-2"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
 
-	// Record a file edit at turn 2
-	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
-	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+	// NOW modify after snapshot
+	if err := os.WriteFile(testFile, []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
+	eng.SetMessages([]types.Message{
+		{ID: "filesonly-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{ID: "filesonly-uuid-2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
+
 	// Rewind files only to index 2 — keep messages as-is
+	// rewindSnapshotID: last user in messages[:2] = messages[0] → "0" (fallback)
+	// → RewindFilesOnly("0") restores from snapshot "0" which has v1 backup = "original"
 	result, err := eng.RewindToScoped(2, RewindFilesOnly)
 	if err != nil {
 		t.Fatalf("RewindToScoped: %v", err)
@@ -3413,17 +3447,26 @@ func TestRewindToScoped_All(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 	eng.SetFileHistory(tracker)
 
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
-	})
+	// TrackEdit reads "original" from disk → v1 backup = "original".
+	// MakeSnapshot("0") captures post-edit state (still "original").
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("all-uuid-2"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
 
-	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
-	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
+	// NOW modify after snapshot
+	if err := os.WriteFile(testFile, []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
+	eng.SetMessages([]types.Message{
+		{ID: "all-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{ID: "all-uuid-2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
 
 	result, err := eng.RewindToScoped(2, RewindAll)
 	if err != nil {
@@ -3450,9 +3493,9 @@ func TestRewindToScoped_InvalidIndex(t *testing.T) {
 	_, err := eng.RewindToScoped(5, RewindAll)
 	if err == nil {
 		t.Fatal("expected error for out-of-range index")
-		if !strings.Contains(err.Error(), "out of range") {
-			t.Errorf("error should mention out of range, got: %v", err)
-		}
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("error should mention out of range, got: %v", err)
 	}
 }
 
@@ -3543,9 +3586,9 @@ queryDone:
 	// that hasn't fully exited after EventQueryEnd — runTurns reads e.messages
 	// without lock in its return path). RewindTo is tested separately in
 	// TestRewindTo_BasicTruncate / TestRewindTo_WithFileRestore.
-	restored, err := tracker.RestoreToIndex(0)
+	restored, err := tracker.Rewind("")
 	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+		t.Fatalf("Rewind: %v", err)
 	}
 
 	if len(restored) != 1 || restored[0] != testFile {
@@ -3624,9 +3667,13 @@ func TestChain_SubEngineBashBackup(t *testing.T) {
 		}
 	}
 subDone:
+	// Yield to let the query goroutine finish its return path.
+	// The goroutine may still be accessing e.messages after emitting
+	// EventQueryEnd. runtime.Gosched() gives it a chance to exit.
+	runtime.Gosched()
 
 	// Verify backup was recorded via shared tracker
-	records := tracker.Records()
+	records := tracker.State().TrackedFiles
 	if len(records) < 1 {
 		t.Fatalf("expected at least 1 backup record from sub-engine, got %d — workingDir not inherited?", len(records))
 	}
@@ -3635,9 +3682,9 @@ subDone:
 	// that hasn't fully exited — RewindTo on sub-engine is inherently racy
 	// because runTurns reads e.messages without lock after EventQueryEnd).
 	// The RewindTo chain is already tested by TestChain_BashBackupViaQuery.
-	restored, err := tracker.RestoreToIndex(0)
+	restored, err := tracker.Rewind("")
 	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+		t.Fatalf("Rewind: %v", err)
 	}
 	found := slices.Contains(restored, testFile)
 	if !found {
@@ -3650,5 +3697,429 @@ subDone:
 	}
 	if string(data) != string(originalContent) {
 		t.Errorf("file = %q, want %q — sub-engine bash modification was not restored!", string(data), string(originalContent))
+	}
+}
+
+// TestHasChangesAtMessage_MsgIDDerivation verifies rewind.go uses the correct
+// messageID when checking HasChangesAtMessage.
+func TestHasChangesAtMessage_MsgIDDerivation(t *testing.T) {
+	tmp := t.TempDir()
+	fileA := filepath.Join(tmp, "a.txt")
+	fileB := filepath.Join(tmp, "b.txt")
+
+	if err := os.WriteFile(fileA, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	// Simulate Turn 1: user sends "write a.txt"
+	// TrackEdit is called BEFORE the write (saves pre-edit content as backup).
+	// Then the tool writes new content, then MakeSnapshot captures the turn boundary.
+	turn1MsgID := "turn1-uuid-1234"
+	if err := tracker.TrackEdit(fileA); err != nil {
+		t.Fatalf("TrackEdit turn1: %v", err)
+	}
+	// Simulate the Write tool modifying the file (after TrackEdit, before MakeSnapshot)
+	if err := os.WriteFile(fileA, []byte("hello-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.MakeSnapshot(turn1MsgID); err != nil {
+		t.Fatalf("MakeSnapshot turn1: %v", err)
+	}
+
+	// Simulate Turn 2: user sends "write b.txt"
+	turn2MsgID := "turn2-uuid-5678"
+	if err := tracker.TrackEdit(fileB); err != nil {
+		t.Fatalf("TrackEdit turn2: %v", err)
+	}
+	// Simulate the Write tool modifying the file
+	if err := os.WriteFile(fileB, []byte("hello-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.MakeSnapshot(turn2MsgID); err != nil {
+		t.Fatalf("MakeSnapshot turn2: %v", err)
+	}
+
+	// Verify snapshot layout
+	state := tracker.State()
+	for i, snap := range state.Snapshots {
+		t.Logf("snapshot[%d]: MessageID=%q files=%d", i, snap.MessageID, len(snap.TrackedFileBackups))
+	}
+	if len(state.Snapshots) < 3 {
+		t.Fatalf("expected at least 3 snapshots, got %d", len(state.Snapshots))
+	}
+
+	// BUGGY logic: use the selected (second) user message's ID
+	buggyHasChanges := tracker.HasChangesAtMessage(turn2MsgID)
+	// CORRECT logic: use the previous user message's ID
+	correctHasChanges := tracker.HasChangesAtMessage(turn1MsgID)
+
+	t.Logf("buggy:   HasChangesAtMessage(%q) = %v", turn2MsgID, buggyHasChanges)
+	t.Logf("correct: HasChangesAtMessage(%q) = %v", turn1MsgID, correctHasChanges)
+
+	if !correctHasChanges {
+		t.Errorf("HasChangesAtMessage(%q) = false, want true", turn1MsgID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E chain tests: QuerySync → TrackEdit → MakeSnapshot → RewindToScoped
+// These test the FULL call chain that the user experiences:
+// ask LLM to edit a file → /rewind → file restored on disk.
+// ---------------------------------------------------------------------------
+
+// TestE2E_WriteTool_RewindAll_RestoresFile exercises:
+// QuerySync(Write tool) → TrackEdit → MakeSnapshot → RewindToScoped(RewindAll)
+// → verify file content on disk reverted to original.
+func TestE2E_WriteTool_RewindAll_RestoresFile(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "main.go")
+	if err := os.WriteFile(testFile, []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTool := &mockTool{
+		name:    "Write",
+		enabled: true,
+		callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			var parsed struct {
+				FilePath string `json:"file_path"`
+				Content  string `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+				return nil, err
+			}
+			if parsed.FilePath != "" {
+				if err := os.WriteFile(parsed.FilePath, []byte(parsed.Content), 0o644); err != nil {
+					return nil, err
+				}
+			}
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	eventCh := make(chan types.QueryEvent, 50)
+	dispatcher := &chanDispatcher{ch: eventCh}
+	mp := &mockProvider{}
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{writeTool},
+		Model:      "test",
+		Dispatcher: dispatcher,
+		WorkingDir: tmp,
+	})
+	defer eng.Close()
+	eng.SetFileHistory(tracker)
+
+	ctx := context.Background()
+
+	// Turn 1: write v1
+	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Write",
+		`{"file_path":"`+testFile+`","content":"v1"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+	eng.QuerySync(ctx, "write v1", nil)
+
+	// Turn 2: write v2
+	mp.addResponse(toolUseStreamEvents("test", "tool_2", "Write",
+		`{"file_path":"`+testFile+`","content":"v2"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+	eng.QuerySync(ctx, "write v2", nil)
+
+	// Verify file is v2 before rewind
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v2" {
+		t.Fatalf("file should be v2, got %q", string(data))
+	}
+
+	// TS semantics: RewindToScoped(0) → msgs[0].ID → snapshot at turn 1 boundary
+	// (BEFORE edits) → file restored to pre-turn-1 state = "v0" (original)
+	result, err := eng.RewindToScoped(0, RewindAll)
+	if err != nil {
+		t.Fatalf("RewindToScoped failed: %v", err)
+	}
+	if len(result.RestoredFiles) == 0 {
+		t.Error("expected at least 1 restored file, got 0")
+	}
+
+	data, err = os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v0" {
+		t.Errorf("file = %q, want v0 — rewind to turn 1 restores pre-edit state", string(data))
+	}
+	if len(eng.Messages()) != 0 {
+		t.Errorf("expected 0 messages after rewind, got %d", len(eng.Messages()))
+	}
+}
+
+// TestE2E_WriteTool_RewindIntermediate verifies rewinding to an intermediate
+// turn restores the correct version (not the latest or earliest).
+// TS semantics: RewindToScoped(idx) uses msgs[idx].ID → snapshot at that turn's boundary.
+// 3 turns: v0→v1→v2→v3. Rewind to turn2 index restores v2 (intermediate).
+func TestE2E_WriteTool_RewindIntermediate(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "main.go")
+	if err := os.WriteFile(testFile, []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTool := &mockTool{
+		name:    "Write",
+		enabled: true,
+		callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			var parsed struct {
+				FilePath string `json:"file_path"`
+				Content  string `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+				return nil, err
+			}
+			if parsed.FilePath != "" {
+				if err := os.WriteFile(parsed.FilePath, []byte(parsed.Content), 0o644); err != nil {
+					return nil, err
+				}
+			}
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	eventCh := make(chan types.QueryEvent, 50)
+	dispatcher := &chanDispatcher{ch: eventCh}
+	mp := &mockProvider{}
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{writeTool},
+		Model:      "test",
+		Dispatcher: dispatcher,
+		WorkingDir: tmp,
+	})
+	defer eng.Close()
+	eng.SetFileHistory(tracker)
+
+	ctx := context.Background()
+
+	// Turn 1: write v1
+	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Write",
+		`{"file_path":"`+testFile+`","content":"v1"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+	eng.QuerySync(ctx, "write v1", nil)
+
+	// Turn 2: write v2
+	mp.addResponse(toolUseStreamEvents("test", "tool_2", "Write",
+		`{"file_path":"`+testFile+`","content":"v2"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+	eng.QuerySync(ctx, "write v2", nil)
+
+	// Turn 3: write v3
+	mp.addResponse(toolUseStreamEvents("test", "tool_3", "Write",
+		`{"file_path":"`+testFile+`","content":"v3"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+	eng.QuerySync(ctx, "write v3", nil)
+
+	// Verify file is at v3
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v3" {
+		t.Fatalf("file should be v3, got %q", string(data))
+	}
+
+	// Find index of second real user message (excluding tool_result messages
+	// which also have RoleUser). Tool result messages have content blocks
+	// with type tool_result — real user messages do not.
+	msgs := eng.Messages()
+	turn2Idx := -1
+	userCount := 0
+	for i, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		// Skip tool_result messages — they have ContentTypeToolResult blocks
+		isToolResult := false
+		for _, cb := range m.Content {
+			if cb.Type == types.ContentTypeToolResult {
+				isToolResult = true
+				break
+			}
+		}
+		if isToolResult {
+			continue
+		}
+		userCount++
+		if userCount == 2 {
+			turn2Idx = i
+			break
+		}
+	}
+	if turn2Idx < 0 {
+		t.Fatalf("expected at least 3 real user messages, found %d", userCount)
+	}
+
+	// RewindToScoped(turn2Idx, RewindAll):
+	//   snapshotID = msgs[turn2Idx].ID → snapshot at turn 2 boundary (file=v2)
+	//   messages truncated to [:turn2Idx] → only turn 1 remains
+	result, err := eng.RewindToScoped(turn2Idx, RewindAll)
+	if err != nil {
+		t.Fatalf("RewindToScoped failed: %v", err)
+	}
+
+	// File should be at v1 (pre-turn-2 state), not v3 (latest) or v0 (earliest)
+	data, err = os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v1" {
+		t.Errorf("file = %q, want v1 — intermediate rewind restores pre-turn-2 state", string(data))
+	}
+
+	if len(result.RestoredFiles) == 0 {
+		t.Error("expected restored files from intermediate rewind")
+	}
+}
+
+// TestE2E_SingleQueryMultiTool_Rewind reproduces the real-world scenario from gbot.log:
+// One Query with multiple tool_use turns inside it (not separate QuerySync calls).
+// MakeSnapshot should create per-turn snapshots so rewind can restore intermediate states.
+//
+// Red light: currently MakeSnapshot only runs at Query end (defer), producing one snapshot
+// with the final file state. HasChangesAtMessage returns false and rewind can't restore
+// intermediate versions.
+func TestE2E_SingleQueryMultiTool_Rewind(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "main.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTool := &mockTool{
+		name:    "Write",
+		enabled: true,
+		callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			var parsed struct {
+				FilePath string `json:"file_path"`
+				Content  string `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+				return nil, err
+			}
+			if parsed.FilePath != "" {
+				if err := os.WriteFile(parsed.FilePath, []byte(parsed.Content), 0o644); err != nil {
+					return nil, err
+				}
+			}
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	eventCh := make(chan types.QueryEvent, 50)
+	dispatcher := &chanDispatcher{ch: eventCh}
+	mp := &mockProvider{}
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{writeTool},
+		Model:      "test",
+		Dispatcher: dispatcher,
+		WorkingDir: tmp,
+	})
+	defer eng.Close()
+	eng.SetFileHistory(tracker)
+
+	ctx := context.Background()
+
+	// One QuerySync with multiple internal tool_use turns:
+	// Turn 1 (internal): LLM calls Write with "v1"
+	// Turn 2 (internal): LLM calls Write with "v2"
+	// Turn 3 (internal): LLM returns text "done"
+	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Write",
+		`{"file_path":"`+testFile+`","content":"v1"}`), nil)
+	mp.addResponse(toolUseStreamEvents("test", "tool_2", "Write",
+		`{"file_path":"`+testFile+`","content":"v2"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+
+	// Single user message → one query with 3 internal turns
+	eng.QuerySync(ctx, "edit the file twice", nil)
+
+	// File should be at v2 after both writes
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v2" {
+		t.Fatalf("file should be v2 after query, got %q", string(data))
+	}
+
+	// Check that we have multiple snapshots (one per internal turn, not just one at query end)
+	state := tracker.State()
+	if len(state.Snapshots) < 2 {
+		t.Fatalf("expected at least 2 snapshots (one per tool turn), got %d — "+
+			"MakeSnapshot must be called per turn, not only at query end",
+			len(state.Snapshots))
+	}
+
+	// The user message (the only real user message in this query)
+	msgs := eng.Messages()
+	var userMsgID string
+	var userMsgIdx int
+	for i, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		isToolResult := false
+		for _, cb := range m.Content {
+			if cb.Type == types.ContentTypeToolResult {
+				isToolResult = true
+				break
+			}
+		}
+		if !isToolResult {
+			userMsgID = m.ID
+			userMsgIdx = i
+			break
+		}
+	}
+	if userMsgID == "" {
+		t.Fatal("expected at least one real user message")
+	}
+
+	// Rewind to the user message should restore the file to a state
+	// different from the current v2 (ideally "original" or "v1")
+	// because TrackEdit captured a v1 backup before the first write.
+	hasChanges := tracker.HasChangesAtMessage(userMsgID)
+	if !hasChanges {
+		t.Errorf("HasChangesAtMessage(%q) = false, want true — "+
+			"snapshot at this message should show file state before v2 edits, "+
+			"which differs from current disk (v2)", userMsgID)
+	}
+
+	// Actually rewind and verify file content changes
+	result, err := eng.RewindToScoped(userMsgIdx, RewindAll)
+	if err != nil {
+		t.Fatalf("RewindToScoped failed: %v", err)
+	}
+	if len(result.RestoredFiles) == 0 {
+		t.Error("expected restored files from rewind of multi-tool query")
+	}
+
+	data, err = os.ReadFile(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("file should be \"original\" after rewind of multi-tool query, got %q", string(data))
 	}
 }

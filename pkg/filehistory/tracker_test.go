@@ -1,608 +1,806 @@
 package filehistory
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
 
-func TestRecordBackup_NewFile(t *testing.T) {
+// ---------------------------------------------------------------------------
+// TrackEdit tests
+// ---------------------------------------------------------------------------
+
+// TestTrackEdit_NewFile records a file that doesn't exist yet (null backup).
+func TestTrackEdit_NewFile(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	err := tr.RecordBackup("/tmp/newfile.go", nil, 1)
+	err := tr.TrackEdit(filepath.Join(dir, "new.go"))
 	if err != nil {
-		t.Fatalf("RecordBackup failed: %v", err)
+		t.Fatalf("TrackEdit new file: %v", err)
 	}
 
-	records := tr.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record, got %d", len(records))
+	state := tr.State()
+	if len(state.TrackedFiles) != 1 {
+		t.Fatalf("expected 1 tracked file, got %d", len(state.TrackedFiles))
 	}
-	r := records[0]
-	if r.FilePath != "/tmp/newfile.go" {
-		t.Errorf("FilePath = %q, want /tmp/newfile.go", r.FilePath)
+	snap := state.Snapshots[len(state.Snapshots)-1]
+	backup, ok := snap.TrackedFileBackups[filepath.Join(dir, "new.go")]
+	if !ok {
+		t.Fatal("file not in trackedFileBackups")
 	}
-	if r.BackupName != "" {
-		t.Errorf("BackupName = %q, want empty for new file", r.BackupName)
+	if backup.BackupFileName != "" {
+		t.Errorf("expected empty BackupFileName for new file, got %q", backup.BackupFileName)
 	}
-	if r.Version != 1 {
-		t.Errorf("Version = %d, want 1", r.Version)
-	}
-	if r.TurnIndex != 1 {
-		t.Errorf("TurnIndex = %d, want 1", r.TurnIndex)
+	if backup.Version != 1 {
+		t.Errorf("expected version 1, got %d", backup.Version)
 	}
 }
 
-func TestRecordBackup_ExistingFile(t *testing.T) {
+// TestTrackEdit_ExistingFile creates backup of pre-edit content.
+func TestTrackEdit_ExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	content := []byte("original content")
-	err := tr.RecordBackup("/tmp/existing.go", content, 2)
+	filePath := filepath.Join(dir, "main.go")
+	content := []byte("package main\n")
+	if err := os.WriteFile(filePath, content, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	err := tr.TrackEdit(filePath)
 	if err != nil {
-		t.Fatalf("RecordBackup failed: %v", err)
+		t.Fatalf("TrackEdit: %v", err)
 	}
 
-	records := tr.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record, got %d", len(records))
+	state := tr.State()
+	snap := state.Snapshots[len(state.Snapshots)-1]
+	backup, ok := snap.TrackedFileBackups[filePath]
+	if !ok {
+		t.Fatal("file not in trackedFileBackups")
 	}
-	r := records[0]
-	if r.BackupName == "" {
-		t.Fatal("BackupName should not be empty for existing file")
-	}
-	if r.Version != 1 {
-		t.Errorf("Version = %d, want 1", r.Version)
+	if backup.BackupFileName == "" {
+		t.Fatal("expected non-empty BackupFileName for existing file")
 	}
 
-	// Verify backup file was created on disk
-	backupPath := filepath.Join(dir, r.BackupName)
+	backupPath := filepath.Join(dir, backup.BackupFileName)
 	data, err := os.ReadFile(backupPath)
 	if err != nil {
-		t.Fatalf("backup file not found: %v", err)
+		t.Fatalf("read backup: %v", err)
 	}
-	if string(data) != "original content" {
-		t.Errorf("backup content = %q, want %q", string(data), "original content")
-	}
-}
-
-func TestRecordBackup_MultipleEdits(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	filePath := "/tmp/multi.go"
-	for i := range 3 {
-		content := []byte("version " + string(rune('0'+i)))
-		if err := tr.RecordBackup(filePath, content, i+1); err != nil {
-			t.Fatalf("RecordBackup %d failed: %v", i+1, err)
-		}
-	}
-
-	records := tr.Records()
-	if len(records) != 3 {
-		t.Fatalf("expected 3 records, got %d", len(records))
-	}
-
-	// Verify versions increment
-	seenVersions := map[int]bool{}
-	for _, r := range records {
-		if r.Version < 1 || r.Version > 3 {
-			t.Errorf("unexpected version %d", r.Version)
-		}
-		seenVersions[r.Version] = true
-	}
-	if len(seenVersions) != 3 {
-		t.Errorf("expected 3 distinct versions, got %d", len(seenVersions))
-	}
-
-	// All should have different backup names
-	seenNames := map[string]bool{}
-	for _, r := range records {
-		if r.BackupName == "" {
-			t.Error("BackupName should not be empty")
-		}
-		seenNames[r.BackupName] = true
-	}
-	if len(seenNames) != 3 {
-		t.Errorf("expected 3 distinct backup names, got %d", len(seenNames))
+	if string(data) != string(content) {
+		t.Errorf("backup content mismatch: got %q, want %q", string(data), string(content))
 	}
 }
 
-func TestRestoreToIndex_RestoresPreEditState(t *testing.T) {
+// TestTrackEdit_DeduplicatesSameTurn skips second TrackEdit for same file in same turn.
+func TestTrackEdit_DeduplicatesSameTurn(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	// Simulate: file exists with content "v1" at turn 1, then edited to "v2" at turn 2
-	targetFile := filepath.Join(t.TempDir(), "test.go")
-	if err := os.WriteFile(targetFile, []byte("v1"), 0o644); err != nil {
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("v0"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Turn 1: no backup needed (original state)
-	// Turn 2: edit changes "v1" → "v2", backup "v1"
-	if err := tr.RecordBackup(targetFile, []byte("v1"), 2); err != nil {
-		t.Fatalf("RecordBackup failed: %v", err)
-	}
-
-	// Simulate edit
-	if err := os.WriteFile(targetFile, []byte("v2"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Rewind to turn 1: should restore "v1"
-	restored, err := tr.RestoreToIndex(1)
+	err := tr.TrackEdit(filePath)
 	if err != nil {
-		t.Fatalf("RestoreToIndex failed: %v", err)
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = tr.TrackEdit(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	snap := state.Snapshots[len(state.Snapshots)-1]
+	backup := snap.TrackedFileBackups[filePath]
+	backupPath := filepath.Join(dir, backup.BackupFileName)
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v0" {
+		t.Errorf("dedup failed: backup should contain v0, got %q", string(data))
+	}
+}
+
+// TestTrackEdit_EmptyPath is a no-op.
+func TestTrackEdit_EmptyPath(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	err := tr.TrackEdit("")
+	if err != nil {
+		t.Fatalf("empty path should not error: %v", err)
+	}
+
+	state := tr.State()
+	if len(state.TrackedFiles) != 0 {
+		t.Errorf("expected 0 tracked files, got %d", len(state.TrackedFiles))
+	}
+}
+
+// TestTrackEdit_MultipleFiles tracks multiple files in same turn.
+func TestTrackEdit_MultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(fileA, []byte("a-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("b-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(fileA); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.TrackEdit(fileB); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	if len(state.TrackedFiles) != 2 {
+		t.Errorf("expected 2 tracked files, got %d", len(state.TrackedFiles))
+	}
+	snap := state.Snapshots[len(state.Snapshots)-1]
+	if len(snap.TrackedFileBackups) != 2 {
+		t.Errorf("expected 2 trackedFileBackups, got %d", len(snap.TrackedFileBackups))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MakeSnapshot tests
+// ---------------------------------------------------------------------------
+
+// TestMakeSnapshot_CreatesNewSnapshot creates a snapshot after TrackEdit.
+func TestMakeSnapshot_CreatesNewSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	if len(state.Snapshots) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(state.Snapshots))
+	}
+	snap := state.Snapshots[1]
+	if snap.MessageID != "msg-1" {
+		t.Errorf("expected messageID msg-1, got %q", snap.MessageID)
+	}
+}
+
+// TestMakeSnapshot_DetectsFileChanges creates new backup when file changed.
+func TestMakeSnapshot_DetectsFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	snap := state.Snapshots[1]
+	backup := snap.TrackedFileBackups[filePath]
+	if backup.Version != 2 {
+		t.Errorf("expected version 2, got %d", backup.Version)
+	}
+
+	backupPath := filepath.Join(dir, backup.BackupFileName)
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v1" {
+		t.Errorf("v2 backup should contain v1, got %q", string(data))
+	}
+}
+
+// TestMakeSnapshot_DeletedFile records null backup for deleted file.
+func TestMakeSnapshot_DeletedFile(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	snap := state.Snapshots[1]
+	backup := snap.TrackedFileBackups[filePath]
+	if backup.BackupFileName != "" {
+		t.Errorf("expected empty BackupFileName for deleted file, got %q", backup.BackupFileName)
+	}
+}
+
+// TestMakeSnapshot_UnchangedFile reuses backup for unchanged file.
+func TestMakeSnapshot_UnchangedFile(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	snap1 := state.Snapshots[1]
+	snap2 := state.Snapshots[2]
+	b1 := snap1.TrackedFileBackups[filePath]
+	b2 := snap2.TrackedFileBackups[filePath]
+	if b1.BackupFileName != b2.BackupFileName {
+		t.Errorf("expected same BackupFileName for unchanged file, got %q vs %q",
+			b1.BackupFileName, b2.BackupFileName)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rewind tests
+// ---------------------------------------------------------------------------
+
+// TestRewind_RestoresFile restores a file to its state at the target snapshot.
+func TestRewind_RestoresFile(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := tr.Rewind("msg-1")
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(restored) != 1 {
 		t.Fatalf("expected 1 restored file, got %d", len(restored))
 	}
-	if restored[0] != targetFile {
-		t.Errorf("restored[0] = %q, want %q", restored[0], targetFile)
-	}
 
-	data, err := os.ReadFile(targetFile)
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		t.Fatalf("read file after restore: %v", err)
+		t.Fatal(err)
 	}
-	if string(data) != "v1" {
-		t.Errorf("file content after restore = %q, want %q", string(data), "v1")
+	if string(data) != "original" {
+		t.Errorf("expected original content, got %q", string(data))
 	}
 }
 
-func TestRestoreToIndex_DeletesCreatedFile(t *testing.T) {
+// TestRewind_DeletesCreatedFile deletes files that didn't exist at target snapshot.
+func TestRewind_DeletesCreatedFile(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	// Simulate: file created at turn 2 (didn't exist at turn 1)
-	targetFile := filepath.Join(t.TempDir(), "new.go")
-	if err := os.WriteFile(targetFile, []byte("new content"), 0o644); err != nil {
+	newFile := filepath.Join(dir, "new.go")
+
+	if err := tr.TrackEdit(newFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Record backup with nil content = file didn't exist before
-	if err := tr.RecordBackup(targetFile, nil, 2); err != nil {
-		t.Fatalf("RecordBackup failed: %v", err)
+	if err := os.WriteFile(newFile, []byte("created"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
 	}
 
-	// Rewind to turn 1: should delete the file
-	restored, err := tr.RestoreToIndex(1)
+	restored, err := tr.Rewind("msg-1")
 	if err != nil {
-		t.Fatalf("RestoreToIndex failed: %v", err)
+		t.Fatal(err)
 	}
 	if len(restored) != 1 {
-		t.Fatalf("expected 1 restored (deleted) file, got %d", len(restored))
+		t.Fatalf("expected 1 restored file, got %d", len(restored))
 	}
 
-	// File should be gone
-	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
-		t.Error("file should have been deleted after rewind")
+	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
+		t.Error("expected file to be deleted after rewind")
 	}
 }
 
-func TestRestoreToIndex_MultipleFiles(t *testing.T) {
+// TestRewind_SnapshotNotFound returns error for unknown messageID.
+func TestRewind_SnapshotNotFound(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	tmpDir := t.TempDir()
-	file1 := filepath.Join(tmpDir, "a.go")
-	file2 := filepath.Join(tmpDir, "b.go")
-	file3 := filepath.Join(tmpDir, "c.go")
-
-	// Write initial content
-	mustWriteFile(t, file1, []byte("a1"))
-	mustWriteFile(t, file2, []byte("b1"))
-	mustWriteFile(t, file3, []byte("c1"))
-
-	// Turn 2: edit file1 a1→a2, backup a1
-	if err := tr.RecordBackup(file1, []byte("a1"), 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	_, err := tr.Rewind("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent snapshot")
 	}
-	mustWriteFile(t, file1, []byte("a2"))
-
-	// Turn 3: edit file2 b1→b2, backup b1
-	if err := tr.RecordBackup(file2, []byte("b1"), 3); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found, got: %v", err)
 	}
-	mustWriteFile(t, file2, []byte("b2"))
+}
 
-	// Turn 4: edit file3 c1→c2, backup c1
-	if err := tr.RecordBackup(file3, []byte("c1"), 4); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+// TestRewind_MultipleFilesMultipleEdits restores all files correctly.
+func TestRewind_MultipleFilesMultipleEdits(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	fileA := filepath.Join(dir, "a.go")
+	fileB := filepath.Join(dir, "b.go")
+	fileC := filepath.Join(dir, "c.go")
+
+	if err := os.WriteFile(fileA, []byte("a0"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	mustWriteFile(t, file3, []byte("c2"))
+	if err := os.WriteFile(fileB, []byte("b0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
-	// Rewind to turn 2: removes turns [2..end], so all 3 edits are reverted.
-	// file1 restored to a1, file2 restored to b1, file3 restored to c1
-	restored, err := tr.RestoreToIndex(2)
+	// Turn 1: edit fileA
+	if err := tr.TrackEdit(fileA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileA, []byte("a1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 2: edit fileB, create fileC
+	if err := tr.TrackEdit(fileB); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.TrackEdit(fileC); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("b1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileC, []byte("c0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 3: edit fileA again
+	if err := tr.TrackEdit(fileA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileA, []byte("a2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-3"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify current state
+	data, err := os.ReadFile(fileA)
 	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+		t.Fatal(err)
+	}
+	if string(data) != "a2" {
+		t.Errorf("fileA should be a2, got %q", string(data))
 	}
 
-	sort.Strings(restored)
+	// Rewind to msg-1
+	restored, err := tr.Rewind("msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(restored) != 3 {
 		t.Fatalf("expected 3 restored files, got %d: %v", len(restored), restored)
 	}
 
-	// file1 should be restored to "a1" (edit at turn 2 is also reverted)
-	data, _ := os.ReadFile(file1)
+	data, err = os.ReadFile(fileA)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(data) != "a1" {
-		t.Errorf("file1 = %q, want %q", string(data), "a1")
+		t.Errorf("fileA should be a1, got %q", string(data))
 	}
 
-	// file2 should be restored to "b1"
-	data, _ = os.ReadFile(file2)
-	if string(data) != "b1" {
-		t.Errorf("file2 = %q, want %q", string(data), "b1")
-	}
-
-	// file3 should be restored to "c1"
-	data, _ = os.ReadFile(file3)
-	if string(data) != "c1" {
-		t.Errorf("file3 = %q, want %q", string(data), "c1")
-	}
-}
-
-func TestRestoreToIndex_NoBackups(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	restored, err := tr.RestoreToIndex(1)
+	data, err = os.ReadFile(fileB)
 	if err != nil {
-		t.Fatalf("RestoreToIndex failed: %v", err)
+		t.Fatal(err)
 	}
-	if len(restored) != 0 {
-		t.Errorf("expected 0 restored files with no backups, got %d", len(restored))
+	if string(data) != "b0" {
+		t.Errorf("fileB should be b0 after rewind, got %q", string(data))
+	}
+
+	if _, err := os.Stat(fileC); !os.IsNotExist(err) {
+		t.Error("fileC should be deleted after rewind to msg-1")
 	}
 }
 
-func TestTruncateRecords(t *testing.T) {
+// ---------------------------------------------------------------------------
+// RewindFilesOnly tests
+// ---------------------------------------------------------------------------
+
+// TestRewindFilesOnly restores files without truncating snapshots.
+func TestRewindFilesOnly(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	if err := tr.RecordBackup("/tmp/a.go", []byte("a"), 1); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr.RecordBackup("/tmp/b.go", []byte("b"), 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr.RecordBackup("/tmp/c.go", []byte("c"), 3); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	tr.TruncateRecords(2)
-
-	records := tr.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record after truncate, got %d", len(records))
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
 	}
-	if records[0].TurnIndex != 1 {
-		t.Errorf("remaining record TurnIndex = %d, want 1", records[0].TurnIndex)
-	}
-}
-
-func TestTracker_PersistenceRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	tr1 := NewTracker(dir)
-
-	if err := tr1.RecordBackup("/tmp/x.go", []byte("x-content"), 1); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr1.RecordBackup("/tmp/y.go", nil, 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr1.RecordBackup("/tmp/x.go", []byte("x-content-v2"), 3); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
 	}
 
-	records := tr1.Records()
-
-	// Simulate crash recovery: create new tracker, load records
-	tr2 := NewTracker(dir)
-	tr2.LoadRecords(records)
-
-	loaded := tr2.Records()
-	if len(loaded) != 3 {
-		t.Fatalf("expected 3 loaded records, got %d", len(loaded))
+	if err := os.WriteFile(filePath, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
 	}
 
-	// Verify version counters were rebuilt
-	// Next backup for /tmp/x.go should be version 3
-	if err := tr2.RecordBackup("/tmp/x.go", []byte("x-content-v3"), 4); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	loaded = tr2.Records()
-	lastRecord := loaded[len(loaded)-1]
-	if lastRecord.Version != 3 {
-		t.Errorf("version after LoadRecords = %d, want 3", lastRecord.Version)
-	}
-}
+	snapCountBefore := len(tr.State().Snapshots)
 
-func TestFileHash(t *testing.T) {
-	h := fileHash("/tmp/test.go")
-	if len(h) != 16 {
-		t.Errorf("hash length = %d, want 16", len(h))
-	}
-	// Same input should produce same hash
-	h2 := fileHash("/tmp/test.go")
-	if h != h2 {
-		t.Errorf("hash not deterministic: %q vs %q", h, h2)
-	}
-	// Different input should produce different hash
-	h3 := fileHash("/tmp/other.go")
-	if h == h3 {
-		t.Error("different paths should produce different hashes")
-	}
-}
-
-func TestIsSkippedDir(t *testing.T) {
-	tests := []struct {
-		name string
-		want bool
-	}{
-		{".git", true},
-		{"node_modules", true},
-		{"vendor", true},
-		{"__pycache__", true},
-		{".hg", true},
-		{".svn", true},
-		{"src", false},
-		{"pkg", false},
-		{"cmd", false},
-	}
-	for _, tt := range tests {
-		got := IsSkippedDir(tt.name)
-		if got != tt.want {
-			t.Errorf("IsSkippedDir(%q) = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-func TestRestoreToIndex_RecordTruncated(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	if err := tr.RecordBackup("/tmp/a.go", []byte("a"), 1); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr.RecordBackup("/tmp/b.go", []byte("b"), 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-	if err := tr.RecordBackup("/tmp/c.go", []byte("c"), 3); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-
-	// Restore to index 2 should truncate records with turnIndex >= 2
-	if _, err := tr.RestoreToIndex(2); err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
-	}
-
-	records := tr.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record after restore+truncate, got %d", len(records))
-	}
-	if records[0].TurnIndex != 1 {
-		t.Errorf("remaining record TurnIndex = %d, want 1", records[0].TurnIndex)
-	}
-}
-
-func TestRecordBackup_EmptyFilePath(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-
-	// Empty file path should still work (it's a valid record)
-	err := tr.RecordBackup("", nil, 1)
+	restored, err := tr.RewindFilesOnly("msg-1")
 	if err != nil {
-		t.Fatalf("RecordBackup with empty path failed: %v", err)
-	}
-	records := tr.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record, got %d", len(records))
-	}
-	if records[0].FilePath != "" {
-		t.Errorf("FilePath = %q, want empty", records[0].FilePath)
-	}
-}
-
-func TestRecordBackup_MkdirAllError(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: test requires non-root user")
-	}
-	parent := t.TempDir()
-	readOnlyDir := filepath.Join(parent, "readonly")
-	mustMkdirAll(t, readOnlyDir)
-	mustWriteFile(t, filepath.Join(readOnlyDir, "placeholder"), []byte("x"))
-	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
 		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o755) })
-
-	// Target dir is inside read-only dir → MkdirAll fails
-	tr := NewTracker(filepath.Join(readOnlyDir, "nested", "sub"))
-	err := tr.RecordBackup("/tmp/test.go", []byte("content"), 1)
-	if err == nil {
-		t.Fatal("expected error when backup dir creation fails")
-	}
-	if !strings.Contains(err.Error(), "mkdir") {
-		t.Errorf("error should mention mkdir, got: %v", err)
-	}
-}
-
-func TestRecordBackup_WriteBackupError(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: test requires non-root user")
-	}
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-
-	// dir exists but is read-only → WriteFile fails
-	tr := NewTracker(dir)
-	err := tr.RecordBackup("/tmp/test.go", []byte("content"), 1)
-	if err == nil {
-		t.Fatal("expected error when writing backup fails")
-	}
-	if !strings.Contains(err.Error(), "backup") {
-		t.Errorf("error should mention backup, got: %v", err)
-	}
-}
-
-func TestRestoreToIndex_SameFileMultipleRecords(t *testing.T) {
-	dir := t.TempDir()
-	tr := NewTracker(dir)
-	targetFile := filepath.Join(t.TempDir(), "multi.go")
-
-	// Turn 1: backup "v1"
-	if err := tr.RecordBackup(targetFile, []byte("v1"), 1); err != nil {
-		t.Fatal(err)
-	}
-	// Turn 3: backup "v3" (records out of order forces sort comparison)
-	if err := tr.RecordBackup(targetFile, []byte("v3"), 3); err != nil {
-		t.Fatal(err)
-	}
-
-	// Restore to turn 2: finds turnIndex=3 (earliest >= 2), restores "v3"
-	restored, err := tr.RestoreToIndex(2)
-	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
 	}
 	if len(restored) != 1 {
-		t.Fatalf("expected 1 restored, got %d", len(restored))
+		t.Fatalf("expected 1 restored file, got %d", len(restored))
 	}
-	data, err := os.ReadFile(targetFile)
+
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "v3" {
-		t.Errorf("file = %q, want %q", string(data), "v3")
+	if string(data) != "original" {
+		t.Errorf("expected original content, got %q", string(data))
+	}
+
+	if len(tr.State().Snapshots) != snapCountBefore {
+		t.Errorf("snapshots should not be truncated, got %d vs %d",
+			len(tr.State().Snapshots), snapCountBefore)
 	}
 }
 
-func TestRestoreToIndex_RemoveFailed(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: test requires non-root user")
-	}
+// ---------------------------------------------------------------------------
+// HasChangesAtMessage tests
+// ---------------------------------------------------------------------------
+
+// TestHasChangesAtMessage_TrueWhenFileDiffers returns true when file was modified.
+func TestHasChangesAtMessage_TrueWhenFileDiffers(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	subDir := filepath.Join(t.TempDir(), "sub")
-	mustMkdirAll(t, subDir)
-	targetFile := filepath.Join(subDir, "created.go")
-	mustWriteFile(t, targetFile, []byte("new"))
-
-	// Record: file was created (nil originalContent)
-	if err := tr.RecordBackup(targetFile, nil, 1); err != nil {
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Make parent dir read-only so os.Remove fails
-	if err := os.Chmod(subDir, 0o555); err != nil {
+	if err := tr.TrackEdit(filePath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(subDir, 0o755) })
-
-	restored, err := tr.RestoreToIndex(1)
-	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
 	}
-	// Delete failed → not in restored list
-	for _, f := range restored {
-		if f == targetFile {
-			t.Error("file should not be in restored list when delete fails")
-		}
+
+	if err := os.WriteFile(filePath, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if !tr.HasChangesAtMessage("msg-1") {
+		t.Error("expected HasChangesAtMessage to return true for msg-1")
 	}
 }
 
-func TestRestoreToIndex_ReadBackupFailed(t *testing.T) {
+// TestHasChangesAtMessage_FalseWhenNoChanges returns false when file unchanged.
+func TestHasChangesAtMessage_FalseWhenNoChanges(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	targetFile := filepath.Join(t.TempDir(), "test.go")
-	if err := tr.RecordBackup(targetFile, []byte("original"), 1); err != nil {
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Delete the backup file from disk
-	records := tr.Records()
-	if err := os.Remove(filepath.Join(dir, records[0].BackupName)); err != nil {
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Restore should fail to read backup (logged, not error)
-	restored, err := tr.RestoreToIndex(1)
-	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
-	}
-	if len(restored) != 0 {
-		t.Errorf("expected 0 restored (backup missing), got %d", len(restored))
+	if tr.HasChangesAtMessage("msg-1") {
+		t.Error("expected HasChangesAtMessage to return false (no changes)")
 	}
 }
 
-func TestRestoreToIndex_WriteRestoreFailed(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: test requires non-root user")
-	}
+// TestHasChangesAtMessage_FalseForUnknownMessage returns false for nonexistent message.
+func TestHasChangesAtMessage_FalseForUnknownMessage(t *testing.T) {
 	dir := t.TempDir()
 	tr := NewTracker(dir)
 
-	targetFile := filepath.Join(t.TempDir(), "test.go")
-	mustWriteFile(t, targetFile, []byte("modified"))
-
-	if err := tr.RecordBackup(targetFile, []byte("original"), 1); err != nil {
-		t.Fatal(err)
-	}
-
-	// Make target file read-only so WriteFile restore fails
-	if err := os.Chmod(targetFile, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(targetFile, 0o644) })
-
-	restored, err := tr.RestoreToIndex(1)
-	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
-	}
-	// WriteFile to read-only file → fails, not in restored list
-	for _, f := range restored {
-		if f == targetFile {
-			t.Error("file should not be in restored list when write fails")
-		}
+	if tr.HasChangesAtMessage("nonexistent") {
+		t.Error("expected false for unknown message")
 	}
 }
 
-func TestWalkDir_InaccessibleEntry(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("skipping: test requires non-root user")
-	}
-	root := t.TempDir()
-	subDir := filepath.Join(root, "sub")
-	mustMkdirAll(t, subDir)
-	mustWriteFile(t, filepath.Join(subDir, "file.txt"), []byte("content"))
+// ---------------------------------------------------------------------------
+// State persistence tests
+// ---------------------------------------------------------------------------
 
-	// Make subdirectory inaccessible → WalkDir passes error to callback
-	if err := os.Chmod(subDir, 0o000); err != nil {
+// TestStateRoundTrip preserves state through serialization cycle.
+func TestStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(subDir, 0o755) })
 
-	var visited []string
-	err := WalkDir(root, func(path string, d fs.DirEntry) error {
-		visited = append(visited, path)
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+
+	tr2 := NewTracker(dir)
+	tr2.LoadState(state)
+
+	state2 := tr2.State()
+	if len(state2.Snapshots) != len(state.Snapshots) {
+		t.Errorf("snapshot count mismatch: %d vs %d", len(state2.Snapshots), len(state.Snapshots))
+	}
+	if len(state2.TrackedFiles) != len(state.TrackedFiles) {
+		t.Errorf("tracked files mismatch: %d vs %d", len(state2.TrackedFiles), len(state.TrackedFiles))
+	}
+
+	// Verify snapshot content survived round-trip.
+	if len(state2.Snapshots) < 2 {
+		t.Fatalf("expected at least 2 snapshots, got %d", len(state2.Snapshots))
+	}
+	snap := state2.Snapshots[1] // msg-1 snapshot
+	if snap.MessageID != "msg-1" {
+		t.Errorf("snapshot MessageID = %q, want %q", snap.MessageID, "msg-1")
+	}
+	backup, ok := snap.TrackedFileBackups[filePath]
+	if !ok {
+		t.Fatalf("filePath %q not in TrackedFileBackups", filePath)
+	}
+	if backup.Version != 1 {
+		t.Errorf("backup Version = %d, want 1", backup.Version)
+	}
+	if backup.BackupFileName == "" {
+		t.Error("backup BackupFileName is empty")
+	}
+	// Verify backup file on disk is readable and has correct content.
+	backupData, err := os.ReadFile(filepath.Join(dir, backup.BackupFileName))
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backupData) != "content" {
+		t.Errorf("backup content = %q, want %q", string(backupData), "content")
+	}
+}
+
+// TestStateRoundTrip_CrashRecovery simulates crash recovery.
+func TestStateRoundTrip_CrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(filePath, []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := tr.State()
+	tr2 := NewTracker(dir)
+	tr2.LoadState(state)
+
+	if err := os.WriteFile(filePath, []byte("v1-edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr2.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := tr2.Rewind("msg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored file, got %d", len(restored))
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "v0" {
+		t.Errorf("expected v0 after crash recovery rewind, got %q", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge cases
+// ---------------------------------------------------------------------------
+
+// TestRewindToBeforeAnyFilesTracked rewinds to initial snapshot.
+func TestRewindToBeforeAnyFilesTracked(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	filePath := filepath.Join(dir, "main.go")
+
+	if err := tr.TrackEdit(filePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("created"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := tr.Rewind("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored file, got %d", len(restored))
+	}
+
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Error("expected file to be deleted after rewind to initial snapshot")
+	}
+}
+
+// TestSnapshotSequenceIncrements tracks snapshot sequence counter.
+func TestSnapshotSequenceIncrements(t *testing.T) {
+	dir := t.TempDir()
+	tr := NewTracker(dir)
+
+	if tr.State().SnapshotSequence != 0 {
+		t.Errorf("expected initial sequence 0, got %d", tr.State().SnapshotSequence)
+	}
+
+	if err := tr.MakeSnapshot("msg-1"); err != nil {
+		t.Fatal(err)
+	}
+	if tr.State().SnapshotSequence != 1 {
+		t.Errorf("expected sequence 1, got %d", tr.State().SnapshotSequence)
+	}
+
+	if err := tr.MakeSnapshot("msg-2"); err != nil {
+		t.Fatal(err)
+	}
+	if tr.State().SnapshotSequence != 2 {
+		t.Errorf("expected sequence 2, got %d", tr.State().SnapshotSequence)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WalkDir tests
+// ---------------------------------------------------------------------------
+
+// TestWalkDir traverses files in a directory.
+func TestWalkDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var files []string
+	err := WalkDir(dir, func(path string, _ os.DirEntry) error {
+		files = append(files, path)
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("WalkDir: %v", err)
+		t.Fatal(err)
 	}
-	// Root should be visited, but files inside inaccessible sub should not
-	for _, p := range visited {
-		if filepath.Base(p) == "file.txt" {
-			t.Error("should not visit files in inaccessible directory")
+	if len(files) != 2 {
+		t.Errorf("expected 2 files, got %d", len(files))
+	}
+}
+
+// TestIsSkippedDir checks known skip directories.
+func TestIsSkippedDir(t *testing.T) {
+	for _, name := range []string{".git", "node_modules", "vendor", "__pycache__"} {
+		if !IsSkippedDir(name) {
+			t.Errorf("expected %q to be skipped", name)
 		}
+	}
+	if IsSkippedDir("src") {
+		t.Error("src should not be skipped")
 	}
 }

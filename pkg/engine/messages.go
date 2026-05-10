@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -11,6 +12,7 @@ import (
 // Source: utils/messages.ts — createUserMessage()
 func CreateUserMessage(text string) types.Message {
 	return types.Message{
+		ID:   uuid.New().String(),
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
 			types.NewTextBlock(text),
@@ -36,6 +38,7 @@ func CreateAssistantMessage(text string) types.Message {
 // After tools execute, results are appended as a user message with tool_result blocks.
 func CreateToolResultMessage(blocks []types.ContentBlock) types.Message {
 	return types.Message{
+		ID:        uuid.New().String(),
 		Role:      types.RoleUser,
 		Content:   blocks,
 		Timestamp: time.Now(),

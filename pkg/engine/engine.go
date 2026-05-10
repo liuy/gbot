@@ -177,6 +177,16 @@ type Engine struct {
 	// Set via SetRecordWriter after engine construction when the store is available.
 	// TS: writeToTranscript callback in applyToolResultBudget (toolResultStorage.ts:924-936).
 	recordWriter func([]toolresult.ContentReplacementRecord)
+
+	// fileHistoryWriter persists fileHistory state after MakeSnapshot.
+	// Set via SetFileHistoryWriter after engine construction when the store is available.
+	fileHistoryWriter func(filehistory.FileHistoryState)
+
+	// currentTurnMsgID is the UUID of the user message that started the current query.
+	// Used by TrackEdit and MakeSnapshot so they consistently use the same messageID,
+	// even though tool_result messages also have RoleUser and would confuse
+	// a "find last user message" search.
+	currentTurnMsgID string
 }
 
 // Params holds the constructor arguments for Engine.
@@ -358,12 +368,14 @@ func (e *Engine) emitEvent(event types.QueryEvent) {
 func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
 	// Stage 0: Process user input
 	userMsg := types.Message{
+		ID:   uuid.New().String(),
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
 			types.NewTextBlock(userMessage),
 		},
 		Timestamp: time.Now(),
 	}
+	e.currentTurnMsgID = userMsg.ID
 	e.appendMessage(userMsg)
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
 
@@ -395,6 +407,20 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			)
 		}
 	}()
+
+	// MakeSnapshot BEFORE the tool loop — aligned with TS QueryEngine.ts:641-654.
+	// TS calls fileHistoryMakeSnapshot before the ask() loop, so the snapshot
+	// captures pre-edit state. Rewind can then restore files to before edits.
+	if e.fileHistory != nil && e.currentTurnMsgID != "" {
+		if err := e.fileHistory.MakeSnapshot(e.currentTurnMsgID); err != nil {
+			e.logger.Error("engine:make_snapshot_failed", "err", err)
+		} else {
+			slog.Info("engine:make_snapshot", "msgID", e.currentTurnMsgID, "trackedFiles", len(e.fileHistory.State().TrackedFiles), "snapshots", len(e.fileHistory.State().Snapshots))
+			if e.fileHistoryWriter != nil {
+				e.fileHistoryWriter(e.fileHistory.State())
+			}
+		}
+	}
 
 	// Microcompact: shrink prompt before the turn loop.
 	// Source: query.ts:413-419 — runs once per query, before autocompact.
@@ -1167,6 +1193,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
 						streamingExecutor.SetFileHistory(e.fileHistory)
+						streamingExecutor.currentTurnMsgID = e.currentTurnMsgID
 						if e.isSubagent {
 							streamingExecutor.SetSubEngine(true)
 						}
@@ -1914,6 +1941,15 @@ func (e *Engine) SetFileHistory(fh *filehistory.Tracker) {
 	e.fileHistory = fh
 }
 
+// SetFileHistoryWriter sets the persistence callback for file history state.
+// Called after each MakeSnapshot to persist state across session restarts.
+// SetFileHistory must be called before SetFileHistoryWriter.
+func (e *Engine) SetFileHistoryWriter(fn func(filehistory.FileHistoryState)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fileHistoryWriter = fn
+}
+
 // RewindResult contains information about what was rewound.
 type RewindResult struct {
 	MessageCount  int      // number of messages after rewind
@@ -1949,6 +1985,14 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 
 	result := &RewindResult{}
 
+	// Derive snapshot messageID BEFORE truncating messages.
+	// Source: TS MessageSelector.tsx uses preselectedMessage.uuid directly for
+	// both fileHistoryGetDiffStats and fileHistoryRewind. No backwards search.
+	var snapshotID string
+	if e.fileHistory != nil && idx < len(e.messages) {
+		snapshotID = e.messages[idx].ID
+	}
+
 	switch scope {
 	case RewindAll, RewindMessagesOnly:
 		// Truncate messages + rebuild toolSearch
@@ -1961,28 +2005,26 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 		result.MessageCount = len(e.messages)
 	}
 
-	// Restore file history
-	if e.fileHistory != nil {
+	// Restore file history using snapshot-based API.
+	// Source: TS uses preselectedMessage.uuid directly for rewind and truncation.
+	if e.fileHistory != nil && snapshotID != "" {
 		switch scope {
 		case RewindAll:
-			// Restore files + truncate records
-			restored, err := e.fileHistory.RestoreToIndex(idx)
+			restored, err := e.fileHistory.Rewind(snapshotID)
 			if err != nil {
 				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
 			} else {
 				result.RestoredFiles = restored
 			}
 		case RewindFilesOnly:
-			// Restore files without truncating records
-			restored, err := e.fileHistory.RestoreFilesOnly(idx)
+			restored, err := e.fileHistory.RewindFilesOnly(snapshotID)
 			if err != nil {
 				e.logger.Error("engine:rewind:file_restore_failed", "err", err)
 			} else {
 				result.RestoredFiles = restored
 			}
 		case RewindMessagesOnly:
-			// Don't restore files, but truncate orphaned records
-			e.fileHistory.TruncateRecords(idx)
+			e.fileHistory.TruncateSnapshotsFrom(snapshotID)
 		}
 	}
 
@@ -2268,6 +2310,15 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // that build their own conversation history.
 func (e *Engine) QueryWithExistingMessages(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
 	e.setMessages(messages)
+	// Set currentTurnMsgID from the last user message in the provided messages.
+	// Used by TrackEdit and MakeSnapshot for consistent messageID.
+	e.currentTurnMsgID = ""
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == types.RoleUser {
+			e.currentTurnMsgID = messages[i].ID
+			break
+		}
+	}
 	return e.runTurns(ctx, systemPrompt)
 }
 

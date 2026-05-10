@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,9 +210,6 @@ func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
 	engMsgs := eng.Messages()
 	if len(engMsgs) != 0 {
 		t.Fatalf("expected 0 engine messages after rewind, got %d", len(engMsgs))
-	}
-	if false {
-		t.Errorf("expected user message, got %s", engMsgs[0].Role)
 	}
 
 	// Input should be restored
@@ -558,9 +557,9 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	}
 
 	engMsgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: testTime},
+		{ID: "uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response1")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: testTime},
+		{ID: "uuid-2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response2")}, Timestamp: testTime},
 	}
 	eng.SetMessages(engMsgs)
@@ -577,12 +576,20 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 		}
 	}
 
-	// Create a backup for file restore
+	// Create a backup for file restore using snapshot API.
+	// File = "original" on disk → TrackEdit captures v1 backup of "original".
+	// MakeSnapshot records the state. Then modify AFTER snapshot.
 	tmpFile := filepath.Join(t.TempDir(), "test.go")
-	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := tracker.RecordBackup(tmpFile, []byte("original"), 2); err != nil {
+	if err := tracker.TrackEdit(tmpFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("uuid-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -723,15 +730,31 @@ func setupRewindWithFileChanges(t *testing.T) (*App, string) {
 	eng := newTestEngine()
 	eng.SetFileHistory(tracker)
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{ID: "uid-hello", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit")}, Timestamp: testTime},
+		{ID: "uid-edit", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit")}, Timestamp: testTime},
 	})
 
-	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
-	if err := tracker.RecordBackup(testFile, []byte("original"), 2); err != nil {
-		t.Fatal(err)
+	// Use snapshot API:
+	// RewindTo(2) → rewindSnapshotID="0" (last user in messages[:2] is index 0).
+	// HasChangesAtMessage uses msgs[2].ID → fallback "2".
+	//
+	// We need:
+	//   - Snapshot "0" with "original" backup → Rewind("0") restores to original
+	//   - Snapshot "2" with "original" backup → HasChangesAtMessage("2") detects disk differs
+	//
+	// Setup: TrackEdit captures "original" as v1, MakeSnapshot("0") records it.
+	// MakeSnapshot("2") reuses same backup (file unchanged). Then modify AFTER.
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
 	}
+	if err := tracker.MakeSnapshot("uid-hello"); err != nil {
+		t.Fatalf("MakeSnapshot 0: %v", err)
+	}
+	if err := tracker.MakeSnapshot("uid-edit"); err != nil {
+		t.Fatalf("MakeSnapshot 2: %v", err)
+	}
+	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
 
 	a := &App{
 		engine:         eng,
@@ -845,6 +868,71 @@ func TestHandleRewind_ScopeCancel(t *testing.T) {
 	}
 	if string(data) != "modified" {
 		t.Errorf("file = %q, want %q (unchanged)", string(data), "modified")
+	}
+}
+
+// TestHandleRewind_ToolResultMessagesSkipped verifies that when engine messages
+// include tool_result user messages (which have no text/ID), the rewind file
+// change check uses the selected message's UUID directly, not a fallback index.
+// This reproduces the real scenario: user sends 4 queries with tool calls,
+// engine has tool_result intermediaries, rewind must find the correct snapshot.
+func TestHandleRewind_ToolResultMessagesSkipped(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "test.go")
+	if err := os.WriteFile(testFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	eng := newTestEngine()
+	eng.SetFileHistory(tracker)
+
+	userUUID := "uuid-user-edit"
+	eng.SetMessages([]types.Message{
+		{ID: "uuid-user-hello", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{ID: "uuid-asst-1", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{ID: "uuid-user-edit", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit file")}, Timestamp: testTime},
+		{ID: "uuid-asst-tool", Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ID: "tu1", Name: "Edit"}}, Timestamp: testTime},
+		// tool_result user message — no ID, no text. The bug was finding this instead of the real user message.
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "tu1", Content: json.RawMessage(`"ok"`)}}, Timestamp: testTime},
+		{ID: "uuid-asst-done", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
+	})
+
+	// Setup snapshots: TrackEdit captures v1, MakeSnapshot creates snapshot with userUUID
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot(userUUID); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	// Modify file after snapshot
+	if err := os.WriteFile(testFile, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		engine:      eng,
+		input:       NewInput(),
+		repl:        NewReplState(),
+		fileHistory: tracker,
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	// Select second user message ("edit file") — cursor=1
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 1
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Must show scope dialog (hasFileChanges=true), not skip to RewindMessagesOnly
+	if app.activeDialog == nil {
+		t.Fatal("expected scope dialog (file changes exist), but got nil — HasChangesAtMessage returned false")
+	}
+	opts := formatOpts(app.activeDialog.options)
+	if !strings.Contains(opts, "Restore code") {
+		t.Errorf("expected code restore options, got: %s", opts)
 	}
 }
 

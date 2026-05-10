@@ -1,6 +1,7 @@
 package filehistory
 
 import (
+	"bytes"
 	"os"
 	"time"
 )
@@ -14,7 +15,7 @@ type FileChange struct {
 
 // FileSnapshot captures file metadata + content for change detection.
 // Content is stored so that DetectChanges can return BeforeContent for modified files,
-// which is required by RecordBackup to save pre-edit state for rewind restoration.
+// which is required by TrackEdit/MakeSnapshot to save pre-edit state for rewind restoration.
 type FileSnapshot struct {
 	modTime time.Time
 	size    int64
@@ -82,7 +83,7 @@ func DetectChanges(root string, before map[string]*FileSnapshot) ([]FileChange, 
 		if err != nil {
 			return nil // skip unreadable
 		}
-		if string(currentContent) == string(snap.content) {
+		if bytes.Equal(currentContent, snap.content) {
 			return nil // content identical (false positive from mtime change)
 		}
 

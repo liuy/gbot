@@ -153,6 +153,23 @@ func (s *Store) initSchema() error {
 		fts_rowid         INTEGER NOT NULL,
 		segmented_content TEXT NOT NULL
 	);
+
+	-- File history snapshots stored separately from messages.
+	-- TS align: file-history-snapshot is a separate entry type in JSONL.
+	CREATE TABLE IF NOT EXISTS file_history_snapshots (
+		session_id    TEXT NOT NULL PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+		snapshot_data TEXT NOT NULL,
+		created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Content replacement records stored separately from messages.
+	-- TS align: content-replacement is a separate entry type in JSONL.
+	CREATE TABLE IF NOT EXISTS content_replacements (
+		session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+		agent_id      TEXT DEFAULT '',
+		replacements  TEXT NOT NULL,
+		created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := s.db.Exec(schema)
 	return err

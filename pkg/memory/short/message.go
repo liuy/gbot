@@ -183,10 +183,13 @@ func (s *Store) TruncateMessagesFromIndex(sessionID string, index int) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Find the seq at the given index (0-based offset into ordered messages)
+	// Find the seq at the given index (0-based offset into conversation messages).
+	// Must exclude metadata/progress messages so the offset aligns with engine
+	// message indices (which don't include metadata). Without this filter, metadata
+	// messages shift the offset and truncate deletes too many messages.
 	var targetSeq int
 	err = tx.QueryRow(
-		"SELECT seq FROM messages WHERE session_id = ? ORDER BY seq ASC LIMIT 1 OFFSET ?",
+		"SELECT seq FROM messages WHERE session_id = ? AND type NOT IN ('metadata','progress') ORDER BY seq ASC LIMIT 1 OFFSET ?",
 		sessionID, index,
 	).Scan(&targetSeq)
 	if err != nil {

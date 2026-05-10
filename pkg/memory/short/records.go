@@ -3,16 +3,13 @@ package short
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
-// SaveContentReplacementRecords persists budget replacement records to the transcript.
-// Stored as a metadata message with subtype "content_replacement".
-// Each call appends a new metadata message; records accumulate across turns.
-// TS align: writeToTranscript callback in applyToolResultBudget (toolResultStorage.ts:924-936).
+// SaveContentReplacementRecords persists budget replacement records.
+// TS align: content-replacement is a separate entry type in JSONL, not mixed into messages.
 func (s *Store) SaveContentReplacementRecords(sessionID string, records []toolresult.ContentReplacementRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -21,25 +18,20 @@ func (s *Store) SaveContentReplacementRecords(sessionID string, records []toolre
 	if err != nil {
 		return fmt.Errorf("marshal content replacement records: %w", err)
 	}
-	msg := &TranscriptMessage{
-		UUID:    fmt.Sprintf("budget-%d", time.Now().UnixNano()),
-		Type:    "metadata",
-		Subtype: "content_replacement",
-		Content: string(data),
-	}
-	return s.AppendMessage(sessionID, msg)
+	_, err = s.db.Exec(
+		`INSERT INTO content_replacements (session_id, replacements) VALUES (?, ?)`,
+		sessionID, string(data),
+	)
+	return err
 }
 
-// LoadContentReplacementRecords loads all budget replacement records from the transcript.
-// Merges records from all metadata messages with subtype "content_replacement".
-// TS align: loadContentReplacementRecords (toolResultStorage.ts:960-992).
+// LoadContentReplacementRecords loads all budget replacement records.
+// Merges records from all rows for the session.
 func (s *Store) LoadContentReplacementRecords(sessionID string) ([]toolresult.ContentReplacementRecord, error) {
-	query := `
-		SELECT content FROM messages
-		WHERE session_id = ? AND type = 'metadata' AND subtype = 'content_replacement'
-		ORDER BY seq ASC
-	`
-	rows, err := s.db.Query(query, sessionID)
+	rows, err := s.db.Query(
+		`SELECT replacements FROM content_replacements WHERE session_id = ? ORDER BY created_at ASC`,
+		sessionID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("query content replacement records: %w", err)
 	}
@@ -47,57 +39,48 @@ func (s *Store) LoadContentReplacementRecords(sessionID string) ([]toolresult.Co
 
 	var all []toolresult.ContentReplacementRecord
 	for rows.Next() {
-		var content string
-		if err := rows.Scan(&content); err != nil {
-			return nil, fmt.Errorf("scan content: %w", err)
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, fmt.Errorf("scan content replacement: %w", err)
 		}
 		var batch []toolresult.ContentReplacementRecord
-		if err := json.Unmarshal([]byte(content), &batch); err != nil {
-			continue // skip malformed records
+		if err := json.Unmarshal([]byte(data), &batch); err != nil {
+			continue
 		}
 		all = append(all, batch...)
 	}
 	return all, nil
 }
 
-// SaveFileBackupRecords persists file backup records to the transcript.
-// Stored as a metadata message with subtype "file_backup".
-// Each call overwrites the previous set by appending a new metadata message.
-func (s *Store) SaveFileBackupRecords(sessionID string, records []filehistory.BackupRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-	data, err := json.Marshal(records)
+// SaveFileHistoryState persists the file history snapshot state to a dedicated table.
+// TS align: file-history-snapshot is a separate entry type in JSONL, not mixed into messages.
+func (s *Store) SaveFileHistoryState(sessionID string, state filehistory.FileHistoryState) error {
+	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("marshal file backup records: %w", err)
+		return fmt.Errorf("marshal file history state: %w", err)
 	}
-	msg := &TranscriptMessage{
-		UUID:    fmt.Sprintf("fbackup-%d", time.Now().UnixNano()),
-		Type:    "metadata",
-		Subtype: "file_backup",
-		Content: string(data),
-	}
-	return s.AppendMessage(sessionID, msg)
+	_, err = s.db.Exec(
+		`INSERT INTO file_history_snapshots (session_id, snapshot_data) VALUES (?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET snapshot_data = excluded.snapshot_data, created_at = CURRENT_TIMESTAMP`,
+		sessionID, string(data),
+	)
+	return err
 }
 
-// LoadFileBackupRecords loads the most recent file backup records from the transcript.
-// Returns the records from the last metadata message with subtype "file_backup".
-func (s *Store) LoadFileBackupRecords(sessionID string) ([]filehistory.BackupRecord, error) {
-	query := `
-		SELECT content FROM messages
-		WHERE session_id = ? AND type = 'metadata' AND subtype = 'file_backup'
-		ORDER BY seq DESC
-		LIMIT 1
-	`
-	var content string
-	err := s.db.QueryRow(query, sessionID).Scan(&content)
+// LoadFileHistoryState loads the most recent file history state.
+// Returns nil if no persisted state exists.
+func (s *Store) LoadFileHistoryState(sessionID string) (*filehistory.FileHistoryState, error) {
+	var data string
+	err := s.db.QueryRow(
+		`SELECT snapshot_data FROM file_history_snapshots WHERE session_id = ?`,
+		sessionID,
+	).Scan(&data)
 	if err != nil {
-		// No records found is not an error
 		return nil, nil
 	}
-	var records []filehistory.BackupRecord
-	if err := json.Unmarshal([]byte(content), &records); err != nil {
-		return nil, fmt.Errorf("unmarshal file backup records: %w", err)
+	var state filehistory.FileHistoryState
+	if err := json.Unmarshal([]byte(data), &state); err != nil {
+		return nil, fmt.Errorf("unmarshal file history state: %w", err)
 	}
-	return records, nil
+	return &state, nil
 }

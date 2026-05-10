@@ -63,6 +63,7 @@ func StoreMessagesToEngine(storeMsgs []short.TranscriptMessage) ([]types.Message
 		}
 
 		result = append(result, types.Message{
+			ID:        sm.UUID,
 			Role:      role,
 			Content:   engineBlocks,
 			Timestamp: sm.CreatedAt,
@@ -91,8 +92,14 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]short.TranscriptMessag
 			return nil, fmt.Errorf("marshal content blocks: %w", err)
 		}
 
+		// Use engine message ID if available (preserves UUID across resume).
+		// Fallback to new UUID for messages without IDs (e.g. system messages).
+		msgUUID := em.ID
+		if msgUUID == "" {
+			msgUUID = uuid.New().String()
+		}
 		result = append(result, short.TranscriptMessage{
-			UUID:      uuid.New().String(),
+			UUID:      msgUUID,
 			Type:      string(em.Role),
 			Content:   string(contentBytes),
 			CreatedAt: em.Timestamp,

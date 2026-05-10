@@ -1,6 +1,7 @@
 package short
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -515,6 +516,69 @@ func TestTruncateInterruptedTurn_AllAssistants(t *testing.T) {
 	truncated := TruncateInterruptedTurn(messages)
 	if len(truncated) != 0 {
 		t.Errorf("got %d messages, want 0 (all assistants truncated)", len(truncated))
+	}
+}
+
+// TruncateMessagesFromIndex must skip metadata/progress in OFFSET so it aligns
+// with engine message indices. Without this, /rewind + restart loses all messages.
+func TestTruncateMessagesFromIndex_MetadataAtStart(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-trunc-meta-first"
+	createTestSession(t, store, sessionID)
+
+	for i := 1; i <= 4; i++ {
+		if err := store.AppendMessage(sessionID, &TranscriptMessage{
+			UUID:    fmt.Sprintf("fh-%d", i),
+			Type:    "metadata",
+			Subtype: "file_history_state",
+			Content: `{"Snapshots":[]}`,
+		}); err != nil {
+			t.Fatalf("AppendMessage metadata: %v", err)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		if err := store.AppendMessage(sessionID, testMessage(0, "user", fmt.Sprintf("u%d", i), "",
+			fmt.Sprintf(`[{"type":"text","text":"turn %d"}]`, i))); err != nil {
+			t.Fatalf("AppendMessage user: %v", err)
+		}
+		if err := store.AppendMessage(sessionID, testMessage(0, "assistant", fmt.Sprintf("a%d", i), "",
+			fmt.Sprintf(`[{"type":"text","text":"response %d"}]`, i))); err != nil {
+			t.Fatalf("AppendMessage assistant: %v", err)
+		}
+	}
+
+	allMsgs, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages setup: %v", err)
+	}
+	if len(allMsgs) != 10 {
+		t.Fatalf("setup: expected 10 store messages, got %d", len(allMsgs))
+	}
+
+	// Engine index 4 = 3rd user message. Keep user1, asst1, user2, asst2.
+	err = store.TruncateMessagesFromIndex(sessionID, 4)
+	if err != nil {
+		t.Fatalf("TruncateMessagesFromIndex: %v", err)
+	}
+
+	remaining, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after rewind: %v", err)
+	}
+
+	var convCount int
+	for _, m := range remaining {
+		if m.Type != "metadata" {
+			convCount++
+		}
+	}
+
+	if convCount != 4 {
+		t.Errorf("got %d conversation messages after rewind, want 4", convCount)
+		for i, m := range remaining {
+			t.Logf("  remaining[%d] type=%s uuid=%s", i, m.Type, m.UUID)
+		}
 	}
 }
 

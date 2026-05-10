@@ -138,35 +138,38 @@ func TestIntegration_AutoRewind_FullChain(t *testing.T) {
 // Chain 2: /rewind + File Restoration E2E
 //
 // 入口: handleRewind → Dialog selection → engine.RewindTo
-// 路径: fileHistory.RestoreToIndex → store.TruncateMessagesFromIndex
+// 路径: fileHistory.Rewind → store.TruncateMessagesFromIndex
 // 可观测输出: file content on disk, store.LoadMessages(), engine.Messages()
 // ---------------------------------------------------------------------------
 func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 	a, store, tracker, projectDir := setupRewindIntegration(t)
 
-	// Create a real file in project dir
 	testFile := filepath.Join(projectDir, "main.go")
 	originalContent := []byte("package main\n\nfunc main() {}\n")
 	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
 		t.Fatalf("write test file: %v", err)
 	}
 
-	// Edit the file (simulate Edit tool)
+	msgID1 := "ddd11111-1111-1111-1111-111111111111"
+	msgID2 := "eee22222-2222-2222-2222-222222222222"
+
+	// Production flow: TrackEdit before edit, MakeSnapshot after edit.
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot(msgID1); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+
 	editedContent := []byte("package main\n\nfunc main() { println(\"hello\") }\n")
 	if err := os.WriteFile(testFile, editedContent, 0o644); err != nil {
 		t.Fatalf("write edited file: %v", err)
 	}
 
-	// Record backup: pre-edit content at turn index 2 (after user message at idx 2)
-	if err := tracker.RecordBackup(testFile, originalContent, 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-
-	// Set up multi-turn conversation
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("What is 2+2?")}, Timestamp: testTime},
+		{ID: msgID1, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("What is 2+2?")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("4.")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("Edit main.go")}, Timestamp: testTime},
+		{ID: msgID2, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("Edit main.go")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("Done.")}, Timestamp: testTime},
 	}
 	a.engine.SetMessages(msgs)
@@ -238,23 +241,30 @@ func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 func TestIntegration_Rewind_DeletesCreatedFiles(t *testing.T) {
 	a, _, tracker, projectDir := setupRewindIntegration(t)
 
-	// A file that didn't exist before the edit (new file creation)
+	// A file that didn't exist before the edit (new file creation).
+	// TrackEdit before file exists → v1 backup = null (BackupFileName="").
+	// MakeSnapshot before file exists → snapshot "0" records null backup.
+	// THEN create file. HasChangesAtMessage("0") detects file exists but shouldn't.
+	// Rewind("") (initial snapshot) → file deleted.
+	msgID1 := "fff11111-1111-1111-1111-111111111111"
+	msgID2 := "fff22222-2222-2222-2222-222222222222"
+
 	newFile := filepath.Join(projectDir, "new_feature.go")
+	if err := tracker.TrackEdit(newFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot(msgID1); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
 	newContent := []byte("package main\n\nfunc newFeature() {}\n")
 	if err := os.WriteFile(newFile, newContent, 0o644); err != nil {
 		t.Fatalf("write new file: %v", err)
 	}
 
-	// Record backup with nil original (file was created, not edited)
-	if err := tracker.RecordBackup(newFile, nil, 2); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
-
-	// Set up conversation
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{ID: msgID1, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("create new_feature.go")}, Timestamp: testTime},
+		{ID: msgID2, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("create new_feature.go")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("created")}, Timestamp: testTime},
 	}
 	a.engine.SetMessages(msgs)
@@ -410,41 +420,59 @@ func TestIntegration_Rewind_MultipleEdits_CorrectVersion(t *testing.T) {
 	v2 := []byte("package main\n\nconst Version = 2\n")
 	v3 := []byte("package main\n\nconst Version = 3\n")
 
-	// Turn 2: edit v1 → v2
+	msgID1 := "aaa11111-1111-1111-1111-111111111111"
+	msgID2 := "bbb22222-2222-2222-2222-222222222222"
+	msgID3 := "ccc33333-3333-3333-3333-333333333333"
+
+	// Production flow: TrackEdit before edit, MakeSnapshot after edit, per turn.
+	// Turn 1 (msgID1): write v1, TrackEdit captures v1, snapshot msgID1 records v1 (unchanged)
+	if err := os.WriteFile(testFile, v1, 0o644); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit v1: %v", err)
+	}
+	if err := tracker.MakeSnapshot(msgID1); err != nil {
+		t.Fatalf("MakeSnapshot msgID1: %v", err)
+	}
+
+	// Turn 2 (msgID2): edit v1→v2, snapshot msgID2 detects change, records v2
 	if err := os.WriteFile(testFile, v2, 0o644); err != nil {
 		t.Fatalf("write v2: %v", err)
 	}
-	if err := tracker.RecordBackup(testFile, v1, 2); err != nil {
-		t.Fatalf("RecordBackup v1→v2: %v", err)
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit v2: %v", err)
+	}
+	if err := tracker.MakeSnapshot(msgID2); err != nil {
+		t.Fatalf("MakeSnapshot msgID2: %v", err)
 	}
 
-	// Turn 4: edit v2 → v3
+	// Turn 3 (msgID3): edit v2→v3, snapshot msgID3 records v3
 	if err := os.WriteFile(testFile, v3, 0o644); err != nil {
 		t.Fatalf("write v3: %v", err)
 	}
-	if err := tracker.RecordBackup(testFile, v2, 4); err != nil {
-		t.Fatalf("RecordBackup v2→v3: %v", err)
+	if err := tracker.MakeSnapshot(msgID3); err != nil {
+		t.Fatalf("MakeSnapshot msgID3: %v", err)
 	}
 
-	// Set up conversation
+	// Messages with UUID IDs
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("turn 1")}, Timestamp: testTime},
+		{ID: msgID1, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("turn 1")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response 1")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config to v2")}, Timestamp: testTime},
+		{ID: msgID2, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config to v2")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config to v3")}, Timestamp: testTime},
+		{ID: msgID3, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config to v3")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
 	}
 	a.engine.SetMessages(msgs)
 
-	// --- Execute: /rewind to turn 2 (index 2, keeping messages 0-1) ---
+	// --- Execute: /rewind to turn 2 (index 2) ---
 	_ = a.handleRewind(nil)
 	a.activeDialog.done = true
-	a.activeDialog.cursor = 1 // indices[1]=2
+	a.activeDialog.cursor = 1 // indices[1]=2 → msgID2
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
 
-	// Scope dialog appears because fileHistory has backups at turn 2
 	if app.activeDialog == nil {
 		t.Fatal("expected scope dialog after message selection (has file changes)")
 	}
@@ -453,16 +481,16 @@ func TestIntegration_Rewind_MultipleEdits_CorrectVersion(t *testing.T) {
 	model, _ = app.onDialogDone(app.activeDialog)
 	app = model.(*App)
 
-	// --- Verify: file should be restored to v1 (pre-edit at turn 2) ---
+	// TS semantics: RewindTo(idx=2) uses msgs[2].ID=msgID2 as snapshotID.
+	// Snapshot at msgID2 has v2 (end of turn 2). File restored to v2.
 	restored, err := os.ReadFile(testFile)
 	if err != nil {
 		t.Fatalf("read restored file: %v", err)
 	}
-	if string(restored) != string(v1) {
-		t.Errorf("expected v1 content after rewind to turn 2, got %q", string(restored))
+	if string(restored) != string(v2) {
+		t.Errorf("expected v2 after rewind to turn 2, got %q", string(restored))
 	}
 
-	// Engine should have 2 messages
 	if len(app.engine.Messages()) != 2 {
 		t.Errorf("expected 2 messages after rewind, got %d", len(app.engine.Messages()))
 	}
@@ -546,7 +574,7 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 
 	// Set up engine with messages (simulating auto-resume)
 	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config")}, Timestamp: testTime},
+		{ID: "setstore-uuid-0", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
 	}
 
@@ -569,17 +597,24 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 		t.Fatalf("fileHistory is nil after SetStore")
 	}
 
-	// Simulate Edit: modify file on disk + record backup via tracker
+	// Simulate Edit: TrackEdit captures "original" as v1, MakeSnapshot records state,
+	// then modify AFTER snapshot so rewind can restore.
+	if err := a.fileHistory.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := a.fileHistory.MakeSnapshot("setstore-uuid-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
 	editedContent := []byte("package main\n\nconst Version = 2\n")
 	if err := os.WriteFile(testFile, editedContent, 0o644); err != nil {
 		t.Fatalf("write edited: %v", err)
 	}
-	if err := a.fileHistory.RecordBackup(testFile, originalContent, 0); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
-	}
 
 	// File should still be edited on disk
-	current, _ := os.ReadFile(testFile)
+	current, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read current file: %v", err)
+	}
 	if string(current) != string(editedContent) {
 		t.Fatalf("file should still be edited before rewind")
 	}
@@ -607,8 +642,9 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 
 func TestIntegration_BashFileMonitor_ModifiedFile(t *testing.T) {
 	// TakeSnapshot captures file state, then Bash modifies the file.
-	// DetectChanges should return BeforeContent with the ORIGINAL content
-	// so RecordBackup can save it and RewindTo can restore.
+	// DetectChanges should return BeforeContent with the ORIGINAL content.
+	// We verify the Bash monitor detects the change, then separately verify
+	// that a tracker with the correct setup can restore the file on rewind.
 	tmp := t.TempDir()
 	testFile := filepath.Join(tmp, "config.txt")
 	originalContent := []byte("v1\n")
@@ -645,15 +681,27 @@ func TestIntegration_BashFileMonitor_ModifiedFile(t *testing.T) {
 		t.Errorf("BeforeContent = %q, want %q", string(changes[0].BeforeContent), string(originalContent))
 	}
 
-	// 4. Record backup and verify rewind restores the file
+	// 4. Verify rewind restores the file using snapshot API.
+	// TrackEdit reads from disk BEFORE modification (we need to reset file first).
+	// Since file is already modified, write original back, TrackEdit, MakeSnapshot,
+	// then write modified again. Rewind to initial snapshot restores original.
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
-	if err := tracker.RecordBackup(testFile, changes[0].BeforeContent, 0); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	if err := os.WriteFile(testFile, modifiedContent, 0o644); err != nil {
+		t.Fatalf("write modified: %v", err)
 	}
 
-	restored, err := tracker.RestoreToIndex(0)
+	restored, err := tracker.Rewind("")
 	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+		t.Fatalf("Rewind: %v", err)
 	}
 	if len(restored) != 1 {
 		t.Errorf("restored %d files, want 1", len(restored))
@@ -700,15 +748,25 @@ func TestIntegration_BashFileMonitor_NewFile(t *testing.T) {
 		t.Errorf("BeforeContent should be nil for new files, got %q", string(changes[0].BeforeContent))
 	}
 
-	// 4. Record backup with nil content, rewind should delete the file
+	// 4. TrackEdit before file exists (null backup), MakeSnapshot records null,
+	// then create file. Rewind to initial snapshot → file should be deleted.
+	// Remove the file first so TrackEdit sees it as non-existent.
+	_ = os.Remove(newFile)
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
-	if err := tracker.RecordBackup(newFile, nil, 0); err != nil {
-		t.Fatalf("RecordBackup: %v", err)
+	if err := tracker.TrackEdit(newFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := tracker.MakeSnapshot("0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	// Now create the file AFTER snapshot
+	if err := os.WriteFile(newFile, []byte("created\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
 	}
 
-	restored, err := tracker.RestoreToIndex(0)
+	restored, err := tracker.Rewind("")
 	if err != nil {
-		t.Fatalf("RestoreToIndex: %v", err)
+		t.Fatalf("Rewind: %v", err)
 	}
 	if len(restored) != 1 {
 		t.Errorf("restored %d files, want 1", len(restored))
@@ -717,5 +775,354 @@ func TestIntegration_BashFileMonitor_NewFile(t *testing.T) {
 	// File should be deleted after rewind
 	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
 		t.Errorf("new file should be deleted after rewind, err=%v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain 9: Persistence — SetStore loads persisted file history state
+// ---------------------------------------------------------------------------
+func TestIntegration_Rewind_PersistenceSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	testFile := filepath.Join(projectDir, "config.go")
+	originalContent := []byte("v0\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	store, err := short.NewStore(filepath.Join(dir, "memory", "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	session, err := store.CreateSession(projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Session 1: App with SetStore (wires fileHistoryWriter)
+	eng1 := engine.New(&engine.Params{Logger: slog.Default()})
+	app1 := &App{
+		engine:           eng1,
+		repl:             NewReplState(),
+		input:            NewInput(),
+		history:          NewHistory(""),
+		lastPersistedIdx: 0,
+	}
+	app1.width = 80
+	app1.SetStore(store, session.SessionID, projectDir, 0)
+
+	if err := app1.fileHistory.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("v1\n"), 0o644); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+	if err := app1.fileHistory.MakeSnapshot("msg-0"); err != nil {
+		t.Fatalf("MakeSnapshot: %v", err)
+	}
+	if err := store.SaveFileHistoryState(session.SessionID, app1.fileHistory.State()); err != nil {
+		t.Fatalf("SaveFileHistoryState: %v", err)
+	}
+
+	// Verify v1 is on disk
+	if data, err := os.ReadFile(testFile); err != nil {
+		t.Fatalf("read: %v", err)
+	} else if string(data) != "v1\n" {
+		t.Fatalf("expected v1, got %q", string(data))
+	}
+
+	// ---------------------------------------------------------------------------
+	// Session restart: new App with SetStore (loads persisted state)
+	// ---------------------------------------------------------------------------
+	eng2 := engine.New(&engine.Params{Logger: slog.Default()})
+	app2 := &App{
+		engine:           eng2,
+		repl:             NewReplState(),
+		input:            NewInput(),
+		history:          NewHistory(""),
+		lastPersistedIdx: 0,
+	}
+	app2.width = 80
+	app2.SetStore(store, session.SessionID, projectDir, 0)
+
+	// Verify SetStore loaded the persisted state
+	snapshots := app2.fileHistory.State().Snapshots
+	t.Logf("loaded %d snapshots, tracker dir=%s", len(snapshots), app2.fileHistory.Dir())
+	for i, s := range snapshots {
+		for fp, b := range s.TrackedFileBackups {
+			backupPath := filepath.Join(app2.fileHistory.Dir(), b.BackupFileName)
+			_, statErr := os.Stat(backupPath)
+			t.Logf("  snapshot[%d] msgID=%q: %s backup=%q (exists=%v)", i, s.MessageID, fp, b.BackupFileName, statErr == nil)
+		}
+	}
+	if len(snapshots) < 2 {
+		t.Errorf("expected at least 2 snapshots after LoadState, got %d", len(snapshots))
+	}
+
+	// Rewind to initial snapshot (MessageID="") — should restore v0.
+	// RewindTo(0) would derive "" as snapshot ID (no user messages in messages[:0]).
+	restored, err := app2.fileHistory.Rewind("")
+	t.Logf("Rewind result: restored=%v err=%v", restored, err)
+
+	// Verify backup file content
+	for _, s := range app2.fileHistory.State().Snapshots {
+		for fp, b := range s.TrackedFileBackups {
+			if s.MessageID == "" && b.Version == 1 {
+				v1BackupPath := filepath.Join(app2.fileHistory.Dir(), b.BackupFileName)
+				t.Logf("v1 backup for %s: %s", fp, v1BackupPath)
+				data, err := os.ReadFile(v1BackupPath)
+				if err != nil {
+					t.Fatalf("read v1 backup: %v", err)
+				}
+				t.Logf("v1 backup content: %q", string(data))
+				break
+			}
+		}
+	}
+	if len(restored) == 0 {
+		t.Errorf("REGRESSION: rewind restored 0 files — persistence broken, snapshot state was lost after session restart")
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "v0\n" {
+		t.Errorf("REGRESSION: file = %q, want v0 — rewind did NOT restore!", string(data))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain 11: Scope dialog after session resume (message ID round-trip)
+//
+// Production failure: after restarting gbot, messages lose their UUID IDs because
+// StoreMessagesToEngine does NOT map sm.UUID -> types.Message.ID.
+// Rewind falls back to index-based IDs ("0", "2") which don't match
+// UUID snapshot IDs -> HasChangesAtMessage returns false -> no scope dialog.
+// ---------------------------------------------------------------------------
+func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	testFile := filepath.Join(projectDir, "config.go")
+	v1 := []byte("package main\n\nconst Version = 1\n")
+	v2 := []byte("package main\n\nconst Version = 2\n")
+	v3 := []byte("package main\n\nconst Version = 3\n")
+
+	if err := os.WriteFile(testFile, v1, 0o644); err != nil {
+		t.Fatalf("write v1: %v", err)
+	}
+
+	store, err := short.NewStore(filepath.Join(dir, "memory", "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	session, err := store.CreateSession(projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	msgID1 := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	msgID2 := "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+	// === Session 1: edit file v1→v2, create snapshots, persist ===
+	//
+	// Production timing matches engine.queryLoop:
+	//   1. User sends message (msgID1)
+	//   2. Tool execution: TrackEdit captures v1 BEFORE writing
+	//   3. File edited to v2
+	//   4. Turn ends: MakeSnapshot(msgID1) records post-edit state (v2)
+	//   5. User sends message (msgID2) — no file edit this turn
+	//   6. Turn ends: MakeSnapshot(msgID2)
+	trackerDir := filepath.Join(dir, "file-history")
+	tracker := filehistory.NewTracker(trackerDir)
+
+	// Turn 1: edit v1 → v2
+	if err := tracker.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit: %v", err)
+	}
+	if err := os.WriteFile(testFile, v2, 0o644); err != nil {
+		t.Fatalf("WriteFile v2: %v", err)
+	}
+	if err := tracker.MakeSnapshot(msgID1); err != nil {
+		t.Fatalf("MakeSnapshot msgID1: %v", err)
+	}
+
+	// Turn 2: no file edit, just MakeSnapshot
+	if err := tracker.MakeSnapshot(msgID2); err != nil {
+		t.Fatalf("MakeSnapshot msgID2: %v", err)
+	}
+
+	// Messages with UUID IDs (as created by engine.queryLoop)
+	msgs1 := []types.Message{
+		{ID: msgID1, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
+		{ID: msgID2, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("what else?")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("nothing")}, Timestamp: testTime},
+	}
+
+	// Persist messages and file history state
+	storeMsgs, err := EngineMessagesToStore(msgs1)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	for _, sm := range storeMsgs {
+		if err := store.AppendMessage(session.SessionID, &sm); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+	if err := store.SaveFileHistoryState(session.SessionID, tracker.State()); err != nil {
+		t.Fatalf("SaveFileHistoryState: %v", err)
+	}
+
+	// === Session 2: resume via store (matching production main.go flow) ===
+	_, resumedMsgs, err := store.ResumeSession(session.SessionID)
+	if err != nil {
+		t.Fatalf("ResumeSession: %v", err)
+	}
+
+	storeMsgSlice := make([]short.TranscriptMessage, len(resumedMsgs))
+	for i, m := range resumedMsgs {
+		storeMsgSlice[i] = *m
+	}
+	engineMsgs, err := StoreMessagesToEngine(storeMsgSlice)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+
+	// RED CHECK: verify user message IDs survived the round-trip
+	var origUserIDs []string
+	for _, m := range msgs1 {
+		if m.Role == types.RoleUser {
+			origUserIDs = append(origUserIDs, m.ID)
+		}
+	}
+	var resumedUserIdx int
+	for _, msg := range engineMsgs {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		if resumedUserIdx < len(origUserIDs) {
+			if msg.ID != origUserIDs[resumedUserIdx] {
+				t.Errorf("user message %d ID lost in round-trip: got %q, want %q",
+					resumedUserIdx, msg.ID, origUserIDs[resumedUserIdx])
+			}
+		}
+		resumedUserIdx++
+	}
+
+	// Set up resumed App (matching production SetStore flow)
+	eng2 := engine.New(&engine.Params{Logger: slog.Default()})
+	eng2.SetMessages(engineMsgs)
+	eng2.SetSessionID(session.SessionID)
+
+	tracker2 := filehistory.NewTracker(trackerDir)
+	if state, err := store.LoadFileHistoryState(session.SessionID); err == nil && state != nil {
+		tracker2.LoadState(*state)
+	}
+	eng2.SetFileHistory(tracker2)
+
+	app := &App{
+		engine:           eng2,
+		store:            store,
+		sessionID:        session.SessionID,
+		projectDir:       projectDir,
+		lastPersistedIdx: len(engineMsgs),
+		repl:             NewReplState(),
+		input:            NewInput(),
+		history:          NewHistory(""),
+		fileHistory:      tracker2,
+	}
+	app.width = 80
+	app.repl.messages = engineMessagesToViews(engineMsgs)
+	app.committedCount = len(app.repl.messages)
+
+	// === Simulate post-resume edit: user asks to edit file again (v2 → v3) ===
+	//
+	// Production flow: user sends message, tool edits file, turn ends with MakeSnapshot.
+	// We simulate this directly: TrackEdit + edit + MakeSnapshot for the new turn.
+	msgID3 := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	if err := tracker2.TrackEdit(testFile); err != nil {
+		t.Fatalf("TrackEdit v2→v3: %v", err)
+	}
+	if err := os.WriteFile(testFile, v3, 0o644); err != nil {
+		t.Fatalf("WriteFile v3: %v", err)
+	}
+	if err := tracker2.MakeSnapshot(msgID3); err != nil {
+		t.Fatalf("MakeSnapshot msgID3: %v", err)
+	}
+
+	// Add the new turn's messages to engine
+	newMsgs := append(engineMsgs, []types.Message{
+		{ID: msgID3, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("change to v3")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
+	}...)
+	eng2.SetMessages(newMsgs)
+	app.repl.messages = engineMessagesToViews(newMsgs)
+	app.committedCount = len(app.repl.messages)
+
+	// Verify current disk state is v3 before rewind
+	current, _ := os.ReadFile(testFile)
+	if string(current) != string(v3) {
+		t.Fatalf("pre-rewind file should be v3, got %q", string(current))
+	}
+
+	// --- Execute: /rewind to first user message (msgID1, cursor=0) ---
+	_ = app.handleRewind(nil)
+	if app.activeDialog == nil {
+		t.Fatal("expected message picker dialog")
+	}
+
+	app.activeDialog.done = true
+	app.activeDialog.cursor = 0 // select first user message (msgID1)
+	model, _ := app.onDialogDone(app.activeDialog)
+	app2 := model.(*App)
+
+	// RED ASSERTION: scope dialog MUST appear after session resume.
+	// HasChangesAtMessage(msgID1) compares snapshot at msgID1 (v2) vs current disk (v3)
+	// → detects change → shows scope dialog.
+	if app2.activeDialog == nil {
+		t.Logf("DIAGNOSIS: scope dialog missing after resume")
+		for i, msg := range newMsgs {
+			if msg.Role == types.RoleUser {
+				t.Logf("  msg[%d].ID = %q", i, msg.ID)
+			}
+		}
+		state := tracker2.State()
+		for i, s := range state.Snapshots {
+			t.Logf("  snapshot[%d] msgID=%q", i, s.MessageID)
+		}
+		t.Fatalf("REGRESSION: scope dialog missing after session resume. " +
+			"HasChangesAtMessage(msgID1) returned false — snapshot ID mismatch or no file change detected.")
+	}
+
+	if app2.activeDialog.title != "What do you want to restore?" {
+		t.Errorf("scope dialog title = %q, want 'What do you want to restore?'", app2.activeDialog.title)
+	}
+
+	// Select "Restore code and conversation"
+	app2.activeDialog.done = true
+	app2.activeDialog.cursor = 0
+	model, _ = app2.onDialogDone(app2.activeDialog)
+	_ = model.(*App)
+
+	// RewindTo(0) → snapshotID=msgs[0].ID=msgID1 → snapshot at msgID1 → v2
+	restored, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if string(restored) != string(v2) {
+		t.Errorf("file not restored to v2: got %q, want %q", string(restored), string(v2))
 	}
 }

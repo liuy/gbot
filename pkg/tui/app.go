@@ -256,13 +256,35 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 		a.committedCount = len(a.repl.messages)
 	}
 
+		// Cleanup old backup session directories (older than 30 days).
+		// Source: TS cleanup.ts:305-348 — cleanupOldFileHistoryBackups.
+		{
+			fhDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history")
+			if cleaned, err := filehistory.CleanupOldBackups(fhDir, filehistory.DefaultCleanupAge); err != nil {
+				slog.Warn("tui:file_history:cleanup_failed", "err", err)
+			} else if cleaned > 0 {
+				slog.Info("tui:file_history:cleaned", "sessions", cleaned)
+			}
+		}
+
 		// Create file history tracker for rewind/restore.
 		// Source: TS fileHistory.ts — per-session backup directory.
 		if sessionID != "" {
 			trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
 			tracker := filehistory.NewTracker(trackerDir)
+			// Load persisted state (crash recovery / session resume).
+			if state, err := store.LoadFileHistoryState(sessionID); err == nil && state != nil {
+				tracker.LoadState(*state)
+				slog.Info("tui:file_history:loaded", "snapshots", len(state.Snapshots), "dir", trackerDir)
+			}
 			a.fileHistory = tracker
 			a.engine.SetFileHistory(tracker)
+			// Wire persistence: save state after each MakeSnapshot.
+			a.engine.SetFileHistoryWriter(func(state filehistory.FileHistoryState) {
+				if err := store.SaveFileHistoryState(sessionID, state); err != nil {
+					slog.Warn("tui:file_history:persist_failed", "err", err)
+				}
+			})
 			slog.Info("tui:file_history", "dir", trackerDir)
 		}
 	// Wire record writer: persist ContentReplacementRecords to transcript.
