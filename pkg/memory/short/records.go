@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
@@ -57,4 +58,46 @@ func (s *Store) LoadContentReplacementRecords(sessionID string) ([]toolresult.Co
 		all = append(all, batch...)
 	}
 	return all, nil
+}
+
+// SaveFileBackupRecords persists file backup records to the transcript.
+// Stored as a metadata message with subtype "file_backup".
+// Each call overwrites the previous set by appending a new metadata message.
+func (s *Store) SaveFileBackupRecords(sessionID string, records []filehistory.BackupRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(records)
+	if err != nil {
+		return fmt.Errorf("marshal file backup records: %w", err)
+	}
+	msg := &TranscriptMessage{
+		UUID:    fmt.Sprintf("fbackup-%d", time.Now().UnixNano()),
+		Type:    "metadata",
+		Subtype: "file_backup",
+		Content: string(data),
+	}
+	return s.AppendMessage(sessionID, msg)
+}
+
+// LoadFileBackupRecords loads the most recent file backup records from the transcript.
+// Returns the records from the last metadata message with subtype "file_backup".
+func (s *Store) LoadFileBackupRecords(sessionID string) ([]filehistory.BackupRecord, error) {
+	query := `
+		SELECT content FROM messages
+		WHERE session_id = ? AND type = 'metadata' AND subtype = 'file_backup'
+		ORDER BY seq DESC
+		LIMIT 1
+	`
+	var content string
+	err := s.db.QueryRow(query, sessionID).Scan(&content)
+	if err != nil {
+		// No records found is not an error
+		return nil, nil
+	}
+	var records []filehistory.BackupRecord
+	if err := json.Unmarshal([]byte(content), &records); err != nil {
+		return nil, fmt.Errorf("unmarshal file backup records: %w", err)
+	}
+	return records, nil
 }

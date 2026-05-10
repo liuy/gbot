@@ -385,3 +385,71 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 		t.Errorf("title = %q, should still contain first prompt", ses.Title)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TDD RED: SetStore must sync repl.messages from engine on resume
+//
+// Bug: After resume, engine has messages loaded from store, but
+// repl.messages is empty. TUI shows nothing. This is the bug found
+// via gbot.log analysis: "resumed 9 messages but totalMessages=0".
+// ---------------------------------------------------------------------------
+
+func TestSetStore_SyncsReplMessagesFromEngine(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create real store + session
+	store, err := short.NewStore(filepath.Join(dir, "memory", "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	session, err := store.CreateSession(dir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Persist a multi-turn conversation
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("world")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("how are you?")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("fine")}, Timestamp: testTime},
+	}
+
+	// Simulate auto-resume: load messages from store into engine
+	eng := newTestEngine()
+	eng.SetMessages(msgs)
+
+	// Create App and call SetStore (as main.go does after resume)
+	a := &App{
+		engine: eng,
+		repl:   NewReplState(),
+		input:  NewInput(),
+	}
+	a.SetStore(store, session.SessionID, dir, len(msgs))
+
+	// RED: repl.messages should be synced from engine, not empty
+	if len(a.repl.messages) == 0 {
+		t.Fatalf("expected repl.messages to be synced from engine on resume, got 0 — TUI shows nothing")
+	}
+
+	// Verify message count matches
+	if len(a.repl.messages) != len(msgs) {
+		t.Errorf("expected %d repl.messages, got %d", len(msgs), len(a.repl.messages))
+	}
+
+	// Verify first user message content
+	first := a.repl.messages[0]
+	if first.Role != "user" {
+		t.Errorf("first message role = %q, want user", first.Role)
+	}
+	if len(first.Blocks) == 0 || first.Blocks[0].Text != "hello" {
+		t.Errorf("first message text mismatch, got %v", first.Blocks)
+	}
+
+	// committedCount should equal message count
+	if a.committedCount != len(msgs) {
+		t.Errorf("committedCount = %d, want %d", a.committedCount, len(msgs))
+	}
+}

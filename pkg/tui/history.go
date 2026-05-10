@@ -120,6 +120,24 @@ func (h *History) Len() int {
 	return len(h.items)
 }
 
+// RemoveLast removes the most recent history entry.
+// Used by auto-rewind to remove the entry added by the cancelled query.
+// Source: TS removeLastFromHistory (history.ts:453)
+func (h *History) RemoveLast() {
+	if len(h.items) == 0 {
+		return
+	}
+	h.items = h.items[:len(h.items)-1]
+	h.index = len(h.items) - 1
+	if h.index < 0 {
+		h.index = -1
+	}
+	// Note: on-disk JSONL is append-only. The stale entry remains on disk.
+	// This matches TS behavior where removeLastFromHistory either pops from
+	// pending buffer (pre-flush) or adds to a skip-set (post-flush).
+	// For simplicity, we only trim the in-memory slice.
+}
+
 // ---------------------------------------------------------------------------
 // Persistence — JSONL append/load matching TS history.ts
 // ---------------------------------------------------------------------------

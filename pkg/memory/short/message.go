@@ -172,6 +172,53 @@ func (s *Store) RemoveMessageByUUID(sessionID, uuid string) error {
 	return tx.Commit()
 }
 
+// TruncateMessagesFromIndex deletes all messages from index onwards (inclusive).
+// Looks up the seq at the given index via OFFSET, then deletes seq >= that value.
+// Handles edge cases: index out of range is a no-op, index 0 deletes all.
+// Used by /rewind to sync the store with the in-memory message state.
+func (s *Store) TruncateMessagesFromIndex(sessionID string, index int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Find the seq at the given index (0-based offset into ordered messages)
+	var targetSeq int
+	err = tx.QueryRow(
+		"SELECT seq FROM messages WHERE session_id = ? ORDER BY seq ASC LIMIT 1 OFFSET ?",
+		sessionID, index,
+	).Scan(&targetSeq)
+	if err != nil {
+		// No message at this index â nothing to truncate
+		return nil
+	}
+
+	// Delete FTS entries for messages being removed (seq >= targetSeq)
+	_, err = tx.Exec(
+		"DELETE FROM messages_fts_map WHERE seq IN "+
+			"(SELECT seq FROM messages WHERE session_id = ? AND seq >= ?)",
+		sessionID, targetSeq,
+	)
+	if err != nil {
+		return fmt.Errorf("delete FTS: %w", err)
+	}
+
+	// Delete the messages themselves (seq >= targetSeq, inclusive)
+	res, err := tx.Exec(
+		"DELETE FROM messages WHERE session_id = ? AND seq >= ?",
+		sessionID, targetSeq,
+	)
+	if err != nil {
+		return fmt.Errorf("delete messages: %w", err)
+	}
+
+	count, _ := res.RowsAffected()
+	slog.Info("store:truncate_from_index", "session", sessionID[:8], "index", index, "target_seq", targetSeq, "removed", count)
+	return tx.Commit()
+}
+
+
 // MessageExists checks if a message with the given UUID exists in the session.
 // TS align: doesMessageExistInSession (sessionStorage.ts:1590-1596)
 func (s *Store) MessageExists(sessionID, uuid string) (bool, error) {

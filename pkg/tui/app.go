@@ -247,12 +247,66 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 	a.projectDir = projectDir
 	a.lastPersistedIdx = lastPersistedIdx
 
+	// Sync repl.messages from engine on resume.
+	// Without this, the TUI shows an empty conversation after restart.
+	if lastPersistedIdx > 0 {
+		a.repl.messages = engineMessagesToViews(a.engine.Messages())
+		a.committedCount = len(a.repl.messages)
+	}
 	// Wire record writer: persist ContentReplacementRecords to transcript.
 	a.engine.SetRecordWriter(func(records []toolresult.ContentReplacementRecord) {
 		if err := store.SaveContentReplacementRecords(sessionID, records); err != nil {
 			slog.Warn("failed to save content replacement records", "error", err)
 		}
 	})
+}
+
+
+// engineMessagesToViews converts engine messages to TUI MessageViews for display.
+// Used on session resume to populate repl.messages from persisted state.
+func engineMessagesToViews(msgs []types.Message) []MessageView {
+	views := make([]MessageView, 0, len(msgs))
+	for _, msg := range msgs {
+		mv := MessageView{}
+		switch msg.Role {
+		case types.RoleUser:
+			mv.Role = "user"
+		case types.RoleAssistant:
+			mv.Role = "assistant"
+		default:
+			continue
+		}
+
+		for _, block := range msg.Content {
+			switch block.Type {
+			case types.ContentTypeText:
+				if strings.TrimSpace(block.Text) != "" {
+					mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
+				}
+			case types.ContentTypeToolUse:
+				mv.Blocks = append(mv.Blocks, ContentBlock{
+					Type: BlockTool,
+					ToolCall: ToolCallView{
+						ID:    block.ID,
+						Name:  block.Name,
+						Done:  true,
+						Input: string(block.Input),
+					},
+				})
+			case types.ContentTypeThinking:
+				mv.Blocks = append(mv.Blocks, ContentBlock{
+					Type:     BlockThinking,
+					Thinking: ThinkingView{Text: block.Text},
+				})
+			}
+		}
+
+		// Skip messages with no renderable blocks
+		if len(mv.Blocks) > 0 {
+			views = append(views, mv)
+		}
+	}
+	return views
 }
 
 // resetDisplayState zeros all App-level display fields for a clean session.

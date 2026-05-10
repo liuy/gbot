@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -148,6 +149,11 @@ type Engine struct {
 	// session-scoped cleanup (e.g. REPL CleanSession) without Engine
 	// knowing about REPLTool directly.
 	onCloseFn func(sessionID string)
+
+	// fileHistory tracks file backups for rewind/restore.
+	// Set by TUI layer via SetFileHistory after session init.
+	// Sub-engines share the same Tracker (sub-agent edits are also tracked).
+	fileHistory *filehistory.Tracker
 
 	// permissionChecker evaluates permission rules for tool invocations.
 	// Nil when no permission rules are configured (default allow).
@@ -1160,6 +1166,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 						)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
+						streamingExecutor.SetFileHistory(e.fileHistory)
 						if e.isSubagent {
 							streamingExecutor.SetSubEngine(true)
 						}
@@ -1898,6 +1905,53 @@ func (e *Engine) SetMessages(msgs []types.Message) {
 	e.setMessages(msgs)
 }
 
+// SetFileHistory sets the file history tracker for rewind/restore.
+// Must be called after Engine construction, before any tool execution.
+// Sub-engines inherit the same Tracker automatically.
+func (e *Engine) SetFileHistory(fh *filehistory.Tracker) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.fileHistory = fh
+}
+
+// RewindResult contains information about what was rewound.
+type RewindResult struct {
+	MessageCount  int      // number of messages after rewind
+	RestoredFiles []string // files restored to pre-edit state
+}
+
+// RewindTo truncates conversation to messages[:idx] and restores file history.
+// Returns RewindResult with info about what was restored, or error if idx is invalid.
+// Thread-safe: acquires Engine lock internally.
+func (e *Engine) RewindTo(idx int) (*RewindResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if idx < 0 || idx > len(e.messages) {
+		return nil, fmt.Errorf("rewind index %d out of range [0, %d]", idx, len(e.messages))
+	}
+
+	result := &RewindResult{}
+
+	// 1. Truncate messages + rebuild toolSearch
+	e.messages = e.messages[:idx]
+	RestoreToolSearchState(e.messages, e.toolSearch)
+	result.MessageCount = len(e.messages)
+
+	// 2. Restore file history (if enabled)
+	if e.fileHistory != nil {
+		restored, err := e.fileHistory.RestoreToIndex(idx)
+		if err != nil {
+			// Log but don't fail — message rewind is more important than file restore
+			e.logger.Error("engine:rewind:file_restore_failed", "err", err)
+		} else {
+			result.RestoredFiles = restored
+		}
+	}
+
+	return result, nil
+}
+
 // SetSessionID sets the session ID for this engine.
 func (e *Engine) SetSessionID(id string) {
 	e.mu.Lock()
@@ -2127,6 +2181,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 			toolSearch:             newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
 			sessionID:            e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
 			onCloseFn:            e.onCloseFn,
+		fileHistory:          e.fileHistory, // share same Tracker — sub-agent edits tracked too
 	}
 }
 

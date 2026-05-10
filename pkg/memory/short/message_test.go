@@ -1889,3 +1889,157 @@ func TestRemoveMessageByUUID_DeleteTriggerError(t *testing.T) {
 		t.Errorf("error should mention 'delete message', got: %v", err)
 	}
 }
+
+
+func TestTruncateMessagesFromIndex_Basic(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 5 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Truncate from index 3 (delete messages 3, 4)
+	if err := store.TruncateMessagesFromIndex(sessionID, 3); err != nil {
+		t.Fatalf("TruncateMessagesFromIndex: %v", err)
+	}
+
+	remaining, _ := store.LoadMessages(sessionID)
+	if len(remaining) != 3 {
+		t.Fatalf("expected 3 messages after truncate, got %d", len(remaining))
+	}
+	if remaining[2].UUID != "uuid-2" {
+		t.Errorf("last remaining UUID = %q, want uuid-2", remaining[2].UUID)
+	}
+}
+
+func TestTruncateMessagesFromIndex_Zero(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Truncate from index 0 — delete ALL messages
+	if err := store.TruncateMessagesFromIndex(sessionID, 0); err != nil {
+		t.Fatalf("TruncateMessagesFromIndex: %v", err)
+	}
+
+	remaining, _ := store.LoadMessages(sessionID)
+	if len(remaining) != 0 {
+		t.Fatalf("expected 0 messages after truncate from 0, got %d", len(remaining))
+	}
+}
+
+func TestTruncateMessagesFromIndex_OutOfRange(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Out of range — no-op, no error
+	if err := store.TruncateMessagesFromIndex(sessionID, 10); err != nil {
+		t.Fatalf("TruncateMessagesFromIndex out of range: %v", err)
+	}
+
+	remaining, _ := store.LoadMessages(sessionID)
+	if len(remaining) != 3 {
+		t.Fatalf("expected 3 messages (no-op), got %d", len(remaining))
+	}
+}
+
+func TestTruncateMessagesFromIndex_BeginError(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Close the database to cause Begin to fail
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err := store.TruncateMessagesFromIndex(sessionID, 1)
+	if err == nil {
+		t.Fatal("expected error from TruncateMessagesFromIndex with closed DB")
+	}
+	if !strings.Contains(err.Error(), "begin") {
+		t.Errorf("error should mention 'begin', got: %v", err)
+	}
+}
+
+func TestTruncateMessagesFromIndex_FTSDeleteError(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Drop the FTS map table to cause DELETE FROM messages_fts_map to fail
+	_, err := store.DB().Exec("DROP TABLE messages_fts_map")
+	if err != nil {
+		t.Fatalf("drop fts table: %v", err)
+	}
+
+	err = store.TruncateMessagesFromIndex(sessionID, 1)
+	if err == nil {
+		t.Fatal("expected error from TruncateMessagesFromIndex with missing FTS table")
+	}
+	if !strings.Contains(err.Error(), "delete FTS") {
+		t.Errorf("error should mention 'delete FTS', got: %v", err)
+	}
+}
+
+func TestTruncateMessagesFromIndex_MessageDeleteError(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	for i := range 3 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Create a trigger that raises an error on DELETE from messages
+	_, err := store.DB().Exec(
+		"CREATE TRIGGER fail_msg_delete BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT, 'test trigger error'); END")
+	if err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	err = store.TruncateMessagesFromIndex(sessionID, 1)
+	if err == nil {
+		t.Fatal("expected error from TruncateMessagesFromIndex with delete trigger")
+	}
+	if !strings.Contains(err.Error(), "delete messages") {
+		t.Errorf("error should mention 'delete messages', got: %v", err)
+	}
+}

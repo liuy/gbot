@@ -371,3 +371,53 @@ func TestHistory_Save_FileOpenError(t *testing.T) {
 	h := NewHistory(path)
 	h.Add("test") // Should not panic
 }
+
+func TestHistory_RemoveLast(t *testing.T) {
+	h := NewHistory("")
+	h.Add("first")
+	h.Add("second")
+	h.Add("third")
+
+	if h.Len() != 3 {
+		t.Fatalf("Len() = %d, want 3 before RemoveLast", h.Len())
+	}
+
+	h.RemoveLast()
+
+	if h.Len() != 2 {
+		t.Fatalf("Len() = %d after RemoveLast, want 2", h.Len())
+	}
+	if h.items[0] != "first" {
+		t.Errorf("items[0] = %q, want %q", h.items[0], "first")
+	}
+	if h.items[1] != "second" {
+		t.Errorf("items[1] = %q, want %q", h.items[1], "second")
+	}
+	// index should point to last remaining item
+	if h.index != 1 {
+		t.Errorf("index = %d, want 1", h.index)
+	}
+}
+
+func TestHistory_RemoveLast_Empty(t *testing.T) {
+	h := NewHistory("")
+	h.RemoveLast() // should not panic
+	if h.Len() != 0 {
+		t.Errorf("Len() = %d after RemoveLast on empty, want 0", h.Len())
+	}
+	if h.index != -1 {
+		t.Errorf("index = %d, want -1", h.index)
+	}
+}
+
+func TestHistory_RemoveLast_SingleItem(t *testing.T) {
+	h := NewHistory("")
+	h.Add("only")
+	h.RemoveLast()
+	if h.Len() != 0 {
+		t.Errorf("Len() = %d, want 0", h.Len())
+	}
+	if h.index != -1 {
+		t.Errorf("index = %d, want -1", h.index)
+	}
+}

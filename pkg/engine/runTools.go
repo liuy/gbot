@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
+	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/permission"
@@ -130,6 +133,10 @@ type StreamingToolExecutor struct {
 	// Set by engine before tool execution. Inherited by sub-engines.
 	permChecker permission.PermissionChecker
 
+	// fileHistory tracks file backups for rewind/restore.
+	// Set by engine via SetFileHistory. Shared across sub-engines.
+	fileHistory *filehistory.Tracker
+
 	// sessionAllowed caches "Allow always" decisions for the current session.
 	// Key format: "ToolName" or "ToolName:contentPattern".
 	// 修正 3: session-scoped allow cache
@@ -202,6 +209,12 @@ func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
 // Called from engine.go when creating the streaming executor.
 func (e *StreamingToolExecutor) SetPermissionChecker(pc permission.PermissionChecker) {
 	e.permChecker = pc
+}
+
+// SetFileHistory injects the file history tracker into the executor.
+// Called from engine.go after construction. Sub-engines share the same Tracker.
+func (e *StreamingToolExecutor) SetFileHistory(fh *filehistory.Tracker) {
+	e.fileHistory = fh
 }
 
 // SetSubEngine marks this executor as running inside a sub-engine.
@@ -873,6 +886,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 		},
 	})
 	tt.Result = result
+	// Record file backup for rewind/restore (Edit/Write tools only)
+	if e.fileHistory != nil {
+		e.recordFileBackup(tt)
+	}
 	tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, outputJSON, false)}
 	if len(result.NewMessages) > 0 {
 		tt.newMessages = result.NewMessages
@@ -1059,4 +1076,48 @@ func isMemoryPathWrite(toolName string, input json.RawMessage) bool {
 	return long.IsMemoryPath(cwd, absPath)
 }
 
+// recordFileBackup records the pre-edit file content for Edit/Write tools.
+// Extracts OriginalFile from the tool result and saves it via fileHistory.Tracker.
+func (e *StreamingToolExecutor) recordFileBackup(tt *TrackedTool) {
+	var filePath string
+	var original *string
+	switch tt.Name {
+	case "Edit":
+		out, ok := tt.Result.Data.(*fileedit.Output)
+		if !ok {
+			return
+		}
+		filePath, original = out.FilePath, out.OriginalFile
+	case "Write":
+		out, ok := tt.Result.Data.(*filewrite.Output)
+		if !ok {
+			return
+		}
+		filePath, original = out.FilePath, out.OriginalFile
+	default:
+		return
+	}
+	if filePath == "" {
+		return
+	}
 
+	// Find turn index = last user message index in current messages
+	turnIdx := -1
+	for i := len(e.messages) - 1; i >= 0; i-- {
+		if e.messages[i].Role == types.RoleUser {
+			turnIdx = i
+			break
+		}
+	}
+	if turnIdx < 0 {
+		return
+	}
+
+	var content []byte
+	if original != nil {
+		content = []byte(*original)
+	}
+	if err := e.fileHistory.RecordBackup(filePath, content, turnIdx); err != nil {
+		slog.Warn("filehistory:record_failed", "file", filePath, "err", err)
+	}
+}

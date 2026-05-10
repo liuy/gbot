@@ -551,6 +551,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			if _, ok := errors.AsType[*engine.AbortError](displayErr); ok {
 				a.repl.AppendChunk(types.InterruptMessage)
 				displayErr = nil
+
+				// Auto-rewind: if no meaningful response was produced, restore state
+				if m.Agent == nil {
+					if a.tryAutoRewind() {
+						slog.Info("tui:auto_rewind", "reason", "no_meaningful_response")
+					}
+				}
 			}
 		}
 		slog.Info("tui:queryEnd", "err", displayErr)

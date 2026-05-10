@@ -146,8 +146,9 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	a.lastPersistedIdx = len(engineMsgs)
 
 	// Reset REPL state
-	*a.repl = *NewReplState()
-	a.committedCount = 0
+		*a.repl = *NewReplState()
+		a.repl.messages = engineMessagesToViews(engineMsgs)
+		a.committedCount = len(a.repl.messages)
 
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {

@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
+	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1073,5 +1076,106 @@ func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
 	}
 	if !strings.Contains(parsed, "select:mcp__fetch__get_markdown") {
 		t.Errorf("error should suggest select:tool_name, got: %q", parsed)
+	}
+}
+
+func TestRecordFileBackup_EditTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	tracker := filehistory.NewTracker(tmpDir)
+
+	e := &StreamingToolExecutor{
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "edit this file"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "I'll edit it"}}},
+		},
+	}
+	e.SetFileHistory(tracker)
+
+	original := "old content"
+	tt := &TrackedTool{
+		Name: "Edit",
+		Result: &tool.ToolResult{
+			Data: &fileedit.Output{
+				FilePath:     "/tmp/test.go",
+				OriginalFile: &original,
+			},
+		},
+	}
+
+	e.recordFileBackup(tt)
+
+	records := tracker.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 backup record, got %d", len(records))
+	}
+	if records[0].FilePath != "/tmp/test.go" {
+		t.Errorf("expected FilePath /tmp/test.go, got %s", records[0].FilePath)
+	}
+	if records[0].TurnIndex != 0 {
+		t.Errorf("expected TurnIndex 0 (first user message), got %d", records[0].TurnIndex)
+	}
+	if records[0].BackupName == "" {
+		t.Error("expected non-empty BackupName for existing file edit")
+	}
+}
+
+func TestRecordFileBackup_WriteTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	tracker := filehistory.NewTracker(tmpDir)
+
+	e := &StreamingToolExecutor{
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "write this file"}}},
+		},
+	}
+	e.SetFileHistory(tracker)
+
+	tt := &TrackedTool{
+		Name: "Write",
+		Result: &tool.ToolResult{
+			Data: &filewrite.Output{
+				FilePath:     "/tmp/newfile.go",
+				OriginalFile: nil, // new file
+			},
+		},
+	}
+
+	e.recordFileBackup(tt)
+
+	records := tracker.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 backup record, got %d", len(records))
+	}
+	if records[0].FilePath != "/tmp/newfile.go" {
+		t.Errorf("expected FilePath /tmp/newfile.go, got %s", records[0].FilePath)
+	}
+	if records[0].BackupName != "" {
+		t.Errorf("expected empty BackupName for new file (nil original), got %q", records[0].BackupName)
+	}
+}
+
+func TestRecordFileBackup_OtherTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	tracker := filehistory.NewTracker(tmpDir)
+
+	e := &StreamingToolExecutor{
+		messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "read this"}}},
+		},
+	}
+	e.SetFileHistory(tracker)
+
+	tt := &TrackedTool{
+		Name: "Read",
+		Result: &tool.ToolResult{
+			Data: "some string result",
+		},
+	}
+
+	e.recordFileBackup(tt)
+
+	records := tracker.Records()
+	if len(records) != 0 {
+		t.Fatalf("expected 0 backup records for Read tool, got %d", len(records))
 	}
 }

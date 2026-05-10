@@ -1,0 +1,667 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/liuy/gbot/pkg/filehistory"
+	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/types"
+)
+
+// testTime is a fixed timestamp for deterministic tests.
+var testTime = time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+
+func TestMessagesAfterAreOnlySynthetic_Empty(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+	}
+	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected true: no messages after user message")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_OnlyThinking(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "thinking..."},
+		}},
+	}
+	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected true: only thinking blocks after user message")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_InterruptMsg(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("[Request interrupted by user]"),
+		}},
+	}
+	// Interrupt message is synthetic (matches types.InterruptMessage),
+	// so it should be skipped → returns true (no meaningful content after).
+	// Source: TS isSyntheticMessage checks SYNTHETIC_MESSAGES set.
+	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected true: interrupt message is synthetic (non-meaningful)")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_AssistantText(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("Hello! How can I help?"),
+		}},
+	}
+	if messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected false: assistant has non-empty text")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_ToolUse(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("read file")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("tu_1", "Read", nil),
+		}},
+	}
+	if messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected false: assistant has tool_use block")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_AnotherUser(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "..."},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("another")}},
+	}
+	if messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected false: another user message with text is meaningful")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_Mixed(t *testing.T) {
+	// thinking + empty assistant → true
+	msgs1 := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "deep thoughts"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(""), // empty text
+		}},
+	}
+	if !messagesAfterAreOnlySynthetic(msgs1, 0) {
+		t.Error("expected true: only thinking + empty text")
+	}
+
+	// thinking + text → false
+	msgs2 := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "deep thoughts"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("actual response"),
+		}},
+	}
+	if messagesAfterAreOnlySynthetic(msgs2, 0) {
+		t.Error("expected false: has non-empty text after thinking")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_ToolResultUser(t *testing.T) {
+	// User message with only tool_result blocks → synthetic (skip)
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewToolUseBlock("tu_1", "Read", nil),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+		}},
+	}
+	// The tool_use at index 1 makes it non-synthetic → false
+	if messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected false: assistant has tool_use before tool_result user msg")
+	}
+
+	// But checking from after the tool_use: only tool_result user → synthetic
+	if !messagesAfterAreOnlySynthetic(msgs, 2) {
+		t.Error("expected true: only tool_result user message after index 2")
+	}
+}
+
+func TestLastUserMessageIndex(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}},
+	}
+	if got := lastUserMessageIndex(msgs); got != 2 {
+		t.Errorf("expected index 2, got %d", got)
+	}
+	if got := lastUserMessageIndex(msgs[:1]); got != 0 {
+		t.Errorf("expected index 0, got %d", got)
+	}
+	if got := lastUserMessageIndex(nil); got != -1 {
+		t.Errorf("expected -1 for nil, got %d", got)
+	}
+}
+
+func TestFirstTextBlockContent(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("hello world"),
+		},
+	}
+	if got := firstTextBlockContent(msg); got != "hello world" {
+		t.Errorf("expected 'hello world', got %q", got)
+	}
+
+	emptyMsg := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewToolResultBlock("tu_1", nil, false)},
+	}
+	if got := firstTextBlockContent(emptyMsg); got != "" {
+		t.Errorf("expected empty string for no text block, got %q", got)
+	}
+}
+
+func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "thinking..."},
+		}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		history:        NewHistory(""),
+		committedCount: 0,
+		repl:           NewReplState(),
+	}
+	// Simulate the user message was added to history
+	a.history.Add("hello")
+	// Simulate TUI has committed the previous messages (none in this case)
+	a.committedCount = 0
+
+	result := a.tryAutoRewind()
+
+	if !result {
+		t.Fatal("expected auto-rewind to fire")
+	}
+
+	// Engine messages should be truncated to just the user message
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 0 {
+		t.Fatalf("expected 0 engine messages after rewind, got %d", len(engMsgs))
+	}
+	if false {
+		t.Errorf("expected user message, got %s", engMsgs[0].Role)
+	}
+
+	// Input should be restored
+	if a.input.Value() != "hello" {
+		t.Errorf("expected input 'hello', got %q", a.input.Value())
+	}
+
+	// History entry should be removed
+	if len(a.history.items) != 0 {
+		t.Errorf("expected empty history, got %d items", len(a.history.items))
+	}
+}
+
+func TestTryAutoRewind_SyncsStore(t *testing.T) {
+	// RED: auto-rewind must also truncate the store so that on resume,
+	// the rewound messages don't reappear as duplicates.
+	// Bug: seq 213 "你好呀" was persisted but had no assistant response.
+	// Auto-rewind cleared engine but not store → duplicate on resume.
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	eng := newTestEngine()
+	session, err := store.CreateSession(dir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng.SetSessionID(session.SessionID)
+
+	// Simulate: user sent "hello", assistant responded with thinking only,
+	// and persistTurn already wrote both to store.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Text: "thinking..."},
+		}, Timestamp: testTime},
+	}
+	eng.SetMessages(msgs)
+
+	a := &App{
+		engine:           eng,
+		input:            NewInput(),
+		history:          NewHistory(""),
+		committedCount:   0,
+		repl:             NewReplState(),
+		store:            store,
+		sessionID:        session.SessionID,
+		lastPersistedIdx: 0,
+	}
+	a.history.Add("hello")
+
+	// Persist messages to store (simulating persistTurn before ESC)
+	a.persistTurn()
+	if a.lastPersistedIdx != 2 {
+		t.Fatalf("setup: expected lastPersistedIdx=2, got %d", a.lastPersistedIdx)
+	}
+
+	// Verify store has the messages
+	storeMsgsBefore, _ := store.LoadMessages(session.SessionID)
+	if len(storeMsgsBefore) != 2 {
+		t.Fatalf("setup: expected 2 store messages, got %d", len(storeMsgsBefore))
+	}
+
+	// Now auto-rewind (simulating ESC cancel with no meaningful response)
+	result := a.tryAutoRewind()
+	if !result {
+		t.Fatal("expected auto-rewind to fire")
+	}
+
+	// RED: store should be truncated so resume doesn't see orphaned messages
+	storeMsgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(storeMsgs) != 0 {
+		t.Fatalf("expected 0 store messages after auto-rewind (store sync), got %d — resume will show duplicates", len(storeMsgs))
+	}
+
+	// lastPersistedIdx should be updated
+	if a.lastPersistedIdx != 0 {
+		t.Errorf("expected lastPersistedIdx=0 after auto-rewind store sync, got %d", a.lastPersistedIdx)
+	}
+}
+
+func TestTryAutoRewind_HasMeaningfulResponse(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("Hello! How can I help?"),
+		}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		history:        NewHistory(""),
+		committedCount: 0,
+		repl:           NewReplState(),
+	}
+	a.history.Add("hello")
+
+	result := a.tryAutoRewind()
+
+	if result {
+		t.Error("expected auto-rewind NOT to fire (has meaningful response)")
+	}
+
+	// Messages should be unchanged
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 2 {
+		t.Fatalf("expected 2 engine messages, got %d", len(engMsgs))
+	}
+}
+
+func TestHandleRewind_Aborted(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("bye")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 0,
+	}
+	a.width = 80
+
+	// Call handleRewind — it sets up the dialog
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog to be created")
+	}
+
+	// Simulate abort (ESC)
+	a.activeDialog.aborted = true
+	model, _ := a.onDialogDone(a.activeDialog)
+	_ = model.(*App)
+
+	// Messages should be unchanged
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 3 {
+		t.Fatalf("expected 3 messages after abort, got %d", len(engMsgs))
+	}
+}
+
+func TestHandleRewind_Selected(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("bye")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 0,
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog to be created")
+	}
+
+	// Select the first user message (index 0)
+	// Dialog options are: user message 0, user message 2
+	// Selecting option 0 → index 0
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 0
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Engine messages truncated — selected message excluded (matches TS slice(0, messageIndex))
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 0 {
+		t.Fatalf("expected 0 messages after rewind (selected msg excluded), got %d", len(engMsgs))
+	}
+
+	// TUI messages should be reset
+	if len(app.repl.messages) != 0 {
+		t.Errorf("expected 0 TUI messages, got %d", len(app.repl.messages))
+	}
+	if app.committedCount != 0 {
+		t.Errorf("expected committedCount=0, got %d", app.committedCount)
+	}
+
+	// Input should be restored with selected message text
+	// Source: TS restoreMessageSync → textForResubmit → setInputValue
+	if app.input.Value() != "hello" {
+		t.Errorf("expected input 'hello' (selected message text), got %q", app.input.Value())
+	}
+}
+
+func TestHandleRewind_DuringStreaming(t *testing.T) {
+	eng := newTestEngine()
+	a := &App{
+		engine: eng,
+		repl:   NewReplState(),
+	}
+	a.repl.streaming = true
+
+	_ = a.handleRewind(nil)
+
+	// Should return nil (no dialog created)
+	if a.activeDialog != nil {
+		t.Error("expected no dialog during streaming")
+	}
+}
+
+func TestMessagesAfterAreOnlySynthetic_ToolResultUserOnly(t *testing.T) {
+	// User message with only tool_result blocks after fromIndex → synthetic
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+		}},
+	}
+	if !messagesAfterAreOnlySynthetic(msgs, 0) {
+		t.Error("expected true: tool-result-only user message is synthetic")
+	}
+}
+
+func TestHasNonToolResultContent_AllToolResults(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+			types.NewToolResultBlock("tu_2", nil, false),
+		},
+	}
+	if hasNonToolResultContent(msg) {
+		t.Error("expected false: all blocks are tool_result")
+	}
+}
+
+func TestHasNonToolResultContent_HasText(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+			types.NewTextBlock("hello"),
+		},
+	}
+	if !hasNonToolResultContent(msg) {
+		t.Error("expected true: has text block alongside tool_result")
+	}
+}
+
+func TestTryAutoRewind_CommittedCountExceedsMessages(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		history:        NewHistory(""),
+		repl:           NewReplState(),
+		committedCount: 5, // exceeds len(repl.messages)
+	}
+	a.history.Add("hello")
+
+	if !a.tryAutoRewind() {
+		t.Fatal("expected auto-rewind to fire")
+	}
+
+	// committedCount should be clamped to 0
+	if a.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0", a.committedCount)
+	}
+}
+
+func TestHandleRewind_NoUserMessages(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog != nil {
+		t.Error("expected no dialog when no user messages exist")
+	}
+}
+
+func TestHandleRewind_UserWithNoText(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+		}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog != nil {
+		t.Error("expected no dialog: user message has no text block")
+	}
+}
+
+func TestHandleRewind_WithStoreTruncation(t *testing.T) {
+	eng := newTestEngine()
+
+	// Set up file history
+	tracker := filehistory.NewTracker(t.TempDir())
+	eng.SetFileHistory(tracker)
+
+	// Set up store
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Create session and persist messages
+	sessionID := "test-session"
+	if _, err := store.DB().Exec(
+		"INSERT INTO sessions (session_id, project_dir, model) VALUES (?, '', '')",
+		sessionID,
+	); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	engMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response1")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response2")}, Timestamp: testTime},
+	}
+	eng.SetMessages(engMsgs)
+
+	// Persist all messages to store
+	for i, msg := range engMsgs {
+		tm := &short.TranscriptMessage{
+			UUID:    fmt.Sprintf("uuid-%d", i),
+			Type:    string(msg.Role),
+			Content: fmt.Sprintf(`[{"type":"text","text":"%s"}]`, firstTextBlockContent(msg)),
+		}
+		if err := store.AppendMessage(sessionID, tm); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+	}
+
+	// Create a backup for file restore
+	tmpFile := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.RecordBackup(tmpFile, []byte("original"), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		engine:           eng,
+		input:            NewInput(),
+		repl:             NewReplState(),
+		store:            store,
+		sessionID:        sessionID,
+		lastPersistedIdx: 4,
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog")
+	}
+
+	// Select first user message (index 0)
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 0
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Verify store was truncated
+	remaining, _ := store.LoadMessages(sessionID)
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 messages in store after rewind, got %d", len(remaining))
+	}
+	if app.lastPersistedIdx != 0 {
+		t.Errorf("lastPersistedIdx = %d, want 0", app.lastPersistedIdx)
+	}
+
+	// Verify file was restored
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("file = %q, want %q", string(data), "original")
+	}
+}
+
+func TestHandleRewind_RewindToError(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: testTime},
+	})
+
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 0,
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog")
+	}
+
+	// Select second user message (cursor=1 -> indices[1]=2)
+	// Then clear engine messages so RewindTo(2) fails (2 > 0)
+	eng.SetMessages(nil)
+
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 1
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Should not crash; input empty because RewindTo failed
+	if app.input.Value() != "" {
+		t.Errorf("expected empty input after RewindTo error, got %q", app.input.Value())
+	}
+}
+

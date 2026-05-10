@@ -6,16 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
-"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // eventCollector implements types.EventDispatcher for test observability.
@@ -3182,3 +3185,111 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	}
 }
 
+// --- RewindTo ---
+
+func TestRewindTo_BasicTruncate(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}},
+	})
+
+	result, err := eng.RewindTo(2)
+	if err != nil {
+		t.Fatalf("RewindTo failed: %v", err)
+	}
+	if result.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", result.MessageCount)
+	}
+	msgs := eng.Messages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages after rewind, got %d", len(msgs))
+	}
+	first, _ := extractFirstTextBlock(msgs[0])
+	if first != "msg1" {
+		t.Errorf("msgs[0] = %q, want msg1", first)
+	}
+}
+
+func TestRewindTo_WithFileRestore(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+
+	dir := t.TempDir()
+	tracker := filehistory.NewTracker(dir)
+	eng.SetFileHistory(tracker)
+
+	// Create a temp file and record a backup
+	tmpFile := filepath.Join(t.TempDir(), "test.go")
+	if err := os.WriteFile(tmpFile, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.RecordBackup(tmpFile, []byte("original"), 1); err != nil {
+		t.Fatalf("RecordBackup: %v", err)
+	}
+	if err := os.WriteFile(tmpFile, []byte("modified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+	})
+
+	result, err := eng.RewindTo(0)
+	if err != nil {
+		t.Fatalf("RewindTo failed: %v", err)
+	}
+	if len(result.RestoredFiles) != 1 {
+		t.Errorf("RestoredFiles = %v, want 1 file", result.RestoredFiles)
+	}
+
+	data, _ := os.ReadFile(tmpFile)
+	if string(data) != "original" {
+		t.Errorf("file content = %q, want %q", string(data), "original")
+	}
+}
+
+func TestRewindTo_InvalidIndex(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+	})
+
+	_, err := eng.RewindTo(-1)
+	if err == nil {
+		t.Error("expected error for negative index")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("error = %v, want out of range", err)
+	}
+
+	_, err = eng.RewindTo(5)
+	if err == nil {
+		t.Fatal("expected error for index > len(messages)")
+	}
+	if !strings.Contains(err.Error(), "out of range") {
+		t.Errorf("error should mention out of range, got: %v", err)
+	}
+}
+
+func TestRewindTo_NoFileHistory(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	// No fileHistory set — should not panic
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
+	})
+
+	result, err := eng.RewindTo(1)
+	if err != nil {
+		t.Fatalf("RewindTo failed: %v", err)
+	}
+	if result.MessageCount != 1 {
+		t.Errorf("MessageCount = %d, want 1", result.MessageCount)
+	}
+	if len(result.RestoredFiles) != 0 {
+		t.Errorf("RestoredFiles should be empty with no fileHistory")
+	}
+}

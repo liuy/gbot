@@ -120,8 +120,9 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	a.sessionID = selected.SessionID
 	a.lastPersistedIdx = len(engineMsgs)
 
-	*a.repl = *NewReplState()
-	a.committedCount = 0
+		*a.repl = *NewReplState()
+		a.repl.messages = engineMessagesToViews(engineMsgs)
+		a.committedCount = len(a.repl.messages)
 
 	title := selected.Title
 	if title == "" {

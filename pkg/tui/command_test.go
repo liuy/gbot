@@ -7,15 +7,15 @@ import (
 
 func TestAllCommands(t *testing.T) {
 	cmds := AllCommands()
-	if len(cmds) != 3 {
-		t.Fatalf("AllCommands() returned %d commands, want 3", len(cmds))
+	if len(cmds) != 4 {
+		t.Fatalf("AllCommands() returned %d commands, want 4", len(cmds))
 	}
 	// Must be sorted alphabetically
 	if !slices.IsSorted(cmds) {
 		t.Errorf("AllCommands() not sorted: %v", cmds)
 	}
 	// Must contain all known commands
-	want := []string{"clear", "model", "session"}
+	want := []string{"clear", "model", "rewind", "session"}
 	for _, w := range want {
 		if !slices.Contains(cmds, w) {
 			t.Errorf("AllCommands() missing %q", w)

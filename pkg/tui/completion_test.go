@@ -28,18 +28,21 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 		t.Fatal("expected completions visible after typing '/'")
 	}
 	items := c.Items()
-	if len(items) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(items))
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
 	}
-	// Must be alphabetical: clear, model, session
+	// Must be alphabetical: clear, model, rewind, session
 	if items[0].Name != "clear" {
 		t.Errorf("first item = %q, want %q", items[0].Name, "clear")
 	}
 	if items[1].Name != "model" {
 		t.Errorf("second item = %q, want %q", items[1].Name, "model")
 	}
-	if items[2].Name != "session" {
-		t.Errorf("third item = %q, want %q", items[2].Name, "session")
+	if items[2].Name != "rewind" {
+		t.Errorf("third item = %q, want %q", items[2].Name, "rewind")
+	}
+	if items[3].Name != "session" {
+		t.Errorf("fourth item = %q, want %q", items[3].Name, "session")
 	}
 }
 
@@ -221,6 +224,11 @@ func TestCompletions_SelectNext(t *testing.T) {
 		t.Errorf("after SelectNext = %d, want 2", c.SelectedIndex())
 	}
 
+	c.SelectNext()
+	if c.SelectedIndex() != 3 {
+		t.Errorf("after SelectNext = %d, want 3", c.SelectedIndex())
+	}
+
 	// Wrap around
 	c.SelectNext()
 	if c.SelectedIndex() != 0 {
@@ -230,17 +238,17 @@ func TestCompletions_SelectNext(t *testing.T) {
 
 func TestCompletions_SelectPrev(t *testing.T) {
 	c := NewCompletions()
-	c.Update("/", true) // clear, model, session
+	c.Update("/", true) // clear, model, rewind, session
 
 	// Wrap around backwards
 	c.SelectPrev()
-	if c.SelectedIndex() != 2 {
-		t.Errorf("after SelectPrev wrap = %d, want 2", c.SelectedIndex())
+	if c.SelectedIndex() != 3 {
+		t.Errorf("after SelectPrev wrap = %d, want 3", c.SelectedIndex())
 	}
 
 	c.SelectPrev()
-	if c.SelectedIndex() != 1 {
-		t.Errorf("after SelectPrev = %d, want 1", c.SelectedIndex())
+	if c.SelectedIndex() != 2 {
+		t.Errorf("after SelectPrev = %d, want 2", c.SelectedIndex())
 	}
 }
 
@@ -293,8 +301,8 @@ func TestCompletions_Render_Basic(t *testing.T) {
 	// First item selected → should be rendered (reverse style applied via ANSI)
 	// Check that clear appears in the output (it's the first alphabetical item)
 	lines := strings.Split(view, "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d", len(lines))
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d", len(lines))
 	}
 }
 
@@ -389,10 +397,19 @@ func TestCompletions_ItemMetadata(t *testing.T) {
 		t.Error("clear should have description")
 	}
 
+	// rewind: HasArgs=false
+	rewindItem := items[2]
+	if rewindItem.Name != "rewind" {
+		t.Fatalf("third item = %q, want rewind", rewindItem.Name)
+	}
+	if rewindItem.HasArgs {
+		t.Error("rewind should not have args")
+	}
+
 	// session: HasArgs=true
-	sessionItem := items[2]
+	sessionItem := items[3]
 	if sessionItem.Name != "session" {
-		t.Fatalf("third item = %q, want session", sessionItem.Name)
+		t.Fatalf("fourth item = %q, want session", sessionItem.Name)
 	}
 	if !sessionItem.HasArgs {
 		t.Error("session should have args")

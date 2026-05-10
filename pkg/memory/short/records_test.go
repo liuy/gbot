@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
@@ -145,5 +146,61 @@ func TestSaveContentReplacementRecords_Accumulates(t *testing.T) {
 	}
 	if loaded[2].ToolUseID != "tr-3" {
 		t.Errorf("record 2 = %q, want tr-3", loaded[2].ToolUseID)
+	}
+}
+
+// --- File Backup Records ---
+
+func TestSaveLoadFileBackupRecords(t *testing.T) {
+	store := newRecordsTestStore(t)
+	sessionID := "test-session"
+
+	records := []filehistory.BackupRecord{
+		{FilePath: "/tmp/a.go", BackupName: "abc123@v1", Version: 1, TurnIndex: 2},
+		{FilePath: "/tmp/b.go", BackupName: "def456@v1", Version: 1, TurnIndex: 3},
+	}
+
+	err := store.SaveFileBackupRecords(sessionID, records)
+	if err != nil {
+		t.Fatalf("SaveFileBackupRecords: %v", err)
+	}
+
+	loaded, err := store.LoadFileBackupRecords(sessionID)
+	if err != nil {
+		t.Fatalf("LoadFileBackupRecords: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(loaded))
+	}
+	if loaded[0].FilePath != "/tmp/a.go" {
+		t.Errorf("record 0 FilePath = %q, want /tmp/a.go", loaded[0].FilePath)
+	}
+	if loaded[0].TurnIndex != 2 {
+		t.Errorf("record 0 TurnIndex = %d, want 2", loaded[0].TurnIndex)
+	}
+	if loaded[1].FilePath != "/tmp/b.go" {
+		t.Errorf("record 1 FilePath = %q, want /tmp/b.go", loaded[1].FilePath)
+	}
+}
+
+func TestLoadFileBackupRecords_Empty(t *testing.T) {
+	store := newRecordsTestStore(t)
+
+	loaded, err := store.LoadFileBackupRecords("nonexistent-session")
+	if err != nil {
+		t.Fatalf("LoadFileBackupRecords: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Errorf("expected 0 records for nonexistent session, got %d", len(loaded))
+	}
+}
+
+func TestSaveFileBackupRecords_Empty(t *testing.T) {
+	store := newRecordsTestStore(t)
+	sessionID := "test-session"
+
+	err := store.SaveFileBackupRecords(sessionID, nil)
+	if err != nil {
+		t.Fatalf("SaveFileBackupRecords(nil) should not error, got: %v", err)
 	}
 }

@@ -27,6 +27,7 @@ var commandDefs = map[string]CommandDef{
 	"session": {Description: "Switch or manage sessions", HasArgs: true},
 	"clear":   {Description: "Clear conversation", HasArgs: false},
 	"model":   {Description: "Switch model", HasArgs: true},
+	"rewind":  {Description: "Restore conversation to a previous point", HasArgs: false},
 }
 
 // skillDefs maps plugin/user skill names for completion display only.
@@ -122,6 +123,8 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 		return a.handleClear(commitCmd)
 	case "model":
 		return a.handleModel(cmd.Args, commitCmd)
+	case "rewind":
+		return a.handleRewind(commitCmd)
 	default:
 		slog.Warn("tui:unknown slash command", "name", cmd.Name)
 		return commitCmd
