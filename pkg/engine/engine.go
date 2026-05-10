@@ -2182,6 +2182,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 			sessionID:            e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
 			onCloseFn:            e.onCloseFn,
 		fileHistory:          e.fileHistory, // share same Tracker — sub-agent edits tracked too
+			workingDir:            e.workingDir,
 	}
 }
 

@@ -3370,3 +3370,99 @@ queryDone:
 		t.Errorf("file = %q, want %q — bash modification was not restored!", string(data), string(originalContent))
 	}
 }
+
+// TestChain_SubEngineBashBackup verifies sub-engine inherits workingDir,
+// so Bash file modifications in sub-agents are tracked and rewind can restore.
+func TestChain_SubEngineBashBackup(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "subdata.txt")
+	originalContent := []byte("sub-original\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	bashTool := &mockTool{
+		name:    "Bash",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			os.WriteFile(testFile, []byte("sub-modified-by-bash\n"), 0o644)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	// Create parent engine with WorkingDir and fileHistory
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	parentEng := New(&Params{
+		Provider:   &mockProvider{},
+		Tools:      []tool.Tool{bashTool},
+		Model:      "test",
+		WorkingDir: tmp,
+	})
+	defer parentEng.Close()
+	parentEng.SetFileHistory(tracker)
+
+	// Create sub-engine (simulating Agent tool)
+	subTools := map[string]tool.Tool{"Bash": bashTool}
+	subEng := parentEng.NewSubEngine(SubEngineOptions{
+		Tools:           subTools,
+		AgentType:       "General",
+		ParentToolUseID: "parent_tool_1",
+	})
+	defer subEng.Close()
+
+	// Set up sub-engine to run a Bash tool via its own query loop
+	eventCh := make(chan types.QueryEvent, 50)
+	subEng.SetDispatcher(&chanDispatcher{ch: eventCh})
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", "sub_tool_1", "Bash", `{"command":"echo >> subdata.txt"}`), nil)
+	mp.addResponse(textStreamEvents("test", "sub-done"), nil)
+	subEng.provider = mp
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	subEng.Query(ctx, "modify subdata.txt", nil)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryEnd {
+				goto subDone
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for sub-engine EventQueryEnd")
+		}
+	}
+subDone:
+
+	// Verify backup was recorded via shared tracker
+	records := tracker.Records()
+	if len(records) < 1 {
+		t.Fatalf("expected at least 1 backup record from sub-engine, got %d — workingDir not inherited?", len(records))
+	}
+
+	// Rewind sub-engine and verify file restored
+	result, err := subEng.RewindTo(0)
+	if err != nil {
+		t.Fatalf("RewindTo: %v", err)
+	}
+
+	found := false
+	for _, f := range result.RestoredFiles {
+		if f == testFile {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("RestoredFiles = %v, want %s included", result.RestoredFiles, testFile)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != string(originalContent) {
+		t.Errorf("file = %q, want %q — sub-engine bash modification was not restored!", string(data), string(originalContent))
+	}
+}
