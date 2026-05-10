@@ -225,10 +225,7 @@ func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
 }
 
 func TestTryAutoRewind_SyncsStore(t *testing.T) {
-	// RED: auto-rewind must also truncate the store so that on resume,
-	// the rewound messages don't reappear as duplicates.
-	// Bug: seq 213 "你好呀" was persisted but had no assistant response.
-	// Auto-rewind cleared engine but not store → duplicate on resume.
+	// Auto-rewind must truncate store to prevent orphaned messages on resume.
 	dir := t.TempDir()
 	store, err := short.NewStore(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -283,13 +280,13 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 		t.Fatal("expected auto-rewind to fire")
 	}
 
-	// RED: store should be truncated so resume doesn't see orphaned messages
+	// Store must be empty after auto-rewind
 	storeMsgs, err := store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
 	if len(storeMsgs) != 0 {
-		t.Fatalf("expected 0 store messages after auto-rewind (store sync), got %d — resume will show duplicates", len(storeMsgs))
+		t.Fatalf("expected 0 store messages after auto-rewind, got %d", len(storeMsgs))
 	}
 
 	// lastPersistedIdx should be updated

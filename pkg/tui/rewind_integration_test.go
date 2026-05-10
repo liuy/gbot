@@ -483,3 +483,96 @@ func TestIntegration_Rewind_NoFileEdits(t *testing.T) {
 		t.Errorf("expected input 'hello', got %q", app.input.Value())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Chain 8: SetStore wires file history → Edit → Rewind → File restored
+//
+// SetStore must create and wire filehistory.Tracker so /rewind can restore files.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Real file to edit
+	testFile := filepath.Join(projectDir, "config.go")
+	originalContent := []byte("package main\n\nconst Version = 1\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Real Store + session
+	store, err := short.NewStore(filepath.Join(dir, "memory", "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	session, err := store.CreateSession(projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Set up engine with messages (simulating auto-resume)
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("edit config")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
+	}
+
+	eng := engine.New(&engine.Params{Logger: slog.Default()})
+	eng.SetMessages(msgs)
+
+	// Create App and call SetStore — THIS is the production wiring path
+	a := &App{
+		engine: eng,
+		repl:   NewReplState(),
+		input:  NewInput(),
+		history: NewHistory(""),
+	}
+	a.width = 80
+	a.SetStore(store, session.SessionID, projectDir, len(msgs))
+
+	// Verify SetStore created a Tracker and wired it to the engine.
+
+	if a.fileHistory == nil {
+		t.Fatalf("fileHistory is nil after SetStore")
+	}
+
+	// Simulate Edit: modify file on disk + record backup via tracker
+	editedContent := []byte("package main\n\nconst Version = 2\n")
+	if err := os.WriteFile(testFile, editedContent, 0o644); err != nil {
+		t.Fatalf("write edited: %v", err)
+	}
+	if err := a.fileHistory.RecordBackup(testFile, originalContent, 0); err != nil {
+		t.Fatalf("RecordBackup: %v", err)
+	}
+
+	// File should still be edited on disk
+	current, _ := os.ReadFile(testFile)
+	if string(current) != string(editedContent) {
+		t.Fatalf("file should still be edited before rewind")
+	}
+
+	// Execute: RewindTo(0) should restore the file
+	result, err := a.engine.RewindTo(0)
+	if err != nil {
+		t.Fatalf("RewindTo: %v", err)
+	}
+
+	// Verify: file should be restored to original content
+	restored, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if string(restored) != string(originalContent) {
+		t.Errorf("file NOT restored after rewind!\n  got:  %q\n  want: %q", string(restored), string(originalContent))
+	}
+
+	// RewindResult should report the restored file
+	if len(result.RestoredFiles) != 1 || result.RestoredFiles[0] != testFile {
+		t.Errorf("RestoredFiles = %v, want [%s]", result.RestoredFiles, testFile)
+	}
+}

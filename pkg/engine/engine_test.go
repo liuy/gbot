@@ -3293,3 +3293,4 @@ func TestRewindTo_NoFileHistory(t *testing.T) {
 		t.Errorf("RestoredFiles should be empty with no fileHistory")
 	}
 }
+

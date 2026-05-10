@@ -387,11 +387,7 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TDD RED: SetStore must sync repl.messages from engine on resume
-//
-// Bug: After resume, engine has messages loaded from store, but
-// repl.messages is empty. TUI shows nothing. This is the bug found
-// via gbot.log analysis: "resumed 9 messages but totalMessages=0".
+// SetStore must sync repl.messages from engine on resume.
 // ---------------------------------------------------------------------------
 
 func TestSetStore_SyncsReplMessagesFromEngine(t *testing.T) {
@@ -429,9 +425,9 @@ func TestSetStore_SyncsReplMessagesFromEngine(t *testing.T) {
 	}
 	a.SetStore(store, session.SessionID, dir, len(msgs))
 
-	// RED: repl.messages should be synced from engine, not empty
+	// repl.messages must be populated from engine
 	if len(a.repl.messages) == 0 {
-		t.Fatalf("expected repl.messages to be synced from engine on resume, got 0 — TUI shows nothing")
+		t.Fatalf("expected repl.messages synced from engine, got 0")
 	}
 
 	// Verify message count matches

@@ -381,7 +381,13 @@ var checkPatterns = []checkPattern{
 				return false
 			},
 		},
-}
+			{
+				Name:     "verbose TDD/BUG story comment in test",
+				TestOnly: true,
+				Regex:    regexp.MustCompile(`(?i)(TDD\s*(RED|GREEN)|Bug:\s|//\s*RED:|\x{2014}\s*(cannot|broken|empty|nothing|duplicates?|shows?))`),
+				Level:    "P3",
+			},
+	}
 
 // isInComment checks if the match is inside a // comment.
 func isInComment(match string, lines []string, lineIdx int) bool {

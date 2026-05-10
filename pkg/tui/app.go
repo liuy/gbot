@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/filehistory"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
@@ -72,6 +73,7 @@ type App struct {
 	sessionID        string
 	lastPersistedIdx int    // tracks how many engine messages have been persisted
 	projectDir       string // working directory for .gbot/meta.json
+	fileHistory      *filehistory.Tracker
 
 	// Active dialog overlay (unified for list picking and permission asking)
 	activeDialog *Dialog
@@ -253,6 +255,16 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 		a.repl.messages = engineMessagesToViews(a.engine.Messages())
 		a.committedCount = len(a.repl.messages)
 	}
+
+		// Create file history tracker for rewind/restore.
+		// Source: TS fileHistory.ts — per-session backup directory.
+		if sessionID != "" {
+			trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
+			tracker := filehistory.NewTracker(trackerDir)
+			a.fileHistory = tracker
+			a.engine.SetFileHistory(tracker)
+			slog.Info("tui:file_history", "dir", trackerDir)
+		}
 	// Wire record writer: persist ContentReplacementRecords to transcript.
 	a.engine.SetRecordWriter(func(records []toolresult.ContentReplacementRecord) {
 		if err := store.SaveContentReplacementRecords(sessionID, records); err != nil {
