@@ -1031,3 +1031,84 @@ func TestCollectCompactableToolIds_Order(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TokenCountWithEstimation — TS align: tokenCountWithEstimation (tokens.ts:226)
+// ---------------------------------------------------------------------------
+
+func TestTokenCountWithEstimation_UsesLastAssistantUsage(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Usage: &types.Usage{
+			InputTokens:          50000,
+			OutputTokens:         100,
+			CacheReadInputTokens: 30000,
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("follow-up question")}},
+	}
+
+	got := TokenCountWithEstimation(msgs)
+	// getTokenCountFromUsage: 50000 + 30000 + 0 + 100 = 80100
+	// Plus rough estimate for the follow-up message after the assistant
+	followUpEstimate := EstimateMessagesTokens(msgs[2:])
+	want := 80100 + followUpEstimate
+	if got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (80100 base + %d delta)", got, want, followUpEstimate)
+	}
+}
+
+func TestTokenCountWithEstimation_FallbackWhenNoUsage(t *testing.T) {
+	// Nil and empty inputs should return 0.
+	if TokenCountWithEstimation(nil) > 0 {
+		t.Fatal("TokenCountWithEstimation(nil) should be 0")
+	}
+	if TokenCountWithEstimation([]types.Message{}) > 0 {
+		t.Fatal("TokenCountWithEstimation(empty) should be 0")
+	}
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("follow-up")}},
+	}
+
+	got := TokenCountWithEstimation(msgs)
+	want := EstimateMessagesTokens(msgs)
+	if got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (full estimation fallback)", got, want)
+	}
+}
+
+func TestTokenCountWithEstimation_AfterRewind(t *testing.T) {
+	// Simulate a conversation with two API responses, then rewind to the first.
+	allMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}, Usage: &types.Usage{
+			InputTokens:          50000,
+			OutputTokens:         100,
+			CacheReadInputTokens: 30000,
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}, Usage: &types.Usage{
+			InputTokens:          80000,
+			OutputTokens:         200,
+			CacheReadInputTokens: 50000,
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg3")}},
+	}
+
+	// Full conversation: should use last API response (130200) + msg3 estimate
+	fullResult := TokenCountWithEstimation(allMsgs)
+	msg3Est := EstimateMessagesTokens(allMsgs[4:])
+	wantFull := 130200 + msg3Est
+	if fullResult != wantFull {
+		t.Errorf("full = %d, want %d", fullResult, wantFull)
+	}
+
+	// After rewind to index 2 (keep msg1+resp1): should use first API response (80100)
+	remaining := allMsgs[:2]
+	rewindResult := TokenCountWithEstimation(remaining)
+	if rewindResult != 80100 {
+		t.Errorf("after rewind = %d, want 80100 (precise first API response)", rewindResult)
+	}
+}
+

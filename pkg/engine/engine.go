@@ -1411,43 +1411,15 @@ func extractJSONStringField(jsonStr, fieldName, prefix string, maxLen int) strin
 // currentInputTokens estimates current context token count.
 // TS align: tokenCountWithEstimation (utils/tokens.ts:226).
 //
-// When ContextTokens > 0 (normal case: restored from DB or set after API call),
-// it holds the precise context size from the last API response. We add an
-// estimated delta for messages added since that response (tool results, user
-// queries) by scanning backward to find the last assistant message and
-// estimating everything after it.
-//
-// When ContextTokens <= 0 (abnormal: DB restore failed or pre-first-call),
-// logs an error and falls back to full message estimation.
+// Walks backward through messages to find the last assistant message with
+// real API usage data. Uses that precise value as base, then estimates
+// tokens for messages added after it (tool results, user queries).
+// Falls back to full estimation when no message has usage data.
 func (e *Engine) currentInputTokens() int {
 	e.mu.RLock()
-	last := e.ContextTokens
 	msgs := e.messages
 	e.mu.RUnlock()
-
-	if last <= 0 {
-		// Abnormal state — DB persistence should have restored a value,
-		// and the first API call sets it. Log and fall back.
-		e.logger.Error("currentInputTokens: ContextTokens <= 0",
-			"ContextTokens", last,
-			"message_count", len(msgs))
-		return EstimateMessagesTokens(msgs)
-	}
-
-	// Find last assistant message — everything after it is the delta
-	// (tool results, user queries) not yet counted in ContextTokens.
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == types.RoleAssistant {
-			delta := EstimateMessagesTokens(msgs[i+1:])
-			return last + delta
-		}
-	}
-
-	// No assistant message found — ContextTokens already accounts for
-	// all messages in history. In real operation this only happens when
-	// messages were loaded from DB without an assistant response (rare).
-	// Can't determine delta boundary, so return the precise value as-is.
-	return last
+	return TokenCountWithEstimation(msgs)
 }
 
 // maybeTokenPrune attempts token-based tool result pruning when the context
@@ -1999,6 +1971,10 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 		e.messages = e.messages[:idx]
 		RestoreToolSearchState(e.messages, e.toolSearch)
 		result.MessageCount = len(e.messages)
+		// TS align: tokenCountWithEstimation is lazy/derived from messages,
+		// so after rewind it naturally returns the correct count. gbot stores
+		// ContextTokens, so recalculate from remaining messages with usage.
+		e.ContextTokens = TokenCountWithEstimation(e.messages)
 	}
 
 	if scope == RewindAll || scope == RewindFilesOnly {

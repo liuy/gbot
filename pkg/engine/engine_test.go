@@ -4123,3 +4123,38 @@ func TestE2E_SingleQueryMultiTool_Rewind(t *testing.T) {
 		t.Errorf("file should be \"original\" after rewind of multi-tool query, got %q", string(data))
 	}
 }
+
+// TestRewindTo_RecalculatesContextTokens verifies that ContextTokens is
+// recalculated from per-message usage after rewind. TS uses lazy/derived
+// tokenCountWithEstimation that walks messages for usage data each time.
+// gbot stores ContextTokens, so it must recalculate after truncation.
+func TestRewindTo_RecalculatesContextTokens(t *testing.T) {
+	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")},
+			Usage: &types.Usage{InputTokens: 50000, OutputTokens: 100, CacheReadInputTokens: 30000}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")},
+			Usage: &types.Usage{InputTokens: 80000, OutputTokens: 200, CacheReadInputTokens: 50000}},
+	}
+	eng.SetMessages(msgs)
+
+	// Simulate ContextTokens from last API response
+	eng.ContextTokens = 130200 // 80000+50000+200
+
+	// Rewind to index 2 (keep msg1+resp1, remove msg2+resp2)
+	result, err := eng.RewindTo(2)
+	if err != nil {
+		t.Fatalf("RewindTo failed: %v", err)
+	}
+	if result.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", result.MessageCount)
+	}
+
+	// ContextTokens should be recalculated from resp1's usage: 50000+30000+100 = 80100
+	if eng.ContextTokens != 80100 {
+		t.Errorf("ContextTokens = %d, want 80100 (precise from resp1 usage)", eng.ContextTokens)
+	}
+}

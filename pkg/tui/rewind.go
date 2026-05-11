@@ -284,6 +284,10 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 		// Restore input text from the selected message for resubmission
 		selectedText := firstTextBlockContent(originalMsgs[idx])
 		a.input.SetValue(selectedText)
+		// TS align: tokenCountWithEstimation is lazy, status bar naturally shows
+		// reduced count. gbot stores it, so sync the status bar after rewind.
+		ctxTokens := engine.TokenCountWithEstimation(a.engine.Messages())
+		a.status.SetContext(ctxTokens, a.engine.ContextWindow())
 	}
 
 	a.markViewportDirty()

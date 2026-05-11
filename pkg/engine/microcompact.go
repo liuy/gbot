@@ -319,6 +319,33 @@ func EstimateMessagesTokens(messages []types.Message) int {
 }
 
 // ---------------------------------------------------------------------------
+// TokenCountWithEstimation — source: tokens.ts:226-261
+// ---------------------------------------------------------------------------
+
+// TokenCountWithEstimation estimates the total context token count by finding
+// the last assistant message with real API usage data and using that as the
+// precise base, then estimating tokens for messages after it.
+// Source: TS tokens.ts:226-261 — tokenCountWithEstimation.
+func TokenCountWithEstimation(messages []types.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != types.RoleAssistant || msg.Usage == nil {
+			continue
+		}
+		// Found an assistant message with usage data.
+		// Source: TS tokens.ts:50-53 — getTokenCountFromUsage.
+		usage := msg.Usage
+		base := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens + usage.OutputTokens
+		// Estimate tokens for messages after this one.
+		delta := EstimateMessagesTokens(messages[i+1:])
+		return base + delta
+	}
+	// No message has usage data — fall back to full estimation.
+	// Source: TS tokens.ts:260.
+	return EstimateMessagesTokens(messages)
+}
+
+// ---------------------------------------------------------------------------
 // nowFunc — injectable clock for testing
 // ---------------------------------------------------------------------------
 

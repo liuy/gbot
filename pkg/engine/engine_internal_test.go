@@ -2792,32 +2792,35 @@ func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
 
 func TestCurrentInputTokens_ExactNoDelta(t *testing.T) {
 	t.Parallel()
-	// ContextTokens is set, last message is assistant → no delta.
-	// Should return ContextTokens exactly.
+	// Last assistant message has Usage → use that as precise base, no delta after it.
+	// TS align: tokenCountWithEstimation finds last assistant with usage.
 	eng := &Engine{
-		ContextTokens: 9000,
+		ContextTokens: 9000, // ignored by new implementation
 		messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
-			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("world")}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("world")},
+				Usage: &types.Usage{InputTokens: 5000, OutputTokens: 100, CacheReadInputTokens: 3900}},
 		},
 	}
 
 	got := eng.currentInputTokens()
+	// getTokenCountFromUsage: 5000 + 3900 + 0 + 100 = 9000
 	if got != 9000 {
-		t.Errorf("currentInputTokens() = %d, want 9000 (exact ContextTokens, no delta)", got)
+		t.Errorf("currentInputTokens() = %d, want 9000 (precise from Usage, no delta)", got)
 	}
 }
 
 func TestCurrentInputTokens_ExactPlusDelta(t *testing.T) {
 	t.Parallel()
-	// ContextTokens is set, but there are messages after the last assistant.
-	// Should return ContextTokens + estimated delta of new messages.
+	// Last assistant message has Usage, messages after it → Usage + estimated delta.
+	// TS align: tokenCountWithEstimation returns base + delta.
 	deltaText := strings.Repeat("x", 4000) // ~1000 tokens (4 chars/token)
 	eng := &Engine{
-		ContextTokens: 9000,
+		ContextTokens: 9000, // ignored by new implementation
 		messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
-			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")},
+				Usage: &types.Usage{InputTokens: 5000, OutputTokens: 100, CacheReadInputTokens: 3900}},
 			// Delta: tool result + user message after last assistant
 			{
 				Role: types.RoleUser,
@@ -2830,11 +2833,10 @@ func TestCurrentInputTokens_ExactPlusDelta(t *testing.T) {
 	}
 
 	got := eng.currentInputTokens()
+	// Base from Usage: 5000+3900+0+100 = 9000. Plus delta (~2000 tokens).
 	if got <= 9000 {
 		t.Errorf("currentInputTokens() = %d, want > 9000 (should include delta from new messages)", got)
 	}
-	// The delta should be roughly 2000 tokens (2 messages × ~1000 each).
-	// Allow generous range since estimation is approximate.
 	if got > 15000 {
 		t.Errorf("currentInputTokens() = %d, unexpectedly high (delta should be ~2000)", got)
 	}
@@ -2863,12 +2865,12 @@ func TestCurrentInputTokens_ZeroContextTokens_Fallback(t *testing.T) {
 	}
 }
 
-func TestCurrentInputTokens_NoAssistantMessage_ReturnsExact(t *testing.T) {
+func TestCurrentInputTokens_NoAssistantMessage_Fallback(t *testing.T) {
 	t.Parallel()
-	// ContextTokens > 0 but no assistant message in history.
-	// Can't determine delta boundary — should return ContextTokens as-is.
+	// No assistant message with Usage → full estimation fallback.
+	// TS align: tokenCountWithEstimation falls back to rough estimation.
 	eng := &Engine{
-		ContextTokens: 9000,
+		ContextTokens: 9000, // ignored — no Usage to derive from
 		messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))}},
@@ -2876,8 +2878,9 @@ func TestCurrentInputTokens_NoAssistantMessage_ReturnsExact(t *testing.T) {
 	}
 
 	got := eng.currentInputTokens()
-	if got != 9000 {
-		t.Errorf("currentInputTokens() = %d, want 9000 (no assistant message, return exact ContextTokens)", got)
+	// Should be ~8000 tokens (2 messages × 4000 chars / 4 chars per token × 4/3 padding).
+	if got < 4000 || got > 16000 {
+		t.Errorf("currentInputTokens() = %d, want ~8000 (full estimation fallback, no Usage)", got)
 	}
 }
 
@@ -5399,13 +5402,20 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	})
 
 	// Only 2 Read results -> pruning keeps KeepRecent=5 -> nothing to clear.
-	// Blocking limit still fires.
+	// Blocking limit still fires. Add Usage to last assistant so
+	// TokenCountWithEstimation derives precise context from per-message data.
 	for i := range 2 {
+		usage := &types.Usage{InputTokens: 17500, OutputTokens: 50}
+		if i == 1 {
+			// Second API response saw full context: 17500*2 = 35000 total.
+			usage = &types.Usage{InputTokens: 35000, OutputTokens: 100}
+		}
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{}`)),
 			},
+			Usage: usage,
 		}))
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role: types.RoleUser,
