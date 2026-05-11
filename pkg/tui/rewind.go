@@ -97,12 +97,23 @@ func hasNonToolResultContent(msg types.Message) bool {
 
 // isSelectableUserMessage returns true if the message is a user message
 // that is selectable for rewind — contains actual user text, skipping
-// tool_result-only and synthetic (interrupt/cancel) messages.
+// tool_result-only, synthetic, compact summary, and task notification messages.
 // Source: TS selectableUserMessagesFilter in MessageSelector.tsx:767.
 func isSelectableUserMessage(msg types.Message) bool {
-	return msg.Role == types.RoleUser &&
-		!isSyntheticMessage(msg) &&
-		hasNonToolResultContent(msg)
+	if msg.Role != types.RoleUser {
+		return false
+	}
+	if isSyntheticMessage(msg) {
+		return false
+	}
+	if !hasNonToolResultContent(msg) {
+		return false
+	}
+	if msg.HasFlag(types.FlagCompactSummary) {
+		return false
+	}
+	text := firstTextBlockContent(msg)
+	return !strings.Contains(text, "<task-notification>")
 }
 
 // lastSelectableUserMessageIndex returns the index of the last user message

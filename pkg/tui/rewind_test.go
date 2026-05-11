@@ -591,6 +591,75 @@ func TestHandleRewind_SyntheticInterruptSkipped(t *testing.T) {
 	}
 }
 
+func TestHandleRewind_CompactBoundarySkipped(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock(`{"compactMetadata":{"trigger":"auto","preTokens":191059}}`),
+		}, Flags: types.FlagCompactSummary, Timestamp: testTime, ID: "uuid-compact"},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("real user message"),
+		}, Timestamp: testTime, ID: "uuid-real"},
+	})
+
+	a := &App{engine: eng, input: NewInput(), repl: NewReplState()}
+	a.width = 80
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog")
+	}
+	if len(a.activeDialog.options) != 1 {
+		t.Fatalf("expected 1 option (compact filtered), got %d", len(a.activeDialog.options))
+	}
+}
+
+func TestHandleRewind_TaskNotificationSkipped(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock(`<task-notification><task-id>bg-1</task-id><status>completed</status></task-notification>`),
+		}, Timestamp: testTime, ID: "uuid-task"},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("real user message"),
+		}, Timestamp: testTime, ID: "uuid-real"},
+	})
+
+	a := &App{engine: eng, input: NewInput(), repl: NewReplState()}
+	a.width = 80
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog")
+	}
+	if len(a.activeDialog.options) != 1 {
+		t.Fatalf("expected 1 option (task-notification filtered), got %d", len(a.activeDialog.options))
+	}
+}
+
+func TestHandleRewind_SessionResumeSkipped(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("This session is being continued from a previous conversation that ran out of context."),
+		}, Flags: types.FlagCompactSummary, Timestamp: testTime, ID: "uuid-resume"},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("real user message"),
+		}, Timestamp: testTime, ID: "uuid-real"},
+	})
+
+	a := &App{engine: eng, input: NewInput(), repl: NewReplState()}
+	a.width = 80
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog")
+	}
+	if len(a.activeDialog.options) != 1 {
+		t.Fatalf("expected 1 option (session resume filtered), got %d", len(a.activeDialog.options))
+	}
+}
+
 func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	eng := newTestEngine()
 

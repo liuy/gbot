@@ -448,6 +448,27 @@ func TestMetadataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMetadataRoundTrip_IsCompactSummary(t *testing.T) {
+	// Only IsCompactSummary, no other metadata — tests the nil guard fix.
+	original := types.Message{Flags: types.FlagCompactSummary}
+	metadata := original.MetadataToJSON()
+	if metadata == "" {
+		t.Fatal("MetadataToJSON should not return empty for IsCompactSummary=true")
+	}
+
+	var restored types.Message
+	restored.SetMetadataFromJSON(metadata)
+	if !restored.HasFlag(types.FlagCompactSummary) {
+		t.Error("FlagCompactSummary should be set after round trip")
+	}
+
+	// False case: default zero value should not produce metadata.
+	original2 := types.Message{}
+	if got := original2.MetadataToJSON(); got != "" {
+		t.Errorf("expected empty for zero-value message, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PermissionMode constants
 // ---------------------------------------------------------------------------

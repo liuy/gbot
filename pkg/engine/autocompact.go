@@ -237,6 +237,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 		Role:      types.RoleUser,
 		Content:   []types.ContentBlock{types.NewTextBlock(boundaryContent)},
 		Timestamp: time.Now(),
+		Flags:     types.FlagCompactSummary,
 	})
 
 	// Summary message (if available)
@@ -246,6 +247,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 			Role:      types.RoleUser,
 			Content:   []types.ContentBlock{types.NewTextBlock(summaryContent)},
 			Timestamp: time.Now(),
+			Flags:     types.FlagCompactSummary,
 		})
 	}
 
