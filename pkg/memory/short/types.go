@@ -24,6 +24,7 @@ type TranscriptMessage struct {
 	Type        string // user / assistant / system / attachment / progress
 	Subtype     string // compact_boundary / informational / tool_result etc.
 	Content     string // Complete JSON message body
+	Metadata    string // JSON: usage, model, stop_reason (for assistant messages)
 	CreatedAt   time.Time
 }
 

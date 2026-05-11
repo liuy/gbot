@@ -1141,7 +1141,7 @@ func TestScanMessage_Error(t *testing.T) {
 	}
 	_ = rows.Close()
 
-	rows, err = store.DB().Query("SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid, is_sidechain, type, subtype, content, created_at FROM messages WHERE session_id = ?", sessionID)
+	rows, err = store.DB().Query("SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid, is_sidechain, type, subtype, content, metadata, created_at FROM messages WHERE session_id = ?", sessionID)
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}

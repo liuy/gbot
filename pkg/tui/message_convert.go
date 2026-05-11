@@ -62,12 +62,14 @@ func StoreMessagesToEngine(storeMsgs []short.TranscriptMessage) ([]types.Message
 			engineBlocks = append(engineBlocks, storeBlockToEngine(sb))
 		}
 
-		result = append(result, types.Message{
+		msg := types.Message{
 			ID:        sm.UUID,
 			Role:      role,
 			Content:   engineBlocks,
 			Timestamp: sm.CreatedAt,
-		})
+		}
+		msg.SetMetadataFromJSON(sm.Metadata)
+		result = append(result, msg)
 	}
 
 	return result, nil
@@ -102,6 +104,7 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]short.TranscriptMessag
 			UUID:      msgUUID,
 			Type:      string(em.Role),
 			Content:   string(contentBytes),
+			Metadata:  em.MetadataToJSON(),
 			CreatedAt: em.Timestamp,
 		})
 	}

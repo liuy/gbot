@@ -376,11 +376,13 @@ func ShortMessageToEngine(m *short.TranscriptMessage) types.Message {
 	var blocks []short.ContentBlock
 	if err := json.Unmarshal([]byte(m.Content), &blocks); err != nil {
 		// Fall back: treat entire content as text
-		return types.Message{
+		msg := types.Message{
 			Role:      types.Role(m.Type),
 			Content:   []types.ContentBlock{types.NewTextBlock(m.Content)},
 			Timestamp: m.CreatedAt,
 		}
+		msg.SetMetadataFromJSON(m.Metadata)
+		return msg
 	}
 
 	engineBlocks := make([]types.ContentBlock, 0, len(blocks))
@@ -398,9 +400,11 @@ func ShortMessageToEngine(m *short.TranscriptMessage) types.Message {
 		})
 	}
 
-	return types.Message{
+	msg := types.Message{
 		Role:      types.Role(m.Type),
 		Content:   engineBlocks,
 		Timestamp: m.CreatedAt,
 	}
+	msg.SetMetadataFromJSON(m.Metadata)
+	return msg
 }

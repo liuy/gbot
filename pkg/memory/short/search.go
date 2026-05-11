@@ -119,6 +119,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		var score float64
 		var subtype sql.NullString
 		var parentUUID, logicalParentUUID sql.NullString
+		var metadata sql.NullString
 
 		if err := rows.Scan(
 			&msg.Seq,
@@ -130,6 +131,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 			&msg.Type,
 			&subtype,
 			&msg.Content,
+			&metadata,
 			&msg.CreatedAt,
 			&score,
 		); err != nil {
@@ -141,6 +143,9 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 		}
 		if logicalParentUUID.Valid {
 			msg.LogicalParentUUID = logicalParentUUID.String
+		}
+		if metadata.Valid {
+			msg.Metadata = metadata.String
 		}
 		if subtype.Valid {
 			msg.Subtype = subtype.String

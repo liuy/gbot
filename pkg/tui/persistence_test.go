@@ -86,8 +86,8 @@ func TestPersistTurn_SuccessfulPersist(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -139,7 +139,7 @@ func TestPersistTurn_Incremental(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -157,9 +157,9 @@ func TestPersistTurn_Incremental(t *testing.T) {
 
 	// Add more messages
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply1")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply1")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	// Second persist: only the 2 new messages
@@ -197,8 +197,8 @@ func TestPersistTurn_AutoTitle(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -239,8 +239,8 @@ func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -352,8 +352,8 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	a := &App{
@@ -368,10 +368,10 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 
 	// Add more messages
 	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second prompt")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply2")}, Timestamp: time.Now()},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply2")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
 
 	// Second persist — should NOT change title
@@ -447,5 +447,119 @@ func TestSetStore_SyncsReplMessagesFromEngine(t *testing.T) {
 	// committedCount should equal message count
 	if a.committedCount != len(msgs) {
 		t.Errorf("committedCount = %d, want %d", a.committedCount, len(msgs))
+	}
+}
+
+// TestStoreRoundTrip_PreservesUsage verifies that Usage/Model/StopReason survive
+// the engine→store→engine round-trip. This is critical for TokenCountWithEstimation
+// which depends on per-message Usage after session resume.
+func TestStoreRoundTrip_PreservesUsage(t *testing.T) {
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Engine messages with full metadata
+	engineMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{
+			Role:       types.RoleAssistant,
+			Content:    []types.ContentBlock{types.NewTextBlock("hi there")},
+			Model:      "minimax-2.7",
+			StopReason: "end_turn",
+			Usage: &types.Usage{
+				InputTokens:          50000,
+				OutputTokens:         100,
+				CacheReadInputTokens: 30000,
+			},
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("follow up")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{
+			Role:       types.RoleAssistant,
+			Content:    []types.ContentBlock{types.NewTextBlock("response")},
+			Model:      "minimax-2.7",
+			StopReason: "tool_use",
+			Usage: &types.Usage{
+				InputTokens:          80000,
+				OutputTokens:         200,
+				CacheReadInputTokens: 50000,
+			},
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}
+
+	// Engine → Store
+	storeMsgs, err := EngineMessagesToStore(engineMsgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+	storePtrs := make([]*short.TranscriptMessage, len(storeMsgs))
+	for i := range storeMsgs { storePtrs[i] = &storeMsgs[i] }
+	if err := store.AppendMessages(session.SessionID, storePtrs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	// Store → Engine (simulate resume)
+	loaded, err := loadAndConvertMessages(store, session.SessionID)
+	if err != nil {
+		t.Fatalf("loadAndConvertMessages: %v", err)
+	}
+	if len(loaded) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(loaded))
+	}
+
+	// Verify Usage preserved on assistant messages
+	msg1 := loaded[1]
+	if msg1.Usage == nil {
+		t.Fatal("msg[1] Usage is nil — metadata lost during round-trip")
+	}
+	if msg1.Usage.InputTokens != 50000 {
+		t.Errorf("msg[1] Usage.InputTokens = %d, want 50000", msg1.Usage.InputTokens)
+	}
+	if msg1.Usage.OutputTokens != 100 {
+		t.Errorf("msg[1] Usage.OutputTokens = %d, want 100", msg1.Usage.OutputTokens)
+	}
+	if msg1.Usage.CacheReadInputTokens != 30000 {
+		t.Errorf("msg[1] Usage.CacheReadInputTokens = %d, want 30000", msg1.Usage.CacheReadInputTokens)
+	}
+	if msg1.Model != "minimax-2.7" {
+		t.Errorf("msg[1] Model = %q, want %q", msg1.Model, "minimax-2.7")
+	}
+	if msg1.StopReason != "end_turn" {
+		t.Errorf("msg[1] StopReason = %q, want %q", msg1.StopReason, "end_turn")
+	}
+
+	msg3 := loaded[3]
+	if msg3.Usage == nil {
+		t.Fatal("msg[3] Usage is nil — metadata lost during round-trip")
+	}
+	if msg3.Usage.InputTokens != 80000 {
+		t.Errorf("msg[3] Usage.InputTokens = %d, want 80000", msg3.Usage.InputTokens)
+	}
+	if msg3.Model != "minimax-2.7" {
+		t.Errorf("msg[3] Model = %q, want %q", msg3.Model, "minimax-2.7")
+	}
+	if msg3.StopReason != "tool_use" {
+		t.Errorf("msg[3] StopReason = %q, want %q", msg3.StopReason, "tool_use")
+	}
+
+	// Verify user messages have no Usage
+	if loaded[0].Usage != nil {
+		t.Error("msg[0] (user) should not have Usage")
+	}
+
+	// Verify TokenCountWithEstimation works with restored messages
+	tokens := engine.TokenCountWithEstimation(loaded)
+	// Should use msg[3]'s usage: 80000+50000+200 = 130200
+	// (no messages after it, so no delta)
+	if tokens != 130200 {
+		t.Errorf("TokenCountWithEstimation = %d, want 130200", tokens)
 	}
 }

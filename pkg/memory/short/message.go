@@ -50,7 +50,7 @@ func (s *Store) LoadMessages(sessionID string) ([]*TranscriptMessage, error) {
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
-		       is_sidechain, type, subtype, content, created_at
+		       is_sidechain, type, subtype, content, metadata, created_at
 		FROM messages
 		WHERE session_id = ?
 		ORDER BY seq ASC
@@ -86,7 +86,7 @@ func (s *Store) LoadMessagesAfterSeq(sessionID string, afterSeq int) ([]*Transcr
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
-		       is_sidechain, type, subtype, content, created_at
+		       is_sidechain, type, subtype, content, metadata, created_at
 		FROM messages
 		WHERE session_id = ? AND seq > ?
 		ORDER BY seq ASC
@@ -117,7 +117,7 @@ func (s *Store) GetLastBoundary(sessionID string) (*TranscriptMessage, int, erro
 
 	query := `
 		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
-		       is_sidechain, type, subtype, content, created_at
+		       is_sidechain, type, subtype, content, metadata, created_at
 		FROM messages
 		WHERE session_id = ? AND type = 'system' AND subtype = 'compact_boundary'
 		ORDER BY seq DESC
@@ -273,7 +273,7 @@ func (s *Store) LoadSidechainTranscript(sessionID string, agentID string) ([]*Tr
 
 	query := `
 		SELECT m.seq, m.session_id, m.uuid, m.parent_uuid, m.logical_parent_uuid,
-		       m.is_sidechain, m.type, m.subtype, m.content, m.created_at
+		       m.is_sidechain, m.type, m.subtype, m.content, m.metadata, m.created_at
 		FROM messages m
 		WHERE m.session_id = ? AND m.is_sidechain = 1
 		ORDER BY m.seq ASC
@@ -414,12 +414,13 @@ func (s *Store) appendMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMes
 	// Insert message
 	query := `
 		INSERT INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
-		                     is_sidechain, type, subtype, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                     is_sidechain, type, subtype, content, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	result, err := tx.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
 		msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
+			nullIfEmpty(msg.Metadata),
 		createdAt)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
@@ -474,12 +475,16 @@ func (s *Store) queryOneMessage(query string, args ...any) (*TranscriptMessage, 
 // scanMessage scans a message from a rows object.
 func (s *Store) scanMessage(rows *sql.Rows) (*TranscriptMessage, error) {
 	var msg TranscriptMessage
+	var metadata sql.NullString
 	err := rows.Scan(
 		&msg.Seq, &msg.SessionID, &msg.UUID, &msg.ParentUUID, &msg.LogicalParentUUID,
-		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &msg.CreatedAt,
+		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &metadata, &msg.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if metadata.Valid {
+		msg.Metadata = metadata.String
 	}
 	return &msg, nil
 }
@@ -487,12 +492,24 @@ func (s *Store) scanMessage(rows *sql.Rows) (*TranscriptMessage, error) {
 // scanMessageFromRow scans a message from a single row.
 func (s *Store) scanMessageFromRow(row *sql.Row) (*TranscriptMessage, error) {
 	var msg TranscriptMessage
+	var metadata sql.NullString
 	err := row.Scan(
 		&msg.Seq, &msg.SessionID, &msg.UUID, &msg.ParentUUID, &msg.LogicalParentUUID,
-		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &msg.CreatedAt,
+		&msg.IsSidechain, &msg.Type, &msg.Subtype, &msg.Content, &metadata, &msg.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if metadata.Valid {
+		msg.Metadata = metadata.String
+	}
 	return &msg, nil
+}
+
+// nullIfEmpty returns nil for empty strings, useful for nullable DB columns.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

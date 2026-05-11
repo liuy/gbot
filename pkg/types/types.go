@@ -50,6 +50,45 @@ func (u Usage) TotalInputTokens() int {
 	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
+// SetMetadataFromJSON restores Usage/Model/StopReason from a JSON metadata string.
+// Used by storage layer to deserialize the metadata column back into message fields.
+func (m *Message) SetMetadataFromJSON(metadata string) {
+	if metadata == "" {
+		return
+	}
+	var meta struct {
+		Usage      *Usage `json:"usage,omitempty"`
+		Model      string `json:"model,omitempty"`
+		StopReason string `json:"stop_reason,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &meta); err == nil {
+		m.Usage = meta.Usage
+		m.Model = meta.Model
+		m.StopReason = meta.StopReason
+	}
+}
+
+// MetadataToJSON serializes Usage/Model/StopReason to a JSON metadata string.
+// Returns empty string if no metadata fields are set.
+func (m *Message) MetadataToJSON() string {
+	if m.Usage == nil && m.Model == "" && m.StopReason == "" {
+		return ""
+	}
+	meta := struct {
+		Usage      *Usage `json:"usage,omitempty"`
+		Model      string `json:"model,omitempty"`
+		StopReason string `json:"stop_reason,omitempty"`
+	}{
+		Usage:      m.Usage,
+		Model:      m.Model,
+		StopReason: m.StopReason,
+	}
+	if b, err := json.Marshal(meta); err == nil {
+		return string(b)
+	}
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 // ContentBlock types — source: Anthropic API ContentBlock variants
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ package types_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,142 @@ func TestUsageJSON(t *testing.T) {
 	}
 	if got.CacheReadInputTokens != 10 {
 		t.Errorf("CacheReadInputTokens = %d, want 10", got.CacheReadInputTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Metadata JSON serialization (SetMetadataFromJSON / MetadataToJSON)
+// ---------------------------------------------------------------------------
+
+func TestSetMetadataFromJSON_Empty(t *testing.T) {
+	var msg types.Message
+	msg.SetMetadataFromJSON("")
+	if msg.Usage != nil {
+		t.Error("expected nil Usage for empty metadata")
+	}
+	if msg.Model != "" {
+		t.Error("expected empty Model for empty metadata")
+	}
+	if msg.StopReason != "" {
+		t.Error("expected empty StopReason for empty metadata")
+	}
+}
+
+func TestSetMetadataFromJSON_FullMetadata(t *testing.T) {
+	var msg types.Message
+	msg.SetMetadataFromJSON(`{"usage":{"input_tokens":50000,"output_tokens":100,"cache_read_input_tokens":30000},"model":"sonnet","stop_reason":"end_turn"}`)
+	if msg.Usage == nil {
+		t.Fatal("expected non-nil Usage")
+	}
+	if msg.Usage.InputTokens != 50000 {
+		t.Errorf("InputTokens = %d, want 50000", msg.Usage.InputTokens)
+	}
+	if msg.Usage.OutputTokens != 100 {
+		t.Errorf("OutputTokens = %d, want 100", msg.Usage.OutputTokens)
+	}
+	if msg.Usage.CacheReadInputTokens != 30000 {
+		t.Errorf("CacheReadInputTokens = %d, want 30000", msg.Usage.CacheReadInputTokens)
+	}
+	if msg.Model != "sonnet" {
+		t.Errorf("Model = %q, want %q", msg.Model, "sonnet")
+	}
+	if msg.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", msg.StopReason, "end_turn")
+	}
+}
+
+func TestSetMetadataFromJSON_PartialMetadata(t *testing.T) {
+	var msg types.Message
+	msg.SetMetadataFromJSON(`{"model":"opus"}`)
+	if msg.Usage != nil {
+		t.Error("expected nil Usage for partial metadata")
+	}
+	if msg.Model != "opus" {
+		t.Errorf("Model = %q, want %q", msg.Model, "opus")
+	}
+	if msg.StopReason != "" {
+		t.Error("expected empty StopReason for partial metadata")
+	}
+}
+
+func TestSetMetadataFromJSON_InvalidJSON(t *testing.T) {
+	var msg types.Message
+	msg.SetMetadataFromJSON(`{invalid json`)
+	if msg.Usage != nil {
+		t.Error("expected nil Usage for invalid JSON")
+	}
+	if msg.Model != "" {
+		t.Error("expected empty Model for invalid JSON")
+	}
+}
+
+func TestMetadataToJSON_NoFields(t *testing.T) {
+	msg := types.Message{}
+	got := msg.MetadataToJSON()
+	if got != "" {
+		t.Errorf("expected empty string for no fields, got %q", got)
+	}
+}
+
+func TestMetadataToJSON_AllFields(t *testing.T) {
+	msg := types.Message{
+		Usage:      &types.Usage{InputTokens: 50000, OutputTokens: 100, CacheReadInputTokens: 30000},
+		Model:      "sonnet",
+		StopReason: "end_turn",
+	}
+	got := msg.MetadataToJSON()
+	if !strings.Contains(got, `"usage"`) {
+		t.Error("expected usage field in JSON")
+	}
+	if !strings.Contains(got, `"model":"sonnet"`) {
+		t.Error("expected model field in JSON")
+	}
+	if !strings.Contains(got, `"stop_reason":"end_turn"`) {
+		t.Error("expected stop_reason field in JSON")
+	}
+}
+
+func TestMetadataToJSON_OnlyUsage(t *testing.T) {
+	msg := types.Message{
+		Usage: &types.Usage{InputTokens: 1000},
+	}
+	got := msg.MetadataToJSON()
+	if !strings.Contains(got, `"usage"`) {
+		t.Error("expected usage field in JSON")
+	}
+	if strings.Contains(got, `"model"`) {
+		t.Error("should not contain model field when empty")
+	}
+}
+
+func TestMetadataRoundTrip(t *testing.T) {
+	original := types.Message{
+		Usage:      &types.Usage{InputTokens: 80000, OutputTokens: 200, CacheReadInputTokens: 50000, CacheCreationInputTokens: 1000},
+		Model:      "minimax-2.7",
+		StopReason: "tool_use",
+	}
+	metadata := original.MetadataToJSON()
+
+	var restored types.Message
+	restored.SetMetadataFromJSON(metadata)
+
+	if restored.Usage.InputTokens != 80000 {
+		t.Errorf("InputTokens = %d, want 80000", restored.Usage.InputTokens)
+	}
+	if restored.Usage.OutputTokens != 200 {
+		t.Errorf("OutputTokens = %d, want 200", restored.Usage.OutputTokens)
+	}
+	if restored.Usage.CacheReadInputTokens != 50000 {
+		t.Errorf("CacheReadInputTokens = %d, want 50000", restored.Usage.CacheReadInputTokens)
+	}
+	if restored.Usage.CacheCreationInputTokens != 1000 {
+		t.Errorf("CacheCreationInputTokens = %d, want 1000", restored.Usage.CacheCreationInputTokens)
+	}
+	if restored.Model != "minimax-2.7" {
+		t.Errorf("Model = %q, want %q", restored.Model, "minimax-2.7")
+	}
+	if restored.StopReason != "tool_use" {
+		t.Errorf("StopReason = %q, want %q", restored.StopReason, "tool_use")
 	}
 }
 

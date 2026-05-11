@@ -135,6 +135,7 @@ func (s *Store) initSchema() error {
 		type              TEXT NOT NULL,
 		subtype           TEXT DEFAULT '',
 		content           TEXT NOT NULL,
+		metadata          TEXT DEFAULT NULL,
 		created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -172,5 +173,12 @@ func (s *Store) initSchema() error {
 	);
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+
+	// Migrate: add metadata column if missing (pre-metadata databases).
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
+
+	return nil
 }
