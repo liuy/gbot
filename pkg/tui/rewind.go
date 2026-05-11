@@ -95,10 +95,19 @@ func hasNonToolResultContent(msg types.Message) bool {
 	return false
 }
 
-// lastUserMessageIndex returns the index of the last user message, or -1.
-func lastUserMessageIndex(msgs []types.Message) int {
+// lastSelectableUserMessageIndex returns the index of the last user message
+// that is selectable for rewind — contains actual user text, skipping
+// tool_result-only and synthetic (interrupt/cancel) messages.
+// Source: TS selectableUserMessagesFilter in MessageSelector.tsx:767.
+func lastSelectableUserMessageIndex(msgs []types.Message) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == types.RoleUser {
+		if msgs[i].Role != types.RoleUser {
+			continue
+		}
+		if isSyntheticMessage(msgs[i]) {
+			continue
+		}
+		if hasNonToolResultContent(msgs[i]) {
 			return i
 		}
 	}
@@ -122,7 +131,7 @@ func firstTextBlockContent(msg types.Message) string {
 // Source: TS restoreMessageSync in REPL.tsx
 func (a *App) tryAutoRewind() bool {
 	msgs := a.engine.Messages()
-	lastUserIdx := lastUserMessageIndex(msgs)
+	lastUserIdx := lastSelectableUserMessageIndex(msgs)
 	if lastUserIdx < 0 {
 		return false
 	}

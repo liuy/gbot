@@ -4264,3 +4264,115 @@ func TestRewindTo_RecalculatesContextTokens(t *testing.T) {
 		t.Errorf("ContextTokens = %d, want 80100 (precise from resp1 usage)", eng.ContextTokens)
 	}
 }
+
+// validateToolPairing checks that every tool_use block in assistant messages
+// has a matching tool_result in a subsequent user message. Returns the first
+// orphaned tool_use ID, or "" if all are paired.
+func validateToolPairing(msgs []types.Message) string {
+	// Collect all tool_result IDs
+	hasResult := map[string]bool{}
+	for _, msg := range msgs {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult {
+				hasResult[block.ToolUseID] = true
+			}
+		}
+	}
+
+	// Check every tool_use has a result
+	for i, msg := range msgs {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse && !hasResult[block.ID] {
+				return fmt.Sprintf("tool_use %s at msg[%d] has no matching tool_result", block.ID, i)
+			}
+		}
+	}
+	return ""
+}
+
+// TestE2E_Interrupt_DuringToolExecution_MessagePairing verifies that when the
+// user cancels (ESC) while a tool is executing, the engine generates synthetic
+// tool_results for orphaned tool_uses, and the resulting message sequence is
+// valid for subsequent API calls (no 2013 error).
+//
+// This is a regression test for the bug where auto-rewind after interrupt
+// would remove tool_result but leave tool_use, causing API 2013.
+func TestE2E_Interrupt_DuringToolExecution_MessagePairing(t *testing.T) {
+	blockStarted := make(chan struct{})
+
+	mt := &mockTool{
+		name:    "Bash",
+		enabled: true,
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(blockStarted)
+			<-ctx.Done() // simulate long-running tool
+			return nil, ctx.Err()
+		},
+	}
+
+	// LLM returns tool_use for Bash
+	toolEvents := toolUseStreamEvents("test-model", "tu_interrupt_1", "Bash", `{"cmd":"sleep 999"}`)
+	mp := &mockProvider{}
+	mp.addResponse(toolEvents, nil)
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{mt},
+		Model:      "test-model",
+		Dispatcher: ec,
+		Logger:     slog.Default(),
+	})
+	defer eng.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel while tool is executing
+	go func() {
+		<-blockStarted
+		cancel()
+	}()
+
+	result := eng.QuerySync(ctx, "run slow command", nil)
+	if result.Error == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+
+	// Validate tool_use/tool_result pairing — this catches the 2013 root cause
+	msgs := eng.Messages()
+	if errMsg := validateToolPairing(msgs); errMsg != "" {
+		t.Fatalf("message pairing broken after interrupt: %s", errMsg)
+	}
+
+	// Verify a synthetic tool_result exists for the interrupted tool
+	found := false
+	for _, msg := range msgs {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult && block.ToolUseID == "tu_interrupt_1" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected synthetic tool_result for tu_interrupt_1")
+	}
+
+	// Simulate next query with a fresh provider — verify no 2013
+	mp2 := &mockProvider{}
+	mp2.addResponse(textStreamEvents("test-model", "ok"), nil)
+	eng.SetProvider(mp2)
+
+	result2 := eng.QuerySync(context.Background(), "next query", nil)
+	if result2.Error != nil {
+		t.Fatalf("next query failed: %v — message sequence invalid after interrupt", result2.Error)
+	}
+}

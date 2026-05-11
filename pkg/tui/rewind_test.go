@@ -142,20 +142,39 @@ func TestMessagesAfterAreOnlySynthetic_ToolResultUser(t *testing.T) {
 	}
 }
 
-func TestLastUserMessageIndex(t *testing.T) {
+func TestLastSelectableUserMessageIndex(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("second")}},
 	}
-	if got := lastUserMessageIndex(msgs); got != 2 {
+	if got := lastSelectableUserMessageIndex(msgs); got != 2 {
 		t.Errorf("expected index 2, got %d", got)
 	}
-	if got := lastUserMessageIndex(msgs[:1]); got != 0 {
+	if got := lastSelectableUserMessageIndex(msgs[:1]); got != 0 {
 		t.Errorf("expected index 0, got %d", got)
 	}
-	if got := lastUserMessageIndex(nil); got != -1 {
+	if got := lastSelectableUserMessageIndex(nil); got != -1 {
 		t.Errorf("expected -1 for nil, got %d", got)
+	}
+
+	// Tool_result-only user messages should be skipped
+	toolResultMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("user query")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewToolUseBlock("tu1", "Read", json.RawMessage(`{}`))}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewToolResultBlock("tu1", json.RawMessage(`"data"`), false)}},
+	}
+	if got := lastSelectableUserMessageIndex(toolResultMsgs); got != 0 {
+		t.Errorf("expected index 0 (skip tool_result msg), got %d", got)
+	}
+
+	// Synthetic messages (interrupt text) should be skipped
+	syntheticMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("user query")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(types.InterruptMessage)}},
+	}
+	if got := lastSelectableUserMessageIndex(syntheticMsgs); got != 0 {
+		t.Errorf("expected index 0 (skip synthetic msg), got %d", got)
 	}
 }
 

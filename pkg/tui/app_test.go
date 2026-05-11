@@ -6215,3 +6215,88 @@ func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
 		t.Error("tool should not exist in pending map")
 	}
 }
+
+// TestAutoRewind_Skipped_WhenToolUsePresent verifies that auto-rewind does NOT
+// fire when the engine has tool_use/tool_result pairs in the current turn.
+// Regression test: auto-rewind was incorrectly removing tool_result but leaving
+// tool_use, causing API 2013 "tool call result does not follow tool call".
+func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.committedCount = 1
+
+	// Set up engine messages simulating: user query → tool_use → tool_result + interrupt
+	app.engine.SetMessages([]types.Message{
+		{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock("read file")},
+		},
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock("tu_1", "Read", json.RawMessage(`{"file_path":"test.go"}`)),
+			},
+		},
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu_1", json.RawMessage(`"file contents here"`), false),
+				types.NewTextBlock(types.InterruptMessage),
+			},
+		},
+	})
+
+	// Set up TUI state as if streaming just ended
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.AppendChunk("partial response")
+	app.progressStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // deterministic time for stats
+
+	// Simulate queryEnd with AbortError — this triggers tryAutoRewind
+	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
+	app.updateRepl(queryEndMsg{Err: abortErr})
+
+	// Verify auto-rewind did NOT fire — engine messages should still have tool_use
+	msgs := app.engine.Messages()
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages after abort (no rewind), got %d", len(msgs))
+	}
+
+	// Verify tool_use still exists in messages
+	hasToolUse := false
+	for _, msg := range msgs {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolUse {
+				hasToolUse = true
+			}
+		}
+	}
+	if !hasToolUse {
+		t.Error("tool_use was removed — auto-rewind should not fire when tool_use is present")
+	}
+
+	// Validate tool pairing — tool_use must have matching tool_result
+	for i, msg := range msgs {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, block := range msg.Content {
+			if block.Type != types.ContentTypeToolUse {
+				continue
+			}
+			found := false
+			for j := i + 1; j < len(msgs); j++ {
+				for _, rb := range msgs[j].Content {
+					if rb.Type == types.ContentTypeToolResult && rb.ToolUseID == block.ID {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Errorf("tool_use %s at msg[%d] has no matching tool_result — will cause API 2013", block.ID, i)
+			}
+		}
+	}
+}
