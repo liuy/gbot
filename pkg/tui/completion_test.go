@@ -618,3 +618,172 @@ func TestCompletions_Render_MaxVisibleRows(t *testing.T) {
 		t.Fatalf("expected %d visible rows, got %d", maxVisibleCompletions, len(lines))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Part-based matching — source: TS commandSuggestions.ts
+// ---------------------------------------------------------------------------
+
+func TestCompletions_PartMatch_PluginSkill(t *testing.T) {
+	// /ral should match "oh-my-claudecode:ralph" via part prefix
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	commandDefs = map[string]CommandDef{
+		"clear": {Description: "Clear conversation", HasArgs: false},
+	}
+	skillDefs = map[string]CommandDef{
+		"oh-my-claudecode:ralph":    {Description: "Persistent agent loop", HasArgs: true},
+		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
+		"oh-my-claudecode:cancel":    {Description: "Cancel active mode", HasArgs: false},
+	}
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/ral", true)
+
+	if !c.Visible() {
+		t.Fatal("expected completions visible for /ral")
+	}
+	items := c.Items()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d: %v", len(items), items)
+	}
+	if items[0].Name != "oh-my-claudecode:ralph" {
+		t.Errorf("item = %q, want %q", items[0].Name, "oh-my-claudecode:ralph")
+	}
+}
+
+func TestCompletions_PartMatch_AutoPrefix(t *testing.T) {
+	// /auto should match "oh-my-claudecode:autopilot" via part prefix
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	commandDefs = map[string]CommandDef{}
+	skillDefs = map[string]CommandDef{
+		"oh-my-claudecode:ralph":    {Description: "Persistent agent loop", HasArgs: true},
+		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
+	}
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/auto", true)
+
+	if !c.Visible() {
+		t.Fatal("expected completions visible for /auto")
+	}
+	items := c.Items()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d: %v", len(items), items)
+	}
+	if items[0].Name != "oh-my-claudecode:autopilot" {
+		t.Errorf("item = %q, want %q", items[0].Name, "oh-my-claudecode:autopilot")
+	}
+}
+
+func TestCompletions_PartMatch_FullPrefixWins(t *testing.T) {
+	// If a builtin starts with "r" and a plugin skill has part "ralph",
+	// the full prefix match (builtin) should appear first.
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	commandDefs = map[string]CommandDef{
+		"rewind": {Description: "Rewind conversation", HasArgs: false},
+	}
+	skillDefs = map[string]CommandDef{
+		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
+	}
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/r", true)
+
+	if !c.Visible() {
+		t.Fatal("expected completions visible for /r")
+	}
+	items := c.Items()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d: %v", len(items), items)
+	}
+	// rewind (priority 1 = full prefix) must come before oh-my-claudecode:ralph (priority 2 = part prefix)
+	if items[0].Name != "rewind" {
+		t.Errorf("first item = %q, want %q (full prefix should win)", items[0].Name, "rewind")
+	}
+	if items[1].Name != "oh-my-claudecode:ralph" {
+		t.Errorf("second item = %q, want %q", items[1].Name, "oh-my-claudecode:ralph")
+	}
+}
+
+func TestCompletions_PartMatch_ClaudecodeMatches(t *testing.T) {
+	// /claude should match "oh-my-claudecode:ralph" via part prefix on "claudecode"
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	commandDefs = map[string]CommandDef{}
+	skillDefs = map[string]CommandDef{
+		"oh-my-claudecode:ralph":  {Description: "Persistent agent loop", HasArgs: true},
+		"oh-my-claudecode:cancel": {Description: "Cancel mode", HasArgs: false},
+	}
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/claude", true)
+
+	if !c.Visible() {
+		t.Fatal("expected completions visible for /claude")
+	}
+	items := c.Items()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (both have claudecode part), got %d: %v", len(items), items)
+	}
+}
+
+func TestCompletions_PartMatch_NoMatch(t *testing.T) {
+	// /xyz should not match any plugin skill
+	origCommands := sortedCommands
+	origDefs := commandDefs
+	origSkills := skillDefs
+	t.Cleanup(func() {
+		sortedCommands = origCommands
+		commandDefs = origDefs
+		skillDefs = origSkills
+	})
+
+	commandDefs = map[string]CommandDef{
+		"clear": {Description: "Clear conversation", HasArgs: false},
+	}
+	skillDefs = map[string]CommandDef{
+		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
+	}
+	sortedCommands = AllCommands()
+
+	c := NewCompletions()
+	c.Update("/xyz", true)
+
+	if c.Visible() {
+		t.Error("should not be visible with no matches")
+	}
+}

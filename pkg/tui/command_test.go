@@ -113,6 +113,74 @@ func TestRegisterSlashCommands_Idempotent(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// commandParts — part splitting
+// Source: TS commandSuggestions.ts:36-39
+// ---------------------------------------------------------------------------
+
+func TestCommandParts(t *testing.T) {
+	tests := []struct {
+		name string
+		want []string
+	}{
+		{"oh-my-claudecode:ralph", []string{"oh", "my", "claudecode", "ralph"}},
+		{"session", []string{"session"}},
+		{"foo_bar:baz-qux", []string{"foo", "bar", "baz", "qux"}},
+		{"a:b:c", []string{"a", "b", "c"}},
+		{"", []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commandParts(tc.name)
+			if len(got) != len(tc.want) {
+				t.Fatalf("commandParts(%q) = %v, want %v", tc.name, got, tc.want)
+			}
+			for i, v := range got {
+				if v != tc.want[i] {
+					t.Errorf("commandParts(%q)[%d] = %q, want %q", tc.name, i, v, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// commandMatchPriority — priority-based matching
+// Source: TS commandSuggestions.ts:406-497
+// ---------------------------------------------------------------------------
+
+func TestCommandMatchPriority(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		// Exact match
+		{"session", "session", 0},
+		// Full prefix match
+		{"session", "s", 1},
+		{"session", "ses", 1},
+		{"oh-my-claudecode:ralph", "oh", 1},
+		// Part prefix match
+		{"oh-my-claudecode:ralph", "ral", 2},
+		{"oh-my-claudecode:ralph", "ralph", 2},
+		{"oh-my-claudecode:autopilot", "auto", 2},
+		{"oh-my-claudecode:autopilot", "claude", 2},
+		// No match
+		{"session", "xyz", -1},
+		{"oh-my-claudecode:ralph", "zzz", -1},
+		{"clear", "xxx", -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name+"/"+tc.query, func(t *testing.T) {
+			got := commandMatchPriority(tc.name, tc.query)
+			if got != tc.want {
+				t.Errorf("commandMatchPriority(%q, %q) = %d, want %d", tc.name, tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLookupSlashCommand(t *testing.T) {
 	tests := []struct {
 		input    string

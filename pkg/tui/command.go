@@ -133,6 +133,31 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 
 // handleClear implements the /clear command.
 // Source: TS src/commands/clear/clear.ts — clearConversation
+// commandParts splits a command name on :, -, _ for part-based matching.
+// Source: TS commandSuggestions.ts:36-39
+func commandParts(name string) []string {
+	return strings.FieldsFunc(name, func(r rune) bool {
+		return r == ':' || r == '-' || r == '_'
+	})
+}
+
+// commandMatchPriority returns match quality (lower = better): 0=exact, 1=full prefix, 2=part prefix, -1=none.
+// Source: TS commandSuggestions.ts:406-497
+func commandMatchPriority(name, query string) int {
+	if name == query {
+		return 0
+	}
+	if strings.HasPrefix(name, query) {
+		return 1
+	}
+	for _, part := range commandParts(name) {
+		if strings.HasPrefix(part, query) {
+			return 2
+		}
+	}
+	return -1
+}
+
 func (a *App) handleClear(commitCmd tea.Cmd) tea.Cmd {
 	if a.repl.IsStreaming() {
 		return a.showInfo("Cannot clear while streaming")

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -38,15 +39,7 @@ func NewCompletions() *Completions {
 }
 
 // Update regenerates completions for the given input text.
-//
-// Algorithm (aligned with TS generateCommandSuggestions):
-//  1. text must start with "/" and cursorAtEnd must be true
-//  2. Query = text after "/" up to first space (exclusive)
-//  3. If text contains space → dismiss (user is typing args)
-//  4. Non-ASCII in query → dismiss (IME guard)
-//  5. If query == "": return all commands, alphabetical, max 5
-//  6. If query != "": filter by HasPrefix, alphabetical, max 5
-//  7. No matches → dismiss
+// Filtering uses commandMatchPriority: exact > full prefix > part prefix.
 func (c *Completions) Update(text string, cursorAtEnd bool) {
 	// Guard: must start with "/" and cursor at end
 	if !cursorAtEnd || !strings.HasPrefix(text, "/") {
@@ -70,18 +63,29 @@ func (c *Completions) Update(text string, cursorAtEnd bool) {
 		}
 	}
 
-	// Filter commands by prefix
-	var matched []Completion
+	// Filter commands by match priority.
+	type matchEntry struct {
+		completion Completion
+		priority   int
+	}
+	var matched []matchEntry
 	for _, name := range sortedCommands {
 		def, ok := getCommandDef(name)
 		if !ok {
 			continue
 		}
-		if query == "" || strings.HasPrefix(name, query) {
-			matched = append(matched, Completion{
-				Name:        name,
-				Description: def.Description,
-				HasArgs:     def.HasArgs,
+		prio := commandMatchPriority(name, query)
+		if query == "" {
+			prio = 3 // show all when query is empty
+		}
+		if prio >= 0 {
+			matched = append(matched, matchEntry{
+				completion: Completion{
+					Name:        name,
+					Description: def.Description,
+					HasArgs:     def.HasArgs,
+				},
+				priority: prio,
 			})
 		}
 	}
@@ -91,7 +95,18 @@ func (c *Completions) Update(text string, cursorAtEnd bool) {
 		return
 	}
 
-	c.items = matched
+	// Stable sort by priority (preserves alphabetical order within same priority)
+	sort.SliceStable(matched, func(i, j int) bool {
+		return matched[i].priority < matched[j].priority
+	})
+
+	// Extract completions
+	completions := make([]Completion, len(matched))
+	for i, m := range matched {
+		completions[i] = m.completion
+	}
+
+	c.items = completions
 	c.index = 0
 	c.visible = true
 }
