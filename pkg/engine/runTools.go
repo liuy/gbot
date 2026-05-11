@@ -857,7 +857,6 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	var bashSnap map[string]*filehistory.FileSnapshot
 
 	if e.fileHistory != nil && e.currentTurnMsgID != "" {
-
 		switch tt.Name {
 		case "Edit", "Write":
 			filePath := extractFilePathFromInput(tt.Input)
@@ -873,6 +872,8 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				}
 			}
 		}
+	} else if tt.Name == "Edit" || tt.Name == "Write" || tt.Name == "Bash" {
+		slog.Warn("engine:file_history_skip", "tool", tt.Name, "hasFileHistory", e.fileHistory != nil, "currentTurnMsgID", e.currentTurnMsgID)
 	}
 
 	result, err := t.Call(e.siblingCtx, tt.Input, toolCtx)
