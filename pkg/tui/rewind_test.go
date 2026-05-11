@@ -558,6 +558,39 @@ func TestHandleRewind_UserWithNoText(t *testing.T) {
 		}
 	}
 
+func TestHandleRewind_SyntheticInterruptSkipped(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock("do something"),
+		}, Timestamp: testTime, ID: "uuid-1"},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock("working..."),
+		}, Timestamp: testTime, ID: "uuid-2"},
+		// Synthetic interrupt message — should NOT appear in rewind dialog
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock(types.InterruptMessage),
+		}, Timestamp: testTime, ID: "uuid-3"},
+	})
+
+	a := &App{
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
+	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog with real user message")
+	}
+	// Should have only 1 option (the real user message), not the interrupt
+	if len(a.activeDialog.options) != 1 {
+		t.Fatalf("expected 1 option (interrupt filtered), got %d", len(a.activeDialog.options))
+	}
+}
+
 func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	eng := newTestEngine()
 

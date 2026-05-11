@@ -95,19 +95,21 @@ func hasNonToolResultContent(msg types.Message) bool {
 	return false
 }
 
-// lastSelectableUserMessageIndex returns the index of the last user message
+// isSelectableUserMessage returns true if the message is a user message
 // that is selectable for rewind — contains actual user text, skipping
 // tool_result-only and synthetic (interrupt/cancel) messages.
 // Source: TS selectableUserMessagesFilter in MessageSelector.tsx:767.
+func isSelectableUserMessage(msg types.Message) bool {
+	return msg.Role == types.RoleUser &&
+		!isSyntheticMessage(msg) &&
+		hasNonToolResultContent(msg)
+}
+
+// lastSelectableUserMessageIndex returns the index of the last user message
+// that is selectable for rewind.
 func lastSelectableUserMessageIndex(msgs []types.Message) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != types.RoleUser {
-			continue
-		}
-		if isSyntheticMessage(msgs[i]) {
-			continue
-		}
-		if hasNonToolResultContent(msgs[i]) {
+		if isSelectableUserMessage(msgs[i]) {
 			return i
 		}
 	}
@@ -196,7 +198,7 @@ func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 	var options []DialogOption
 	var indices []int
 	for i, msg := range msgs {
-		if msg.Role != types.RoleUser {
+		if !isSelectableUserMessage(msg) {
 			continue
 		}
 		text := firstTextBlockContent(msg)
