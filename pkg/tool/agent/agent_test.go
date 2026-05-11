@@ -524,8 +524,8 @@ func TestPermissionMethods(t *testing.T) {
 	if got := at.IsDestructive(input); got != false {
 		t.Errorf("IsDestructive() = %v, want false", got)
 	}
-	if got := at.IsConcurrencySafe(input); got != false {
-		t.Errorf("IsConcurrencySafe() = %v, want false", got)
+	if got := at.IsConcurrencySafe(input); got != true {
+		t.Errorf("IsConcurrencySafe() = %v, want true", got)
 	}
 	if got := at.IsEnabled(); got != true {
 		t.Errorf("IsEnabled() = %v, want true", got)

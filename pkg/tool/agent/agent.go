@@ -340,8 +340,10 @@ func (t *AgentTool) IsReadOnly(input json.RawMessage) bool { return false }
 // IsDestructive returns false — the Agent tool itself isn't destructive.
 func (t *AgentTool) IsDestructive(input json.RawMessage) bool { return false }
 
-// IsConcurrencySafe returns false — sub-agents must run serially.
-func (t *AgentTool) IsConcurrencySafe(input json.RawMessage) bool { return false }
+// IsConcurrencySafe returns true — multiple agent calls can run in parallel.
+// Each sub-engine has independent state; internal tool execution follows its
+// own concurrency rules. Source: TS AgentTool.tsx:1273 isConcurrencySafe().
+func (t *AgentTool) IsConcurrencySafe(input json.RawMessage) bool { return true }
 
 // IsEnabled returns true.
 func (t *AgentTool) IsEnabled() bool { return true }
