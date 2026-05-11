@@ -891,17 +891,20 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			}
 		}
 	} else {
-		// Non-agent or legacy: render output
+		// Write/Edit: always show full diff hunks (never collapse).
+		// Source: TS FileEditToolUpdatedMessage / FileWriteToolCreatedMessage —
+		// structured diffs are shown in full, not truncated.
+		toolExpand := expand || tc.Name == "Write" || tc.Name == "Edit"
 		if tc.ToolCount > 0 {
 			if len(tc.AgentLogs) > 0 {
 				sb.WriteString(renderAgentLogs(&tc, availWidth))
 			}
 			if tc.Output != "" {
-				output := formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
+				output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
 				sb.WriteString("\n" + indentLines(output, indent))
 			}
 		} else if tc.Output != "" {
-			output := formatToolOutput(tc.Output, tc.IsError, expand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
+			output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-2, noHint, maxOutputLines, lipgloss.NewStyle())
 			sb.WriteString("\n" + indentLines(output, indent))
 		}
 	}
