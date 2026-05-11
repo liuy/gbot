@@ -1315,7 +1315,13 @@ func stripRedundantVS16(s string) string {
 //	☐ 1 Fix auth bug
 //	▶ 2 Write tests             (agent-1)
 //	☑ 3 Implement API           [blocked by 2]
-const maxTaskPanelItems = 5
+const maxTaskPanelItems = 10
+
+// taskMaxDisplay computes dynamic max visible tasks based on terminal height.
+// Source: TS TaskListV2.tsx:48 — maxDisplay = min(10, max(3, rows - 14))
+func taskMaxDisplay(termRows int) int {
+	return min(maxTaskPanelItems, max(3, termRows-14))
+}
 
 // truncateRunes truncates s to maxRunes, appending "..." if truncated.
 func truncateRunes(s string, maxRunes int) string {
@@ -1335,9 +1341,13 @@ func (a *App) renderTaskList() string {
 		return ""
 	}
 
-	// Cap to maxTaskPanelItems
-	if len(tasks) > maxTaskPanelItems {
-		tasks = tasks[:maxTaskPanelItems]
+	// Cap to dynamic max, show overflow summary.
+	// Source: TS TaskListV2.tsx:136-185 — hiddenSummary
+	maxDisplay := taskMaxDisplay(a.height)
+	var hidden []TaskSummary
+	if len(tasks) > maxDisplay {
+		hidden = tasks[maxDisplay:]
+		tasks = tasks[:maxDisplay]
 	}
 
 	var b strings.Builder
@@ -1388,6 +1398,34 @@ func (a *App) renderTaskList() string {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
+
+	// Overflow summary (Source: TS TaskListV2.tsx:170-185 — hiddenSummary)
+	if len(hidden) > 0 {
+		var parts []string
+		var hInProgress, hPending, hCompleted int
+		for _, h := range hidden {
+			switch h.Status {
+			case "in_progress":
+				hInProgress++
+			case "completed":
+				hCompleted++
+			default:
+				hPending++
+			}
+		}
+		if hInProgress > 0 {
+			parts = append(parts, fmt.Sprintf("%d in progress", hInProgress))
+		}
+		if hPending > 0 {
+			parts = append(parts, fmt.Sprintf("%d pending", hPending))
+		}
+		if hCompleted > 0 {
+			parts = append(parts, fmt.Sprintf("%d completed", hCompleted))
+		}
+		b.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(" … +%s", strings.Join(parts, ", "))))
+		b.WriteByte('\n')
+	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 

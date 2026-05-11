@@ -97,7 +97,8 @@ func TestRenderTaskList_Blocked(t *testing.T) {
 
 func TestRenderTaskList_MaxItems(t *testing.T) {
 	app := newTaskTestApp()
-	tasks := make([]TaskSummary, 10)
+	app.height = 30 // taskMaxDisplay(30) = min(10, max(3, 16)) = 10
+	tasks := make([]TaskSummary, 15)
 	for i := range tasks {
 		tasks[i] = TaskSummary{ID: strconv.Itoa(i + 1), Subject: "Task", Status: "pending"}
 	}
@@ -105,8 +106,40 @@ func TestRenderTaskList_MaxItems(t *testing.T) {
 
 	result := app.renderTaskList()
 	lines := strings.Split(result, "\n")
-	if len(lines) != maxTaskPanelItems {
-		t.Errorf("expected %d lines (capped), got %d", maxTaskPanelItems, len(lines))
+	// 10 visible + 1 overflow summary line
+	if len(lines) != 10+1 {
+		t.Errorf("expected %d lines (capped + overflow), got %d", 10+1, len(lines))
+	}
+	// Last line should be overflow summary
+	if !strings.Contains(lines[len(lines)-1], "+5 pending") {
+		t.Errorf("expected overflow summary with '+5 pending', got: %q", lines[len(lines)-1])
+	}
+}
+
+func TestRenderTaskList_OverflowMixedStatus(t *testing.T) {
+	app := newTaskTestApp()
+	app.height = 20 // taskMaxDisplay(20) = min(10, max(3, 6)) = 6
+	tasks := []TaskSummary{
+		{ID: "1", Subject: "Done 1", Status: "completed"},
+		{ID: "2", Subject: "Running", Status: "in_progress"},
+		{ID: "3", Subject: "Done 2", Status: "completed"},
+		{ID: "4", Subject: "Pending 1", Status: "pending"},
+		{ID: "5", Subject: "Pending 2", Status: "pending"},
+		{ID: "6", Subject: "Done 3", Status: "completed"},
+		{ID: "7", Subject: "Running 2", Status: "in_progress"},
+	}
+	app.SetTaskListFn(func() []TaskSummary { return tasks })
+
+	result := app.renderTaskList()
+	// Should show 6 items + 1 overflow line
+	lines := strings.Split(result, "\n")
+	if len(lines) != 6+1 {
+		t.Fatalf("expected %d lines, got %d", 6+1, len(lines))
+	}
+	overflow := lines[len(lines)-1]
+	// Hidden: 1 in_progress (task 7)
+	if !strings.Contains(overflow, "1 in progress") {
+		t.Errorf("overflow should mention '1 in progress', got: %q", overflow)
 	}
 }
 
