@@ -52,7 +52,7 @@ func NewJobStop(reg Registry) tool.Tool {
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:        true,
+		ShouldDefer_:        false,
 		SearchHint_:         "kill a running background task",
 		MaxResultSizeChars:   100000,
 		Prompt_: jobStopPrompt(),

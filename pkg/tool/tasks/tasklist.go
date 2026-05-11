@@ -44,7 +44,7 @@ func NewTaskList(list *List) tool.Tool {
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:       true,
+		ShouldDefer_:       false,
 		SearchHint_:        "list all tasks",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskListPrompt(),

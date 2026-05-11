@@ -106,7 +106,7 @@ func NewTaskUpdate(list *List) tool.Tool {
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:       true,
+		ShouldDefer_:       false,
 		SearchHint_:        "update a task",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskUpdatePrompt(),

@@ -65,7 +65,7 @@ func NewJobOutput(reg Registry) tool.Tool {
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:        true,
+		ShouldDefer_:        false,
 		SearchHint_:         "read output/logs from a background task",
 		MaxResultSizeChars:   100000,
 		Prompt_: jobOutputPrompt(),

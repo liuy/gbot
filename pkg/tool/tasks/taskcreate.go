@@ -67,7 +67,7 @@ func NewTaskCreate(list *List) tool.Tool {
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:       true,
+		ShouldDefer_:       false,
 		SearchHint_:        "create a task in the task list",
 		MaxResultSizeChars: 100000,
 		Prompt_:            taskCreatePrompt(),
