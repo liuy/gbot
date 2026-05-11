@@ -209,6 +209,11 @@ func (a *App) handleRewind(commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	if len(options) == 0 {
+		// Source: TS MessageSelector.tsx:325-327 — "Nothing to rewind to yet."
+		a.activeDialog = NewDialog("Nothing to rewind to yet.", []DialogOption{
+			{Label: "OK"},
+		})
+		a.activeDialog.width = a.width
 		return commitCmd
 	}
 

@@ -511,46 +511,52 @@ func TestTryAutoRewind_CommittedCountExceedsMessages(t *testing.T) {
 }
 
 func TestHandleRewind_NoUserMessages(t *testing.T) {
-	eng := newTestEngine()
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
-	})
+		eng := newTestEngine()
+		eng.SetMessages([]types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		})
 
-	a := &App{
-		engine: eng,
-		input:  NewInput(),
-		repl:   NewReplState(),
+		a := &App{
+			engine: eng,
+			input:  NewInput(),
+			repl:   NewReplState(),
+		}
+		a.width = 80
+
+		_ = a.handleRewind(nil)
+
+		if a.activeDialog == nil {
+			t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
+		}
+		if a.activeDialog.title != "Nothing to rewind to yet." {
+			t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
+		}
 	}
-	a.width = 80
-
-	_ = a.handleRewind(nil)
-
-	if a.activeDialog != nil {
-		t.Error("expected no dialog when no user messages exist")
-	}
-}
 
 func TestHandleRewind_UserWithNoText(t *testing.T) {
-	eng := newTestEngine()
-	eng.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("tu_1", nil, false),
-		}, Timestamp: testTime},
-	})
+		eng := newTestEngine()
+		eng.SetMessages([]types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("tu_1", nil, false),
+			}, Timestamp: testTime},
+		})
 
-	a := &App{
-		engine: eng,
-		input:  NewInput(),
-		repl:   NewReplState(),
+		a := &App{
+			engine: eng,
+			input:  NewInput(),
+			repl:   NewReplState(),
+		}
+		a.width = 80
+
+		_ = a.handleRewind(nil)
+
+		if a.activeDialog == nil {
+			t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
+		}
+		if a.activeDialog.title != "Nothing to rewind to yet." {
+			t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
+		}
 	}
-	a.width = 80
-
-	_ = a.handleRewind(nil)
-
-	if a.activeDialog != nil {
-		t.Error("expected no dialog: user message has no text block")
-	}
-}
 
 func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	eng := newTestEngine()
