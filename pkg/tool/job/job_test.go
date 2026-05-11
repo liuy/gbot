@@ -121,7 +121,7 @@ func TestJobOutput_CompletedTask(t *testing.T) {
 	})
 
 	tl := NewJobOutput(reg)
-	input := json.RawMessage(`{"task_id":"bg-1"}`)
+	input := json.RawMessage(`{"job_id":"bg-1"}`)
 	result, err := tl.Call(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -145,7 +145,7 @@ func TestJobOutput_CompletedTask(t *testing.T) {
 func TestJobOutput_NotFound(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobOutput(reg)
-	input := json.RawMessage(`{"task_id":"nonexistent"}`)
+	input := json.RawMessage(`{"job_id":"nonexistent"}`)
 	_, err := tl.Call(context.Background(), input, nil)
 	if err == nil {
 		t.Error("expected error for nonexistent task")
@@ -176,7 +176,7 @@ func TestJobOutput_BlockWait(t *testing.T) {
 
 	tl := NewJobOutput(reg)
 	block := true
-	input, _ := json.Marshal(OutputInput{TaskID: "bg-2", Block: &block, Timeout: 5000})
+	input, _ := json.Marshal(OutputInput{JobID: "bg-2", Block: &block, Timeout: 5000})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -201,7 +201,7 @@ func TestJobOutput_BlockTimeout(t *testing.T) {
 
 	tl := NewJobOutput(reg)
 	block := true
-	input, _ := json.Marshal(OutputInput{TaskID: "bg-3", Block: &block, Timeout: 200})
+	input, _ := json.Marshal(OutputInput{JobID: "bg-3", Block: &block, Timeout: 200})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -224,7 +224,7 @@ func TestJobOutput_NotReady(t *testing.T) {
 
 	tl := NewJobOutput(reg)
 	block := false
-	input, _ := json.Marshal(OutputInput{TaskID: "bg-4", Block: &block})
+	input, _ := json.Marshal(OutputInput{JobID: "bg-4", Block: &block})
 	result, err := tl.Call(context.Background(), json.RawMessage(input), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -239,15 +239,15 @@ func TestJobOutput_NotReady(t *testing.T) {
 	}
 }
 
-func TestJobOutput_EmptyTaskID(t *testing.T) {
+func TestJobOutput_EmptyJobID(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobOutput(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":""}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":""}`), nil)
 	if err == nil {
-		t.Error("expected error for empty task_id")
+		t.Error("expected error for empty job_id")
 	}
-	if !strings.Contains(err.Error(), "task_id is required") {
-		t.Errorf("error = %q, want error containing 'task_id is required'", err.Error())
+	if !strings.Contains(err.Error(), "job_id is required") {
+		t.Errorf("error = %q, want error containing 'job_id is required'", err.Error())
 	}
 }
 
@@ -277,7 +277,7 @@ func TestJobStop_Success(t *testing.T) {
 	})
 
 	tl := NewJobStop(reg)
-	input := json.RawMessage(`{"task_id":"bg-10"}`)
+	input := json.RawMessage(`{"job_id":"bg-10"}`)
 	result, err := tl.Call(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -287,8 +287,8 @@ func TestJobStop_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("result.Data type = %T, want *StopOutput", result.Data)
 	}
-	if out.TaskID != "bg-10" {
-		t.Errorf("TaskID = %q, want bg-10", out.TaskID)
+	if out.JobID != "bg-10" {
+		t.Errorf("JobID = %q, want bg-10", out.JobID)
 	}
 	if out.TaskType != "local_bash" {
 		t.Errorf("TaskType = %q, want local_bash", out.TaskType)
@@ -298,7 +298,7 @@ func TestJobStop_Success(t *testing.T) {
 func TestJobStop_NotFound(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobStop(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"nonexistent"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":"nonexistent"}`), nil)
 	if err == nil {
 		t.Error("expected error for nonexistent task")
 	}
@@ -317,7 +317,7 @@ func TestJobStop_NotRunning(t *testing.T) {
 	})
 
 	tl := NewJobStop(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-11"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":"bg-11"}`), nil)
 	if err == nil {
 		t.Error("expected error for non-running task")
 	}
@@ -326,15 +326,15 @@ func TestJobStop_NotRunning(t *testing.T) {
 	}
 }
 
-func TestJobStop_EmptyTaskID(t *testing.T) {
+func TestJobStop_EmptyJobID(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobStop(reg)
 	_, err := tl.Call(context.Background(), json.RawMessage(`{}`), nil)
 	if err == nil {
-		t.Error("expected error for empty task_id")
+		t.Error("expected error for empty job_id")
 	}
-	if !strings.Contains(err.Error(), "task_id") {
-		t.Errorf("error = %q, want error containing 'task_id'", err.Error())
+	if !strings.Contains(err.Error(), "job_id") {
+		t.Errorf("error = %q, want error containing 'job_id'", err.Error())
 	}
 }
 
@@ -389,7 +389,7 @@ func TestJobStop_ImplementsTool(t *testing.T) {
 func TestJobStop_Description(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobStop(reg)
-	desc, err := tl.Description(json.RawMessage(`{"task_id":"bg-1"}`))
+	desc, err := tl.Description(json.RawMessage(`{"job_id":"bg-1"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestJobStop_Description(t *testing.T) {
 func TestJobOutput_Description(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobOutput(reg)
-	desc, err := tl.Description(json.RawMessage(`{"task_id":"bg-1"}`))
+	desc, err := tl.Description(json.RawMessage(`{"job_id":"bg-1"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestJobStop_RenderResult(t *testing.T) {
 
 	result := tl.RenderResult(&StopOutput{
 		Message: "Successfully stopped task: bg-1 (sleep 60)",
-		TaskID:  "bg-1",
+		JobID:  "bg-1",
 	})
 	if result != "Successfully stopped task: bg-1 (sleep 60)" {
 		t.Errorf("RenderResult = %q, want success message", result)
@@ -466,7 +466,7 @@ func TestJobOutput_DescriptionInvalidJSON(t *testing.T) {
 func TestJobOutput_DescriptionEmptyCommand(t *testing.T) {
 	reg := newMockRegistry()
 	tl := NewJobOutput(reg)
-	desc, err := tl.Description(json.RawMessage(`{"task_id":""}`))
+	desc, err := tl.Description(json.RawMessage(`{"job_id":""}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestJobStop_KillError(t *testing.T) {
 	// Use a custom mock for this.
 	tl := NewJobStop(reg)
 	// Task doesn't exist — tests the "not found" before Kill
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"missing"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":"missing"}`), nil)
 	if err == nil {
 		t.Error("expected error for missing task")
 	}
@@ -569,7 +569,7 @@ func TestJobStop_KillReturnsError(t *testing.T) {
 	reg := &killErrorRegistry{mockRegistry: base}
 
 	tl := NewJobStop(reg)
-	_, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-20"}`), nil)
+	_, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":"bg-20"}`), nil)
 	if err == nil {
 		t.Fatal("expected error when Kill fails")
 	}
@@ -589,7 +589,7 @@ func TestJobStop_EmptyCommandUsesDescription(t *testing.T) {
 	})
 
 	tl := NewJobStop(reg)
-	result, err := tl.Call(context.Background(), json.RawMessage(`{"task_id":"bg-21"}`), nil)
+	result, err := tl.Call(context.Background(), json.RawMessage(`{"job_id":"bg-21"}`), nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestJobOutput_ContextCancelled(t *testing.T) {
 
 	tl := NewJobOutput(reg)
 	block := true
-	input, _ := json.Marshal(OutputInput{TaskID: "bg-30", Block: &block, Timeout: 5000})
+	input, _ := json.Marshal(OutputInput{JobID: "bg-30", Block: &block, Timeout: 5000})
 	_, err := tl.Call(ctx, json.RawMessage(input), nil)
 	if err == nil {
 		t.Error("expected error from cancelled context")
@@ -642,8 +642,8 @@ func TestJobOutput_InputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("InputSchema missing 'properties' object")
 	}
-	if _, ok := props["task_id"]; !ok {
-		t.Error("InputSchema properties missing 'task_id'")
+	if _, ok := props["job_id"]; !ok {
+		t.Error("InputSchema properties missing 'job_id'")
 	}
 }
 
@@ -662,8 +662,8 @@ func TestJobStop_InputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("InputSchema missing 'properties' object")
 	}
-	if _, ok := props["task_id"]; !ok {
-		t.Error("InputSchema properties missing 'task_id'")
+	if _, ok := props["job_id"]; !ok {
+		t.Error("InputSchema properties missing 'job_id'")
 	}
 }
 
@@ -720,7 +720,7 @@ func TestJobInfo_AgentFields(t *testing.T) {
 	}
 
 	// Old JSON without agent fields should unmarshal with zero values
-	oldJSON := `{"task_id":"bg-1","task_type":"local_bash","status":"completed"}`
+	oldJSON := `{"job_id":"bg-1","task_type":"local_bash","status":"completed"}`
 	var old JobInfo
 	if err := json.Unmarshal([]byte(oldJSON), &old); err != nil {
 		t.Fatalf("Unmarshal old JSON: %v", err)

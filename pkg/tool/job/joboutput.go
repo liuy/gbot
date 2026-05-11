@@ -13,7 +13,7 @@ import (
 // OutputInput is the input schema for the TaskOutput tool.
 // Source: TaskOutputTool.tsx — inputSchema
 type OutputInput struct {
-	TaskID string `json:"task_id"`
+	JobID string `json:"job_id"`
 	Block  *bool  `json:"block,omitempty"`   // default true
 	Timeout int   `json:"timeout,omitempty"` // default 30000ms
 }
@@ -30,9 +30,9 @@ type OutputOutput struct {
 func NewJobOutput(reg Registry) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
-		"required": ["task_id"],
+		"required": ["job_id"],
 		"properties": {
-			"task_id": {
+			"job_id": {
 				"type": "string",
 				"description": "The task ID to get output from"
 			},
@@ -57,7 +57,7 @@ func NewJobOutput(reg Registry) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Get job output", nil
 			}
-			return fmt.Sprintf("JobOutput(%s)", in.TaskID), nil
+			return fmt.Sprintf("JobOutput(%s)", in.JobID), nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return executeJobOutput(ctx, reg, input)
@@ -96,8 +96,8 @@ func executeJobOutput(ctx context.Context, reg Registry, input json.RawMessage) 
 		return nil, fmt.Errorf("parse input: %w", err)
 	}
 
-	if in.TaskID == "" {
-		return nil, fmt.Errorf("task_id is required")
+	if in.JobID == "" {
+		return nil, fmt.Errorf("job_id is required")
 	}
 
 	block := true
@@ -111,9 +111,9 @@ func executeJobOutput(ctx context.Context, reg Registry, input json.RawMessage) 
 	}
 
 	// Initial lookup
-	info, found := reg.Get(in.TaskID)
+	info, found := reg.Get(in.JobID)
 	if !found {
-		return nil, fmt.Errorf("no job found with ID: %s", in.TaskID)
+		return nil, fmt.Errorf("no job found with ID: %s", in.JobID)
 	}
 
 	// If already terminal, return immediately
@@ -148,7 +148,7 @@ func executeJobOutput(ctx context.Context, reg Registry, input json.RawMessage) 
 			return nil, ctx.Err()
 		case <-deadline:
 			// Timeout — return current state
-			info, _ = reg.Get(in.TaskID)
+			info, _ = reg.Get(in.JobID)
 			return &tool.ToolResult{
 				Data: &OutputOutput{
 					RetrievalStatus: "timeout",
@@ -156,7 +156,7 @@ func executeJobOutput(ctx context.Context, reg Registry, input json.RawMessage) 
 				},
 			}, nil
 		case <-ticker.C:
-			info, _ = reg.Get(in.TaskID)
+			info, _ = reg.Get(in.JobID)
 			if info != nil && isTerminal(info.Status) {
 				return &tool.ToolResult{
 					Data: &OutputOutput{

@@ -13,7 +13,7 @@ var ErrNotFound = errors.New("job not found")
 // JobInfo is a snapshot of a background task's state.
 // Source: TaskOutputTool.tsx — TaskOutput type
 type JobInfo struct {
-	ID          string `json:"task_id"`
+	ID          string `json:"job_id"`
 	Type        string `json:"task_type"`              // "local_bash"
 	Status      string `json:"status"`                 // running, completed, failed, killed
 	Command     string `json:"command,omitempty"`
