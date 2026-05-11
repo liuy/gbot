@@ -411,7 +411,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 	// MakeSnapshot BEFORE the tool loop — aligned with TS QueryEngine.ts:641-654.
 	// TS calls fileHistoryMakeSnapshot before the ask() loop, so the snapshot
 	// captures pre-edit state. Rewind can then restore files to before edits.
-	if e.fileHistory != nil && e.currentTurnMsgID != "" {
+	if e.fileHistory != nil && e.currentTurnMsgID != "" && !e.isSubagent {
 		if err := e.fileHistory.MakeSnapshot(e.currentTurnMsgID); err != nil {
 			e.logger.Error("engine:make_snapshot_failed", "err", err)
 		} else {

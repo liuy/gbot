@@ -128,7 +128,7 @@ func TestIntegration_Rewind_SubAgentEditsRestored(t *testing.T) {
 	app.activeDialog.done = true
 	app.activeDialog.cursor = 0 // "Restore code and conversation"
 	model, _ = app.onDialogDone(app.activeDialog)
-	app = model.(*App)
+	_ = model.(*App)
 
 	// === Verify: BOTH files should be restored ===
 
@@ -237,7 +237,7 @@ func TestIntegration_Rewind_SubAgentCreatesFile_Deleted(t *testing.T) {
 	app.activeDialog.done = true
 	app.activeDialog.cursor = 0 // "Restore code and conversation"
 	model, _ = app.onDialogDone(app.activeDialog)
-	app = model.(*App)
+	_ = model.(*App)
 
 	// fileA should be restored to v1
 	restoredA, err := os.ReadFile(fileA)
@@ -331,7 +331,7 @@ func TestIntegration_Rewind_SubAgentEditsSameFile(t *testing.T) {
 	app.activeDialog.done = true
 	app.activeDialog.cursor = 0
 	model, _ = app.onDialogDone(app.activeDialog)
-	app = model.(*App)
+	_ = model.(*App)
 
 	// File should be restored to v1 (state at snapshot[msgID1])
 	restored, err := os.ReadFile(fileA)

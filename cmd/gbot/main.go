@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+
+	"github.com/google/uuid"
 	"os"
 	"path/filepath"
 	"time"
@@ -281,6 +283,7 @@ func main() {
 			messages := opts.UserContextMessages
 			if opts.Prompt != "" {
 				messages = append(messages, types.Message{
+					ID:      uuid.New().String(),
 					Role:    types.RoleUser,
 					Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
 				})

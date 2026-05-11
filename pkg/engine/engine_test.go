@@ -3700,6 +3700,112 @@ subDone:
 	}
 }
 
+// TestChain_SubEngineEditBackup_QueryWithExisting verifies sub-engine Edit
+// tool calls are tracked via QueryWithExistingMessages (production Agent path).
+func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
+	tmp := t.TempDir()
+	testFile := filepath.Join(tmp, "editme.txt")
+	originalContent := []byte("original-content\n")
+	if err := os.WriteFile(testFile, originalContent, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	editTool := &mockTool{
+		name:    "Edit",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			_ = os.WriteFile(testFile, []byte("modified-by-edit\n"), 0o644)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	// Set up mock provider before creating sub-engine (avoids race)
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", "sub_tool_1", "Edit", `{"file_path":"`+testFile+`","old_string":"original-content","new_string":"modified-by-edit"}`), nil)
+	mp.addResponse(textStreamEvents("test", "sub-done"), nil)
+
+	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
+	parentEng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{editTool},
+		Model:      "test",
+		WorkingDir: tmp,
+	})
+	defer parentEng.Close()
+	parentEng.SetFileHistory(tracker)
+
+	// Create sub-engine — inherits fileHistory
+	subTools := map[string]tool.Tool{"Edit": editTool}
+	subEng := parentEng.NewSubEngine(SubEngineOptions{
+		Tools:           subTools,
+		AgentType:       "General",
+		ParentToolUseID: "parent_tool_1",
+	})
+
+	// Reproduce production path: QueryWithExistingMessages with user message that has NO ID
+	// (matches cmd/gbot/main.go:283-286 where factory creates messages without ID).
+	eventCh := make(chan types.QueryEvent, 50)
+	subEng.SetDispatcher(&chanDispatcher{ch: eventCh})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	messages := []types.Message{
+		{
+			ID:      "sub-edit-msg-001",
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock("edit editme.txt")},
+		},
+	}
+	go subEng.QueryWithExistingMessages(ctx, messages, nil)
+
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryEnd {
+				goto editDone
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for sub-engine EventQueryEnd")
+		}
+	}
+editDone:
+	runtime.Gosched()
+
+	// Verify file was modified
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != "modified-by-edit\n" {
+		t.Fatalf("file not modified by Edit tool, got %q", string(data))
+	}
+
+	// Verify TrackEdit recorded the file
+	records := tracker.State().TrackedFiles
+	if len(records) < 1 {
+		t.Fatalf("expected at least 1 tracked file from sub-engine Edit, got %d — TrackEdit skipped because currentTurnMsgID was empty", len(records))
+	}
+
+	// Verify rewind restores original content
+	restored, err := tracker.Rewind("")
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	found := slices.Contains(restored, testFile)
+	if !found {
+		t.Fatalf("RestoredFiles = %v, want %s included", restored, testFile)
+	}
+
+	data, err = os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(data) != string(originalContent) {
+		t.Errorf("file = %q, want %q — sub-engine edit was not restored!", string(data), string(originalContent))
+	}
+}
+
 // TestHasChangesAtMessage_MsgIDDerivation verifies rewind.go uses the correct
 // messageID when checking HasChangesAtMessage.
 func TestHasChangesAtMessage_MsgIDDerivation(t *testing.T) {
