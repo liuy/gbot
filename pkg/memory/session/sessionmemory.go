@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,7 +25,9 @@ const (
 // ctx: context for cancellation.
 // prompt: the extraction prompt to send to the subagent.
 // notesPath: absolute path to the session memory file.
-type ExtractionFunc func(ctx context.Context, prompt string, notesPath string) error
+// messages: the full parent conversation history (for fork-style context).
+// systemPrompt: the parent engine's rendered system prompt (for cache sharing).
+type ExtractionFunc func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt json.RawMessage) error
 
 // SessionMemory manages background extraction of session notes.
 // TS source: services/SessionMemory/sessionMemory.ts.
@@ -43,6 +46,10 @@ type SessionMemory struct {
 
 	// extractFn is provided by the engine layer to run subagent extraction.
 	extractFn ExtractionFunc
+
+	// systemPromptFn returns the parent engine's rendered system prompt for cache sharing.
+	// Set via SetSystemPromptFn after construction.
+	systemPromptFn func() json.RawMessage
 
 	// extractDone is closed when extraction completes. Nil when not extracting.
 	extractDone chan struct{}
@@ -151,12 +158,13 @@ func (sm *SessionMemory) Extract(ctx context.Context, messages []types.Message, 
 	// Build update prompt — TS: buildSessionMemoryUpdatePrompt
 	prompt := BuildUpdatePrompt(currentNotes, notesPath, sm.config)
 
-	// Create timeout context for extraction
-	extractCtx, cancel := context.WithTimeout(ctx, time.Duration(sm.config.ExtractionTimeoutMs)*time.Millisecond)
-	defer cancel()
-
-	// Run extraction via callback (engine-provided subagent)
-	if err := sm.extractFn(extractCtx, prompt, notesPath); err != nil {
+	// TS: runForkedAgent — no timeout; extraction runs to completion.
+	// Timeout is only for WaitForExtraction (SM-compact fallback decision).
+	var sysPrompt json.RawMessage
+	if sm.systemPromptFn != nil {
+		sysPrompt = sm.systemPromptFn()
+	}
+	if err := sm.extractFn(ctx, prompt, notesPath, messages, sysPrompt); err != nil {
 		return fmt.Errorf("extraction failed: %w", err)
 	}
 
@@ -244,6 +252,13 @@ func (sm *SessionMemory) Reset() {
 	sm.extractionStart = time.Time{}
 	sm.toolCallsSinceUpdate = 0
 	sm.mu.Unlock()
+}
+
+// SetSystemPromptFn sets the function that returns the parent engine's rendered
+// system prompt. Used for prompt cache sharing during extraction.
+// TS: runForkedAgent uses cacheSafeParams.systemPrompt from parent context.
+func (sm *SessionMemory) SetSystemPromptFn(fn func() json.RawMessage) {
+	sm.systemPromptFn = fn
 }
 
 // ensureFile creates the session memory file from the template if it doesn't exist.

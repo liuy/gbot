@@ -3701,7 +3701,7 @@ subDone:
 }
 
 // TestChain_SubEngineEditBackup_QueryWithExisting verifies sub-engine Edit
-// tool calls are tracked via QueryWithExistingMessages (production Agent path).
+// tool calls are tracked via RunForkedQuery (production Agent path).
 func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
 	tmp := t.TempDir()
 	testFile := filepath.Join(tmp, "editme.txt")
@@ -3742,7 +3742,7 @@ func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
 		ParentToolUseID: "parent_tool_1",
 	})
 
-	// Reproduce production path: QueryWithExistingMessages with user message that has NO ID
+	// Reproduce production path: RunForkedQuery with user message that has NO ID
 	// (matches cmd/gbot/main.go:283-286 where factory creates messages without ID).
 	eventCh := make(chan types.QueryEvent, 50)
 	subEng.SetDispatcher(&chanDispatcher{ch: eventCh})
@@ -3757,7 +3757,7 @@ func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
 			Content: []types.ContentBlock{types.NewTextBlock("edit editme.txt")},
 		},
 	}
-	go subEng.QueryWithExistingMessages(ctx, messages, nil)
+	go subEng.RunForkedQuery(ctx, messages, nil)
 
 	for {
 		select {

@@ -10,10 +10,12 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,9 +54,9 @@ func TestSMCompact_Integration_ExtractThenCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a mock extraction function that writes real content to the file
 	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+	// Create a mock extraction function that writes real content to the file
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
 		content := `# Session Notes
 
 ## Session Title
@@ -173,7 +175,7 @@ func TestSessionMemory_Integration_ColdStart(t *testing.T) {
 	// Intentionally do NOT create the memory directory or file
 
 	extractionCount := 0
-	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
 		extractionCount++
 		// First extraction: file is created from template by ensureFile()
 		// We write real content to simulate what the sub-agent would do
@@ -262,7 +264,7 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 
 	blockCh := make(chan struct{})
 	firstCall := true
-	extractFn := func(ctx context.Context, prompt string, targetPath string) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
 		if firstCall {
 			firstCall = false
 			<-blockCh // block forever (simulates crash)
@@ -492,5 +494,67 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	}
 	if !foundLLMSummary {
 		t.Error("expected LLM summary (Summary: text) since session memory was empty")
+	}
+}
+
+func TestExtraction_ReceivesConversationContext(t *testing.T) {
+	setTempHome(t)
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var captured struct {
+		mu              sync.Mutex
+		gotMessages     []types.Message
+		gotSystemPrompt json.RawMessage
+	}
+
+	extractFn := func(ctx context.Context, prompt string, targetPath string, messages []types.Message, systemPrompt json.RawMessage) error {
+		captured.mu.Lock()
+		captured.gotMessages = messages
+		captured.gotSystemPrompt = systemPrompt
+		captured.mu.Unlock()
+		// Write real content to verify end-to-end
+		content := "## Session Title\nExtraction with context test\n"
+		return os.WriteFile(targetPath, []byte(content), 0644)
+	}
+
+	sm := session.New(session.Config{
+		MinTokensToInit:        50,
+		MinTokensBetweenUpdate: 25,
+		ExtractionTimeoutMs:    5000,
+		ExtractionStaleMs:      60000,
+	}, tmpDir, extractFn, slog.Default())
+
+	// Create messages to pass to extraction
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("fix the bug")}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := sm.Extract(ctx, messages, 100); err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+
+	// Assert: extractFn must receive the conversation messages
+	if len(captured.gotMessages) != len(messages) {
+		t.Errorf("extractFn received %d messages, want %d — conversation context not passed",
+			len(captured.gotMessages), len(messages))
+	}
+
+	// Assert: messages content must match
+	firstText, _ := extractFirstTextBlock(captured.gotMessages[0])
+	if firstText != "hello" {
+		t.Errorf("first message text = %q, want %q", firstText, "hello")
 	}
 }

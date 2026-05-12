@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 	"sync"
+	"slices"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -293,7 +294,7 @@ func main() {
 			}
 			var result engine.QueryResult
 			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
-				result = subEng.QueryWithExistingMessages(ctx, messages, opts.SystemPrompt)
+				result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
 			} else {
 				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
 			}
@@ -454,7 +455,7 @@ func main() {
 		// TS source: services/SessionMemory/sessionMemory.ts
 		if store != nil && sessionID != "" && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
-			extractFn := func(ctx context.Context, prompt string, notesPath string) error {
+			extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt json.RawMessage) error {
 				editTool := fileedit.New()
 				subEng := eng.NewSubEngine(engine.SubEngineOptions{
 					Tools:     map[string]tool.Tool{"Edit": editTool},
@@ -462,11 +463,21 @@ func main() {
 				})
 				defer subEng.Close()
 
-				sysPrompt, _ := json.Marshal(prompt)
-				result := subEng.QuerySync(ctx, "", sysPrompt)
+				// Build fork-style messages: parent conversation + extraction prompt as user message.
+				// TS: runForkedAgent passes forkContextMessages + promptMessages.
+				extractionUserMsg := types.Message{
+					ID:      uuid.New().String(),
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(prompt)},
+				}
+				forkMessages := append(slices.Clone(messages), extractionUserMsg)
+
+				// Use parent's system prompt for cache sharing (TS: cacheSafeParams).
+				result := subEng.RunForkedQuery(ctx, forkMessages, systemPrompt)
 				return result.Error
 			}
 			sm := session.New(smCfg, workingDir, extractFn, slog.Default())
+			sm.SetSystemPromptFn(eng.SystemPrompt)
 			eng.SetSessionMemory(sm)
 		}
 

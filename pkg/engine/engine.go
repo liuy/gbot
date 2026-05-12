@@ -383,7 +383,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 }
 
 // runTurns executes the agentic turn loop. Shared by queryLoop (normal path)
-// and QueryWithExistingMessages (fork agent path).
+// and RunForkedQuery (fork agent path).
 func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) QueryResult {
 	var totalUsage types.Usage
 	// Log query summary on every exit path.
@@ -2281,10 +2281,10 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 	return e.queryLoop(ctx, userMessage, systemPrompt)
 }
 
-// QueryWithExistingMessages executes the agentic turn loop starting from
+// RunForkedQuery executes the agentic turn loop starting from
 // pre-constructed messages (no user message injection). Used by fork agents
 // that build their own conversation history.
-func (e *Engine) QueryWithExistingMessages(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
+func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
 	e.setMessages(messages)
 	// Set currentTurnMsgID from the last user message in the provided messages.
 	// Used by TrackEdit and MakeSnapshot for consistent messageID.

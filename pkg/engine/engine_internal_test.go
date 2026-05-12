@@ -1724,7 +1724,7 @@ func TestStreamingToolExecutor_NoSetMessages_NilTctx(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: Engine accessors + QueryWithExistingMessages
+// Phase 3: Engine accessors + RunForkedQuery
 // ---------------------------------------------------------------------------
 
 func TestEngineModel_Accessor(t *testing.T) {
@@ -1752,7 +1752,7 @@ func TestEngineSystemPrompt_Accessors(t *testing.T) {
 	}
 }
 
-func TestQueryWithExistingMessages(t *testing.T) {
+func TestRunForkedQuery(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
@@ -1770,7 +1770,7 @@ func TestQueryWithExistingMessages(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("fork directive")}},
 	}
 
-	result := eng.QueryWithExistingMessages(context.Background(), messages, nil)
+	result := eng.RunForkedQuery(context.Background(), messages, nil)
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
