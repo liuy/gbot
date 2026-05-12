@@ -98,7 +98,7 @@ func (d *InputDialog) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if time.Until(d.deadline) <= 0 {
-			d.abort()
+			d.abortTimeout()
 			return d, nil
 		}
 		// Continue ticking
@@ -141,6 +141,11 @@ func (d *InputDialog) submit() {
 func (d *InputDialog) abort() {
 	d.done = true
 	sendDecision(d.result, types.AskResponse{Aborted: true})
+}
+
+func (d *InputDialog) abortTimeout() {
+	d.done = true
+	sendDecision(d.result, types.AskResponse{Aborted: true, Timeout: true})
 }
 
 func (d *InputDialog) insertText(text string) {

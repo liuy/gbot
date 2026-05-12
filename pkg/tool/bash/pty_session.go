@@ -115,6 +115,12 @@ func (s *PTYSession) Drain(ctx context.Context, emitAskInput func(tail string, m
 							return
 						}
 						if resp.Aborted {
+							reason := "cancelled by user"
+							if resp.Timeout {
+								reason = "timed out"
+							}
+							s.Screen.Write(fmt.Appendf(nil, "\r\n[Interaction %s]\r\n", reason))
+							s.Screen.Flush()
 							_ = killProcessTree(s.Cmd.Process.Pid)
 							return
 						}

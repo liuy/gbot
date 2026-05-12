@@ -341,3 +341,76 @@ func TestPTYIntegration_SudoPromptDetected(t *testing.T) {
 	}
 	<-done
 }
+
+// Abort sends [Interaction cancelled by user] to Screen output
+func TestPTYIntegration_AbortWritesInteractionMessage(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	var lines []string
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+		lines = append(lines, ev.Content)
+	})
+
+	emitAskInput := func(tail string, masked bool) chan types.AskResponse {
+		ch := make(chan types.AskResponse, 1)
+		ch <- types.AskResponse{Aborted: true}
+		return ch
+	}
+
+	exitCode, _, _ := runPTYCommand(
+		context.Background(),
+		"printf 'Password: ' && sleep 2",
+		"",
+		os.Environ(),
+		screen,
+		10*time.Second,
+		emitAskInput,
+	)
+	// Process was killed
+	if exitCode == 0 {
+		t.Errorf("exitCode = 0, want non-zero (killed)")
+	}
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "[Interaction cancelled by user]") {
+		t.Errorf("output should contain interaction message, got %q", joined)
+	}
+}
+
+// Timeout abort sends [Interaction timed out] to Screen output
+func TestPTYIntegration_TimeoutWritesInteractionMessage(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	var lines []string
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {
+		lines = append(lines, ev.Content)
+	})
+
+	emitAskInput := func(tail string, masked bool) chan types.AskResponse {
+		ch := make(chan types.AskResponse, 1)
+		ch <- types.AskResponse{Aborted: true, Timeout: true}
+		return ch
+	}
+
+	exitCode, _, _ := runPTYCommand(
+		context.Background(),
+		"printf 'Password: ' && sleep 2",
+		"",
+		os.Environ(),
+		screen,
+		10*time.Second,
+		emitAskInput,
+	)
+	if exitCode == 0 {
+		t.Errorf("exitCode = 0, want non-zero (killed)")
+	}
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "[Interaction timed out]") {
+		t.Errorf("output should contain timeout message, got %q", joined)
+	}
+}

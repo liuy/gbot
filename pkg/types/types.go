@@ -292,6 +292,7 @@ type AskResponse struct {
 	Decision UserDecision // permission response
 	Text     string       // input response
 	Aborted  bool         // user cancelled (input only)
+	Timeout  bool         // dialog countdown expired (input only)
 }
 
 // ---------------------------------------------------------------------------
