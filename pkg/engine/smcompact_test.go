@@ -46,7 +46,7 @@ func TestTrySMCompact_NilSessionMemory(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 	msgs := makeLargeMessages(10, 100)
 
 	result, err := ac.TrySMCompact(msgs, nil)
@@ -78,7 +78,7 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	msgs := makeLargeMessages(20, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -123,7 +123,7 @@ smcompact_test.go — test file
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	// Create enough messages for PartialCompact to work
 	// Need at least keepFrom > 1 and keepFrom < len(messages)
@@ -186,7 +186,7 @@ func TestTrySMCompact_TooFewMessages(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	// Only 2 messages — too few for PartialCompact to find a valid boundary
 	msgs := makeLargeMessages(2, 100)
@@ -213,7 +213,7 @@ func TestTrySMCompact_NoFile(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	msgs := makeLargeMessages(20, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -234,7 +234,7 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	// Create a minimal CompactResult with messages to keep
 	shortMsgs := makeLargeMessages(10, 100)
@@ -281,7 +281,7 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	// Create a CompactResult with nil boundary marker
 	shortMsgs := makeLargeMessages(10, 100)
@@ -448,7 +448,7 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 	go func() { _ = sm.Extract(context.Background(), msgs, 100) }()
 	time.Sleep(50 * time.Millisecond) // REAL-TIME: wait for extraction to start
 
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	largeMsgs := makeLargeMessages(20, 500)
 	result, err := ac.TrySMCompact(largeMsgs, sm)
@@ -481,7 +481,7 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 128000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	result, err := ac.TrySMCompact([]types.Message{}, sm)
 	if err != nil {

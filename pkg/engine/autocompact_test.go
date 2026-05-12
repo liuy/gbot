@@ -500,7 +500,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	}
 }
 
-func TestCompactor_Compact_TooFewMessages(t *testing.T) {
+func TestCompactor_Compact_FewMessages_CompactAll(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -521,14 +521,15 @@ func TestCompactor_Compact_TooFewMessages(t *testing.T) {
 	}
 
 	result, err := sc.Compact(context.Background(), msgs)
-	if err == nil {
-		t.Fatal("expected error for too few messages (<=minKeep=4)")
+	if err != nil {
+		t.Fatalf("Compact should succeed (compact everything), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "nothing to compact") {
-		t.Errorf("error should mention 'nothing to compact', got: %v", err)
+	// Compact-all: result should have boundary + summary, no kept messages.
+	if len(result.Messages) < 2 {
+		t.Errorf("expected at least boundary + summary, got %d messages", len(result.Messages))
 	}
-	if result != nil {
-		t.Errorf("expected nil result on error, got %+v", result)
+	if result.BeforeMessages != 3 {
+		t.Errorf("BeforeMessages should be 3, got %d", result.BeforeMessages)
 	}
 }
 
@@ -544,7 +545,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 40000)
 
 	msgs := makeMessages(10, 5000)
 
@@ -573,43 +574,6 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	}
 }
 
-// TestCompactor_Compact_NothingToCompact_ReturnsError verifies that when
-// findKeepFrom determines all messages should be kept (nothing to compact),
-// Compact returns an error instead of a fake "success" with zero delta.
-// This aligns with TS where autocompact returns wasCompacted:false for no-ops.
-func TestCompactor_Compact_NothingToCompact_ReturnsError(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := short.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
-
-	// 3 messages ≤ minKeep(4) → findKeepFrom returns len(messages) → "nothing to compact"
-	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("continue")}},
-	}
-
-	_, err = sc.Compact(context.Background(), msgs)
-	if err == nil {
-		t.Fatal("expected error when nothing to compact (≤4 messages)")
-	}
-	if !strings.Contains(err.Error(), "nothing to compact") {
-		t.Errorf("error should mention 'nothing to compact', got: %v", err)
-	}
-	if mp.compactCallCount != 0 {
-		t.Errorf("no LLM call expected, got %d", mp.compactCallCount)
-	}
-}
-
 // TestCompactor_Compact_EmptyHeadText_ReturnsError verifies that when
 // head messages have no extractable text, Compact returns an error
 // instead of a no-op "success" with empty summary.
@@ -624,23 +588,17 @@ func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a session so RecordCompact can succeed
 	session, err := store.CreateSession(tmpDir, "test-model")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
 	mp := &compactMockProvider{}
-	// Small contextWindow → lower keep target
 	sc := NewAutoCompactor(store, session.SessionID, "test-model", mp, 10000)
 
-	// Build messages where head (first ~8) have only non-text blocks that
-	// extractTextFromShortContent skips. Use thinking blocks (type "thinking")
-	// which are ignored by the extractor.
+	// All messages have only thinking blocks - no extractable text.
 	msgs := []types.Message{}
-
-	// Head: 8 messages with thinking blocks (not extracted by extractTextFromShortContent)
-	for i := range 4 {
+	for i := range 5 {
 		msgs = append(msgs, types.Message{
 			Role:    types.RoleAssistant,
 			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("thinking %d", i)}},
@@ -650,19 +608,10 @@ func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
 			Content: []types.ContentBlock{{Type: "thinking", Text: fmt.Sprintf("response %d", i)}},
 		})
 	}
-	// Tail: 2 messages with real text (kept by findKeepFrom)
-	msgs = append(msgs, types.Message{
-		Role:    types.RoleAssistant,
-		Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 5000))},
-	})
-	msgs = append(msgs, types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock("continue")},
-	})
 
 	_, err = sc.Compact(context.Background(), msgs)
 	if err == nil {
-		t.Fatal("expected error when head messages have no extractable text")
+		t.Fatal("expected error when all messages have no extractable text")
 	}
 	if !strings.Contains(err.Error(), "no extractable text") {
 		t.Errorf("error should mention 'no extractable text', got: %v", err)
@@ -717,7 +666,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 200000)
+	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 8000)
 
 	msgs := makeMessages(10, 1000)
 
@@ -1107,5 +1056,142 @@ func TestBuildResultMessages_RemovesOrphanedToolResults(t *testing.T) {
 	}
 	if !foundKept {
 		t.Error("tool_result for kept_1 should be preserved")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findKeepFrom: [0, min(targetKeepTokens, maxKeepMessages)] design
+//
+// Invariant: tail = messages[keepFrom:] is in range [0, min(8K tokens, 8 msgs)].
+// Walk backwards from tail, stop when EITHER constraint is hit.
+// If nothing fits, tail = 0 (compact everything into summary).
+// ---------------------------------------------------------------------------
+
+// newFindKeepFromHelper creates a compactor and returns keepFrom for the given messages.
+func newFindKeepFromHelper(t *testing.T, contextWindow int, msgs []types.Message) int {
+	t.Helper()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+	sc := NewAutoCompactor(store, "test-session", "test-model", &compactMockProvider{}, contextWindow)
+	shortMsgs := engineToShort(msgs)
+	return sc.findKeepFrom(shortMsgs)
+}
+
+func TestFindKeepFrom_SingleHugeMessage_TailZero(t *testing.T) {
+	t.Parallel()
+	// contextWindow=40K → target=8K. One message of 40K chars (~10K tokens) > 8K.
+	// Nothing fits in tail budget → keepFrom = len (compact everything).
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("x", 40000)),
+		}},
+	}
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	if keepFrom != len(msgs) {
+		t.Errorf("single huge msg: keepFrom should be len(%d), got %d", len(msgs), keepFrom)
+	}
+}
+
+func TestFindKeepFrom_LastMessageHuge_CompactEverything(t *testing.T) {
+	t.Parallel()
+	// 10 messages: 9 small + 1 huge last. Last alone exceeds 8K budget.
+	// Pure token-based: nothing fits in tail → keepFrom = len (compact everything).
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 0")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("msg 1")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("msg 3")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 4")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("msg 5")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 6")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("msg 7")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 8")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("x", 40000)), // ~10K tokens > 8K
+		}},
+	}
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	// Huge last message exceeds 8K → nothing fits in tail → keepFrom = len.
+	// This means Compact will summarize everything (tail=0).
+	if keepFrom != len(msgs) {
+		t.Errorf("should return len(%d) when nothing fits in budget, got %d", len(msgs), keepFrom)
+	}
+}
+
+func TestFindKeepFrom_AllHuge_CompactEverything(t *testing.T) {
+	t.Parallel()
+	// 8 messages, each ~5K tokens (20K chars). First from tail exceeds 8K budget.
+	// Nothing fits in tail → keepFrom = len (compact everything, tail=0).
+	msgs := makeLargeMessages(8, 5000)
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	// First message from tail (5K tokens) fits in 8K budget, second doesn't (10K > 8K).
+	// So tail = 1 message, keepFrom = len - 1 = 7.
+	tail := len(msgs) - keepFrom
+	if tail != 1 {
+		t.Errorf("tail should be 1 (first fits, second overflows), got tail=%d keepFrom=%d", tail, keepFrom)
+	}
+}
+
+func TestFindKeepFrom_SmallMessages_AllFit_NothingToCompact(t *testing.T) {
+	t.Parallel()
+	// 20 small messages, each ~100 tokens. Total = ~2K tokens << 8K budget.
+	// All fit → return len (nothing to compact).
+	msgs := makeLargeMessages(20, 100)
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	if keepFrom != len(msgs) {
+		t.Errorf("all fit: should return len(%d), got %d", len(msgs), keepFrom)
+	}
+}
+
+func TestFindKeepFrom_Mixed_StopsAtTokenBudget(t *testing.T) {
+	t.Parallel()
+	// Messages with varying sizes. Budget = 8K tokens, maxKeep = 8 messages.
+	// Tail should stop when token budget is hit, even if count < 8.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old 2")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 3")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old 4")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 5")}},
+		// Last 3 messages: each ~3K tokens (12K chars). Total ~9K > 8K budget.
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("a", 12000)),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("b", 12000)),
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(strings.Repeat("c", 12000)),
+		}},
+	}
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	tail := len(msgs) - keepFrom
+	// Last 2 messages: 6K tokens < 8K. Adding 3rd: 9K > 8K. So tail = 2.
+	if tail != 2 {
+		t.Errorf("tail should be 2 (budget hit), got %d (keepFrom=%d)", tail, keepFrom)
+	}
+}
+
+func TestFindKeepFrom_Empty_ReturnsZero(t *testing.T) {
+	t.Parallel()
+	keepFrom := newFindKeepFromHelper(t, 40000, nil)
+	if keepFrom != 0 {
+		t.Errorf("empty messages should return 0, got %d", keepFrom)
+	}
+}
+
+func TestFindKeepFrom_AllFit_NothingToCompact(t *testing.T) {
+	t.Parallel()
+	// 3 small messages, all fit in 8K budget and under 8 count.
+	// Nothing to compact → return len.
+	msgs := makeLargeMessages(3, 100)
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
+	if keepFrom != len(msgs) {
+		t.Errorf("all fit: should return len(%d), got %d", len(msgs), keepFrom)
 	}
 }

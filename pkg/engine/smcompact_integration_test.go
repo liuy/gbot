@@ -93,7 +93,7 @@ smcompact_integration_test.go — chain tests
 	// Turn response (after compact)
 	p.addStream(textStreamEvents("test-model", "Turn after SM-compact."), nil)
 
-	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 500)
 
 	eng := New(&Params{
 		Provider:  p,
@@ -130,7 +130,7 @@ smcompact_integration_test.go — chain tests
 
 	// Step 2: Set large messages and query → engine should auto-compact using SM-compact
 	// 20 messages × 50 tokens = 1000 tokens > 90% of ContextWindow(500)
-	eng.SetMessages(makeLargeMessages(20, 50))
+	eng.SetMessages(makeLargeMessages(20, 400))
 	result := eng.QuerySync(ctx, "turn 1", nil)
 	if result.Error != nil {
 		t.Fatalf("query failed: %v", result.Error)
@@ -362,7 +362,7 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 40000)
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
 
 	msgs := makeLargeMessages(20, 500)
@@ -446,7 +446,7 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	p := &integrationProvider{}
 	p.addStream(textStreamEvents("test-model", "Response after LLM compact."), nil)
 
-	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 200000)
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 40000)
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
 
 	eng := New(&Params{
@@ -461,7 +461,7 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	eng.SetSessionMemory(sm)
 
 	// Set messages that exceed threshold
-	eng.SetMessages(makeLargeMessages(20, 50))
+	eng.SetMessages(makeLargeMessages(20, 400))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

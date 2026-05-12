@@ -80,40 +80,41 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	shortMsgs := engineToShort(messages)
 
 	// Determine how many recent messages to keep.
-	// Strategy: count tokens from tail, keep adding until reaching dynamic target
-	// (contextWindow / 5, clamped to [2K, 60K]).
+	// Walk backwards from tail, keep adding until token budget exceeded.
+	// keepFrom = len: compact everything (tail=0).
+	// keepFrom < len: compact head, keep tail.
 	keepFrom := c.findKeepFrom(shortMsgs)
-	if keepFrom >= len(shortMsgs) {
-		// Nothing to compact — keep all messages.
-		// Return error so the engine treats this as a no-op (doesn't skip
-		// blocking limit, increments circuit breaker).
-		return nil, fmt.Errorf("nothing to compact: all messages within keep target")
-	}
-	if keepFrom <= 1 {
-		// Need at least 1 message to keep.
-		return nil, fmt.Errorf("nothing to compact: too few messages to keep")
-	}
 
-	// Call PartialCompact: creates boundary marker + splits head/tail
-	pcr, err := c.store.PartialCompact(c.sessionID, shortMsgs, keepFrom)
-	if err != nil {
-		c.logger.Error("PartialCompact failed", "error", err)
-		return nil, err
-	}
-
-	// Generate summary for the compacted head via LLM
+	// Generate summary for the head messages via LLM
 	headMsgs := shortMsgs[:keepFrom]
 	summaryText, err := c.summarizeMessages(ctx, headMsgs)
 	if err != nil {
 		return nil, fmt.Errorf("summarize failed: %w", err)
 	}
 
-	// Record compact in database (write boundary + summary to store)
-	if err := c.store.RecordCompact(c.sessionID, pcr); err != nil {
-		c.logger.Warn("RecordCompact failed", "error", err)
+	if keepFrom < len(shortMsgs) {
+		// Normal compact: call PartialCompact to split head/tail.
+		pcr, err := c.store.PartialCompact(c.sessionID, shortMsgs, keepFrom)
+		if err != nil {
+			c.logger.Error("PartialCompact failed", "error", err)
+			return nil, err
+		}
+		if err := c.store.RecordCompact(c.sessionID, pcr); err != nil {
+			c.logger.Warn("RecordCompact failed", "error", err)
+		}
+		built := c.buildResultMessages(pcr, summaryText)
+		return &CompactResult{
+			Summary:        summaryText,
+			BeforeTokens:   beforeTokens,
+			BeforeMessages: len(messages),
+			AfterTokens:    EstimateMessagesTokens(built),
+			Messages:       built,
+		}, nil
 	}
 
-	built := c.buildResultMessages(pcr, summaryText)
+	// keepFrom == len: compact everything (tail=0).
+	// Build [boundary, summary] directly — no PartialCompact needed.
+	built := c.buildCompactAllResult(summaryText)
 	return &CompactResult{
 		Summary:        summaryText,
 		BeforeTokens:   beforeTokens,
@@ -124,29 +125,31 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).
-// Uses a dynamic target based on contextWindow: keep = contextWindow/5,
-// clamped to [2000, 60000]. For small windows this keeps less recent context,
-// for large windows it keeps more — but never more than 60K tokens.
-// TS align: compact.ts partialCompactConversation — keeps recent messages for context
+// Pure token-based: walk backwards from tail, keep adding messages until the
+// token budget (contextWindow/5, clamped to [2K, 60K]) is exceeded.
+//
+// Tail range: [0, targetKeepTokens].
+//   - tail=0: nothing fits in budget, compact everything into summary
+//   - tail=K: K tokens of recent messages kept verbatim
+//
+// Returns the split index keepFrom. head = messages[:keepFrom], tail = messages[keepFrom:].
 func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
-	// Dynamic keep target: contextWindow / 5, clamped
-	targetKeepTokens := max(min(c.contextWindow/5, 60000), 2000)
-
-	// Always keep at least 4 messages (2 turns)
-	minKeep := 4
-	if len(messages) <= minKeep {
-		return len(messages)
+	if len(messages) == 0 {
+		return 0
 	}
 
+	targetKeepTokens := max(min(c.contextWindow/5, 60000), 2000)
+
 	totalTokens := 0
-	for i := len(messages) - 1; i >= minKeep-1; i-- {
+	for i := len(messages) - 1; i >= 0; i-- {
 		tokens := EstimateTokens(messages[i].Content)
 		if totalTokens+tokens > targetKeepTokens {
 			return i + 1
 		}
 		totalTokens += tokens
 	}
-	return minKeep
+	// All messages fit in budget — nothing to compact.
+	return len(messages)
 }
 
 // summarizeMessages calls the LLM to generate a summary of the given messages.
@@ -260,6 +263,41 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 	// Remove orphaned tool_results: tool_result blocks whose tool_use was in
 	// the removed head. The API rejects tool_results without matching tool_use.
 	msgs = removeOrphanedToolResults(msgs)
+
+	return msgs
+}
+
+// buildCompactAllResult builds the post-compact message array when tail=0
+// (compact everything). Returns [boundary_msg, summary_msg].
+func (c *AutoCompactor) buildCompactAllResult(summaryText string) []types.Message {
+	msgs := make([]types.Message, 0, 2)
+
+	// Boundary message using compact_boundary format (same as PartialCompact).
+	contentMap := map[string]any{
+		"type":            "system",
+		"subtype":         "compact_boundary",
+		"content":         "Conversation compacted",
+		"isMeta":          false,
+		"compactMetadata": map[string]any{"trigger": "auto"},
+	}
+	boundaryBytes, _ := json.Marshal(contentMap)
+	msgs = append(msgs, types.Message{
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock(string(boundaryBytes))},
+		Timestamp: time.Now(),
+		Flags:     types.FlagCompactSummary,
+	})
+
+	// Summary message
+	if summaryText != "" {
+		summaryContent := short.GetCompactUserSummaryMessage(summaryText, true, "", "entire conversation was compacted")
+		msgs = append(msgs, types.Message{
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock(summaryContent)},
+			Timestamp: time.Now(),
+			Flags:     types.FlagCompactSummary,
+		})
+	}
 
 	return msgs
 }
