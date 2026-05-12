@@ -193,33 +193,12 @@ func BuildUpdatePrompt(currentNotes, notesPath string, cfg Config) string {
 
 // IsSessionMemoryEmpty checks if the content matches the template (no real data).
 // TS source: prompts.ts:220 — isSessionMemoryEmpty.
-// Compares by checking if content contains only template placeholders.
+// Uses strict string equality against the template (after trimming), matching TS behavior.
 func IsSessionMemoryEmpty(content string) bool {
 	if content == "" {
 		return true
 	}
-	// If every non-header, non-empty line is a template placeholder like [Brief, ...]
-	// or the worklog only has the template entry, it's empty.
-	lines := strings.Split(content, "\n")
-	hasContent := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "##") {
-			continue
-		}
-		// Template placeholders start with [ and end with ]
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			continue
-		}
-		// Worklog template entry
-		if strings.HasPrefix(trimmed, "- [Timestamp]") {
-			continue
-		}
-		// If we find a line that's not a placeholder, there's real content
-		hasContent = true
-		break
-	}
-	return !hasContent
+	return strings.TrimSpace(content) == strings.TrimSpace(DefaultTemplate)
 }
 
 // TruncateForCompact truncates oversized sections for use in compact messages.

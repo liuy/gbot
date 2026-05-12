@@ -23,8 +23,10 @@ func TestIsSessionMemoryEmpty_TemplateOnly(t *testing.T) {
 	}
 }
 
-func TestIsSessionMemoryEmpty_OnlyPlaceholders(t *testing.T) {
+func TestIsSessionMemoryEmpty_PartialTemplate(t *testing.T) {
 	t.Parallel()
+	// Partial template content (not the full template) — TS uses strict equality,
+	// so this is NOT considered empty even though it has only placeholders.
 	content := `# Session Notes
 
 ## Session Title
@@ -36,8 +38,8 @@ func TestIsSessionMemoryEmpty_OnlyPlaceholders(t *testing.T) {
 ## Worklog
 - [Timestamp] [Brief description of what was done]
 `
-	if !IsSessionMemoryEmpty(content) {
-		t.Error("content with only placeholders should be empty")
+	if IsSessionMemoryEmpty(content) {
+		t.Error("partial template should NOT be considered empty (strict equality check)")
 	}
 }
 

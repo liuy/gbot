@@ -2129,7 +2129,7 @@ func (e *Engine) SetSessionMemory(sm *session.SessionMemory) {
 
 			// Run extraction asynchronously — TS: extractSessionMemory runs in background via runForkedAgent
 			go func() {
-				if err := sm.Extract(ctx, messages, currentTokens); err != nil {
+				if err := sm.Extract(context.WithoutCancel(ctx), messages, currentTokens); err != nil {
 					e.logger.Warn("session memory extraction failed", "error", err)
 				}
 			}()
