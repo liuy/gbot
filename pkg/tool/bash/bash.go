@@ -20,6 +20,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func init() {
@@ -212,7 +213,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 	// Background execution: spawn command and return immediately with task ID
 	// Source: BashTool.tsx:988-1001 — run_in_background=true spawns immediately
 	if in.RunInBackground {
-		return spawnBackground(ctx, in, cwd, timeout, registry)
+		return spawnBackground(ctx, in, cwd, timeout, registry, tctx)
 	}
 
 	// Create streaming output with progress callback wired to tctx.OnProgress.
@@ -239,7 +240,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 
 	// Run the command, capturing output into StreamingOutput
 	if isPTYAvailable() {
-		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
+		return executePTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap, tctx)
 	}
 	return executeNonPTY(ctx, in, cwd, timeout, s, shouldAutoBg, registry, outputCap)
 }
@@ -250,7 +251,7 @@ func executeBash(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseC
 // When shouldAutoBg is true and timeout fires, the command transitions to a
 // background task instead of being killed.
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
-func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry, outputCap int64) (*tool.ToolResult, error) {
+func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, shouldAutoBg bool, registry *BackgroundTaskRegistry, outputCap int64, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	id := fmt.Sprintf("%04x", time.Now().UnixNano()%0x10000)
 	cwdFile := buildCwdFilePath(id)
 	wrappedCmd := buildCommand(in.Command, nil, cwdFile)
@@ -269,18 +270,35 @@ func executePTY(ctx context.Context, in Input, cwd string, timeout time.Duration
 		}
 	})
 
-	if shouldAutoBg {
-		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap)
+	// Build emitAskInput callback from tctx.OnAskInput (if available).
+	var emitAskInput func(string, bool) chan types.AskResponse
+	if tctx != nil && tctx.OnAskInput != nil {
+		onAskInput := tctx.OnAskInput
+		startTime := time.Now()
+		cmdTimeout := timeout
+		emitAskInput = func(tail string, masked bool) chan types.AskResponse {
+			remaining := cmdTimeout - time.Since(startTime)
+			if remaining <= 0 {
+				return nil
+			}
+			deadline := time.Now().Add(min(remaining, 60*time.Second))
+			return onAskInput(tail, masked, deadline)
+		}
+
 	}
-	return executePTYSync(ctx, in, cwd, timeout, s, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap)
+	if shouldAutoBg {
+		return executePTYAutoBg(ctx, in, cwd, timeout, s, registry, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap, emitAskInput)
+	}
+	return executePTYSync(ctx, in, cwd, timeout, s, id, cwdFile, wrappedCmd, baseEnv, screen, outputCap, emitAskInput)
 }
 
 // executePTYSync runs a PTY command synchronously.
 // When timeout fires, the process is killed and TimedOut=true is returned.
-func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64) (*tool.ToolResult, error) {
-	exitCode, interrupted, err := ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
+func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse) (*tool.ToolResult, error) {
+	exitCode, interrupted, err := runPTYCommand(ctx, wrappedCmd, cwd, baseEnv,
 		screen,
 		timeout,
+		emitAskInput,
 	)
 
 	if err != nil {
@@ -310,7 +328,7 @@ func executePTYSync(ctx context.Context, in Input, cwd string, timeout time.Dura
 //
 // Uses MaxTimeout for ptyCommand (so it doesn't kill internally) and manages
 // the actual timeout via a timer. When timeout fires, transitions to background.
-func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64) (*tool.ToolResult, error) {
+func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, id string, cwdFile string, wrappedCmd string, baseEnv []string, screen *tool.Screen, outputCap int64, emitAskInput func(string, bool) chan types.AskResponse) (*tool.ToolResult, error) {
 	// Run ptyCommand in a goroutine with MaxTimeout (don't let it kill the process).
 	// Source: ShellCommand.ts:349-366 — background() clears the timeout timer.
 	ptyDone := make(chan struct{})
@@ -320,9 +338,10 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 
 	go func() {
 		defer close(ptyDone)
-		ptyExitCode, ptyInterrupted, _ = ptyCommand(ctx, wrappedCmd, cwd, baseEnv,
+		ptyExitCode, ptyInterrupted, _ = runPTYCommand(ctx, wrappedCmd, cwd, baseEnv,
 			screen,
 			MaxTimeout, // long timeout — we manage the real timeout externally
+			emitAskInput,
 			func(pid int) {
 				ptyPID.Store(int64(pid))
 			},
@@ -649,8 +668,25 @@ func truncate(s string, maxLen int) string {
 //
 // Source: BashTool.tsx:904-921 — spawnBackgroundTask()
 // Source: LocalShellTask.tsx:180-252 — spawnShellTask()
-func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Duration, registry *BackgroundTaskRegistry) (*tool.ToolResult, error) {
+func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Duration, registry *BackgroundTaskRegistry, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	s := NewStreamingOutput(nil)
+
+	// Build emitAskInput callback from tctx.OnAskInput (if available).
+	// Deadline mechanism prevents Drain from blocking forever if TUI disconnects.
+	var emitAskInput func(string, bool) chan types.AskResponse
+	if tctx != nil && tctx.OnAskInput != nil {
+		onAskInput := tctx.OnAskInput
+		startTime := time.Now()
+		cmdTimeout := timeout
+		emitAskInput = func(tail string, masked bool) chan types.AskResponse {
+			remaining := cmdTimeout - time.Since(startTime)
+			if remaining <= 0 {
+				return nil
+			}
+			deadline := time.Now().Add(min(remaining, 60*time.Second))
+			return onAskInput(tail, masked, deadline)
+		}
+	}
 
 	// Create an independent context for the background task.
 	// Background tasks must outlive the query context — cancelling the parent
@@ -699,9 +735,10 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 		var ptyExitCode int
 		go func() {
 			defer close(ptyDone)
-			ptyExitCode, _, _ = ptyCommand(taskCtx, wrappedCmd, cwd, baseEnv,
+			ptyExitCode, _, _ = runPTYCommand(taskCtx, wrappedCmd, cwd, baseEnv,
 				screen,
 				timeout,
+				emitAskInput,
 				func(pid int) {
 					task.mu.Lock()
 					task.PID = pid

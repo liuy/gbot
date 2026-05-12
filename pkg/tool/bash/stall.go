@@ -32,7 +32,7 @@ var promptPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Press (any key|Enter)`),
 	regexp.MustCompile(`(?i)Continue\?`),
 	regexp.MustCompile(`(?i)Overwrite\?`),
-	regexp.MustCompile(`(?i)Password:`),
+	regexp.MustCompile(`(?i)\bPassword\b.*:\s*$`),
 }
 
 // looksLikePrompt checks whether the tail of the output looks like an
@@ -49,6 +49,17 @@ func looksLikePrompt(tail string) bool {
 	}
 	return false
 }
+
+// isPasswordPrompt checks whether the tail of the output looks like a
+// password prompt (masked input). Used by PTYSession.Drain to determine
+// if the InputDialog should mask user input.
+func isPasswordPrompt(tail string) bool {
+	lastLine := lastNonEmptyLine(tail)
+	return passwordPattern.MatchString(lastLine)
+}
+
+// passwordPattern matches common password prompts.
+var passwordPattern = regexp.MustCompile(`(?i)\bPassword\b.*:\s*$`)
 
 // lastNonEmptyLine returns the last line from a multiline string after
 // trimming trailing whitespace, matching the TS: tail.trimEnd().split('\n').pop()

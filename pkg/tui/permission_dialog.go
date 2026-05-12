@@ -10,7 +10,7 @@ import (
 // NewPermissionDialog creates a Dialog for a permission ask event.
 // The dialog shows tool details and offers Allow/Deny/AllowAlways options
 // with y/n/a shortcuts.
-func NewPermissionDialog(event *types.PermissionAskEvent, detail string) *Dialog {
+func NewPermissionDialog(event *types.AskEvent, detail string) *Dialog {
 	var details []DialogDetail
 
 	if event.AgentType != "" {
@@ -45,33 +45,33 @@ func extractDetail(toolName string, input json.RawMessage) string {
 	}
 }
 
-// sendDecision writes the user's decision to the response channel.
+// sendDecision writes the user's response to the response channel.
 // Non-blocking: if engine already timed out and stopped reading, the write is dropped.
-func sendDecision(ch chan types.PermissionUserDecision, decision types.PermissionUserDecision) {
+func sendDecision(ch chan types.AskResponse, resp types.AskResponse) {
 	select {
-	case ch <- decision:
+	case ch <- resp:
 	default:
 	}
 }
 
-// permissionDecisions maps dialog option index to PermissionUserDecision.
-var permissionDecisions = []types.PermissionUserDecision{
-	types.UserDecisionAllow,
-	types.UserDecisionDeny,
-	types.UserDecisionAllowAlways,
+// permissionDecisions maps dialog option index to AskResponse.
+var permissionDecisions = []types.AskResponse{
+	{Decision: types.DecisionAllow},
+	{Decision: types.DecisionDeny},
+	{Decision: types.DecisionAllowAlways},
 }
 
 // dialogDonePermission handles the completion of a permission dialog.
 // It sends the appropriate decision to the response channel.
-func dialogDonePermission(d *Dialog, ch chan types.PermissionUserDecision) {
+func dialogDonePermission(d *Dialog, ch chan types.AskResponse) {
 	if d.Aborted() {
-		sendDecision(ch, types.UserDecisionDeny)
+		sendDecision(ch, types.AskResponse{Decision: types.DecisionDeny})
 		return
 	}
 	idx := d.SelectedIndex()
 	if idx >= 0 && idx < len(permissionDecisions) {
 		sendDecision(ch, permissionDecisions[idx])
 	} else {
-		sendDecision(ch, types.UserDecisionDeny)
+		sendDecision(ch, types.AskResponse{Decision: types.DecisionDeny})
 	}
 }

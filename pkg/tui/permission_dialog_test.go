@@ -12,9 +12,9 @@ import (
 
 // newTestPermDialog creates a permission Dialog and returns it along with
 // the response channel so tests can read the decision.
-func newTestPermDialog() (*Dialog, chan types.PermissionUserDecision) {
-	ch := make(chan types.PermissionUserDecision, 1)
-	d := NewPermissionDialog(&types.PermissionAskEvent{
+func newTestPermDialog() (*Dialog, chan types.AskResponse) {
+	ch := make(chan types.AskResponse, 1)
+	d := NewPermissionDialog(&types.AskEvent{
 		ToolName:   "Bash",
 		Message:    "permission required",
 		RuleDetail: "Bash(rm -rf *) from project",
@@ -61,8 +61,8 @@ func TestPermissionDialog_KeyY_Allow(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionAllow {
-			t.Errorf("got %q, want allow", dec)
+		if dec.Decision != types.DecisionAllow {
+			t.Errorf("got %v, want allow", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -76,8 +76,8 @@ func TestPermissionDialog_KeyN_Deny(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionDeny {
-			t.Errorf("got %q, want deny", dec)
+		if dec.Decision != types.DecisionDeny {
+			t.Errorf("got %v, want deny", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -91,8 +91,8 @@ func TestPermissionDialog_KeyA_AllowAlways(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionAllowAlways {
-			t.Errorf("got %q, want allow_always", dec)
+		if dec.Decision != types.DecisionAllowAlways {
+			t.Errorf("got %v, want allow_always", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -106,8 +106,8 @@ func TestPermissionDialog_Esc_Deny(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionDeny {
-			t.Errorf("got %q, want deny", dec)
+		if dec.Decision != types.DecisionDeny {
+			t.Errorf("got %v, want deny", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -122,8 +122,8 @@ func TestPermissionDialog_EnterSelectsCursor(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionAllow {
-			t.Errorf("got %q, want allow (cursor=0)", dec)
+		if dec.Decision != types.DecisionAllow {
+			t.Errorf("got %v, want allow (cursor=0)", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -138,8 +138,8 @@ func TestPermissionDialog_ArrowDownThenEnter(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionDeny {
-			t.Errorf("got %q, want deny (cursor=1)", dec)
+		if dec.Decision != types.DecisionDeny {
+			t.Errorf("got %v, want deny (cursor=1)", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -155,8 +155,8 @@ func TestPermissionDialog_ArrowDownTwiceThenEnter(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionAllowAlways {
-			t.Errorf("got %q, want allow_always (cursor=2)", dec)
+		if dec.Decision != types.DecisionAllowAlways {
+			t.Errorf("got %v, want allow_always (cursor=2)", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -172,8 +172,8 @@ func TestPermissionDialog_ArrowUpWraps(t *testing.T) {
 	dialogDonePermission(d, ch)
 	select {
 	case dec := <-ch:
-		if dec != types.UserDecisionAllowAlways {
-			t.Errorf("got %q, want allow_always (wrapped to last)", dec)
+		if dec.Decision != types.DecisionAllowAlways {
+			t.Errorf("got %v, want allow_always (wrapped to last)", dec.Decision)
 		}
 	default:
 		t.Fatal("expected decision on responseCh")
@@ -199,8 +199,8 @@ func TestPermissionDialog_UnknownKeyIntercepted(t *testing.T) {
 }
 
 func TestPermissionDialog_AgentType(t *testing.T) {
-	ch := make(chan types.PermissionUserDecision, 1)
-	d := NewPermissionDialog(&types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	d := NewPermissionDialog(&types.AskEvent{
 		ToolName:   "Bash",
 		Message:    "test",
 		AgentType:  "Explore",
@@ -214,8 +214,8 @@ func TestPermissionDialog_AgentType(t *testing.T) {
 }
 
 func TestPermissionDialog_NoRuleDetail(t *testing.T) {
-	ch := make(chan types.PermissionUserDecision, 1)
-	d := NewPermissionDialog(&types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	d := NewPermissionDialog(&types.AskEvent{
 		ToolName:   "Bash",
 		Message:    "test",
 		RuleDetail: "",
@@ -229,8 +229,8 @@ func TestPermissionDialog_NoRuleDetail(t *testing.T) {
 }
 
 func TestPermissionDialog_NoDetail(t *testing.T) {
-	ch := make(chan types.PermissionUserDecision, 1)
-	d := NewPermissionDialog(&types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	d := NewPermissionDialog(&types.AskEvent{
 		ToolName:   "Bash",
 		Message:    "test",
 		ResponseCh: ch,

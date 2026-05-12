@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -42,6 +43,7 @@ type ToolUseContext struct {
 	ReadFileState map[string]FileState // keyed by absolute file path
 	OnProgress    func(ProgressUpdate) // optional — engine sets this for streaming progress
 	UncappedOutput bool                // bypass internal output capping (set for REPL sub-tool calls)
+	OnAskInput    func(prompt string, masked bool, deadline time.Time) chan types.AskResponse // optional — interactive PTY input
 }
 
 // MaxUncappedOutput is the safety limit for uncapped tool output reads (64MB).

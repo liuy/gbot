@@ -694,10 +694,11 @@ func TestConvertEventToMsg_ToolRun(t *testing.T) {
 
 func TestConvertEventToMsg_PermissionAsk(t *testing.T) {
 	h := NewTUIHandler()
-	ch := make(chan types.PermissionUserDecision, 1)
+	ch := make(chan types.AskResponse, 1)
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventPermissionAsk,
-		PermissionAsk: &types.PermissionAskEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskPermission,
 			ToolName:   "Bash",
 			Input:      json.RawMessage(`{"command":"rm -rf /tmp"}`),
 			Message:    "permission required",
@@ -723,8 +724,8 @@ func TestConvertEventToMsg_PermissionAsk(t *testing.T) {
 func TestConvertEventToMsg_PermissionAsk_NilPermissionAsk(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:         types.EventPermissionAsk,
-		PermissionAsk: nil,
+		Type:         types.EventAsk,
+		Ask: nil,
 	})
 	if msg != nil {
 		t.Errorf("nil PermissionAsk should return nil, got %T", msg)
@@ -733,10 +734,11 @@ func TestConvertEventToMsg_PermissionAsk_NilPermissionAsk(t *testing.T) {
 
 func TestTUIHandler_PermissionAsk_DeliveredToChannel(t *testing.T) {
 	h := NewTUIHandler()
-	ch := make(chan types.PermissionUserDecision, 1)
+	ch := make(chan types.AskResponse, 1)
 	h.Handle(types.QueryEvent{
-		Type: types.EventPermissionAsk,
-		PermissionAsk: &types.PermissionAskEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskPermission,
 			ToolName:   "Write",
 			Input:      json.RawMessage(`{"file_path":"test.go"}`),
 			Message:    "write permission",
@@ -771,12 +773,13 @@ func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 		h.appCh <- textDeltaMsg{Text: "fill"}
 	}
 
-	ch := make(chan types.PermissionUserDecision, 1)
+	ch := make(chan types.AskResponse, 1)
 	done := make(chan struct{})
 	go func() {
 		h.Handle(types.QueryEvent{
-			Type: types.EventPermissionAsk,
-			PermissionAsk: &types.PermissionAskEvent{
+			Type: types.EventAsk,
+			Ask: &types.AskEvent{
+			Kind:       types.AskPermission,
 				ToolName:   "Bash",
 				Input:      json.RawMessage(`{"command":"ls"}`),
 				Message:    "test",
@@ -789,13 +792,107 @@ func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 	// Wait for timeout + auto-deny (5s timeout)
 	select {
 	case d := <-ch:
-		if d != types.UserDecisionDeny {
-			t.Errorf("auto-deny decision = %q, want deny", d)
+		if d.Decision != types.DecisionDeny {
+			t.Errorf("auto-deny decision = %v, want deny", d.Decision)
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("timed out waiting for auto-deny")
 	}
 	<-done // ensure Handle returns
+}
+
+// ---------------------------------------------------------------------------
+// Input ask dispatch tests
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_InputAsk(t *testing.T) {
+	h := NewTUIHandler()
+	ch := make(chan types.AskResponse, 1)
+	deadline := time.Date(2099, 1, 1, 0, 0, 30, 0, time.UTC)
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskInput,
+			Prompt:     "[sudo] password for user:",
+			Masked:     true,
+			Deadline:   deadline,
+			ResponseCh: ch,
+		},
+	})
+	im, ok := msg.(inputAskMsg)
+	if !ok {
+		t.Fatalf("expected inputAskMsg, got %T", msg)
+	}
+	if im.event == nil {
+		t.Fatal("event should not be nil")
+	}
+	if im.event.Prompt != "[sudo] password for user:" {
+		t.Errorf("Prompt = %q, want [sudo] password for user:", im.event.Prompt)
+	}
+	if !im.event.Masked {
+		t.Error("Masked should be true")
+	}
+	if !im.event.Deadline.Equal(deadline) {
+		t.Errorf("Deadline = %v, want %v", im.event.Deadline, deadline)
+	}
+}
+
+func TestConvertEventToMsg_InputAsk_NilAsk(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAsk,
+		Ask:  nil,
+	})
+	if msg != nil {
+		t.Errorf("nil Ask should return nil, got %T", msg)
+	}
+}
+
+func TestConvertEventToMsg_InputAsk_UnknownKind(t *testing.T) {
+	h := NewTUIHandler()
+	ch := make(chan types.AskResponse, 1)
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       "unknown",
+			Prompt:     "test",
+			ResponseCh: ch,
+		},
+	})
+	if msg != nil {
+		t.Errorf("unknown Kind should return nil, got %T", msg)
+	}
+}
+
+func TestTUIHandler_InputAsk_DeliveredToChannel(t *testing.T) {
+	h := NewTUIHandler()
+	ch := make(chan types.AskResponse, 1)
+	h.Handle(types.QueryEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskInput,
+			Prompt:     "Enter value:",
+			Masked:     false,
+			Deadline:   time.Date(2099, 1, 1, 0, 0, 30, 0, time.UTC),
+			ResponseCh: ch,
+		},
+	})
+
+	select {
+	case msg, ok := <-h.appCh:
+		if !ok {
+			t.Fatal("appCh closed")
+		}
+		im, ok := msg.(inputAskMsg)
+		if !ok {
+			t.Fatalf("expected inputAskMsg, got %T", msg)
+		}
+		if im.event.Prompt != "Enter value:" {
+			t.Errorf("Prompt = %q, want Enter value:", im.event.Prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("input ask event should be delivered to appCh")
+	}
 }
 
 // ---------------------------------------------------------------------------

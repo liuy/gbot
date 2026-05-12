@@ -6300,3 +6300,103 @@ func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
 		}
 	}
 }
+
+// --- renderInputOverlay ---
+
+func TestApp_RenderInputOverlay_NoPeekContent(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	ch := make(chan types.AskResponse, 1)
+	app.activeInput = NewInputDialog("Enter password:", false, testFutureDeadline, ch)
+
+	view := app.renderInputOverlay()
+	if !strings.Contains(view, "Input Required") {
+		t.Error("overlay should contain input dialog title")
+	}
+	if !strings.Contains(view, "Enter password:") {
+		t.Error("overlay should contain prompt text")
+	}
+}
+
+func TestApp_RenderInputOverlay_WithPeekContent(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	helperAddMessages(app, 3, "Line")
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentDirty = false
+
+	ch := make(chan types.AskResponse, 1)
+	app.activeInput = NewInputDialog("Password:", true, testFutureDeadline, ch)
+
+	view := app.renderInputOverlay()
+	if !strings.Contains(view, "Line") {
+		t.Error("overlay should contain peek content")
+	}
+	if !strings.Contains(view, "Input Required") {
+		t.Error("overlay should contain input dialog title")
+	}
+	if !strings.Contains(view, "Password:") {
+		t.Error("overlay should contain prompt")
+	}
+	// Peek content should appear before dialog
+	peekIdx := strings.Index(view, "Line")
+	dialogIdx := strings.Index(view, "Input Required")
+	if peekIdx == -1 || dialogIdx == -1 {
+		t.Fatal("missing peek or dialog in view")
+	}
+	if dialogIdx < peekIdx {
+		t.Error("peek content should appear before dialog")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 2: Second inputAskMsg should abort existing InputDialog
+// ---------------------------------------------------------------------------
+
+func TestApp_InputAskMsg_OverwriteAbortsExisting(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Set up an existing activeInput with its own result channel
+	firstCh := make(chan types.AskResponse, 1)
+	app.activeInput = NewInputDialog("First prompt:", false, testFutureDeadline, firstCh)
+
+	// Send a second inputAskMsg — should abort the first dialog
+	secondCh := make(chan types.AskResponse, 1)
+	app.Update(inputAskMsg{
+		event: &types.AskEvent{
+			Kind:       types.AskInput,
+			Prompt:     "Second prompt:",
+			Masked:     false,
+			Deadline:   testFutureDeadline,
+			ResponseCh: secondCh,
+		},
+	})
+
+	// First dialog's channel should receive abort
+	select {
+	case resp := <-firstCh:
+		if !resp.Aborted {
+			t.Error("first dialog should have been aborted on overwrite")
+		}
+	default:
+		t.Error("first dialog's channel should have received abort response")
+	}
+
+	// Second dialog should be the new activeInput
+	if app.activeInput == nil {
+		t.Fatal("activeInput should be set after second inputAskMsg")
+	}
+	if app.activeInput.prompt != "Second prompt:" {
+		t.Errorf("activeInput prompt = %q, want %q", app.activeInput.prompt, "Second prompt:")
+	}
+
+	// Second channel should NOT have received anything yet
+	select {
+	case <-secondCh:
+		t.Error("second dialog's channel should not have received anything yet")
+	default:
+	}
+}

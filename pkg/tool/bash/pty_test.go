@@ -16,6 +16,22 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 )
 
+// drainToScreen reads from an io.Reader and feeds bytes to a Screen.
+// Replaces the old drainPTY for test-only use.
+func drainToScreen(reader io.Reader, screen *tool.Screen) {
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := reader.Read(buf)
+		if n > 0 {
+			screen.Write(buf[:n])
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	screen.Flush()
+}
+
 // --- executeNonPTY tests (internal access) ---
 
 func TestExecuteNonPTY_Echo(t *testing.T) {
@@ -183,7 +199,7 @@ func TestPtyCommand_MultilineOutput(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"echo line1; echo line2; echo line3",
 		"",
@@ -192,9 +208,10 @@ func TestPtyCommand_MultilineOutput(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		10*time.Second,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
@@ -211,7 +228,7 @@ func TestPtyCommand_Environment(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, interrupted, ptyErr := ptyCommand(
+	exitCode, interrupted, ptyErr := runPTYCommand(
 		context.Background(),
 		"echo $GBOT_TEST_VAR",
 		"",
@@ -220,9 +237,10 @@ func TestPtyCommand_Environment(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		10*time.Second,
+		nil,
 	)
 	if ptyErr != nil {
-		t.Fatalf("ptyCommand() error: %v", ptyErr)
+		t.Fatalf("runPTYCommand() error: %v", ptyErr)
 	}
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
@@ -243,7 +261,7 @@ func TestPtyCommand_PartialLineFlush(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"printf 'no-newline-end'",
 		"",
@@ -252,9 +270,10 @@ func TestPtyCommand_PartialLineFlush(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		10*time.Second,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
@@ -271,7 +290,7 @@ func TestPtyCommand_PartialLine(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"printf 'partial-no-newline'",
 		"",
@@ -280,9 +299,10 @@ func TestPtyCommand_PartialLine(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		10*time.Second,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
@@ -299,7 +319,7 @@ func TestPtyCommand_ExitBySignal(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, interrupted, err := ptyCommand(
+	exitCode, interrupted, err := runPTYCommand(
 		context.Background(),
 		"sleep 10",
 		"",
@@ -308,9 +328,10 @@ func TestPtyCommand_ExitBySignal(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		200*time.Millisecond,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if !interrupted {
 		t.Error("interrupted = false, want true for timed-out command")
@@ -328,7 +349,7 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"kill -ABRT $$",
 		"",
@@ -337,6 +358,7 @@ func TestPtyCommand_NonExitErrorPath(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		500*time.Millisecond,
+		nil,
 	)
 	// Command should terminate with signal (exit code != 0) or error
 	if exitCode == 0 && err == nil {
@@ -351,7 +373,7 @@ func TestPtyCommand_LongLine(t *testing.T) {
 
 	longStr := strings.Repeat("A", 8192)
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"printf '%s\\n' "+longStr,
 		"",
@@ -360,9 +382,10 @@ func TestPtyCommand_LongLine(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		10*time.Second,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if exitCode != 0 {
 		t.Errorf("exitCode = %d, want 0", exitCode)
@@ -379,7 +402,7 @@ func TestPtyCommand_ReadError(t *testing.T) {
 	}
 
 	var lines []string
-	exitCode, _, err := ptyCommand(
+	exitCode, _, err := runPTYCommand(
 		context.Background(),
 		"exec cat",
 		"",
@@ -388,6 +411,7 @@ func TestPtyCommand_ReadError(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		500*time.Millisecond,
+		nil,
 	)
 	// Command times out, should get interrupted (exit code 137) or error
 	if exitCode == 0 && err == nil {
@@ -402,7 +426,7 @@ func TestPtyCommand_SigkillExit(t *testing.T) {
 
 	// killProcessTree sends SIGKILL directly (matching TS behavior)
 	var lines []string
-	exitCode, interrupted, err := ptyCommand(
+	exitCode, interrupted, err := runPTYCommand(
 		context.Background(),
 		"sleep 10",
 		"",
@@ -411,9 +435,10 @@ func TestPtyCommand_SigkillExit(t *testing.T) {
 			lines = append(lines, ev.Content)
 		}),
 		200*time.Millisecond,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("ptyCommand() error: %v", err)
+		t.Fatalf("runPTYCommand() error: %v", err)
 	}
 	if !interrupted {
 		t.Error("interrupted = false, want true")
@@ -528,13 +553,14 @@ func TestPtyCommand_StartError(t *testing.T) {
 	shellCommand = "/nonexistent/shell/xyz"
 	defer func() { shellCommand = orig }()
 
-	_, _, err := ptyCommand(
+	_, _, err := runPTYCommand(
 		context.Background(),
 		"echo hi",
 		"",
 		os.Environ(),
 		tool.NewScreen(nil),
 		5*time.Second,
+		nil,
 	)
 	if err == nil {
 		t.Error("expected error with non-existent shell")
@@ -585,13 +611,14 @@ func TestPtyCommand_OpenPTYError(t *testing.T) {
 	ptmxPath = "/nonexistent/ptmx/gbot-test"
 	defer func() { ptmxPath = orig }()
 
-	_, _, err := ptyCommand(
+	_, _, err := runPTYCommand(
 		context.Background(),
 		"echo hi",
 		"",
 		os.Environ(),
 		tool.NewScreen(nil),
 		5*time.Second,
+		nil,
 	)
 	if err == nil {
 		t.Error("expected error when openPTY fails")
@@ -618,11 +645,11 @@ func (r *dataThenEOFReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestDrainPTY_NormalLines(t *testing.T) {
+func TestDrainToScreen_NormalLines(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte("hello\nworld\n")}, 64)
 	var lines []string
-	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
 			lines = append(lines, ev.Content)
 		}))
 	if len(lines) != 2 {
@@ -636,7 +663,7 @@ func TestDrainPTY_NormalLines(t *testing.T) {
 	}
 }
 
-func TestDrainPTY_EOBBreak(t *testing.T) {
+func TestDrainToScreen_EOBBreak(t *testing.T) {
 	t.Parallel()
 	// 32 bytes > 16-byte buffer forces isPrefix=true, then EOF
 	// covers io.EOF break + partial line flush
@@ -645,7 +672,7 @@ func TestDrainPTY_EOBBreak(t *testing.T) {
 		16,
 	)
 	var lines []string
-	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
 			lines = append(lines, ev.Content)
 		}))
 	joined := strings.Join(lines, "")
@@ -654,7 +681,7 @@ func TestDrainPTY_EOBBreak(t *testing.T) {
 	}
 }
 
-func TestDrainPTY_NonEOFError(t *testing.T) {
+func TestDrainToScreen_NonEOFError(t *testing.T) {
 	t.Parallel()
 	// Reader returns data then non-EOF error -> covers generic break
 	r, w := io.Pipe()
@@ -664,7 +691,7 @@ func TestDrainPTY_NonEOFError(t *testing.T) {
 	}()
 	reader := bufio.NewReaderSize(r, 64)
 	var lines []string
-	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
 			lines = append(lines, ev.Content)
 		}))
 	if len(lines) < 1 {
@@ -675,17 +702,17 @@ func TestDrainPTY_NonEOFError(t *testing.T) {
 	}
 }
 
-func TestDrainPTY_NilCallback(t *testing.T) {
+func TestDrainToScreen_NilCallback(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte("hello\n")}, 64)
-	drainPTY(reader, tool.NewScreen(nil)) // should not panic
+	drainToScreen(reader, tool.NewScreen(nil)) // should not panic
 }
 
-func TestDrainPTY_Empty(t *testing.T) {
+func TestDrainToScreen_Empty(t *testing.T) {
 	t.Parallel()
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte{}}, 64)
 	var lines []string
-	drainPTY(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
+	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
 			lines = append(lines, ev.Content)
 		}))
 	if len(lines) != 0 {
@@ -775,6 +802,64 @@ func TestExitCodeFromWait_SignalSIGTERM(t *testing.T) {
 	code := exitCodeFromWait(err)
 	if code != 143 {
 		t.Errorf("exitCodeFromWait(SIGTERM) = %d, want 143", code)
+	}
+}
+
+// --- WriteInput ---
+
+func TestPTYSession_WriteInput_Success(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	session, err := openPTYSession()
+	if err != nil {
+		t.Fatalf("openPTYSession() error: %v", err)
+	}
+	defer session.Close()
+
+	// Start a cat command that echoes back input
+	screen := tool.NewScreen(func(ev tool.ScreenEvent) {})
+	if err := session.Start("cat", "", os.Environ(), screen); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Write input should succeed
+	if err := session.WriteInput("hello\n"); err != nil {
+		t.Fatalf("WriteInput() error: %v", err)
+	}
+
+	// Close master to signal EOF to cat
+	_ = session.Master.Close()
+
+	// Wait for process to exit — cat gets SIGHUP on master close, which is expected.
+	// Accept either clean exit (nil) or signal-terminated (*exec.ExitError).
+	waitErr := session.Cmd.Wait()
+	if waitErr != nil {
+		if _, ok := waitErr.(*exec.ExitError); !ok {
+			t.Fatalf("Wait() unexpected error: %v", waitErr)
+		}
+	}
+}
+
+func TestPTYSession_WriteInput_ClosedFD(t *testing.T) {
+	if !isPTYAvailable() {
+		t.Skip("PTY not available")
+	}
+
+	session, err := openPTYSession()
+	if err != nil {
+		t.Fatalf("openPTYSession() error: %v", err)
+	}
+	// Close master before writing
+	_ = session.Master.Close()
+
+	err = session.WriteInput("hello\n")
+	if err == nil {
+		t.Error("expected error writing to closed PTY fd")
+	}
+	if !strings.Contains(err.Error(), "pty write") {
+		t.Errorf("error = %v, want pty write error", err)
 	}
 }
 

@@ -55,7 +55,7 @@ func TestChainTest_ProgressBar(t *testing.T) {
 	screen := newChainScreen(s)
 
 	// Simulate PTY output: progress bar updates then final message
-	drainPTY(&dataThenEOFReader{data: []byte("Downloading 10%\rDownloading 50%\rDownloading 100%\nDone!\n")}, screen)
+	drainToScreen(&dataThenEOFReader{data: []byte("Downloading 10%\rDownloading 50%\rDownloading 100%\nDone!\n")}, screen)
 
 	lines := s.Lines()
 	if len(lines) != 2 {
@@ -88,7 +88,7 @@ func TestChainTest_AnsiColorPreserved(t *testing.T) {
 	s := NewStreamingOutput(nil)
 	screen := newChainScreen(s)
 
-	drainPTY(&dataThenEOFReader{data: []byte("\x1b[31mred\x1b[0m\n\x1b[32mgreen\x1b[0m\n")}, screen)
+	drainToScreen(&dataThenEOFReader{data: []byte("\x1b[31mred\x1b[0m\n\x1b[32mgreen\x1b[0m\n")}, screen)
 
 	lines := s.Lines()
 	if len(lines) != 2 {
@@ -108,7 +108,7 @@ func TestChainTest_MixedLinesAndCR(t *testing.T) {
 	s := NewStreamingOutput(nil)
 	screen := newChainScreen(s)
 
-	drainPTY(&dataThenEOFReader{data: []byte("line1\nprogress 10%\rprogress 100%\nline2\n")}, screen)
+	drainToScreen(&dataThenEOFReader{data: []byte("line1\nprogress 10%\rprogress 100%\nline2\n")}, screen)
 
 	lines := s.Lines()
 	if len(lines) != 3 {
@@ -132,7 +132,7 @@ func TestChainTest_OutputLinesCollector(t *testing.T) {
 	var outputLines []string
 	screen := newCollectorScreen(&outputLines)
 
-	drainPTY(&dataThenEOFReader{data: []byte("line1\nprog 10%\rprog 90%\rprog 100%\nline2\n")}, screen)
+	drainToScreen(&dataThenEOFReader{data: []byte("line1\nprog 10%\rprog 90%\rprog 100%\nline2\n")}, screen)
 
 	output := strings.Join(outputLines, "\n")
 	if len(outputLines) != 3 {
@@ -159,7 +159,7 @@ func TestChainTest_Recovery_InterruptedEscape(t *testing.T) {
 	screen := newChainScreen(s)
 
 	// Simulate escape sequence split across two reads from PTY
-	drainPTY(&chunkedReader{chunks: [][]byte{
+	drainToScreen(&chunkedReader{chunks: [][]byte{
 		[]byte("\x1b[31"),
 		[]byte("mhello\n"),
 	}}, screen)
@@ -187,7 +187,7 @@ func TestChainTest_LargeProgress(t *testing.T) {
 	}
 	input = append(input, []byte("done!\n")...)
 
-	drainPTY(&dataThenEOFReader{data: input}, screen)
+	drainToScreen(&dataThenEOFReader{data: input}, screen)
 
 	lines := s.Lines()
 	if len(lines) != 1 {

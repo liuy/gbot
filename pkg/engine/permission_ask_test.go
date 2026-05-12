@@ -54,23 +54,23 @@ func TestAskUser_SubEngineEmitsPermissionAsk(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
 			Message: "test ask",
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	// Sub-engine should emit PermissionAsk event (same as main engine)
 	var capturedEvent types.QueryEvent
 	select {
 	case capturedEvent = <-eventCh:
-		if capturedEvent.Type != types.EventPermissionAsk {
+		if capturedEvent.Type != types.EventAsk {
 			t.Fatalf("expected EventPermissionAsk, got %v", capturedEvent.Type)
 		}
-		if capturedEvent.PermissionAsk == nil {
+		if capturedEvent.Ask == nil {
 			t.Fatal("PermissionAsk field is nil")
 		}
 	case <-time.After(1 * time.Second):
@@ -78,11 +78,11 @@ func TestAskUser_SubEngineEmitsPermissionAsk(t *testing.T) {
 	}
 
 	// Respond with deny
-	capturedEvent.PermissionAsk.ResponseCh <- types.UserDecisionDeny
+	capturedEvent.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
 
 	select {
 	case decision := <-resultCh:
-		if decision != types.UserDecisionDeny {
+		if decision.Decision != types.DecisionDeny {
 			t.Errorf("expected UserDecisionDeny, got %v", decision)
 		}
 	case <-time.After(1 * time.Second):
@@ -113,7 +113,7 @@ func TestAskUser_SessionAllowedCacheHit(t *testing.T) {
 		Message: "test ask",
 	}, "")
 
-	if decision != types.UserDecisionAllow {
+	if decision != types.DecisionAllow {
 		t.Errorf("cached allow should return UserDecisionAllow, got %v", decision)
 	}
 }
@@ -141,7 +141,7 @@ func TestAskUser_SessionAllowedCacheHitWithContent(t *testing.T) {
 		Message: "test ask",
 	}, "rm -rf *")
 
-	if decision != types.UserDecisionAllow {
+	if decision != types.DecisionAllow {
 		t.Errorf("cached allow with content should return UserDecisionAllow, got %v", decision)
 	}
 }
@@ -166,7 +166,7 @@ func TestAskUser_NormalFlowAllows(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
@@ -180,30 +180,30 @@ func TestAskUser_NormalFlowAllows(t *testing.T) {
 				Source: "user",
 			},
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	// Wait for EventPermissionAsk
 	var capturedEvent types.QueryEvent
 	select {
 	case capturedEvent = <-eventCh:
-		if capturedEvent.PermissionAsk == nil {
+		if capturedEvent.Ask == nil {
 			t.Fatal("PermissionAsk field is nil")
 		}
-		if capturedEvent.PermissionAsk.ToolName != "TestTool" {
-			t.Errorf("ToolName: got %q, want 'TestTool'", capturedEvent.PermissionAsk.ToolName)
+		if capturedEvent.Ask.ToolName != "TestTool" {
+			t.Errorf("ToolName: got %q, want 'TestTool'", capturedEvent.Ask.ToolName)
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timeout waiting for EventPermissionAsk")
 	}
 
 	// Send decision
-	capturedEvent.PermissionAsk.ResponseCh <- types.UserDecisionAllow
+	capturedEvent.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
 
 	// Wait for result
 	select {
 	case decision := <-resultCh:
-		if decision != types.UserDecisionAllow {
+		if decision.Decision != types.DecisionAllow {
 			t.Errorf("expected UserDecisionAllow, got %v", decision)
 		}
 	case <-time.After(1 * time.Second):
@@ -228,19 +228,19 @@ func TestAskUser_RootCtxCancellationDenies(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
 			Message: "test",
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	cancel()
 
 	decision := <-resultCh
-	if decision != types.UserDecisionDeny {
+	if decision.Decision != types.DecisionDeny {
 		t.Errorf("cancelled rootCtx should deny, got %v", decision)
 	}
 }
@@ -266,19 +266,19 @@ func TestAskUser_SiblingCtxCancellationDenies(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
 			Message: "test",
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	siblingCancel(context.Canceled)
 
 	decision := <-resultCh
-	if decision != types.UserDecisionDeny {
+	if decision.Decision != types.DecisionDeny {
 		t.Errorf("cancelled siblingCtx should deny, got %v", decision)
 	}
 	rootCancel()
@@ -286,8 +286,8 @@ func TestAskUser_SiblingCtxCancellationDenies(t *testing.T) {
 
 func TestAskUser_ChannelClosedDenies(t *testing.T) {
 	emitEvent := func(evt types.QueryEvent) {
-		if evt.PermissionAsk != nil && evt.PermissionAsk.ResponseCh != nil {
-			close(evt.PermissionAsk.ResponseCh)
+		if evt.Ask != nil && evt.Ask.ResponseCh != nil {
+			close(evt.Ask.ResponseCh)
 		}
 	}
 
@@ -310,7 +310,7 @@ func TestAskUser_ChannelClosedDenies(t *testing.T) {
 		Message: "test",
 	}, "")
 
-	if decision != types.UserDecisionDeny {
+	if decision != types.DecisionDeny {
 		t.Errorf("closed channel should deny, got %v", decision)
 	}
 }
@@ -335,7 +335,7 @@ func TestAskUser_RuleDetailWithRuleContent(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
@@ -349,24 +349,24 @@ func TestAskUser_RuleDetailWithRuleContent(t *testing.T) {
 				Source: "project",
 			},
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	var capturedEvent types.QueryEvent
 	select {
 	case capturedEvent = <-eventCh:
-		if capturedEvent.PermissionAsk == nil {
+		if capturedEvent.Ask == nil {
 			t.Fatal("PermissionAsk is nil")
 		}
 		want := "Bash(rm -rf *) from project settings"
-		if capturedEvent.PermissionAsk.RuleDetail != want {
-			t.Errorf("RuleDetail: got %q, want %q", capturedEvent.PermissionAsk.RuleDetail, want)
+		if capturedEvent.Ask.RuleDetail != want {
+			t.Errorf("RuleDetail: got %q, want %q", capturedEvent.Ask.RuleDetail, want)
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timeout waiting for EventPermissionAsk")
 	}
 
-	capturedEvent.PermissionAsk.ResponseCh <- types.UserDecisionAllow
+	capturedEvent.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
 	<-resultCh
 }
 
@@ -391,19 +391,19 @@ func TestAskUser_RootCtxDeniesWithIndependentSibling(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
 			Message: "test",
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	rootCancel()
 
 	decision := <-resultCh
-	if decision != types.UserDecisionDeny {
+	if decision.Decision != types.DecisionDeny {
 		t.Errorf("cancelled rootCtx should deny, got %v", decision)
 	}
 	siblingCancel(context.Canceled)
@@ -583,10 +583,10 @@ func TestAskUser_Integration(t *testing.T) {
 		},
 	})
 
-	askCh := make(chan *types.PermissionAskEvent, 1)
+	askCh := make(chan *types.AskEvent, 1)
 	emitEvent := func(evt types.QueryEvent) {
-		if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
-			askCh <- evt.PermissionAsk
+		if evt.Type == types.EventAsk && evt.Ask != nil {
+			askCh <- evt.Ask
 		}
 	}
 
@@ -605,7 +605,7 @@ func TestAskUser_Integration(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
@@ -619,10 +619,10 @@ func TestAskUser_Integration(t *testing.T) {
 				Source: "user",
 			},
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
-	var capturedAsk *types.PermissionAskEvent
+	var capturedAsk *types.AskEvent
 	select {
 	case capturedAsk = <-askCh:
 	case <-time.After(2 * time.Second):
@@ -633,11 +633,11 @@ func TestAskUser_Integration(t *testing.T) {
 		t.Errorf("ToolName: got %q, want 'AskTool'", capturedAsk.ToolName)
 	}
 
-	capturedAsk.ResponseCh <- types.UserDecisionAllow
+	capturedAsk.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
 
 	select {
 	case decision := <-resultCh:
-		if decision != types.UserDecisionAllow {
+		if decision.Decision != types.DecisionAllow {
 			t.Errorf("expected UserDecisionAllow, got %v", decision)
 		}
 	case <-time.After(2 * time.Second):
@@ -707,13 +707,13 @@ func TestCheckContentPermissions_Integration(t *testing.T) {
 }
 
 func TestSetSubEngine_Integration(t *testing.T) {
-	askCh := make(chan *types.PermissionAskEvent, 1)
+	askCh := make(chan *types.AskEvent, 1)
 	executor := NewStreamingToolExecutor(
 		map[string]tool.Tool{},
 		nil,
 		func(evt types.QueryEvent) {
-			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
-				askCh <- evt.PermissionAsk
+			if evt.Type == types.EventAsk && evt.Ask != nil {
+				askCh <- evt.Ask
 			}
 		},
 		context.Background(),
@@ -736,26 +736,26 @@ func TestSetSubEngine_Integration(t *testing.T) {
 		Status: StatusQueued,
 	}
 
-	resultCh := make(chan types.PermissionUserDecision, 1)
+	resultCh := make(chan types.AskResponse, 1)
 	go func() {
 		decision := executor.askUser(tt, permission.Decision{
 			Action:  permission.ActionAsk,
 			Message: "test",
 		}, "")
-		resultCh <- decision
+		resultCh <- types.AskResponse{Decision: decision}
 	}()
 
 	// Respond to the permission ask
 	select {
 	case ask := <-askCh:
-		ask.ResponseCh <- types.UserDecisionDeny
+		ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
 	case <-time.After(1 * time.Second):
 		t.Fatal("timeout waiting for permission ask from sub-engine")
 	}
 
 	select {
 	case decision := <-resultCh:
-		if decision != types.UserDecisionDeny {
+		if decision.Decision != types.DecisionDeny {
 			t.Errorf("expected UserDecisionDeny, got %v", decision)
 		}
 	case <-time.After(1 * time.Second):
@@ -819,13 +819,13 @@ func TestPermissionDeny_UserRejectMessage(t *testing.T) {
 		Source: "user",
 	}})
 
-	askCh := make(chan *types.PermissionAskEvent, 1)
+	askCh := make(chan *types.AskEvent, 1)
 	executor := NewStreamingToolExecutor(
 		map[string]tool.Tool{"AskTool": &denyTestTool{}},
 		nil,
 		func(evt types.QueryEvent) {
-			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
-				askCh <- evt.PermissionAsk
+			if evt.Type == types.EventAsk && evt.Ask != nil {
+				askCh <- evt.Ask
 			}
 		},
 		context.Background(),
@@ -842,7 +842,7 @@ func TestPermissionDeny_UserRejectMessage(t *testing.T) {
 	// Wait for ask event, then deny
 	select {
 	case ask := <-askCh:
-		ask.ResponseCh <- types.UserDecisionDeny
+		ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for permission ask")
 	}

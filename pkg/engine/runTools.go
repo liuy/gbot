@@ -229,14 +229,14 @@ func (e *StreamingToolExecutor) SetSubEngine(v bool) {
 // Blocks until the user responds, a context is cancelled, or the executor is discarded.
 // 修正 2: uses doEmit. 修正 3: sessionAllowed cache. 修正 4: askMu serialization.
 // 修正 7: three-way select.
-func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Decision, matchedContent string) types.PermissionUserDecision {
+func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Decision, matchedContent string) types.UserDecision {
 	// 修正 3: check session-scoped cache
 	cacheKey := tt.Name
 	if matchedContent != "" {
 		cacheKey = tt.Name + ":" + matchedContent
 	}
 	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
-		return types.UserDecisionAllow
+		return types.DecisionAllow
 	}
 
 	// 修正 4: serialize concurrent asks
@@ -245,10 +245,10 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 
 	// Double-check: cache may have been updated while waiting for lock
 	if e.sessionAllowed != nil && e.sessionAllowed[cacheKey] {
-		return types.UserDecisionAllow
+		return types.DecisionAllow
 	}
 
-	decisionCh := make(chan types.PermissionUserDecision, 1)
+	decisionCh := make(chan types.AskResponse, 1)
 
 	// Build RuleDetail string from matched rule
 	ruleDetail := ""
@@ -261,8 +261,9 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 	}
 
 	e.doEmit(types.QueryEvent{ // 修正 2: use doEmit
-		Type: types.EventPermissionAsk,
-		PermissionAsk: &types.PermissionAskEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskPermission,
 			ToolName:   tt.Name,
 			Input:      tt.Input,
 			Message:    decision.Message,
@@ -273,22 +274,22 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 
 	// 修正 7: three-way select
 	select {
-	case d, ok := <-decisionCh:
+	case resp, ok := <-decisionCh:
 		if !ok {
-			return types.UserDecisionDeny
+			return types.DecisionDeny
 		}
-		if d == types.UserDecisionAllowAlways {
+		if resp.Decision == types.DecisionAllowAlways {
 			// 修正 3: write to session cache
 			if e.sessionAllowed == nil {
 				e.sessionAllowed = make(map[string]bool)
 			}
 			e.sessionAllowed[cacheKey] = true
 		}
-		return d
+		return resp.Decision
 	case <-e.rootCtx.Done():
-		return types.UserDecisionDeny
+		return types.DecisionDeny
 	case <-e.siblingCtx.Done():
-		return types.UserDecisionDeny
+		return types.DecisionDeny
 	}
 }
 
@@ -720,7 +721,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 						}
 					}
 					userDecision := e.askUser(tt, decision, "")
-					if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
+					if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
 						errMsg := e.userOrSubRejectMessage()
 						errBytes, _ := json.Marshal(errMsg)
 						e.doEmit(types.QueryEvent{
@@ -763,7 +764,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 							Action:  permission.ActionAsk,
 							Message: fmt.Sprintf("tool %s requires permission by content rule", tt.Name),
 						}, matchedContent)
-						if userDecision != types.UserDecisionAllow && userDecision != types.UserDecisionAllowAlways {
+						if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
 							errMsg := e.userOrSubRejectMessage()
 							errBytes, _ := json.Marshal(errMsg)
 							e.doEmit(types.QueryEvent{
@@ -1026,6 +1027,24 @@ func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseCont
 	cp.ToolUseID = toolUseID
 	if len(msgs) > 0 {
 		cp.Messages = msgs
+	}
+	// Wire OnAskInput: creates channel, emits AskEvent{Kind: AskInput}, returns channel.
+	if cp.OnAskInput == nil {
+		emitFn := e.emitEvent
+		cp.OnAskInput = func(prompt string, masked bool, deadline time.Time) chan types.AskResponse {
+			ch := make(chan types.AskResponse, 1)
+			emitFn(types.QueryEvent{
+				Type: types.EventAsk,
+				Ask: &types.AskEvent{
+					Kind:       types.AskInput,
+					Prompt:     prompt,
+					Masked:     masked,
+					Deadline:   deadline,
+					ResponseCh: ch,
+				},
+			})
+			return ch
+		}
 	}
 	return &cp
 }

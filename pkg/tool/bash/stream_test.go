@@ -974,3 +974,43 @@ func TestStreamingOutputReplaceLastLineEmptyAfterSpill(t *testing.T) {
 
 	s.Cleanup()
 }
+
+func TestStreamingOutput_IsPartialLine(t *testing.T) {
+	t.Parallel()
+	s := NewStreamingOutput(nil)
+
+	// Initially false
+	if s.IsPartialLine() {
+		t.Error("IsPartialLine() = true initially, want false")
+	}
+
+	// Write without newline -> partial
+	_, _ = s.Write([]byte("hello"))
+	if !s.IsPartialLine() {
+		t.Error("IsPartialLine() = false after partial write, want true")
+	}
+
+	// Write newline -> not partial
+	_, _ = s.Write([]byte("\n"))
+	if s.IsPartialLine() {
+		t.Error("IsPartialLine() = true after newline, want false")
+	}
+
+	// Write complete line -> not partial
+	_, _ = s.Write([]byte("world\n"))
+	if s.IsPartialLine() {
+		t.Error("IsPartialLine() = true after complete line, want false")
+	}
+
+	// Write data then trailing newline -> not partial
+	_, _ = s.Write([]byte("trailing\n"))
+	if s.IsPartialLine() {
+		t.Error("IsPartialLine() = true with trailing newline, want false")
+	}
+
+	// Write data without trailing newline -> partial
+	_, _ = s.Write([]byte("partial"))
+	if !s.IsPartialLine() {
+		t.Error("IsPartialLine() = false for partial data, want true")
+	}
+}

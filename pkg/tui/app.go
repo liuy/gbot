@@ -79,6 +79,9 @@ type App struct {
 	activeDialog *Dialog
 	onDialogDone func(*Dialog) (tea.Model, tea.Cmd)
 
+	// Active input dialog overlay (interactive PTY input with countdown)
+	activeInput *InputDialog
+
 	// Multi-provider model switching
 	providers       map[string]llm.Provider
 	cfg             *config.Config
@@ -388,6 +391,26 @@ func isInternalTeaMsg(msg tea.Msg) bool {
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Route to active InputDialog overlay when active.
+	// InputDialog intercepts ALL keys (including Ctrl+C) to prevent unwanted actions.
+	if a.activeInput != nil {
+		// New inputAskMsg aborts existing dialog and falls through to updateRepl
+		if iam, ok := msg.(inputAskMsg); ok && iam.event != nil {
+			sendDecision(a.activeInput.result, types.AskResponse{Aborted: true})
+			a.activeInput = nil
+		} else {
+			model, cmd := a.activeInput.Update(msg)
+			if d, ok := model.(*InputDialog); ok {
+				a.activeInput = d
+			}
+			if a.activeInput.done {
+				a.activeInput = nil
+				return a, a.readEvents()
+			}
+			return a, cmd
+		}
+	}
+
 	// Route to active dialog overlay when active.
 	// Dialog intercepts ALL keys (including Ctrl+C) to prevent unwanted actions.
 	if a.activeDialog != nil {
@@ -437,7 +460,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		notificationPendingMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg,
-		permissionAskMsg:
+		permissionAskMsg, inputAskMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
@@ -466,6 +489,11 @@ func (a *App) View() string {
 	// Dialog overlay (unified for list picking and permission asking)
 	if a.activeDialog != nil {
 		return a.renderModalView()
+	}
+
+	// Input dialog overlay (interactive PTY input with countdown)
+	if a.activeInput != nil {
+		return a.renderInputOverlay()
 	}
 
 	uncommitted := a.repl.messages[a.committedCount:]
@@ -1002,43 +1030,53 @@ func (a *App) scrollDown(n int) {
 // ---------------------------------------------------------------------------
 
 // renderModalView renders the modal overlay: peek content + dialog.
-// The dialog height is computed dynamically from content length.
 func (a *App) renderModalView() string {
-	content := a.getRenderedContent()
-
-	// Adaptive peek: sparse content → expand peek; abundant → cap at modalPeekRows.
-	contentLines := 0
-	if content != "" {
-		contentLines = strings.Count(content, "\n") + 1
-	}
-	maxPeek := max(a.height-minModalHeight, 0)
-	peekRows := contentLines
-	if peekRows > maxPeek {
-		peekRows = modalPeekRows
-	}
-
-	modalHeight := max(a.height-peekRows, minModalHeight)
+	peek := a.computePeek()
+	modalHeight := max(a.height-max(a.countPeekLines(peek), 0), minModalHeight)
 	a.activeDialog.height = modalHeight
 	a.activeDialog.width = a.width
-
-	var peek string
-	if peekRows <= 0 || content == "" {
-		peek = ""
-	} else {
-		peek = lastNLines(content, peekRows)
-	}
-
 	dialogView := a.activeDialog.View()
-
 	if peek == "" {
 		return dialogView
 	}
 	return peek + "\n" + dialogView
 }
 
+// renderInputOverlay renders the InputDialog overlay with transcript peek.
+func (a *App) renderInputOverlay() string {
+	peek := a.computePeek()
+	inputView := a.activeInput.View()
+	if peek == "" {
+		return inputView
+	}
+	return peek + "\n" + inputView
+}
+
+// computePeek returns the adaptive peek content for overlay rendering.
+// Sparse content expands peek; abundant content caps at modalPeekRows.
+func (a *App) computePeek() string {
+	content := a.getRenderedContent()
+	if content == "" {
+		return ""
+	}
+	contentLines := strings.Count(content, "\n") + 1
+	maxPeek := max(a.height-minModalHeight, 0)
+	peekRows := contentLines
+	if peekRows > maxPeek {
+		peekRows = modalPeekRows
+	}
+	return lastNLines(content, peekRows)
+}
+
+// countPeekLines returns the number of lines in s, or 0 if empty.
+func (a *App) countPeekLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
 // getRenderedContent returns cached or freshly built rendered content.
-// Read-only: reads contentCache if available, builds temp string if not.
-// Never writes to contentCache or contentDirty.
 func (a *App) getRenderedContent() string {
 	uncommitted := a.repl.messages[a.committedCount:]
 	if len(uncommitted) == 0 {

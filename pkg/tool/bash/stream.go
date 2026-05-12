@@ -316,6 +316,14 @@ func (s *StreamingOutput) Spilled() bool {
 	return s.spilled
 }
 
+// IsPartialLine returns whether the output ends with an incomplete line
+// (no trailing newline). Used by PTYSession.Drain for prompt detection.
+func (s *StreamingOutput) IsPartialLine() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.partialLine
+}
+
 // Cleanup closes and removes the temp file if output was spilled to disk.
 // Must be called exactly once: either from sync path return or background completion.
 func (s *StreamingOutput) Cleanup() {

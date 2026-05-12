@@ -98,10 +98,11 @@ func (e *Engine) askAndCheckPermission(
 		ruleDetail += " from " + decision.Rule.Source + " settings"
 	}
 
-	decisionCh := make(chan types.PermissionUserDecision, 1)
+	decisionCh := make(chan types.AskResponse, 1)
 	e.emitEvent(types.QueryEvent{
-		Type: types.EventPermissionAsk,
-		PermissionAsk: &types.PermissionAskEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
+			Kind:       types.AskPermission,
 			ToolName:   name,
 			Input:      args,
 			Message:    decision.Message,
@@ -111,11 +112,11 @@ func (e *Engine) askAndCheckPermission(
 	})
 
 	select {
-	case d, ok := <-decisionCh:
-		if !ok || d == types.UserDecisionDeny {
+	case resp, ok := <-decisionCh:
+		if !ok || resp.Decision == types.DecisionDeny {
 			return fmt.Errorf("%s: permission denied by user", name)
 		}
-		if d == types.UserDecisionAllowAlways {
+		if resp.Decision == types.DecisionAllowAlways {
 			if sessionAllowed == nil {
 					return nil
 			}

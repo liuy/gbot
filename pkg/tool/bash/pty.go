@@ -1,9 +1,7 @@
 package bash
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,8 +12,6 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
-
-	"github.com/liuy/gbot/pkg/tool"
 )
 
 // Test hooks — package-level vars that can be overridden in tests.
@@ -58,134 +54,6 @@ var (
 		return os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
 	}
 )
-
-// ptyCommand runs cmd in a PTY, feeding raw PTY output through a Screen.
-// Returns exit code, interrupted flag, and any error.
-// The Screen interprets \r (line replacement) and \n (line advance),
-// preserving ANSI SGR colors and emitting structured ScreenEvents.
-//
-// Source: ShellCommand.ts — ShellCommandImpl wraps a child process.
-// PTY allocation is the Go-native equivalent of TS's spawn() with file-mode stdio.
-// All TS algorithms (timeout escalation, process tree kill) are preserved 1:1.
-func ptyCommand(ctx context.Context, cmd string, dir string, env []string,
-	screen *tool.Screen, timeout time.Duration, onStart ...func(pid int)) (exitCode int, interrupted bool, err error) {
-
-	// Open PTY master/slave pair
-	ptyMaster, ptySlave, err := openPTY()
-	if err != nil {
-		return -1, false, fmt.Errorf("open PTY: %w", err)
-	}
-	defer ptyMaster.Close()
-
-	// Set initial window size from terminal
-	_ = setPTYWindowSize(ptyMaster.Fd())
-
-	// Build command to run in PTY
-	execCmd := exec.Command(shellCommand, "-c", cmd)
-	execCmd.Dir = dir
-	execCmd.Env = env
-	execCmd.SysProcAttr = &syscall.SysProcAttr{
-		Setctty: true,
-		Setsid:  true,
-	}
-	execCmd.Stdin = ptySlave
-	execCmd.Stdout = ptySlave
-	execCmd.Stderr = ptySlave
-
-	// Watch for SIGWINCH and forward to PTY (Linux only)
-	var stopSigwinch chan struct{}
-	if isLinux() {
-		stopSigwinch = make(chan struct{})
-		go watchSigwinch(ptyMaster.Fd(), stopSigwinch)
-		defer func() {
-			if stopSigwinch != nil {
-				close(stopSigwinch)
-			}
-		}()
-	}
-
-	// Start the command
-	if err := execCmd.Start(); err != nil {
-		_ = ptySlave.Close()
-		return -1, false, fmt.Errorf("start command: %w", err)
-	}
-	// Close slave in parent process — child has its own dup
-	_ = ptySlave.Close()
-
-	// Notify PID to caller (for background task Kill support)
-	if len(onStart) > 0 && onStart[0] != nil {
-		onStart[0](execCmd.Process.Pid)
-	}
-
-	// Setup timeout handling
-	// Source: ShellCommand.ts:275-279 — setTimeout(#handleTimeout, timeout)
-	deadline := time.Now().Add(timeout)
-	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
-	defer deadlineCancel()
-
-	// Timeout goroutine — fires killProcessTree on timeout
-	// Source: ShellCommand.ts:135-141 — #handleTimeout → #doKill
-	timeoutFired := false
-	graceCh := make(chan struct{})
-	go func() {
-		<-deadlineCtx.Done()
-		if deadlineCtx.Err() == context.DeadlineExceeded && execCmd.Process != nil {
-			_ = killProcessTree(execCmd.Process.Pid)
-			timeoutFired = true
-		}
-		close(graceCh)
-	}()
-
-	// Context cancellation goroutine (user interrupt / Ctrl+C)
-	// Source: ShellCommand.ts:186-192 — #abortHandler
-	go func() {
-		<-ctx.Done()
-		if ctx.Err() == context.Canceled && execCmd.Process != nil {
-			_ = killProcessTree(execCmd.Process.Pid)
-		}
-	}()
-
-	// Read loop — feed raw PTY output through Screen for \r/\n/ANSI processing
-	// Source: ShellCommand.ts — file mode reads from output file;
-	// PTY reads from master fd with partial-line buffering.
-	drainPTY(ptyMaster, screen)
-
-	// Wait for process to exit
-	waitErr := execCmd.Wait()
-
-	// Cancel deadline context to ensure timeout goroutine exits.
-	// Must happen before reading graceCh to avoid deadlock.
-	deadlineCancel()
-
-	// Determine exit code
-	// Source: ShellCommand.ts:196-202 — #exitHandler
-	code := exitCodeFromWait(waitErr)
-
-	// Wait for timeout goroutine to complete before reading timeoutFired.
-	// graceCh is always closed (either by deadline exceeded or by cancel above).
-	<-graceCh
-	return code, timeoutFired, nil
-}
-
-// drainPTY reads raw PTY output and feeds it to the Screen for processing.
-// The Screen handles \r (line replacement), \n (line advance), and ANSI sequences.
-// On EOF or error, flushes any remaining buffered content.
-//
-// Source: ShellCommand.ts — file mode reads from output file;
-// PTY reads from master fd with partial-line buffering.
-func drainPTY(reader io.Reader, screen *tool.Screen) {
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := reader.Read(buf)
-		if n > 0 {
-			screen.Write(buf[:n])
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	screen.Flush()
-}
 
 // exitCodeFromWait determines the exit code from a cmd.Wait() error.
 // Source: ShellCommand.ts:196-202 — #exitHandler

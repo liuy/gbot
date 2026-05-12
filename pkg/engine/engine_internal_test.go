@@ -4219,7 +4219,7 @@ func TestAskUser_SessionCacheHit(t *testing.T) {
 	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
 	decision := permission.Decision{Action: permission.ActionAsk}
 	result := exec.askUser(tt, decision, "")
-	if result != types.UserDecisionAllow {
+	if result != types.DecisionAllow {
 		t.Errorf("session cache hit: expected Allow, got %v", result)
 	}
 }
@@ -4235,7 +4235,7 @@ func TestAskUser_RootCtxDone(t *testing.T) {
 	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
 	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
 	result := exec.askUser(tt, decision, "")
-	if result != types.UserDecisionDeny {
+	if result != types.DecisionDeny {
 		t.Errorf("rootCtx done: expected Deny, got %v", result)
 	}
 }
@@ -4253,7 +4253,7 @@ func TestAskUser_SiblingCtxDone(t *testing.T) {
 	tt := &TrackedTool{ID: "t1", Name: "AskTool", done: make(chan struct{}), Input: json.RawMessage(`{}`)}
 	decision := permission.Decision{Action: permission.ActionAsk, Message: "test"}
 	result := exec.askUser(tt, decision, "")
-	if result != types.UserDecisionDeny {
+	if result != types.DecisionDeny {
 		t.Errorf("siblingCtx done: expected Deny, got %v", result)
 	}
 }
@@ -4266,13 +4266,13 @@ func TestAskUser_SiblingCtxDone(t *testing.T) {
 
 func TestAskUser_AllowResponse(t *testing.T) {
 	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
-	chCh := make(chan chan types.PermissionUserDecision, 1)
+	chCh := make(chan chan types.AskResponse, 1)
 	exec := NewStreamingToolExecutor(
 		map[string]tool.Tool{"AskTool": fakeTool},
 		nil, func(evt types.QueryEvent) {
-			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+			if evt.Type == types.EventAsk && evt.Ask != nil {
 				select {
-				case chCh <- evt.PermissionAsk.ResponseCh:
+				case chCh <- evt.Ask.ResponseCh:
 				default:
 				}
 			}
@@ -4283,24 +4283,24 @@ func TestAskUser_AllowResponse(t *testing.T) {
 
 	go func() {
 		ch := <-chCh
-		ch <- types.UserDecisionAllow
+		ch <- types.AskResponse{Decision: types.DecisionAllow}
 	}()
 
 	result := exec.askUser(tt, decision, "")
-	if result != types.UserDecisionAllow {
+	if result != types.DecisionAllow {
 		t.Errorf("expected Allow, got %v", result)
 	}
 }
 
 func TestAskUser_AllowAlways_CachesKey(t *testing.T) {
 	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
-	chCh := make(chan chan types.PermissionUserDecision, 1)
+	chCh := make(chan chan types.AskResponse, 1)
 	exec := NewStreamingToolExecutor(
 		map[string]tool.Tool{"AskTool": fakeTool},
 		nil, func(evt types.QueryEvent) {
-			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+			if evt.Type == types.EventAsk && evt.Ask != nil {
 				select {
-				case chCh <- evt.PermissionAsk.ResponseCh:
+				case chCh <- evt.Ask.ResponseCh:
 				default:
 				}
 			}
@@ -4311,11 +4311,11 @@ func TestAskUser_AllowAlways_CachesKey(t *testing.T) {
 
 	go func() {
 		ch := <-chCh
-		ch <- types.UserDecisionAllowAlways
+		ch <- types.AskResponse{Decision: types.DecisionAllowAlways}
 	}()
 
 	result := exec.askUser(tt, decision, "matched_pattern")
-	if result != types.UserDecisionAllowAlways {
+	if result != types.DecisionAllowAlways {
 		t.Errorf("expected AllowAlways, got %v", result)
 	}
 	// After AllowAlways, the cache should have the key
@@ -4329,13 +4329,13 @@ func TestAskUser_AllowAlways_CachesKey(t *testing.T) {
 
 func TestAskUser_ClosedChannel(t *testing.T) {
 	fakeTool := &nonStreamingSuccessTool{name: "AskTool", data: "ok"}
-	chCh := make(chan chan types.PermissionUserDecision, 1)
+	chCh := make(chan chan types.AskResponse, 1)
 	exec := NewStreamingToolExecutor(
 		map[string]tool.Tool{"AskTool": fakeTool},
 		nil, func(evt types.QueryEvent) {
-			if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
+			if evt.Type == types.EventAsk && evt.Ask != nil {
 				select {
-				case chCh <- evt.PermissionAsk.ResponseCh:
+				case chCh <- evt.Ask.ResponseCh:
 				default:
 				}
 			}
@@ -4350,7 +4350,7 @@ func TestAskUser_ClosedChannel(t *testing.T) {
 	}()
 
 	result := exec.askUser(tt, decision, "")
-	if result != types.UserDecisionDeny {
+	if result != types.DecisionDeny {
 		t.Errorf("closed channel: expected Deny, got %v", result)
 	}
 }
@@ -4708,8 +4708,8 @@ func TestExecuteTool_PermissionAsk_Rejected(t *testing.T) {
 	var emitted []types.QueryEvent
 	emit := func(evt types.QueryEvent) {
 		emitted = append(emitted, evt)
-		if evt.Type == types.EventPermissionAsk && evt.PermissionAsk != nil {
-			evt.PermissionAsk.ResponseCh <- types.UserDecisionDeny
+		if evt.Type == types.EventAsk && evt.Ask != nil {
+			evt.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
 		}
 	}
 
@@ -4982,6 +4982,88 @@ func TestStreamingToolExecutor_BuildToolCtx(t *testing.T) {
 	}
 	if tctx.ToolUseID != "tool-123" {
 		t.Errorf("expected ToolUseID=tool-123, got %q", tctx.ToolUseID)
+	}
+}
+
+func TestStreamingToolExecutor_BuildToolCtx_OnAskInput(t *testing.T) {
+	rootCtx := t.Context()
+
+	var capturedEvent types.QueryEvent
+	emit := func(evt types.QueryEvent) { capturedEvent = evt }
+	exec := NewStreamingToolExecutor(nil, nil, emit, rootCtx)
+	exec.sessionID = "test-session"
+	// Provide an empty tctx so buildToolCtx enters the wiring branch
+	exec.tctx = &tool.ToolUseContext{}
+
+	tctx := exec.buildToolCtx("tool-ask-1")
+	if tctx.OnAskInput == nil {
+		t.Fatal("OnAskInput should be wired when tctx.OnAskInput is nil")
+	}
+
+	// Call the OnAskInput closure
+	deadline := time.Date(2099, 1, 1, 0, 0, 30, 0, time.UTC)
+	ch := tctx.OnAskInput("[sudo] password:", true, deadline)
+
+	if ch == nil {
+		t.Fatal("OnAskInput should return non-nil channel")
+	}
+
+	// Verify the emitted event
+	if capturedEvent.Type != types.EventAsk {
+		t.Errorf("event type = %v, want %v", capturedEvent.Type, types.EventAsk)
+	}
+	if capturedEvent.Ask == nil {
+		t.Fatal("event Ask should not be nil")
+	}
+	if capturedEvent.Ask.Kind != types.AskInput {
+		t.Errorf("Ask.Kind = %v, want %v", capturedEvent.Ask.Kind, types.AskInput)
+	}
+	if capturedEvent.Ask.Prompt != "[sudo] password:" {
+		t.Errorf("Ask.Prompt = %q, want %q", capturedEvent.Ask.Prompt, "[sudo] password:")
+	}
+	if !capturedEvent.Ask.Masked {
+		t.Error("Ask.Masked should be true")
+	}
+	if capturedEvent.Ask.ResponseCh == nil {
+		t.Fatal("Ask.ResponseCh should not be nil")
+	}
+	if capturedEvent.Ask.ResponseCh != ch {
+		t.Error("ResponseCh should be the same channel returned by OnAskInput")
+	}
+}
+
+func TestStreamingToolExecutor_BuildToolCtx_OnAskInput_PreservedWhenSet(t *testing.T) {
+	rootCtx := t.Context()
+
+	emit := func(types.QueryEvent) {}
+	exec := NewStreamingToolExecutor(nil, nil, emit, rootCtx)
+
+	// Pre-set OnAskInput — buildToolCtx should NOT overwrite it
+	called := false
+	presetFn := func(prompt string, masked bool, deadline time.Time) chan types.AskResponse {
+		called = true
+		ch := make(chan types.AskResponse, 1)
+		ch <- types.AskResponse{Text: "preset-response"}
+		return ch
+	}
+	exec.tctx = &tool.ToolUseContext{OnAskInput: presetFn}
+
+	tctx := exec.buildToolCtx("tool-preset")
+	if tctx.OnAskInput == nil {
+		t.Fatal("OnAskInput should not be nil")
+	}
+
+	ch := tctx.OnAskInput("test", false, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !called {
+		t.Error("preset OnAskInput should have been called, not overwritten")
+	}
+	select {
+	case resp := <-ch:
+		if resp.Text != "preset-response" {
+			t.Errorf("response = %q, want %q", resp.Text, "preset-response")
+		}
+	default:
+		t.Fatal("expected response from preset OnAskInput")
 	}
 }
 
@@ -5561,3 +5643,63 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 			t.Error("expected messages in result")
 		}
 	}
+
+// ---------------------------------------------------------------------------
+// Full chain integration test: engine → bash.Execute → Drain → AskEvent
+// Tests the complete path from tool execution to interaction detection.
+// If any step in the chain is broken, this test will fail.
+// ---------------------------------------------------------------------------
+
+func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipped under root — no PTY needed")
+	}
+
+	// Real Bash tool with a real BackgroundTaskRegistry
+	registry := bash.NewBackgroundTaskRegistry()
+	bashTool := bash.New(registry)
+
+	// Capture AskEvent
+	askReceived := make(chan *types.AskEvent, 1)
+	emit := func(evt types.QueryEvent) {
+		if evt.Type == types.EventAsk && evt.Ask != nil && evt.Ask.Kind == types.AskInput {
+			// Respond immediately to unblock Drain
+			evt.Ask.ResponseCh <- types.AskResponse{Text: "testpass"}
+			select {
+			case askReceived <- evt.Ask:
+			default:
+			}
+		}
+	}
+
+	// Pass non-nil tctx like production does (engine.go:1179)
+	tctx := &tool.ToolUseContext{
+		Ctx:       context.Background(),
+		WorkingDir: ".",
+	}
+	toolMap := map[string]tool.Tool{"Bash": bashTool}
+	executor := NewStreamingToolExecutor(toolMap, tctx, emit, context.Background())
+
+	tt := &TrackedTool{
+		ID:    "test_bash_interaction",
+		Name:  "Bash",
+		done:  make(chan struct{}),
+		Input: json.RawMessage(`{"command":"printf 'Password: ' && sleep 2","description":"test interaction detection"}`),
+	}
+
+	go executor.executeTool(tt)
+
+	select {
+	case ask := <-askReceived:
+		if !strings.Contains(ask.Prompt, "Password") {
+			t.Errorf("expected 'Password' in prompt, got %q", ask.Prompt)
+		}
+		if !ask.Masked {
+			t.Error("expected Masked=true for password prompt")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("AskEvent{AskInput} was never emitted — full chain broken somewhere between engine → bash.Execute → Drain → looksLikePrompt → emitAskInput → emitEvent")
+	}
+
+	<-tt.done
+}

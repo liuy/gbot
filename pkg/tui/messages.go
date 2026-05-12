@@ -149,5 +149,12 @@ type toolRunMsg struct {
 // The TUI creates a PermissionDialog overlay; user response is written to
 // the event's ResponseCh, unblocking the waiting engine goroutine.
 type permissionAskMsg struct {
-	event *types.PermissionAskEvent
+	event *types.AskEvent
+}
+
+// inputAskMsg carries an interactive input request from the engine.
+// The TUI creates an InputDialog overlay; user response is written to
+// the event's ResponseCh, unblocking the waiting Drain goroutine.
+type inputAskMsg struct {
+	event *types.AskEvent
 }

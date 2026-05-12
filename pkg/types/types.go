@@ -246,27 +246,52 @@ func (PermissionDenyDecision) permissionResultMarker()      {}
 func (PermissionDenyDecision) Behavior() PermissionBehavior { return BehaviorDeny }
 
 // ---------------------------------------------------------------------------
-// Permission ask dialog types
+// Ask dialog types — unified permission + input requests
 // ---------------------------------------------------------------------------
 
-// PermissionUserDecision is the user's response to a permission ask dialog.
-type PermissionUserDecision string
+// UserDecision is the user's response to a permission ask dialog.
+type UserDecision string
 
 const (
-	UserDecisionAllow       PermissionUserDecision = "allow"
-	UserDecisionDeny        PermissionUserDecision = "deny"
-	UserDecisionAllowAlways PermissionUserDecision = "allow_always"
+	DecisionAllow       UserDecision = "allow"
+	DecisionDeny        UserDecision = "deny"
+	DecisionAllowAlways UserDecision = "allow_always"
 )
 
-// PermissionAskEvent carries a permission confirmation request from the engine
-// to the TUI. The engine blocks on ResponseCh until the user responds.
-type PermissionAskEvent struct {
+// AskKind discriminates between permission and input ask events.
+type AskKind string
+
+const (
+	AskPermission AskKind = "permission"
+	AskInput      AskKind = "input"
+)
+
+// AskEvent carries a request from the engine to the TUI.
+// Kind discriminates between permission asks and interactive input requests.
+// The engine blocks on ResponseCh until the user responds.
+type AskEvent struct {
+	Kind       AskKind
+	// Permission-specific (AskPermission)
 	ToolName   string                 // tool being invoked (e.g. "Bash", "Write")
 	Input      json.RawMessage        // tool input JSON
 	Message    string                 // human-readable reason for the ask
 	RuleDetail string                 // matched rule description (e.g. "Bash(rm -rf *) from project")
+	// Input-specific (AskInput)
+	Prompt     string                 // "[sudo] password for user:"
+	Masked     bool                   // password masking
+	Deadline   time.Time              `json:"-"` // countdown timer for InputDialog (zero = no countdown)
+	// Shared
 	AgentType  string                 // non-empty for sub-agent asks (e.g. "Explore")
-	ResponseCh chan PermissionUserDecision `json:"-"` // engine reads, TUI writes
+	ResponseCh chan AskResponse       `json:"-"` // engine reads, TUI writes
+}
+
+// AskResponse is the user's response to an AskEvent.
+// For AskPermission: Decision is set (DecisionAllow/DecisionDeny/DecisionAllowAlways).
+// For AskInput: Text is set with user input, or Aborted is true if cancelled.
+type AskResponse struct {
+	Decision UserDecision // permission response
+	Text     string       // input response
+	Aborted  bool         // user cancelled (input only)
 }
 
 // ---------------------------------------------------------------------------
@@ -308,8 +333,8 @@ const (
 	EventError               QueryEventType = "error"
 	EventNotificationPending QueryEventType = "notification_pending"
 
-	// Permission ask: engine requests user confirmation for a tool.
-	EventPermissionAsk QueryEventType = "permission_ask"
+	// Ask: engine requests user confirmation or input.
+	EventAsk QueryEventType = "ask"
 )
 
 // AgentMeta tags events originating from a sub-agent.
@@ -333,7 +358,7 @@ type QueryEvent struct {
 	Usage        *UsageEvent        `json:"usage_event,omitempty"`
 	Agent        *AgentMeta         // non-nil = sub-agent event
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
-	PermissionAsk *PermissionAskEvent // non-nil when Type == EventPermissionAsk
+	Ask *AskEvent // non-nil when Type == EventAsk
 	Error        error              `json:"-"`
 }
 

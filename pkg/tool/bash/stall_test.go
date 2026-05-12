@@ -687,11 +687,65 @@ func TestLooksLikePrompt_Password(t *testing.T) {
 		{"Password:", true},
 		{"password:", true},
 		{"Enter Password:", true},
+		{"[sudo] password for yliu:", true},
+		{"[sudo] password for user on host:", true},
 		{"passwords are secret", false},
 	}
 	for _, tt := range tests {
 		if got := looksLikePrompt(tt.input); got != tt.want {
 			t.Errorf("looksLikePrompt(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestIsPasswordPrompt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"Password:", true},
+		{"[sudo] Password for user:", true},
+		{"Enter Password:", true},
+		{"  Password: ", true},
+		{"password:", true},
+		{"PASSWORD:", true},
+		// Negative cases
+		{"Continue? (y/n)", false},
+		{"Enter your name:", false},
+		{"Your password has been reset", false},
+		{"passwords are secret", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isPasswordPrompt(tt.input); got != tt.want {
+			t.Errorf("isPasswordPrompt(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestIsPasswordPrompt_FalsePositives(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		// Error/info messages that contain "Password:" but are NOT prompts
+		{"Invalid Password: try again", false},
+		{"Incorrect Password: access denied", false},
+		{"Error: Password: not set", false},
+		{"Weak Password: choose a stronger one", false},
+		{"Rejected Password: too short", false},
+		{"Bad Password: must contain numbers", false},
+		// Real prompts — should still match
+		{"Password:", true},
+		{"[sudo] password for root:", true},
+		{"Enter Password:", true},
+		{"Password for 'admin':", true},
+	}
+	for _, tt := range tests {
+		if got := isPasswordPrompt(tt.input); got != tt.want {
+			t.Errorf("isPasswordPrompt(%q) = %v, want %v", tt.input, got, tt.want)
 		}
 	}
 }

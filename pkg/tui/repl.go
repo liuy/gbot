@@ -727,6 +727,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, a.readEvents()
 
+	case inputAskMsg:
+		if m.event != nil {
+			if a.activeInput != nil && !a.activeInput.done {
+				sendDecision(a.activeInput.result, types.AskResponse{Aborted: true})
+			}
+			a.activeInput = NewInputDialog(
+				m.event.Prompt,
+				m.event.Masked,
+				m.event.Deadline,
+				m.event.ResponseCh,
+			)
+			return true, a.activeInput.Init()
+		}
+		return true, a.readEvents()
+
 	case notificationPendingMsg:
 		if a.repl.IsStreaming() {
 			// Path A handles it — runTurns drains queue each iteration

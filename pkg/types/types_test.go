@@ -581,7 +581,7 @@ func TestQueryEventTypeConstants(t *testing.T) {
 		{"tool_end", types.EventToolEnd, "tool_end"},
 		{"usage", types.EventUsage, "usage"},
 		{"error", types.EventError, "error"},
-		{"permission_ask", types.EventPermissionAsk, "permission_ask"},
+		{"ask", types.EventAsk, "ask"},
 	}
 
 	for _, tc := range tests {
@@ -933,34 +933,34 @@ func TestInvokedSkillInfo(t *testing.T) {
 // Permission ask dialog types
 // ---------------------------------------------------------------------------
 
-func TestPermissionUserDecisionConstants(t *testing.T) {
+func TestUserDecisionConstants(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
-		d    types.PermissionUserDecision
+		d    types.UserDecision
 		want string
 	}{
-		{"allow", types.UserDecisionAllow, "allow"},
-		{"deny", types.UserDecisionDeny, "deny"},
-		{"allow_always", types.UserDecisionAllowAlways, "allow_always"},
+		{"allow", types.DecisionAllow, "allow"},
+		{"deny", types.DecisionDeny, "deny"},
+		{"allow_always", types.DecisionAllowAlways, "allow_always"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if string(tc.d) != tc.want {
-				t.Errorf("PermissionUserDecision %s = %q, want %q", tc.name, tc.d, tc.want)
+				t.Errorf("UserDecision %s = %q, want %q", tc.name, tc.d, tc.want)
 			}
 		})
 	}
 }
 
-func TestPermissionAskEventFields(t *testing.T) {
+func TestAskEventFields(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan types.PermissionUserDecision, 1)
-	evt := types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	evt := types.AskEvent{
 		ToolName:   "Bash",
 		Input:      json.RawMessage(`{"command":"rm -rf /tmp"}`),
 		Message:    "permission required",
@@ -986,11 +986,11 @@ func TestPermissionAskEventFields(t *testing.T) {
 	}
 }
 
-func TestPermissionAskEventResponseChRoundtrip(t *testing.T) {
+func TestAskEventResponseChRoundtrip(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan types.PermissionUserDecision, 1)
-	evt := types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	evt := types.AskEvent{
 		ToolName:   "Bash",
 		Input:      json.RawMessage(`{"command":"ls"}`),
 		Message:    "test",
@@ -998,24 +998,24 @@ func TestPermissionAskEventResponseChRoundtrip(t *testing.T) {
 	}
 
 	// Simulate TUI writing a decision
-	evt.ResponseCh <- types.UserDecisionAllow
+	evt.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
 
 	// Engine reads the decision
 	select {
 	case d := <-evt.ResponseCh:
-		if d != types.UserDecisionAllow {
-			t.Errorf("got %q, want %q", d, types.UserDecisionAllow)
+		if d.Decision != types.DecisionAllow {
+			t.Errorf("got %v, want %v", d.Decision, types.DecisionAllow)
 		}
 	default:
 		t.Fatal("expected decision on ResponseCh but got nothing")
 	}
 }
 
-func TestPermissionAskEventWithAgentType(t *testing.T) {
+func TestAskEventWithAgentType(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan types.PermissionUserDecision, 1)
-	evt := types.PermissionAskEvent{
+	ch := make(chan types.AskResponse, 1)
+	evt := types.AskEvent{
 		ToolName:   "Bash",
 		Input:      json.RawMessage(`{"command":"ls"}`),
 		Message:    "agent permission",
@@ -1028,21 +1028,21 @@ func TestPermissionAskEventWithAgentType(t *testing.T) {
 	}
 }
 
-func TestEventPermissionAskConstant(t *testing.T) {
+func TestEventAskConstant(t *testing.T) {
 	t.Parallel()
 
-	if string(types.EventPermissionAsk) != "permission_ask" {
-		t.Errorf("EventPermissionAsk = %q, want %q", types.EventPermissionAsk, "permission_ask")
+	if string(types.EventAsk) != "ask" {
+		t.Errorf("EventAsk = %q, want %q", types.EventAsk, "ask")
 	}
 }
 
-func TestQueryEventPermissionAskField(t *testing.T) {
+func TestQueryEventAskField(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan types.PermissionUserDecision, 1)
+	ch := make(chan types.AskResponse, 1)
 	evt := types.QueryEvent{
-		Type: types.EventPermissionAsk,
-		PermissionAsk: &types.PermissionAskEvent{
+		Type: types.EventAsk,
+		Ask: &types.AskEvent{
 			ToolName:   "Write",
 			Input:      json.RawMessage(`{"file_path":"test.go"}`),
 			Message:    "write permission required",
@@ -1051,17 +1051,17 @@ func TestQueryEventPermissionAskField(t *testing.T) {
 		},
 	}
 
-	if evt.Type != types.EventPermissionAsk {
-		t.Errorf("Type = %q, want %q", evt.Type, types.EventPermissionAsk)
+	if evt.Type != types.EventAsk {
+		t.Errorf("Type = %q, want %q", evt.Type, types.EventAsk)
 	}
-	if evt.PermissionAsk == nil {
+	if evt.Ask == nil {
 		t.Fatal("PermissionAsk should not be nil")
 	}
-	if evt.PermissionAsk.ToolName != "Write" {
-		t.Errorf("ToolName = %q, want %q", evt.PermissionAsk.ToolName, "Write")
+	if evt.Ask.ToolName != "Write" {
+		t.Errorf("ToolName = %q, want %q", evt.Ask.ToolName, "Write")
 	}
-	if evt.PermissionAsk.RuleDetail != "Write(*.go) from user settings" {
-		t.Errorf("RuleDetail = %q, want %q", evt.PermissionAsk.RuleDetail, "Write(*.go) from user settings")
+	if evt.Ask.RuleDetail != "Write(*.go) from user settings" {
+		t.Errorf("RuleDetail = %q, want %q", evt.Ask.RuleDetail, "Write(*.go) from user settings")
 	}
 }
 

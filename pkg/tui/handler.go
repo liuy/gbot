@@ -73,7 +73,24 @@ func (h *TUIHandler) Handle(event hub.Event) {
 			slog.Warn("TUIHandler: permission ask timed out, auto-denying")
 			if permMsg.event != nil && permMsg.event.ResponseCh != nil {
 				select {
-				case permMsg.event.ResponseCh <- types.UserDecisionDeny:
+				case permMsg.event.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}:
+				default:
+				}
+			}
+		}
+		return
+	}
+
+	// --- Input ask: blocking with timeout + auto-abort ---
+	if inputMsg, ok := msg.(inputAskMsg); ok {
+		h.flushAll()
+		select {
+		case h.appCh <- inputMsg:
+		case <-time.After(60 * time.Second):
+			slog.Warn("TUIHandler: input ask timed out, auto-aborting")
+			if inputMsg.event != nil && inputMsg.event.ResponseCh != nil {
+				select {
+				case inputMsg.event.ResponseCh <- types.AskResponse{Aborted: true}:
 				default:
 				}
 			}
@@ -270,10 +287,15 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		// Per-round end; TUI doesn't need to act on this currently.
 		return nil
 
-	case types.EventPermissionAsk:
-		// Permission ask from any engine (main or sub).
-		if evt.PermissionAsk != nil {
-			return permissionAskMsg{event: evt.PermissionAsk}
+	case types.EventAsk:
+		// Dispatch by Kind: permission vs interactive input.
+		if evt.Ask != nil {
+			switch evt.Ask.Kind {
+			case types.AskPermission:
+				return permissionAskMsg{event: evt.Ask}
+			case types.AskInput:
+				return inputAskMsg{event: evt.Ask}
+			}
 		}
 		return nil
 	}
