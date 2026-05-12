@@ -16,6 +16,13 @@ func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
 	return nil
 }
 
+// wrapAsTextBlock wraps a raw JSON object string into a content block array.
+func wrapAsTextBlock(rawJSON string) string {
+	block := ContentBlock{Type: "text", Text: rawJSON}
+	b, _ := json.Marshal([]ContentBlock{block})
+	return string(b)
+}
+
 func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -55,8 +62,12 @@ func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 			}
 
 			// Parse and check compactMetadata
+			blocks := ParseContentBlocks(msg.Content)
+			if len(blocks) == 0 {
+				t.Fatalf("Content should have at least one text block")
+			}
 			var contentMap map[string]any
-			if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
+			if err := json.Unmarshal([]byte(blocks[0].Text), &contentMap); err != nil {
 				t.Fatalf("Failed to parse content JSON: %v", err)
 			}
 
@@ -94,6 +105,23 @@ func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 	}
 }
 
+func TestCreateCompactBoundaryMessage_ContentIsParseableArray(t *testing.T) {
+	msg := CreateCompactBoundaryMessage("auto", 10000, "")
+
+	blocks := ParseContentBlocks(msg.Content)
+	if len(blocks) == 0 {
+		t.Fatalf("ParseContentBlocks returned empty — Content is not a valid content block array.\n"+
+			"Content: %s", msg.Content)
+	}
+
+	if blocks[0].Type != "text" {
+		t.Errorf("first block type = %q, want text", blocks[0].Type)
+	}
+	if !strings.Contains(blocks[0].Text, "Conversation compacted") {
+		t.Errorf("first block text should contain 'Conversation compacted', got %q", blocks[0].Text)
+	}
+}
+
 func TestCreateCompactBoundaryMessage_PreservedSegment(t *testing.T) {
 	msg := CreateCompactBoundaryMessage("auto", 5000, "")
 
@@ -107,8 +135,12 @@ func TestCreateCompactBoundaryMessage_PreservedSegment(t *testing.T) {
 	}
 
 	// Parse and verify
+	blocks := ParseContentBlocks(msg.Content)
+	if len(blocks) == 0 {
+		t.Fatalf("Content should have at least one text block")
+	}
 	var contentMap map[string]any
-	if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
+	if err := json.Unmarshal([]byte(blocks[0].Text), &contentMap); err != nil {
 		t.Fatalf("Failed to parse content JSON: %v", err)
 	}
 
@@ -875,7 +907,7 @@ func TestApplySnipRemovals_WithRemovals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: wrapAsTextBlock(string(contentJSON))}
 	toDelete := &TranscriptMessage{UUID: "msg-to-delete", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"delete me"}]`}
 	survivor := &TranscriptMessage{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: `[{"type":"text","text":"I stay"}]`}
 
@@ -1233,7 +1265,7 @@ func TestExtractCompactMetadata_NoCompactMetadata(t *testing.T) {
 		UUID:    "boundary-1",
 		Type:    "system",
 		Subtype: "compact_boundary",
-		Content: string(contentJSON),
+		Content: wrapAsTextBlock(string(contentJSON)),
 	}
 
 	metadata, err := extractCompactMetadata(msg)
@@ -1660,7 +1692,7 @@ func TestApplySnipRemovals_PathCompression(t *testing.T) {
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: wrapAsTextBlock(string(contentJSON))}
 	msgB := &TranscriptMessage{UUID: "msg-b", Type: "user", ParentUUID: "boundary-1", Content: `[{"type":"text","text":"b"}]`}
 	msgC := &TranscriptMessage{UUID: "msg-c", Type: "assistant", ParentUUID: "msg-b", Content: `[{"type":"text","text":"c"}]`}
 	msgA := &TranscriptMessage{UUID: "msg-a", Type: "user", ParentUUID: "msg-c", Content: `[{"type":"text","text":"a"}]`}
@@ -1743,7 +1775,7 @@ func TestExtractCompactMetadata_EmptyCompactMetadata(t *testing.T) {
 		"compactMetadata": map[string]any{},
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &TranscriptMessage{Content: string(contentJSON)}
+	msg := &TranscriptMessage{Content: wrapAsTextBlock(string(contentJSON))}
 
 	metadata, err := extractCompactMetadata(msg)
 	if err != nil {
@@ -1759,13 +1791,12 @@ func TestExtractCompactMetadata_EmptyCompactMetadata(t *testing.T) {
 }
 
 func TestExtractCompactMetadata_InvalidMetadataStructure(t *testing.T) {
-	// Test with compactMetadata that can't be unmarshaled
 	content := map[string]any{
 		"type":            "system",
 		"compactMetadata": "not a map",
 	}
 	contentJSON, _ := json.Marshal(content)
-	msg := &TranscriptMessage{Content: string(contentJSON)}
+	msg := &TranscriptMessage{Content: wrapAsTextBlock(string(contentJSON))}
 
 	_, err := extractCompactMetadata(msg)
 	if err == nil {
@@ -2181,7 +2212,7 @@ func TestApplySnipRemovals_ResolveNotFound(t *testing.T) {
 		},
 	}
 	contentJSON, _ := json.Marshal(content)
-	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: string(contentJSON)}
+	boundary := &TranscriptMessage{UUID: "boundary-1", Type: "system", Subtype: "compact_boundary", ParentUUID: "", Content: wrapAsTextBlock(string(contentJSON))}
 	// msg-to-delete has a parent "nonexistent" which is not in messages
 	toDelete := &TranscriptMessage{UUID: "msg-to-delete", Type: "user", ParentUUID: "nonexistent-parent", Content: "delete me"}
 	survivor := &TranscriptMessage{UUID: "survivor-1", Type: "assistant", ParentUUID: "msg-to-delete", Content: "I stay"}
@@ -2238,7 +2269,7 @@ func TestCollectReadToolFilePaths_EmptyContentAndText(t *testing.T) {
 // Line 791-793: annotateBoundaryWithPreservedSegment — marshal error
 func TestAnnotateBoundaryWithPreservedSegment_MarshalError(t *testing.T) {
 	boundary := &TranscriptMessage{
-		Content: `{"type":"system"}`,
+		Content: wrapAsTextBlock(`{"type":"system"}`),
 	}
 	// This should succeed — the function re-marshals contentMap
 	err := annotateBoundaryWithPreservedSegment(boundary, "h", "a", "t")
@@ -2249,13 +2280,14 @@ func TestAnnotateBoundaryWithPreservedSegment_MarshalError(t *testing.T) {
 
 // Line 812-814: extractCompactMetadata — marshal error for compactMetadata
 func TestExtractCompactMetadata_MarshalError(t *testing.T) {
-	// compactMetadata value that can't be re-marshaled
-	content := map[string]any{
+	inner := map[string]any{
 		"type":            "system",
 		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
-	contentJSON, _ := json.Marshal(content)
-	msg := &TranscriptMessage{Content: string(contentJSON)}
+	innerJSON, _ := json.Marshal(inner)
+	textBlock := ContentBlock{Type: "text", Text: string(innerJSON)}
+	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+	msg := &TranscriptMessage{Content: string(blockBytes)}
 	// This should succeed normally
 	meta, err := extractCompactMetadata(msg)
 	if err != nil {
@@ -2442,9 +2474,8 @@ func TestAnnotateBoundaryWithPreservedSegment_Normal(t *testing.T) {
 }
 
 func TestExtractCompactMetadata_NoMetadata(t *testing.T) {
-	// Content must be a JSON object (map), not an array
 	boundary := &TranscriptMessage{
-		Content: `{"type":"text","text":"plain boundary"}`,
+		Content: wrapAsTextBlock(`{"type":"text","text":"plain boundary"}`),
 	}
 	meta, err := extractCompactMetadata(boundary)
 	if err != nil {
@@ -2590,7 +2621,7 @@ func TestApplySnipRemovals_ResolveNotFound_DirectTrigger(t *testing.T) {
 		Type:       "system",
 		Subtype:    "compact_boundary",
 		ParentUUID: "",
-		Content:    string(snipJSON),
+		Content:    wrapAsTextBlock(string(snipJSON)),
 	}
 
 	// del-1 has parent "ghost-parent" which is not in the messages list at all
@@ -2793,7 +2824,7 @@ func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
 		Type:       "system",
 		Subtype:    "compact_boundary",
 		ParentUUID: "",
-		Content:    string(snipJSON),
+		Content:    wrapAsTextBlock(string(snipJSON)),
 	}
 
 	// del-1 is in removedUuids but NOT in the messages list.

@@ -63,12 +63,17 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 
 	contentBytes, _ := json.Marshal(contentMap)
 
+	// Wrap in content block array so ParseContentBlocks can parse it.
+	// TS: messages store content as ContentBlock[] — boundary is no exception.
+	textBlock := ContentBlock{Type: "text", Text: string(contentBytes)}
+	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+
 	return &TranscriptMessage{
 		UUID:       msgUUID,
 		ParentUUID: "", // Boundary is always chain root
 		Type:       "system",
 		Subtype:    "compact_boundary",
-		Content:    string(contentBytes),
+		Content:    string(blockBytes),
 		CreatedAt:  now,
 	}
 }
@@ -472,8 +477,8 @@ func applyPreservedSegmentRelinksOnLoad(messages []*TranscriptMessage) []*Transc
 	for i, msg := range messages {
 		if msg.Type == "system" && msg.Subtype == "compact_boundary" {
 			absoluteLastBoundaryIdx = i
-			var contentMap map[string]any
-			if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
+			contentMap, err := parseBoundaryContentMap(msg.Content)
+			if err != nil {
 				continue
 			}
 			meta, ok := contentMap["compactMetadata"]
@@ -511,8 +516,8 @@ func ApplySnipRemovals(messages []*TranscriptMessage) []*TranscriptMessage {
 		if msg.Type != "system" || msg.Subtype != "compact_boundary" {
 			continue
 		}
-		var contentMap map[string]any
-		if err := json.Unmarshal([]byte(msg.Content), &contentMap); err != nil {
+		contentMap, err := parseBoundaryContentMap(msg.Content)
+		if err != nil {
 			continue
 		}
 		snipMeta, ok := contentMap["snipMetadata"]
@@ -769,9 +774,8 @@ func TruncateHeadForPTLRetry(messages []*TranscriptMessage, maxTokens int) []*Tr
 
 // annotateBoundaryWithPreservedSegment adds preserved segment metadata to boundary.
 func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID, anchorUUID, tailUUID string) error {
-	// Parse existing content
-	var contentMap map[string]any
-	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
+	contentMap, err := parseBoundaryContentMap(boundary.Content)
+	if err != nil {
 		return err
 	}
 
@@ -797,14 +801,29 @@ func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID,
 
 	// Marshal back
 	contentBytes, _ := json.Marshal(contentMap)
-
-	boundary.Content = string(contentBytes)
+	textBlock := ContentBlock{Type: "text", Text: string(contentBytes)}
+	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+	boundary.Content = string(blockBytes)
 	return nil
+}
+
+// parseBoundaryContentMap extracts the inner JSON object from a boundary message's
+// content block array. Content is stored as [{"type":"text","text":"<inner JSON>"}].
+func parseBoundaryContentMap(content string) (map[string]any, error) {
+	blocks := ParseContentBlocks(content)
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("no content blocks in boundary message")
+	}
+	var contentMap map[string]any
+	if err := json.Unmarshal([]byte(blocks[0].Text), &contentMap); err != nil {
+		return nil, fmt.Errorf("parse boundary inner JSON: %w", err)
+	}
+	return contentMap, nil
 }
 // extractCompactMetadata extracts compact metadata from boundary content JSON.
 func extractCompactMetadata(boundary *TranscriptMessage) (*CompactMetadata, error) {
-	var contentMap map[string]any
-	if err := json.Unmarshal([]byte(boundary.Content), &contentMap); err != nil {
+	contentMap, err := parseBoundaryContentMap(boundary.Content)
+	if err != nil {
 		return nil, err
 	}
 

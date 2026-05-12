@@ -182,24 +182,34 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	}
 
 	// Build the summarization request
-	// Use a smaller model for summary generation if available, otherwise same model
+	// TS align: compact.ts:1292-1304 — system prompt is short, compact prompt is a user message,
+	// conversation messages are included as individual messages.
 	model := c.model
 	maxTokens := c.maxTokens
 	if maxTokens <= 0 {
 		maxTokens = 16000
 	}
 
-	systemPrompt := short.GetCompactPrompt("")
-	userContent := fmt.Sprintf("Summarize the following conversation:\n\n%s", conversationText)
+	// Convert head messages to engine messages for the API call.
+	apiMsgs := make([]types.Message, 0, len(messages)+1)
+	for _, m := range messages {
+		apiMsgs = append(apiMsgs, ShortMessageToEngine(m))
+	}
 
+	// Compact prompt as the last user message (TS: compact.ts:441-443)
+	compactPromptUserMsg := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(short.GetCompactPrompt(""))},
+	}
+	apiMsgs = append(apiMsgs, compactPromptUserMsg)
+
+	sysPrompt, _ := json.Marshal("You are a helpful AI assistant tasked with summarizing conversations.")
 	req := &llm.Request{
 		Model:     model,
 		MaxTokens: maxTokens,
-		Messages: []types.Message{
-			{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock(systemPrompt)}},
-			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(userContent)}},
-		},
-		Stream: false,
+		System:    sysPrompt,
+		Messages:  apiMsgs,
+		Stream:    false,
 	}
 
 	resp, err := c.provider.Complete(ctx, req)
@@ -220,7 +230,14 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 		return "", fmt.Errorf("summarize: no text in LLM response")
 	}
 
-	return short.FormatCompactSummary(summaryText), nil
+	formatted := short.FormatCompactSummary(summaryText)
+	c.logger.Info("compact:llm_summary",
+		"raw_len", len(summaryText),
+		"formatted_len", len(formatted),
+		"has_summary_tag", strings.Contains(summaryText, "<summary>"),
+		"raw_preview", summaryText[:min(200, len(summaryText))],
+	)
+	return formatted, nil
 }
 
 // buildResultMessages assembles the post-compact message array.
