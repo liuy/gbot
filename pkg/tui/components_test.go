@@ -2832,13 +2832,8 @@ func TestInput_WrapLines_HardNewlineWithSoftWrap(t *testing.T) {
 	t.Parallel()
 	i := NewInput()
 	i.SetValue("abcdefg\nhi")
-	i.SetWidth(5) // "abcdefg" wraps at width 5
-	lines := i.wrapLines()
-	// First line: "abcde" (soft wrap, availFirst = 5-2 = 3 for prompt... use wider)
-	// Actually: availFirst = max(5-2, 1) = 3, so "abc" then "def" then "g"
-	// Let's use a wider width to simplify
 	i.SetWidth(20)
-	lines = i.wrapLines()
+	lines := i.wrapLines()
 	if len(lines) != 2 {
 		t.Fatalf("wrapLines with width 20: got %d lines, want 2", len(lines))
 	}

@@ -50,21 +50,21 @@ func TestHistory_Up(t *testing.T) {
 	h.Add("third")
 
 	// Up from end should go to "third" (last item)
-	cmd, ok := h.Up("current")
-	if !ok {
-		t.Fatal("Up() returned false")
+	res := h.Up("current")
+	if res.Text != "third" {
+		t.Errorf("Up() = %q, want %q", res.Text, "third")
 	}
-	if cmd != "third" {
-		t.Errorf("Up() = %q, want %q", cmd, "third")
+	if res.Cursor != CursorHome {
+		t.Errorf("Up() cursor = %v, want CursorHome", res.Cursor)
 	}
 
 	// Up again should go to "second"
-	cmd, ok = h.Up(cmd)
-	if !ok {
-		t.Fatal("Up() returned false")
+	res = h.Up(res.Text)
+	if res.Text != "second" {
+		t.Errorf("Up() = %q, want %q", res.Text, "second")
 	}
-	if cmd != "second" {
-		t.Errorf("Up() = %q, want %q", cmd, "second")
+	if res.Cursor != CursorHome {
+		t.Errorf("Up() cursor = %v, want CursorHome", res.Cursor)
 	}
 }
 
@@ -75,16 +75,17 @@ func TestHistory_Down(t *testing.T) {
 	h.Add("first")
 	h.Add("second")
 
-	_, ok := h.Up("current")
-	if !ok {
-		t.Fatal("setup Up() failed")
+	res := h.Up("current")
+	if res.Text != "second" {
+		t.Fatalf("setup Up() failed, got %q", res.Text)
 	}
-	cmd, ok := h.Down()
-	if !ok {
-		t.Fatal("Down() returned false")
+	// Down from newest entry restores draft
+	res = h.Down()
+	if res.Text != "current" {
+		t.Errorf("Down() = %q, want draft %q", res.Text, "current")
 	}
-	if cmd != "second" {
-		t.Errorf("Down() = %q, want %q", cmd, "second")
+	if res.Cursor != CursorEnd {
+		t.Errorf("Down() cursor = %v, want CursorEnd", res.Cursor)
 	}
 }
 
@@ -96,12 +97,9 @@ func TestHistory_ResetNav(t *testing.T) {
 	h.Up("current")
 	h.ResetNav()
 	// After reset, Up should start fresh from end
-	cmd, ok := h.Up("current")
-	if !ok {
-		t.Fatal("Up() should return true after ResetNav")
-	}
-	if cmd != "first" {
-		t.Errorf("after ResetNav, Up() = %q, want %q", cmd, "first")
+	res := h.Up("current")
+	if res.Text != "first" {
+		t.Errorf("after ResetNav, Up() = %q, want %q", res.Text, "first")
 	}
 }
 
@@ -241,38 +239,37 @@ func TestHistory_RelativePathRejected(t *testing.T) {
 
 func TestHistory_Up_Empty(t *testing.T) {
 	h := NewHistory("")
-	cmd, ok := h.Up("current")
-	if ok {
-		t.Error("Up on empty history should return false")
+	res := h.Up("current")
+	if res.Text != "current" {
+		t.Errorf("Up on empty should return current, got %q", res.Text)
 	}
-	if cmd != "current" {
-		t.Errorf("Up on empty should return current, got %q", cmd)
+	if res.Cursor != CursorNone {
+		t.Errorf("Up on empty cursor = %v, want CursorNone", res.Cursor)
 	}
 }
 
-func TestHistory_Up_ClampedAtStart(t *testing.T) {
+func TestHistory_Up_ClampedAtOldest(t *testing.T) {
 	h := NewHistory("")
 	h.Add("only")
-	h.Up("x")
-	h.Up("x")
-	// Should clamp at index 0
-	cmd, ok := h.Up("x")
-	if !ok {
-		t.Fatal("Up() should return true at clamp boundary")
+	res := h.Up("x")
+	if res.Text != "only" {
+		t.Fatalf("first Up = %q, want %q", res.Text, "only")
 	}
-	if cmd != "only" {
-		t.Errorf("clamped Up = %q, want %q", cmd, "only")
+	// Second Up: already at oldest, no-op (rollback per TS line 166-171)
+	res = h.Up("x")
+	if res.Cursor != CursorNone {
+		t.Errorf("clamped Up should be no-op, cursor = %v", res.Cursor)
 	}
 }
 
 func TestHistory_Down_Empty(t *testing.T) {
 	h := NewHistory("")
-	cmd, ok := h.Down()
-	if ok {
-		t.Error("Down on empty should return false")
+	res := h.Down()
+	if res.Text != "" {
+		t.Errorf("Down on empty should return empty, got %q", res.Text)
 	}
-	if cmd != "" {
-		t.Errorf("Down on empty should return empty, got %q", cmd)
+	if res.Cursor != CursorNone {
+		t.Errorf("Down on empty cursor = %v, want CursorNone", res.Cursor)
 	}
 }
 
@@ -281,14 +278,18 @@ func TestHistory_Down_ClampedAtEnd(t *testing.T) {
 	h.Add("a")
 	h.Add("b")
 	h.Up("x")
-	// Down twice past end
-	h.Down()
-	cmd, ok := h.Down()
-	if !ok {
-		t.Fatal("Down() should return true at clamp boundary")
+	// Down from newest: restore draft "x"
+	res := h.Down()
+	if res.Text != "x" {
+		t.Errorf("Down from newest = %q, want draft %q", res.Text, "x")
 	}
-	if cmd != "b" {
-		t.Errorf("clamped Down = %q, want %q", cmd, "b")
+	if res.Cursor != CursorEnd {
+		t.Errorf("Down from newest cursor = %v, want CursorEnd", res.Cursor)
+	}
+	// Down again: already in draft (historyIndex=0), no-op
+	res = h.Down()
+	if res.Cursor != CursorNone {
+		t.Errorf("Down in draft should be no-op, cursor = %v", res.Cursor)
 	}
 }
 
@@ -296,13 +297,10 @@ func TestHistory_Up_CurrentMatchesLast(t *testing.T) {
 	h := NewHistory("")
 	h.Add("first")
 	h.Add("second")
-	// Up with current matching last item should skip to second-to-last
-	cmd, ok := h.Up("second")
-	if !ok {
-		t.Fatal("Up() should return true when skipping matching last")
-	}
-	if cmd != "first" {
-		t.Errorf("Up with current=last should skip, got %q", cmd)
+	// TS does not skip matching entries; displays newest regardless
+	res := h.Up("second")
+	if res.Text != "second" {
+		t.Errorf("Up with current=last = %q, want %q (TS shows newest)", res.Text, "second")
 	}
 }
 
@@ -393,9 +391,12 @@ func TestHistory_RemoveLast(t *testing.T) {
 	if h.items[1] != "second" {
 		t.Errorf("items[1] = %q, want %q", h.items[1], "second")
 	}
-	// index should point to last remaining item
-	if h.index != 1 {
-		t.Errorf("index = %d, want 1", h.index)
+	// RemoveLast resets navigation state
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0 after RemoveLast", h.historyIndex)
+	}
+	if h.savedDraft != "" {
+		t.Errorf("savedDraft = %q, want empty after RemoveLast", h.savedDraft)
 	}
 }
 
@@ -405,8 +406,8 @@ func TestHistory_RemoveLast_Empty(t *testing.T) {
 	if h.Len() != 0 {
 		t.Errorf("Len() = %d after RemoveLast on empty, want 0", h.Len())
 	}
-	if h.index != -1 {
-		t.Errorf("index = %d, want -1", h.index)
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0", h.historyIndex)
 	}
 }
 
@@ -417,7 +418,228 @@ func TestHistory_RemoveLast_SingleItem(t *testing.T) {
 	if h.Len() != 0 {
 		t.Errorf("Len() = %d, want 0", h.Len())
 	}
-	if h.index != -1 {
-		t.Errorf("index = %d, want -1", h.index)
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0", h.historyIndex)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Draft save/restore — aligned with TS useArrowKeyHistory.tsx
+// historyIndex 0 = draft, 1+ = navigating (1=newest, N=oldest)
+// savedDraft = user's input saved on first Up (only if non-empty)
+// ---------------------------------------------------------------------------
+
+func TestHistory_Draft_SaveOnFirstUp(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	// First Up with draft "my draft" should save it
+	res := h.Up("my draft")
+	if res.Text != "old2" {
+		t.Errorf("Up() = %q, want %q", res.Text, "old2")
+	}
+	if h.savedDraft != "my draft" {
+		t.Errorf("savedDraft = %q, want %q", h.savedDraft, "my draft")
+	}
+}
+
+func TestHistory_Draft_RestoreOnDown(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	h.Up("my draft") // saves draft, shows "old2"
+	h.Up("my draft") // shows "old1"
+
+	// Down back to "old2"
+	res := h.Down()
+	if res.Text != "old2" {
+		t.Errorf("Down = %q, want %q", res.Text, "old2")
+	}
+	if res.Cursor != CursorEnd {
+		t.Errorf("Down cursor = %v, want CursorEnd", res.Cursor)
+	}
+
+	// Down past newest: back to draft (historyIndex=0)
+	res = h.Down()
+	if res.Text != "my draft" {
+		t.Errorf("Down past newest = %q, want draft %q", res.Text, "my draft")
+	}
+	if res.Cursor != CursorEnd {
+		t.Errorf("Down to draft cursor = %v, want CursorEnd", res.Cursor)
+	}
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0 (at draft)", h.historyIndex)
+	}
+}
+
+func TestHistory_Draft_ClearWhenNoDraft(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	// Up with empty input — savedDraft stays empty
+	h.Up("")
+	// Down from newest: back to draft (empty, since no input when Up was pressed)
+	res := h.Down()
+	if res.Text != "" {
+		t.Errorf("Down from newest with empty draft = %q, want empty", res.Text)
+	}
+	if res.Cursor != CursorEnd {
+		t.Errorf("Down to empty draft cursor = %v, want CursorEnd", res.Cursor)
+	}
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0 (at draft)", h.historyIndex)
+	}
+}
+
+func TestHistory_Draft_FullCycle(t *testing.T) {
+	h := NewHistory("")
+	h.Add("a")
+	h.Add("b")
+	h.Add("c")
+
+	// Up from draft "typing..." → c (newest)
+	res := h.Up("typing...")
+	if res.Text != "c" {
+		t.Fatalf("Up1 = %q, want c", res.Text)
+	}
+	// Up → b
+	res = h.Up("typing...")
+	if res.Text != "b" {
+		t.Fatalf("Up2 = %q, want b", res.Text)
+	}
+	// Down → c
+	res = h.Down()
+	if res.Text != "c" {
+		t.Fatalf("Down1 = %q, want c", res.Text)
+	}
+	// Down past newest → draft "typing..."
+	res = h.Down()
+	if res.Text != "typing..." {
+		t.Errorf("Down2 = %q, want draft %q", res.Text, "typing...")
+	}
+	// Now in draft (historyIndex=0). Down → no-op
+	res = h.Down()
+	if res.Cursor != CursorNone {
+		t.Errorf("Down in draft should be no-op, cursor = %v", res.Cursor)
+	}
+	// Up from draft → re-enter history at newest "c"
+	res = h.Up("typing...")
+	if res.Text != "c" {
+		t.Errorf("Up from draft = %q, want c", res.Text)
+	}
+	if res.Cursor != CursorHome {
+		t.Errorf("Up from draft cursor = %v, want CursorHome", res.Cursor)
+	}
+}
+
+func TestHistory_Draft_UpFromDraftEntersHistory(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	// Enter history, then down to draft
+	h.Up("我的草稿") // → old2
+	h.Down()        // → draft "我的草稿"
+
+	// Up from draft → re-enter history at newest
+	res := h.Up("我的草稿")
+	if res.Text != "old2" {
+		t.Errorf("Up from draft = %q, want old2", res.Text)
+	}
+	if h.historyIndex == 0 {
+		t.Error("historyIndex should be > 0 after Up")
+	}
+}
+
+func TestHistory_Draft_UpFromDraftThenDown(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	// idle → history → draft
+	h.Up("草稿") // → old2
+	h.Down()     // → draft "草稿"
+
+	// Up from draft → back to old2
+	res := h.Up("草稿")
+	if res.Text != "old2" {
+		t.Fatalf("Up from draft = %q, want old2", res.Text)
+	}
+	// Down again → back to draft
+	res = h.Down()
+	if res.Text != "草稿" {
+		t.Errorf("Down = %q, want draft %q", res.Text, "草稿")
+	}
+}
+
+func TestHistory_Draft_ResetByAdd(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old")
+	h.Up("draft")
+	// Add resets navigation state and draft
+	h.Add("new")
+	if h.savedDraft != "" {
+		t.Errorf("savedDraft should be cleared after Add, got %q", h.savedDraft)
+	}
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex should be 0 after Add, got %d", h.historyIndex)
+	}
+}
+
+func TestHistory_Draft_ResetByResetNav(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old")
+	h.Up("draft")
+	h.ResetNav()
+	if h.savedDraft != "" {
+		t.Errorf("savedDraft should be cleared after ResetNav, got %q", h.savedDraft)
+	}
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex should be 0 after ResetNav, got %d", h.historyIndex)
+	}
+}
+
+func TestHistory_Down_NoOpOutsideNav(t *testing.T) {
+	h := NewHistory("")
+	h.Add("old1")
+	h.Add("old2")
+
+	// Down without prior Up — should be no-op (historyIndex=0)
+	res := h.Down()
+	if res.Cursor != CursorNone {
+		t.Errorf("Down without nav cursor = %v, want CursorNone", res.Cursor)
+	}
+}
+
+func TestHistory_Draft_SubmittedEmptyDraftCleared(t *testing.T) {
+	h := NewHistory("")
+	h.Add("测试消息")
+
+	// Input is empty (just submitted)
+	// Up → shows "测试消息" from history
+	res := h.Up("")
+	if res.Text != "测试消息" {
+		t.Fatalf("after Up, text = %q, want %q", res.Text, "测试消息")
+	}
+	// Down → back to draft (empty, since input was empty when Up was pressed)
+	res = h.Down()
+	if res.Text != "" {
+		t.Errorf("after Down, text = %q, want empty (draft was empty)", res.Text)
+	}
+	if h.historyIndex != 0 {
+		t.Errorf("historyIndex = %d, want 0 (at draft)", h.historyIndex)
+	}
+	// Down again → no-op (historyIndex=0)
+	res = h.Down()
+	if res.Cursor != CursorNone {
+		t.Errorf("Down in empty draft should be no-op, cursor = %v", res.Cursor)
+	}
+	// Up from draft → re-enter history
+	res = h.Up("")
+	if res.Text != "测试消息" {
+		t.Errorf("Up from empty draft = %q, want 测试消息", res.Text)
 	}
 }

@@ -927,19 +927,33 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// handleHistoryUp navigates to the previous history entry.
+// handleHistoryUp navigates to the previous history entry or moves within draft.
 func (a *App) handleHistoryUp() tea.Model {
-	text, _ := a.history.Up(a.input.Value())
-	a.input.SetValue(text)
-	a.input.End()
+	res := a.history.Up(a.input.Value())
+	if res.Cursor == CursorNone {
+		return a
+	}
+	a.input.SetValue(res.Text)
+	if res.Cursor == CursorHome {
+		a.input.Home()
+	} else {
+		a.input.End()
+	}
 	return a
 }
 
-// handleHistoryDown navigates to the next history entry.
+// handleHistoryDown navigates to the next history entry or enters draft.
 func (a *App) handleHistoryDown() tea.Model {
-	text, _ := a.history.Down()
-	a.input.SetValue(text)
-	a.input.End()
+	res := a.history.Down()
+	if res.Cursor == CursorNone {
+		return a
+	}
+	a.input.SetValue(res.Text)
+	if res.Cursor == CursorHome {
+		a.input.Home()
+	} else {
+		a.input.End()
+	}
 	return a
 }
 

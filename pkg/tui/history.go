@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // ---------------------------------------------------------------------------
 // History — source: history.ts prompt history persistence
+// Navigation: source: TS useArrowKeyHistory.tsx
 // ---------------------------------------------------------------------------
 
 // historyEntry is the JSONL on-disk format, matching TS LogEntry.
@@ -18,14 +20,34 @@ type historyEntry struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+// HistCursor tells the caller where to place the cursor after a history navigation.
+type HistCursor int
+
+const (
+	CursorNone HistCursor = iota // no cursor movement (no-op)
+	CursorHome                   // move cursor to start of text
+	CursorEnd                    // move cursor to end of text
+)
+
+// HistResult is returned by Up/Down, containing the text and cursor action.
+type HistResult struct {
+	Text   string
+	Cursor HistCursor
+}
+
 // History stores command history for Up/Down navigation.
-// Source: history.ts → promptHistory + history.jsonl persistence
+//
+// State model (aligned with TS useArrowKeyHistory.tsx):
+//   - historyIndex: 0 = at draft (initial), 1+ = navigating history
+//     (1 = newest entry, N = oldest entry)
+//   - savedDraft: user's current input, saved on first Up press
+//     (only saved when input is non-empty, matching TS setLastShownHistoryEntry)
 type History struct {
-	items    []string
-	index    int
-	maxSize  int
-	navMode  bool
-	filePath string // path to history.jsonl; empty means no persistence
+	items        []string
+	historyIndex int    // 0=draft, 1+=navigating (1=newest, N=oldest)
+	savedDraft   string // draft saved on first Up; "" if input was empty
+	maxSize      int
+	filePath     string // path to history.jsonl; empty means no persistence
 }
 
 // NewHistory creates a new History with optional file persistence.
@@ -38,7 +60,6 @@ func NewHistory(filePath string) *History {
 	h := &History{
 		items:    make([]string, 0, 100),
 		maxSize:  100,
-		index:    -1,
 		filePath: filePath,
 	}
 	if filePath != "" {
@@ -48,6 +69,7 @@ func NewHistory(filePath string) *History {
 }
 
 // Add appends a command to history and persists it to disk.
+// Resets navigation state (historyIndex=0, savedDraft=""), matching TS resetHistory.
 func (h *History) Add(cmd string) {
 	if cmd == "" {
 		return
@@ -57,62 +79,95 @@ func (h *History) Add(cmd string) {
 		return
 	}
 	h.items = append(h.items, cmd)
-	h.index = len(h.items) - 1
-	h.navMode = false
+	h.historyIndex = 0
+	h.savedDraft = ""
 
 	// Cap at max size
 	if len(h.items) > h.maxSize {
 		h.items = h.items[1:]
-		h.index--
 	}
 
 	h.save(cmd)
 }
 
-// Up returns the previous command in history, starting from current input.
-func (h *History) Up(current string) (string, bool) {
+// Up navigates toward older history entries.
+//
+// TS useArrowKeyHistory.tsx onHistoryUp algorithm:
+//  1. targetIndex = historyIndex (capture)
+//  2. historyIndex++ (increment immediately for rapid keypresses)
+//  3. If targetIndex === 0: save draft (only if non-empty input)
+//  4. If targetIndex >= cache.length: rollback (decrement), return
+//  5. Show cache[targetIndex] with cursor to START
+//
+// Go mapping: cache[i] = items[len(items)-1-i]
+// (TS cache is newest-first; Go items is oldest-first)
+func (h *History) Up(current string) HistResult {
 	if len(h.items) == 0 {
-		return current, false
+		return HistResult{Text: current, Cursor: CursorNone}
 	}
 
-	// If not in nav mode, start from the end
-	if !h.navMode {
-		h.navMode = true
-		// If current matches last item, go one back
-		if len(h.items) > 0 && h.items[len(h.items)-1] == current {
-			h.index = len(h.items) - 2
+	targetIndex := h.historyIndex
+	h.historyIndex++
+
+	// Source: TS line 131-142 — save draft on first Up press
+	if targetIndex == 0 {
+		if strings.TrimSpace(current) != "" {
+			h.savedDraft = current
 		} else {
-			h.index = len(h.items) - 1
+			h.savedDraft = ""
 		}
-	} else {
-		h.index--
 	}
 
-	if h.index < 0 {
-		h.index = 0
+	// Source: TS line 166-171 — rollback if past oldest entry
+	if targetIndex >= len(h.items) {
+		h.historyIndex--
+		return HistResult{Cursor: CursorNone}
 	}
 
-	return h.items[h.index], true
+	// Show entry: items[len-1-targetIndex]
+	// Source: TS line 174 — updateInput(historyCache.current[targetIndex], true)
+	item := h.items[len(h.items)-1-targetIndex]
+	return HistResult{Text: item, Cursor: CursorHome}
 }
 
-// Down returns the next command in history.
-func (h *History) Down() (string, bool) {
-	if len(h.items) == 0 {
-		return "", false
+// Down navigates toward newer history entries or restores the draft.
+//
+// TS useArrowKeyHistory.tsx onHistoryDown algorithm:
+//  1. currentIndex = historyIndex
+//  2. If currentIndex > 1: historyIndex--, show cache[currentIndex-2], cursor END
+//  3. If currentIndex === 1: historyIndex=0, restore draft (or clear), cursor END
+//  4. If currentIndex <= 0: no-op, return false
+func (h *History) Down() HistResult {
+	currentIndex := h.historyIndex
+
+	if currentIndex > 1 {
+		// Source: TS line 188-189 — go to newer entry
+		h.historyIndex--
+		item := h.items[len(h.items)-currentIndex+1]
+		return HistResult{Text: item, Cursor: CursorEnd}
 	}
 
-	h.index++
-
-	if h.index >= len(h.items) {
-		h.index = len(h.items) - 1
+	if currentIndex == 1 {
+		// Source: TS line 191-206 — back to draft
+		h.historyIndex = 0
+		if h.savedDraft != "" {
+			// Source: TS line 193-200 — restore saved draft
+			return HistResult{Text: h.savedDraft, Cursor: CursorEnd}
+		}
+		// Source: TS line 202-204 — no draft saved, clear input
+		return HistResult{Text: "", Cursor: CursorEnd}
 	}
 
-	return h.items[h.index], true
+	// currentIndex <= 0: no-op
+	// Source: TS line 206 — return currentIndex <= 0
+	return HistResult{Cursor: CursorNone}
 }
 
-// ResetNav exits navigation mode.
+// ResetNav exits navigation mode and clears the draft.
+// Source: TS resetHistory — sets historyIndex=0, lastShownHistoryEntry=undefined.
 func (h *History) ResetNav() {
-	h.navMode = false
+	h.historyIndex = 0
+	h.savedDraft = ""
 }
 
 // Len returns the number of history entries.
@@ -122,16 +177,13 @@ func (h *History) Len() int {
 
 // RemoveLast removes the most recent history entry.
 // Used by auto-rewind to remove the entry added by the cancelled query.
-// Source: TS removeLastFromHistory (history.ts:453)
 func (h *History) RemoveLast() {
 	if len(h.items) == 0 {
 		return
 	}
 	h.items = h.items[:len(h.items)-1]
-	h.index = len(h.items) - 1
-	if h.index < 0 {
-		h.index = -1
-	}
+	h.historyIndex = 0
+	h.savedDraft = ""
 	// Note: on-disk JSONL is append-only. The stale entry remains on disk.
 	// This matches TS behavior where removeLastFromHistory either pops from
 	// pending buffer (pre-flush) or adds to a skip-set (post-flush).
@@ -169,11 +221,11 @@ func (h *History) save(cmd string) {
 	defer f.Close()
 
 	if _, err := f.Write(line); err != nil {
-			return
-		}
-		if _, err := f.Write([]byte("\n")); err != nil {
-			return
-		}
+		return
+	}
+	if _, err := f.Write([]byte("\n")); err != nil {
+		return
+	}
 }
 
 // load reads all entries from the JSONL history file into items.
@@ -204,10 +256,6 @@ func (h *History) load() {
 	// Cap at max size
 	if len(h.items) > h.maxSize {
 		h.items = h.items[len(h.items)-h.maxSize:]
-	}
-
-	if len(h.items) > 0 {
-		h.index = len(h.items) - 1
 	}
 }
 

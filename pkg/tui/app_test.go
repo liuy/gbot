@@ -764,11 +764,11 @@ func TestApp_HandleKey_CtrlN(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.history.Add("first")
 	app.history.Add("second")
-	app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
-	app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
-	// After Up then Down, should be back at "second"
-	if app.input.Value() != "second" {
-		t.Errorf("Ctrl+N should navigate history down, got %q", app.input.Value())
+	app.input.SetValue("my draft")
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlP}) // shows "second"
+	app.Update(tea.KeyMsg{Type: tea.KeyCtrlN}) // restores draft
+	if app.input.Value() != "my draft" {
+		t.Errorf("Ctrl+N should restore draft, got %q", app.input.Value())
 	}
 }
 
@@ -2716,10 +2716,11 @@ func TestApp_HandleKey_KeyDown(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.history.Add("first")
 	app.history.Add("second")
-	app.Update(tea.KeyMsg{Type: tea.KeyUp})
-	app.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if app.input.Value() != "second" {
-		t.Errorf("KeyDown should navigate history down, got %q", app.input.Value())
+	app.input.SetValue("my draft")
+	app.Update(tea.KeyMsg{Type: tea.KeyUp})  // shows "second"
+	app.Update(tea.KeyMsg{Type: tea.KeyDown}) // restores draft
+	if app.input.Value() != "my draft" {
+		t.Errorf("KeyDown should restore draft, got %q", app.input.Value())
 	}
 }
 
@@ -4722,7 +4723,8 @@ func TestApp_SlashCommand_PersistedToHistory(t *testing.T) {
 		t.Errorf("history should contain 1 entry (the slash command), got %d", app.history.Len())
 	}
 	// Navigate up — should recall "/session"
-	text, _ := app.history.Up("")
+	result := app.history.Up("")
+	text := result.Text
 	if text != "/session" {
 		t.Errorf("history up = %q, want %q", text, "/session")
 	}
@@ -6476,5 +6478,170 @@ func TestApp_InputAskMsg_OverwriteAbortsExisting(t *testing.T) {
 	case <-secondCh:
 		t.Error("second dialog's channel should not have received anything yet")
 	default:
+	}
+}
+
+// ---------------------------------------------------------------------------
+// History Up/Down integration
+// ---------------------------------------------------------------------------
+
+// TestApp_HistoryDown_NoOpOutsideNav verifies that pressing Down without
+// prior Up does NOT clear the current input.
+func TestApp_HistoryDown_NoOpOutsideNav(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("测试消息")
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated := model.(*App)
+
+	if updated.input.Value() != "测试消息" {
+		t.Errorf("Down without prior Up should be no-op, got input = %q", updated.input.Value())
+	}
+}
+
+// TestApp_HistoryDown_RestoresDraft verifies: Up into history → Down back
+// restores the original draft input.
+func TestApp_HistoryDown_RestoresDraft(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("我的草稿")
+
+	// Up → old2
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	upApp := model.(*App)
+	if upApp.input.Value() != "old2" {
+		t.Fatalf("after Up, input = %q, want %q", upApp.input.Value(), "old2")
+	}
+
+	// Down → draft restored
+	model, _ = upApp.Update(tea.KeyMsg{Type: tea.KeyDown})
+	downApp := model.(*App)
+	if downApp.input.Value() != "我的草稿" {
+		t.Errorf("after Down, input = %q, want draft %q", downApp.input.Value(), "我的草稿")
+	}
+}
+
+// TestApp_HistoryUp_CursorAtStart verifies that pressing Up moves the
+// cursor to the beginning of the history entry (matching TS cursorToStart).
+func TestApp_HistoryUp_CursorAtStart(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("草稿")
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	upApp := model.(*App)
+
+	if upApp.input.Value() != "old2" {
+		t.Fatalf("after Up, input = %q, want %q", upApp.input.Value(), "old2")
+	}
+	if upApp.input.cursor != 0 {
+		t.Errorf("after Up, cursor = %d, want 0 (start)", upApp.input.cursor)
+	}
+}
+
+// TestApp_HistoryDown_DraftCursorAtEnd verifies that when Down restores the
+// draft, the cursor is at the end of the draft text.
+func TestApp_HistoryDown_DraftCursorAtEnd(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("我的草稿")
+
+	// Up → old2 (cursor at start)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	upApp := model.(*App)
+
+	// Down → draft restored (cursor at end)
+	model, _ = upApp.Update(tea.KeyMsg{Type: tea.KeyDown})
+	downApp := model.(*App)
+
+	if downApp.input.Value() != "我的草稿" {
+		t.Errorf("after Down, input = %q, want draft %q", downApp.input.Value(), "我的草稿")
+	}
+	want := len([]rune("我的草稿"))
+	if downApp.input.cursor != want {
+		t.Errorf("after Down restores draft, cursor = %d, want %d (end)", downApp.input.cursor, want)
+	}
+}
+
+// TestApp_HistoryDown_EntryCursorAtEnd verifies that when Down shows a newer
+// history entry (not draft), the cursor is at the end.
+func TestApp_HistoryDown_EntryCursorAtEnd(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("草稿")
+
+	// Up → old2 (cursor at start)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	up1 := model.(*App)
+
+	// Up → old1 (cursor at start)
+	model, _ = up1.Update(tea.KeyMsg{Type: tea.KeyUp})
+	up2 := model.(*App)
+
+	// Down → old2 (cursor at end)
+	model, _ = up2.Update(tea.KeyMsg{Type: tea.KeyDown})
+	downApp := model.(*App)
+
+	if downApp.input.Value() != "old2" {
+		t.Errorf("after Down, input = %q, want %q", downApp.input.Value(), "old2")
+	}
+	want := len([]rune("old2"))
+	if downApp.input.cursor != want {
+		t.Errorf("after Down to entry, cursor = %d, want %d (end)", downApp.input.cursor, want)
+	}
+}
+
+// TestApp_HistoryUp_SecondUpCursorAtStart verifies multiple Ups all place
+// the cursor at the start.
+func TestApp_HistoryUp_SecondUpCursorAtStart(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.input.SetValue("草稿")
+
+	// Up → old2
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	up1 := model.(*App)
+
+	// Up → old1
+	model, _ = up1.Update(tea.KeyMsg{Type: tea.KeyUp})
+	up2 := model.(*App)
+
+	if up2.input.Value() != "old1" {
+		t.Fatalf("after 2nd Up, input = %q, want %q", up2.input.Value(), "old1")
+	}
+	if up2.input.cursor != 0 {
+		t.Errorf("after 2nd Up, cursor = %d, want 0 (start)", up2.input.cursor)
+	}
+}
+
+// TestApp_HistoryDown_SubmittedDraftCleared verifies that after submitting
+// "测试消息" (input goes empty), Up shows it from history, and Down clears
+// back to empty (draft was empty when Up was pressed).
+func TestApp_HistoryDown_SubmittedDraftCleared(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.history.Add("测试消息")
+
+	// Input is empty (just submitted)
+	app.input.SetValue("")
+
+	// Up → shows "测试消息" from history (cursor at start)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	upApp := model.(*App)
+	if upApp.input.Value() != "测试消息" {
+		t.Fatalf("after Up, input = %q, want %q", upApp.input.Value(), "测试消息")
+	}
+
+	// Down → draft restored (empty, since input was empty when Up was pressed)
+	model, _ = upApp.Update(tea.KeyMsg{Type: tea.KeyDown})
+	downApp := model.(*App)
+	if downApp.input.Value() != "" {
+		t.Errorf("after Down, input = %q, want empty (draft was empty)", downApp.input.Value())
 	}
 }
