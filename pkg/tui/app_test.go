@@ -535,6 +535,84 @@ func TestApp_HandleKey_EnterEmpty(t *testing.T) {
 	}
 }
 
+// TestApp_HandleKey_BackslashEnter inserts newline instead of submitting.
+// Source: TS useTextInput.ts:248-253 — backslash+enter inserts \n.
+func TestApp_HandleKey_BackslashEnter(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.input.SetValue("hello\\")
+	app.input.cursor = len(app.input.value) // cursor at end
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Should NOT submit (cmd should be nil)
+	if cmd != nil {
+		t.Error("backslash+enter should insert newline, not submit")
+	}
+	// The backslash should be removed and \n inserted
+	if got := app.input.Value(); got != "hello\n" {
+		t.Errorf("after backslash+enter: got %q, want %q", got, "hello\n")
+	}
+}
+
+// TestApp_HandleKey_BackslashEnter_MiddleOfText inserts newline in middle.
+// Source: TS useTextInput.ts:248-253 — cursor.text[cursor.offset-1] === '\\'
+func TestApp_HandleKey_BackslashEnter_MiddleOfText(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.input.SetValue("hel\\lo")
+	app.input.cursor = 4 // cursor after the backslash (pos 4, after "hel\")
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error("backslash+enter in middle should insert newline, not submit")
+	}
+	if got := app.input.Value(); got != "hel\nlo" {
+		t.Errorf("after backslash+enter in middle: got %q, want %q", got, "hel\nlo")
+	}
+}
+
+// TestApp_HandleKey_AltEnter inserts newline (same as VSCode Shift+Enter).
+// Source: TS useTextInput.ts:255-257 — key.meta || key.shift → insert \n.
+// VSCode terminal-setup sends \x1b\r for Shift+Enter, which bubbletea
+// parses as Alt+Enter (Alt=true, Type=KeyEnter).
+func TestApp_HandleKey_AltEnter(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.input.SetValue("hello world")
+	app.input.cursor = 5 // after "hello"
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if cmd != nil {
+		t.Error("alt+enter should insert newline, not submit")
+	}
+	if got := app.input.Value(); got != "hello\n world" {
+		t.Errorf("after alt+enter: got %q, want %q", got, "hello\n world")
+	}
+}
+
+// TestApp_HandleKey_AltEnter_AtEnd inserts newline at end.
+func TestApp_HandleKey_AltEnter_AtEnd(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+	app.input.SetValue("hello")
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if cmd != nil {
+		t.Error("alt+enter should insert newline, not submit")
+	}
+	if got := app.input.Value(); got != "hello\n" {
+		t.Errorf("after alt+enter at end: got %q, want %q", got, "hello\n")
+	}
+}
+
 func TestApp_HandleKey_Backspace(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})

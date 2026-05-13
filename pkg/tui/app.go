@@ -809,6 +809,17 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyEnter:
+		// Alt+Enter (also VSCode Shift+Enter via \x1b\r): insert newline.
+		if msg.Alt {
+			a.input.InsertNewline()
+			return a, nil
+		}
+		// Backslash+Enter: remove trailing \ and insert newline.
+		if a.input.cursor > 0 && a.input.value[a.input.cursor-1] == '\\' {
+			a.input.Backspace() // remove the backslash
+			a.input.InsertNewline()
+			return a, nil
+		}
 		text := a.input.Value()
 		if strings.TrimSpace(text) == "" {
 			return a, nil

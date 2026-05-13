@@ -136,6 +136,15 @@ func (i *Input) wrapLines() []wrappedLine {
 	avail := availFirst
 
 	for idx, r := range i.value {
+		// Hard newline — flush current line and start a new one.
+		if r == '\n' {
+			lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
+			current = nil
+			currentLen = 0
+			lineStart = idx + 1
+			avail = availRest
+			continue
+		}
 		rw := runeDisplayWidth(r)
 		if currentLen+rw > avail && currentLen > 0 {
 			lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
@@ -247,6 +256,11 @@ func (i *Input) InsertChar(ch rune) {
 	}
 	i.value = append(i.value[:i.cursor], append([]rune{ch}, i.value[i.cursor:]...)...)
 	i.cursor++
+}
+
+// InsertNewline inserts a newline character at the cursor position.
+func (i *Input) InsertNewline() {
+	i.InsertChar('\n')
 }
 
 // Backspace deletes the rune before the cursor.
