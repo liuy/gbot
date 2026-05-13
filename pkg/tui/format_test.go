@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -103,24 +105,26 @@ func TestFormatElapsed_Milliseconds(t *testing.T) {
 
 func TestFormatTokenCount_Under1000(t *testing.T) {
 	t.Parallel()
-	v := formatTokenCount(42)
+	v := types.FormatTokenCount(42)
 	if v != "42" {
-		t.Errorf("formatTokenCount(42) = %q, want %q", v, "42")
+		t.Errorf("FormatTokenCount(42) = %q, want %q", v, "42")
 	}
 }
 
 func TestFormatTokenCount_Over1000(t *testing.T) {
 	t.Parallel()
-	v := formatTokenCount(1500)
+	// 1500 / 1024 ≈ 1.465 → "1.5k"
+	v := types.FormatTokenCount(1500)
 	if v != "1.5k" {
-		t.Errorf("formatTokenCount(1500) = %q, want %q", v, "1.5k")
+		t.Errorf("FormatTokenCount(1500) = %q, want %q", v, "1.5k")
 	}
 }
 
-func TestFormatTokenCount_Exactly1000(t *testing.T) {
+func TestFormatTokenCount_Exactly1024(t *testing.T) {
 	t.Parallel()
-	v := formatTokenCount(1000)
+	// 1024 / 1024 = 1.0k
+	v := types.FormatTokenCount(1024)
 	if v != "1.0k" {
-		t.Errorf("formatTokenCount(1000) = %q, want %q", v, "1.0k")
+		t.Errorf("FormatTokenCount(1024) = %q, want %q", v, "1.0k")
 	}
 }

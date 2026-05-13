@@ -116,26 +116,34 @@ func TestFormatTokenCount_Zero(t *testing.T) {
 	}
 }
 
-func TestFormatTokenCount_Exactly1000(t *testing.T) {
-	t.Parallel()
-	got := FormatTokenCount(1000)
+func TestFormatTokenCount_Exactly1024(t *testing.T) {
+	// 1024 / 1024 = 1.0k
+	got := FormatTokenCount(1024)
 	if got != "1.0k" {
-		t.Errorf("FormatTokenCount(1000) = %q, want %q", got, "1.0k")
+		t.Errorf("FormatTokenCount(1024) = %q, want %q", got, "1.0k")
 	}
 }
 
-func TestFormatTokenCount_Over1000(t *testing.T) {
-	t.Parallel()
+func TestFormatTokenCount_Over1K(t *testing.T) {
+	// 1500 / 1024 ≈ 1.465 → "1.5k"
 	got := FormatTokenCount(1500)
 	if got != "1.5k" {
 		t.Errorf("FormatTokenCount(1500) = %q, want %q", got, "1.5k")
 	}
 }
 
-func TestFormatTokenCount_Large(t *testing.T) {
-	t.Parallel()
+func TestFormatTokenCount_Megabytes(t *testing.T) {
+	// 150000 / 1024 ≈ 146.5k
 	got := FormatTokenCount(150000)
-	if got != "150.0k" {
-		t.Errorf("FormatTokenCount(150000) = %q, want %q", got, "150.0k")
+	if got != "146.5k" {
+		t.Errorf("FormatTokenCount(150000) = %q, want %q", got, "146.5k")
+	}
+}
+
+func TestFormatTokenCount_1M(t *testing.T) {
+	// 1048576 / 1024² = 1.0M
+	got := FormatTokenCount(1048576)
+	if got != "1.0M" {
+		t.Errorf("FormatTokenCount(1048576) = %q, want %q", got, "1.0M")
 	}
 }

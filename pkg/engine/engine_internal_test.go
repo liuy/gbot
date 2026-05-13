@@ -2390,9 +2390,9 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	}
 
 	// Pre-turn compact uses ContextTokens directly (35000).
-	// Compact delta = 10000-4000 = 6000, display: 35.0k → 29.0k
-	if !strings.Contains(compactDisplayOutput, "token: 35.0k → 29.0k") {
-		t.Errorf("expected compact output to show real tokens (35.0k → 29.0k), got:\n%s", compactDisplayOutput)
+	// Compact delta = 10000-4000 = 6000, display: 34.2k → 28.3k (1024 base)
+	if !strings.Contains(compactDisplayOutput, "token: 34.2k → 28.3k") {
+		t.Errorf("expected compact output to show real tokens (34.2k → 28.3k), got:\n%s", compactDisplayOutput)
 	}
 }
 

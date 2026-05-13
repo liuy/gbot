@@ -571,7 +571,7 @@ func ctxStyle(used, total int) lipgloss.Style {
 
 // formatContextSize formats context usage as "usedK/totalK" or "used/total".
 func formatContextSize(used, total int) string {
-	return fmt.Sprintf("%s/%s", formatTokenCount(used), formatTokenCount(total))
+	return fmt.Sprintf("%s/%s", types.FormatTokenCount(used), types.FormatTokenCount(total))
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +774,7 @@ func agentTypeName(tc *ToolCallView) string {
 func renderStatsText(tcv *ToolCallView) string {
 	var parts []string
 	if tcv.TokensIn > 0 || tcv.TokensOut > 0 {
-		parts = append(parts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tcv.TokensIn), formatTokenCount(tcv.TokensOut)))
+		parts = append(parts, fmt.Sprintf("↑%s ↓%s", types.FormatTokenCount(tcv.TokensIn), types.FormatTokenCount(tcv.TokensOut)))
 	}
 	if tcv.ContextSize > 0 && tcv.ContextWindow > 0 {
 		parts = append(parts, formatContextSize(tcv.ContextSize, tcv.ContextWindow))
@@ -963,7 +963,7 @@ func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
 	if tcv.ToolCount > 0 || tcv.TokensIn > 0 || tcv.TokensOut > 0 {
 		var parts []string
 		if tcv.TokensIn > 0 || tcv.TokensOut > 0 {
-			parts = append(parts, fmt.Sprintf("↑%s ↓%s", formatTokenCount(tcv.TokensIn), formatTokenCount(tcv.TokensOut)))
+			parts = append(parts, fmt.Sprintf("↑%s ↓%s", types.FormatTokenCount(tcv.TokensIn), types.FormatTokenCount(tcv.TokensOut)))
 		}
 		if tcv.ContextSize > 0 && tcv.ContextWindow > 0 {
 			parts = append(parts, formatContextSize(tcv.ContextSize, tcv.ContextWindow))

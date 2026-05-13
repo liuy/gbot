@@ -5239,9 +5239,9 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 		t.Fatal("expected at least one message after queryEnd")
 	}
 	statsText := lastMsg.View(200, false, "", false, 50)
-	if !strings.Contains(statsText, "35.0k") && !strings.Contains(statsText, "35000") {
-		// TotalInput = 22000 + 13000 = 35000 = 35.0k
-		t.Errorf("stats line should show engine accumulated total input (35.0k), got:\n%s", statsText)
+	if !strings.Contains(statsText, "34.2k") && !strings.Contains(statsText, "35000") {
+		// TotalInput = 22000 + 13000 = 35000 = 34.2k (1024 base)
+		t.Errorf("stats line should show engine accumulated total input (34.2k), got:\n%s", statsText)
 	}
 	if !strings.Contains(statsText, "800") {
 		t.Errorf("stats line should show engine accumulated output (800), got:\n%s", statsText)

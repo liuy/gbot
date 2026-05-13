@@ -331,7 +331,7 @@ func TestStatusBar_SetUsage(t *testing.T) {
 	// SetUsage still stores usage data internally for context tracking.
 	s.SetContext(84000, 200000)
 	v := s.View()
-	if !strings.Contains(v, "84.0k/200.0k") {
+	if !strings.Contains(v, "82.0k/195.3k") {
 		t.Errorf("View() = %q, should contain context size", v)
 	}
 }
@@ -909,8 +909,8 @@ func TestStatusBar_SetContext(t *testing.T) {
 	s := NewStatusBar()
 	s.SetContext(84000, 200000)
 	v := s.View()
-	if !strings.Contains(v, "84.0k/200.0k") {
-		t.Errorf("View() = %q, should contain 84.0k/200.0k", v)
+	if !strings.Contains(v, "82.0k/195.3k") {
+		t.Errorf("View() = %q, should contain 82.0k/195.3k", v)
 	}
 	if s.contextUsed != 84000 {
 		t.Errorf("contextUsed = %d, want 84000", s.contextUsed)
@@ -974,10 +974,10 @@ func TestFormatContextSize(t *testing.T) {
 		used, total int
 		want        string
 	}{
-		{0, 200000, "0/200.0k"},
-		{500, 200000, "500/200.0k"},
-		{84000, 200000, "84.0k/200.0k"},
-		{1500, 3000, "1.5k/3.0k"},
+		{0, 200000, "0/195.3k"},
+		{500, 200000, "500/195.3k"},
+		{84000, 200000, "82.0k/195.3k"},
+		{1500, 3000, "1.5k/2.9k"},
 		{999, 1000, "999/1.0k"},
 	}
 	for _, tt := range tests {
@@ -1001,7 +1001,7 @@ func TestStatusBar_View_FullLayout(t *testing.T) {
 	if !strings.Contains(v, "sonnet-4") {
 		t.Errorf("View() = %q, should contain model name", v)
 	}
-	if !strings.Contains(v, "84.0k/200.0k") {
+	if !strings.Contains(v, "82.0k/195.3k") {
 		t.Errorf("View() = %q, should contain context size", v)
 	}
 	if !strings.Contains(v, "13 tools") {

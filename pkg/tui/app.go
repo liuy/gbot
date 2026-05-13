@@ -632,7 +632,7 @@ func (a *App) View() string {
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		spinnerFrame := a.spinner.View()
 		elapsedStr := formatElapsed(a.progressStart)
-		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(a.displayedInputTokens), formatTokenCount(a.displayedOutputTokens))
+		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.displayedInputTokens), types.FormatTokenCount(a.displayedOutputTokens))
 		var thinkingStr string
 		if a.thinkingActive {
 			thinkingStr = " · thinking"

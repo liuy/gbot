@@ -580,7 +580,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				queryUsage = a.status.usage
 			}
 			elapsedStr := formatElapsed(a.progressStart)
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", formatTokenCount(queryUsage.TotalInputTokens()), formatTokenCount(queryUsage.OutputTokens))
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(queryUsage.TotalInputTokens()), types.FormatTokenCount(queryUsage.OutputTokens))
 			var cachePart string
 			if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
 				total := queryUsage.CacheReadInputTokens + queryUsage.CacheCreationInputTokens + queryUsage.InputTokens
@@ -589,7 +589,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						pct := queryUsage.CacheReadInputTokens * 100 / total
 						cachePart = fmt.Sprintf(" · %d%% cached", pct)
 					} else {
-						cachePart = fmt.Sprintf(" · %s warmed", formatTokenCount(queryUsage.CacheCreationInputTokens))
+						cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
 					}
 				}
 			} else {

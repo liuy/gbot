@@ -41,10 +41,18 @@ func IsCJK(r rune) bool {
 		(r >= 0x3130 && r <= 0x318F) // Hangul Compatibility Jamo
 }
 
-// FormatTokenCount formats a token count: <1000 as-is, >=1000 as "1.2k".
+// FormatTokenCount formats a token count with K/M/G suffixes.
+// <1000: as-is, >=1K: "1.2k", >=1M: "1.2M", >=1G: "1.2G".
+// Uses 1024 as the base.
 func FormatTokenCount(n int) string {
 	if n < 1000 {
 		return fmt.Sprintf("%d", n)
 	}
-	return fmt.Sprintf("%.1fk", float64(n)/1000)
+	if n < 1024*1024 {
+		return fmt.Sprintf("%.1fk", float64(n)/1024)
+	}
+	if n < 1024*1024*1024 {
+		return fmt.Sprintf("%.1fM", float64(n)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1fG", float64(n)/(1024*1024*1024))
 }
