@@ -54,6 +54,14 @@ type PostTurnHook func(ctx context.Context, messages []types.Message, currentTok
 const (
 	maxOutputTokensForSummary = 20_000 // MAX_OUTPUT_TOKENS_FOR_SUMMARY: reserve for compact output
 	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: blocking limit buffer
+
+	stopReasonContextWindowExceeded = "model_context_window_exceeded"
+	stopReasonMaxTokens            = "max_tokens"
+	maxTokensRecoveryLimit         = 3
+
+	// continuationPrompt is appended as a meta user message when stop_reason
+	// signals truncated output. Source: TS query.ts:1226 — identical text.
+	continuationPrompt = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces."
 )
 
 // autoCompactBuffer returns the dynamic buffer for the auto-compact threshold.
@@ -435,6 +443,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 	e.setMessages(mcResult.Messages)
 
 	reactiveCompactDone := false
+	maxTokensRecoveryCount := 0
 
 	for e.maxTurns == 0 || e.turnCount < e.maxTurns {
 		compactSucceeded := false
@@ -706,6 +715,80 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 
 		// Stage 20: No-tool-use terminal path
 		if streamingExecutor == nil {
+			// Stop reason recovery: compact (context_window_exceeded) or continue
+			// directly (max_tokens), then append continuation meta message.
+			// Source: TS query.ts:1223-1256.
+			if (resp.StopReason == stopReasonContextWindowExceeded || resp.StopReason == stopReasonMaxTokens) && maxTokensRecoveryCount < maxTokensRecoveryLimit {
+				src := e.querySource()
+				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
+					maxTokensRecoveryCount++
+
+					if resp.StopReason == stopReasonContextWindowExceeded && e.compactor != nil {
+						// Context window exceeded: compact to free space for next turn.
+						compactID := "compact-recovery-" + uuid.New().String()[:8]
+						e.emitEvent(types.QueryEvent{
+							Type: types.EventToolStart,
+							ToolUse: &types.ToolUseEvent{
+								ID:      compactID,
+								Name:    "Compact",
+								Summary: "Compacting to continue truncated response...",
+							},
+						})
+						e.emitEvent(types.QueryEvent{
+							Type:    types.EventToolRun,
+							ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
+						})
+						e.fireCompactHooks(ctx, "auto", "pre")
+						result, compactErr := e.runCompact(ctx, "context window recovery")
+						if compactErr != nil {
+							e.emitEvent(types.QueryEvent{
+								Type: types.EventToolEnd,
+								ToolResult: &types.ToolResultEvent{
+									ToolUseID:     compactID,
+									DisplayOutput: fmt.Sprintf("Compact failed: %v", compactErr),
+									IsError:       true,
+								},
+							})
+							// Compact failed — fall through to existing terminal path.
+						} else {
+							e.fireCompactHooks(ctx, "auto", "post")
+							if result != nil {
+								e.mu.Lock()
+								e.ContextTokens = result.AfterTokens
+								e.mu.Unlock()
+							}
+							e.emitEvent(types.QueryEvent{
+								Type: types.EventToolEnd,
+								ToolResult: &types.ToolResultEvent{
+									ToolUseID:     compactID,
+									DisplayOutput: "Context compacted. Continuing response...",
+								},
+							})
+							e.appendMessage(types.Message{
+								Role: types.RoleUser,
+								Content: []types.ContentBlock{
+									types.NewTextBlock(continuationPrompt),
+								},
+								Flags: types.FlagMeta,
+							})
+							e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+							continue
+						}
+					} else if resp.StopReason == stopReasonMaxTokens {
+						// max_tokens: context not full, just hit output limit.
+						e.appendMessage(types.Message{
+							Role: types.RoleUser,
+							Content: []types.ContentBlock{
+								types.NewTextBlock(continuationPrompt),
+							},
+							Flags: types.FlagMeta,
+						})
+						e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+						continue
+					}
+				}
+			}
+
 			// Before exiting, check if notifications arrived during this
 			// turn. If so, inject them and continue the loop instead of
 			// returning. Source: TS queryLoop checks commandQueue at each
