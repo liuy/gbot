@@ -119,6 +119,14 @@ type App struct {
 	toolBlink     bool
 	toolBlinkTick int
 
+	// Retry state — source: TS SystemAPIErrorMessage.tsx
+	retryActive    bool
+	retryAttempt   int
+	retryMax       int
+	retryRemaining time.Duration
+	retryStart     time.Time
+	retryErrorType string
+
 	// Content cache — avoids rebuilding rendered messages every frame.
 	// TS writes content to terminal; terminal handles scrollback natively.
 	// We follow the same pattern: render all messages, let terminal scroll.
@@ -138,11 +146,11 @@ type App struct {
 	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
 
 	// Task list panel (auto-shows when tasks exist)
-	taskListFn       taskListFn       // set from main.go to read tasks for display
-	autoCleanupFn    func() bool     // checked every render; cleans tasks and jobs, returns true if reset happened
-	taskListCache    string           // rendered task list, rebuilt when dirty
-	taskListDirty    bool
-	killAllFn        func()           // set from main.go to kill all background tasks
+	taskListFn    taskListFn  // set from main.go to read tasks for display
+	autoCleanupFn func() bool // checked every render; cleans tasks and jobs, returns true if reset happened
+	taskListCache string      // rendered task list, rebuilt when dirty
+	taskListDirty bool
+	killAllFn     func() // set from main.go to kill all background tasks
 	// Cache token tracking for spinner display
 	cacheReadTokens     int
 	cacheCreationTokens int
@@ -259,37 +267,37 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 		a.committedCount = len(a.repl.messages)
 	}
 
-		// Cleanup old backup session directories (older than 30 days).
-		// Source: TS cleanup.ts:305-348 — cleanupOldFileHistoryBackups.
-		{
-			fhDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history")
-			if cleaned, err := filehistory.CleanupOldBackups(fhDir, filehistory.DefaultCleanupAge); err != nil {
-				slog.Warn("tui:file_history:cleanup_failed", "err", err)
-			} else if cleaned > 0 {
-				slog.Info("tui:file_history:cleaned", "sessions", cleaned)
-			}
+	// Cleanup old backup session directories (older than 30 days).
+	// Source: TS cleanup.ts:305-348 — cleanupOldFileHistoryBackups.
+	{
+		fhDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history")
+		if cleaned, err := filehistory.CleanupOldBackups(fhDir, filehistory.DefaultCleanupAge); err != nil {
+			slog.Warn("tui:file_history:cleanup_failed", "err", err)
+		} else if cleaned > 0 {
+			slog.Info("tui:file_history:cleaned", "sessions", cleaned)
 		}
+	}
 
-		// Create file history tracker for rewind/restore.
-		// Source: TS fileHistory.ts — per-session backup directory.
-		if sessionID != "" {
-			trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
-			tracker := filehistory.NewTracker(trackerDir)
-			// Load persisted state (crash recovery / session resume).
-			if state, err := store.LoadFileHistoryState(sessionID); err == nil && state != nil {
-				tracker.LoadState(*state)
-				slog.Info("tui:file_history:loaded", "snapshots", len(state.Snapshots), "dir", trackerDir)
-			}
-			a.fileHistory = tracker
-			a.engine.SetFileHistory(tracker)
-			// Wire persistence: save state after each MakeSnapshot.
-			a.engine.SetFileHistoryWriter(func(state filehistory.FileHistoryState) {
-				if err := store.SaveFileHistoryState(sessionID, state); err != nil {
-					slog.Warn("tui:file_history:persist_failed", "err", err)
-				}
-			})
-			slog.Info("tui:file_history", "dir", trackerDir)
+	// Create file history tracker for rewind/restore.
+	// Source: TS fileHistory.ts — per-session backup directory.
+	if sessionID != "" {
+		trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
+		tracker := filehistory.NewTracker(trackerDir)
+		// Load persisted state (crash recovery / session resume).
+		if state, err := store.LoadFileHistoryState(sessionID); err == nil && state != nil {
+			tracker.LoadState(*state)
+			slog.Info("tui:file_history:loaded", "snapshots", len(state.Snapshots), "dir", trackerDir)
 		}
+		a.fileHistory = tracker
+		a.engine.SetFileHistory(tracker)
+		// Wire persistence: save state after each MakeSnapshot.
+		a.engine.SetFileHistoryWriter(func(state filehistory.FileHistoryState) {
+			if err := store.SaveFileHistoryState(sessionID, state); err != nil {
+				slog.Warn("tui:file_history:persist_failed", "err", err)
+			}
+		})
+		slog.Info("tui:file_history", "dir", trackerDir)
+	}
 	// Wire record writer: persist ContentReplacementRecords to transcript.
 	a.engine.SetRecordWriter(func(records []toolresult.ContentReplacementRecord) {
 		if err := store.SaveContentReplacementRecords(sessionID, records); err != nil {
@@ -367,6 +375,12 @@ func (a *App) resetDisplayState() {
 	a.cacheCreationTokens = 0
 	a.toolBlink = false
 	a.toolBlinkTick = 0
+	a.retryActive = false
+	a.retryAttempt = 0
+	a.retryMax = 0
+	a.retryRemaining = 0
+	a.retryStart = time.Time{}
+	a.retryErrorType = ""
 	a.status.SetUsage(types.Usage{})
 }
 
@@ -460,7 +474,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		notificationPendingMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg,
-		permissionAskMsg, inputAskMsg:
+		permissionAskMsg, inputAskMsg, retryAttemptMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd
@@ -630,26 +644,36 @@ func (a *App) View() string {
 
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
-		spinnerFrame := a.spinner.View()
-		elapsedStr := formatElapsed(a.progressStart)
-		tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.displayedInputTokens), types.FormatTokenCount(a.displayedOutputTokens))
-		var thinkingStr string
-		if a.thinkingActive {
-			thinkingStr = " · thinking"
-		} else if a.thinkingDuration > 0 {
-			thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.thinkingDuration.Seconds())
-		}
-		var toolsStr string
-		if tc := a.repl.toolCount; tc > 0 {
-			if tc == 1 {
-				toolsStr = " · 1 tool"
-			} else {
-				toolsStr = fmt.Sprintf(" · %d tools", tc)
+		// Retry display: show user-friendly error + countdown for attempts >= 4
+		// Source: TS SystemAPIErrorMessage.tsx — hidden for attempts < 4
+		if a.retryActive && a.retryAttempt >= 4 && a.responseCharCount == 0 && !a.thinkingActive {
+			secs := max(int((a.retryRemaining - time.Since(a.retryStart)).Seconds())+1, 0)
+			errLine := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(formatRetryError(a.retryErrorType))
+			countdownLine := lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf("Retrying in %ds… (attempt %d/%d)", secs, a.retryAttempt, a.retryMax))
+			sb.WriteString(errLine + "\n" + countdownLine + "\n")
+		} else {
+			spinnerFrame := a.spinner.View()
+			elapsedStr := formatElapsed(a.progressStart)
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.displayedInputTokens), types.FormatTokenCount(a.displayedOutputTokens))
+			var thinkingStr string
+			if a.thinkingActive {
+				thinkingStr = " · thinking"
+			} else if a.thinkingDuration > 0 {
+				thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.thinkingDuration.Seconds())
 			}
+			var toolsStr string
+			if tc := a.repl.toolCount; tc > 0 {
+				if tc == 1 {
+					toolsStr = " · 1 tool"
+				} else {
+					toolsStr = fmt.Sprintf(" · %d tools", tc)
+				}
+			}
+			progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + toolsStr + thinkingStr + ")"
+			sb.WriteString(progressLine)
+			sb.WriteString("\n")
 		}
-		progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + toolsStr + thinkingStr + ")"
-		sb.WriteString(progressLine)
-		sb.WriteString("\n")
 	}
 
 	// Input

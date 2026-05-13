@@ -738,19 +738,18 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 
 }
 
-func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
+func TestQuery_StreamError_APIErrorTerminal(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	// First call: retryable error (429) — now correctly detected via errors.As
+	// API-level error (429) — engine does NOT retry these (provider handles HTTP-level retry).
+	// If it reaches engine, it's terminal.
 	mp.addResponse(nil, &llm.APIError{
 		Type:      "rate_limit_error",
 		Message:   "rate limited",
 		Status:    429,
 		Retryable: true,
 	})
-	// Second call: success after retry
-	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
 	eng := New(&Params{
 		Provider: mp,
@@ -762,8 +761,15 @@ func TestQuery_StreamError_RetryableThenSuccess(t *testing.T) {
 	defer cancel()
 
 	result := eng.QuerySync(ctx, "test", nil)
-	if result.Error != nil {
-		t.Fatalf("expected no error after retry, got: %v", result.Error)
+	if result.Error == nil {
+		t.Fatal("expected terminal error for API-level 429, got nil")
+	}
+	if !strings.Contains(result.Error.Error(), "rate limited") {
+		t.Errorf("error should contain 'rate limited', got: %v", result.Error)
+	}
+	// Provider should only be called once (no engine retry for API errors)
+	if mp.index != 1 {
+		t.Errorf("expected 1 provider call, got %d", mp.index)
 	}
 }
 
@@ -1458,21 +1464,19 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	}
 }
 
-// TestQuery_RetryableStreamError tests handleStreamError's Continue=true path.
-// When a retryable error occurs mid-stream (returned via event.Error, NOT wrapped),
-// handleStreamError should return Continue=true and the loop retries.
-func TestQuery_RetryableStreamError(t *testing.T) {
+// TestQuery_RetryableStreamError_APIErrorTerminal verifies that mid-stream API errors
+// (e.g. 529 overloaded) are NOT retried at engine level. Provider handles HTTP-level retries;
+// if the error reaches engine, it's terminal.
+func TestQuery_RetryableStreamError_APIErrorTerminal(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	// First response: retryable error mid-stream (unwrapped via event.Error)
+	// Mid-stream API error (529) — returned via event.Error
 	retryableEvents := []llm.StreamEvent{
 		{Type: "message_start", Message: &llm.MessageStart{Model: "test-model", Usage: types.Usage{InputTokens: 5}}},
 		{Error: &llm.APIError{Message: "overloaded", Status: 529, Retryable: true}},
 	}
 	mp.addResponse(retryableEvents, nil)
-	// Second response: success after retry
-	mp.addResponse(textStreamEvents("test-model", "Recovered!"), nil)
 
 	eng := New(&Params{
 		Provider: mp,
@@ -1484,8 +1488,11 @@ func TestQuery_RetryableStreamError(t *testing.T) {
 	defer cancel()
 
 	result := eng.QuerySync(ctx, "test", nil)
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
+	if result.Error == nil {
+		t.Fatal("expected terminal error for mid-stream 529, got nil")
+	}
+	if !strings.Contains(result.Error.Error(), "overloaded") {
+		t.Errorf("error should contain 'overloaded', got: %v", result.Error)
 	}
 }
 

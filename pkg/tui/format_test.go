@@ -128,3 +128,39 @@ func TestFormatTokenCount_Exactly1024(t *testing.T) {
 		t.Errorf("FormatTokenCount(1024) = %q, want %q", v, "1.0k")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// formatRetryError
+// ---------------------------------------------------------------------------
+
+func TestFormatRetryError_StreamInterrupted(t *testing.T) {
+	t.Parallel()
+	got := formatRetryError(string(types.RetryErrorStreamInterrupted))
+	if got != "Connection interrupted" {
+		t.Errorf("formatRetryError(stream_interrupted) = %q, want %q", got, "Connection interrupted")
+	}
+}
+
+func TestFormatRetryError_StreamEnded(t *testing.T) {
+	t.Parallel()
+	got := formatRetryError(string(types.RetryErrorStreamEnded))
+	if got != "Connection lost" {
+		t.Errorf("formatRetryError(stream_ended) = %q, want %q", got, "Connection lost")
+	}
+}
+
+func TestFormatRetryError_UnknownType(t *testing.T) {
+	t.Parallel()
+	got := formatRetryError("unknown_error")
+	if got != "Request timed out. Check your internet connection" {
+		t.Errorf("formatRetryError(unknown) = %q, want timeout message", got)
+	}
+}
+
+func TestFormatRetryError_EmptyType(t *testing.T) {
+	t.Parallel()
+	got := formatRetryError("")
+	if got != "Request timed out. Check your internet connection" {
+		t.Errorf("formatRetryError(empty) = %q, want timeout message", got)
+	}
+}

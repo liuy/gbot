@@ -1046,3 +1046,46 @@ func BenchmarkTUIHandler_CoalescedBatch(b *testing.B) {
 		b.ReportMetric(ratio, "msg/call")
 	}
 }
+
+func TestConvertEventToMsg_RetryAttempt(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventRetryAttempt,
+		RetryAttempt: &types.RetryAttemptEvent{
+			Attempt:    3,
+			MaxRetries: 10,
+			RetryInMs:  4000,
+			Error:      "stream interrupted",
+		},
+	})
+	if msg == nil {
+		t.Fatal("EventRetryAttempt with non-nil RetryAttempt should not return nil")
+	}
+	rm, ok := msg.(retryAttemptMsg)
+	if !ok {
+		t.Fatalf("expected retryAttemptMsg, got %T", msg)
+	}
+	if rm.Attempt != 3 {
+		t.Errorf("Attempt = %d, want 3", rm.Attempt)
+	}
+	if rm.MaxRetries != 10 {
+		t.Errorf("MaxRetries = %d, want 10", rm.MaxRetries)
+	}
+	if rm.RetryInMs != 4000 {
+		t.Errorf("RetryInMs = %d, want 4000", rm.RetryInMs)
+	}
+	if rm.Error != "stream interrupted" {
+		t.Errorf("Error = %q, want %q", rm.Error, "stream interrupted")
+	}
+}
+
+func TestConvertEventToMsg_RetryAttempt_NilRetryAttempt(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:         types.EventRetryAttempt,
+		RetryAttempt: nil,
+	})
+	if msg != nil {
+		t.Errorf("EventRetryAttempt with nil RetryAttempt should return nil, got %T", msg)
+	}
+}

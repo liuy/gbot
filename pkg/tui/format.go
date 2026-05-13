@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // formatElapsed returns a human-readable elapsed time string.
@@ -46,4 +48,17 @@ func animateTokenValue(displayed, target int) int {
 		displayed = target
 	}
 	return displayed
+}
+
+// formatRetryError maps a RetryErrorType to a user-friendly message.
+// Source: TS formatAPIError() in services/api/errorUtils.ts
+func formatRetryError(errorType string) string {
+	switch types.RetryErrorType(errorType) {
+	case types.RetryErrorStreamInterrupted:
+		return "Connection interrupted"
+	case types.RetryErrorStreamEnded:
+		return "Connection lost"
+	default:
+		return "Request timed out. Check your internet connection"
+	}
 }

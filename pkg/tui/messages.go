@@ -158,3 +158,13 @@ type permissionAskMsg struct {
 type inputAskMsg struct {
 	event *types.AskEvent
 }
+
+// retryAttemptMsg carries retry information when the engine retries a failed stream.
+// Source: TS withRetry.ts — SystemAPIErrorMessage countdown display.
+type retryAttemptMsg struct {
+	Attempt    int
+	MaxRetries int
+	RetryInMs  int64
+	ErrorType  string
+	Error      string
+}

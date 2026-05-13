@@ -7,10 +7,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -111,6 +112,10 @@ type Engine struct {
 	// maxTurns is the maximum number of agentic turns before stopping.
 	// 0 means no limit — aligns with TS built-in agents (undefined maxTurns).
 	maxTurns int
+
+	// retryConfig controls retry behavior for stream-level failures.
+	// nil means use llm.DefaultRetryConfig(). Tests can override for faster backoff.
+	retryConfig *llm.RetryConfig
 
 	// Auto-compact fields
 	compactor                  Compactor
@@ -562,7 +567,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Stage 14-15: API call streaming loop
 		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
 
-		resp, streamingExecutor, err := e.callLLM(ctx, systemPrompt)
+		resp, streamingExecutor, err := e.callLLMWithRetry(ctx, systemPrompt)
 		if err != nil {
 			// Abort check: if ctx was cancelled during callLLM, return *AbortError
 			// with inline interrupt message. This handles the common case where
@@ -643,18 +648,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 				}
 			}
 
-			// Stage 16: Error handling
-			action := e.handleStreamError(err)
-			if !action.Continue {
-				e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
-				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
-				return QueryResult{
-					Messages: e.messages,
-					Error:    err,
-				}
+			// Stage 16: Error handling — all errors are terminal here.
+			// Retry is handled by callLLMWithRetry (stream-level only).
+			e.logger.Error("callLLM error (terminal)", "error", err, "turn", e.turnCount)
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err})
+			return QueryResult{
+				Messages: e.messages,
+				Error:    err,
 			}
-			e.logger.Warn("callLLM error (retryable)", "error", err, "turn", e.turnCount)
-			continue
 		}
 
 		// Accumulate usage
@@ -896,6 +897,105 @@ func buildToolDefs(tools []tool.Tool) []llm.ToolDef {
 	}
 	return defs
 }
+
+// StreamInterruptedError indicates the stream ended with content
+// but no stop_reason — genuine mid-stream failure safe to retry.
+// Created by callLLM when hasContent && !streamComplete && ctx is alive.
+type StreamInterruptedError struct {
+	ContentBlocks int
+	Model         string
+}
+
+func (e *StreamInterruptedError) Error() string {
+	return "stream interrupted: response incomplete (no stop_reason received)"
+}
+
+// StreamEndedError indicates the stream ended without any content
+// and without a completion signal.
+type StreamEndedError struct{}
+
+func (e *StreamEndedError) Error() string {
+	return "stream ended without content or completion signal"
+}
+
+// isStreamError reports whether err is a transient stream failure safe to retry
+// (connection interrupted or ended without content), not an API error like 429/5xx.
+func isStreamError(err error) bool {
+	if _, ok := errors.AsType[*StreamInterruptedError](err); ok {
+		return true
+	}
+	_, ok := errors.AsType[*StreamEndedError](err)
+	return ok
+}
+
+// retryErrorType maps a stream error to its display category for the TUI.
+func retryErrorType(err error) types.RetryErrorType {
+	if _, ok := errors.AsType[*StreamInterruptedError](err); ok {
+		return types.RetryErrorStreamInterrupted
+	}
+	if _, ok := errors.AsType[*StreamEndedError](err); ok {
+		return types.RetryErrorStreamEnded
+	}
+	return ""
+}
+
+// callLLMWithRetry wraps callLLM with exponential backoff retry for stream-level failures.
+// Sub-agents bypass retry to prevent deadlock.
+// AbortError is never retried because callLLM mutates e.messages on ctx cancellation.
+// Only stream-level errors are retried; API errors (429/5xx) are handled by the provider.
+func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
+	// Sub-agents bypass retry to prevent deadlock.
+	if e.isSubagent {
+		return e.callLLM(ctx, systemPrompt)
+	}
+
+	cfg := e.retryConfig
+	if cfg == nil {
+		cfg = llm.DefaultRetryConfig()
+	}
+	for attempt := 1; attempt <= cfg.MaxRetries+1; attempt++ {
+		// callLLM internally calls Discard() on the executor for stream errors,
+		// so no goroutine leak on failed attempts.
+		msg, exec, err := e.callLLM(ctx, systemPrompt)
+		if err == nil {
+			return msg, exec, nil
+		}
+
+		// AbortError means messages were mutated — retrying would corrupt history.
+		if _, ok := errors.AsType[*AbortError](err); ok {
+			return nil, nil, err
+		}
+
+		// Only retry stream-level errors; API errors are terminal here.
+		if !isStreamError(err) {
+			return nil, nil, err
+		}
+		if attempt > cfg.MaxRetries {
+			return nil, nil, err
+		}
+
+		delay := llm.CalculateBackoff(attempt-1, cfg)
+		e.emitEvent(types.QueryEvent{
+			Type: types.EventRetryAttempt,
+			RetryAttempt: &types.RetryAttemptEvent{
+				Attempt:    attempt,
+				MaxRetries: cfg.MaxRetries,
+				RetryInMs:  delay.Milliseconds(),
+				ErrorType:  retryErrorType(err),
+				Error:      err.Error(),
+			},
+		})
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, nil, ShouldAbort(ctx, "streaming")
+		}
+	}
+	return nil, nil, fmt.Errorf("callLLMWithRetry: unreachable")
+}
+
 func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 
@@ -1306,11 +1406,11 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 				streamingExecutor.Discard()
 			}
 			e.logger.Error("stream interrupted", "contentBlocks", len(contentBlocks), "model", model)
-			return nil, nil, fmt.Errorf("stream interrupted: response incomplete (no stop_reason received)")
+			return nil, nil, &StreamInterruptedError{ContentBlocks: len(contentBlocks), Model: model}
 		}
 		// No content and no cancel — stream ended immediately without explanation.
 		e.logger.Error("stream ended without content or completion signal")
-		return nil, nil, fmt.Errorf("stream ended without content or completion signal")
+		return nil, nil, &StreamEndedError{}
 	}
 
 	return &types.Message{
@@ -1321,14 +1421,6 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 		Usage:      &usage,
 		Timestamp:  time.Now(),
 	}, streamingExecutor, nil
-}
-
-// handleStreamError determines the action for a streaming error.
-func (e *Engine) handleStreamError(err error) types.LoopAction {
-	if llm.IsRetryable(err) {
-		return types.LoopAction{Continue: true, Reason: types.ContinueNextTurn}
-	}
-	return types.LoopAction{Continue: false}
 }
 
 // computeSummary returns a human-readable summary for a tool invocation.

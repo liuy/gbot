@@ -395,7 +395,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 	case textStartMsg:
-		// No-op: text content block started.
 		return true, a.readEvents()
 
 	case textEndMsg:
@@ -410,6 +409,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	case turnStartMsg:
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
+		return true, a.readEvents()
+
+	case retryAttemptMsg:
+		a.retryActive = true
+		a.retryAttempt = m.Attempt
+		a.retryMax = m.MaxRetries
+		a.retryRemaining = time.Duration(m.RetryInMs) * time.Millisecond
+		a.retryStart = time.Now()
+		a.retryErrorType = m.ErrorType
+		a.markViewportDirty()
 		return true, a.readEvents()
 
 	case streamMessageMsg:

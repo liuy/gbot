@@ -336,6 +336,9 @@ const (
 
 	// Ask: engine requests user confirmation or input.
 	EventAsk QueryEventType = "ask"
+
+	// Retry: engine is retrying a failed stream attempt.
+	EventRetryAttempt QueryEventType = "retry_attempt"
 )
 
 // AgentMeta tags events originating from a sub-agent.
@@ -360,6 +363,7 @@ type QueryEvent struct {
 	Agent        *AgentMeta         // non-nil = sub-agent event
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
 	Ask *AskEvent // non-nil when Type == EventAsk
+	RetryAttempt *RetryAttemptEvent `json:"retry_attempt,omitempty"`
 	Error        error              `json:"-"`
 }
 
@@ -375,6 +379,24 @@ type UsageEvent struct {
 type ThinkingEvent struct {
 	Duration time.Duration `json:"duration,omitempty"` // time spent thinking (set on ThinkingEnd)
 	Text     string        `json:"text,omitempty"`     // thinking text delta (set on ThinkingDelta)
+}
+
+// RetryErrorType constants identify the category of stream failure for retry display.
+type RetryErrorType string
+
+const (
+	RetryErrorStreamInterrupted RetryErrorType = "stream_interrupted"
+	RetryErrorStreamEnded       RetryErrorType = "stream_ended"
+)
+
+// RetryAttemptEvent carries retry information when the engine retries a failed stream.
+// Source: TS withRetry.ts — SystemAPIErrorMessage countdown display.
+type RetryAttemptEvent struct {
+	Attempt    int            `json:"attempt"`
+	MaxRetries int            `json:"max_retries"`
+	RetryInMs  int64          `json:"retry_in_ms"`
+	ErrorType  RetryErrorType `json:"error_type,omitempty"`
+	Error      string         `json:"error"`
 }
 
 // PartialInputEvent carries incremental input for a pending tool call.

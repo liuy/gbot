@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
 	"strings"
@@ -1012,7 +1013,8 @@ func (p *midStreamErrorProvider) Stream(_ context.Context, _ *llm.Request) (<-ch
 // TestCallLLM_DiscardsExecutorOnStreamError verifies that when callLLM encounters
 // a stream error AFTER creating a StreamingToolExecutor with running tool goroutines,
 // the executor is Discard()ed to cancel those goroutines.
-// RED TEST: Currently FAILS — callLLM does not Discard() the executor on error.
+// API-level errors (429) are terminal at engine level (D2), but executor cleanup
+// must still happen to prevent goroutine leaks.
 func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 	dt := newDiscardSlowTool()
 	p := &midStreamErrorProvider{}
@@ -1028,9 +1030,12 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "test", nil)
 
-	// The retryable error from call 1 should be retried, and call 2 should succeed
-	if result.Error != nil {
-		t.Fatalf("unexpected error after retry: %v", result.Error)
+	// API error (429) is terminal at engine level — no retry (D2)
+	if result.Error == nil {
+		t.Fatal("expected terminal error for mid-stream 429, got nil")
+	}
+	if !strings.Contains(result.Error.Error(), "rate limited") {
+		t.Errorf("error should contain 'rate limited', got: %v", result.Error)
 	}
 
 	// Wait for the tool goroutine to settle.
@@ -1041,10 +1046,7 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 		}
 	}
 
-	// Verify tool goroutine was properly cleaned up:
-	// - If tool.Call started: it must have been cancelled (ctx.Done fired)
-	// - If tool.Call never started: executor aborted it via getAbortReason
-	// Without the fix, a started tool would block forever (ctx never cancelled).
+	// Verify tool goroutine was properly cleaned up.
 	if dt.WasStarted() && !dt.WasCancelled() {
 		t.Error("tool started but was never cancelled — callLLM must Discard() executor on stream error")
 	}
@@ -5702,4 +5704,517 @@ func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
 	}
 
 	<-tt.done
+}
+
+// ---------------------------------------------------------------------------
+// Engine retry tests — red phase (callLLMWithRetry not implemented yet)
+// Tests exercise retry behavior via QuerySync with mock providers.
+// ---------------------------------------------------------------------------
+
+// partialTextEvents creates streaming events WITHOUT message_stop.
+// Simulates idle timeout: content received but stream ended without completion.
+// toolUseEvents returns a complete stream that produces a tool_use block.
+func toolUseEvents(model, toolID, toolName, inputJSON string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: toolID, Name: toolName}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: inputJSON}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 5}},
+		{Type: "message_stop"},
+	}
+}
+
+func partialTextEvents(model, text string) []llm.StreamEvent {
+	return []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: model, Usage: types.Usage{InputTokens: 10}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: text}},
+		{Type: "content_block_stop", Index: 0},
+		// NO message_delta, NO message_stop — simulates idle timeout
+	}
+}
+
+// TestQuery_RetryStreamTimeout verifies retry on stream interrupted (idle timeout).
+// Mock sends partial content then closes channel (no message_stop).
+// First call → StreamInterruptedError → retry → second call succeeds with full response.
+func TestQuery_RetryStreamTimeout(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// First attempt: partial stream (simulates idle timeout)
+	mp.addResponse(partialTextEvents("test", "partial"), nil)
+	// Second attempt: full successful response
+	mp.addResponse(subTextEvents("test", "recovered!"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+
+	// Verify retry attempt event was emitted
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) == 0 {
+		t.Fatal("expected at least one EventRetryAttempt, got none")
+	}
+	if retryEvents[0].RetryAttempt == nil {
+		t.Fatal("RetryAttempt field should be non-nil")
+	}
+	if retryEvents[0].RetryAttempt.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1", retryEvents[0].RetryAttempt.Attempt)
+	}
+
+	// Verify the final text is from the second (successful) attempt
+	if len(result.Messages) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleAssistant {
+		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
+	}
+	text := lastMsg.Content[0].Text
+	if !strings.Contains(text, "recovered!") {
+		t.Errorf("expected 'recovered!' in response, got %q", text)
+	}
+}
+
+// TestQuery_RetryStreamEndedNoContent verifies retry when stream ends
+// without any content (simulates connection timeout).
+func TestQuery_RetryStreamEndedNoContent(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// First attempt: empty events (simulates connection timeout — no content at all)
+	mp.addResponse([]llm.StreamEvent{}, nil)
+	// Second attempt: full successful response
+	mp.addResponse(subTextEvents("test", "connected!"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) == 0 {
+		t.Fatal("expected at least one EventRetryAttempt, got none")
+	}
+}
+
+// TestQuery_RetryExhausted verifies that exhausting all retries returns terminal error.
+func TestQuery_RetryExhausted(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// First response (initial attempt)
+	mp.addResponse(partialTextEvents("test", "partial"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+	// Use fast retry config for testing (10ms backoff, 3 retries)
+	eng.retryConfig = &llm.RetryConfig{
+		MaxRetries:  3,
+		BaseBackoff: 10 * time.Millisecond,
+		MaxBackoff:  50 * time.Millisecond,
+	}
+
+	// Queue 4 responses (1 initial + 3 retries) — all partial
+	for range 3 {
+		mp.addResponse(partialTextEvents("test", "partial"), nil)
+	}
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error == nil {
+		t.Fatal("expected error after all retries exhausted, got nil")
+	}
+
+	// Should be StreamInterruptedError
+	var si *StreamInterruptedError
+	if !errors.As(result.Error, &si) {
+		t.Errorf("expected *StreamInterruptedError, got %T: %v", result.Error, result.Error)
+	}
+		if si.ContentBlocks == 0 {
+			t.Errorf("expected ContentBlocks > 0 in StreamInterruptedError")
+		}
+
+	// Should have 3 retry events (4 attempts = 1 initial + 3 retries)
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 3 {
+		t.Errorf("expected 3 EventRetryAttempt, got %d", len(retryEvents))
+	}
+}
+
+// TestQuery_NonRetryableTerminal verifies that API-level errors (e.g. 400) are NOT retried.
+// Provider already handles HTTP-level retries; engine should not duplicate.
+func TestQuery_NonRetryableTerminal(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// Non-retryable API error (400 Bad Request)
+	mp.addResponse(nil, &llm.APIError{
+		Message: "bad request",
+		Status:  400,
+	})
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error == nil {
+		t.Fatal("expected error for 400, got nil")
+	}
+		if !strings.Contains(result.Error.Error(), "bad request") {
+			t.Errorf("error should mention 'bad request', got: %v", result.Error)
+		}
+
+	// Should NOT have any retry events
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 0 {
+		t.Errorf("expected 0 EventRetryAttempt for non-retryable error, got %d", len(retryEvents))
+	}
+
+	// Provider should only have been called once
+	if mp.index != 1 {
+		t.Errorf("expected 1 provider call, got %d", mp.index)
+	}
+}
+
+// TestQuery_RetryAbortErrorNoRetry verifies AbortError is NOT retried.
+// callLLM mutates e.messages on ctx cancellation — retrying would corrupt history.
+func TestQuery_RetryAbortErrorNoRetry(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	slowCh := make(chan llm.StreamEvent, 10)
+	mp.addChannelResponse(slowCh)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ready := make(chan struct{})
+	go func() {
+		defer close(slowCh)
+		slowCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test"}}
+		slowCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		slowCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "partial"}}
+		close(ready)
+		<-ctx.Done()
+	}()
+
+	go func() {
+		<-ready
+		cancel()
+	}()
+
+	result := eng.QuerySync(ctx, "hello", nil)
+	if result.Error == nil {
+		t.Fatal("expected AbortError, got nil")
+	}
+
+	// Should be AbortError, NOT retried
+	var abortErr *AbortError
+	if !errors.As(result.Error, &abortErr) {
+		t.Errorf("expected *AbortError, got %T: %v", result.Error, result.Error)
+	}
+
+	// No retry events — AbortError should not trigger retry
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 0 {
+		t.Errorf("expected 0 EventRetryAttempt for AbortError, got %d", len(retryEvents))
+	}
+}
+
+// TestQuery_RetryContextCancellation verifies ctx cancellation during backoff
+// returns immediately without further retry attempts.
+func TestQuery_RetryContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// First attempt: partial stream → triggers retry with backoff
+	mp.addResponse(partialTextEvents("test", "partial"), nil)
+	// Second attempt: would succeed but ctx will be cancelled during backoff
+	mp.addResponse(subTextEvents("test", "recovered"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+	// Use retry config with long backoff so cancel fires during wait
+	eng.retryConfig = &llm.RetryConfig{
+		MaxRetries:  10,
+		BaseBackoff: 5 * time.Second,
+		MaxBackoff:  30 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel context during backoff wait (5s backoff, cancel at 100ms)
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	result := eng.QuerySync(ctx, "hello", nil)
+	if result.Error == nil {
+		t.Fatal("expected error from ctx cancellation, got nil")
+	}
+
+	// Should indicate cancellation (AbortError or context error)
+	var abortErr *AbortError
+	if !errors.As(result.Error, &abortErr) {
+		// Also accept raw context error
+		if !strings.Contains(result.Error.Error(), "context canceled") {
+			t.Errorf("expected AbortError or context cancellation, got: %v", result.Error)
+		}
+	}
+}
+
+// TestQuery_SubagentNoRetry verifies sub-agents skip retry and fail immediately.
+func TestQuery_SubagentNoRetry(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// Stream interrupted — would normally trigger retry
+	mp.addResponse(partialTextEvents("test", "partial"), nil)
+
+	parentTools := map[string]tool.Tool{}
+	parent := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: newEventCollector(),
+	})
+
+	// Create sub-engine (isSubagent = true)
+	sub := parent.NewSubEngine(SubEngineOptions{
+		AgentType: "Explore",
+		Tools:     parentTools,
+	})
+
+	tc := newEventCollector()
+	sub.dispatcher = tc
+
+	result := sub.QuerySync(context.Background(), "explore", nil)
+	if result.Error == nil {
+		t.Fatal("expected error for sub-agent stream failure, got nil")
+	}
+		if !strings.Contains(result.Error.Error(), "stream interrupted") {
+			t.Errorf("sub-agent error should mention stream, got: %v", result.Error)
+		}
+
+	// Sub-agent should NOT retry — no EventRetryAttempt
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 0 {
+		t.Errorf("sub-agent should not retry, got %d EventRetryAttempt", len(retryEvents))
+	}
+
+	// Should fail immediately — only 1 provider call
+	if mp.index != 1 {
+		t.Errorf("expected 1 provider call (no retry), got %d", mp.index)
+	}
+}
+
+// TestStreamErrorTypeDiscrimination verifies errors.As works for sentinel types.
+func TestStreamErrorTypeDiscrimination(t *testing.T) {
+	t.Parallel()
+
+	interrupted := &StreamInterruptedError{ContentBlocks: 3, Model: "claude-3"}
+	ended := &StreamEndedError{}
+
+	// errors.Is
+	if !errors.Is(interrupted, interrupted) {
+		t.Error("errors.Is(self) should be true for StreamInterruptedError")
+	}
+
+	// errors.As
+	var si *StreamInterruptedError
+	if !errors.As(interrupted, &si) {
+		t.Error("errors.As should match *StreamInterruptedError")
+	}
+	if si.ContentBlocks != 3 {
+		t.Errorf("ContentBlocks = %d, want 3", si.ContentBlocks)
+	}
+	if si.Model != "claude-3" {
+		t.Errorf("Model = %q, want %q", si.Model, "claude-3")
+	}
+
+	var se *StreamEndedError
+	if !errors.As(ended, &se) {
+		t.Error("errors.As should match *StreamEndedError")
+	}
+
+	// Cross-type: StreamInterruptedError should NOT match StreamEndedError
+	if _, ok := errors.AsType[*StreamEndedError](interrupted); ok {
+		t.Error("StreamInterruptedError should not match *StreamEndedError")
+	}
+
+	// isStreamError helper
+	if !isStreamError(interrupted) {
+		t.Error("isStreamError should return true for StreamInterruptedError")
+	}
+	if !isStreamError(ended) {
+		t.Error("isStreamError should return true for StreamEndedError")
+	}
+
+	// Wrapped error
+	wrapped := fmt.Errorf("wrapper: %w", interrupted)
+	if !isStreamError(wrapped) {
+		t.Error("isStreamError should return true for wrapped StreamInterruptedError")
+	}
+	var si2 *StreamInterruptedError
+	if !errors.As(wrapped, &si2) {
+		t.Error("errors.As should unwrap to *StreamInterruptedError")
+	}
+}
+
+// TestQuery_RetryBackoffSequence verifies that RetryAttemptEvent.RetryInMs values
+// grow exponentially across attempts and fall within theoretical bounds.
+func TestQuery_RetryBackoffSequence(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	// All attempts fail with partial stream
+	for range 6 { // 1 initial + 5 retries
+		mp.addResponse(partialTextEvents("test", "partial"), nil)
+	}
+
+	cfg := &llm.RetryConfig{
+		MaxRetries:  5,
+		BaseBackoff: 100 * time.Millisecond,
+		MaxBackoff:  5 * time.Second,
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+	eng.retryConfig = cfg
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error == nil {
+		t.Fatal("expected error after all retries exhausted, got nil")
+	}
+	if !strings.Contains(result.Error.Error(), "stream interrupted") {
+		t.Errorf("error should mention stream interrupted, got: %v", result.Error)
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 5 {
+		t.Fatalf("expected 5 EventRetryAttempt, got %d", len(retryEvents))
+	}
+
+	// Verify each retry event has increasing backoff within expected bounds.
+	// CalculateBackoff(n) = base * 2^n * jitter, where jitter ∈ [0.5, 1.0)
+	for i, evt := range retryEvents {
+		if evt.RetryAttempt == nil {
+			t.Fatalf("retry event %d: RetryAttempt is nil", i)
+		}
+
+		attempt := evt.RetryAttempt.Attempt
+		retryInMs := evt.RetryAttempt.RetryInMs
+
+		// attempt is 1-indexed in events, CalculateBackoff uses attempt-1
+		backoffAttempt := attempt - 1
+		// Theoretical range: base * 2^backoffAttempt * [0.5, 1.5) (±50% jitter)
+		expBase := float64(cfg.BaseBackoff.Milliseconds())
+		lowerBound := int64(expBase * math.Pow(2, float64(backoffAttempt)) * 0.5)
+		upperBound := int64(expBase * math.Pow(2, float64(backoffAttempt)) * 1.5)
+		// Cap at MaxBackoff
+		maxMs := cfg.MaxBackoff.Milliseconds()
+		if upperBound > maxMs {
+			upperBound = maxMs
+		}
+		if lowerBound > maxMs {
+			lowerBound = maxMs
+		}
+
+		if retryInMs < lowerBound || retryInMs > upperBound {
+			t.Errorf("retry %d (attempt=%d): RetryInMs=%d outside expected range [%d, %d]",
+				i, attempt, retryInMs, lowerBound, upperBound)
+		}
+	}
+
+}
+
+// TestQuery_MultiTurnRetryReset verifies that retry counters reset between turns.
+// Turn 1 retries and succeeds. Turn 2 also encounters a stream error and retries.
+// The retry attempt counter should start fresh on each turn (callLLMWithRetry is new per turn).
+func TestQuery_MultiTurnRetryReset(t *testing.T) {
+	mp := &testProvider{}
+
+	// Turn 1: partial → retry → success (triggers tool use)
+	// First call: partial stream → StreamInterruptedError
+	mp.addResponse(partialTextEvents("test", "partial"), nil)
+	// Retry: successful response with tool_use
+	mp.addResponse(toolUseEvents("test", "call_1", "bash", `{"command":"echo hi"}`), nil)
+	// Tool result → Turn 2
+	// Turn 2: partial → retry → success (text)
+	mp.addResponse(partialTextEvents("test", "partial2"), nil)
+	mp.addResponse(subTextEvents("test", "turn2 recovered!"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+	eng.retryConfig = &llm.RetryConfig{
+		MaxRetries:  3,
+		BaseBackoff: 5 * time.Millisecond,
+		MaxBackoff:  20 * time.Millisecond,
+	}
+
+	result := eng.QuerySync(context.Background(), "hello", nil)
+	if result.Error != nil {
+		t.Fatalf("expected success after multi-turn retry, got: %v", result.Error)
+	}
+
+	retryEvents := tc.FindEvents(types.EventRetryAttempt)
+	if len(retryEvents) != 2 {
+		t.Fatalf("expected 2 EventRetryAttempt (1 per turn), got %d", len(retryEvents))
+	}
+
+	// Both retry events should have Attempt=1 (fresh counter per turn)
+	if retryEvents[0].RetryAttempt.Attempt != 1 {
+		t.Errorf("turn 1 retry: Attempt=%d, want 1", retryEvents[0].RetryAttempt.Attempt)
+	}
+	if retryEvents[1].RetryAttempt.Attempt != 1 {
+		t.Errorf("turn 2 retry: Attempt=%d, want 1", retryEvents[1].RetryAttempt.Attempt)
+	}
+
+	// Verify final response is from turn 2
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleAssistant {
+		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
+	}
+	if !strings.Contains(lastMsg.Content[0].Text, "turn2 recovered!") {
+		t.Errorf("expected 'turn2 recovered!' in final message, got %q", lastMsg.Content[0].Text)
+	}
 }

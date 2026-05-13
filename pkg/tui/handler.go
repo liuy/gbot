@@ -287,6 +287,17 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		// Per-round end; TUI doesn't need to act on this currently.
 		return nil
 
+	case types.EventRetryAttempt:
+		if evt.RetryAttempt != nil {
+			return retryAttemptMsg{
+				Attempt:    evt.RetryAttempt.Attempt,
+				MaxRetries: evt.RetryAttempt.MaxRetries,
+				RetryInMs:  evt.RetryAttempt.RetryInMs,
+				Error:      evt.RetryAttempt.Error,
+				ErrorType:  string(evt.RetryAttempt.ErrorType),
+			}
+		}
+
 	case types.EventAsk:
 		// Dispatch by Kind: permission vs interactive input.
 		if evt.Ask != nil {
