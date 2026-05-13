@@ -1375,7 +1375,7 @@ func (a *App) renderTaskList() string {
 		switch t.Status {
 		case "in_progress":
 			icon = "[▶]"
-			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("111")) // soft blue
+			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // same blue as input prompt ❯
 		case "completed":
 			icon = "[✓]"
 			iconStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("114")) // emerald
