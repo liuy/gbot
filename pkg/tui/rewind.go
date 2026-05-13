@@ -48,9 +48,15 @@ func messagesAfterAreOnlySynthetic(msgs []types.Message, fromIndex int) bool {
 			continue
 		}
 
+		// Skip tool_result user messages (API-structured, not user-authored).
+		// Source: TS messagesAfterAreOnlySynthetic line 806 — isToolUseResultMessage.
+		if isToolUseResultMessage(msg) {
+			continue
+		}
+
 		switch msg.Role {
 		case types.RoleUser:
-			// User messages are only synthetic if they contain only tool_result blocks
+			// User messages with non-tool_result content are meaningful
 			if hasNonToolResultContent(msg) {
 				return false
 			}
@@ -71,17 +77,28 @@ func messagesAfterAreOnlySynthetic(msgs []types.Message, fromIndex int) bool {
 	return true
 }
 
-// isSyntheticMessage returns true if the message's first text block matches a known
-// synthetic string (interrupt, cancel, etc.). These are system-generated messages that
-// should not count as meaningful LLM output.
-// Source: TS utils/messages.ts:310-319 — isSyntheticMessage.
+// isSyntheticMessage returns true if the message's first content block is a text
+// block matching a known synthetic string (interrupt, cancel, etc.).
+// Source: TS utils/messages.ts:310-319 — checks content[0]?.type === 'text'.
 func isSyntheticMessage(msg types.Message) bool {
-	for _, block := range msg.Content {
-		if block.Type == types.ContentTypeText {
-			return syntheticTexts[block.Text]
-		}
+	if len(msg.Content) == 0 {
+		return false
 	}
-	return false
+	first := msg.Content[0]
+	if first.Type != types.ContentTypeText {
+		return false
+	}
+	return syntheticTexts[first.Text]
+}
+
+// isToolUseResultMessage returns true for user messages whose first content block
+// is a tool_result. These are API-structured messages, not user-authored text.
+// Source: TS utils/messages.ts:843-852 — isToolUseResultMessage.
+func isToolUseResultMessage(msg types.Message) bool {
+	if msg.Role != types.RoleUser || len(msg.Content) == 0 {
+		return false
+	}
+	return msg.Content[0].Type == types.ContentTypeToolResult
 }
 
 // hasNonToolResultContent returns true if a user message has content blocks
@@ -97,16 +114,17 @@ func hasNonToolResultContent(msg types.Message) bool {
 
 // isSelectableUserMessage returns true if the message is a user message
 // that is selectable for rewind — contains actual user text, skipping
-// tool_result-only, synthetic, compact summary, and task notification messages.
+// tool_result, synthetic, compact summary, and task notification messages.
 // Source: TS selectableUserMessagesFilter in MessageSelector.tsx:767.
 func isSelectableUserMessage(msg types.Message) bool {
 	if msg.Role != types.RoleUser {
 		return false
 	}
-	if isSyntheticMessage(msg) {
+	// Source: TS selectableUserMessagesFilter line 771 — content[0]?.type === 'tool_result'
+	if isToolUseResultMessage(msg) {
 		return false
 	}
-	if !hasNonToolResultContent(msg) {
+	if isSyntheticMessage(msg) {
 		return false
 	}
 	if msg.HasFlag(types.FlagCompactSummary) {

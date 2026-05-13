@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1124,5 +1125,191 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	}
 	if string(restored) != string(v2) {
 		t.Errorf("file not restored to v2: got %q, want %q", string(restored), string(v2))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain 12: /rewind after ESC abort during tool use rounds
+//
+// User scenario: execute a query, a few rounds of tool use happen, user presses
+// ESC before text response, normal interrupt (no autorewind), but /rewind doesn't
+// show the interrupted query. This test verifies the interrupted query IS visible.
+// ---------------------------------------------------------------------------
+func TestIntegration_Rewind_AbortDuringToolUse(t *testing.T) {
+	a, _, _, _ := setupRewindIntegration(t)
+
+	// Simulate a conversation with prior history:
+	// [0] user: "previous query"
+	// [1] assistant: "previous response"
+	prevMsgs := []types.Message{
+		{
+			ID:        "prev-user-1",
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock("previous query")},
+			Timestamp: testTime,
+		},
+		{
+			ID:        "prev-asst-1",
+			Role:      types.RoleAssistant,
+			Content:   []types.ContentBlock{types.NewTextBlock("previous response")},
+			Timestamp: testTime,
+		},
+	}
+
+	// Now the user submits a new query. Engine appends it immediately (queryLoop line 379).
+	// Then tool use rounds happen. User presses ESC during streaming.
+	//
+	// Post-abort engine state (simulating callLLM ctx.Done path, lines 1029-1057):
+	// [2] user: "read main.go"           ← the interrupted query
+	// [3] assistant: [tool_use Read]      ← round 1 tool call
+	// [4] user: [tool_result]             ← round 1 result
+	// [5] assistant: [tool_use Grep]      ← round 2 tool call
+	// [6] user: [tool_result + interrupt] ← round 2 result + appendInlineInterruptMessage
+	abortedMsgs := []types.Message{
+		{
+			ID:        "abort-user-1",
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock("read main.go")},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "abort-asst-1",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "tool-1", Name: "Read", Input: json.RawMessage(`{"file_path":"main.go"}`)},
+			},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "abort-user-2",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolResult, ToolUseID: "tool-1", Text: "file contents here"},
+			},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "abort-asst-2",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "tool-2", Name: "Grep", Input: json.RawMessage(`{"pattern":"func"}`)},
+			},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "abort-user-3",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolResult, ToolUseID: "tool-2", Text: "match1\nmatch2"},
+				types.NewTextBlock(types.InterruptMessage), // appended by appendInlineInterruptMessage
+			},
+			Timestamp: testTime,
+		},
+	}
+
+	allMsgs := append(prevMsgs, abortedMsgs...)
+	a.engine.SetMessages(allMsgs)
+
+	// Step 1: Verify auto-rewind does NOT fire (tool_use blocks exist)
+	if a.tryAutoRewind() {
+		t.Fatal("auto-rewind should NOT fire when tool_use blocks exist after user message")
+	}
+
+	// Step 2: Verify /rewind can see the interrupted query
+	msgs := a.engine.Messages()
+	var selectableIndices []int
+	var selectableTexts []string
+	for i, msg := range msgs {
+		if isSelectableUserMessage(msg) {
+			selectableIndices = append(selectableIndices, i)
+			selectableTexts = append(selectableTexts, firstTextBlockContent(msg))
+		}
+	}
+
+	// Should find both the previous query and the interrupted query
+	if len(selectableIndices) != 2 {
+		t.Fatalf("expected 2 selectable user messages, got %d: %v", len(selectableIndices), selectableTexts)
+	}
+	if selectableTexts[0] != "previous query" {
+		t.Errorf("first selectable = %q, want 'previous query'", selectableTexts[0])
+	}
+	if selectableTexts[1] != "read main.go" {
+		t.Errorf("second selectable = %q, want 'read main.go'", selectableTexts[1])
+	}
+
+	// Step 3: Verify the interrupted query is at the expected index
+	if selectableIndices[1] != 2 {
+		t.Errorf("interrupted query at index %d, want 2", selectableIndices[1])
+	}
+
+	// Step 4: Rewind to the interrupted query should work
+	result, err := a.engine.RewindTo(2)
+	if err != nil {
+		t.Fatalf("RewindTo(2) error: %v", err)
+	}
+	if result.MessageCount != 2 {
+		t.Errorf("after rewind, message count = %d, want 2", result.MessageCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain 13: isSyntheticMessage must NOT mark tool_use messages as synthetic
+//
+// Stage 18 abort (ESC after streaming, before tool execution): interrupt text
+// appended to assistant message with tool_use blocks. isSyntheticMessage must
+// not classify it as synthetic, preventing incorrect auto-rewind.
+// ---------------------------------------------------------------------------
+func TestIntegration_Rewind_Stage18AbortWithToolUse(t *testing.T) {
+	a, _, _, _ := setupRewindIntegration(t)
+
+	// Simulate Stage 18 abort state:
+	// ESC pressed after LLM streamed tool_use response, before tool execution.
+	// appendInlineInterruptMessage appended interrupt to the assistant message.
+	// appendSyntheticToolResultsLocked added synthetic tool_results.
+	//
+	// [0] user: "read main.go"
+	// [1] assistant: [tool_use Read, text "[Request interrupted by user]"]
+	// [2] user: [synthetic tool_result]
+	a.engine.SetMessages([]types.Message{
+		{
+			ID:        "user-1",
+			Role:      types.RoleUser,
+			Content:   []types.ContentBlock{types.NewTextBlock("read main.go")},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "asst-1",
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolUse, ID: "tool-1", Name: "Read", Input: json.RawMessage(`{"file_path":"main.go"}`)},
+				types.NewTextBlock(types.InterruptMessage),
+			},
+			Timestamp: testTime,
+		},
+		{
+			ID:   "user-2",
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeToolResult, ToolUseID: "tool-1", Text: "synthetic error"},
+			},
+			Timestamp: testTime,
+		},
+	})
+
+	// Auto-rewind should NOT fire — tool_use blocks exist (meaningful LLM output)
+	if a.tryAutoRewind() {
+		t.Fatal("auto-rewind should NOT fire when assistant message has tool_use blocks")
+	}
+
+	// /rewind should see the query
+	msgs := a.engine.Messages()
+	var found bool
+	for _, msg := range msgs {
+		if isSelectableUserMessage(msg) && firstTextBlockContent(msg) == "read main.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("/rewind should find 'read main.go' as selectable, but it was not found")
 	}
 }
