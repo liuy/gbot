@@ -130,7 +130,25 @@ func isSelectableUserMessage(msg types.Message) bool {
 	if msg.HasFlag(types.FlagCompactSummary) {
 		return false
 	}
+	// Source: TS selectableUserMessagesFilter line 777 — message.isMeta
+	if msg.HasFlag(types.FlagMeta) {
+		return false
+	}
+	// Source: TS selectableUserMessagesFilter line 780 — message.isCompactSummary || message.isVisibleInTranscriptOnly
+	// isVisibleInTranscriptOnly not implemented in gbot yet.
+
+	// Source: TS selectableUserMessagesFilter line 787-790 — filter out non-user-authored messages
 	text := firstTextBlockContent(msg)
+	nonUserTags := []string{
+		"<local-command-stdout>", "<local-command-stderr>",
+		"<bash-stdout>", "<bash-stderr>",
+		"<tick>", "<teammate-message>",
+	}
+	for _, tag := range nonUserTags {
+		if strings.Contains(text, tag) {
+			return false
+		}
+	}
 	return !strings.Contains(text, "<task-notification>")
 }
 

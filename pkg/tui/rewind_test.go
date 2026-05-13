@@ -198,6 +198,77 @@ func TestFirstTextBlockContent(t *testing.T) {
 	}
 }
 
+func TestIsSelectableUserMessage_FlagMeta(t *testing.T) {
+	// Source: TS selectableUserMessagesFilter line 777 — message.isMeta
+	// Skill messages are marked FlagMeta and should NOT appear in rewind list.
+	metaMsg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("<command-message>roast</command-message>"),
+		},
+		Flags: types.FlagMeta,
+	}
+	if isSelectableUserMessage(metaMsg) {
+		t.Error("expected FlagMeta message to be filtered out of rewind selection")
+	}
+
+	// Non-meta user message should still be selectable
+	normalMsg := types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("你好呀"),
+		},
+	}
+	if !isSelectableUserMessage(normalMsg) {
+		t.Error("expected normal user message to be selectable")
+	}
+}
+
+func TestIsSelectableUserMessage_NonUserTags(t *testing.T) {
+	// Source: TS selectableUserMessagesFilter line 787-790
+	// Messages containing terminal/command output tags should be filtered.
+	cases := []struct {
+		name    string
+		text    string
+		want    bool
+	}{
+		{"local-command-stdout", "<local-command-stdout>output</local-command-stdout>", false},
+		{"local-command-stderr", "<local-command-stderr>error</local-command-stderr>", false},
+		{"bash-stdout", "<bash-stdout>result</bash-stdout>", false},
+		{"bash-stderr", "<bash-stderr>err</bash-stderr>", false},
+		{"tick", "<tick>heartbeat</tick>", false},
+		{"teammate-message", "<teammate-message>hello</teammate-message>", false},
+		{"task-notification", "<task-notification>done</task-notification>", false},
+		{"normal text", "用户正常消息", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(tc.text)},
+			}
+			got := isSelectableUserMessage(msg)
+			if got != tc.want {
+				t.Errorf("isSelectableUserMessage(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLastSelectableUserMessageIndex_SkipsMetaMessages(t *testing.T) {
+	// Skill messages (FlagMeta) should not appear in rewind list.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("你好呀")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("<command-message>roast</command-message>")}, Flags: types.FlagMeta},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("/roast 找2个文件吐槽下")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("You are a ruthless senior engineer...")}, Flags: types.FlagMeta},
+	}
+	// Should select index 2 (the user's actual input), skipping meta messages
+	if got := lastSelectableUserMessageIndex(msgs); got != 2 {
+		t.Errorf("expected index 2, got %d", got)
+	}
+}
+
 func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{

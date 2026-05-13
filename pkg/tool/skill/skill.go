@@ -219,12 +219,14 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	var newMessages []types.Message
 
 	// 5a. Metadata message
+	// Source: SkillTool.ts:1104 — isMeta: true on all skill messages
 	metadata := formatCommandLoadingMetadata(cmd, args)
 	newMessages = append(newMessages, types.Message{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
 			{Type: "text", Text: metadata},
 		},
+		Flags: types.FlagMeta,
 	})
 
 	// 5b. Content message (skill body with substituted args)
@@ -233,6 +235,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 		Content: []types.ContentBlock{
 			{Type: "text", Text: content},
 		},
+		Flags: types.FlagMeta,
 	})
 
 	// 5c. Command permissions attachment
@@ -244,6 +247,7 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 			Content: []types.ContentBlock{
 				{Type: "text", Text: perms},
 			},
+			Flags: types.FlagMeta,
 		})
 	}
 
