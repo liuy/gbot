@@ -46,6 +46,7 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 		BaseProvider: BaseProvider{
 			httpClient:  &http.Client{Timeout: cfg.Timeout},
 			retryConfig: cfg.RetryConfig,
+			idleTimeout: DefaultSSETimeout,
 		},
 		apiKey:  cfg.APIKey,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
@@ -209,7 +210,11 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		done := make(chan struct{})
 		go func() {
 			defer close(sseCh)
-			p.ParseSSE(ctx, httpResp.Body, sseCh)
+			var body io.Reader = httpResp.Body
+			if p.idleTimeout > 0 {
+				body = &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+			}
+			p.ParseSSE(ctx, body, sseCh)
 			close(done)
 		}()
 

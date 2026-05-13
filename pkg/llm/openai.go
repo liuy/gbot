@@ -346,7 +346,11 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 	go func() {
 		defer close(eventCh)
 		defer httpResp.Body.Close()
-		p.parseOpenAISSE(ctx, req, httpResp.Body, eventCh)
+		var body io.Reader = httpResp.Body
+		if p.idleTimeout > 0 {
+			body = &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+		}
+		p.parseOpenAISSE(ctx, req, body, eventCh)
 	}()
 
 	return eventCh, nil
@@ -374,16 +378,9 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 	textContentIndex := 0
 	thinkingBlockOpen := false
 	thinkingContentIndex := 0
-	lastData := time.Now()
 
 	for scanner.Scan() {
 		line := scanner.Text()
-
-		// Idle timeout check (fires between lines when data trickles slowly)
-		if p.idleTimeout > 0 && !lastData.IsZero() && time.Since(lastData) > p.idleTimeout {
-			slog.Warn("openai sse: idle timeout exceeded", "timeout", p.idleTimeout)
-			return
-		}
 
 		// Empty line — skip
 		if line == "" {
@@ -422,8 +419,6 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 			send(ctx, eventCh, StreamEvent{Type: "message_stop"})
 			return
 		}
-
-		lastData = time.Now()
 
 		var chunk openaiStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -586,7 +581,12 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 		}
 	}
 
-	// Stream ended without [DONE] — close gracefully
+	// Stream ended without [DONE]
+	if err := scanner.Err(); err != nil {
+		slog.Warn("openai sse: scanner error", "error", err)
+		return
+	}
+	// Clean EOF without [DONE] — close gracefully.
 	if textBlockOpen {
 		send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
 	}
