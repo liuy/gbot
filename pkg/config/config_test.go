@@ -931,3 +931,62 @@ func TestSave_NoTmpFileLeft(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_APITimeoutEnv(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	gbotDir := filepath.Join(dir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte(`{"model":"pro"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	origEnv := os.Getenv("API_TIMEOUT_MS")
+	_ = os.Setenv("API_TIMEOUT_MS", "5000")
+	defer func() { _ = os.Setenv("API_TIMEOUT_MS", origEnv) }()
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.APITimeoutMS != 5000 {
+		t.Errorf("APITimeoutMS = %d, want 5000", cfg.APITimeoutMS)
+	}
+}
+
+func TestSave_ConfigDirError(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", "")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	cfg := &config.Config{Model: "pro"}
+	err := cfg.Save()
+	if err == nil {
+		t.Fatal("Save should fail when ConfigDir errors")
+	}
+}
+
+func TestSave_WriteTempError(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.Setenv("HOME", dir)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	gbotDir := filepath.Join(dir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Create settings.json.tmp as a directory to make WriteFile fail
+	if err := os.MkdirAll(filepath.Join(gbotDir, "settings.json.tmp"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{Model: "pro"}
+	err := cfg.Save()
+	if err == nil {
+		t.Fatal("Save should fail when temp file write fails")
+	}
+}

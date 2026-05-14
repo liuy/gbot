@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -6216,5 +6217,529 @@ func TestQuery_MultiTurnRetryReset(t *testing.T) {
 	}
 	if !strings.Contains(lastMsg.Content[0].Text, "turn2 recovered!") {
 		t.Errorf("expected 'turn2 recovered!' in final message, got %q", lastMsg.Content[0].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage gap fill: SetOnClose, Dispatcher, SetFileHistoryWriter, Close, etc.
+// ---------------------------------------------------------------------------
+
+func TestSetOnClose(t *testing.T) {
+	eng := &Engine{sessionID: "test-session"}
+	called := false
+	eng.SetOnClose(func(sessionID string) {
+		called = true
+		if sessionID != "test-session" {
+			t.Errorf("onCloseFn sessionID = %q, want %q", sessionID, "test-session")
+		}
+	})
+	eng.Close()
+	if !called {
+		t.Error("SetOnClose callback was not called during Close()")
+	}
+}
+
+func TestDispatcher(t *testing.T) {
+	eng := &Engine{}
+	if eng.Dispatcher() != nil {
+		t.Error("Dispatcher() should be nil on new engine")
+	}
+	d := &eventCollector{}
+	eng.SetDispatcher(d)
+	if eng.Dispatcher() != d {
+		t.Error("Dispatcher() should return the set dispatcher")
+	}
+}
+
+func TestSetFileHistoryWriter(t *testing.T) {
+	var called bool
+	var state filehistory.FileHistoryState
+	eng := &Engine{}
+	eng.SetFileHistoryWriter(func(s filehistory.FileHistoryState) {
+		called = true
+		state = s
+	})
+
+	eng.mu.Lock()
+	w := eng.fileHistoryWriter
+	eng.mu.Unlock()
+	if w == nil {
+		t.Fatal("fileHistoryWriter should not be nil after SetFileHistoryWriter")
+	}
+
+	tracked := map[string]bool{"/tmp/test.go": true}
+	w(filehistory.FileHistoryState{TrackedFiles: tracked})
+	if !called {
+		t.Error("writer callback was not called")
+	}
+	if !state.TrackedFiles["/tmp/test.go"] {
+		t.Error("state mismatch: /tmp/test.go should be tracked")
+	}
+}
+
+func TestClose_WithMCPRegistry(t *testing.T) {
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	eng := &Engine{
+		sessionID:   "s1",
+		mcpRegistry: reg,
+	}
+	eng.Close()
+}
+
+func TestRetryErrorType_NonStreamError(t *testing.T) {
+	got := retryErrorType(fmt.Errorf("some random error"))
+	if got != "" {
+		t.Errorf("retryErrorType(random error) = %q, want empty", got)
+	}
+}
+
+func TestRetryErrorType_StreamInterrupted(t *testing.T) {
+	got := retryErrorType(&StreamInterruptedError{ContentBlocks: 3, Model: "claude"})
+	if got != types.RetryErrorStreamInterrupted {
+		t.Errorf("retryErrorType(StreamInterruptedError) = %q, want %q", got, types.RetryErrorStreamInterrupted)
+	}
+}
+
+func TestRetryErrorType_StreamEnded(t *testing.T) {
+	got := retryErrorType(&StreamEndedError{})
+	if got != types.RetryErrorStreamEnded {
+		t.Errorf("retryErrorType(StreamEndedError) = %q, want %q", got, types.RetryErrorStreamEnded)
+	}
+}
+
+type disabledTool struct {
+	minimalTool
+}
+
+func (d *disabledTool) Name() string    { return "DisabledTool" }
+func (d *disabledTool) IsEnabled() bool { return false }
+
+func TestBuildToolDefs_SkipsDisabledTools(t *testing.T) {
+	tools := []tool.Tool{
+		&minimalTool{},
+		&disabledTool{},
+	}
+	defs := buildToolDefs(tools)
+	if len(defs) != 1 {
+		t.Fatalf("buildToolDefs returned %d defs, want 1 (disabled tool skipped)", len(defs))
+	}
+	if defs[0].Name != "test" {
+		t.Errorf("def name = %q, want %q", defs[0].Name, "test")
+	}
+}
+
+func TestQuerySource_AutoDream(t *testing.T) {
+	eng := &Engine{isSubagent: true, agentType: "auto_dream"}
+	got := eng.querySource()
+	if got != QuerySourceAutoDream {
+		t.Errorf("querySource(auto_dream) = %q, want %q", got, QuerySourceAutoDream)
+	}
+}
+
+func TestQuerySource_BuiltinAgent(t *testing.T) {
+	eng := &Engine{isSubagent: true, agentType: "General"}
+	got := eng.querySource()
+	if !strings.HasPrefix(got, "agent:builtin:") {
+		t.Errorf("querySource(builtin agent) = %q, want prefix 'agent:builtin:'", got)
+	}
+	if !strings.Contains(got, "General") {
+		t.Errorf("querySource(General) should contain 'General', got %q", got)
+	}
+}
+
+func TestQuerySource_CustomAgent(t *testing.T) {
+	eng := &Engine{isSubagent: true, agentType: "my-custom-agent"}
+	got := eng.querySource()
+	if got != QuerySourceAgentCustom {
+		t.Errorf("querySource(custom agent) = %q, want %q", got, QuerySourceAgentCustom)
+	}
+}
+
+func TestFirePostTurnHooks_PanicRecovery(t *testing.T) {
+	hookCalled := false
+	eng := &Engine{
+		logger:            slog.Default(),
+		autoCompactConfig: AutoCompactConfig{ContextWindow: 200000},
+		postTurnHooks: []PostTurnHook{
+			func(ctx context.Context, messages []types.Message, currentTokens int, querySource string) {
+				panic("test hook panic")
+			},
+			func(ctx context.Context, messages []types.Message, currentTokens int, querySource string) {
+				hookCalled = true
+			},
+		},
+	}
+	eng.firePostTurnHooks(context.Background())
+	if !hookCalled {
+		t.Error("second hook should have been called after first hook panicked")
+	}
+}
+
+func TestPendingMCPServerNames_WithRegistry(t *testing.T) {
+	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
+	eng := &Engine{mcpRegistry: reg}
+	names := eng.pendingMCPServerNames()
+	if names == nil {
+		return
+	}
+	if len(names) != 0 {
+		t.Errorf("pendingMCPServerNames() = %v, want empty", names)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Engine.ExecuteTool (tool_exec.go) — permission + execution paths
+// ---------------------------------------------------------------------------
+
+// channelDispatcher sends events to a channel for test observability.
+type channelDispatcher struct{ ch chan types.QueryEvent }
+
+func (d *channelDispatcher) Dispatch(evt types.QueryEvent) { d.ch <- evt }
+
+func TestEngineExecuteTool_ToolNotFound(t *testing.T) {
+	eng := &Engine{logger: slog.Default()}
+	_, err := eng.ExecuteTool(context.Background(), "NonExistent", json.RawMessage(`{}`), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nonexistent tool")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestEngineExecuteTool_DenyPermission(t *testing.T) {
+	eng := &Engine{
+		logger: slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "test"},
+			Action: permission.ActionDeny,
+			Source: "user",
+		}}),
+	}
+	eng.tools = map[string]tool.Tool{"test": &minimalTool{}}
+
+	_, err := eng.ExecuteTool(context.Background(), "test", json.RawMessage(`{}`), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for denied tool")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("error = %q, want 'denied'", err.Error())
+	}
+}
+
+func TestEngineExecuteTool_ContentRuleDeny(t *testing.T) {
+	eng := &Engine{
+		logger: slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "Bash", RuleContent: new("rm -rf *")},
+			Action: permission.ActionDeny,
+			Source: "user",
+		}}),
+	}
+	eng.tools = map[string]tool.Tool{"Bash": &namedTool{name: "Bash"}}
+
+	_, err := eng.ExecuteTool(context.Background(), "Bash", json.RawMessage(`{"command":"rm -rf /important"}`), nil, nil)
+	if err == nil {
+		t.Fatal("expected error for content rule deny")
+	}
+	if !strings.Contains(err.Error(), "denied by content rule") {
+		t.Errorf("error = %q, want 'denied by content rule'", err.Error())
+	}
+}
+
+func TestEngineExecuteTool_AllowPermission(t *testing.T) {
+	eng := &Engine{
+		logger:            slog.Default(),
+		permissionChecker: permission.NewChecker(nil),
+	}
+	eng.tools = map[string]tool.Tool{"MyTool": &namedTool{name: "MyTool"}}
+
+	result, err := eng.ExecuteTool(context.Background(), "MyTool", json.RawMessage(`{}`), nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %q, want 'ok'", result)
+	}
+}
+
+func TestEngineExecuteTool_NilResult(t *testing.T) {
+	eng := &Engine{
+		logger:            slog.Default(),
+		permissionChecker: permission.NewChecker(nil),
+	}
+	eng.tools = map[string]tool.Tool{"test": &minimalTool{}}
+
+	result, err := eng.ExecuteTool(context.Background(), "test", json.RawMessage(`{}`), nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "" {
+		t.Errorf("nil result should give empty string, got %q", result)
+	}
+}
+
+func TestEngineExecuteTool_ToolError(t *testing.T) {
+	eng := &Engine{
+		logger:            slog.Default(),
+		permissionChecker: permission.NewChecker(nil),
+	}
+	eng.tools = map[string]tool.Tool{"errTool": &errorTool{name: "errTool"}}
+
+	_, err := eng.ExecuteTool(context.Background(), "errTool", json.RawMessage(`{}`), nil, nil)
+	if err == nil {
+		t.Fatal("expected error from errorTool")
+	}
+	if !strings.Contains(err.Error(), "tool error") {
+		t.Errorf("error = %q, want 'tool error'", err.Error())
+	}
+}
+
+func TestEngineExecuteTool_AskPermission_UserAllows(t *testing.T) {
+	ch := make(chan types.QueryEvent, 1)
+	eng := &Engine{
+		logger:     slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "AskTool"},
+			Action: permission.ActionAsk,
+			Source: "user",
+		}}),
+		dispatcher: &channelDispatcher{ch: ch},
+	}
+	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
+
+	resultCh := make(chan string)
+	errCh := make(chan error)
+	go func() {
+		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		if e != nil {
+			errCh <- e
+		} else {
+			resultCh <- r
+		}
+	}()
+
+	select {
+	case evt := <-ch:
+		if evt.Type != types.EventAsk {
+			t.Fatalf("expected EventAsk, got %v", evt.Type)
+		}
+		evt.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllow}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for ask event")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result != "ok" {
+			t.Errorf("result = %q, want 'ok'", result)
+		}
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestEngineExecuteTool_AskPermission_UserDenies(t *testing.T) {
+	ch := make(chan types.QueryEvent, 1)
+	eng := &Engine{
+		logger:     slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "AskTool"},
+			Action: permission.ActionAsk,
+			Source: "user",
+		}}),
+		dispatcher: &channelDispatcher{ch: ch},
+	}
+	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		errCh <- e
+	}()
+
+	select {
+	case evt := <-ch:
+		evt.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	select {
+	case err := <-errCh:
+		if !strings.Contains(err.Error(), "permission denied by user") {
+			t.Errorf("error = %q, want 'permission denied by user'", err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestEngineExecuteTool_AskPermission_AlwaysCache(t *testing.T) {
+	ch := make(chan types.QueryEvent, 1)
+	eng := &Engine{
+		logger:     slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "AskTool"},
+			Action: permission.ActionAsk,
+			Source: "user",
+		}}),
+		dispatcher: &channelDispatcher{ch: ch},
+	}
+	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
+
+	sessionAllowed := map[string]bool{}
+	resultCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, e := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), sessionAllowed, &sync.Mutex{})
+		if e != nil {
+			errCh <- e
+		} else {
+			resultCh <- r
+		}
+	}()
+
+	select {
+	case evt := <-ch:
+		evt.Ask.ResponseCh <- types.AskResponse{Decision: types.DecisionAllowAlways}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result != "ok" {
+			t.Errorf("result = %q, want 'ok'", result)
+		}
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	if !sessionAllowed["AskTool"] {
+		t.Error("DecisionAllowAlways should cache in sessionAllowed")
+	}
+}
+
+func TestEngineExecuteTool_CachedAllow(t *testing.T) {
+	eng := &Engine{
+		logger:     slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "AskTool"},
+			Action: permission.ActionAsk,
+			Source: "user",
+		}}),
+		dispatcher: &eventCollector{},
+	}
+	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
+
+	result, err := eng.ExecuteTool(context.Background(), "AskTool", json.RawMessage(`{}`), map[string]bool{"AskTool": true}, &sync.Mutex{})
+	if err != nil {
+		t.Fatalf("cached allow should succeed: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %q, want 'ok'", result)
+	}
+}
+
+func TestEngineExecuteTool_CtxCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	eng := &Engine{
+		logger:     slog.Default(),
+		permissionChecker: permission.NewChecker([]permission.Rule{{
+			Value:  permission.RuleValue{ToolName: "AskTool"},
+			Action: permission.ActionAsk,
+			Source: "user",
+		}}),
+		dispatcher: &eventCollector{},
+	}
+	eng.tools = map[string]tool.Tool{"AskTool": &namedTool{name: "AskTool"}}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, e := eng.ExecuteTool(ctx, "AskTool", json.RawMessage(`{}`), map[string]bool{}, &sync.Mutex{})
+		errCh <- e
+	}()
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !strings.Contains(err.Error(), "cancelled") {
+			t.Errorf("error = %q, want 'cancelled'", err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+// namedTool is a configurable-name tool that returns {Data: "ok"}, rendered as "ok".
+type namedTool struct{ name string }
+
+func (d *namedTool) Name() string                                { return d.name }
+func (d *namedTool) Aliases() []string                           { return nil }
+func (d *namedTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (d *namedTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
+func (d *namedTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Data: "ok"}, nil
+}
+func (d *namedTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (d *namedTool) IsReadOnly(json.RawMessage) bool        { return false }
+func (d *namedTool) IsDestructive(json.RawMessage) bool     { return true }
+func (d *namedTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (d *namedTool) IsEnabled() bool                        { return true }
+func (d *namedTool) InterruptBehavior() tool.InterruptBehavior {
+	return tool.InterruptCancel
+}
+func (d *namedTool) Prompt() string          { return "" }
+func (d *namedTool) RenderResult(any) string { return "ok" }
+func (d *namedTool) MaxResultSize() int      { return 50000 }
+
+// ---------------------------------------------------------------------------
+// isMemoryPathWrite + extractFilePathFromInput
+// ---------------------------------------------------------------------------
+
+func TestIsMemoryPathWrite_NotWriteTool(t *testing.T) {
+	if isMemoryPathWrite("Read", json.RawMessage(`{"file_path":"/tmp/test"}`)) {
+		t.Error("Read tool should never be a memory write")
+	}
+}
+
+func TestIsMemoryPathWrite_EmptyFilePath(t *testing.T) {
+	if isMemoryPathWrite("Write", json.RawMessage(`{}`)) {
+		t.Error("empty file_path should not be memory write")
+	}
+}
+
+func TestIsMemoryPathWrite_InvalidJSON(t *testing.T) {
+	if isMemoryPathWrite("Write", json.RawMessage(`{invalid`)) {
+		t.Error("invalid JSON should not be memory write")
+	}
+}
+
+func TestExtractFilePathFromInput_Valid(t *testing.T) {
+	got := extractFilePathFromInput(json.RawMessage(`{"file_path":"/tmp/test.go"}`))
+	if got != "/tmp/test.go" {
+		t.Errorf("got %q, want /tmp/test.go", got)
+	}
+}
+
+func TestExtractFilePathFromInput_Empty(t *testing.T) {
+	got := extractFilePathFromInput(json.RawMessage(`{}`))
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractFilePathFromInput_InvalidJSON(t *testing.T) {
+	got := extractFilePathFromInput(json.RawMessage(`{invalid`))
+	if got != "" {
+		t.Errorf("got %q, want empty for invalid JSON", got)
 	}
 }

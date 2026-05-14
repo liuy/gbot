@@ -1706,3 +1706,125 @@ func TestDispatch_PluginRoot_InjectsExtraEnv(t *testing.T) {
 		t.Errorf("extraEnv = %v, want to contain GBOT_PLUGIN_ROOT=/home/user/.gbot/plugins/my-plugin", gotEnv)
 	}
 }
+
+func TestSubagentStart(t *testing.T) {
+	rec := &HookRecorder{
+		results: []HookResult{{Outcome: HookOutcomeSuccess, HookName: "subagent-start"}},
+	}
+	config := HooksConfig{
+		"SubagentStart": []HookMatcher{
+			{Matcher: "", Hooks: []HookConfig{
+				{Type: HookTypeCommand, Command: "subagent-start"},
+			}},
+		},
+	}
+	h := NewHooks(config, rec)
+
+	results := h.SubagentStart(context.Background(), &HookInput{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Outcome != HookOutcomeSuccess {
+		t.Errorf("outcome = %v, want success", results[0].Outcome)
+	}
+}
+
+func TestSubagentStart_NoHooks(t *testing.T) {
+	h := NewHooks(nil, &HookRecorder{})
+	results := h.SubagentStart(context.Background(), &HookInput{})
+	if len(results) != 0 {
+		t.Errorf("expected 0 results with no hooks, got %d", len(results))
+	}
+}
+
+func TestPermissionRequest(t *testing.T) {
+	rec := &HookRecorder{
+		results: []HookResult{{Outcome: HookOutcomeSuccess, HookName: "permission-request"}},
+	}
+	config := HooksConfig{
+		"PermissionRequest": []HookMatcher{
+			{Matcher: "", Hooks: []HookConfig{
+				{Type: HookTypeCommand, Command: "permission-request"},
+			}},
+		},
+	}
+	h := NewHooks(config, rec)
+
+	results := h.PermissionRequest(context.Background(), &HookInput{})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Outcome != HookOutcomeSuccess {
+		t.Errorf("outcome = %v, want success", results[0].Outcome)
+	}
+}
+
+func TestPermissionRequest_NoHooks(t *testing.T) {
+	h := NewHooks(nil, &HookRecorder{})
+	results := h.PermissionRequest(context.Background(), &HookInput{})
+	if len(results) != 0 {
+		t.Errorf("expected 0 results with no hooks, got %d", len(results))
+	}
+}
+
+func TestDispatch_NilExecutor(t *testing.T) {
+	// Command hook with nil executor → exec == nil → continue
+	config := HooksConfig{
+		"PreToolUse": []HookMatcher{
+			{Matcher: "Bash", Hooks: []HookConfig{
+				{Type: HookTypeCommand, Command: "echo ok"},
+			}},
+		},
+	}
+	h := NewHooks(config, nil) // nil executor
+	decision, results := h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
+	if decision != HookDecisionPassthrough {
+		t.Errorf("decision = %v, want Passthrough with nil executor", decision)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results with nil executor, got %d", len(results))
+	}
+}
+
+func TestDispatch_UnknownHookType(t *testing.T) {
+	// HookConfig with unknown type → default case → continue
+	config := HooksConfig{
+		"PreToolUse": []HookMatcher{
+			{Matcher: "Bash", Hooks: []HookConfig{
+				{Type: HookType("unknown_type"), Command: "echo ok"},
+			}},
+		},
+	}
+	rec := &HookRecorder{}
+	h := NewHooks(config, rec)
+	decision, results := h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
+	if decision != HookDecisionPassthrough {
+		t.Errorf("decision = %v, want Passthrough for unknown hook type", decision)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for unknown type, got %d", len(results))
+	}
+}
+
+func TestDispatch_AsyncHookWithPluginRoot(t *testing.T) {
+	rec := &HookRecorder{
+		results: []HookResult{{Outcome: HookOutcomeSuccess, HookName: "echo ok"}},
+	}
+	config := HooksConfig{
+		"PreToolUse": []HookMatcher{
+			{
+				Matcher:     "Bash",
+				PluginRoot:  "/plugin/root",
+				Hooks: []HookConfig{
+					{Type: HookTypeCommand, Command: "echo ok", Async: true},
+				},
+			},
+		},
+	}
+	h := NewHooks(config, rec)
+	decision, _ := h.PreToolUse(context.Background(), &HookInput{ToolName: "Bash"})
+	// Async hooks don't block
+	if decision != HookDecisionPassthrough {
+		t.Errorf("decision = %v, want Passthrough for async hook", decision)
+	}
+}

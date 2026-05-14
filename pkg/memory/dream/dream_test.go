@@ -463,8 +463,9 @@ func TestShouldDream_LockAcquireError(t *testing.T) {
 	tmpDir := t.TempDir()
 	lockPath := filepath.Join(tmpDir, lockFileName)
 
-	// Create stale lock file (passes time gate)
-	oldTime := time.Now().Add(-2 * time.Hour) // REAL-TIME: set stale lock age
+	// Create lock file old enough to pass the 24-hour time gate (Gate 2)
+	// and stale enough for TryAcquire to reclaim (>1 hour)
+	oldTime := time.Now().Add(-25 * time.Hour) // REAL-TIME: must exceed MinHours
 	if err := os.WriteFile(lockPath, []byte("99999"), 0o644); err != nil {
 		t.Fatal(err)
 	}

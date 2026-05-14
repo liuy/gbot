@@ -384,3 +384,311 @@ func TestBuild_WithTypedMemory(t *testing.T) {
 		t.Error("built prompt missing 'What NOT to save' section")
 	}
 }
+
+func TestLoadMemoryFiles_Disabled(t *testing.T) {
+	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
+	files := context.LoadMemoryFiles(t.TempDir())
+	if files != nil {
+		t.Errorf("expected nil when disabled, got %d files", len(files))
+	}
+}
+
+// --- loadFromIndex path (MEMORY.md index) ---
+
+func TestLoadMemoryFiles_WithIndex(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create MEMORY.md index with two entries
+	indexContent := "- [User Profile](user_profile.md) — user info\n- [Feedback](feedback.md) — guidelines\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(indexContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "user_profile.md"), []byte("Always use Go"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "feedback.md"), []byte("No tabs"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files via index, got %d", len(files))
+	}
+
+	var foundUser, foundFeedback bool
+	for _, f := range files {
+		if strings.Contains(f.Path, "user_profile.md") {
+			foundUser = true
+			if f.Content != "Always use Go" {
+				t.Errorf("user_profile content = %q, want 'Always use Go'", f.Content)
+			}
+		}
+		if strings.Contains(f.Path, "feedback.md") {
+			foundFeedback = true
+			if f.Content != "No tabs" {
+				t.Errorf("feedback content = %q, want 'No tabs'", f.Content)
+			}
+		}
+	}
+	if !foundUser {
+		t.Error("user_profile.md not loaded via index")
+	}
+	if !foundFeedback {
+		t.Error("feedback.md not loaded via index")
+	}
+}
+
+func TestLoadMemoryFiles_IndexSkipsMissingFiles(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Index references two files, but only one exists
+	indexContent := "- [Exists](exists.md) — present\n- [Missing](missing.md) — gone\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(indexContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "exists.md"), []byte("present content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file (missing skipped), got %d", len(files))
+	}
+	if files[0].Content != "present content" {
+		t.Errorf("content = %q, want 'present content'", files[0].Content)
+	}
+}
+
+func TestLoadMemoryFiles_IndexSkipsEmptyFiles(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Index references one empty file
+	indexContent := "- [Empty](empty.md) — blank\n"
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte(indexContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "empty.md"), []byte("   \n  \n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 0 {
+		t.Fatalf("expected 0 files (empty content skipped), got %d", len(files))
+	}
+}
+
+func TestLoadMemoryFiles_IndexFallbackToScan(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// MEMORY.md exists but has no valid index entries
+	if err := os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("# Memory Index\nNo entries here.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Regular .md file should be picked up by scan fallback
+	if err := os.WriteFile(filepath.Join(memDir, "notes.md"), []byte("useful note"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file from scan fallback, got %d", len(files))
+	}
+	if files[0].Content != "useful note" {
+		t.Errorf("content = %q, want 'useful note'", files[0].Content)
+	}
+	// Verify MEMORY.md itself is NOT in the results (scan skips MEMORY.md)
+	for _, f := range files {
+		if strings.Contains(f.Path, "MEMORY.md") {
+			t.Error("MEMORY.md should be skipped in scan fallback")
+		}
+	}
+}
+
+// --- migrateLegacyMemory edge cases ---
+
+func TestMigrateLegacyMemory_HomeDirPath(t *testing.T) {
+	setTempHome(t)
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", homeDir)
+
+	// Create legacy memory in HOME dir
+	homeLegacy := filepath.Join(homeDir, ".gbot", "memory")
+	if err := os.MkdirAll(homeLegacy, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeLegacy, "global.md"), []byte("global preference"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// workingDir has NO legacy dir — only HOME has it
+	tmpDir := t.TempDir()
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file migrated from HOME, got %d", len(files))
+	}
+	if !strings.Contains(files[0].Content, "global preference") {
+		t.Errorf("expected 'global preference' in content, got %q", files[0].Content)
+	}
+	if !strings.HasPrefix(files[0].Content, "---\n") {
+		t.Error("expected frontmatter from migration")
+	}
+}
+
+func TestMigrateLegacyMemory_SkipsNonMarkdown(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "data.json"), []byte(`{"key":"val"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "notes.txt"), []byte("text file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Directory named like a file — should be skipped by IsDir check
+	if err := os.MkdirAll(filepath.Join(legacyDir, "subdir.md"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 0 {
+		t.Errorf("expected 0 files (non-md and dirs skipped), got %d", len(files))
+	}
+}
+
+func TestMigrateLegacyMemory_SkipsEmptyFiles(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "empty.md"), []byte("   \n  "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 0 {
+		t.Errorf("expected 0 files (empty md skipped), got %d", len(files))
+	}
+}
+
+func TestMigrateLegacyMemory_PreservesExistingFrontmatter(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// File already has frontmatter
+	existing := "---\nname: test\n---\noriginal body"
+	if err := os.WriteFile(filepath.Join(legacyDir, "prefixed.md"), []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	// Should NOT be double-wrapped — original frontmatter preserved
+	if files[0].Content != existing {
+		t.Errorf("content = %q, want %q", files[0].Content, existing)
+	}
+}
+
+func TestMigrateLegacyMemory_WriteFailureGraceful(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create legacy file
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "fail.md"), []byte("should not appear"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make new dir read-only so WriteFile fails
+	if err := os.Chmod(memDir, 0555); err != nil {
+		t.Skipf("cannot chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(memDir, 0755) }()
+
+	files := context.LoadMemoryFiles(tmpDir)
+	// Migration failed, nothing to scan
+	if len(files) != 0 {
+		t.Errorf("expected 0 files (write failed gracefully), got %d", len(files))
+	}
+}
+
+func TestMigrateLegacyMemory_ReadFailSkipped(t *testing.T) {
+	setTempHome(t)
+	tmpDir := t.TempDir()
+	legacyDir := filepath.Join(tmpDir, ".gbot", "memory")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(legacyDir, "unreadable.md")
+	if err := os.WriteFile(target, []byte("hidden"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0000); err != nil {
+		t.Skipf("cannot chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(target, 0644) }()
+
+	files := context.LoadMemoryFiles(tmpDir)
+	if len(files) != 0 {
+		t.Errorf("expected 0 files (unreadable legacy skipped), got %d", len(files))
+	}
+}
+
+func TestLoadMemoryFiles_ScanReadDirFails(t *testing.T) {
+	setTempHome(t)
+	homeDir := os.Getenv("HOME")
+
+	// Create ~/.gbot read-only so EnsureMemoryDir fails to create subdirs
+	gbotDir := filepath.Join(homeDir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(gbotDir, 0555); err != nil {
+		t.Skipf("cannot chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(gbotDir, 0755) }()
+
+	files := context.LoadMemoryFiles(t.TempDir())
+	if len(files) != 0 {
+		t.Errorf("expected 0 files when memory dir inaccessible, got %d", len(files))
+	}
+}

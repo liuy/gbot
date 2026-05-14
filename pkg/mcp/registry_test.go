@@ -2332,3 +2332,349 @@ func TestRegistry_SetToolsForTest(t *testing.T) {
 		t.Errorf("got[0].Name = %q, want %q", got[0].Name, "tool1")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PendingServerNames
+// ---------------------------------------------------------------------------
+
+func TestRegistry_PendingServerNames_Empty(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	names := r.PendingServerNames()
+	if len(names) != 0 {
+		t.Errorf("expected empty, got %v", names)
+	}
+}
+
+func TestRegistry_PendingServerNames_WithPending(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	cfg := ScopedMcpServerConfig{
+		Config: &SSEConfig{URL: "http://example.com"},
+		Scope:  ScopeUser,
+	}
+
+	r.mu.Lock()
+	r.configs["pending-srv"] = cfg
+	r.connections["pending-srv"] = &PendingServer{Name: "pending-srv", Config: cfg}
+	// Also add a connected one to verify it's excluded
+	r.configs["connected-srv"] = ScopedMcpServerConfig{Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser}
+	r.connections["connected-srv"] = &ConnectedServer{Name: "connected-srv"}
+	r.mu.Unlock()
+
+	names := r.PendingServerNames()
+	if len(names) != 1 {
+		t.Fatalf("expected 1 pending, got %d: %v", len(names), names)
+	}
+	if names[0] != "pending-srv" {
+		t.Errorf("expected pending-srv, got %q", names[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Notification handlers — handleToolNotification, handleResourceNotification,
+// handleCommandNotification
+// ---------------------------------------------------------------------------
+
+func TestRegistry_HandleToolNotification_NoConnection(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+	// Should not panic with no connection
+	r.handleToolNotification("nonexistent")
+}
+
+func TestRegistry_HandleToolNotification_NotConnectedServer(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.connections["srv"] = &FailedServer{Name: "srv", Config: cfg}
+	r.mu.Unlock()
+
+	// FailedServer is not *ConnectedServer — should return early
+	r.handleToolNotification("srv")
+}
+
+func TestRegistry_HandleResourceNotification_NoConnection(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+	r.handleResourceNotification("nonexistent")
+}
+
+func TestRegistry_HandleResourceNotification_NotConnectedServer(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.connections["srv"] = &PendingServer{Name: "srv", Config: cfg}
+	r.mu.Unlock()
+
+	r.handleResourceNotification("srv")
+}
+
+func TestRegistry_HandleCommandNotification_NoConnection(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+	r.handleCommandNotification("nonexistent")
+}
+
+func TestRegistry_HandleCommandNotification_NotConnectedServer(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.connections["srv"] = &DisabledServer{Name: "srv", Config: cfg}
+	r.mu.Unlock()
+
+	r.handleCommandNotification("srv")
+}
+
+func TestRegistry_HandleToolNotification_WithRealServer(t *testing.T) {
+	toolsCh := make(chan struct{}, 1)
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{
+		OnToolsChanged: func(serverName string, tools []DiscoveredTool) {
+			select {
+			case toolsCh <- struct{}{}:
+			default:
+			}
+		},
+	})
+	defer r.Close()
+
+	srv, t2 := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "read_file", Description: "Read a file"}, noopToolHandler)
+	p.mu.Lock()
+	p.transports["srv"] = t2
+	p.mu.Unlock()
+
+	cfg := ScopedMcpServerConfig{Config: &SSEConfig{URL: "http://localhost"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.configs["srv"] = cfg
+	r.mu.Unlock()
+
+	// First, connect to populate the connection
+	conn, err := r.Reconnect(context.Background(), "srv")
+	if err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if conn.ConnType() != "connected" {
+		t.Fatalf("expected connected, got %s", conn.ConnType())
+	}
+
+	// Now trigger the notification handler directly
+	r.handleToolNotification("srv")
+
+	select {
+	case <-toolsCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnToolsChanged not called within 2s")
+	}
+}
+
+func TestRegistry_HandleResourceNotification_WithRealServer(t *testing.T) {
+	resCh := make(chan struct{}, 1)
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{
+		OnResourcesChanged: func(serverName string, resources []ServerResource) {
+			select {
+			case resCh <- struct{}{}:
+			default:
+			}
+		},
+	})
+	defer r.Close()
+
+	srv, t2 := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "read", Description: "read"}, noopToolHandler)
+	p.mu.Lock()
+	p.transports["srv"] = t2
+	p.mu.Unlock()
+
+	cfg := ScopedMcpServerConfig{Config: &SSEConfig{URL: "http://localhost"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.configs["srv"] = cfg
+	r.mu.Unlock()
+
+	conn, err := r.Reconnect(context.Background(), "srv")
+	if err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if conn.ConnType() != "connected" {
+		t.Fatalf("expected connected, got %s", conn.ConnType())
+	}
+
+	r.handleResourceNotification("srv")
+
+	select {
+	case <-resCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnResourcesChanged not called within 2s")
+	}
+}
+
+func TestRegistry_HandleCommandNotification_WithRealServer(t *testing.T) {
+	cmdCh := make(chan struct{}, 1)
+	p := newInMemoryProvider()
+	mgr := NewClientManager(p, true, "")
+	r := NewRegistry(mgr, ChangeCallbacks{
+		OnCommandsChanged: func(serverName string, commands []MCPCommand) {
+			select {
+			case cmdCh <- struct{}{}:
+			default:
+			}
+		},
+	})
+	defer r.Close()
+
+	srv, t2 := setupInMemoryServer(t)
+	mcp.AddTool(srv, &mcp.Tool{Name: "read", Description: "read"}, noopToolHandler)
+	p.mu.Lock()
+	p.transports["srv"] = t2
+	p.mu.Unlock()
+
+	cfg := ScopedMcpServerConfig{Config: &SSEConfig{URL: "http://localhost"}, Scope: ScopeUser}
+	r.mu.Lock()
+	r.configs["srv"] = cfg
+	r.mu.Unlock()
+
+	conn, err := r.Reconnect(context.Background(), "srv")
+	if err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if conn.ConnType() != "connected" {
+		t.Fatalf("expected connected, got %s", conn.ConnType())
+	}
+
+	r.handleCommandNotification("srv")
+
+	select {
+	case <-cmdCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnCommandsChanged not called within 2s")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HasResourceSupport
+// ---------------------------------------------------------------------------
+
+func TestRegistry_HasResourceSupport_True(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	r.mu.Lock()
+	r.connections["srv"] = &ConnectedServer{
+		Name: "srv",
+		Capabilities: &mcp.ServerCapabilities{
+			Resources: &mcp.ResourceCapabilities{},
+		},
+	}
+	r.mu.Unlock()
+
+	if !r.HasResourceSupport() {
+		t.Error("expected HasResourceSupport true")
+	}
+}
+
+func TestRegistry_HasResourceSupport_False(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	r.mu.Lock()
+	r.connections["srv"] = &ConnectedServer{Name: "srv"}
+	r.mu.Unlock()
+
+	if r.HasResourceSupport() {
+		t.Error("expected HasResourceSupport false with nil capabilities")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// StartConfigWatch
+// ---------------------------------------------------------------------------
+
+func TestRegistry_StartConfigWatch_EmptyDir(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	// configDir is empty by default — should return nil
+	if err := r.StartConfigWatch(); err != nil {
+		t.Errorf("StartConfigWatch with empty dir: %v", err)
+	}
+}
+
+func TestRegistry_StartConfigWatch_NonExistentConfigFile(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	r.configDir = t.TempDir()
+	// No .mcp.json file in the temp dir — should return nil
+	if err := r.StartConfigWatch(); err != nil {
+		t.Errorf("StartConfigWatch with no config file: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetConnectionForTest
+// ---------------------------------------------------------------------------
+
+func TestRegistry_SetConnectionForTest(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	cfg := ScopedMcpServerConfig{Config: &StdioConfig{Command: "echo"}, Scope: ScopeUser}
+	r.SetConnectionForTest("test-srv", &ConnectedServer{Name: "test-srv", Config: cfg})
+
+	conn, ok := r.GetConnection("test-srv")
+	if !ok {
+		t.Fatal("expected connection after SetConnectionForTest")
+	}
+	if conn.ConnType() != "connected" {
+		t.Errorf("expected connected, got %s", conn.ConnType())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PutResourceCacheForTest
+// ---------------------------------------------------------------------------
+
+func TestRegistry_PutResourceCacheForTest(t *testing.T) {
+	r, _ := newTestRegistry(ChangeCallbacks{})
+	defer r.Close()
+
+	resources := []ServerResource{{URI: "file:///test.txt", Server: "srv"}}
+	r.PutResourceCacheForTest("srv", resources)
+
+	got := r.GetResources()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 resource, got %d", len(got))
+	}
+	if got[0].URI != "file:///test.txt" {
+		t.Errorf("URI = %q, want file:///test.txt", got[0].URI)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewRegistry with nil manager
+// ---------------------------------------------------------------------------
+
+func TestNewRegistry_NilManager(t *testing.T) {
+	r := NewRegistry(nil, ChangeCallbacks{})
+	defer r.Close()
+
+	if r == nil {
+		t.Fatal("NewRegistry with nil manager returned nil")
+	}
+	tools := r.GetTools()
+	if len(tools) != 0 {
+		t.Errorf("expected empty tools with nil manager, got %d", len(tools))
+	}
+}

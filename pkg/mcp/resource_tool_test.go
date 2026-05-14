@@ -990,3 +990,40 @@ func TestReadMcpResource_BinaryPersistFailureInsideRead(t *testing.T) {
 		t.Errorf("BlobSavedTo should be empty on failure, got: %q", contents[0].BlobSavedTo)
 	}
 }
+
+func TestReadMcpResource_ReadRPCErr(t *testing.T) {
+	// Server with resources capability that returns error on ReadResource
+	server, t2 := setupInMemoryServer(t)
+
+	// Register a resource but make ReadResource fail
+	server.AddResource(&mcp.Resource{URI: "test://fail", Name: "fail"}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return nil, fmt.Errorf("server internal error")
+	})
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	conn := &ConnectedServer{
+		Name:    "err-server",
+		Session: session,
+		Config:  ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
+		Capabilities: &mcp.ServerCapabilities{
+			Resources: &mcp.ResourceCapabilities{},
+		},
+	}
+
+	reg := NewRegistry(NewClientManager(nil, false, ""), ChangeCallbacks{})
+	reg.SetConnectionForTest("err-server", conn)
+
+	_, err = ReadMcpResource(context.Background(), reg, "err-server", "test://fail")
+	if err == nil {
+		t.Fatal("expected error from ReadResource RPC")
+	}
+	if !strings.Contains(err.Error(), "server internal error") {
+		t.Errorf("error = %q, want 'server internal error'", err.Error())
+	}
+}

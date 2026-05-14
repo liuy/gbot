@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -254,5 +255,99 @@ func TestPluginsDir(t *testing.T) {
 	want := filepath.Join(home, ".gbot", "plugins")
 	if dir != want {
 		t.Errorf("PluginsDir() = %q, want %q", dir, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// discoverPluginsFromDir paths
+// ---------------------------------------------------------------------------
+
+func TestDiscoverPluginsFromDir_NonExistent(t *testing.T) {
+	plugins, err := discoverPluginsFromDir("/nonexistent/path")
+	if err != nil {
+		t.Errorf("non-existent dir should return nil, nil, got err=%v", err)
+	}
+	if plugins != nil {
+		t.Errorf("non-existent dir should return nil plugins, got %v", plugins)
+	}
+}
+
+func TestPluginsDir_EmptyHome(t *testing.T) {
+	orig := pluginsDirOverride
+	pluginsDirOverride = ""
+	defer func() { pluginsDirOverride = orig }()
+
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", "")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	_, err := PluginsDir()
+	if err == nil {
+		t.Fatal("expected error when HOME is empty")
+	}
+	if !strings.Contains(err.Error(), "home dir") {
+		t.Errorf("error should mention 'home dir', got: %v", err)
+	}
+}
+
+func TestDiscoverPlugins_EmptyHome(t *testing.T) {
+	orig := pluginsDirOverride
+	pluginsDirOverride = ""
+	defer func() { pluginsDirOverride = orig }()
+
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", "")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	_, err := DiscoverPlugins()
+	if err == nil {
+		t.Fatal("expected error when PluginsDir fails")
+	}
+	if !strings.Contains(err.Error(), "home dir") {
+		t.Errorf("error should propagate from PluginsDir, got: %v", err)
+	}
+}
+
+func TestDiscoverPluginsFromDir_ReadDirError(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a file (not directory) so os.ReadDir fails with ENOTDIR, not ENOENT
+	filePath := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := discoverPluginsFromDir(filePath)
+	if err == nil {
+		t.Fatal("expected error when reading a file as directory")
+	}
+	if !strings.Contains(err.Error(), "read dir") {
+		t.Errorf("error should mention 'read dir', got: %v", err)
+	}
+}
+
+func TestDiscoverPluginsFromDir_WithPlugin(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginDir := filepath.Join(tmpDir, "my-plugin", ".gbot-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := map[string]any{
+		"name":    "my-plugin",
+		"version": "1.0.0",
+	}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plugins, err := discoverPluginsFromDir(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plugins) != 1 {
+		t.Fatalf("expected 1 plugin, got %d", len(plugins))
+	}
+	if plugins[0].Name != "my-plugin" {
+		t.Errorf("plugin name = %q, want 'my-plugin'", plugins[0].Name)
 	}
 }

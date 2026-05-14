@@ -1245,3 +1245,152 @@ func TestDiscoverPlugins_PluginsDirError(t *testing.T) {
 		t.Errorf("expected nil for nonexistent dir, got %v", plugins)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Error paths in loadHooks, loadSkills, loadAgents, LoadAndInitialize
+// ---------------------------------------------------------------------------
+
+func TestLoadAndInitialize_DiscoverError(t *testing.T) {
+	orig := pluginsDirOverride
+	pluginsDirOverride = ""
+	defer func() { pluginsDirOverride = orig }()
+
+	origHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", "")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	_, err := LoadAndInitialize(context.Background(), "/tmp")
+	if err == nil {
+		t.Fatal("expected error when DiscoverPlugins fails")
+	}
+	if !strings.Contains(err.Error(), "discover") {
+		t.Errorf("error should mention 'discover', got: %v", err)
+	}
+}
+
+func TestLoadHooks_NonIsNotExistError(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginDir := filepath.Join(tmpDir, "my-plugin", ".gbot-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := PluginManifest{Name: "my-plugin", Version: "1.0.0"}
+	data, _ := json.Marshal(manifest)
+	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create hooks.json as a directory to cause EISDIR (not ENOENT)
+	hooksDir := filepath.Join(tmpDir, "my-plugin", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(hooksDir, "hooks.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &ResolvedPlugin{
+		Name:     "my-plugin",
+		RootPath: filepath.Join(tmpDir, "my-plugin"),
+		Manifest: &manifest,
+	}
+	hc := loadHooks(plugin)
+	if hc != nil {
+		t.Errorf("expected nil hooks on error, got %v", hc)
+	}
+}
+
+func TestLoadSkills_NonIsNotExistError(t *testing.T) {
+	tmpDir := t.TempDir()
+	pluginDir := filepath.Join(tmpDir, "my-plugin", ".gbot-plugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Skills path is a file (not directory) so ReadDir returns ENOTDIR
+	skillsPath := filepath.Join(tmpDir, "my-plugin", "skills")
+	if err := os.WriteFile(skillsPath, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := PluginManifest{Name: "my-plugin", Version: "1.0.0", Skills: "skills"}
+	plugin := &ResolvedPlugin{
+		Name:     "my-plugin",
+		RootPath: filepath.Join(tmpDir, "my-plugin"),
+		Manifest: &manifest,
+	}
+	skills := loadSkills(plugin)
+	if skills != nil {
+		t.Errorf("expected nil skills on error, got %v", skills)
+	}
+}
+
+func TestLoadAgents_NonIsNotExistError(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "my-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// agents dir is a file (not directory) so ReadDir returns ENOTDIR
+	agentsPath := filepath.Join(tmpDir, "my-plugin", "agents")
+	if err := os.WriteFile(agentsPath, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &ResolvedPlugin{
+		Name:     "my-plugin",
+		RootPath: filepath.Join(tmpDir, "my-plugin"),
+		Manifest: &PluginManifest{Name: "my-plugin", Version: "1.0.0"},
+	}
+	agents := loadAgents(plugin)
+	if agents != nil {
+		t.Errorf("expected nil agents on error, got %v", agents)
+	}
+}
+
+func TestLoadAgents_NilFrontmatter(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsDir := filepath.Join(tmpDir, "my-plugin", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// .md file with no frontmatter
+	if err := os.WriteFile(filepath.Join(agentsDir, "test.md"), []byte("just plain text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &ResolvedPlugin{
+		Name:     "my-plugin",
+		RootPath: filepath.Join(tmpDir, "my-plugin"),
+		Manifest: &PluginManifest{Name: "my-plugin", Version: "1.0.0"},
+	}
+	agents := loadAgents(plugin)
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents for .md with no frontmatter, got %d", len(agents))
+	}
+}
+
+func TestLoadAgents_ReadFileError(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsDir := filepath.Join(tmpDir, "my-plugin", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a .md file with no read permissions
+	secretFile := filepath.Join(agentsDir, "secret.md")
+	if err := os.WriteFile(secretFile, []byte("---\nname: test\ndescription: test\n---\ncontent"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	plugin := &ResolvedPlugin{
+		Name:     "my-plugin",
+		RootPath: filepath.Join(tmpDir, "my-plugin"),
+		Manifest: &PluginManifest{Name: "my-plugin", Version: "1.0.0"},
+	}
+	agents := loadAgents(plugin)
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents when file unreadable, got %d", len(agents))
+	}
+}

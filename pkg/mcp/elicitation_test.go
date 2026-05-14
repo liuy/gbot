@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -102,4 +104,28 @@ type mockElicitationUI struct {
 
 func (m *mockElicitationUI) HandleElicitation(ctx context.Context, serverName string, params *mcp.ElicitParams) (*mcp.ElicitResult, error) {
 	return m.fn(ctx, serverName, params)
+}
+
+func TestElicitationHandler_UIError(t *testing.T) {
+	cm := NewClientManager(TransportFactory{}, true, "")
+
+	cm.SetElicitationUI(&mockElicitationUI{
+		fn: func(ctx context.Context, serverName string, params *mcp.ElicitParams) (*mcp.ElicitResult, error) {
+			return nil, fmt.Errorf("ui error")
+		},
+	})
+
+	handler := cm.makeElicitationHandler("err-server")
+	result, err := handler(context.Background(), &mcp.ClientRequest[*mcp.ElicitParams]{
+		Params: &mcp.ElicitParams{Message: "test", Mode: "form"},
+	})
+	if err == nil {
+		t.Fatal("expected error from UI handler")
+	}
+	if !strings.Contains(err.Error(), "ui error") {
+		t.Errorf("error = %q, want 'ui error'", err.Error())
+	}
+	if result != nil {
+		t.Errorf("expected nil result on error, got %+v", result)
+	}
 }

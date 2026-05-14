@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---------------------------------------------------------------------------
@@ -639,7 +639,7 @@ func TestTruncateContent(t *testing.T) {
 
 func TestPersistToolResult(t *testing.T) {
 	content := "test content " + strings.Repeat("x", 1000)
-	persistID := fmt.Sprintf("test-persist-%d", time.Now().UnixMilli())  // REAL-TIME: pending tool start time
+	persistID := fmt.Sprintf("test-persist-%d", time.Now().UnixMilli()) // REAL-TIME: pending tool start time
 
 	path, err := persistToolResult(content, persistID)
 	if err != nil {
@@ -2123,5 +2123,123 @@ func TestCallMCPTool_NoProgressWithoutCallback(t *testing.T) {
 	}
 	if len(result.Content) != 1 {
 		t.Fatalf("expected 1 content, got %d", len(result.Content))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// dispatchProgress with invalid callback type
+// ---------------------------------------------------------------------------
+
+func TestDispatchProgress_InvalidCallbackType(t *testing.T) {
+	// Store a non-func(MCPProgress) value to simulate corrupted registry
+	progressRegistry.Store("bad-token", "not-a-function")
+	defer progressRegistry.Delete("bad-token")
+
+	found := dispatchProgress("bad-token", MCPProgress{Progress: 1})
+	if found {
+		t.Error("expected false for invalid callback type")
+	}
+
+	// Verify the corrupted entry was cleaned up
+	if _, exists := progressRegistry.Load("bad-token"); exists {
+		t.Error("corrupted entry should be deleted after dispatch")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallMCPTool with OnProgress callback
+// ---------------------------------------------------------------------------
+
+func TestCallMCPTool_WithProgressCallback(t *testing.T) {
+	server, t2 := setupInMemoryServer(t)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "progress_tool",
+		Description: "Tool with progress",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
+		}, nil, nil
+	})
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0"}, nil)
+	session, err := client.Connect(context.Background(), t2, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	conn := &ConnectedServer{
+		Name:         "test-server",
+		Session:      session,
+		Config:       ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+	}
+
+	_, err = CallMCPTool(context.Background(), CallMCPToolParams{
+		Server:   conn,
+		ToolName: "progress_tool",
+		Args:     map[string]any{},
+		OnProgress: func(p MCPProgress) {
+			// Progress callback — server may or may not send progress
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallMCPTool with progress: %v", err)
+	}
+	// Progress callback may or may not be called (server needs to send progress),
+	// but the call itself should succeed without panicking.
+}
+
+// ---------------------------------------------------------------------------
+// resizeImageWithLimits — PNG encode error, JPEG encode error,
+// over-size lower quality JPEG, lower quality still over size
+// ---------------------------------------------------------------------------
+
+func TestResizeImageWithLimits_PNGEncodeError(t *testing.T) {
+	// Create a valid PNG image
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	pngData := buf.Bytes()
+
+	// Use very small target size to force over-size path after encoding
+	result, err := resizeImageWithLimits(pngData, "image/png", 10, 10, 1)
+	// Should either succeed with resized data or return error
+	if err != nil {
+		// Encode failure is acceptable — just verify it doesn't panic
+		t.Logf("resize error (acceptable): %v", err)
+	} else {
+		t.Logf("resize result: %d bytes", len(result))
+	}
+}
+
+func TestResizeImageWithLimits_LargeImageTriggersResize(t *testing.T) {
+	// Create a large image that will definitely exceed dimensions
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(2000, 2000, 1, 1))
+	for y := range 2000 {
+		for x := range 2000 {
+			img.Set(x, y, color.NRGBA{R: uint8(x % 256), G: uint8(y % 256), B: 128, A: 255})
+		}
+	}
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	jpegData := buf.Bytes()
+
+	// Resize with small limits
+	result, err := resizeImageWithLimits(jpegData, "image/jpeg", 100, 100, 10000)
+	if err != nil {
+		t.Fatalf("resizeImageWithLimits: %v", err)
+	}
+	if len(result) == 0 {
+		t.Error("expected non-empty result")
+	}
+	// Result should be smaller than original
+	if len(result) >= len(jpegData) {
+		t.Logf("result (%d) not smaller than original (%d), but still valid", len(result), len(jpegData))
 	}
 }

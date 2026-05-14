@@ -157,3 +157,39 @@ func TestMulti_WaitNotFound(t *testing.T) {
 		t.Errorf("Wait took %v for nonexistent ID — should be fast (Get-first)", elapsed)
 	}
 }
+
+func TestMulti_KillNonErrNotFound(t *testing.T) {
+	t.Parallel()
+	r1 := newErrorKillRegistry("permission denied")
+	m := NewMultiRegistry(r1)
+
+	err := m.Kill("any-id")
+	if err == nil {
+		t.Fatal("Kill should return error")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("error = %q, want permission denied", err.Error())
+	}
+}
+
+func TestMulti_CleanupCompleted_WithCleanupAware(t *testing.T) {
+	t.Parallel()
+	r1 := newCleanupStubRegistry()
+	r2 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	m := NewMultiRegistry(r1, r2)
+
+	m.CleanupCompleted()
+
+	if !r1.cleaned {
+		t.Error("CleanupCompleted should have been called on cleanupAware registry")
+	}
+}
+
+func TestMulti_CleanupCompleted_NoCleanupAware(t *testing.T) {
+	t.Parallel()
+	r1 := newStubRegistry(&JobInfo{ID: "bg-1", Status: "running"})
+	m := NewMultiRegistry(r1)
+
+	// Should not panic — stubRegistry does not implement cleanupAware
+	m.CleanupCompleted()
+}

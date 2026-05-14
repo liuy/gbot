@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -625,7 +626,7 @@ func (t *Tracker) copyFileData(src, dst string, mode fs.FileMode) error {
 	// Try copy first (fast path: destination dir exists).
 	if err := t.copyFileDataOnce(src, dst, mode); err == nil {
 		return nil
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	// Slow path: destination dir missing — create and retry.

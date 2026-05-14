@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dop251/goja"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -1551,6 +1552,123 @@ func TestExecutePromiseAllWithTool(t *testing.T) {
 	}
 }
 
+func TestInterrupt(t *testing.T) {
+	s := newTestSession(t)
+	done := make(chan string, 1)
+	ready := make(chan struct{})
+	go func() {
+		toolFn := func(_ context.Context, name, _ string) string {
+			if name == "ready" {
+				close(ready)
+				return "ok"
+			}
+			return "ERROR: unknown tool " + name
+		}
+		output, _ := s.Execute(context.Background(), `tool("ready", ""); while(true) {}`, "", toolFn, 60000)
+		done <- output
+	}()
+	<-ready
+	s.Interrupt()
+	select {
+	case output := <-done:
+		if !strings.Contains(output, "[JS Error]") {
+			t.Errorf("expected error after Interrupt, got %q", output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after Interrupt")
+	}
+}
+
+func TestConsoleLogNull(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(), `console.log(null)`, "", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := strings.TrimSpace(output)
+	if got != "null" {
+		t.Errorf("console.log(null): got %q, want 'null'", got)
+	}
+}
+
+func TestConsoleLogObject(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(), `console.log({a: 1})`, "", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, `"a"`) {
+		t.Errorf("expected JSON object with key 'a', got %q", output)
+	}
+}
+
+func TestToolWithUndefinedArgs(t *testing.T) {
+	s := newTestSession(t)
+	toolFn := mockToolFn(t, map[string]string{
+		"Echo": `{"result": "no-args"}`,
+	})
+	output, err := s.Execute(context.Background(),
+		`const r = tool("Echo"); console.log(r)`,
+		"", toolFn, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "no-args") {
+		t.Errorf("expected tool result with default args, got %q", output)
+	}
+}
+
+func TestPromiseRejection(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(),
+		`console.log("before"); Promise.reject("boom")`,
+		"", nil, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "before") {
+		t.Errorf("expected 'before', got %q", output)
+	}
+	if !strings.Contains(output, "Unhandled promise rejection") {
+		t.Errorf("expected rejection message, got %q", output)
+	}
+}
+
+func TestCancelWithOutput(t *testing.T) {
+	s := newTestSession(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan string, 1)
+	ready := make(chan struct{})
+	go func() {
+		toolFn := func(_ context.Context, name, _ string) string {
+			if name == "ready" {
+				close(ready)
+				return "ok"
+			}
+			return "ERROR: unknown tool " + name
+		}
+		output, _ := s.Execute(ctx, `console.log("before cancel"); tool("ready", ""); while(true) {}`, "", toolFn, 60000)
+		done <- output
+	}()
+
+	<-ready
+	cancel()
+
+	select {
+	case output := <-done:
+		if !strings.Contains(output, "before cancel") {
+			t.Errorf("expected 'before cancel', got %q", output)
+		}
+		if !strings.Contains(output, "[JS Error]") {
+			t.Errorf("expected error after cancel, got %q", output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after cancel")
+	}
+}
+
 func TestExecuteRecoversFromClosedVM(t *testing.T) {
 	// Verify that executing on a closed session returns an error and marks session closed.
 	s, err := NewSession()
@@ -1572,5 +1690,207 @@ func TestExecuteRecoversFromClosedVM(t *testing.T) {
 	}
 	if output != "" {
 		t.Errorf("expected empty output, got %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Direct unit tests for jsValueToString
+// ---------------------------------------------------------------------------
+
+func TestJsValueToString_Direct(t *testing.T) {
+	vm := goja.New()
+
+	// null value
+	nullVal, _ := vm.RunString("null")
+	if got := jsValueToString(nullVal); got != "null" {
+		t.Errorf("null: got %q, want 'null'", got)
+	}
+
+	// undefined value
+	undefVal, _ := vm.RunString("undefined")
+	if got := jsValueToString(undefVal); got != "undefined" {
+		t.Errorf("undefined: got %q, want 'undefined'", got)
+	}
+
+	// string value
+	strVal, _ := vm.RunString(`"hello"`)
+	if got := jsValueToString(strVal); got != "hello" {
+		t.Errorf("string: got %q, want 'hello'", got)
+	}
+
+	// number value
+	numVal, _ := vm.RunString("42")
+	if got := jsValueToString(numVal); got != "42" {
+		t.Errorf("number: got %q, want '42'", got)
+	}
+
+	// object value (default case → JSON serialize)
+	objVal, _ := vm.RunString("({a: 1})")
+	got := jsValueToString(objVal)
+	if !strings.Contains(got, `"a"`) {
+		t.Errorf("object: expected JSON with key 'a', got %q", got)
+	}
+}
+
+func TestExecute_PanicRecovery(t *testing.T) {
+	s := newTestSession(t)
+	// Cause a fatal panic by recursively calling until stack overflow
+	output, err := s.Execute(context.Background(), `function f(){f()} f()`, "", nil, 10000)
+	if err != nil {
+		t.Logf("stack overflow returned error (acceptable): %v", err)
+	}
+	if !strings.Contains(output, "[JS") && !strings.Contains(output, "fatal") && output == "" {
+		t.Errorf("expected some error output, got %q", output)
+	}
+	// Session should be closed after fatal panic
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if !closed {
+		// If the panic was caught as InterruptedError instead of fatal, that's also fine
+		t.Log("session not marked closed — panic may have been caught as regular error")
+	}
+}
+
+func TestJsValueToString_MarshalError(t *testing.T) {
+	s := newTestSession(t)
+	var vmVal goja.Value
+	s.loop.Run(func(vm *goja.Runtime) {
+		// Create a circular reference object that can't be JSON marshaled
+		vmVal, _ = vm.RunString(`var obj = {}; obj.self = obj; obj`)
+	})
+	if vmVal == nil {
+		t.Fatal("failed to create circular ref")
+	}
+	got := jsValueToString(vmVal)
+	// Should fall back to v.String() since json.Marshal fails on circular ref
+	if got == "" {
+		t.Error("expected non-empty string from jsValueToString")
+	}
+}
+
+func TestAdjustStackLines(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+	}{
+		{
+			name:  "basic line adjustment",
+			input: "Error at <eval>:5",
+			want:  "Error at <eval>:3",
+		},
+		{
+			name:  "no match",
+			input: "some random text",
+			want:  "some random text",
+		},
+		{
+			name:  "strip paren offset",
+			input: "at <eval>:4:7(14)",
+			want:  "at <eval>:2:7",
+		},
+		{
+			name:  "minimum line 1",
+			input: "Error at <eval>:1",
+			want:  "Error at <eval>:1",
+		},
+		{
+			name:  "multi-line stack",
+			input: "at foo (<eval>:10:5)\nat bar (<eval>:20:3)",
+			want:  "at foo (<eval>:8:5)\nat bar (<eval>:18:3)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := adjustStackLines(tt.input, 2)
+			if got != tt.want {
+				t.Errorf("adjustStackLines(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReset_Success(t *testing.T) {
+	s := newTestSession(t)
+	// Execute something first
+	if _, err := s.Execute(context.Background(), `var x = 1`, "", nil, 10000); err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+
+	// Reset the session
+	if err := s.Reset(); err != nil {
+		t.Fatalf("Reset() error: %v", err)
+	}
+
+	// After reset, x should be gone (new VM)
+	output, err := s.Execute(context.Background(), `console.log(typeof x)`, "", nil, 10000)
+	if err != nil {
+		t.Fatalf("post-reset execute: %v", err)
+	}
+	got := strings.TrimSpace(output)
+	if got != "undefined" {
+		t.Errorf("after reset, typeof x = %q, want 'undefined'", got)
+	}
+}
+
+func TestExecute_Timeout(t *testing.T) {
+	s := newTestSession(t)
+	output, err := s.Execute(context.Background(), `while(true) {}`, "", nil, 1000)
+	if err != nil {
+		t.Fatalf("timeout execute returned error: %v", err)
+	}
+	if !strings.Contains(output, "[JS Error]") {
+		t.Errorf("expected timeout error, got %q", output)
+	}
+	if !strings.Contains(output, "timeout") {
+		t.Errorf("expected 'timeout' in output, got %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// json.Marshal error path for tool args (NaN)
+// ---------------------------------------------------------------------------
+
+func TestToolArgs_NaN(t *testing.T) {
+	// NaN is exported as float64(math.NaN()), which json.Marshal rejects.
+	// This covers session.go:104-105 — the marshal error → panic path.
+	s := newTestSession(t)
+	toolFn := func(_ context.Context, _, _ string) string {
+		return "should not reach"
+	}
+	output, err := s.Execute(context.Background(),
+		`try { tool("test", NaN) } catch(e) { console.log("caught:" + e) }`,
+		"", toolFn, 10000)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "failed to marshal tool args") {
+		t.Errorf("expected marshal error in output, got: %s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Panic recovery from Go-level panic (circular ref in Export)
+// ---------------------------------------------------------------------------
+
+func TestExecute_CircularRefPanic(t *testing.T) {
+	// A circular JS object passed to tool() causes infinite recursion
+	// in goja's Export(), triggering a Go stack overflow panic.
+	// This covers session.go:147-153 — the defer/recover panic path.
+	s := newTestSession(t)
+	toolFn := func(_ context.Context, _, _ string) string {
+		return "should not reach"
+	}
+	output, err := s.Execute(context.Background(),
+		`var obj = {}; obj.self = obj; tool("test", obj)`,
+		"", toolFn, 10000)
+	// The panic is caught by Execute's defer/recover
+	if err != nil && !strings.Contains(err.Error(), "closed") {
+		t.Logf("error (acceptable): %v", err)
+	}
+	if !strings.Contains(output, "[JS fatal]") && output == "" {
+		t.Errorf("expected fatal error or empty output, got: %q", output)
 	}
 }

@@ -147,3 +147,38 @@ func TestFormatTokenCount_1M(t *testing.T) {
 		t.Errorf("FormatTokenCount(1048576) = %q, want %q", got, "1.0M")
 	}
 }
+
+func TestFormatTokenCount_1G(t *testing.T) {
+	got := FormatTokenCount(1024 * 1024 * 1024)
+	if got != "1.0G" {
+		t.Errorf("FormatTokenCount(1G) = %q, want %q", got, "1.0G")
+	}
+}
+
+func TestPermissionResultMarkers(t *testing.T) {
+	// Verify marker methods exist and satisfy the interface
+	var _ PermissionResult = PermissionAllowDecision{}
+	var _ PermissionResult = PermissionAskDecision{}
+	var _ PermissionResult = PermissionDenyDecision{}
+
+	// Explicitly call marker methods for coverage
+	allow2 := PermissionAllowDecision{}
+	ask2 := PermissionAskDecision{}
+	deny2 := PermissionDenyDecision{}
+	allow2.permissionResultMarker()
+	ask2.permissionResultMarker()
+	deny2.permissionResultMarker()
+
+	allow := PermissionAllowDecision{}
+	if allow.Behavior() != BehaviorAllow {
+		t.Error("AllowDecision.Behavior should be BehaviorAllow")
+	}
+	ask := PermissionAskDecision{}
+	if ask.Behavior() != BehaviorAsk {
+		t.Error("AskDecision.Behavior should be BehaviorAsk")
+	}
+	deny := PermissionDenyDecision{}
+	if deny.Behavior() != BehaviorDeny {
+		t.Error("DenyDecision.Behavior should be BehaviorDeny")
+	}
+}

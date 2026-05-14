@@ -1381,3 +1381,14 @@ func TestRegisterPluginAgents_OverrideResolution(t *testing.T) {
 		t.Errorf("cached agents count = %d, want >= %d (built-ins preserved)", len(loader.cached), builtInCount)
 	}
 }
+
+func TestGlobalLoader_AfterInit(t *testing.T) {
+	globalLoader = nil
+	InitLoader(t.TempDir())
+	defer func() { globalLoader = nil }()
+
+	got := GlobalLoader()
+	if got == nil {
+		t.Fatal("GlobalLoader() should return non-nil after InitLoader")
+	}
+}

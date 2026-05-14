@@ -55,6 +55,10 @@ func TestLogEngineEvent_AllBranches(t *testing.T) {
 		// Error
 		{"error", Event{Type: types.EventError, Error: errTest}},
 
+		// Ask
+		{"ask_nil", Event{Type: types.EventAsk}},
+		{"ask_with_data", Event{Type: types.EventAsk, Ask: &types.AskEvent{ToolName: "Bash"}}},
+
 		// Unknown / default
 		{"unknown_type", Event{Type: "custom_event_type"}},
 	}

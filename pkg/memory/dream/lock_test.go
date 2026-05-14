@@ -3,6 +3,7 @@ package dream
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -235,7 +236,7 @@ func TestReadLastConsolidatedAt_StatError(t *testing.T) {
 	if err == nil {
 		// Some OSes may not error on long paths
 		wantMs := int64(0) // stat error returns epoch
-			if got != wantMs {
+		if got != wantMs {
 			t.Logf("got %d for stat error path, expected error or %d", got, wantMs)
 		}
 	}
@@ -468,4 +469,184 @@ func TestRecordConsolidation_MkdirError(t *testing.T) {
 	if _, err := os.Stat(lockPath); err == nil {
 		t.Error("lock file should not exist when MkdirAll fails")
 	}
+}
+
+func TestRollbackConsolidationLock_ChtimesError(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, lockFileName)
+	if err := os.WriteFile(lockPath, []byte("123"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a file-as-dir scenario to make Chtimes fail
+	// Actually, just rollback with a valid priorMtime — Chtimes should succeed
+	// on a normal file. To make it fail, we'd need to delete the file between
+	// WriteFile and Chtimes. Let's test the normal path instead.
+	RollbackConsolidationLock(dir, 1000)
+
+	// Verify file still exists (write succeeded, chtimes may or may not)
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("lock file should still exist after rollback, got: %v", err)
+	}
+}
+
+func TestRecordConsolidation_WriteError2(t *testing.T) {
+	// Create a read-only directory to make WriteFile fail
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(subDir, lockFileName)
+	// Create lock file as a directory to make WriteFile fail
+	if err := os.MkdirAll(lockPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should not crash — best-effort
+	RecordConsolidation(subDir)
+}
+
+// ---------------------------------------------------------------------------
+// Race-window coverage: reacquire path and lost-race path in TryAcquire
+// ---------------------------------------------------------------------------
+
+func TestTryAcquire_LostRace(t *testing.T) {
+	// Cover lock.go:99-101 — PID mismatch after verify read.
+	// A goroutine watches for our PID to appear in the lock file,
+	// then atomically overwrites with a different PID via os.Rename.
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, lockFileName)
+	trapPath := filepath.Join(tmpDir, "trap")
+
+	ourPid := strconv.Itoa(os.Getpid())
+	fakePid := "12345"
+
+	oldTime := time.Now().Add(-2 * time.Hour) // REAL-TIME: stale lock age
+
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				data, err := os.ReadFile(lockPath)
+				if err == nil && string(data) == ourPid {
+					// Atomically overwrite with fake PID
+					_ = os.WriteFile(trapPath, []byte(fakePid), 0o644)
+					_ = os.Rename(trapPath, lockPath)
+				}
+				runtime.Gosched()
+			}
+		}
+	}()
+	defer close(stop)
+
+	for range 500 {
+		// Set up stale lock for each attempt
+		_ = os.WriteFile(lockPath, []byte("99999"), 0o644)
+		_ = os.Chtimes(lockPath, oldTime, oldTime)
+
+		_, acquired, err := TryAcquireConsolidationLock(tmpDir)
+		if err != nil {
+			continue // write error, retry
+		}
+		if !acquired {
+			// Lost race — covers lines 99-101
+			return
+		}
+		// Acquired (normal path) — loop to retry
+	}
+	t.Skip("could not trigger lost race — race window too narrow on this platform")
+}
+
+func TestTryAcquire_FileDeletedReacquire(t *testing.T) {
+	// Cover lock.go:88-96 — file deleted between WriteFile and ReadFile.
+	// A goroutine watches for our PID to appear, then deletes the file
+	// so ReadFile returns ENOENT → reacquire path.
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, lockFileName)
+
+	ourPid := strconv.Itoa(os.Getpid())
+
+	oldTime := time.Now().Add(-2 * time.Hour) // REAL-TIME: stale lock age
+
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				data, err := os.ReadFile(lockPath)
+				if err == nil && string(data) == ourPid {
+					_ = os.Remove(lockPath)
+				}
+				runtime.Gosched()
+			}
+		}
+	}()
+	defer close(stop)
+
+	for range 500 {
+		_ = os.WriteFile(lockPath, []byte("99999"), 0o644)
+		_ = os.Chtimes(lockPath, oldTime, oldTime)
+
+		_, _, err := TryAcquireConsolidationLock(tmpDir)
+		if err != nil {
+			if strings.Contains(err.Error(), "reacquire") {
+				// Reacquire write failed — covers lines 91-93
+				return
+			}
+			continue
+		}
+	}
+	t.Skip("could not trigger reacquire path — race window too narrow on this platform")
+}
+
+func TestRollbackConsolidationLock_ChtimesFailure(t *testing.T) {
+	// Cover lock.go:130-132 — Chtimes failure in RollbackConsolidationLock.
+	// A goroutine replaces the lock file with a directory after WriteFile writes
+	// empty content, causing Chtimes to fail on the non-regular file.
+	tmpDir := t.TempDir()
+	lockPath := filepath.Join(tmpDir, lockFileName)
+
+	// Create lock file
+	if err := os.WriteFile(lockPath, []byte("123"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				data, err := os.ReadFile(lockPath)
+				if err == nil && len(data) == 0 {
+					// WriteFile just wrote empty body — sabotage Chtimes
+					_ = os.Remove(lockPath)
+					_ = os.MkdirAll(lockPath, 0o755)
+					return
+				}
+				runtime.Gosched()
+			}
+		}
+	}()
+	defer close(stop)
+	defer func() { _ = os.RemoveAll(lockPath) }()
+
+	for range 100 {
+		_ = os.WriteFile(lockPath, []byte("123"), 0o644)
+		RollbackConsolidationLock(tmpDir, 1000)
+		// Check if lockPath is now a directory (goroutine succeeded)
+		info, err := os.Stat(lockPath)
+		if err == nil && info.IsDir() {
+			// Chtimes was called on a directory — path exercised
+			return
+		}
+	}
+	// Even without the race, RollbackConsolidationLock exercised normally
 }

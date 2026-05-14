@@ -373,6 +373,36 @@ func TestLoadGitStatus_NonGitDir(t *testing.T) {
 	}
 }
 
+func TestLoadGitStatus_WithRemote(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize repo
+	cmd := exec.Command("git", "init", tmpDir)
+	if err := cmd.Run(); err != nil {
+		t.Skip("git not available")
+	}
+	_, _ = exec.Command("git", "-C", tmpDir, "config", "user.email", "t@t.com").Output()
+	_, _ = exec.Command("git", "-C", tmpDir, "config", "user.name", "T").Output()
+	if err := os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = exec.Command("git", "-C", tmpDir, "add", ".").Output()
+	_, _ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Output()
+
+	// Add remote and set origin/HEAD so default branch is detected
+	_, _ = exec.Command("git", "-C", tmpDir, "remote", "add", "origin", "/tmp/fake").Output()
+	_, _ = exec.Command("git", "-C", tmpDir, "update-ref", "refs/remotes/origin/main", "HEAD").Output()
+	_, _ = exec.Command("git", "-C", tmpDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main").Output()
+
+	info := context.LoadGitStatus(tmpDir)
+	if !info.IsGit {
+		t.Fatal("expected IsGit=true")
+	}
+	if info.DefaultBranch != "main" {
+		t.Errorf("DefaultBranch = %q, want 'main'", info.DefaultBranch)
+	}
+}
+
 func TestLoadGBOTMD(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -445,6 +475,28 @@ func TestBuild_NoFiles(t *testing.T) {
 	// Should contain platform info (Platform: section)
 	if !strings.Contains(promptStr, "Platform:") {
 		t.Error("prompt should contain platform info even without files")
+	}
+}
+
+func TestBuild_WithSkillListing(t *testing.T) {
+	t.Parallel()
+	b := context.NewBuilder("/work")
+	b.SkillListing = "/commit - create a commit\n/review - review code"
+
+	result, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	var promptStr string
+	if err := json.Unmarshal(result, &promptStr); err != nil {
+		t.Fatalf("result not valid JSON: %v", err)
+	}
+	if !strings.Contains(promptStr, "## Available Skills") {
+		t.Error("built prompt missing '## Available Skills' section")
+	}
+	if !strings.Contains(promptStr, "/commit") {
+		t.Error("built prompt missing skill listing content")
 	}
 }
 

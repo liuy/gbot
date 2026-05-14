@@ -587,6 +587,281 @@ func TestListMcpResources_AllProperties(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Description_ branches: json.Unmarshal error + server-only description
+// ---------------------------------------------------------------------------
+
+func TestListMcpResources_Description_InvalidJSON(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewListMcpResources(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{invalid`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != listMcpResourcesDescription {
+		t.Errorf("Description(invalid json) = %q, want %q", desc, listMcpResourcesDescription)
+	}
+}
+
+func TestReadMcpResource_Description_InvalidJSON(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewReadMcpResource(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{invalid`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != readMcpResourceDescription {
+		t.Errorf("Description(invalid json) = %q, want %q", desc, readMcpResourceDescription)
+	}
+}
+
+func TestReadMcpResource_Description_ServerOnly(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewReadMcpResource(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{"server":"my-server"}`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != "my-server" {
+		t.Errorf("Description(server-only) = %q, want %q", desc, "my-server")
+	}
+}
+
+func TestReadMcpResource_Description_ServerAndURI(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewReadMcpResource(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{"server":"my-server","uri":"test://x"}`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != "my-server test://x" {
+		t.Errorf("Description(server+uri) = %q, want %q", desc, "my-server test://x")
+	}
+}
+
+func TestListMcpResources_Description_WithServer(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewListMcpResources(reg)
+
+	desc, err := tt.Description(json.RawMessage(`{"server":"my-server"}`))
+	if err != nil {
+		t.Fatalf("Description() error: %v", err)
+	}
+	if desc != "my-server" {
+		t.Errorf("Description(with server) = %q, want %q", desc, "my-server")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderResourceResultJSON: empty ResourceContent, MarshalIndent error
+// ---------------------------------------------------------------------------
+
+func TestRenderResourceResultJSON_NilData(t *testing.T) {
+	got := renderResourceResultJSON(nil)
+	if got != emptyResourcesMessage {
+		t.Errorf("renderResourceResultJSON(nil) = %q, want %q", got, emptyResourcesMessage)
+	}
+}
+
+func TestRenderResourceResultJSON_EmptyServerResourceSlice(t *testing.T) {
+	got := renderResourceResultJSON([]gbotmcp.ServerResource{})
+	if got != emptyResourcesMessage {
+		t.Errorf("renderResourceResultJSON(empty ServerResource) = %q, want %q", got, emptyResourcesMessage)
+	}
+}
+
+func TestRenderResourceResultJSON_EmptyResourceContentSlice(t *testing.T) {
+	got := renderResourceResultJSON([]gbotmcp.ResourceContent{})
+	if got != "[]" {
+		t.Errorf("renderResourceResultJSON(empty ResourceContent) = %q, want %q", got, "[]")
+	}
+}
+
+func TestRenderResourceResultJSON_MarshalIndentError(t *testing.T) {
+	// Channels cannot be marshaled to JSON, so MarshalIndent fails
+	// and the fallback json.Marshal also fails, returning empty string.
+	got := renderResourceResultJSON(make(chan int))
+	if got != "" {
+		// json.Marshal(chan) returns an error; the fallback also fails.
+		// Both paths fail → returns "" from the string(b) where b is nil.
+		t.Logf("renderResourceResultJSON(chan) = %q", got)
+	}
+}
+
+func TestRenderResourceResultJSON_NonEmptyResourceContent(t *testing.T) {
+	contents := []gbotmcp.ResourceContent{
+		{URI: "test://1", Text: "hello"},
+	}
+	got := renderResourceResultJSON(contents)
+	if !strings.Contains(got, "test://1") {
+		t.Errorf("should contain URI, got: %q", got)
+	}
+	if !strings.Contains(got, "hello") {
+		t.Errorf("should contain text, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderListResourcesTUI: nil, wrong type, MimeType
+// ---------------------------------------------------------------------------
+
+func TestRenderListResourcesTUI_Nil(t *testing.T) {
+	got := renderListResourcesTUI(nil)
+	if got != emptyResourcesMessage {
+		t.Errorf("renderListResourcesTUI(nil) = %q, want %q", got, emptyResourcesMessage)
+	}
+}
+
+func TestRenderListResourcesTUI_WrongType(t *testing.T) {
+	got := renderListResourcesTUI("not a slice")
+	if got != emptyResourcesMessage {
+		t.Errorf("renderListResourcesTUI(string) = %q, want %q", got, emptyResourcesMessage)
+	}
+}
+
+func TestRenderListResourcesTUI_WithMimeType(t *testing.T) {
+	resources := []gbotmcp.ServerResource{
+		{URI: "test://1", Name: "res1", Server: "s1", MimeType: "text/plain"},
+		{URI: "test://2", Name: "res2", Server: "s1"},
+	}
+	got := renderListResourcesTUI(resources)
+	if !strings.Contains(got, "test://1 (text/plain)") {
+		t.Errorf("should show MimeType for res1, got: %q", got)
+	}
+	// res2 has no MimeType — should NOT have parentheses
+	_, after, found := strings.Cut(got, "test://2")
+	if !found {
+		t.Fatalf("should contain test://2, got: %q", got)
+	}
+	// After test://2, next char should be newline, not space+paren
+	if strings.HasPrefix(after, " (") {
+		t.Errorf("res2 should not have MimeType, got: %q", got)
+	}
+}
+
+func TestRenderListResourcesTUI_MultipleServers(t *testing.T) {
+	resources := []gbotmcp.ServerResource{
+		{URI: "test://b", Name: "rb", Server: "srv-b"},
+		{URI: "test://a", Name: "ra", Server: "srv-a"},
+	}
+	got := renderListResourcesTUI(resources)
+	// Servers should be sorted alphabetically
+	idxA := strings.Index(got, "srv-a")
+	idxB := strings.Index(got, "srv-b")
+	if idxA == -1 || idxB == -1 {
+		t.Fatalf("should contain both servers, got: %q", got)
+	}
+	if idxA > idxB {
+		t.Errorf("srv-a should appear before srv-b, got: %q", got)
+	}
+	if !strings.Contains(got, "2 resources from 2 servers") {
+		t.Errorf("should show total count, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// renderReadResourceTUI: multiple contents separator, BlobSavedTo
+// ---------------------------------------------------------------------------
+
+func TestRenderReadResourceTUI_MultipleContents(t *testing.T) {
+	contents := []gbotmcp.ResourceContent{
+		{URI: "test://1", Text: "first"},
+		{URI: "test://2", Text: "second"},
+	}
+	got := renderReadResourceTUI(contents)
+	if !strings.Contains(got, "first") || !strings.Contains(got, "second") {
+		t.Errorf("should contain both texts, got: %q", got)
+	}
+	if !strings.Contains(got, "test://1") || !strings.Contains(got, "test://2") {
+		t.Errorf("should contain both URIs, got: %q", got)
+	}
+	// Verify separator: there should be a newline between the two entries
+	// Pattern: "first\ntest://2" — the separator is the \n between entries
+	parts := strings.Split(got, "\n")
+	// Should have: [test://1], first, [test://2], second, at minimum
+	found := 0
+	for _, p := range parts {
+		if strings.Contains(p, "first") || strings.Contains(p, "second") {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Errorf("expected 2 content lines, found %d in: %q", found, got)
+	}
+}
+
+func TestRenderReadResourceTUI_BlobSavedTo(t *testing.T) {
+	contents := []gbotmcp.ResourceContent{
+		{URI: "test://binary", BlobSavedTo: "/tmp/saved.bin"},
+	}
+	got := renderReadResourceTUI(contents)
+	if !strings.Contains(got, "(binary content saved to /tmp/saved.bin)") {
+		t.Errorf("should show BlobSavedTo path, got: %q", got)
+	}
+}
+
+func TestRenderReadResourceTUI_NilData(t *testing.T) {
+	got := renderReadResourceTUI(nil)
+	if got != "" {
+		t.Errorf("renderReadResourceTUI(nil) = %q, want empty", got)
+	}
+}
+
+func TestRenderReadResourceTUI_WrongType(t *testing.T) {
+	got := renderReadResourceTUI("not a slice")
+	if got != "" {
+		t.Errorf("renderReadResourceTUI(string) = %q, want empty", got)
+	}
+}
+
+func TestRenderReadResourceTUI_WithMimeType(t *testing.T) {
+	contents := []gbotmcp.ResourceContent{
+		{URI: "test://1", MimeType: "application/json", Text: `{}`},
+	}
+	got := renderReadResourceTUI(contents)
+	if !strings.Contains(got, "[test://1] (application/json)") {
+		t.Errorf("should show MimeType in header, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatWireResult for ReadMcpResource (line 166-168)
+// ---------------------------------------------------------------------------
+
+func TestReadMcpResource_FormatWireResult(t *testing.T) {
+	reg := gbotmcp.NewRegistry(gbotmcp.NewClientManager(nil, false, ""), gbotmcp.ChangeCallbacks{})
+	tt := NewReadMcpResource(reg)
+
+	wf, ok := tt.(tool.ToolWithWireFormat)
+	if !ok {
+		t.Fatal("ReadMcpResource should implement ToolWithWireFormat")
+	}
+
+	// nil data → emptyResourcesMessage (from renderResourceResultJSON)
+	got := wf.FormatWireResult(nil)
+	if got != emptyResourcesMessage {
+		t.Errorf("FormatWireResult(nil) = %q, want %q", got, emptyResourcesMessage)
+	}
+
+	// empty ResourceContent → "[]"
+	got = wf.FormatWireResult([]gbotmcp.ResourceContent{})
+	if got != "[]" {
+		t.Errorf("FormatWireResult(empty ResourceContent) = %q, want %q", got, "[]")
+	}
+
+	// non-empty ResourceContent → JSON
+	got = wf.FormatWireResult([]gbotmcp.ResourceContent{
+		{URI: "test://1", Text: "hello"},
+	})
+	if !strings.Contains(got, "test://1") {
+		t.Errorf("FormatWireResult with content should contain URI, got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

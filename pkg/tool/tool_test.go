@@ -422,6 +422,149 @@ func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
 // ToolUseContext
 // ---------------------------------------------------------------------------
 
+func TestIsDeferred_True(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:          "Deferred",
+		Call_:          func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_:   func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_:   func(input json.RawMessage) (string, error) { return "", nil },
+		ShouldDefer_:   true,
+	}
+
+	tt := tool.BuildTool(def)
+	if !tool.IsDeferred(tt) {
+		t.Error("IsDeferred() = false, want true for ShouldDefer_=true")
+	}
+}
+
+func TestIsDeferred_False(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:        "NotDeferred",
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+	if tool.IsDeferred(tt) {
+		t.Error("IsDeferred() = true, want false for default tool")
+	}
+}
+
+func TestSearchHint_WithHint(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:        "Hinted",
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+		SearchHint_:  "search files by pattern",
+	}
+
+	tt := tool.BuildTool(def)
+	got := tool.SearchHint(tt)
+	if got != "search files by pattern" {
+		t.Errorf("SearchHint() = %q, want %q", got, "search files by pattern")
+	}
+}
+
+func TestSearchHint_NoHint(t *testing.T) {
+	t.Parallel()
+
+	// minimalTool implements Tool but NOT ToolWithSearchHint
+	tt := minimalTool{}
+	got := tool.SearchHint(tt)
+	if got != "" {
+		t.Errorf("SearchHint() = %q, want empty string for tool without hint", got)
+	}
+}
+
+// minimalTool implements only the Tool interface — no optional interfaces.
+type minimalTool struct{}
+
+func (minimalTool) Name() string                                                  { return "minimal" }
+func (minimalTool) Aliases() []string                                             { return nil }
+func (minimalTool) Description(json.RawMessage) (string, error)                   { return "minimal", nil }
+func (minimalTool) InputSchema() json.RawMessage                                  { return json.RawMessage(`{}`) }
+func (minimalTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+	return nil, nil
+}
+func (minimalTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (minimalTool) IsReadOnly(json.RawMessage) bool       { return false }
+func (minimalTool) IsDestructive(json.RawMessage) bool    { return false }
+func (minimalTool) IsConcurrencySafe(json.RawMessage) bool { return false }
+func (minimalTool) IsEnabled() bool                       { return true }
+func (minimalTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
+func (minimalTool) MaxResultSize() int                    { return 50000 }
+func (minimalTool) Prompt() string                        { return "" }
+func (minimalTool) RenderResult(any) string                { return "" }
+
+func TestFormatWireResult(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:  "WireTool",
+		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+		FormatWireResult_: func(data any) string {
+			return "wire:" + data.(string)
+		},
+	}
+
+	tt := tool.BuildTool(def)
+
+	wf, ok := tt.(tool.ToolWithWireFormat)
+	if !ok {
+		t.Fatal("tool should implement ToolWithWireFormat when FormatWireResult_ is set")
+	}
+
+	got := wf.FormatWireResult("test")
+	if got != "wire:test" {
+		t.Errorf("FormatWireResult() = %q, want %q", got, "wire:test")
+	}
+}
+
+func TestMaxResultSize_Default(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:        "SizeDefault",
+		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	tt := tool.BuildTool(def)
+	if tt.MaxResultSize() != 50000 {
+		t.Errorf("MaxResultSize() = %d, want 50000", tt.MaxResultSize())
+	}
+}
+
+func TestMaxResultSize_Custom(t *testing.T) {
+	t.Parallel()
+
+	def := tool.ToolDef{
+		Name_:              "SizeCustom",
+		Call_:              func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		InputSchema_:       func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_:       func(input json.RawMessage) (string, error) { return "", nil },
+		MaxResultSizeChars: 100000,
+	}
+
+	tt := tool.BuildTool(def)
+	if tt.MaxResultSize() != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", tt.MaxResultSize())
+	}
+}
+
 func TestToolUseContext(t *testing.T) {
 	t.Parallel()
 

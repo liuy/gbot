@@ -253,16 +253,15 @@ func TestScreen_IncompleteEscapeOnFlush(t *testing.T) {
 	var events []ScreenEvent
 	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
 
-	// Incomplete SGR at end of stream
-	s.Write([]byte("\x1b[31m"))
+	// Incomplete SGR — missing final byte → buffered, then recovered by Flush
+	s.Write([]byte("\x1b[31"))
 	s.Flush()
 
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	// The partial SGR should be included in the flushed content
-	if !strings.Contains(events[0].Content, "\x1b[31m") {
-		t.Errorf("content = %q, should contain SGR sequence", events[0].Content)
+	if !strings.Contains(events[0].Content, "\x1b[31") {
+		t.Errorf("content = %q, should contain partial SGR sequence", events[0].Content)
 	}
 }
 
@@ -304,6 +303,167 @@ func TestScreen_LargeInput(t *testing.T) {
 		}
 	}
 	assertEvent(t, events[100], ScreenReplace, "done!")
+}
+
+func TestScreen_InvalidUTF8LeadByte(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// 0x80 is a continuation byte without a lead byte → invalid UTF-8, skipped
+	s.Write([]byte{0x80, 'o', 'k', '\n'})
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	assertEvent(t, events[0], ScreenAppend, "ok")
+}
+
+func TestScreen_ControlCharactersSkipped(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// SOH (0x01) and BEL (0x07) are control chars < 0x20, not \r or \n → skipped
+	s.Write([]byte{0x01, 'a', 0x07, 'b', '\n'})
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	assertEvent(t, events[0], ScreenAppend, "ab")
+}
+
+func TestScreen_BareEscapeSequence(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// ESC followed by a letter (not [ or ]) → bare ESC, consumed and discarded
+	s.Write([]byte{'\x1b', 'X', 'h', 'i', '\n'})
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	assertEvent(t, events[0], ScreenAppend, "hi")
+}
+
+func TestScreen_IncompleteEscapeJustESC(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// Just ESC byte → incomplete, buffer remaining. Next write completes it as CSI SGR.
+	s.Write([]byte{'\x1b'})
+	s.Write([]byte{'[', '3', '1', 'm', 'r', 'e', 'd', '\n'})
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	want := "\x1b[31mred"
+	if events[0].Content != want {
+		t.Errorf("content = %q, want %q", events[0].Content, want)
+	}
+}
+
+func TestScreen_CSIIntermediateBytes(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// CSI with intermediate byte: \x1b[?25h (show cursor) — ? is parameter, but
+	// let's use an intermediate byte range 0x20-0x2F after parameters
+	// \x1b[?25l = hide cursor: ? is 0x3F (parameter), 'l' is 0x6C (final)
+	// Test with space (0x20) as intermediate: \x1b[?25\x20l
+	// Actually let's just use a sequence with intermediate bytes
+	s.Write([]byte("\x1b[?\x20lhel\x1b[?25llo\n"))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	assertEvent(t, events[0], ScreenAppend, "hello")
+}
+
+func TestScreen_CSIInvalidFinalByte(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// CSI with final byte outside 0x40-0x7E (e.g., 0x30 = '0' digit)
+	// \x1b[0 followed by '0' as "final" → invalid, consumed up to that point
+	// The '0' at position after parameters is not a valid final byte (< 0x40)
+	// But actually in parseCSI, after parameter bytes (0x30-0x3F), if the next
+	// byte is also in parameter range, it keeps going. We need a byte that is
+	// not parameter, not intermediate, and not a valid final byte.
+	// After parameters, byte < 0x20 (control char) would work.
+	s.Write([]byte("\x1b[" + string([]byte{0x10}) + "ok\n"))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	assertEvent(t, events[0], ScreenAppend, "ok")
+}
+
+func TestScreen_OSCIncomplete(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// OSC without terminator → incomplete, buffered across writes
+	s.Write([]byte("\x1b]0;unfinished"))
+	// The parseOSC returns -1, parseEscape returns -1, Write buffers remaining
+	// Now send terminator + content in next write
+	s.Write([]byte("\x07hello\n"))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	assertEvent(t, events[0], ScreenAppend, "hello")
+}
+
+func TestScreen_FlushNonSGREscapeRecovery(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// Write incomplete escape that is NOT SGR (e.g., partial OSC)
+	// ESC ] starts OSC, not SGR
+	s.Write([]byte("\x1b]0;title"))
+	// Now escapeBuf contains the partial. Flush should handle non-SGR escape.
+	s.Flush()
+
+	// The incomplete OSC escape is NOT SGR (buf[1] is ']', not '['),
+	// so the SGR check fails and the else branch runs.
+	// But line is still empty, so no event emitted.
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events, got %d", len(events))
+	}
+}
+
+func TestScreen_FlushAfterLFNoReEmit(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// Write a complete line with \n → lineEmitted becomes true
+	s.Write([]byte("done\n"))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event after write, got %d", len(events))
+	}
+
+	// Flush should NOT re-emit because lineEmitted=true after \n
+	s.Flush()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event total (no re-emit on flush), got %d", len(events))
+	}
+}
+
+func TestScreen_IncompleteCSIAcrossWrites(t *testing.T) {
+	var events []ScreenEvent
+	s := NewScreen(func(ev ScreenEvent) { events = append(events, ev) })
+
+	// Start a CSI sequence, don't finish it
+	s.Write([]byte("\x1b[31"))
+	// Now send the rest
+	s.Write([]byte("mcolor\n"))
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	want := "\x1b[31mcolor"
+	if events[0].Content != want {
+		t.Errorf("content = %q, want %q", events[0].Content, want)
+	}
 }
 
 func assertEvent(t *testing.T, ev ScreenEvent, wantKind ScreenEventKind, wantContent string) {

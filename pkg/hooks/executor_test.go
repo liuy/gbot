@@ -270,3 +270,23 @@ func TestFormatEnvVar(t *testing.T) {
 		t.Errorf("FormatEnvVar = %q, want 'GBOT_PROJECT_DIR=/tmp/test'", got)
 	}
 }
+
+func TestExecuteHook_NoTimeout(t *testing.T) {
+	e := &CommandExecutor{}
+	result := e.ExecuteHook(context.Background(), "echo hello", nil, 0, nil)
+	if result.Outcome != HookOutcomeSuccess {
+		t.Errorf("Outcome = %v, want Success with no timeout", result.Outcome)
+	}
+}
+
+func TestExecuteHook_StdoutJSONAdditionalContext(t *testing.T) {
+	e := &CommandExecutor{}
+	script := `echo '{"decision":"approve","additionalContext":"extra info"}'`
+	result := e.ExecuteHook(context.Background(), script, nil, 5*time.Second, nil)
+	if result.Outcome != HookOutcomeSuccess {
+		t.Errorf("Outcome = %v, want Success", result.Outcome)
+	}
+	if result.AdditionalContext != "extra info" {
+		t.Errorf("AdditionalContext = %q, want 'extra info'", result.AdditionalContext)
+	}
+}

@@ -533,7 +533,57 @@ func TestPermissionMethods(t *testing.T) {
 	if got := at.InterruptBehavior(); got != tool.InterruptBlock {
 		t.Errorf("InterruptBehavior() = %v, want InterruptBlock", got)
 	}
+	if got := at.MaxResultSize(); got != 100000 {
+		t.Errorf("MaxResultSize() = %d, want 100000", got)
+	}
 }
+
+func TestSetSkillRegistry(t *testing.T) {
+	at := New()
+	reg := &testSkillRegistry{}
+	at.SetSkillRegistry(reg)
+	if at.skillReg != reg {
+		t.Error("SetSkillRegistry did not set the registry")
+	}
+}
+
+func TestSetMcpConnect(t *testing.T) {
+	at := New()
+	var fn McpConnectFunc = func(ctx context.Context, name string, specs []json.RawMessage) (*McpConnectResult, error) {
+		return nil, nil
+	}
+	at.SetMcpConnect(fn)
+	if at.mcpConnect == nil {
+		t.Error("SetMcpConnect did not set the function")
+	}
+}
+
+func TestJobAdapter_NilForkReg(t *testing.T) {
+	at := New()
+	if got := at.JobAdapter(); got != nil {
+		t.Error("JobAdapter() should return nil when forkReg is nil")
+	}
+}
+
+func TestJobAdapter_NonNilForkReg(t *testing.T) {
+	at := New()
+	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+	if got := at.JobAdapter(); got == nil {
+		t.Error("JobAdapter() should return non-nil when forkReg is set")
+	}
+}
+
+func TestForkAgentJobAdapter_Prefix(t *testing.T) {
+	reg := NewForkAgentRegistry()
+	a := NewForkAgentJobAdapter(reg)
+	if got := a.Prefix(); got != "fork-" {
+		t.Errorf("Prefix() = %q, want %q", got, "fork-")
+	}
+}
+
+type testSkillRegistry struct{}
+
+func (t *testSkillRegistry) GetAllSkills() []types.SkillCommand { return nil }
 
 func TestRenderResultNonSubQueryResult(t *testing.T) {
 	at := New()
@@ -1807,5 +1857,18 @@ func TestGetLastToolUseName_ToolUseAtStart(t *testing.T) {
 	got := GetLastToolUseName(msg)
 	if got != "Bash" {
 		t.Errorf("expected %q (only tool_use, found via backward walk), got %q", "Bash", got)
+	}
+}
+
+func TestBuildEnvBlock_ContainsShellAndModel(t *testing.T) {
+	env := buildEnvBlock("/tmp", false, "test-model")
+	if !strings.Contains(env, "/tmp") {
+		t.Errorf("env block should contain working dir, got: %q", env)
+	}
+	if !strings.Contains(env, "test-model") {
+		t.Errorf("env block should contain model, got: %q", env)
+	}
+	if !strings.Contains(env, "Shell:") {
+		t.Errorf("env block should contain Shell line, got: %q", env)
 	}
 }

@@ -1272,3 +1272,19 @@ func TestExtractPDFPages_ReadDirError(t *testing.T) {
 		t.Errorf("JPG files in output dir = %d, want 1", jpgCount)
 	}
 }
+
+func TestFormatFileSize_SmallBytes(t *testing.T) {
+	t.Parallel()
+	got := formatFileSize(512)
+	if got != "512B" {
+		t.Errorf("formatFileSize(512) = %q, want %q", got, "512B")
+	}
+}
+
+func TestFormatFileSize_LargeBytes(t *testing.T) {
+	t.Parallel()
+	got := formatFileSize(2048)
+	if got != "2.0KB" {
+		t.Errorf("formatFileSize(2048) = %q, want %q", got, "2.0KB")
+	}
+}
