@@ -27,9 +27,6 @@ func TestNewBuilder(t *testing.T) {
 	if len(b.ToolPrompts) != 0 {
 		t.Errorf("ToolPrompts should be empty, got %d items", len(b.ToolPrompts))
 	}
-	if b.GBOTMDContent != "" {
-		t.Errorf("GBOTMDContent should be empty by default, got %q", b.GBOTMDContent)
-	}
 }
 
 func TestBuild_Basic(t *testing.T) {
@@ -45,7 +42,6 @@ func TestBuild_Basic(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
-	// Check for unique, specific substrings from the system prompt
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("built prompt missing 'You are gbot'")
 	}
@@ -81,29 +77,6 @@ func TestBuild_WithGitStatus(t *testing.T) {
 	}
 }
 
-func TestBuild_WithGBOTMDContent(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GBOTMDContent = "Always use TypeScript strict mode."
-
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
-
-	if !strings.Contains(promptStr, "Always use TypeScript strict mode.") {
-		t.Error("built prompt missing GBOT.md content")
-	}
-	if !strings.Contains(promptStr, "Instructions") {
-		t.Error("built prompt missing Instructions section header")
-	}
-}
-
 func TestBuild_WithToolPrompts(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
@@ -119,14 +92,12 @@ func TestBuild_WithToolPrompts(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
-	// Check for specific tool names and unique content
 	if !strings.Contains(promptStr, "Tool 1: Use wisely") {
 		t.Error("built prompt missing tool prompt 1")
 	}
 	if !strings.Contains(promptStr, "Tool 2: Be carefully") {
 		t.Error("built prompt missing tool prompt 2")
 	}
-	// Also verify base prompt is still present
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("built prompt should still contain 'You are gbot'")
 	}
@@ -141,7 +112,6 @@ func TestBuild_AllSections(t *testing.T) {
 		DefaultBranch: "main",
 		IsDirty:       true,
 	}
-	b.GBOTMDContent = "Custom instructions here."
 	b.ToolPrompts = []string{"Bash tool: Use for shell commands."}
 
 	result, err := b.Build()
@@ -160,7 +130,6 @@ func TestBuild_AllSections(t *testing.T) {
 		"Git branch: develop",
 		"Default branch: main",
 		"dirty",
-		"Custom instructions here.",
 		"Bash tool: Use for shell commands.",
 	}
 
@@ -170,7 +139,6 @@ func TestBuild_AllSections(t *testing.T) {
 		}
 	}
 
-	// Verify order: system prompt should come before tool definitions
 	systemPromptIdx := strings.Index(promptStr, "You are gbot")
 	toolPromptIdx := strings.Index(promptStr, "Bash tool: Use for shell commands.")
 	if systemPromptIdx == -1 || toolPromptIdx == -1 {
@@ -200,30 +168,9 @@ func TestBuild_EmptyToolPrompts(t *testing.T) {
 	}
 }
 
-func TestBuild_EmptyGBOTMDContent(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GBOTMDContent = ""
-	result, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build() error: %v", err)
-	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
-
-	if strings.Contains(promptStr, "Instructions") {
-		t.Error("built prompt should not have Instructions section for empty GBOT.md")
-	}
-}
-
 func TestBuild_EscapesJSON(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	b.GBOTMDContent = `Contains "quotes" and <html>`
-
 	result, err := b.Build()
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
@@ -232,10 +179,6 @@ func TestBuild_EscapesJSON(t *testing.T) {
 	var promptStr string
 	if err := json.Unmarshal(result, &promptStr); err != nil {
 		t.Fatalf("Build() result is not valid JSON: %v, raw: %s", err, string(result))
-	}
-
-	if !strings.Contains(promptStr, `Contains "quotes"`) {
-		t.Errorf("expected escaped quotes in prompt, got: %s", promptStr)
 	}
 }
 
@@ -314,7 +257,6 @@ func TestGitStatusSection_Dirty(t *testing.T) {
 func TestLoadGitStatus(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Initialize a git repo with a specific branch
 	cmd := exec.Command("git", "init")
 	cmd.Dir = tmpDir
 	if err := cmd.Run(); err != nil {
@@ -336,8 +278,6 @@ func TestLoadGitStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Need at least one commit for rev-parse --abbrev-ref HEAD to return
-	// the branch name instead of "HEAD"
 	if err := os.WriteFile(filepath.Join(tmpDir, "initial.txt"), []byte("init"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +316,6 @@ func TestLoadGitStatus_NonGitDir(t *testing.T) {
 func TestLoadGitStatus_WithRemote(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Initialize repo
 	cmd := exec.Command("git", "init", tmpDir)
 	if err := cmd.Run(); err != nil {
 		t.Skip("git not available")
@@ -389,7 +328,6 @@ func TestLoadGitStatus_WithRemote(t *testing.T) {
 	_, _ = exec.Command("git", "-C", tmpDir, "add", ".").Output()
 	_, _ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Output()
 
-	// Add remote and set origin/HEAD so default branch is detected
 	_, _ = exec.Command("git", "-C", tmpDir, "remote", "add", "origin", "/tmp/fake").Output()
 	_, _ = exec.Command("git", "-C", tmpDir, "update-ref", "refs/remotes/origin/main", "HEAD").Output()
 	_, _ = exec.Command("git", "-C", tmpDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main").Output()
@@ -400,28 +338,6 @@ func TestLoadGitStatus_WithRemote(t *testing.T) {
 	}
 	if info.DefaultBranch != "main" {
 		t.Errorf("DefaultBranch = %q, want 'main'", info.DefaultBranch)
-	}
-}
-
-func TestLoadGBOTMD(t *testing.T) {
-	t.Parallel()
-	tmpDir := t.TempDir()
-
-	// No GBOT.md files exist
-	content := context.LoadGBOTMD(tmpDir)
-	if content != "" {
-		t.Errorf("expected empty content with no GBOT.md files, got %q", content)
-	}
-
-	// Create a GBOT.md in the working directory
-	gbotMD := filepath.Join(tmpDir, "GBOT.md")
-	if err := os.WriteFile(gbotMD, []byte("Test instructions."), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	content = context.LoadGBOTMD(tmpDir)
-	if !strings.Contains(content, "Test instructions.") {
-		t.Errorf("expected GBOT.md content, got %q", content)
 	}
 }
 
@@ -453,7 +369,6 @@ func TestBaseSystemPrompt(t *testing.T) {
 func TestBuild_NoFiles(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
-	// No files, no git status, no GBOT.md - just base prompt
 	result, err := b.Build()
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
@@ -464,15 +379,12 @@ func TestBuild_NoFiles(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
-	// Should still contain the base system prompt
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("prompt should contain 'You are gbot' even without files")
 	}
-	// Should contain working directory
 	if !strings.Contains(promptStr, "/work") {
 		t.Error("prompt should contain working directory even without files")
 	}
-	// Should contain platform info (Platform: section)
 	if !strings.Contains(promptStr, "Platform:") {
 		t.Error("prompt should contain platform info even without files")
 	}
@@ -502,11 +414,7 @@ func TestBuild_WithSkillListing(t *testing.T) {
 
 func TestBuild_MarshalError(t *testing.T) {
 	t.Parallel()
-	// json.Marshal of a string never fails in practice, so this test
-	// verifies the error path is reachable by testing Build returns
-	// a valid result (proving lines 77-81 execute correctly).
 	b := context.NewBuilder("/work")
-	b.GBOTMDContent = "test"
 	b.ToolPrompts = []string{"p1", "", "p3"}
 
 	result, err := b.Build()

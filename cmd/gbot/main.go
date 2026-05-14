@@ -125,7 +125,6 @@ func main() {
 	// SetNotifyFn with stubs creates forkReg so JobAdapter() works.
 	agentTool := agenttool.New()
 	agentTool.SetWorkingDir(workingDir)
-	agentTool.SetGBOTMDContent(ctxbuild.LoadGBOTMD(workingDir))
 	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
 	agentTool.SetSkillRegistry(skillReg)
 	agentTool.SetNotifyFn(
@@ -685,9 +684,6 @@ func buildSystemPrompt(workingDir string, reg *tool.Registry, skillReg *skills.R
 
 	// Load git status
 	builder.GitStatus = ctxbuild.LoadGitStatus(workingDir)
-
-	// Load GBOT.md instructions
-	builder.GBOTMDContent = ctxbuild.LoadGBOTMD(workingDir)
 
 	// Load memory files
 	builder.MemoryFiles = ctxbuild.LoadMemoryFiles(workingDir)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,23 +22,23 @@ type mockTool struct {
 	name string
 }
 
-func (m *mockTool) Name() string                                                    { return m.name }
-func (m *mockTool) Aliases() []string                                               { return nil }
-func (m *mockTool) Description(json.RawMessage) (string, error)                     { return "", nil }
-func (m *mockTool) InputSchema() json.RawMessage                                    { return nil }
+func (m *mockTool) Name() string                                { return m.name }
+func (m *mockTool) Aliases() []string                           { return nil }
+func (m *mockTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (m *mockTool) InputSchema() json.RawMessage                { return nil }
 func (m *mockTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
 func (m *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (m *mockTool) IsReadOnly(json.RawMessage) bool      { return false }
-func (m *mockTool) IsDestructive(json.RawMessage) bool   { return false }
-func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool { return false }
-func (m *mockTool) IsEnabled() bool                      { return true }
+func (m *mockTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (m *mockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (m *mockTool) IsEnabled() bool                           { return true }
 func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
-func (m *mockTool) Prompt() string                       { return "" }
-func (m *mockTool) RenderResult(any) string              { return "" }
+func (m *mockTool) Prompt() string                            { return "" }
+func (m *mockTool) RenderResult(any) string                   { return "" }
 
 func (m *mockTool) MaxResultSize() int { return 50000 }
 
@@ -159,7 +161,7 @@ func TestResultExtractionNormal(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("found it")}},
 	}
 
-	startTime := time.Now().Add(-1 * time.Second)  // REAL-TIME: startTime for FinalizeResult
+	startTime := time.Now().Add(-1 * time.Second) // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "General", startTime, types.Usage{InputTokens: 100, OutputTokens: 50}, 0)
 
 	if result.Content != "found it" {
@@ -189,7 +191,7 @@ func TestResultExtractionFallback(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now().Add(-2 * time.Second)  // REAL-TIME: startTime for FinalizeResult
+	startTime := time.Now().Add(-2 * time.Second) // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Explore", startTime, types.Usage{InputTokens: 200, OutputTokens: 100}, 2)
 
 	// Should walk backward and find "found something" from the first assistant
@@ -213,7 +215,7 @@ func TestResultExtractionNoText(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
+	startTime := time.Now() // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Plan", startTime, types.Usage{}, 1)
 
 	if !strings.Contains(result.Content, "no text output") {
@@ -235,7 +237,7 @@ func TestResultExtractionInterruptOnUserMessage(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
+	startTime := time.Now() // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Plan", startTime, types.Usage{}, 1)
 
 	if strings.Contains(result.Content, "completed") {
@@ -256,7 +258,7 @@ func TestResultExtractionInterruptOnAssistantMessage(t *testing.T) {
 		}},
 	}
 
-	startTime := time.Now()  // REAL-TIME: startTime for FinalizeResult
+	startTime := time.Now() // REAL-TIME: startTime for FinalizeResult
 	result := FinalizeResult(messages, "Explore", startTime, types.Usage{}, 0)
 
 	// Should return the text content found ("Let me check[Request interrupted by user]")
@@ -1100,6 +1102,7 @@ func TestFormatWireResult_NonSubQueryResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCall_UserContextMessages_CurrentDate(t *testing.T) {
+	tmpDir := t.TempDir()
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1109,7 +1112,7 @@ func TestCall_UserContextMessages_CurrentDate(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1117,23 +1120,30 @@ func TestCall_UserContextMessages_CurrentDate(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// UserContextMessages must contain currentDate
-	if len(capturedOpts.UserContextMessages) < 1 {
-		t.Fatalf("expected at least 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("expected 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
 	}
-	firstMsg := capturedOpts.UserContextMessages[0]
-	if firstMsg.Role != types.RoleUser {
-		t.Errorf("first UserContextMessage Role = %q, want %q", firstMsg.Role, types.RoleUser)
+	msg := capturedOpts.UserContextMessages[0]
+	if msg.Role != types.RoleUser {
+		t.Errorf("Role = %q, want %q", msg.Role, types.RoleUser)
 	}
-	if len(firstMsg.Content) == 0 {
-		t.Fatal("first UserContextMessage has no content")
+	if !msg.HasFlag(types.FlagMeta) {
+		t.Error("UserContextMessage should have FlagMeta")
 	}
-	if !strings.Contains(firstMsg.Content[0].Text, "Today's date is") {
-		t.Errorf("first UserContextMessage should contain currentDate, got %q", firstMsg.Content[0].Text)
+	if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
+		t.Error("UserContextMessage should contain <system-reminder> wrapper")
+	}
+	if !strings.Contains(msg.Content[0].Text, "Today's date is") {
+		t.Error("UserContextMessage should contain currentDate")
 	}
 }
 
 func TestCall_UserContextMessages_ClaudeMd(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# My Project\nBuild with make"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1143,8 +1153,7 @@ func TestCall_UserContextMessages_ClaudeMd(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
-	at.SetGBOTMDContent("# My Project\nBuild with make")
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1152,17 +1161,30 @@ func TestCall_UserContextMessages_ClaudeMd(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// General agent should have 2 UserContextMessages: currentDate + claudeMd
-	if len(capturedOpts.UserContextMessages) != 2 {
-		t.Fatalf("expected 2 UserContextMessages, got %d", len(capturedOpts.UserContextMessages))
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("expected 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
 	}
-	secondMsg := capturedOpts.UserContextMessages[1]
-	if !strings.Contains(secondMsg.Content[0].Text, "My Project") {
-		t.Errorf("second UserContextMessage should contain claudeMd content, got %q", secondMsg.Content[0].Text)
+	msg := capturedOpts.UserContextMessages[0]
+	if !msg.HasFlag(types.FlagMeta) {
+		t.Error("UserContextMessage should have FlagMeta")
+	}
+	if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
+		t.Error("UserContextMessage should contain <system-reminder> wrapper")
+	}
+	if !strings.Contains(msg.Content[0].Text, "My Project") {
+		t.Error("UserContextMessage should contain AGENTS.md content")
+	}
+	if !strings.Contains(msg.Content[0].Text, "Today's date is") {
+		t.Error("UserContextMessage should contain currentDate")
 	}
 }
 
 func TestCall_UserContextMessages_ExploreOmitsClaudeMd(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Project rules\nUse tabs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1172,8 +1194,7 @@ func TestCall_UserContextMessages_ExploreOmitsClaudeMd(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
-	at.SetGBOTMDContent("# Project rules")
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"search","subagent_type":"Explore"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1181,16 +1202,24 @@ func TestCall_UserContextMessages_ExploreOmitsClaudeMd(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// Explore should omit claudeMd — only currentDate
 	if len(capturedOpts.UserContextMessages) != 1 {
-		t.Fatalf("Explore should have 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+		t.Fatalf("Explore should have 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
 	}
-	if strings.Contains(capturedOpts.UserContextMessages[0].Content[0].Text, "Project rules") {
+	msg := capturedOpts.UserContextMessages[0]
+	if strings.Contains(msg.Content[0].Text, "Project rules") {
 		t.Error("Explore should NOT receive claudeMd content")
+	}
+	if !strings.Contains(msg.Content[0].Text, "Today's date is") {
+		t.Error("Explore should still receive currentDate")
 	}
 }
 
 func TestCall_UserContextMessages_PlanOmitsClaudeMd(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1200,8 +1229,7 @@ func TestCall_UserContextMessages_PlanOmitsClaudeMd(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
-	at.SetGBOTMDContent("# Project rules")
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"plan","subagent_type":"Plan"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1209,13 +1237,20 @@ func TestCall_UserContextMessages_PlanOmitsClaudeMd(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// Plan should omit claudeMd — only currentDate
 	if len(capturedOpts.UserContextMessages) != 1 {
-		t.Fatalf("Plan should have 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+		t.Fatalf("Plan should have 1 UserContextMessage, got %d", len(capturedOpts.UserContextMessages))
+	}
+	msg := capturedOpts.UserContextMessages[0]
+	if strings.Contains(msg.Content[0].Text, "Rules") {
+		t.Error("Plan should NOT receive claudeMd content")
+	}
+	if !strings.Contains(msg.Content[0].Text, "Today's date is") {
+		t.Error("Plan should still receive currentDate")
 	}
 }
 
 func TestCall_UserContextMessages_EmptyClaudeMd(t *testing.T) {
+	tmpDir := t.TempDir()
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1225,8 +1260,7 @@ func TestCall_UserContextMessages_EmptyClaudeMd(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
-	// No SetGBOTMDContent: empty by default
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1234,9 +1268,16 @@ func TestCall_UserContextMessages_EmptyClaudeMd(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// Only currentDate — no claudeMd message for empty content
+	// Only currentDate — no AGENTS.md/CLAUDE.md files
 	if len(capturedOpts.UserContextMessages) != 1 {
 		t.Fatalf("expected 1 UserContextMessage (currentDate only), got %d", len(capturedOpts.UserContextMessages))
+	}
+	msg := capturedOpts.UserContextMessages[0]
+	if !strings.Contains(msg.Content[0].Text, "Today's date is") {
+		t.Error("should contain currentDate")
+	}
+	if !strings.Contains(msg.Content[0].Text, "<system-reminder>") {
+		t.Error("should be wrapped in <system-reminder>")
 	}
 }
 
@@ -1353,6 +1394,11 @@ func TestCall_NilGitStatus_NoAppend(t *testing.T) {
 }
 
 func TestCall_UserContextMessages_Ordering(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("# Project\nUse tabs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
 		capturedOpts = opts
@@ -1362,8 +1408,7 @@ func TestCall_UserContextMessages_Ordering(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetWorkingDir("/tmp")
-	at.SetGBOTMDContent("# CLAUDE.md content")
+	at.SetWorkingDir(tmpDir)
 
 	input := json.RawMessage(`{"description":"test","prompt":"do it","subagent_type":"General"}`)
 	_, err := at.Call(context.Background(), input, nil)
@@ -1371,15 +1416,18 @@ func TestCall_UserContextMessages_Ordering(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// Verify ordering: currentDate first, claudeMd second
-	if len(capturedOpts.UserContextMessages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(capturedOpts.UserContextMessages))
+	// Single <system-reminder> message with both currentDate and claudeMd
+	if len(capturedOpts.UserContextMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(capturedOpts.UserContextMessages))
 	}
-	if !strings.Contains(capturedOpts.UserContextMessages[0].Content[0].Text, "Today's date is") {
-		t.Error("first message should be currentDate")
+	text := capturedOpts.UserContextMessages[0].Content[0].Text
+	found := strings.Contains(text, "Today's date is")
+	found := strings.Contains(text, "Project")
+	if !found {
+		t.Error("message should contain currentDate")
 	}
-	if !strings.Contains(capturedOpts.UserContextMessages[1].Content[0].Text, "CLAUDE.md") {
-		t.Error("second message should be claudeMd")
+	if !found {
+		t.Error("message should contain AGENTS.md content")
 	}
 }
 

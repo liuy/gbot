@@ -27,6 +27,7 @@ import (
 	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/types"
 
 	"github.com/liuy/gbot/pkg/memory/session"
@@ -1122,6 +1123,26 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 	// Replaces large tool results with previews when aggregate per-message
 	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
 	apiMessages = e.applyBudget(apiMessages)
+
+	// Prepend user context (AGENTS.md/CLAUDE.md/currentDate).
+	// Source: query.ts:660 — prependUserContext(messages, userContext).
+	// Placed before ToolSearch prepend so final order matches TS:
+	// [deferred-tools, claudeMd+currentDate, ...conversation]
+	if !e.isSubagent {
+		ctxMap := ctxbuild.LoadContextFiles(e.workingDir)
+		if len(ctxMap) > 0 {
+			ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
+			ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+			if ctxText != "" {
+				ctxMsg := types.Message{
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+					Flags:   types.FlagMeta,
+				}
+				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
+			}
+		}
+	}
 
 	// ToolSearch: prepend deferred tools announcement to first user message.
 	// Source: utils/toolSearch.ts — <available-deferred-tools> user message prefix

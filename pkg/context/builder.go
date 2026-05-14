@@ -15,9 +15,6 @@ type Builder struct {
 	// WorkingDir is the current working directory.
 	WorkingDir string
 
-	// GBOTMDContent is the loaded GBOT.md instruction content.
-	GBOTMDContent string
-
 	// GitStatus is the injected git status information.
 	GitStatus *GitStatusInfo
 
@@ -56,12 +53,6 @@ func (b *Builder) Build() (json.RawMessage, error) {
 	// 3. Git status
 	if b.GitStatus != nil {
 		buf.WriteString(b.GitStatusSection())
-	}
-
-	// 4. GBOT.md instructions
-	if b.GBOTMDContent != "" {
-		buf.WriteString("\n\n## Instructions\n\n")
-		buf.WriteString(b.GBOTMDContent)
 	}
 
 	// 5. Memory — typed-memory prompt with full instructions

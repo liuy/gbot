@@ -78,7 +78,6 @@ type AgentTool struct {
 
 	// Sub-agent environment context — loaded once at startup, read-only during execution
 	workingDir    string
-	gbotMdContent string
 	gitStatus     *ctxbuild.GitStatusInfo
 
 	// Skill registry — injected from main.go, provides all loaded skills.
@@ -114,9 +113,6 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() js
 
 // SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
 func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
-
-// SetGBOTMDContent sets the GBOT.md content for sub-agent injection.
-func (t *AgentTool) SetGBOTMDContent(content string) { t.gbotMdContent = content }
 
 // SetGitStatus sets the git status for sub-agent system prompt injection.
 func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
@@ -275,16 +271,18 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 	// Step 6: Build user context messages
 	// Source: runAgent.ts:380-398 — getUserContext() + prependUserContext()
 	var userCtxMsgs []types.Message
-	// currentDate — Source: context.ts getUserContext().currentDate
-	userCtxMsgs = append(userCtxMsgs, types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02")))},
-	})
-	// claudeMd — Source: context.ts getUserContext().claudeMd, omitted for Explore/Plan
-	if !agentDef.OmitClaudeMd && t.gbotMdContent != "" {
+	ctxMap := ctxbuild.LoadContextFiles(t.workingDir)
+	ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
+	if agentDef.OmitClaudeMd {
+		delete(ctxMap, ctxbuild.KeyClaudeMd)
+		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+	}
+	ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+	if ctxText != "" {
 		userCtxMsgs = append(userCtxMsgs, types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(t.gbotMdContent)},
+			Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+			Flags:   types.FlagMeta,
 		})
 	}
 

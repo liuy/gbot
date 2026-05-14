@@ -9,10 +9,6 @@ import (
 	"github.com/liuy/gbot/pkg/context"
 )
 
-// ---------------------------------------------------------------------------
-// Build benchmarks
-// ---------------------------------------------------------------------------
-
 func BenchmarkBuild_Minimal(b *testing.B) {
 	bldr := context.NewBuilder("/work/project")
 	b.ReportAllocs()
@@ -30,17 +26,6 @@ func BenchmarkBuild_WithGitStatus(b *testing.B) {
 		DefaultBranch: "main",
 		IsDirty:       true,
 	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = bldr.Build()
-	}
-}
-
-func BenchmarkBuild_WithGBOTMD(b *testing.B) {
-	bldr := context.NewBuilder("/work/project")
-	bldr.GBOTMDContent = "Always use Go 1.24 idioms.\nPrefer editing existing files over creating new ones.\nUse table-driven tests for all test functions.\nAvoid global state in packages."
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -75,7 +60,6 @@ func BenchmarkBuild_Full(b *testing.B) {
 		DefaultBranch: "main",
 		IsDirty:       true,
 	}
-	bldr.GBOTMDContent = "Always use Go 1.24 idioms.\nPrefer editing existing files over creating new ones.\nUse table-driven tests for all test functions.\nAvoid global state in packages."
 	bldr.ToolPrompts = []string{
 		"Bash: Execute shell commands. Use for running builds, tests, and other CLI tools.",
 		"Read: Read file contents. Use dedicated tools over Bash for file operations.",
@@ -92,10 +76,6 @@ func BenchmarkBuild_Full(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BaseSystemPrompt benchmark
-// ---------------------------------------------------------------------------
-
 func BenchmarkBaseSystemPrompt(b *testing.B) {
 	bldr := context.NewBuilder("/work")
 	b.ReportAllocs()
@@ -105,10 +85,6 @@ func BenchmarkBaseSystemPrompt(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// PlatformInfo benchmark
-// ---------------------------------------------------------------------------
-
 func BenchmarkPlatformInfo(b *testing.B) {
 	bldr := context.NewBuilder("/work/project")
 	b.ReportAllocs()
@@ -117,10 +93,6 @@ func BenchmarkPlatformInfo(b *testing.B) {
 		_ = bldr.PlatformInfo()
 	}
 }
-
-// ---------------------------------------------------------------------------
-// GitStatusSection benchmarks
-// ---------------------------------------------------------------------------
 
 func BenchmarkGitStatusSection_Clean(b *testing.B) {
 	bldr := context.NewBuilder("/work")
@@ -161,58 +133,27 @@ func BenchmarkGitStatusSection_NonGit(b *testing.B) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// LoadGBOTMD benchmark
-// ---------------------------------------------------------------------------
-
-func BenchmarkLoadGBOTMD_NoFile(b *testing.B) {
+func BenchmarkLoadContextFiles_NoFile(b *testing.B) {
 	tmpDir := b.TempDir()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = context.LoadGBOTMD(tmpDir)
+		_ = context.LoadContextFiles(tmpDir)
 	}
 }
 
-func BenchmarkLoadGBOTMD_WithFile(b *testing.B) {
+func BenchmarkLoadContextFiles_WithFile(b *testing.B) {
 	tmpDir := b.TempDir()
-	content := "# GBOT Instructions\n\nAlways use Go 1.24 idioms.\nPrefer table-driven tests.\nKeep functions short and focused."
-	if err := os.WriteFile(filepath.Join(tmpDir, "GBOT.md"), []byte(content), 0o644); err != nil {
+	content := "# AGENTS Instructions\n\nAlways use Go 1.24 idioms.\nPrefer table-driven tests."
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(content), 0o644); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = context.LoadGBOTMD(tmpDir)
+		_ = context.LoadContextFiles(tmpDir)
 	}
 }
-
-func BenchmarkLoadGBOTMD_MultipleFiles(b *testing.B) {
-	tmpDir := b.TempDir()
-
-	// Root GBOT.md
-	if err := os.WriteFile(filepath.Join(tmpDir, "GBOT.md"), []byte("Root instructions."), 0o644); err != nil {
-		b.Fatal(err)
-	}
-
-	// .gbot/GBOT.md
-	gbotDir := filepath.Join(tmpDir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		b.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gbotDir, "GBOT.md"), []byte("Extended instructions with more detail about coding standards and project conventions."), 0o644); err != nil {
-		b.Fatal(err)
-	}
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = context.LoadGBOTMD(tmpDir)
-	}
-}
-
-// Build output JSON unmarshal (round-trip)
-// ---------------------------------------------------------------------------
 
 func BenchmarkBuild_Unmarshal(b *testing.B) {
 	bldr := context.NewBuilder("/work/project")
@@ -220,7 +161,6 @@ func BenchmarkBuild_Unmarshal(b *testing.B) {
 		IsGit:  true,
 		Branch: "main",
 	}
-	bldr.GBOTMDContent = "Some instructions."
 	result, err := bldr.Build()
 	if err != nil {
 		b.Fatal(err)
