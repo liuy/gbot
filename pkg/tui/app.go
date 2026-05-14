@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"time"
@@ -103,6 +105,10 @@ type App struct {
 	doublePress *DoublePress
 	completions *Completions
 
+	// Paste reference state
+	pasteStore   map[int]string
+	nextPasteID  int
+
 	// Spinner progress state
 	progressStart    time.Time
 	allToolsExpanded bool
@@ -176,6 +182,8 @@ func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
 		completions:      NewCompletions(),
+		pasteStore:       make(map[int]string),
+		nextPasteID:      1,
 		allToolsExpanded: false,
 		idleStop:         make(chan struct{}),
 	}
@@ -371,6 +379,8 @@ func (a *App) resetDisplayState() {
 	a.displayedOutputTokens = 0
 	a.outputTokenTarget = 0
 	a.inputTokenTarget = 0
+	a.pasteStore = make(map[int]string)
+	a.nextPasteID = 1
 	a.cacheReadTokens = 0
 	a.cacheCreationTokens = 0
 	a.toolBlink = false
@@ -751,7 +761,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleHistoryDown(), nil
 
 	case tea.KeyCtrlH:
-		a.input.Backspace()
+		a.input.BackspaceToken()
 		return a, nil
 
 	case tea.KeyCtrlD:
@@ -857,11 +867,12 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(text) == "" {
 			return a, nil
 		}
+		text = a.expandPasteRefs(text)
 		if a.completions.Visible() && a.input.cursor == len(a.input.value) {
 			fillText, shouldExec := a.completions.Accept()
 			a.completions.Dismiss()
 			if shouldExec {
-				return a, a.handleSubmitRepl(fillText)
+				return a, a.handleSubmitRepl(a.expandPasteRefs(fillText))
 			}
 			a.input.SetValue(fillText)
 			return a, nil
@@ -873,7 +884,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyBackspace:
 		a.resetNavAndAccum()
-		a.input.Backspace()
+		a.input.BackspaceToken()
 		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
 
@@ -1010,13 +1021,31 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	if msg.Paste {
-		slog.Info("tui:paste_input", "raw", fmt.Sprintf("%q", string(msg.Runes)), "runes", len(msg.Runes))
+		slog.Info("tui:paste_input", "runes", len(msg.Runes))
 		a.resetNavAndAccum()
-		for _, ch := range msg.Runes {
+		runes := make([]rune, len(msg.Runes))
+		for i, ch := range msg.Runes {
 			if ch == '\r' {
 				ch = '\n'
 			}
-			a.input.InsertChar(ch)
+			runes[i] = ch
+		}
+		newlineCount := 0
+		for _, ch := range runes {
+			if ch == '\n' {
+				newlineCount++
+			}
+		}
+		if len(runes) > 800 || newlineCount > 2 {
+			id := a.nextPasteID
+			a.nextPasteID++
+			a.pasteStore[id] = string(runes)
+			a.input.InsertString(formatPasteRef(id, newlineCount))
+			slog.Info("tui:paste_ref", "id", id, "runes", len(runes), "newlines", newlineCount)
+		} else {
+			for _, ch := range runes {
+				a.input.InsertChar(ch)
+			}
 		}
 		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 		return a, nil
@@ -1030,6 +1059,32 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
 	return a, nil
+}
+
+// formatPasteRef returns the display string for a paste reference.
+// Matches TS: formatPastedTextRef(id, numLines).
+func formatPasteRef(id, numLines int) string {
+	if numLines == 0 {
+		return fmt.Sprintf("[Pasted text #%d]", id)
+	}
+	return fmt.Sprintf("[Pasted text #%d +%d lines]", id, numLines)
+}
+
+// pasteRefExpandRe matches [Pasted text #N] or [Pasted text #N +L lines]
+// for expanding references back to full content on submit.
+var pasteRefExpandRe = regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
+
+// expandPasteRefs replaces all paste references in text with their stored content.
+// References without a matching store entry are left as-is.
+func (a *App) expandPasteRefs(text string) string {
+	return pasteRefExpandRe.ReplaceAllStringFunc(text, func(match string) string {
+		sub := pasteRefExpandRe.FindStringSubmatch(match)
+		id, _ := strconv.Atoi(sub[1])
+		if content, ok := a.pasteStore[id]; ok {
+			return content
+		}
+		return match
+	})
 }
 
 // handleKillWord deletes the word before the cursor and pushes it to the kill ring.

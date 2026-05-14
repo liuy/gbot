@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -284,12 +285,57 @@ func (i *Input) InsertNewline() {
 	i.InsertChar('\n')
 }
 
+// InsertString inserts a string at the cursor position.
+// More efficient than calling InsertChar in a loop for multi-char strings.
+func (i *Input) InsertString(s string) {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return
+	}
+	i.value = append(i.value[:i.cursor], append(runes, i.value[i.cursor:]...)...)
+	i.cursor += len(runes)
+}
+
 // Backspace deletes the rune before the cursor.
 func (i *Input) Backspace() {
 	if i.cursor > 0 {
 		i.value = append(i.value[:i.cursor-1], i.value[i.cursor:]...)
 		i.cursor--
 	}
+}
+
+// pasteRefInputRe matches [Pasted text #N] or [Pasted text #N +L lines]
+// in the input rune buffer for atomic backspace deletion.
+var pasteRefInputRe = regexp.MustCompile(`^\[Pasted text #\d+(?: \+\d+ lines)?\]$`)
+
+// BackspaceToken attempts to delete a paste reference token before the cursor.
+// If the cursor is right after a [Pasted text #N ...] token, deletes it atomically.
+// Otherwise falls back to single-rune backspace.
+func (i *Input) BackspaceToken() {
+	if i.cursor == 0 || i.value[i.cursor-1] != ']' {
+		i.Backspace()
+		return
+	}
+	start := -1
+	for pos := i.cursor - 2; pos >= 0; pos-- {
+		r := i.value[pos]
+		if r == '[' {
+			start = pos
+			break
+		}
+		if r == '\n' {
+			break
+		}
+	}
+	if start >= 0 {
+		candidate := string(i.value[start:i.cursor])
+		if pasteRefInputRe.MatchString(candidate) {
+			i.value = append(i.value[:start], i.value[i.cursor:]...)
+			i.cursor = start
+			return
+		}
+	}
+	i.Backspace()
 }
 
 // DeleteForward deletes the rune at the cursor position (forward delete).

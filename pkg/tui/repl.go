@@ -846,12 +846,16 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	if cmd, ok := LookupSlashCommand(text); ok {
 		a.history.Add(text)
 		a.input.Reset()
+		a.pasteStore = make(map[int]string)
+		a.nextPasteID = 1
 		return a.handleSlashCommand(cmd, commitCmd)
 	}
 
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()
+	a.pasteStore = make(map[int]string)
+	a.nextPasteID = 1
 	a.scrollOffset = 0
 	a.scrollTotal = 0
 	a.userScrolled = false

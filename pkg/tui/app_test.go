@@ -7097,3 +7097,394 @@ func TestApp_NormalTyping_CarriageReturnNormalized(t *testing.T) {
 		t.Errorf("expected 'hello\\nworld', got: %q", inputVal)
 	}
 }
+
+func TestPaste_BelowThreshold_InsertsVerbatim(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// 500 chars, 1 newline — below both thresholds
+	text := strings.Repeat("x", 499) + "\n"
+	runes := []rune(text)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: runes, Paste: true})
+
+	inputVal := app.input.Value()
+	if strings.Contains(inputVal, "[Pasted text") {
+		t.Errorf("short paste should not create reference, got: %q", inputVal)
+	}
+	if !strings.Contains(inputVal, strings.Repeat("x", 499)) {
+		t.Errorf("full content should be in input, got length %d", len(inputVal))
+	}
+}
+
+func TestPaste_CharThreshold_CreatesRef(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// 900 chars, 0 newlines — exceeds char threshold
+	text := strings.Repeat("a", 900)
+	runes := []rune(text)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: runes, Paste: true})
+
+	inputVal := app.input.Value()
+	if !strings.Contains(inputVal, "[Pasted text #1]") {
+		t.Errorf("expected [Pasted text #1] for >800 chars with 0 newlines, got: %q", inputVal)
+	}
+	if len(app.pasteStore) != 1 {
+		t.Fatalf("expected 1 paste store entry, got %d", len(app.pasteStore))
+	}
+	if app.pasteStore[1] != text {
+		t.Errorf("stored content mismatch: stored %d chars, want %d", len(app.pasteStore[1]), len(text))
+	}
+}
+
+func TestPaste_LineThreshold_CreatesRef(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// 3 newlines (>2) — exceeds line threshold
+	text := "line1\nline2\nline3\nline4"
+	runes := []rune(text)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: runes, Paste: true})
+
+	inputVal := app.input.Value()
+	if !strings.Contains(inputVal, "[Pasted text #1 +3 lines]") {
+		t.Errorf("expected [Pasted text #1 +3 lines], got: %q", inputVal)
+	}
+	if app.pasteStore[1] != text {
+		t.Errorf("stored content mismatch")
+	}
+}
+
+func TestPaste_MultiplePastes_IncrementingIDs(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	text1 := "line1\nline2\nline3\nline4" // 3 newlines
+	text2 := "alpha\nbeta\ngamma\ndelta"  // 3 newlines
+
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text1), Paste: true})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" "), Paste: false})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text2), Paste: true})
+
+	inputVal := app.input.Value()
+	if !strings.Contains(inputVal, "[Pasted text #1 +3 lines]") {
+		t.Errorf("expected #1 reference, got: %q", inputVal)
+	}
+	if !strings.Contains(inputVal, "[Pasted text #2 +3 lines]") {
+		t.Errorf("expected #2 reference, got: %q", inputVal)
+	}
+	if len(app.pasteStore) != 2 {
+		t.Errorf("expected 2 store entries, got %d", len(app.pasteStore))
+	}
+}
+
+func TestPaste_Backspace_DeletesWholeToken(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	text := "line1\nline2\nline3\nline4" // 3 newlines
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true})
+
+	before := app.input.Value()
+	if !strings.Contains(before, "[Pasted text #1") {
+		t.Fatalf("expected reference before backspace, got: %q", before)
+	}
+
+	// Backspace should delete the entire token at once
+	app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	after := app.input.Value()
+	if strings.Contains(after, "[Pasted text") {
+		t.Errorf("backspace should delete entire token, got: %q", after)
+	}
+	if len(after) != 0 {
+		t.Errorf("input should be empty after deleting only content, got: %q", after)
+	}
+}
+
+func TestPaste_Submit_ExpandsRefs(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	pasted := "line1\nline2\nline3\nline4"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+
+	inputVal := app.input.Value()
+	if !strings.Contains(inputVal, "[Pasted text #1") {
+		t.Fatalf("expected reference, got: %q", inputVal)
+	}
+
+	// Submit
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Check the user message was expanded
+	if len(app.repl.messages) == 0 {
+		t.Fatal("expected at least one message after submit")
+	}
+	msg := app.repl.messages[0]
+	if msg.Role != "user" {
+		t.Fatalf("expected user message, got role %q", msg.Role)
+	}
+	expanded := msg.Blocks[0].Text
+	if strings.Contains(expanded, "[Pasted text") {
+		t.Errorf("submitted text should have expanded references, got: %q", expanded)
+	}
+	if !strings.Contains(expanded, "line1\nline2\nline3\nline4") {
+		t.Errorf("submitted text should contain original content, got: %q", expanded)
+	}
+}
+
+func TestPaste_StoreClearedAfterSubmit(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	pasted := "line1\nline2\nline3\nline4"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	if len(app.pasteStore) != 1 {
+		t.Fatalf("expected 1 store entry before submit, got %d", len(app.pasteStore))
+	}
+
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(app.pasteStore) != 0 {
+		t.Errorf("paste store should be empty after submit, got %d entries", len(app.pasteStore))
+	}
+	if app.nextPasteID != 1 {
+		t.Errorf("nextPasteID should reset to 1, got %d", app.nextPasteID)
+	}
+}
+
+func TestBackspaceToken_RegularText_SingleChar(t *testing.T) {
+	input := NewInput()
+	input.SetValue("hello")
+	input.End()
+
+	input.BackspaceToken()
+
+	if input.Value() != "hell" {
+		t.Errorf("expected 'hell', got %q", input.Value())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Paste reference integration tests — call chain coverage
+// ---------------------------------------------------------------------------
+
+// TestPasteChain_FullFlow tests the complete paste→view→submit→expand chain.
+// Observable output: the submitted message text contains expanded content.
+func TestPasteChain_FullFlow(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	pasted := "func main() {\n\tfmt.Println(\"hello\")\n\treturn\n}"
+	// 3 newlines → triggers reference
+
+	// Step 1: Paste
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+
+	// Observable: input shows reference, not raw content
+	inputVal := app.input.Value()
+	if strings.Contains(inputVal, "func main()") {
+		t.Errorf("input should show reference, not raw pasted content, got: %q", inputVal)
+	}
+	if !strings.HasPrefix(inputVal, "[Pasted text #1") {
+		t.Errorf("input should start with paste reference, got: %q", inputVal)
+	}
+
+	// Step 2: Submit
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Observable: engine receives expanded text, not the reference
+	if len(app.repl.messages) == 0 {
+		t.Fatal("expected a user message after submit")
+	}
+	submitted := app.repl.messages[0].Blocks[0].Text
+	if strings.Contains(submitted, "[Pasted text") {
+		t.Errorf("submitted text should NOT contain reference, got: %q", submitted)
+	}
+	if submitted != pasted {
+		t.Errorf("submitted text should equal original paste\nwant: %q\n got: %q", pasted, submitted)
+	}
+
+	// Observable: input is cleared
+	if app.input.Value() != "" {
+		t.Errorf("input should be empty after submit, got: %q", app.input.Value())
+	}
+}
+
+// TestPasteChain_MixedInput tests typing + paste + typing → correct expansion.
+func TestPasteChain_MixedInput(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Type prefix
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("review this code: "), Paste: false})
+
+	// Paste multi-line content
+	pasted := "line1\nline2\nline3\nline4"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+
+	// Type suffix
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" thanks!"), Paste: false})
+
+	// Verify input contains all three parts
+	inputVal := app.input.Value()
+	if !strings.HasPrefix(inputVal, "review this code: ") {
+		t.Errorf("input should start with typed prefix, got: %q", inputVal)
+	}
+	if !strings.Contains(inputVal, "[Pasted text #1") {
+		t.Errorf("input should contain reference, got: %q", inputVal)
+	}
+	if !strings.HasSuffix(inputVal, " thanks!") {
+		t.Errorf("input should end with typed suffix, got: %q", inputVal)
+	}
+
+	// Submit → verify expansion preserves prefix and suffix
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	submitted := app.repl.messages[0].Blocks[0].Text
+
+	if !strings.HasPrefix(submitted, "review this code: ") {
+		t.Errorf("submitted should start with prefix, got: %q", submitted)
+	}
+	if !strings.Contains(submitted, pasted) {
+		t.Errorf("submitted should contain expanded paste, got: %q", submitted)
+	}
+	if !strings.HasSuffix(submitted, " thanks!") {
+		t.Errorf("submitted should end with suffix, got: %q", submitted)
+	}
+	// The reference should be fully replaced
+	if strings.Contains(submitted, "[Pasted text") {
+		t.Errorf("submitted should NOT contain reference, got: %q", submitted)
+	}
+}
+
+// TestPasteChain_BoundaryChar tests the exact 800/801 char boundary.
+func TestPasteChain_BoundaryChar(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Exactly 800 chars — should NOT trigger
+	text800 := strings.Repeat("a", 800)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text800), Paste: true})
+	if strings.Contains(app.input.Value(), "[Pasted text") {
+		t.Errorf("800 chars should NOT trigger reference, got: %q", app.input.Value()[:50])
+	}
+
+	app.input.Reset()
+	app.pasteStore = make(map[int]string)
+	app.nextPasteID = 1
+
+	// Exactly 801 chars — should trigger
+	text801 := strings.Repeat("a", 801)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text801), Paste: true})
+	if !strings.Contains(app.input.Value(), "[Pasted text #1]") {
+		t.Errorf("801 chars should trigger reference, got: %q", app.input.Value())
+	}
+	if app.pasteStore[1] != text801 {
+		t.Errorf("stored content length = %d, want 801", len(app.pasteStore[1]))
+	}
+}
+
+// TestPasteChain_BoundaryLines tests the exact 2/3 newline boundary.
+func TestPasteChain_BoundaryLines(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Exactly 2 newlines — should NOT trigger
+	text2nl := "a\nb\nc"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text2nl), Paste: true})
+	if strings.Contains(app.input.Value(), "[Pasted text") {
+		t.Errorf("2 newlines should NOT trigger reference, got: %q", app.input.Value())
+	}
+
+	app.input.Reset()
+	app.pasteStore = make(map[int]string)
+	app.nextPasteID = 1
+
+	// Exactly 3 newlines — should trigger
+	text3nl := "a\nb\nc\nd"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text3nl), Paste: true})
+	if !strings.Contains(app.input.Value(), "[Pasted text #1 +3 lines]") {
+		t.Errorf("3 newlines should trigger reference, got: %q", app.input.Value())
+	}
+}
+
+// TestPasteChain_RecoveryAfterSubmit tests that paste IDs reset after submit.
+func TestPasteChain_RecoveryAfterSubmit(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// First turn: paste and submit
+	pasted := "line1\nline2\nline3\nline4"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Store should be empty after submit
+	if len(app.pasteStore) != 0 {
+		t.Fatalf("store should be empty after submit, got %d entries", len(app.pasteStore))
+	}
+	if app.nextPasteID != 1 {
+		t.Fatalf("nextPasteID should reset to 1, got %d", app.nextPasteID)
+	}
+
+	// Second paste — should get #1 again (not #2) because IDs reset
+	app.input.Reset() // clear any leftover state from failed engine query
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	inputVal := app.input.Value()
+	if !strings.Contains(inputVal, "[Pasted text #1") {
+		t.Errorf("after submit, paste ID should restart from #1, got: %q", inputVal)
+	}
+	if strings.Contains(inputVal, "[Pasted text #2") {
+		t.Errorf("ID should NOT be #2 after submit reset, got: %q", inputVal)
+	}
+
+	// Expansion works on second paste too
+	expanded := app.expandPasteRefs(inputVal)
+	if expanded != pasted {
+		t.Errorf("second paste expansion should work\nwant: %q\n got: %q", pasted, expanded)
+	}
+}
+
+// TestPasteChain_BackspacePreservesTypedText tests backspace only deletes the token.
+func TestPasteChain_BackspacePreservesTypedText(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Type before and after paste
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("prefix "), Paste: false})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb\nc\nd"), Paste: true})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" suffix"), Paste: false})
+
+	// Move cursor to end of paste reference (before " suffix")
+	// The cursor is after " suffix", so we need to move back past " suffix" to the end of the ref
+	for range len(" suffix") {
+		app.input.CursorLeft()
+	}
+
+	// Now backspace should delete the entire token
+	app.input.BackspaceToken()
+	inputAfter := app.input.Value()
+
+	if inputAfter != "prefix  suffix" {
+		t.Errorf("after deleting token, expected 'prefix  suffix', got: %q", inputAfter)
+	}
+	// Typed text should be preserved
+	if !strings.HasPrefix(inputAfter, "prefix ") {
+		t.Errorf("prefix should be preserved, got: %q", inputAfter)
+	}
+	if !strings.HasSuffix(inputAfter, " suffix") {
+		t.Errorf("suffix should be preserved, got: %q", inputAfter)
+	}
+}
