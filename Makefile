@@ -33,6 +33,7 @@ fix:
 clean:
 	rm -f $(BINARY) coverage.out *.out *.prof *.test
 	rm -f /tmp/gbot-screen.raw /tmp/gbot-agent.pid /tmp/gbot-input
+	rm -rf /tmp/Test*
 	screen -S gbot -X quit 2>/dev/null || true
 	go clean
 	@echo "cleaned"
