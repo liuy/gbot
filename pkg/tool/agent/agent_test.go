@@ -1421,12 +1421,12 @@ func TestCall_UserContextMessages_Ordering(t *testing.T) {
 		t.Fatalf("expected 1 message, got %d", len(capturedOpts.UserContextMessages))
 	}
 	text := capturedOpts.UserContextMessages[0].Content[0].Text
-	found := strings.Contains(text, "Today's date is")
-	found := strings.Contains(text, "Project")
-	if !found {
+	foundDate := strings.Contains(text, "Today's date is")
+	foundProject := strings.Contains(text, "Project")
+	if !foundDate {
 		t.Error("message should contain currentDate")
 	}
-	if !found {
+	if !foundProject {
 		t.Error("message should contain AGENTS.md content")
 	}
 }
