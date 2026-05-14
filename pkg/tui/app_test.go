@@ -5898,9 +5898,9 @@ func TestApp_UpdateRepl_SubAgentTextIndentation(t *testing.T) {
 
 	t.Logf("rendered:\n%s", plain)
 
-	// Text should be at depth=1 (2-space indent)
-	if !strings.Contains(plain, "| Here is my analysis") {
-		t.Errorf("sub-agent text should have | prefix with indent, got:\n%s", plain)
+	// Text should be at depth=1 (2-space indent), no "| " prefix
+	if !strings.Contains(plain, "  Here is my analysis") {
+		t.Errorf("sub-agent text should have 2-space indent, got:\n%s", plain)
 	}
 }
 

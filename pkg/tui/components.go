@@ -891,7 +891,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 					sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
 				case BlockText:
 					if sub.Text != "" {
-						sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolOutput(Render(sub.Text), false, expand, availWidth-len(subIndent)-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())))
+						sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, expand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
 					}
 				case BlockThinking:
 					sb.WriteString("\n")
@@ -935,7 +935,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 				sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
 			case BlockText:
 				if sub.Text != "" {
-					sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolOutput(Render(sub.Text), false, expand, availWidth-len(subIndent)-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())))
+					sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, expand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
 				}
 			case BlockThinking:
 				sb.WriteString("\n")

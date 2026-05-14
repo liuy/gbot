@@ -2015,9 +2015,9 @@ func TestRenderToolCall_RunningStateWithSubBlocks_BlocksAreIndented(t *testing.T
 	v := m.View(80, false, "●", false, 0)
 	stripped := stripANSIPrintable(v)
 
-	// Sub-block text "hello" should be at depth=1 (2-space indent), NOT with "| "
-	if !strings.Contains(stripped, "| hello") {
-		t.Errorf("sub-block text should have | prefix with indent (depth=1), got:\n%s", stripped)
+	// Sub-block text "hello" should be at depth=1 (2-space indent), no "| " prefix
+	if !strings.Contains(stripped, "  hello") {
+		t.Errorf("sub-block text should have 2-space indent (depth=1), got:\n%s", stripped)
 	}
 }
 
@@ -2052,9 +2052,9 @@ func TestRenderToolCall_NestedDepth2_GrandchildIndented(t *testing.T) {
 	v := m.View(80, false, "", false, 0)
 	stripped := stripANSIPrintable(v)
 
-	// Grandchild text at depth=2 should have 4-space indent
-	if !strings.Contains(stripped, "| deep content") {
-		t.Errorf("grandchild text should have | prefix with indent (depth=2), got:\n%s", stripped)
+	// Grandchild text at depth=2 should have 4-space indent, no "| " prefix
+	if !strings.Contains(stripped, "    deep content") {
+		t.Errorf("grandchild text should have 4-space indent (depth=2), got:\n%s", stripped)
 	}
 	// Child agent at depth=1 should have 2-space indent, NOT 4
 	if !strings.Contains(stripped, "  ●") {
@@ -2643,9 +2643,9 @@ func TestRenderToolCall_DoneSubBlocks_BlockTextHasPrefix(t *testing.T) {
 	v := m.View(80, false, "", false, 0)
 	stripped := stripANSIPrintable(v)
 
-	// "hello world" should appear with 2-space indent (depth=1)
-	if !strings.Contains(stripped, "| hello world") {
-		t.Errorf("BlockText sub-blocks should have | prefix with indent, got:\n%s", stripped)
+	// "hello world" should appear with 2-space indent (depth=1), no "| " prefix
+	if !strings.Contains(stripped, "  hello world") {
+		t.Errorf("BlockText sub-blocks should have 2-space indent, got:\n%s", stripped)
 	}
 }
 
