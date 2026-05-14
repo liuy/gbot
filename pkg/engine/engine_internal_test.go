@@ -3230,8 +3230,10 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 	if !errors.As(result.Error, &ae) {
 		t.Fatalf("expected *AbortError, got %T: %v", result.Error, result.Error)
 	}
-	if ae.Phase != "tools" {
-		t.Errorf("Phase = %q, want %q", ae.Phase, "tools")
+	// Phase depends on goroutine scheduling: tool cancels ctx during streaming,
+	// so either Stage 18 (Phase="streaming") or Stage 23 (Phase="tools") catches it.
+	if ae.Phase != "tools" && ae.Phase != "streaming" {
+		t.Errorf("Phase = %q, want %q or %q", ae.Phase, "tools", "streaming")
 	}
 }
 
