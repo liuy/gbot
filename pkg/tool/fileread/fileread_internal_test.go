@@ -1087,14 +1087,39 @@ func TestExecute_TextFileReadFileStateNilMap(t *testing.T) {
 // These pass non-pointer types to renderResult to hit the value-type branches.
 // ---------------------------------------------------------------------------
 
+func TestRenderResult_TextOutputPointer(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&TextOutput{
+		Content:  "hello world",
+		FilePath: "/tmp/test.txt",
+		NumLines: 42,
+	})
+	if result != "Read 42 lines" {
+		t.Errorf("renderResult(*TextOutput) = %q, want %q", result, "Read 42 lines")
+	}
+}
+
 func TestRenderResult_TextOutputValue(t *testing.T) {
 	t.Parallel()
 	result := renderResult(TextOutput{
 		Content:  "hello world",
 		FilePath: "/tmp/test.txt",
+		NumLines: 1,
 	})
-	if result != "hello world" {
-		t.Errorf("renderResult(TextOutput) = %q, want %q", result, "hello world")
+	if result != "Read 1 line" {
+		t.Errorf("renderResult(TextOutput) = %q, want %q", result, "Read 1 line")
+	}
+}
+
+func TestRenderResult_TextOutputZeroLines(t *testing.T) {
+	t.Parallel()
+	result := renderResult(&TextOutput{
+		Content:  "",
+		FilePath: "/tmp/empty.txt",
+		NumLines: 0,
+	})
+	if result != "Read 0 lines" {
+		t.Errorf("renderResult(*TextOutput zero lines) = %q, want %q", result, "Read 0 lines")
 	}
 }
 

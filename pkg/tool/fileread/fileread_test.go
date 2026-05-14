@@ -887,7 +887,7 @@ func TestRenderResult_TextOutput(t *testing.T) {
 		StartLine:  1,
 		TotalLines: 2,
 	})
-	want := "package main\nfunc main() {}\n"
+	want := "Read 2 lines"
 	if result != want {
 		t.Errorf("RenderResult(TextOutput) = %q, want %q", result, want)
 	}
@@ -978,8 +978,8 @@ func TestRenderResult_TextOutputValueType(t *testing.T) {
 		StartLine:  1,
 		TotalLines: 1,
 	})
-	if result != "hello" {
-		t.Errorf("RenderResult(TextOutput value) = %q, want %q", result, "hello")
+	if result != "Read 1 line" {
+		t.Errorf("RenderResult(TextOutput value) = %q, want %q", result, "Read 1 line")
 	}
 }
 
