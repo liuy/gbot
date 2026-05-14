@@ -982,6 +982,48 @@ func TestExtractTextFromShortContent_PlainText(t *testing.T) {
 	}
 }
 
+func TestExtractTextFromShortContent_Empty(t *testing.T) {
+	got := extractTextFromShortContent("")
+	if got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_ToolUseEmptyName(t *testing.T) {
+	content := `[{"type":"tool_use","name":""},{"type":"text","text":"ok"}]`
+	got := extractTextFromShortContent(content)
+	if strings.Contains(got, "[]") {
+		t.Error("empty name should not produce [] brackets")
+	}
+	if !strings.Contains(got, "ok") {
+		t.Errorf("expected 'ok' in output, got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_ToolResultNonStringContent(t *testing.T) {
+	content := `[{"type":"tool_result","content":{"nested":true}}]`
+	got := extractTextFromShortContent(content)
+	if got != "" {
+		t.Errorf("non-string content should be skipped, got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_ToolResultEmptyContent(t *testing.T) {
+	content := `[{"type":"tool_result","content":null}]`
+	got := extractTextFromShortContent(content)
+	if got != "" {
+		t.Errorf("null content should produce empty, got %q", got)
+	}
+}
+
+func TestExtractTextFromShortContent_MultipleTextBlocks(t *testing.T) {
+	content := `[{"type":"text","text":"hello"},{"type":"text","text":"world"}]`
+	got := extractTextFromShortContent(content)
+	if got != "hello world" {
+		t.Errorf("expected 'hello world', got %q", got)
+	}
+}
+
 // TestBuildResultMessages_RemovesOrphanedToolResults verifies that after compact,
 // tool_result blocks whose tool_use was removed are stripped.
 // This reproduces the production"tool result's tool id not found".

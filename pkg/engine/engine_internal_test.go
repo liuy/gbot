@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
@@ -6806,6 +6807,22 @@ func TestIsMemoryPathWrite_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestIsMemoryPathWrite_ActualMemoryPath(t *testing.T) {
+	cwd, _ := os.Getwd()
+	memPath := long.GetMemoryPath(cwd)
+	result := isMemoryPathWrite("Write", json.RawMessage(fmt.Sprintf(`{"file_path":"%s/test.md"}`, memPath)))
+	if !result {
+		t.Error("Write to memory path should return true")
+	}
+}
+
+func TestIsMemoryPathWrite_NonMemoryPath(t *testing.T) {
+	result := isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"/tmp/not-memory.md"}`))
+	if result {
+		t.Error("Write to non-memory path should return false")
+	}
+}
+
 func TestExtractFilePathFromInput_Valid(t *testing.T) {
 	got := extractFilePathFromInput(json.RawMessage(`{"file_path":"/tmp/test.go"}`))
 	if got != "/tmp/test.go" {
@@ -7099,4 +7116,20 @@ func TestStreamInterrupt_EmptyContent_NoPanic(t *testing.T) {
 
 	eng.QuerySync(ctx, "test", nil)
 	// Should not panic; messages may or may not be appended depending on timing.
+}
+
+func TestEngine_GetContextTokens(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{ContextTokens: 4242}
+	if got := eng.GetContextTokens(); got != 4242 {
+		t.Errorf("GetContextTokens() = %d, want 4242", got)
+	}
+}
+
+func TestEngine_GetContextTokens_Zero(t *testing.T) {
+	t.Parallel()
+	eng := &Engine{}
+	if got := eng.GetContextTokens(); got != 0 {
+		t.Errorf("GetContextTokens() = %d, want 0", got)
+	}
 }
