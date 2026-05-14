@@ -433,7 +433,7 @@ func CountPatchChanges(hunks []DiffHunk) (added, removed int) {
 func FormatDiffSummary(added, removed int) string {
 	var sb strings.Builder
 	if added > 0 {
-		fmt.Fprintf(&sb, "Added %s%d%s %s", diffBold, added, diffBoldOff, pluralWord(added, "line"))
+		fmt.Fprintf(&sb, "Added %s%d%s %s", diffBold, added, diffBoldOff, PluralWord(added, "lines"))
 	}
 	if added > 0 && removed > 0 {
 		sb.WriteString(", ")
@@ -443,7 +443,7 @@ func FormatDiffSummary(added, removed int) string {
 		if added > 0 {
 			prefix = "removed"
 		}
-		fmt.Fprintf(&sb, "%s %s%d%s %s", prefix, diffBold, removed, diffBoldOff, pluralWord(removed, "line"))
+		fmt.Fprintf(&sb, "%s %s%d%s %s", prefix, diffBold, removed, diffBoldOff, PluralWord(removed, "lines"))
 	}
 	return sb.String()
 }
@@ -578,11 +578,14 @@ func TruncateStringLines(s string, maxLines int) string {
 }
 
 // pluralWord returns "word" or "words" based on count.
-func pluralWord(n int, word string) string {
+// PluralWord returns the singular form when n==1 by stripping the trailing "s"
+// from word. Otherwise returns word as-is. Callers pass the plural form
+// (e.g. "files", "matches") and the function trims it for n==1.
+func PluralWord(n int, word string) string {
 	if n == 1 {
-		return word
+		return strings.TrimSuffix(word, "s")
 	}
-	return word + "s"
+	return word
 }
 
 // RenderContentWithLineNumbers renders content with dim line numbers,

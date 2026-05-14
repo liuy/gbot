@@ -808,11 +808,8 @@ func TestRenderResult_ContentMode(t *testing.T) {
 		NumLines: 2,
 	}
 	result := tt.RenderResult(output)
-	if !strings.Contains(result, "match here") {
-		t.Errorf("RenderResult(content mode) = %q, should contain content", result)
-	}
-	if strings.Contains(result, `"mode"`) {
-		t.Errorf("RenderResult(content mode) = %q, should not contain raw JSON keys", result)
+	if result != "2 lines" {
+		t.Errorf("RenderResult(content mode) = %q, want %q", result, "2 lines")
 	}
 }
 
@@ -825,8 +822,8 @@ func TestRenderResult_FilesWithMatches(t *testing.T) {
 		Filenames: []string{"a.go", "b.go"},
 	}
 	result := tt.RenderResult(output)
-	if !strings.Contains(result, "a.go") || !strings.Contains(result, "b.go") {
-		t.Errorf("RenderResult(files_with_matches) = %q, should contain filenames", result)
+	if result != "Found 2 files" {
+		t.Errorf("RenderResult(files_with_matches) = %q, want %q", result, "Found 2 files")
 	}
 }
 

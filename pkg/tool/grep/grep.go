@@ -171,14 +171,14 @@ func New() tool.Tool {
 			}
 			switch out.Mode {
 			case "content":
-				return out.Content
+				return fmt.Sprintf("%d %s", out.NumLines, tool.PluralWord(out.NumLines, "lines"))
 			case "files_with_matches":
-				if len(out.Filenames) == 0 {
+				if out.NumFiles == 0 {
 					return "No files matched"
 				}
-				return strings.Join(out.Filenames, "\n")
+				return fmt.Sprintf("Found %d %s", out.NumFiles, tool.PluralWord(out.NumFiles, "files"))
 			case "count":
-				return fmt.Sprintf("%d matches in %d files", out.NumMatches, out.NumFiles)
+				return fmt.Sprintf("%d %s in %d %s", out.NumMatches, tool.PluralWord(out.NumMatches, "matches"), out.NumFiles, tool.PluralWord(out.NumFiles, "files"))
 			default:
 				b, _ := json.Marshal(data)
 				return string(b)
