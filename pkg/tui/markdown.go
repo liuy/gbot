@@ -19,6 +19,15 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 )
 
+// mdExtensions holds the pre-computed markdown parser extensions.
+var mdExtensions = func() parser.Extensions {
+	e := parser.CommonExtensions | parser.AutoHeadingIDs | parser.Footnotes
+	// Disable strikethrough: ~ is often used for "approximate" (e.g., ~100),
+	// not actual strikethrough. Matches TS: marked.use({ tokenizer: { del() { return undefined } } })
+	e &^= parser.Strikethrough
+	return e
+}()
+
 // Render converts markdown text to ANSI-styled terminal output.
 // Source: utils/markdown.ts applyMarkdown → Go port
 func Render(text string) string {
@@ -28,12 +37,7 @@ func Render(text string) string {
 	// on some terminals, breaking table alignment.
 	text = stripRedundantVS16(text)
 
-	extensions := parser.CommonExtensions | parser.AutoHeadingIDs | parser.Footnotes
-	// Disable strikethrough: ~ is often used for "approximate" (e.g., ~100),
-	// not actual strikethrough. Matches TS: marked.use({ tokenizer: { del() { return undefined } } })
-	extensions &^= parser.Strikethrough
-
-	p := parser.NewWithExtensions(extensions)
+	p := parser.NewWithExtensions(mdExtensions)
 
 	doc := p.Parse([]byte(text))
 

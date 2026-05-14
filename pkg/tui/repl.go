@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -927,15 +928,11 @@ func prettyJSON(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "  ", "  "); err != nil {
 		return string(raw)
 	}
-	pretty, err := json.MarshalIndent(v, "  ", "  ")
-	if err != nil {
-		return string(raw)
-	}
-	return string(pretty)
+	return buf.String()
 }
 
 // renderMessagesFull renders the complete message history without height truncation.

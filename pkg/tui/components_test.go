@@ -3095,3 +3095,124 @@ func TestInput_View_MultilineCursorAligned(t *testing.T) {
 		t.Errorf("continuation line should NOT contain prompt (Option C), got: %q", contLine)
 	}
 }
+
+func TestFormatToolContent_NoPrefix(t *testing.T) {
+	content := formatToolContent("line1\nline2\nline3", false, true, 80, true, 0, lipgloss.NewStyle())
+	if strings.Contains(content, "| ") {
+		t.Errorf("formatToolContent should return pure content without prefix, got: %q", content)
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), content)
+	}
+	if lines[0] != "line1" {
+		t.Errorf("first line = %q, want %q", lines[0], "line1")
+	}
+}
+
+func TestWithResultPrefix_FirstLine(t *testing.T) {
+	content := "line1\nline2\nline3"
+	result := withResultPrefix(content)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), result)
+	}
+	if !strings.HasPrefix(lines[0], "| ") {
+		t.Errorf("first line should start with '| ', got: %q", lines[0])
+	}
+	if strings.HasPrefix(lines[1], "| ") {
+		t.Errorf("continuation lines should NOT start with '| ', got: %q", lines[1])
+	}
+	if strings.HasPrefix(lines[2], "| ") {
+		t.Errorf("continuation lines should NOT start with '| ', got: %q", lines[2])
+	}
+	prefixWidth := lipgloss.Width("| ")
+	contIndent := lines[1][:len(lines[1])-len("line2")]
+	if lipgloss.Width(contIndent) != prefixWidth {
+		t.Errorf("continuation indent width = %d, want %d (prefix width)", lipgloss.Width(contIndent), prefixWidth)
+	}
+}
+
+func TestWithResultPrefix_AnsiSafe(t *testing.T) {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
+	styled := style.Render("styled text")
+	content := styled + "\n" + styled
+	result := withResultPrefix(content)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	firstVisual := lipgloss.Width(lines[0])
+	secondVisual := lipgloss.Width(lines[1])
+	if firstVisual != secondVisual {
+		t.Errorf("visual widths should match: first=%d, second=%d", firstVisual, secondVisual)
+	}
+}
+
+func TestWithResultPrefix_EmptyContent(t *testing.T) {
+	result := withResultPrefix("")
+	if result != "" {
+		t.Errorf("empty content should return empty, got: %q", result)
+	}
+}
+
+func TestRenderThinkingBlock_NoDoubleStyle(t *testing.T) {
+	var sb strings.Builder
+	blk := ContentBlock{
+		Type: BlockThinking,
+		Thinking: ThinkingView{
+			Text:     "hello world",
+			Done:     true,
+			Duration: 100 * time.Millisecond,
+		},
+	}
+	blk.renderThinkingBlock(&sb, 80, false, "\xe2\x97\x8f", false, 0)
+	output := sb.String()
+	lines := strings.Split(output, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines (header + content), got %d: %q", len(lines), output)
+	}
+	// The content line should have styleThinkingContent applied once (2 ANSI starts).
+	// Double styling would produce 4+ ANSI starts.
+	contentLine := lines[1]
+	contentAnsiCount := strings.Count(contentLine, "\x1b[")
+	if contentAnsiCount > 4 {
+		t.Errorf("content line has %d ANSI sequences, likely double-styled: %q", contentAnsiCount, contentLine)
+	}
+}
+
+func TestJoinHorizontal_MatchesIndentLines(t *testing.T) {
+	tests := []struct {
+		name    string
+		indent  string
+		content string
+	}{
+		{"no indent", "", "line1\nline2"},
+		{"2-space indent", "  ", "line1\nline2"},
+		{"4-space indent", "    ", "line1\nline2\nline3"},
+		{"empty content", "  ", ""},
+		{"single line", "  ", "only line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var expected string
+			if tt.indent == "" || tt.content == "" {
+				if tt.content == "" {
+					expected = lipgloss.JoinHorizontal(lipgloss.Top, tt.indent, tt.content)
+				} else {
+					expected = tt.content
+				}
+			} else {
+				var lines []string
+				for l := range strings.SplitSeq(tt.content, "\n") {
+					lines = append(lines, tt.indent+l)
+				}
+				expected = strings.Join(lines, "\n")
+			}
+			result := lipgloss.JoinHorizontal(lipgloss.Top, tt.indent, tt.content)
+			if result != expected {
+				t.Errorf("JoinHorizontal != indentLines\nexpected: %q\n     got: %q", expected, result)
+			}
+		})
+	}
+}
