@@ -319,4 +319,3 @@ func TestAppendInlineInterruptMessage_SkipsExistingToolResults(t *testing.T) {
 		t.Errorf("expected 1 synthetic tool_result (for tu_pending only), got %d", toolResultCount)
 	}
 }
-

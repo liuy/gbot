@@ -1804,6 +1804,16 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 		if msg.Role == types.RoleSystem {
 			continue
 		}
+		// Sanitize tool_use blocks with partial/invalid JSON input.
+		// Stream interruption may leave tool_use input as incomplete JSON.
+		// OpenAI-compatible APIs require valid JSON in function arguments.
+		for i := range msg.Content {
+			if msg.Content[i].Type == types.ContentTypeToolUse {
+				if !json.Valid(msg.Content[i].Input) {
+					msg.Content[i].Input = json.RawMessage("{}")
+				}
+			}
+		}
 		result = append(result, msg)
 	}
 	return result
@@ -1867,6 +1877,7 @@ func (e *Engine) applyBudget(msgs []types.Message) []types.Message {
 
 	return msgs
 }
+
 func (e *Engine) AddSystemMessage(content string) {
 	e.appendMessage(types.Message{
 		Role: types.RoleSystem,
