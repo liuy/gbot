@@ -348,7 +348,8 @@ func renderWriteResult(data any) string {
 		if out.Content == "" {
 			return summary
 		}
-		return summary + "\n" + strings.TrimRight(out.Content, "\n")
+		rendered := tool.RenderContentWithLineNumbers(out.Content)
+		return summary + "\n" + rendered
 	}
 
 	// Update: summary + structured diff

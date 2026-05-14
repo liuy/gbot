@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -866,4 +867,60 @@ func TestComputePatch_WhitespaceOnly(t *testing.T) {
 	if result != nil {
 		t.Errorf("expected nil for identical whitespace, got %v", result)
 	}
+}
+
+func TestRenderContentWithLineNumbers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		got := RenderContentWithLineNumbers("")
+		if got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("single line", func(t *testing.T) {
+		t.Parallel()
+		got := StripANSI(RenderContentWithLineNumbers("hello"))
+		if got != " 1  hello" {
+			t.Errorf("expected ' 1  hello', got %q", got)
+		}
+	})
+
+	t.Run("multi line with trailing newline", func(t *testing.T) {
+		t.Parallel()
+		got := StripANSI(RenderContentWithLineNumbers("aaa\nbbb\nccc\n"))
+		lines := strings.Split(got, "\n")
+		if len(lines) != 3 {
+			t.Fatalf("expected 3 lines, got %d: %q", len(lines), got)
+		}
+		if lines[0] != " 1  aaa" {
+			t.Errorf("line 1 = %q, want ' 1  aaa'", lines[0])
+		}
+		if lines[1] != " 2  bbb" {
+			t.Errorf("line 2 = %q, want ' 2  bbb'", lines[1])
+		}
+		if lines[2] != " 3  ccc" {
+			t.Errorf("line 3 = %q, want ' 3  ccc'", lines[2])
+		}
+	})
+
+	t.Run("gutter width for 10+ lines", func(t *testing.T) {
+		t.Parallel()
+		var content strings.Builder
+		for i := 1; i <= 15; i++ {
+			fmt.Fprintf(&content, "line %d\n", i)
+		}
+		got := StripANSI(RenderContentWithLineNumbers(content.String()))
+		lines := strings.Split(got, "\n")
+		// Single-digit lines should be right-aligned with 2-digit width: " 1  line 1"
+		if !strings.HasPrefix(lines[0], "  1  ") {
+			t.Errorf("line 1 should have padded gutter, got %q", lines[0])
+		}
+		// Double-digit lines: "10  line 10"
+		if !strings.HasPrefix(lines[9], " 10  ") {
+			t.Errorf("line 10 should have 2-digit gutter, got %q", lines[9])
+		}
+	})
 }

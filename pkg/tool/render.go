@@ -584,3 +584,25 @@ func pluralWord(n int, word string) string {
 	}
 	return word + "s"
 }
+
+// RenderContentWithLineNumbers renders content with dim line numbers,
+// matching the context-line style from RenderDiff (dim gray gutter + content).
+// Used by Write tool's create path to show file content with line numbers.
+func RenderContentWithLineNumbers(content string) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	maxDigits := len(strconv.Itoa(len(lines)))
+
+	var sb strings.Builder
+	for i, line := range lines {
+		paddedNum := fmt.Sprintf("%*d", maxDigits, i+1)
+		sb.WriteString(diffDimFg)
+		fmt.Fprintf(&sb, " %s  ", paddedNum)
+		sb.WriteString(diffReset)
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
