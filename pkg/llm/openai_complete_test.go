@@ -220,8 +220,8 @@ func TestOpenAIComplete_ErrorResponse(t *testing.T) {
 	if apiErr.Status != 429 {
 		t.Errorf("Status = %d, want 429", apiErr.Status)
 	}
-	if !apiErr.Retryable {
-		t.Error("Retryable = false, want true for 429")
+	if apiErr.Retryable {
+		t.Error("Retryable = true, want false for 429")
 	}
 	if apiErr.Message != "Rate limit exceeded" {
 		t.Errorf("Message = %q, want %q", apiErr.Message, "Rate limit exceeded")
@@ -520,41 +520,38 @@ func TestOpenAIStream_Success(t *testing.T) {
 	}
 }
 
-func TestOpenAIStream_RetryOn429(t *testing.T) {
+func TestOpenAIStream_NoRetryOn429(t *testing.T) {
 	callCount := 0
 	server := newTestOpenAIServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		if callCount == 1 {
-			w.Header().Set("Retry-After", "0")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\n")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
 	}))
 	defer server.Close()
 
 	provider := newOpenAIProviderWithServer(server)
 	ctx := context.Background()
 	req := &llm.Request{Model: "gpt-4", MaxTokens: 100}
-	ch, err := provider.Stream(ctx, req)
-	if err != nil {
-		t.Fatalf("Stream() error: %v", err)
+	_, err := provider.Stream(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for 429, got nil")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error should contain 'rate limited', got: %v", err)
+	}
+	var apiErr *llm.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Status != 429 {
+		t.Errorf("Status = %d, want 429", apiErr.Status)
+	}
+	if apiErr.Retryable {
+		t.Error("429 should NOT be retryable")
 	}
 
-	var events []llm.StreamEvent
-	for e := range ch {
-		events = append(events, e)
-	}
-
-	if callCount != 2 {
-		t.Errorf("expected 2 calls (1 retry), got %d", callCount)
-	}
-	if len(events) == 0 {
-		t.Fatal("expected events after retry")
+	if callCount != 1 {
+		t.Errorf("expected 1 call (no retry on 429), got %d", callCount)
 	}
 }
 
@@ -690,8 +687,8 @@ func TestParseAPIError_RateLimitMapping(t *testing.T) {
 	if apiErr.Type != "rate_limit_error" {
 		t.Errorf("Type = %q, want %q", apiErr.Type, "rate_limit_error")
 	}
-	if !apiErr.Retryable {
-		t.Error("429 should be retryable")
+	if apiErr.Retryable {
+		t.Error("429 should NOT be retryable")
 	}
 }
 
@@ -901,8 +898,8 @@ func TestOpenAIStream_RetryAfterHeader(t *testing.T) {
 		callCount++
 		if callCount == 1 {
 			w.Header().Set("Retry-After", "1") // 1 second
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error"}}`)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"service unavailable","type":"server_error"}}`)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")

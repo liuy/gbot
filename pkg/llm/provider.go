@@ -273,7 +273,7 @@ func CalculateBackoffWithRetryAfter(attempt int, cfg *RetryConfig, retryAfter ti
 // IsRetryableStatus returns true for retryable HTTP status codes.
 func IsRetryableStatus(statusCode int) bool {
 	switch statusCode {
-	case 429, 529, 500, 502, 503, 504:
+	case 529, 500, 502, 503, 504:
 		return true
 	default:
 		return false

@@ -360,7 +360,7 @@ func TestIsRetryableStatus(t *testing.T) {
 		code  int
 		retry bool
 	}{
-		{429, true},
+		{429, false},
 		{529, true},
 		{500, true},
 		{502, true},
@@ -874,8 +874,8 @@ func TestParseAPIError_ValidJSON(t *testing.T) {
 	if apiErr.Message != "Too many requests" {
 		t.Errorf("expected 'Too many requests', got %s", apiErr.Message)
 	}
-	if !apiErr.Retryable {
-		t.Error("expected retryable for 429")
+	if apiErr.Retryable {
+		t.Error("retryable should be false for 429")
 	}
 }
 
