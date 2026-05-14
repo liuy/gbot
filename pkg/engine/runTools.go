@@ -966,13 +966,24 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 	e.firePostToolUseHook(tt, true)
 	// Error content must be a JSON string (not object) for Anthropic API compatibility.
 	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
-	errJSON, _ := json.Marshal(err.Error())
+	fullErr := err.Error()
+	errJSON, _ := json.Marshal(fullErr)
+	// DisplayOutput is for the TUI; only show the first line so that error
+	// messages containing file content (e.g. Edit "string not found" errors
+	// that append the search string) don't dump large text into the UI.
+	// The full error is still sent to the LLM via Output (errJSON).
+	// Source: FileEditTool/UI.tsx renderToolUseErrorMessage — TS shows only
+	// short summaries like "Error editing file", "File must be read first".
+	displayErr := fullErr
+	if idx := strings.IndexByte(fullErr, '\n'); idx >= 0 {
+		displayErr = fullErr[:idx]
+	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
 			ToolUseID:     tt.ID,
 			Output:        errJSON,
-			DisplayOutput: err.Error(),
+			DisplayOutput: displayErr,
 			IsError:       true,
 			Timing:        elapsed,
 		},
