@@ -47,8 +47,8 @@ func (a *App) persistTurn() {
 		// non-fatal: messages were persisted, timestamp is best-effort
 	}
 
-	if a.engine.ContextTokens > 0 {
-		if err := a.store.UpdateContextTokens(a.sessionID, a.engine.ContextTokens); err != nil {
+	if ct := a.engine.GetContextTokens(); ct > 0 {
+		if err := a.store.UpdateContextTokens(a.sessionID, ct); err != nil {
 			slog.Error("persistTurn: update context tokens", "error", err)
 		}
 	}

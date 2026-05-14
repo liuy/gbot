@@ -1119,6 +1119,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 	// Marshal messages for the API request
 	apiMessages := e.marshalMessages()
 
+	// Filter out messages not intended for the LLM (system messages, etc.)
+	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
+	apiMessages = NormalizeMessagesForAPI(apiMessages)
+
 	// Apply per-message tool result budget (TS: applyToolResultBudget).
 	// Replaces large tool results with previews when aggregate per-message
 	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
@@ -1790,6 +1794,21 @@ func (e *Engine) marshalMessages() []types.Message {
 	return result
 }
 
+// NormalizeMessagesForAPI filters messages before sending to the LLM API.
+// Source: TS normalizeMessagesForAPI in utils/messages.ts:1989.
+// Filters out system messages (compact boundaries, etc.) that are local
+// metadata for tool search, not LLM context.
+func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
+	result := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			continue
+		}
+		result = append(result, msg)
+	}
+	return result
+}
+
 // applyBudget applies the per-message tool result budget to API messages.
 // Converts types.Message → toolresult.BudgetMessage, runs the budget algorithm,
 // then copies modified tool_result content back to the types.Message slice.
@@ -2338,6 +2357,14 @@ func (e *Engine) ContextWindow() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.autoCompactConfig.ContextWindow
+}
+
+// GetContextTokens returns the current context token count (thread-safe).
+// Used by TUI to read ContextTokens without racing with the query goroutine.
+func (e *Engine) GetContextTokens() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.ContextTokens
 }
 
 // SetMaxTokens updates the max output tokens for the current model.

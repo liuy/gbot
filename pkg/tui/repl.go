@@ -575,10 +575,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Sync status bar with engine's final ContextTokens (post-compact).
 		// During streaming the bar showed the API-reported value; compact may
 		// have reduced the context after that.
-		if a.engine.ContextTokens > 0 {
-			a.displayedInputTokens = a.engine.ContextTokens
-			a.inputTokenTarget = a.engine.ContextTokens
-			a.status.SetContext(a.engine.ContextTokens, a.engine.ContextWindow())
+		if ct := a.engine.GetContextTokens(); ct > 0 {
+			a.displayedInputTokens = ct
+			a.inputTokenTarget = ct
+			a.status.SetContext(ct, a.engine.ContextWindow())
 		}
 
 		if !a.progressStart.IsZero() {
@@ -887,7 +887,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// Estimate input tokens: use engine's precise ContextTokens (from last
 	// API usage) as the base, only estimate the new user message text.
 	// Falls back to system prompt estimation on the first turn (cold start).
-	base := a.engine.ContextTokens
+	base := a.engine.GetContextTokens()
 	if base == 0 {
 		base = types.EstimateTokens(string(a.systemPrompt))
 	}

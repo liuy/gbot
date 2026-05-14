@@ -1135,6 +1135,84 @@ func TestMarshalMessages_PreservesToolUseAndResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// NormalizeMessagesForAPI tests
+// ---------------------------------------------------------------------------
+
+func TestNormalizeMessagesForAPI_FiltersSystemMessages(t *testing.T) {
+	t.Parallel()
+
+	// Compact boundaries (RoleSystem) must be filtered out — they are local
+	// metadata for tool search, not LLM context. TS normalizeMessagesForAPI
+	// filters all system messages except local commands.
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock(`{"subtype":"compact_boundary"}`)}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("another system msg")}},
+	}
+
+	result := NormalizeMessagesForAPI(messages)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2 (system messages filtered)", len(result))
+	}
+	if result[0].Role != types.RoleUser {
+		t.Errorf("result[0].Role = %q, want user", result[0].Role)
+	}
+	if result[0].Content[0].Text != "hello" {
+		t.Errorf("result[0].Content = %q, want hello", result[0].Content[0].Text)
+	}
+	if result[1].Role != types.RoleAssistant {
+		t.Errorf("result[1].Role = %q, want assistant", result[1].Role)
+	}
+}
+
+func TestNormalizeMessagesForAPI_NoSystemMessages(t *testing.T) {
+	t.Parallel()
+
+	// Normal conversation with no system messages passes through unchanged.
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+
+	result := NormalizeMessagesForAPI(messages)
+
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+}
+
+func TestNormalizeMessagesForAPI_Empty(t *testing.T) {
+	t.Parallel()
+
+	result := NormalizeMessagesForAPI(nil)
+	if len(result) != 0 {
+		t.Errorf("len(result) = %d, want 0 for nil", len(result))
+	}
+
+	result = NormalizeMessagesForAPI([]types.Message{})
+	if len(result) != 0 {
+		t.Errorf("len(result) = %d, want 0 for empty", len(result))
+	}
+}
+
+func TestNormalizeMessagesForAPI_OnlySystemMessages(t *testing.T) {
+	t.Parallel()
+
+	messages := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("sys1")}},
+		{Role: types.RoleSystem, Content: []types.ContentBlock{types.NewTextBlock("sys2")}},
+	}
+
+	result := NormalizeMessagesForAPI(messages)
+
+	if len(result) != 0 {
+		t.Fatalf("len(result) = %d, want 0 (all system filtered)", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers for internal tests
 // ---------------------------------------------------------------------------
 

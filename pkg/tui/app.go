@@ -225,8 +225,8 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 // Called from main.go after system prompt and tools are loaded.
 // The estimate is a heuristic (len/4) and will be corrected after the first API response.
 func (a *App) SetInitialContext(usedTokens, contextWindow int) {
-	if a.engine.ContextTokens > 0 {
-		usedTokens = a.engine.ContextTokens
+	if ct := a.engine.GetContextTokens(); ct > 0 {
+		usedTokens = ct
 	}
 	a.status.SetContext(usedTokens, contextWindow)
 }
