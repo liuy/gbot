@@ -53,8 +53,15 @@ type ContentBlock struct {
 // Input — source: components/Input.tsx
 // ---------------------------------------------------------------------------
 
-// promptDisplayWidth is the display width of "❯ " (❯ = 1 cell + space = 1 cell).
-const promptDisplayWidth = 2
+// promptLiteral is the prompt character shown before the input.
+const promptLiteral = "❯ "
+
+var (
+	// renderedPrompt is the styled prompt, computed once at init.
+	renderedPrompt = stylePrompt.Render(promptLiteral)
+	// renderedPromptWidth is the display width of the styled prompt.
+	renderedPromptWidth = lipgloss.Width(renderedPrompt)
+)
 
 // wrappedLine represents one visual line after wrapping the input value.
 type wrappedLine struct {
@@ -120,6 +127,7 @@ func (i *Input) SetWidth(w int) {
 
 // wrapLines wraps the input value into visual lines based on display width.
 // Source: Cursor.ts — MeasuredText.measureWrappedText() (simplified rune-based version).
+// All lines wrap at the same width — prompt/indent is handled by the caller.
 func (i *Input) wrapLines() []wrappedLine {
 	if len(i.value) == 0 {
 		return []wrappedLine{{runes: i.value, startOffset: 0}}
@@ -128,24 +136,19 @@ func (i *Input) wrapLines() []wrappedLine {
 		return i.splitOnNewlines()
 	}
 
-	// First line has less room due to prompt prefix
-	availFirst := max(i.width-promptDisplayWidth, 1)
-	availRest := max(i.width, 1)
+	avail := max(i.width, 1)
 
 	var lines []wrappedLine
 	var current []rune
 	currentLen := 0
 	lineStart := 0
-	avail := availFirst
 
 	for idx, r := range i.value {
-		// Hard newline — flush current line and start a new one.
 		if r == '\n' {
 			lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
 			current = nil
 			currentLen = 0
 			lineStart = idx + 1
-			avail = availRest
 			continue
 		}
 		rw := runeDisplayWidth(r)
@@ -154,15 +157,13 @@ func (i *Input) wrapLines() []wrappedLine {
 			current = nil
 			currentLen = 0
 			lineStart = idx
-			avail = availRest
 		}
 		current = append(current, r)
 		currentLen += rw
 	}
 
-	if len(current) > 0 || len(lines) == 0 {
-		lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
-	}
+	// Always append the final line, even if empty after trailing \n.
+	lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
 
 	return lines
 }
@@ -384,27 +385,22 @@ func (i *Input) End() {
 	i.cursor = len(i.value)
 }
 
-// View renders the input with wrapping support for long text.
-// Source: Cursor.ts — Cursor.render() (simplified rune-based version).
+// View renders the input text with cursor highlighting.
+// Returns pure text content — no prompt prefix or continuation indent.
+// The caller (App) is responsible for prepending the prompt to the first line
+// and indent to continuation lines.
 func (i *Input) View() string {
-	promptStyle := stylePrompt
-	prompt := promptStyle.Render("❯ ")
-	indent := strings.Repeat(" ", promptDisplayWidth)
-
-	// Empty value: show placeholder or cursor-only
 	if len(i.value) == 0 {
 		if !i.focused {
-			ph := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render(i.placeholder)
-			return prompt + ph
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Render(i.placeholder)
 		}
 		cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("15")).Foreground(lipgloss.Color("0"))
-		return prompt + cursorStyle.Render(" ")
+		return cursorStyle.Render(" ")
 	}
 
-	// No wrapping needed (width not set or single line)
 	lines := i.wrapLines()
 	if len(lines) <= 1 {
-		return prompt + i.renderLineSingle(lines)
+		return i.renderLineSingle(lines)
 	}
 
 	// Multi-line wrapped rendering
@@ -415,7 +411,6 @@ func (i *Input) View() string {
 	for li, line := range lines {
 		var rendered string
 		if i.focused && li == cl {
-			// Render this line with cursor
 			cursorInLine := i.cursor - line.startOffset
 			beforeRunes := line.runes[:min(cursorInLine, len(line.runes))]
 			var cursorRune string
@@ -431,9 +426,9 @@ func (i *Input) View() string {
 		}
 
 		if li == 0 {
-			sb.WriteString(prompt + rendered)
+			sb.WriteString(rendered)
 		} else {
-			sb.WriteString("\n" + indent + rendered)
+			sb.WriteString("\n" + rendered)
 		}
 	}
 	return sb.String()
@@ -715,7 +710,7 @@ func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, m
 				if blk.Text != "" {
 					wrapped := wordWrap(Render(blk.Text), availWidth)
 					if isUser {
-						wrapped = prefixUserLine(wrapped, availWidth)
+						wrapped = prefixUserLine(wrapped)
 					}
 					sb.WriteString(wrapped)
 					sb.WriteString("\n")
@@ -1200,14 +1195,10 @@ func wordWrap(text string, width int) string {
 
 // prefixUserLine adds ❯ prefix to the first line and aligns continuation lines.
 // Lines are split by \n from wordWrap output.
-func prefixUserLine(text string, width int) string {
-	prompt := stylePrompt.Render("❯ ")
-	promptLen := 2 // width of ❯ in display cells (1 cell)
+func prefixUserLine(text string) string {
 	lines := strings.Split(text, "\n")
-	// First line: prepend prompt
-	lines[0] = prompt + lines[0]
-	// Continuation lines: indent to align with text after prompt
-	indent := strings.Repeat(" ", promptLen)
+	lines[0] = renderedPrompt + lines[0]
+	indent := strings.Repeat(" ", renderedPromptWidth)
 	for i := 1; i < len(lines); i++ {
 		lines[i] = indent + lines[i]
 	}

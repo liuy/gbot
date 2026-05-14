@@ -253,8 +253,9 @@ func TestInput_View_Focused(t *testing.T) {
 	i := NewInput()
 	i.SetValue("hello")
 	v := i.View()
-	if !strings.Contains(v, "❯") {
-		t.Error("View() should contain prompt '❯'")
+	// Option C: Input.View() returns pure text, no prompt.
+	if strings.Contains(v, "❯") {
+		t.Error("View() should NOT contain prompt '❯' (Option C)")
 	}
 	if !strings.Contains(v, "hello") {
 		t.Error("View() should contain value")
@@ -268,8 +269,12 @@ func TestInput_View_Blurred(t *testing.T) {
 	i.SetValue("hello")
 	i.Blur()
 	v := i.View()
-	if !strings.Contains(v, "❯") {
-		t.Error("View() should contain prompt")
+	// Option C: Input.View() returns pure text, no prompt.
+	if strings.Contains(v, "❯") {
+		t.Error("View() should NOT contain prompt (Option C)")
+	}
+	if !strings.Contains(v, "hello") {
+		t.Error("View() should contain value when blurred")
 	}
 }
 
@@ -493,13 +498,13 @@ func TestPrefixUserLine(t *testing.T) {
 	t.Parallel()
 
 	// Single line
-	out := prefixUserLine("hello", 80)
+	out := prefixUserLine("hello")
 	if out != "❯ hello" {
 		t.Errorf("single line: got %q, want %q", out, "❯ hello")
 	}
 
 	// Multi-line
-	out = prefixUserLine("line1\nline2\nline3", 80)
+	out = prefixUserLine("line1\nline2\nline3")
 	lines := strings.Split(out, "\n")
 	if lines[0] != "❯ line1" {
 		t.Errorf("first line: got %q, want %q", lines[0], "❯ line1")
@@ -1045,7 +1050,7 @@ func TestStatusBar_View_DefaultModel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPrefixUserLine_Empty(t *testing.T) {
-	out := prefixUserLine("", 80)
+	out := prefixUserLine("")
 	// Empty string split by \n gives [""] → prefixUserLine adds prompt to first line
 	if !strings.Contains(out, "❯") {
 		t.Errorf("prefixUserLine('') should contain prompt, got %q", out)
@@ -1881,10 +1886,13 @@ func TestInput_RenderLineSingle_EmptyRunes(t *testing.T) {
 	t.Parallel()
 	i := NewInput()
 	i.SetWidth(80)
-	// Empty value, focused — should render cursor block
+	// Empty value, focused — should render cursor block (no prompt per Option C)
 	v := i.View()
-	if !strings.Contains(v, "❯") {
-		t.Errorf("empty focused input should show prompt, got: %q", v)
+	if strings.Contains(v, "❯") {
+		t.Errorf("empty focused input should NOT show prompt (Option C), got: %q", v)
+	}
+	if v == "" {
+		t.Error("empty focused input should render cursor block")
 	}
 }
 
@@ -2857,19 +2865,21 @@ func TestInput_View_Multiline(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("View multiline: got %d lines, want >= 2; output:\n%s", len(lines), v)
 	}
-	// First line should start with prompt
-	if !strings.Contains(lines[0], "❯") {
-		t.Errorf("first line should contain prompt ❯, got: %q", lines[0])
+	// Option C: Input.View() returns pure text, no prompt or indent.
+	if strings.Contains(lines[0], "❯") {
+		t.Errorf("first line should NOT contain prompt (Option C), got: %q", lines[0])
 	}
-	// Second line should be indented (not start with prompt)
 	if strings.Contains(lines[1], "❯") {
 		t.Errorf("continuation line should NOT contain ❯, got: %q", lines[1])
 	}
-	if strings.TrimSpace(lines[0]) == "" {
-		t.Error("first line should not be empty")
+	// Both lines should contain content
+	stripped0 := stripANSIPrintable(lines[0])
+	stripped1 := stripANSIPrintable(lines[1])
+	if !strings.Contains(stripped0, "hello") {
+		t.Errorf("first line should contain 'hello', got: %q", stripped0)
 	}
-	if strings.TrimSpace(lines[1]) == "" {
-		t.Error("second line should not be empty")
+	if !strings.Contains(stripped1, "world") {
+		t.Errorf("second line should contain 'world', got: %q", stripped1)
 	}
 }
 
@@ -3003,9 +3013,85 @@ func TestInput_View_PasteMultiline(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("View should have 2 lines, got %d: %q", len(lines), lines)
 	}
-	if !strings.HasPrefix(lines[0], "❯") {
-		t.Errorf("line 0 should start with prompt, got: %q", lines[0])
+	// Option C: no prompt in Input.View()
+	if strings.Contains(lines[0], "❯") {
+		t.Errorf("line 0 should NOT start with prompt (Option C), got: %q", lines[0])
 	}
 	t.Logf("line 0: %q", lines[0])
 	t.Logf("line 1: %q", lines[1])
+}
+
+func TestRenderedPromptWidth_NonZero(t *testing.T) {
+	t.Parallel()
+	if renderedPromptWidth <= 0 {
+		t.Fatalf("renderedPromptWidth should be > 0, got %d", renderedPromptWidth)
+	}
+	// Must be consistent with lipgloss.Width(renderedPrompt)
+	if got := lipgloss.Width(renderedPrompt); got != renderedPromptWidth {
+		t.Errorf("renderedPromptWidth = %d, but lipgloss.Width(renderedPrompt) = %d", renderedPromptWidth, got)
+	}
+}
+
+func TestInput_WrapLines_ContinuationSameWidthAsFirstLine(t *testing.T) {
+	// Option C: wrapLines() uses uniform avail = max(i.width, 1) for ALL lines.
+	// The width passed to Input is already reduced by promptWidth by the caller (App).
+	// Verify first line and continuation lines wrap at the same boundary.
+	i := NewInput()
+	i.SetWidth(4) // uniform avail=4 for all lines
+
+	// "aaa" fits in 4. "bbbbb" (5 chars > 4) wraps into "bbbb" + "b"
+	i.SetValue("aaa\nbbbbb")
+	lines := i.wrapLines()
+
+	t.Logf("width=4, lines=%d", len(lines))
+	for li, l := range lines {
+		t.Logf("  line %d: %q (len=%d)", li, string(l.runes), len(l.runes))
+	}
+
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (aaa + bbbb + b), got %d", len(lines))
+	}
+	if string(lines[0].runes) != "aaa" {
+		t.Errorf("line 0: got %q, want %q", string(lines[0].runes), "aaa")
+	}
+	if string(lines[1].runes) != "bbbb" {
+		t.Errorf("line 1: got %q, want %q", string(lines[1].runes), "bbbb")
+	}
+	if string(lines[2].runes) != "b" {
+		t.Errorf("line 2: got %q, want %q", string(lines[2].runes), "b")
+	}
+}
+
+func TestInput_View_MultilineCursorAligned(t *testing.T) {
+	// Simulate \+Enter: type text, then newline
+	i := NewInput()
+	i.SetWidth(80)
+	i.Focus()
+
+	i.SetValue("hello")
+	i.InsertChar('\n')
+	// Cursor is now after \n, at start of empty continuation line
+
+	view := i.View()
+	viewLines := strings.Split(view, "\n")
+	t.Logf("lines: %d", len(viewLines))
+	for li, l := range viewLines {
+		t.Logf("  line %d: %q", li, l)
+	}
+
+	if len(viewLines) < 2 {
+		t.Fatalf("expected 2+ lines, got %d", len(viewLines))
+	}
+
+	// Option C: continuation line is pure text (cursor highlight on empty line).
+	// No indent — that's App.View()'s job.
+	contLine := viewLines[1]
+	// The cursor on empty continuation line = highlighted space
+	if contLine == "" {
+		t.Error("continuation line should show cursor, got empty")
+	}
+	// Should not contain prompt
+	if strings.Contains(contLine, "❯") {
+		t.Errorf("continuation line should NOT contain prompt (Option C), got: %q", contLine)
+	}
 }

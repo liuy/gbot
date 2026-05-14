@@ -458,7 +458,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = m.Width
 		a.height = m.Height
-		a.input.SetWidth(a.width - 4)
+		a.input.SetWidth(a.width - 4 - renderedPromptWidth)
 		a.status.SetWidth(a.width)
 		return a, nil
 
@@ -676,9 +676,17 @@ func (a *App) View() string {
 		}
 	}
 
-	// Input
+	// Input: View() returns pure text, prepend prompt/indent here.
 	inputView := a.input.View()
-	sb.WriteString(inputView)
+	inputLines := strings.Split(inputView, "\n")
+	indent := strings.Repeat(" ", renderedPromptWidth)
+	for li, line := range inputLines {
+		if li == 0 {
+			sb.WriteString(renderedPrompt + line)
+		} else {
+			sb.WriteString("\n" + indent + line)
+		}
+	}
 
 	// Completion dropdown (below input, above separator — TS: PromptInputFooter)
 	if a.completions.Visible() {

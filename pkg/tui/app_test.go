@@ -3113,8 +3113,8 @@ func TestApp_HandleKey_CtrlN_WrappedInput(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 30
-	app.input.SetWidth(26)
-	app.input.SetValue("abcdefghijklmnopqrstuvwxyz") // wraps in 26-wide input
+	app.input.SetWidth(20)
+	app.input.SetValue("abcdefghijklmnopqrstuvwxyz") // wraps in 20-wide input
 	app.input.Home()                                 // cursor at 0, first line
 	// Ctrl+N should call CursorDown which returns true (on first line, can go down)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
@@ -3131,7 +3131,7 @@ func TestApp_HandleKey_KeyUp_WrappedInput(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 30
-	app.input.SetWidth(26)
+	app.input.SetWidth(20)
 	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyUp})
 	a := model.(*App)
@@ -3147,7 +3147,7 @@ func TestApp_HandleKey_KeyDown_WrappedInput(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 30
-	app.input.SetWidth(26)
+	app.input.SetWidth(20)
 	app.input.SetValue("abcdefghijklmnopqrstuvwxyz")
 	app.input.Home()
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
