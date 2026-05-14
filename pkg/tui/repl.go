@@ -884,16 +884,14 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.displayedOutputTokens = 0
 	a.cacheReadTokens = 0
 	a.cacheCreationTokens = 0
-	// Estimate input tokens from context + user message text
-	estimate := types.EstimateTokens(string(a.systemPrompt)) + types.EstimateTokens(text)
-	for _, msg := range a.repl.Messages() {
-		for _, blk := range msg.Blocks {
-			if blk.Type == BlockText {
-				estimate += types.EstimateTokens(blk.Text)
-			}
-		}
+	// Estimate input tokens: use engine's precise ContextTokens (from last
+	// API usage) as the base, only estimate the new user message text.
+	// Falls back to system prompt estimation on the first turn (cold start).
+	base := a.engine.ContextTokens
+	if base == 0 {
+		base = types.EstimateTokens(string(a.systemPrompt))
 	}
-	a.inputTokenTarget = estimate
+	a.inputTokenTarget = base + types.EstimateTokens(text)
 
 	return tea.Batch(
 		commitCmd,
