@@ -2905,3 +2905,107 @@ func TestInput_CursorDown_AcrossNewline(t *testing.T) {
 		t.Errorf("CursorDown across newline: cursor=%d, want 8", i.cursor)
 	}
 }
+
+func TestInput_WrapLines_ZeroWidth_SplitsOnNewlines(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello\nworld\nfoo")
+	// width remains 0 (no SetWidth call)
+	lines := i.wrapLines()
+	if len(lines) != 3 {
+		t.Fatalf("wrapLines with width=0: got %d lines, want 3", len(lines))
+	}
+	if string(lines[0].runes) != "hello" {
+		t.Errorf("line 0: got %q, want %q", string(lines[0].runes), "hello")
+	}
+	if lines[0].startOffset != 0 {
+		t.Errorf("line 0 startOffset: got %d, want 0", lines[0].startOffset)
+	}
+	if string(lines[1].runes) != "world" {
+		t.Errorf("line 1: got %q, want %q", string(lines[1].runes), "world")
+	}
+	if lines[1].startOffset != 6 {
+		t.Errorf("line 1 startOffset: got %d, want 6", lines[1].startOffset)
+	}
+	if string(lines[2].runes) != "foo" {
+		t.Errorf("line 2: got %q, want %q", string(lines[2].runes), "foo")
+	}
+	if lines[2].startOffset != 12 {
+		t.Errorf("line 2 startOffset: got %d, want 12", lines[2].startOffset)
+	}
+}
+
+func TestInput_WrapLines_ZeroWidth_EmptyValue(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	// width=0, empty value
+	lines := i.wrapLines()
+	if len(lines) != 1 {
+		t.Fatalf("empty value: got %d lines, want 1", len(lines))
+	}
+	if len(lines[0].runes) != 0 {
+		t.Error("empty value should have empty runes")
+	}
+}
+
+func TestInput_WrapLines_ZeroWidth_NoNewlines(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello world")
+	// width=0, no newlines
+	lines := i.wrapLines()
+	if len(lines) != 1 {
+		t.Fatalf("no newlines: got %d lines, want 1", len(lines))
+	}
+	if string(lines[0].runes) != "hello world" {
+		t.Errorf("line 0: got %q, want %q", string(lines[0].runes), "hello world")
+	}
+}
+
+func TestInput_WrapLines_ZeroWidth_TrailingNewline(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetValue("hello\n")
+	lines := i.wrapLines()
+	if len(lines) != 2 {
+		t.Fatalf("trailing newline: got %d lines, want 2", len(lines))
+	}
+	if string(lines[0].runes) != "hello" {
+		t.Errorf("line 0: got %q, want %q", string(lines[0].runes), "hello")
+	}
+	if len(lines[1].runes) != 0 {
+		t.Errorf("line 1 after trailing \\n should be empty, got %q", string(lines[1].runes))
+	}
+}
+
+func TestInput_View_PasteMultiline(t *testing.T) {
+	t.Parallel()
+	i := NewInput()
+	i.SetWidth(80)
+	i.Focus()
+
+	// Simulate paste: insert each character including \n
+	for _, ch := range "测试消息\n换行" {
+		i.InsertChar(ch)
+	}
+
+	view := i.View()
+
+	if !strings.Contains(view, "测试消息") {
+		t.Errorf("View should contain '测试消息', got: %q", view)
+	}
+	if !strings.Contains(view, "换行") {
+		t.Errorf("View should contain '换行', got: %q", view)
+	}
+
+	// Should have 2 lines (split by \n in rendered output)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("View should have 2 lines, got %d: %q", len(lines), lines)
+	}
+	if !strings.HasPrefix(lines[0], "❯") {
+		t.Errorf("line 0 should start with prompt, got: %q", lines[0])
+	}
+	t.Logf("line 0: %q", lines[0])
+	t.Logf("line 1: %q", lines[1])
+}

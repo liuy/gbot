@@ -6862,3 +6862,238 @@ func TestRetryView_CountdownAccuracy(t *testing.T) {
 		t.Error("no countdown line found in view")
 	}
 }
+
+func TestApp_HandleKey_PasteMultiline_ResetsNav(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Populate history and enter navigation
+	app.history.Add("old1")
+	app.history.Add("old2")
+	app.history.Up("current draft")
+	if app.history.savedDraft == "" {
+		t.Fatal("setup: savedDraft should be set after Up()")
+	}
+
+	// Paste multi-line content — should resetNavAndAccum
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("line1\nline2"), Paste: true})
+
+	if app.input.Value() != "line1\nline2" {
+		t.Errorf("paste multiline: got %q, want %q", app.input.Value(), "line1\nline2")
+	}
+	if app.history.savedDraft != "" {
+		t.Errorf("paste should reset history nav (clear savedDraft), got %q", app.history.savedDraft)
+	}
+}
+
+func TestApp_PasteMultiline_SubmitPreservesAllLines(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Simulate paste of "测试消息\n换行"
+	pastedText := "测试消息\n换行"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pastedText), Paste: true})
+
+	// Verify input contains the full pasted text
+	if got := app.input.Value(); got != pastedText {
+		t.Fatalf("input after paste: got %q, want %q", got, pastedText)
+	}
+
+	// Submit
+	cmd := app.handleSubmitRepl(pastedText)
+	if cmd == nil {
+		t.Fatal("handleSubmitRepl should return a command")
+	}
+
+	// Check the user message in repl state
+	msgs := app.repl.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one message")
+	}
+
+	// Find user message text
+	var userText strings.Builder
+	for _, m := range msgs {
+		if m.Role == "user" {
+			for _, b := range m.Blocks {
+				if b.Type == BlockText {
+					userText.WriteString(b.Text)
+				}
+			}
+		}
+	}
+	if userText.String() != pastedText {
+		t.Errorf("submitted text: got %q, want %q", userText.String(), pastedText)
+	}
+
+	// Verify rendering preserves both lines
+	rendered := msgs[0].View(80, false, "", false, 0)
+	if !strings.Contains(rendered, "测试消息") {
+		t.Errorf("rendered should contain '测试消息', got: %s", rendered)
+	}
+	if !strings.Contains(rendered, "换行") {
+		t.Errorf("rendered should contain '换行', got: %s", rendered)
+	}
+}
+
+func TestApp_PasteMultiline_NoBracketedPaste(t *testing.T) {
+	// Simulates a terminal without bracketed paste support:
+	// paste "测试消息\n换行" arrives as separate events:
+	// 1) runes "测试消息", 2) KeyEnter (from \n), 3) runes "换行"
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// First part: "测试消息" arrives as regular runes (no paste flag)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("测试消息")})
+	if got := app.input.Value(); got != "测试消息" {
+		t.Fatalf("after first runes: got %q, want %q", got, "测试消息")
+	}
+
+	// The \n arrives as KeyEnter — this SUBMITS "测试消息" as a query!
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Input is now empty (was reset by handleSubmitRepl)
+	if got := app.input.Value(); got != "" {
+		t.Errorf("input should be empty after Enter, got %q", got)
+	}
+
+	// Second part: "换行" arrives as runes
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("换行")})
+	if got := app.input.Value(); got != "换行" {
+		t.Errorf("after second runes: got %q, want %q", got, "换行")
+	}
+
+	// Check submitted messages: should have "测试消息" as first user message
+	msgs := app.repl.Messages()
+	var userMsgs []string
+	for _, m := range msgs {
+		if m.Role == "user" {
+			for _, b := range m.Blocks {
+				if b.Type == BlockText {
+					userMsgs = append(userMsgs, b.Text)
+				}
+			}
+		}
+	}
+	if len(userMsgs) != 1 || userMsgs[0] != "测试消息" {
+		t.Errorf("submitted messages: %v, want [%q]", userMsgs, "测试消息")
+	}
+	t.Logf("CONFIRMED: without bracketed paste, first line is auto-submitted, second line remains in input")
+	t.Logf("This explains the reported issue: they see '换行' in input, '测试消息' was submitted separately")
+}
+
+func TestApp_View_PasteMultiline_InputBothLinesVisible(t *testing.T) {
+	// Small terminal where multi-line input overflows the fixed 5-line reserve
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 8 // maxContentLines = 8-5 = 3
+
+	// Add content to fill the 3-line content area
+	app.repl.AddUserMessage("line1")
+	app.repl.AddUserMessage("line2")
+	app.repl.AddUserMessage("line3")
+	app.markViewportDirty()
+
+	// Paste 2-line content into input
+	pastedText := "测试消息\n换行"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pastedText), Paste: true})
+
+	inputView := app.input.View()
+	inputLineCount := strings.Count(inputView, "\n") + 1
+	t.Logf("input lines: %d", inputLineCount)
+
+	view := app.View()
+	viewLines := strings.Count(view, "\n") + 1
+	t.Logf("total view lines: %d (terminal height: %d)", viewLines, app.height)
+
+	if viewLines > app.height {
+		t.Errorf("view overflows terminal: %d lines in height %d", viewLines, app.height)
+	}
+
+	if !strings.Contains(view, "测试消息") {
+		t.Errorf("View should contain '测试消息'")
+		t.Logf("View:\n%s", view)
+	}
+	if !strings.Contains(view, "换行") {
+		t.Errorf("View should contain '换行'")
+	}
+}
+
+// TestApp_Paste_CarriageReturnNormalizedToNewline verifies that \r from
+// Windows Terminal paste is converted to \n so both lines are visible.
+func TestApp_Paste_CarriageReturnNormalizedToNewline(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Windows Terminal sends \r (0x0D) for line breaks in pasted text
+	pastedText := "测试消息\r换行"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pastedText), Paste: true})
+
+	inputVal := app.input.Value()
+	t.Logf("input value: %q", inputVal)
+
+	if strings.ContainsRune(inputVal, '\r') {
+		t.Errorf("input value should not contain \\r, got: %q", inputVal)
+	}
+	if !strings.Contains(inputVal, "测试消息\n换行") {
+		t.Errorf("input value should be '测试消息\\n换行', got: %q", inputVal)
+	}
+
+	// Both lines must be visible in View
+	view := app.View()
+	if !strings.Contains(view, "测试消息") {
+		t.Errorf("View should contain '测试消息'")
+		t.Logf("View:\n%s", view)
+	}
+	if !strings.Contains(view, "换行") {
+		t.Errorf("View should contain '换行'")
+		t.Logf("View:\n%s", view)
+	}
+}
+
+// TestApp_Paste_CRLFNormalized verifies \r\n from Windows paste becomes \n\n
+// (TS behavior: .replace(/\r/g, '\n') converts each \r individually).
+func TestApp_Paste_CRLFNormalized(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	pastedText := "line1\r\nline2"
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pastedText), Paste: true})
+
+	inputVal := app.input.Value()
+	t.Logf("input value: %q", inputVal)
+
+	if strings.ContainsRune(inputVal, '\r') {
+		t.Errorf("input value should not contain \\r, got: %q", inputVal)
+	}
+	// \r\n becomes \n\n (both \r and \n are kept, \r→\n)
+	if !strings.Contains(inputVal, "line1\n\nline2") {
+		t.Errorf("expected 'line1\\n\\nline2', got: %q", inputVal)
+	}
+}
+
+// TestApp_NormalTyping_CarriageReturnNormalized verifies non-paste typing also
+// converts \r to \n (Alt+Enter / SSH-coalesced input path).
+func TestApp_NormalTyping_CarriageReturnNormalized(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.width = 80
+	app.height = 24
+
+	// Non-paste typing with \r
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello\rworld"), Paste: false})
+
+	inputVal := app.input.Value()
+	t.Logf("input value: %q", inputVal)
+
+	if strings.ContainsRune(inputVal, '\r') {
+		t.Errorf("input value should not contain \\r, got: %q", inputVal)
+	}
+	if !strings.Contains(inputVal, "hello\nworld") {
+		t.Errorf("expected 'hello\\nworld', got: %q", inputVal)
+	}
+}

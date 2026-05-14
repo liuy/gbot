@@ -121,8 +121,11 @@ func (i *Input) SetWidth(w int) {
 // wrapLines wraps the input value into visual lines based on display width.
 // Source: Cursor.ts — MeasuredText.measureWrappedText() (simplified rune-based version).
 func (i *Input) wrapLines() []wrappedLine {
-	if i.width <= 0 || len(i.value) == 0 {
+	if len(i.value) == 0 {
 		return []wrappedLine{{runes: i.value, startOffset: 0}}
+	}
+	if i.width <= 0 {
+		return i.splitOnNewlines()
 	}
 
 	// First line has less room due to prompt prefix
@@ -161,6 +164,21 @@ func (i *Input) wrapLines() []wrappedLine {
 		lines = append(lines, wrappedLine{runes: current, startOffset: lineStart})
 	}
 
+	return lines
+}
+
+// splitOnNewlines splits the input value on hard newlines without word wrapping.
+// Used when width is unknown (before WindowSizeMsg arrives).
+func (i *Input) splitOnNewlines() []wrappedLine {
+	var lines []wrappedLine
+	start := 0
+	for idx, r := range i.value {
+		if r == '\n' {
+			lines = append(lines, wrappedLine{runes: i.value[start:idx], startOffset: start})
+			start = idx + 1
+		}
+	}
+	lines = append(lines, wrappedLine{runes: i.value[start:], startOffset: start})
 	return lines
 }
 

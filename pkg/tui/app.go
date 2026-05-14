@@ -677,7 +677,8 @@ func (a *App) View() string {
 	}
 
 	// Input
-	sb.WriteString(a.input.View())
+	inputView := a.input.View()
+	sb.WriteString(inputView)
 
 	// Completion dropdown (below input, above separator — TS: PromptInputFooter)
 	if a.completions.Visible() {
@@ -1001,7 +1002,12 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 	if msg.Paste {
+		slog.Info("tui:paste_input", "raw", fmt.Sprintf("%q", string(msg.Runes)), "runes", len(msg.Runes))
+		a.resetNavAndAccum()
 		for _, ch := range msg.Runes {
+			if ch == '\r' {
+				ch = '\n'
+			}
 			a.input.InsertChar(ch)
 		}
 		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
@@ -1009,6 +1015,9 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	a.resetNavAndAccum()
 	for _, ch := range msg.Runes {
+		if ch == '\r' {
+			ch = '\n'
+		}
 		a.input.InsertChar(ch)
 	}
 	a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
