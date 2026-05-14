@@ -140,19 +140,14 @@ type StreamingToolExecutor struct {
 	currentTurnMsgID string
 
 	// sessionAllowed caches "Allow always" decisions for the current session.
-	// Key format: "ToolName" or "ToolName:contentPattern".
-	// 修正 3: session-scoped allow cache
 	sessionAllowed map[string]bool
 
 	// askMu serializes concurrent ask dialogs. Only one ask at a time.
-	// 修正 4: concurrent ask serialization
 	askMu sync.Mutex
 
 	// isSubEngine is true for sub-engine executors. Sub-engines auto-deny asks
 	// since they run in the background and can't show interactive dialogs.
-	// 修正 6: sub-engine ask strategy
 	isSubEngine bool
-
 }
 
 // NewStreamingToolExecutor creates a new concurrent tool executor.
@@ -176,10 +171,6 @@ func NewStreamingToolExecutor(
 }
 
 // SetMessages sets the conversation history on the executor.
-// Called from engine.go after the assistant message is appended (so messages
-// include the triggering assistant turn) but before ExecuteAll runs.
-// This ensures tools like Agent can access the full parent conversation
-// for fork-agent message construction.
 func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -201,36 +192,29 @@ func (e *StreamingToolExecutor) StartedToolIDs() map[string]bool {
 }
 
 // SetHooks injects the hooks system into the executor.
-// Called from engine.go after construction.
 func (e *StreamingToolExecutor) SetHooks(h *hooks.Hooks, sessionID string) {
 	e.hooks = h
 	e.sessionID = sessionID
 }
 
 // SetPermissionChecker injects the permission checker into the executor.
-// Called from engine.go when creating the streaming executor.
 func (e *StreamingToolExecutor) SetPermissionChecker(pc permission.PermissionChecker) {
 	e.permChecker = pc
 }
 
 // SetFileHistory injects the file history tracker into the executor.
-// Called from engine.go after construction. Sub-engines share the same Tracker.
 func (e *StreamingToolExecutor) SetFileHistory(fh *filehistory.Tracker) {
 	e.fileHistory = fh
 }
 
 // SetSubEngine marks this executor as running inside a sub-engine.
-// 修正 6: sub-engine ask strategy
 func (e *StreamingToolExecutor) SetSubEngine(v bool) {
 	e.isSubEngine = v
 }
 
 // askUser asks the user for permission via TUI dialog.
 // Blocks until the user responds, a context is cancelled, or the executor is discarded.
-// 修正 2: uses doEmit. 修正 3: sessionAllowed cache. 修正 4: askMu serialization.
-// 修正 7: three-way select.
 func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Decision, matchedContent string) types.UserDecision {
-	// 修正 3: check session-scoped cache
 	cacheKey := tt.Name
 	if matchedContent != "" {
 		cacheKey = tt.Name + ":" + matchedContent
@@ -239,7 +223,6 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 		return types.DecisionAllow
 	}
 
-	// 修正 4: serialize concurrent asks
 	e.askMu.Lock()
 	defer e.askMu.Unlock()
 
@@ -250,7 +233,6 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 
 	decisionCh := make(chan types.AskResponse, 1)
 
-	// Build RuleDetail string from matched rule
 	ruleDetail := ""
 	if decision.Rule != nil {
 		ruleDetail = decision.Rule.Value.ToolName
@@ -260,7 +242,7 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 		ruleDetail += " from " + decision.Rule.Source + " settings"
 	}
 
-	e.doEmit(types.QueryEvent{ // 修正 2: use doEmit
+	e.doEmit(types.QueryEvent{
 		Type: types.EventAsk,
 		Ask: &types.AskEvent{
 			Kind:       types.AskPermission,
@@ -272,14 +254,12 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 		},
 	})
 
-	// 修正 7: three-way select
 	select {
 	case resp, ok := <-decisionCh:
 		if !ok {
 			return types.DecisionDeny
 		}
 		if resp.Decision == types.DecisionAllowAlways {
-			// 修正 3: write to session cache
 			if e.sessionAllowed == nil {
 				e.sessionAllowed = make(map[string]bool)
 			}
@@ -428,10 +408,7 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 	for _, ch := range doneChans {
 		select {
 		case <-ch:
-			// Tool completed normally.
 		case <-e.rootCtx.Done():
-			// Query cancelled. Tool goroutines detect siblingCtx cancellation
-			// and complete shortly. Wait for this tool's goroutine to finish.
 			<-ch
 		}
 	}
@@ -645,84 +622,63 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	// Use siblingCtx so Bash errors can cancel siblings.
 	start := time.Now()
 
-	// Build per-tool ToolUseContext with the correct ToolUseID.
-	// The executor-level tctx may be nil (created inline during callLLM),
-	// so we always create a fresh copy with tt.ID set.
 	toolCtx := e.buildToolCtx(tt.ID)
 
-		// ── Permission check (before hooks) ──
-		// Source: toolExecution.ts — hasPermissionsToUseTool runs before hooks.
-		// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
-		// The checker is a system component — if it panics (e.g. nil interface trap),
-		// silently disable it and let the tool execute, rather than failing the tool.
+	// ── Permission check (before hooks) ──
+	// Source: toolExecution.ts — hasPermissionsToUseTool runs before hooks.
+	// Three-phase: bare-tool deny → bare-tool ask → content-level matching → allow.
+	// The checker is a system component — if it panics (e.g. nil interface trap),
+	// silently disable it and let the tool execute, rather than failing the tool.
 
-		// Memory path bypass: auto-allow writes to the memory directory.
-		// TS: isAutoMemPath (filesystem.ts:1572-1581) — write carve-out for auto-memory.
-		if isMemoryPathWrite(tt.Name, tt.Input) {
-			// Skip permission check — memory dir writes are always allowed.
-		} else if e.permChecker != nil {
-			var decision permission.Decision
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Error("engine: permChecker.Check panicked, disabling", "tool", tt.Name, "error", r)
-						e.permChecker = nil
-						decision = permission.Decision{Action: permission.ActionAllow}
-					}
-				}()
-				decision = e.permChecker.Check(tt.Name, tt.Input)
+	// Memory path bypass: auto-allow writes to the memory directory.
+	// TS: isAutoMemPath (filesystem.ts:1572-1581) — write carve-out for auto-memory.
+	if isMemoryPathWrite(tt.Name, tt.Input) {
+		// Skip permission check — memory dir writes are always allowed.
+	} else if e.permChecker != nil {
+		var decision permission.Decision
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("engine: permChecker.Check panicked, disabling", "tool", tt.Name, "error", r)
+					e.permChecker = nil
+					decision = permission.Decision{Action: permission.ActionAllow}
+				}
 			}()
+			decision = e.permChecker.Check(tt.Name, tt.Input)
+		}()
 
-			// Phase 1: bare-tool deny (rule-based, no user interaction)
-			if decision.Action == permission.ActionDeny {
-				errMsg := ruleDenyMessage(tt.Name)
-				errBytes, _ := json.Marshal(errMsg)
-				e.doEmit(types.QueryEvent{
-					Type: types.EventToolEnd,
-					ToolResult: &types.ToolResultEvent{
-						ToolUseID:     tt.ID,
-						Output:        errBytes,
-						DisplayOutput: errMsg,
-						IsError:       true,
-					},
-				})
-				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
-				return
-			}
+		// Phase 1: bare-tool deny (rule-based, no user interaction)
+		if decision.Action == permission.ActionDeny {
+			errMsg := ruleDenyMessage(tt.Name)
+			errBytes, _ := json.Marshal(errMsg)
+			e.doEmit(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     tt.ID,
+					Output:        errBytes,
+					DisplayOutput: errMsg,
+					IsError:       true,
+				},
+			})
+			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+			return
+		}
 
-				// Phase 2: bare-tool ask
-				if decision.Action == permission.ActionAsk {
-					// Fire PermissionRequest hook — plugins can auto-allow/deny.
-					// Source: interactiveHandler.ts:412 — executePermissionRequestHooks
-					if e.hooks != nil {
-						hookInput := &hooks.HookInput{
-							HookEventName: "PermissionRequest",
-							ToolName:      tt.Name,
-						}
-						for _, r := range e.hooks.PermissionRequest(context.Background(), hookInput) {
-							if r.Output != nil && r.Output.Decision == "allow" {
-								continue // hook approved, skip askUser — fall through to Phase 3
-							}
-							if r.Output != nil && r.Output.Decision == "block" {
-								errMsg := ruleDenyMessage(tt.Name)
-								errBytes, _ := json.Marshal(errMsg)
-								e.doEmit(types.QueryEvent{
-									Type: types.EventToolEnd,
-									ToolResult: &types.ToolResultEvent{
-										ToolUseID:     tt.ID,
-										Output:        errBytes,
-										DisplayOutput: errMsg,
-										IsError:       true,
-									},
-								})
-								tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
-								return
-							}
-						}
+		// Phase 2: bare-tool ask
+		if decision.Action == permission.ActionAsk {
+			// Fire PermissionRequest hook — plugins can auto-allow/deny.
+			// Source: interactiveHandler.ts:412 — executePermissionRequestHooks
+			if e.hooks != nil {
+				hookInput := &hooks.HookInput{
+					HookEventName: "PermissionRequest",
+					ToolName:      tt.Name,
+				}
+				for _, r := range e.hooks.PermissionRequest(context.Background(), hookInput) {
+					if r.Output != nil && r.Output.Decision == "allow" {
+						continue // hook approved, skip askUser — fall through to Phase 3
 					}
-					userDecision := e.askUser(tt, decision, "")
-					if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
-						errMsg := e.userOrSubRejectMessage()
+					if r.Output != nil && r.Output.Decision == "block" {
+						errMsg := ruleDenyMessage(tt.Name)
 						errBytes, _ := json.Marshal(errMsg)
 						e.doEmit(types.QueryEvent{
 							Type: types.EventToolEnd,
@@ -737,65 +693,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 						return
 					}
 				}
-
-			// Phase 3: content-level matching
-			if len(decision.ContentRules) > 0 {
-				action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
-				if action == permission.ActionDeny {
-					errMsg := ruleDenyMessage(tt.Name)
-					errBytes, _ := json.Marshal(errMsg)
-					e.doEmit(types.QueryEvent{
-						Type: types.EventToolEnd,
-						ToolResult: &types.ToolResultEvent{
-							ToolUseID:     tt.ID,
-							Output:        errBytes,
-							DisplayOutput: errMsg,
-							IsError:       true,
-						},
-					})
-					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
-					return
-				}
-					if action == permission.ActionAsk {
-						// 修正 9: use pattern from checkContentPermissions (avoids double check)
-						matchedContent := matchedPattern
-
-						userDecision := e.askUser(tt, permission.Decision{
-							Action:  permission.ActionAsk,
-							Message: fmt.Sprintf("tool %s requires permission by content rule", tt.Name),
-						}, matchedContent)
-						if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
-							errMsg := e.userOrSubRejectMessage()
-							errBytes, _ := json.Marshal(errMsg)
-							e.doEmit(types.QueryEvent{
-								Type: types.EventToolEnd,
-								ToolResult: &types.ToolResultEvent{
-									ToolUseID:     tt.ID,
-									Output:        errBytes,
-									DisplayOutput: errMsg,
-									IsError:       true,
-								},
-							})
-							tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
-							return
-						}
-					}
 			}
-		}
-
-		// PreToolUse hook — blocking result prevents tool execution.
-		// Source: toolHooks.ts:435 — runPreToolUseHooks.
-		if e.hooks != nil {
-			hookInput := &hooks.HookInput{
-				HookEventName: string(hooks.HookPreToolUse),
-				SessionID:     e.sessionID,
-				ToolName:      tt.Name,
-				ToolInput:     tt.Input,
-				ToolUseID:     tt.ID,
-			}
-			decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
-			if decision == hooks.HookDecisionBlock {
-				errMsg := fmt.Sprintf("Execution stopped by PreToolUse hook for tool %s", tt.Name)
+			userDecision := e.askUser(tt, decision, "")
+			if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
+				errMsg := e.userOrSubRejectMessage()
 				errBytes, _ := json.Marshal(errMsg)
 				e.doEmit(types.QueryEvent{
 					Type: types.EventToolEnd,
@@ -810,6 +711,78 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 				return
 			}
 		}
+
+		// Phase 3: content-level matching
+		if len(decision.ContentRules) > 0 {
+			action, matchedPattern := e.checkContentPermissions(tt.Name, tt.Input, decision.ContentRules)
+			if action == permission.ActionDeny {
+				errMsg := ruleDenyMessage(tt.Name)
+				errBytes, _ := json.Marshal(errMsg)
+				e.doEmit(types.QueryEvent{
+					Type: types.EventToolEnd,
+					ToolResult: &types.ToolResultEvent{
+						ToolUseID:     tt.ID,
+						Output:        errBytes,
+						DisplayOutput: errMsg,
+						IsError:       true,
+					},
+				})
+				tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+				return
+			}
+			if action == permission.ActionAsk {
+				matchedContent := matchedPattern
+
+				userDecision := e.askUser(tt, permission.Decision{
+					Action:  permission.ActionAsk,
+					Message: fmt.Sprintf("tool %s requires permission by content rule", tt.Name),
+				}, matchedContent)
+				if userDecision != types.DecisionAllow && userDecision != types.DecisionAllowAlways {
+					errMsg := e.userOrSubRejectMessage()
+					errBytes, _ := json.Marshal(errMsg)
+					e.doEmit(types.QueryEvent{
+						Type: types.EventToolEnd,
+						ToolResult: &types.ToolResultEvent{
+							ToolUseID:     tt.ID,
+							Output:        errBytes,
+							DisplayOutput: errMsg,
+							IsError:       true,
+						},
+					})
+					tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+					return
+				}
+			}
+		}
+	}
+
+	// PreToolUse hook — blocking result prevents tool execution.
+	// Source: toolHooks.ts:435 — runPreToolUseHooks.
+	if e.hooks != nil {
+		hookInput := &hooks.HookInput{
+			HookEventName: string(hooks.HookPreToolUse),
+			SessionID:     e.sessionID,
+			ToolName:      tt.Name,
+			ToolInput:     tt.Input,
+			ToolUseID:     tt.ID,
+		}
+		decision, _ := e.hooks.PreToolUse(e.siblingCtx, hookInput)
+		if decision == hooks.HookDecisionBlock {
+			errMsg := fmt.Sprintf("Execution stopped by PreToolUse hook for tool %s", tt.Name)
+			errBytes, _ := json.Marshal(errMsg)
+			e.doEmit(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     tt.ID,
+					Output:        errBytes,
+					DisplayOutput: errMsg,
+					IsError:       true,
+				},
+			})
+			tt.resultBlocks = []types.ContentBlock{types.NewToolResultBlock(tt.ID, errBytes, true)}
+			return
+		}
+	}
 
 	// Re-check: Discard may have been called between getAbortReason and here.
 	// Without this, a goroutine launched by processQueue can pass the abort check
@@ -975,8 +948,8 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 	// Source: FileEditTool/UI.tsx renderToolUseErrorMessage — TS shows only
 	// short summaries like "Error editing file", "File must be read first".
 	displayErr := fullErr
-	if idx := strings.IndexByte(fullErr, '\n'); idx >= 0 {
-		displayErr = fullErr[:idx]
+	if before, _, ok := strings.Cut(fullErr, "\n"); ok {
+		displayErr = before
 	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
@@ -1001,11 +974,6 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 		e.siblingCancel(fmt.Errorf("sibling_error"))
 	}
 }
-
-// buildToolCtx creates a per-tool ToolUseContext with the correct ToolUseID.
-// The executor-level tctx is shared and may be nil (created inline during callLLM).
-// Each tool needs its own context with its specific ID for identity-aware operations
-// (e.g., Agent tool needs ToolUseID to tag sub-agent events via ParentToolUseID).
 
 // firePostToolUseHook fires PostToolUse or PostToolUseFailure hook.
 func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError bool) {
@@ -1074,8 +1042,8 @@ func (e *StreamingToolExecutor) applyContextModifier(tt *TrackedTool, result *to
 }
 
 // checkContentPermissions performs content-level permission matching for a tool.
-// Source: 修正 15 — Checker does bare-tool matching; content matching is tool-specific.
-// P2-5: dispatches to registered content checkers instead of hardcoded switch.
+// Checker does bare-tool matching; content matching is tool-specific.
+// Dispatches to registered content checkers instead of hardcoded switch.
 func (e *StreamingToolExecutor) checkContentPermissions(toolName string, input json.RawMessage, contentRules []permission.Rule) (permission.RuleAction, string) {
 	action := permission.CheckContent(toolName, input, contentRules)
 	if action == permission.ActionAsk {

@@ -204,7 +204,6 @@ func CheckBashPermission(command string, contentRules []Rule) (RuleAction, *Rule
 		return ActionAllow, nil, nil
 	}
 
-	// Build shell rules from content rules
 	shellRules := make([]struct {
 		rule    Rule
 		shell   ShellRule

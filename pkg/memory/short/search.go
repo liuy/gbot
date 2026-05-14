@@ -56,7 +56,6 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 	// Segment query for Chinese + English mixed search
 	segmentedQuery := s.Segment(sanitizeFTSQuery(query))
 
-	// Build WHERE clause
 	var whereClauses []string
 	var args []any
 
@@ -292,7 +291,6 @@ func (s *Store) insertFTS(db dbExec, seq int64, content string) error {
 }
 
 // deleteFTS removes a message from the FTS5 index.
-// Called from message delete when a message is removed.
 // Note: For contentless FTS5 tables (content=”), we only delete from the map table.
 // The FTS table entry is implicitly orphaned but consumes minimal space.
 func (s *Store) deleteFTS(seq int64) error {

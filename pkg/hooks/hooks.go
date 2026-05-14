@@ -25,8 +25,8 @@ type Hooks struct {
 	executor       HookExecutor
 	promptExecutor PromptExecutor
 	agentExecutor  AgentExecutor
-	onceFired      sync.Map // 修正 6: atomic once tracking
-	trusted        bool     // 修正 5: workspace trust
+	onceFired      sync.Map // tracks which hooks have already fired
+	trusted        bool     // workspace trust status
 	mu             sync.RWMutex
 
 	// compiledMatchers caches compiled pattern functions per event.
@@ -224,7 +224,7 @@ func (h *Hooks) PostCompact(ctx context.Context, input *HookInput) []HookResult 
 // ---------------------------------------------------------------------------
 
 func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookInput) []HookResult {
-	// 1. Trust check — 修正 5
+	// 1. Trust check
 	h.mu.RLock()
 	trusted := h.trusted
 	compiled := h.compiledMatchers[string(event)]
@@ -248,7 +248,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 			continue
 		}
 		for _, hookCfg := range cm.hooks {
-			// 4. Once tracking — 修正 6 (atomic via sync.Map)
+			// 4. Once tracking (atomic via sync.Map)
 			if hookCfg.Once {
 				key := onceKey(event, cm.pattern, hookCfg)
 				if _, existed := h.onceFired.LoadOrStore(key, true); existed {
@@ -271,8 +271,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 				if exec == nil {
 					continue
 				}
-				// Build extraEnv from plugin context
-				var extraEnv []string
+			var extraEnv []string
 				if cm.pluginRoot != "" {
 					extraEnv = []string{"GBOT_PLUGIN_ROOT=" + cm.pluginRoot}
 				}

@@ -251,13 +251,11 @@ func (s *Store) UpdateContextTokens(sessionID string, tokens int) error {
 // Skips tool_result, isMeta, isCompactSummary, slash commands.
 // Truncates to 200 chars. Bash input gets "!" prefix.
 func ExtractFirstPrompt(contentJSON string) string {
-	// Parse the full message JSON
 	var msg map[string]any
 	if err := json.Unmarshal([]byte(contentJSON), &msg); err != nil {
 		return ""
 	}
 
-	// Extract message.content
 	msgObj, ok := msg["message"].(map[string]any)
 	if !ok {
 		return ""
@@ -267,7 +265,6 @@ func ExtractFirstPrompt(contentJSON string) string {
 		return ""
 	}
 
-	// Extract text blocks from content
 	texts := extractTextBlocks(content)
 
 	// Patterns to skip

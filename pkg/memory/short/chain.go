@@ -18,7 +18,6 @@ func (s *Store) BuildConversationChain(sessionID string) ([]*TranscriptMessage, 
 		return []*TranscriptMessage{}, nil
 	}
 
-	// Build message map by UUID
 	msgMap := make(map[string]*TranscriptMessage)
 	for _, msg := range messages {
 		msgMap[msg.UUID] = msg
@@ -66,7 +65,6 @@ func recoverOrphanedParallelToolResults(allMessages []*TranscriptMessage, chain 
 		return ""
 	}
 
-	// Build map of all messages by UUID
 	allMsgsByUUID := make(map[string]*TranscriptMessage)
 	for _, msg := range allMessages {
 		allMsgsByUUID[msg.UUID] = msg
@@ -128,7 +126,6 @@ func recoverOrphanedParallelToolResults(allMessages []*TranscriptMessage, chain 
 		}
 	}
 
-	// Build set of chain message UUIDs for quick lookup
 	chainUUIDs := make(map[string]bool)
 	for _, msg := range chain {
 		chainUUIDs[msg.UUID] = true
@@ -203,7 +200,6 @@ func recoverOrphanedParallelToolResults(allMessages []*TranscriptMessage, chain 
 // findLeafMessage finds the leaf message (no other message's parent_uuid points to it).
 // Prefers non-sidechain, non-progress messages regardless of timestamp.
 func findLeafMessage(messages []*TranscriptMessage) *TranscriptMessage {
-	// Build set of all UUIDs that are someone's parent
 	childUUIDs := make(map[string]bool)
 
 	for _, msg := range messages {

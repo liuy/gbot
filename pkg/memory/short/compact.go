@@ -389,7 +389,6 @@ func ApplyPreservedSegmentRelinks(boundary *TranscriptMessage, chain []*Transcri
 
 	seg := metadata.PreservedSegment
 
-	// Build index: uuid → position in chain
 	entryIndex := make(map[string]int, len(chain))
 	msgMap := make(map[string]*TranscriptMessage, len(chain))
 	for i, msg := range chain {
@@ -547,7 +546,6 @@ func ApplySnipRemovals(messages []*TranscriptMessage) []*TranscriptMessage {
 		return messages
 	}
 
-	// Build parent map for deleted entries
 	deletedParent := make(map[string]string)
 	for _, msg := range messages {
 		if toDelete[msg.UUID] {

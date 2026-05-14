@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// P2-1: Dropped event counter
+// Dropped event counter
 // ---------------------------------------------------------------------------
 
 func TestTUIHandler_DroppedCounter_Zero(t *testing.T) {
@@ -126,7 +126,7 @@ func TestTUIHandler_BlockingWrite_WaitsForConsumer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// P2-3: EventTurnStart and EventQueryStart handling in convertEventToMsg
+// EventTurnStart and EventQueryStart handling in convertEventToMsg
 // ---------------------------------------------------------------------------
 
 func TestConvertEventToMsg_StreamStart(t *testing.T) {
