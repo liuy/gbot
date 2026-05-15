@@ -369,18 +369,23 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 		t.Fatal("expected auto-rewind to fire")
 	}
 
-	// Store must be empty after auto-rewind
+	// Store retains all messages (append-only)
 	storeMsgs, err := store.LoadMessages(session.SessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
-	if len(storeMsgs) != 0 {
-		t.Fatalf("expected 0 store messages after auto-rewind, got %d", len(storeMsgs))
+	if len(storeMsgs) == 0 {
+		t.Fatal("expected store to retain messages after auto-rewind (append-only)")
 	}
 
-	// lastPersistedIdx should be updated
+	// lastPersistedIdx should be at rewind point
 	if a.lastPersistedIdx != 0 {
-		t.Errorf("expected lastPersistedIdx=0 after auto-rewind store sync, got %d", a.lastPersistedIdx)
+		t.Errorf("expected lastPersistedIdx=0 after auto-rewind, got %d", a.lastPersistedIdx)
+	}
+
+	// forkParentUUID should be empty (rewound to beginning)
+	if a.forkParentUUID != "" {
+		t.Errorf("expected empty forkParentUUID after auto-rewind, got %q", a.forkParentUUID)
 	}
 }
 
@@ -821,13 +826,16 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 			app = model.(*App)
 		}
 
-	// Verify store was truncated
+	// Store retains all messages (append-only)
 	remaining, _ := store.LoadMessages(sessionID)
-	if len(remaining) != 0 {
-		t.Errorf("expected 0 messages in store after rewind, got %d", len(remaining))
+	if len(remaining) == 0 {
+		t.Error("expected store to retain messages after rewind (append-only)")
 	}
 	if app.lastPersistedIdx != 0 {
 		t.Errorf("lastPersistedIdx = %d, want 0", app.lastPersistedIdx)
+	}
+	if app.forkParentUUID != "" {
+		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
 	}
 
 	// Verify file was restored

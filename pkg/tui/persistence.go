@@ -37,10 +37,17 @@ func (a *App) persistTurn() {
 		ptrs[i] = &storeMsgs[i]
 	}
 
-	if err := a.store.AppendMessages(a.sessionID, ptrs); err != nil {
+	// Use fork-aware persist when rewind has set a fork point
+	if a.forkParentUUID != "" {
+		err = a.store.AppendMessagesWithForkPoint(a.sessionID, ptrs, a.forkParentUUID)
+	} else {
+		err = a.store.AppendMessages(a.sessionID, ptrs)
+	}
+	if err != nil {
 		slog.Error("persistTurn: append messages", "error", err)
 		return
 	}
+	a.forkParentUUID = "" // clear fork point after successful persist
 
 	if err := a.store.UpdateSessionTimestamp(a.sessionID); err != nil {
 		slog.Error("persistTurn: update session timestamp", "error", err)
@@ -79,7 +86,7 @@ func (a *App) persistTurn() {
 // loadAndConvertMessages loads store messages and converts them to engine format.
 // Deduplicates the load→dereference→convert pattern used in auto-resume, picker, and fork.
 func loadAndConvertMessages(store *short.Store, sessionID string) ([]types.Message, error) {
-	storeMsgs, err := store.LoadMessages(sessionID)
+	storeMsgs, err := store.LoadChainMessages(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load messages: %w", err)
 	}

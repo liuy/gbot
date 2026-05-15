@@ -183,6 +183,47 @@ func (s *Store) GetMessagesAfterCompactBoundary(sessionID string) ([]*Transcript
 	return s.LoadPostCompactMessages(sessionID)
 }
 
+// LoadPostCompactChainMessages loads only the active chain from the last compact boundary onward.
+// Unlike LoadPostCompactMessages which returns all messages (including dead branches from rewinds),
+// this uses chain-walk to skip dead branches.
+// Optimization: when boundarySeq > 0, only loads messages with seq >= boundarySeq instead of the
+// full session, since the boundary starts a fresh chain (parent_uuid="").
+// TS align: getMessagesAfterCompactBoundary + buildConversationChain
+func (s *Store) LoadPostCompactChainMessages(sessionID string) ([]*TranscriptMessage, error) {
+	_, boundarySeq, err := s.GetLastBoundary(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get last boundary: %w", err)
+	}
+
+	if boundarySeq == 0 {
+		return s.BuildConversationChain(sessionID)
+	}
+
+	// Only load messages from boundary onward — the boundary starts a fresh chain
+	rows, err := s.db.Query(`
+		SELECT seq, session_id, uuid, parent_uuid, logical_parent_uuid,
+		       is_sidechain, type, subtype, content, metadata, created_at
+		FROM messages
+		WHERE session_id = ? AND seq >= ?
+		ORDER BY seq ASC
+	`, sessionID, boundarySeq)
+	if err != nil {
+		return nil, fmt.Errorf("query post-boundary messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []*TranscriptMessage
+	for rows.Next() {
+		msg, err := s.scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+
+	return buildChainFromMessages(messages), nil
+}
+
 // PartialCompact compacts only the head portion of messages, keeping the tail.
 // keepFrom specifies the index (0-based) from which to start keeping messages.
 // TS align: compact.ts:1500-1600 partialCompactConversation

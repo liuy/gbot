@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,7 @@ func (s *Store) AppendMessage(sessionID string, msg *TranscriptMessage) error {
 }
 
 // AppendMessages adds multiple messages to the session in a single transaction.
+// Includes batch UUID dedup: skips messages whose UUID already exists in the store.
 // TS align: recordTranscript → insertMessageChain for batch writes.
 func (s *Store) AppendMessages(sessionID string, msgs []*TranscriptMessage) error {
 
@@ -27,10 +29,23 @@ func (s *Store) AppendMessages(sessionID string, msgs []*TranscriptMessage) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Batch dedup: check all UUIDs in one query (avoids N+1)
+	existing, err := dedupBatch(tx, sessionID, msgs)
+	if err != nil {
+		return fmt.Errorf("dedup check: %w", err)
+	}
+
 	// Track the last chain participant's UUID
 	lastChainUUID := s.getLastChainUUID(tx, sessionID)
 
 	for _, msg := range msgs {
+		if existing[msg.UUID] {
+			if isChainParticipant(msg) {
+				lastChainUUID = msg.UUID
+			}
+			continue
+		}
+
 		if err := s.appendMessageTx(tx, sessionID, msg, lastChainUUID); err != nil {
 			return err
 		}
@@ -184,12 +199,13 @@ func (s *Store) TruncateMessagesFromIndex(sessionID string, index int) error {
 	defer func() { _ = tx.Rollback() }()
 
 	// Find the seq at the given index (0-based offset into conversation messages).
-	// Must exclude metadata/progress messages so the offset aligns with engine
-	// message indices (which don't include metadata). Without this filter, metadata
-	// messages shift the offset and truncate deletes too many messages.
+	// Only count user/assistant messages — the engine only has these types.
+	// The store also has 'system' (compact_boundary), 'metadata', and 'progress'
+	// messages that have no engine equivalent; including them in the offset count
+	// would shift the target seq backwards, deleting messages before the rewind point.
 	var targetSeq int
 	err = tx.QueryRow(
-		"SELECT seq FROM messages WHERE session_id = ? AND type NOT IN ('metadata','progress') ORDER BY seq ASC LIMIT 1 OFFSET ?",
+		"SELECT seq FROM messages WHERE session_id = ? AND type IN ('user','assistant') ORDER BY seq ASC LIMIT 1 OFFSET ?",
 		sessionID, index,
 	).Scan(&targetSeq)
 	if err != nil {
@@ -512,4 +528,85 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// dedupBatch checks which message UUIDs already exist in the store.
+// Returns a set of existing UUIDs. Used to skip already-persisted messages
+// during AppendMessages and AppendMessagesWithForkPoint.
+// TS align: recordTranscript's messageSet.has(m.uuid) dedup logic.
+func dedupBatch(tx *sql.Tx, sessionID string, msgs []*TranscriptMessage) (map[string]bool, error) {
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(msgs))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, 0, len(msgs)+1)
+	args = append(args, sessionID)
+	for _, m := range msgs {
+		args = append(args, m.UUID)
+	}
+
+	rows, err := tx.Query(
+		"SELECT uuid FROM messages WHERE session_id = ? AND uuid IN ("+placeholders+")",
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool, len(msgs))
+	for rows.Next() {
+		var uuid string
+		if err := rows.Scan(&uuid); err != nil {
+			return nil, err
+		}
+		existing[uuid] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+// AppendMessagesWithForkPoint adds messages starting from an explicit fork parent UUID.
+// Used after rewind: new messages' parent_uuid points to the last surviving message,
+// creating a DAG fork. Includes batch UUID dedup.
+// TS align: insertMessageChain's startingParentUuid parameter.
+func (s *Store) AppendMessagesWithForkPoint(sessionID string, msgs []*TranscriptMessage, forkParentUUID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	existing, err := dedupBatch(tx, sessionID, msgs)
+	if err != nil {
+		return fmt.Errorf("dedup check: %w", err)
+	}
+
+	lastChainUUID := forkParentUUID
+	for _, msg := range msgs {
+		if existing[msg.UUID] {
+			if isChainParticipant(msg) {
+				lastChainUUID = msg.UUID
+			}
+			continue
+		}
+		if err := s.appendMessageTx(tx, sessionID, msg, lastChainUUID); err != nil {
+			return err
+		}
+		if isChainParticipant(msg) {
+			lastChainUUID = msg.UUID
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadChainMessages loads only the active conversation chain for a session.
+// Walks from the latest leaf back to root via parent_uuid, skipping dead branches
+// from rewinds. Returns messages in root→leaf order.
+// TS align: buildConversationChain (sessionStorage.ts:2069)
+func (s *Store) LoadChainMessages(sessionID string) ([]*TranscriptMessage, error) {
+	return s.BuildConversationChain(sessionID)
 }

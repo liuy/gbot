@@ -681,3 +681,225 @@ func TestRecoverOrphaned_GroupNil(t *testing.T) {
 	}
 }
 
+// --- Phase 1 tests: LoadChainMessages, LoadPostCompactChainMessages, dedup, fork ---
+
+func TestLoadChainMessages_Basic(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-chain-basic"
+	createTestSession(t, store, sessionID)
+
+	msgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
+		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
+		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"bye"}]`),
+	}
+	if err := store.AppendMessages(sessionID, msgs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	chain, err := store.LoadChainMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadChainMessages: %v", err)
+	}
+
+	if len(chain) != 3 {
+		t.Fatalf("got %d messages, want 3", len(chain))
+	}
+	if chain[0].UUID != "uuid-1" {
+		t.Errorf("chain[0] = %q, want uuid-1", chain[0].UUID)
+	}
+	if chain[2].UUID != "uuid-3" {
+		t.Errorf("chain[2] = %q, want uuid-3", chain[2].UUID)
+	}
+}
+
+func TestLoadChainMessages_WithFork(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-chain-fork"
+	createTestSession(t, store, sessionID)
+
+	// Build chain: user -> assistant -> user (then rewind to user, fork new branch)
+	msgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
+		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"bad answer"}]`),
+		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"try again"}]`),
+	}
+	if err := store.AppendMessages(sessionID, msgs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	// Simulate rewind: new messages fork from uuid-1 (skipping uuid-2 and uuid-3)
+	forkMsgs := []*TranscriptMessage{
+		testMessage(0, "assistant", "uuid-4", "", `[{"type":"text","text":"better answer"}]`),
+		testMessage(0, "user", "uuid-5", "", `[{"type":"text","text":"thanks"}]`),
+	}
+	if err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, "uuid-1"); err != nil {
+		t.Fatalf("AppendMessagesWithForkPoint: %v", err)
+	}
+
+	chain, err := store.LoadChainMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadChainMessages: %v", err)
+	}
+
+	// Should only contain the active branch: uuid-1 -> uuid-4 -> uuid-5
+	if len(chain) != 3 {
+		t.Fatalf("got %d messages, want 3 (active branch only)", len(chain))
+	}
+
+	uuids := make([]string, len(chain))
+	for i, m := range chain {
+		uuids[i] = m.UUID
+	}
+	wantUUIDs := []string{"uuid-1", "uuid-4", "uuid-5"}
+	for i, got := range uuids {
+		if got != wantUUIDs[i] {
+			t.Errorf("chain[%d] = %q, want %q", i, got, wantUUIDs[i])
+		}
+	}
+}
+
+func TestFindLeafMessage_SeqTiebreaker(t *testing.T) {
+	now := testTimeBase // REAL-TIME: fixed timestamp for determinism
+	// Two leaves with same timestamp but different seq
+	messages := []*TranscriptMessage{
+		{Seq: 1, UUID: "root", Type: "user", ParentUUID: "", CreatedAt: now},
+		{Seq: 2, UUID: "leaf-a", Type: "assistant", ParentUUID: "root", CreatedAt: now.Add(1 * time.Second)},
+		{Seq: 3, UUID: "leaf-b", Type: "assistant", ParentUUID: "root", CreatedAt: now.Add(1 * time.Second)},
+	}
+
+	leaf := findLeafMessage(messages)
+	if leaf == nil {
+		t.Fatal("got nil leaf")
+	}
+	// Same timestamp → seq tiebreaker → leaf-b (seq 3)
+	if leaf.UUID != "leaf-b" {
+		t.Errorf("leaf = %q, want leaf-b (higher seq wins tie)", leaf.UUID)
+	}
+}
+
+func TestAppendMessages_Dedup_SkipsExistingUUID(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-dedup"
+	createTestSession(t, store, sessionID)
+
+	msg1 := testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`)
+	if err := store.AppendMessage(sessionID, msg1); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// Try to append same UUID again — should skip, not error
+	dupMsgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
+		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
+	}
+	if err := store.AppendMessages(sessionID, dupMsgs); err != nil {
+		t.Fatalf("AppendMessages with dedup: %v", err)
+	}
+
+	chain, err := store.LoadChainMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadChainMessages: %v", err)
+	}
+
+	// uuid-1 should appear once, uuid-2 should be added
+	if len(chain) != 2 {
+		t.Fatalf("got %d messages, want 2", len(chain))
+	}
+	if chain[0].UUID != "uuid-1" {
+		t.Errorf("chain[0] = %q, want uuid-1", chain[0].UUID)
+	}
+	if chain[1].UUID != "uuid-2" {
+		t.Errorf("chain[1] = %q, want uuid-2", chain[1].UUID)
+	}
+}
+
+func TestAppendMessagesWithForkPoint(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-fork"
+	createTestSession(t, store, sessionID)
+
+	// Initial chain
+	msgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
+		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"hi"}]`),
+	}
+	if err := store.AppendMessages(sessionID, msgs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	// Fork from uuid-1 (simulate rewind past uuid-2)
+	forkMsgs := []*TranscriptMessage{
+		testMessage(0, "assistant", "uuid-3", "", `[{"type":"text","text":"new answer"}]`),
+	}
+	if err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, "uuid-1"); err != nil {
+		t.Fatalf("AppendMessagesWithForkPoint: %v", err)
+	}
+
+	// Verify parent_uuid of uuid-3 points to uuid-1
+	var parentUUID string
+	err := store.db.QueryRow(
+		"SELECT parent_uuid FROM messages WHERE uuid = ?", "uuid-3",
+	).Scan(&parentUUID)
+	if err != nil {
+		t.Fatalf("query uuid-3 parent: %v", err)
+	}
+	if parentUUID != "uuid-1" {
+		t.Errorf("uuid-3 parent_uuid = %q, want uuid-1", parentUUID)
+	}
+}
+
+func TestAppendMessagesWithForkPoint_EmptyFork(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-fork-empty"
+	createTestSession(t, store, sessionID)
+
+	// Fork from empty string (root)
+	forkMsgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"first"}]`),
+	}
+	if err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, ""); err != nil {
+		t.Fatalf("AppendMessagesWithForkPoint: %v", err)
+	}
+
+	// Verify parent_uuid is empty (root)
+	var parentUUID string
+	err := store.db.QueryRow(
+		"SELECT parent_uuid FROM messages WHERE uuid = ?", "uuid-1",
+	).Scan(&parentUUID)
+	if err != nil {
+		t.Fatalf("query uuid-1 parent: %v", err)
+	}
+	if parentUUID != "" {
+		t.Errorf("uuid-1 parent_uuid = %q, want empty (root)", parentUUID)
+	}
+}
+
+func TestAppendMessagesWithForkPoint_Dedup(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-fork-dedup"
+	createTestSession(t, store, sessionID)
+
+	msg1 := testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`)
+	if err := store.AppendMessage(sessionID, msg1); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// Fork with a mix of existing and new UUIDs
+	forkMsgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`), // dup
+		testMessage(0, "assistant", "uuid-2", "", `[{"type":"text","text":"new"}]`),
+	}
+	if err := store.AppendMessagesWithForkPoint(sessionID, forkMsgs, ""); err != nil {
+		t.Fatalf("AppendMessagesWithForkPoint: %v", err)
+	}
+
+	chain, err := store.LoadChainMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadChainMessages: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("got %d messages, want 2 (dedup skipped uuid-1)", len(chain))
+	}
+}
+

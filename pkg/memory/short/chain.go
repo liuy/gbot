@@ -13,33 +13,31 @@ func (s *Store) BuildConversationChain(sessionID string) ([]*TranscriptMessage, 
 	if err != nil {
 		return nil, err
 	}
+	return buildChainFromMessages(messages), nil
+}
 
+// buildChainFromMessages builds the conversation chain from a pre-loaded message slice.
+// Extracted from BuildConversationChain so callers can load a subset of messages
+// (e.g. only post-boundary) and still get chain-walk semantics.
+func buildChainFromMessages(messages []*TranscriptMessage) []*TranscriptMessage {
 	if len(messages) == 0 {
-		return []*TranscriptMessage{}, nil
+		return []*TranscriptMessage{}
 	}
 
-	msgMap := make(map[string]*TranscriptMessage)
+	msgMap := make(map[string]*TranscriptMessage, len(messages))
 	for _, msg := range messages {
 		msgMap[msg.UUID] = msg
 	}
 
-	// Find leaf: a message that no other message's parent_uuid points to
 	leaf := findLeafMessage(messages)
 	if leaf == nil {
-		// No leaf found (possibly all orphans or circular), return empty
-		return []*TranscriptMessage{}, nil
+		return []*TranscriptMessage{}
 	}
 
-	// Walk from leaf to root with cycle detection
 	chain := walkToRoot(leaf, msgMap)
-
-	// Reverse to get root→leaf order
 	reverseMessages(chain)
-
-	// Recover orphaned parallel tool results
 	chain = recoverOrphanedParallelToolResults(messages, chain)
-
-	return chain, nil
+	return chain
 }
 
 // recoverOrphanedParallelToolResults recovers sibling assistant blocks and tool_results
@@ -220,15 +218,18 @@ func findLeafMessage(messages []*TranscriptMessage) *TranscriptMessage {
 		return nil // All messages are parents (circular?)
 	}
 
-	// First pass: prefer non-sidechain, non-progress leaves (latest by timestamp)
+	// First pass: prefer non-sidechain, non-progress leaves (latest by timestamp, then seq)
 	var best *TranscriptMessage
 	var bestTime int64 = -1
+	var bestSeq int64 = -1
 	for _, candidate := range leaves {
 		if candidate.IsSidechain == 1 || candidate.Type == "progress" {
 			continue
 		}
-		if candidate.CreatedAt.Unix() > bestTime {
-			bestTime = candidate.CreatedAt.Unix()
+		ts := candidate.CreatedAt.Unix()
+		if ts > bestTime || (ts == bestTime && candidate.Seq > bestSeq) {
+			bestTime = ts
+			bestSeq = candidate.Seq
 			best = candidate
 		}
 	}
@@ -236,12 +237,15 @@ func findLeafMessage(messages []*TranscriptMessage) *TranscriptMessage {
 		return best
 	}
 
-	// Fall back to any leaf (latest by timestamp)
+	// Fall back to any leaf (latest by timestamp, then seq)
 	var leaf *TranscriptMessage
 	var maxTime int64 = -1
+	var maxSeq int64 = -1
 	for _, candidate := range leaves {
-		if candidate.CreatedAt.Unix() > maxTime {
-			maxTime = candidate.CreatedAt.Unix()
+		ts := candidate.CreatedAt.Unix()
+		if ts > maxTime || (ts == maxTime && candidate.Seq > maxSeq) {
+			maxTime = ts
+			maxSeq = candidate.Seq
 			leaf = candidate
 		}
 	}

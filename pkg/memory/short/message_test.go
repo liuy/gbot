@@ -1179,8 +1179,8 @@ func TestGetLastChainUUID_NonErrNoRowsError(t *testing.T) {
 	}
 }
 
-// TestAppendMessages_AppendFailureMidBatch triggers an append failure within the batch.
-// This happens when a message has a duplicate UUID.
+// TestAppendMessages_AppendFailureMidBatch verifies dedup: duplicate UUIDs are skipped,
+// unique messages are inserted successfully.
 func TestAppendMessages_AppendFailureMidBatch(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
@@ -1192,17 +1192,23 @@ func TestAppendMessages_AppendFailureMidBatch(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Try to batch-insert with same UUID — should fail on uniqueness constraint
+	// Batch-insert with one duplicate UUID — dedup should skip it, insert the unique one
 	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "unique-uuid", "", `[{"type":"text","text":"ok"}]`),
 		testMessage(0, "user", "dup-uuid", "", `[{"type":"text","text":"duplicate"}]`),
 	}
 	err := store.AppendMessages(sessionID, msgs)
-	if err == nil {
-		t.Fatal("AppendMessages should fail on duplicate UUID")
+	if err != nil {
+		t.Fatalf("AppendMessages should succeed with dedup, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insert message") {
-		t.Errorf("error should mention 'insert message', got: %v", err)
+
+	// Verify: 2 messages total (original + unique new one, duplicate skipped)
+	result, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 messages after dedup, got %d", len(result))
 	}
 }
 
@@ -1233,7 +1239,7 @@ func TestNewStore_MkdirError(t *testing.T) {
 	}
 }
 
-// Lines 34-36: AppendMessages — appendMessageTx mid-batch error
+// Lines 34-36: AppendMessages — dedup skips duplicate UUIDs mid-batch
 func TestAppendMessages_MidBatchError(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
@@ -1245,14 +1251,23 @@ func TestAppendMessages_MidBatchError(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Now try AppendMessages with a message that has the same UUID (duplicate)
+	// AppendMessages with a duplicate UUID — dedup skips it
 	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-new", "", `[{"type":"text","text":"ok"}]`),
-		testMessage(0, "user", "uuid-dup", "", `[{"type":"text","text":"duplicate"}]`), // duplicate UUID
+		testMessage(0, "user", "uuid-dup", "", `[{"type":"text","text":"duplicate"}]`),
 	}
 	err := store.AppendMessages(sessionID, msgs)
-	if err == nil {
-		t.Fatal("AppendMessages should fail with duplicate UUID")
+	if err != nil {
+		t.Fatalf("AppendMessages should succeed with dedup, got: %v", err)
+	}
+
+	// Verify: 2 messages total (original + new, duplicate skipped)
+	result, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 messages after dedup, got %d", len(result))
 	}
 }
 
@@ -1802,6 +1817,8 @@ func TestRemoveMessageByUUID_FTSMapDeleteError(t *testing.T) {
 
 // TestAppendMessages_CommitErrorWithDuplicateUUID triggers commit error
 // by making the batch insert fail at the second message.
+// TestAppendMessages_BatchInsertError verifies dedup: first message is duplicate,
+// second is unique — both handled correctly.
 func TestAppendMessages_BatchInsertError(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
@@ -1813,17 +1830,23 @@ func TestAppendMessages_BatchInsertError(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	// Now try batch append with same UUID — should fail
+	// Batch append with duplicate first — dedup skips it, inserts the new one
 	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "dup", "", `[{"type":"text","text":"dup"}]`),
 		testMessage(0, "assistant", "new-1", "", `[{"type":"text","text":"ok"}]`),
 	}
 	err := store.AppendMessages(sessionID, msgs)
-	if err == nil {
-		t.Fatal("AppendMessages should fail with duplicate UUID")
+	if err != nil {
+		t.Fatalf("AppendMessages should succeed with dedup, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insert message") {
-		t.Errorf("error should mention 'insert message', got: %v", err)
+
+	// Verify: 2 messages total (original + new-1, duplicate skipped)
+	result, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 messages after dedup, got %d", len(result))
 	}
 }
 
@@ -1913,6 +1936,57 @@ func TestTruncateMessagesFromIndex_Basic(t *testing.T) {
 	}
 	if remaining[2].UUID != "uuid-2" {
 		t.Errorf("last remaining UUID = %q, want uuid-2", remaining[2].UUID)
+	}
+}
+
+// TestTruncateMessagesFromIndex_SystemMessagesSkipped verifies that 'system' type
+// messages (compact_boundary) in the store do NOT shift the OFFSET mapping.
+// Without the fix, system messages inflated the offset count, causing truncate
+// to delete messages BEFORE the rewind point.
+func TestTruncateMessagesFromIndex_SystemMessagesSkipped(t *testing.T) {
+	store := openTestStore(t)
+	sessionID := "test-session"
+	createTestSession(t, store, sessionID)
+
+	// Insert conversation messages interleaved with system/compact_boundary messages.
+	// Engine messages (user/assistant): u0, u1, u2, u3, u4
+	// Store also has system messages interspersed that the engine doesn't track.
+	for i := range 5 {
+		msg := testMessage(0, "user", fmt.Sprintf("uuid-%d", i), "", fmt.Sprintf("msg-%d", i))
+		if err := store.AppendMessage(sessionID, msg); err != nil {
+			t.Fatalf("AppendMessage %d: %v", i, err)
+		}
+		// Simulate compact_boundary after messages 1 and 3
+		if i == 1 || i == 3 {
+			boundary := testMessage(0, "system", fmt.Sprintf("boundary-%d", i), "compact_boundary",
+				fmt.Sprintf(`{"type":"compact_boundary","after":"msg-%d"}`, i))
+			if err := store.AppendMessage(sessionID, boundary); err != nil {
+				t.Fatalf("AppendBoundary %d: %v", i, err)
+			}
+		}
+	}
+
+	// Store has: u0, u1, boundary-1, u2, u3, boundary-3, u4 (7 rows, 5 user msgs)
+	// Truncate at engine index 3 should keep u0, u1, u2 and delete u3, u4.
+	// Edge case: if system messages aren't excluded, OFFSET 3 hits u2 (too early).
+	if err := store.TruncateMessagesFromIndex(sessionID, 3); err != nil {
+		t.Fatalf("TruncateMessagesFromIndex: %v", err)
+	}
+
+	remaining, _ := store.LoadMessages(sessionID)
+	// LoadMessages returns all types; filter to user messages for assertion
+	var userUUIDs []string
+	for _, m := range remaining {
+		if m.Type == "user" {
+			userUUIDs = append(userUUIDs, m.UUID)
+		}
+	}
+	if len(userUUIDs) != 3 {
+		t.Fatalf("expected 3 user messages after truncate, got %d", len(userUUIDs))
+	}
+	lastUUID := userUUIDs[len(userUUIDs)-1]
+	if lastUUID != "uuid-2" {
+		t.Errorf("last remaining user UUID = %q, want uuid-2 (u3 and u4 should be deleted)", lastUUID)
 	}
 }
 

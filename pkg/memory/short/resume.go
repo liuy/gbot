@@ -14,8 +14,9 @@ import (
 // TS: sessionRestore.ts:409-534 (ProcessResumedConversation)
 // TS: conversationRecovery.ts (full recovery flow)
 func (s *Store) ResumeSession(sessionID string) (*ResumedState, []*TranscriptMessage, error) {
-	// Phase 1: Load messages from last compact boundary (or all)
-	messages, err := s.LoadPostCompactMessages(sessionID)
+	// Phase 1: Load messages from last compact boundary using chain-walk.
+	// Chain-walk skips dead branches from rewinds.
+	messages, err := s.LoadPostCompactChainMessages(sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load messages: %w", err)
 	}

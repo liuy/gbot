@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/engine"
@@ -219,18 +218,23 @@ func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 		t.Errorf("file not restored: got %q, want %q", string(restored), string(originalContent))
 	}
 
-	// Store should be truncated (no messages remain)
+	// Store should retain all messages (append-only — no truncation)
 	storeMsgs, err := store.LoadMessages(a.sessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages after rewind: %v", err)
 	}
-	if len(storeMsgs) != 0 {
-		t.Errorf("expected 0 store messages after rewind, got %d", len(storeMsgs))
+	if len(storeMsgs) == 0 {
+		t.Error("expected store to retain messages after rewind (append-only)")
 	}
 
-	// lastPersistedIdx should be updated
+	// lastPersistedIdx should be updated to rewind point
 	if app.lastPersistedIdx != 0 {
 		t.Errorf("expected lastPersistedIdx=0, got %d", app.lastPersistedIdx)
+	}
+
+	// forkParentUUID should be empty (rewound to beginning)
+	if app.forkParentUUID != "" {
+		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
 	}
 }
 
@@ -351,21 +355,18 @@ func TestIntegration_Rewind_PersistenceRoundtrip(t *testing.T) {
 		t.Errorf("second message should be 'response 1', got %q", firstTextBlockContent(engMsgs[1]))
 	}
 
-	// --- Recovery: simulate process restart by loading from store ---
+	// Store should retain all 6 messages (append-only — no truncation)
 	storeMsgsAfter, err := store.LoadMessages(a.sessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages after rewind: %v", err)
 	}
-	if len(storeMsgsAfter) != 2 {
-		t.Fatalf("expected 2 messages in store after rewind (recovery), got %d", len(storeMsgsAfter))
+	if len(storeMsgsAfter) != 6 {
+		t.Fatalf("expected 6 messages still in store after rewind (append-only), got %d", len(storeMsgsAfter))
 	}
 
-	// Store messages should match engine messages
-	if !strings.Contains(storeMsgsAfter[0].Content, "turn 1") {
-		t.Errorf("store[0] should contain 'turn 1', got %q", storeMsgsAfter[0].Content)
-	}
-	if !strings.Contains(storeMsgsAfter[1].Content, "response 1") {
-		t.Errorf("store[1] should contain 'response 1', got %q", storeMsgsAfter[1].Content)
+	// lastPersistedIdx should be at the rewind point
+	if app.lastPersistedIdx != 2 {
+		t.Errorf("expected lastPersistedIdx=2, got %d", app.lastPersistedIdx)
 	}
 }
 
@@ -526,13 +527,18 @@ func TestIntegration_Rewind_NoFileEdits(t *testing.T) {
 		t.Errorf("expected 0 messages, got %d", len(app.engine.Messages()))
 	}
 
-	// Store should be empty
+	// Store should retain all messages (append-only)
 	storeMsgs, err := store.LoadMessages(a.sessionID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
-	if len(storeMsgs) != 0 {
-		t.Errorf("expected 0 store messages, got %d", len(storeMsgs))
+	if len(storeMsgs) == 0 {
+		t.Error("expected store to retain messages after rewind (append-only)")
+	}
+
+	// forkParentUUID should be empty (rewound to beginning, idx=0)
+	if app.forkParentUUID != "" {
+		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
 	}
 
 	// Input should be restored from the selected message
@@ -1311,5 +1317,370 @@ func TestIntegration_Rewind_Stage18AbortWithToolUse(t *testing.T) {
 	}
 	if !found {
 		t.Error("/rewind should find 'read main.go' as selectable, but it was not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain 8: Rewind -> New messages -> Store chain reload (Full lifecycle)
+//
+// The most critical append-only test. Exercises the complete lifecycle:
+//  1. Multi-turn conversation -> persist to store
+//  2. /rewind -> engine truncates, forkParentUUID captured
+//  3. New messages -> persistTurn uses AppendMessagesWithForkPoint
+//  4. Simulate restart: LoadChainMessages from store
+//  5. Verify only active branch loaded (dead branches skipped)
+//
+// Call chain: persistTurn -> executeRewind -> persistTurn -> store.LoadChainMessages
+// Observable output: store.LoadChainMessages returns only the active branch
+//
+// All messages have explicit IDs (production behavior) so forkParentUUID
+// maps correctly to store UUIDs via EngineMessagesToStore.
+// ---------------------------------------------------------------------------
+func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
+	a, store, _, _ := setupRewindIntegration(t)
+
+	// --- Phase 1: Build 3-turn conversation with explicit IDs ---
+	msgs := []types.Message{
+		{ID: "u1", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("turn 1")}, Timestamp: testTime},
+		{ID: "a1", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response 1")}, Timestamp: testTime},
+		{ID: "u2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("turn 2")}, Timestamp: testTime},
+		{ID: "a2", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response 2")}, Timestamp: testTime},
+		{ID: "u3", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("turn 3")}, Timestamp: testTime},
+		{ID: "a3", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response 3")}, Timestamp: testTime},
+	}
+	a.engine.SetMessages(msgs)
+
+	// Persist all 6 messages
+	a.persistTurn()
+	if a.lastPersistedIdx != 6 {
+		t.Fatalf("expected lastPersistedIdx=6, got %d", a.lastPersistedIdx)
+	}
+
+	// Verify store has all 6
+	allBefore, err := store.LoadMessages(a.sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages before rewind: %v", err)
+	}
+	if len(allBefore) != 6 {
+		t.Fatalf("expected 6 messages in store, got %d", len(allBefore))
+	}
+
+	// --- Phase 2: /rewind to turn 2 (index=2, keep u1+a1) ---
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog to open")
+	}
+
+	// Select turn 2 user message (index 2 in the list)
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 1 // second user message -> indices[1]=2
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Verify engine truncated to 2 messages
+	engMsgs := app.engine.Messages()
+	if len(engMsgs) != 2 {
+		t.Fatalf("expected 2 engine messages after rewind, got %d", len(engMsgs))
+	}
+	if firstTextBlockContent(engMsgs[0]) != "turn 1" {
+		t.Errorf("first msg = %q, want 'turn 1'", firstTextBlockContent(engMsgs[0]))
+	}
+
+	// Verify fork point captured
+	if app.forkParentUUID != "a1" {
+		t.Errorf("forkParentUUID = %q, want 'a1' (last surviving message ID)", app.forkParentUUID)
+	}
+	if app.lastPersistedIdx != 2 {
+		t.Errorf("lastPersistedIdx = %d, want 2", app.lastPersistedIdx)
+	}
+
+	// --- Phase 3: Send 2 new turns (simulating user continuing after rewind) ---
+	newMsgs := []types.Message{
+		{ID: "u4", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("new turn 1")}, Timestamp: testTime},
+		{ID: "a4", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("new response 1")}, Timestamp: testTime},
+		{ID: "u5", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("new turn 2")}, Timestamp: testTime},
+		{ID: "a5", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("new response 2")}, Timestamp: testTime},
+	}
+	// Set engine messages to existing + new
+	app.engine.SetMessages(append(engMsgs[:2], newMsgs...))
+
+	// Persist new messages -- should use AppendMessagesWithForkPoint
+	app.persistTurn()
+
+	// forkParentUUID should be cleared after persist
+	if app.forkParentUUID != "" {
+		t.Errorf("forkParentUUID should be cleared after persist, got %q", app.forkParentUUID)
+	}
+
+	// Store should have 10 messages total (6 original + 4 new, dead branches kept)
+	allAfter, err := store.LoadMessages(app.sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after new persist: %v", err)
+	}
+	if len(allAfter) != 10 {
+		t.Fatalf("expected 10 messages in store (append-only), got %d", len(allAfter))
+	}
+
+	// --- Phase 4: Simulate restart -- load chain from store ---
+	chain, err := store.LoadChainMessages(app.sessionID)
+	if err != nil {
+		t.Fatalf("LoadChainMessages: %v", err)
+	}
+
+	// Active branch: u1 -> a1 -> u4 -> a4 -> u5 -> a5 (6 messages)
+	// Dead branch: u2 -> a2 -> u3 -> a3 (skipped by chain-walk)
+	if len(chain) != 6 {
+		t.Fatalf("got %d chain messages, want 6 (active branch only)", len(chain))
+	}
+
+	wantUUIDs := []string{"u1", "a1", "u4", "a4", "u5", "a5"}
+	for i, msg := range chain {
+		if msg.UUID != wantUUIDs[i] {
+			t.Errorf("chain[%d].UUID = %q, want %q", i, msg.UUID, wantUUIDs[i])
+		}
+	}
+
+	// Verify dead branch messages are NOT in the chain
+	chainUUIDs := make(map[string]bool, len(chain))
+	for _, msg := range chain {
+		chainUUIDs[msg.UUID] = true
+	}
+	for _, deadUUID := range []string{"u2", "a2", "u3", "a3"} {
+		if chainUUIDs[deadUUID] {
+			t.Errorf("dead branch message %q should not be in active chain", deadUUID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// E2E Test: Full Lifecycle — TUI + Engine + Store
+//
+// Simulates a real user session from start to finish:
+//  1. Multi-turn conversation (send → persist)
+//  2. Rewind + new messages (fork → persist)
+//  3. Compact boundary (insert boundary + post-compact messages)
+//  4. Process restart (new App instance from same DB → resume → verify)
+//
+// Covers the complete append-only + chain-walk lifecycle end-to-end.
+// Uses real SQLite, real Engine, real file I/O. No mocking.
+// ---------------------------------------------------------------------------
+
+// setupE2E creates a fully wired App for E2E testing.
+// Returns the App, store DB path (for restart), and cleanup.
+func setupE2E(t *testing.T) (*App, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+
+	store, err := short.NewStore(filepath.Join(dir, "memory", "e2e.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	eng := engine.New(&engine.Params{Logger: slog.Default()})
+
+	session, err := store.CreateSession(projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng.SetSessionID(session.SessionID)
+
+	a := &App{
+		engine:           eng,
+		store:            store,
+		sessionID:        session.SessionID,
+		projectDir:       projectDir,
+		lastPersistedIdx: 0,
+		repl:             NewReplState(),
+		input:            NewInput(),
+		history:          NewHistory(""),
+	}
+	a.width = 80
+
+	return a, filepath.Join(dir, "memory", "e2e.db")
+}
+
+func TestE2E_RewindCompactResume(t *testing.T) {
+	a, dbPath := setupE2E(t)
+
+	// ================================================================
+	// Phase 1: Multi-turn conversation — 3 turns, all persisted
+	// ================================================================
+	turn1 := []types.Message{
+		{ID: "e2e-u1", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("what is Go?")}, Timestamp: testTime},
+		{ID: "e2e-a1", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("a compiled language")}, Timestamp: testTime},
+	}
+	turn2 := []types.Message{
+		{ID: "e2e-u2", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("show hello world")}, Timestamp: testTime},
+		{ID: "e2e-a2", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(`fmt.Println("hello")`)}, Timestamp: testTime},
+	}
+	turn3 := []types.Message{
+		{ID: "e2e-u3", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("explain goroutines")}, Timestamp: testTime},
+		{ID: "e2e-a3", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("lightweight threads")}, Timestamp: testTime},
+	}
+
+	allMsgs := append(append(turn1, turn2...), turn3...)
+	a.engine.SetMessages(allMsgs)
+	a.persistTurn()
+	if a.lastPersistedIdx != 6 {
+		t.Fatalf("Phase 1: lastPersistedIdx=%d, want 6", a.lastPersistedIdx)
+	}
+
+	// ================================================================
+	// Phase 2: Rewind to turn 2 (keep u1+a1+u2+a2), send new messages
+	// ================================================================
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("Phase 2: expected rewind dialog")
+	}
+	// Selectable user messages at indices: 0(u1), 2(u2), 4(u3)
+	// cursor=2 -> index=4 -> rewind to turn 3
+	a.activeDialog.done = true
+	a.activeDialog.cursor = 2
+	model, _ := a.onDialogDone(a.activeDialog)
+	app := model.(*App)
+
+	// Engine should have 4 messages (u1, a1, u2, a2)
+	engMsgs := app.engine.Messages()
+	if len(engMsgs) != 4 {
+		t.Fatalf("Phase 2: engine has %d messages after rewind, want 4", len(engMsgs))
+	}
+	if app.forkParentUUID != "e2e-a2" {
+		t.Errorf("Phase 2: forkParentUUID=%q, want e2e-a2", app.forkParentUUID)
+	}
+
+	// Send 1 new turn after rewind
+	newTurns := []types.Message{
+		{ID: "e2e-u4", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("tell me about interfaces")}, Timestamp: testTime},
+		{ID: "e2e-a4", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("interfaces define behavior")}, Timestamp: testTime},
+	}
+	app.engine.SetMessages(append(engMsgs[:4], newTurns...))
+	app.persistTurn()
+
+	// Store: 6 original + 2 new = 8 total (append-only)
+	allAfter, err := app.store.LoadMessages(app.sessionID)
+	if err != nil {
+		t.Fatalf("Phase 2: LoadMessages: %v", err)
+	}
+	if len(allAfter) != 8 {
+		t.Fatalf("Phase 2: store has %d messages, want 8 (append-only)", len(allAfter))
+	}
+
+	// Chain: u1->a1->u2->a2->u4->a4 (6 messages, dead branch u3/a3 skipped)
+	chain, err := app.store.LoadChainMessages(app.sessionID)
+	if err != nil {
+		t.Fatalf("Phase 2: LoadChainMessages: %v", err)
+	}
+	if len(chain) != 6 {
+		t.Fatalf("Phase 2: chain has %d messages, want 6", len(chain))
+	}
+	for _, msg := range chain {
+		for _, dead := range []string{"e2e-u3", "e2e-a3"} {
+			if msg.UUID == dead {
+				t.Errorf("Phase 2: dead branch message %q in chain", dead)
+			}
+		}
+	}
+
+	// ================================================================
+	// Phase 3: Compact — insert boundary, then add post-boundary msgs
+	// ================================================================
+	boundary := &short.TranscriptMessage{
+		Type:      "system",
+		Subtype:   "compact_boundary",
+		UUID:      "e2e-boundary",
+		Content:   `[{"type":"text","text":"[Compact summary: Go basics, hello world]"}]`,
+		CreatedAt: testTime,
+	}
+	if err := app.store.AppendMessage(app.sessionID, boundary); err != nil {
+		t.Fatalf("Phase 3: AppendMessage boundary: %v", err)
+	}
+
+	// Add post-boundary messages (chain from boundary)
+	postCompactMsgs := []*short.TranscriptMessage{
+		{Type: "user", UUID: "e2e-u5", Content: `[{"type":"text","text":"what about generics?"}]`, CreatedAt: testTime},
+		{Type: "assistant", UUID: "e2e-a5", Content: `[{"type":"text","text":"type parameters"}]`, CreatedAt: testTime},
+	}
+	if err := app.store.AppendMessagesWithForkPoint(app.sessionID, postCompactMsgs, "e2e-boundary"); err != nil {
+		t.Fatalf("Phase 3: AppendMessagesWithForkPoint: %v", err)
+	}
+
+	// Verify LoadPostCompactChainMessages returns post-boundary chain
+	postCompact, err := app.store.LoadPostCompactChainMessages(app.sessionID)
+	if err != nil {
+		t.Fatalf("Phase 3: LoadPostCompactChainMessages: %v", err)
+	}
+	wantPostCompact := []string{"e2e-boundary", "e2e-u5", "e2e-a5"}
+	if len(postCompact) != len(wantPostCompact) {
+		t.Fatalf("Phase 3: got %d post-compact messages, want %d", len(postCompact), len(wantPostCompact))
+	}
+	for i, msg := range postCompact {
+		if msg.UUID != wantPostCompact[i] {
+			t.Errorf("Phase 3: postCompact[%d]=%q, want %q", i, msg.UUID, wantPostCompact[i])
+		}
+	}
+
+	// ================================================================
+	// Phase 4: Restart — new store + engine from same DB
+	// ================================================================
+	if err := app.store.Close(); err != nil {
+		t.Fatalf("Phase 4: close store: %v", err)
+	}
+
+	store2, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Phase 4: NewStore reopen: %v", err)
+	}
+	defer store2.Close()
+
+	// Resume via store.ResumeSession (chain-walk + boundary filtering)
+	_, resumedMsgs, err := store2.ResumeSession(app.sessionID)
+	if err != nil {
+		t.Fatalf("Phase 4: ResumeSession: %v", err)
+	}
+	if len(resumedMsgs) != len(wantPostCompact) {
+		t.Fatalf("Phase 4: ResumeSession returned %d messages, want %d", len(resumedMsgs), len(wantPostCompact))
+	}
+	for i, msg := range resumedMsgs {
+		if msg.UUID != wantPostCompact[i] {
+			t.Errorf("Phase 4: resumed[%d]=%q, want %q", i, msg.UUID, wantPostCompact[i])
+		}
+	}
+
+	// Convert to engine messages via TUI layer
+	// After compact, chain-walk stops at boundary (parent_uuid="") so
+	// only post-boundary chain is returned: boundary->u5->a5
+	engMsgs2, err := loadAndConvertMessages(store2, app.sessionID)
+	if err != nil {
+		t.Fatalf("Phase 4: loadAndConvertMessages: %v", err)
+	}
+	// Chain: boundary(system) + u5(user) + a5(assistant) = 3
+	if len(engMsgs2) != 3 {
+		t.Fatalf("Phase 4: loadAndConvert returned %d engine messages, want 3", len(engMsgs2))
+	}
+	// Boundary summary is first (system message)
+	if engMsgs2[0].Role != types.RoleSystem {
+		t.Errorf("Phase 4: first msg role = %q, want system", engMsgs2[0].Role)
+	}
+	if firstTextBlockContent(engMsgs2[1]) != "what about generics?" {
+		t.Errorf("Phase 4: second msg = %q, want 'what about generics?'", firstTextBlockContent(engMsgs2[1]))
+	}
+	if firstTextBlockContent(engMsgs2[2]) != "type parameters" {
+		t.Errorf("Phase 4: third msg = %q, want 'type parameters'", firstTextBlockContent(engMsgs2[2]))
+	}
+
+	// Pre-boundary and dead branch messages not in engine
+	for _, msg := range engMsgs2 {
+		text := firstTextBlockContent(msg)
+		for _, dead := range []string{"what is Go?", "explain goroutines", "lightweight threads"} {
+			if text == dead {
+				t.Errorf("Phase 4: pre-boundary content %q should not be in engine messages", text)
+			}
+		}
 	}
 }

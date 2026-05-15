@@ -70,6 +70,7 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	a.engine.SetSessionID(session.SessionID)
 	a.sessionID = session.SessionID
 	a.lastPersistedIdx = 0
+	a.forkParentUUID = ""
 
 	// Reset REPL state
 	*a.repl = *NewReplState()
@@ -144,6 +145,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	parentID := a.sessionID
 	a.sessionID = forked.SessionID
 	a.lastPersistedIdx = len(engineMsgs)
+	a.forkParentUUID = ""
 
 	// Reset REPL state
 		*a.repl = *NewReplState()

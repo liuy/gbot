@@ -200,11 +200,8 @@ func (a *App) tryAutoRewind() bool {
 	}
 	_ = result
 
-	// Sync store: remove persisted messages that were rewound.
-	// Without this, resume reloads orphaned messages from store.
 	if a.store != nil && a.sessionID != "" && a.lastPersistedIdx > 0 {
-		_ = a.store.TruncateMessagesFromIndex(a.sessionID, 0)
-		a.lastPersistedIdx = 0
+		a.captureForkPoint(msgs, lastUserIdx)
 	}
 	// Truncate TUI messages to committedCount (current turn was not committed)
 	if a.committedCount <= len(a.repl.messages) {
@@ -224,6 +221,17 @@ func (a *App) tryAutoRewind() bool {
 
 	a.markViewportDirty()
 	return true
+}
+
+// captureForkPoint sets forkParentUUID and lastPersistedIdx for append-only rewind.
+// After rewind, new messages will fork from msgs[idx-1] (or root if idx==0).
+func (a *App) captureForkPoint(msgs []types.Message, idx int) {
+	if idx > 0 {
+		a.forkParentUUID = msgs[idx-1].ID
+	} else {
+		a.forkParentUUID = ""
+	}
+	a.lastPersistedIdx = idx
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +346,7 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 	// Sync persistence for message-affecting scopes
 	if scope == engine.RewindAll || scope == engine.RewindMessagesOnly {
 		if a.store != nil && a.sessionID != "" && idx < a.lastPersistedIdx {
-			_ = a.store.TruncateMessagesFromIndex(a.sessionID, idx)
-			a.lastPersistedIdx = idx
+			a.captureForkPoint(originalMsgs, idx)
 		}
 		// Reset TUI messages — rewind changes engine messages, rebuild from scratch
 		*a.repl = *NewReplState()
