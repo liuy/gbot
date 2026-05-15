@@ -47,7 +47,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 		return nil, nil
 	}
 
-	beforeTokens := EstimateMessagesTokens(messages)
+	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Determine how many recent messages to keep (reuse existing logic)
 	shortMsgs := engineToShort(messages)
@@ -67,7 +67,7 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 	summaryText := formatSMSummary(truncated)
 
 	built := c.buildResultMessages(pcr, summaryText)
-	afterTokens := EstimateMessagesTokens(built)
+	afterTokens := TokenCountWithEstimation(built)
 
 	c.logger.Info("sm-compact: using session memory for compact",
 		"before_tokens", beforeTokens,

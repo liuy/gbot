@@ -74,7 +74,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
-	beforeTokens := EstimateMessagesTokens(messages)
+	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Convert engine types → short types for store operations
 	shortMsgs := engineToShort(messages)
@@ -107,7 +107,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 			Summary:        summaryText,
 			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:    EstimateMessagesTokens(built),
+			AfterTokens:    TokenCountWithEstimation(built),
 			Messages:       built,
 		}, nil
 	}
@@ -119,7 +119,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 		Summary:        summaryText,
 		BeforeTokens:   beforeTokens,
 		BeforeMessages: len(messages),
-		AfterTokens:    EstimateMessagesTokens(built),
+		AfterTokens:    TokenCountWithEstimation(built),
 		Messages:       built,
 	}, nil
 }

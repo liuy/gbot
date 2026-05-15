@@ -101,8 +101,8 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 			if evt.ToolResult.IsError {
 				t.Error("compact end should not be an error")
 			}
-			if !strings.Contains(evt.ToolResult.DisplayOutput, "Context compacted") {
-				t.Errorf("expected 'Context compacted' in display output, got %q", evt.ToolResult.DisplayOutput)
+			if !strings.Contains(evt.ToolResult.DisplayOutput, "compacted") {
+				t.Errorf("expected 'compacted' in display output, got %q", evt.ToolResult.DisplayOutput)
 			}
 		}
 	}

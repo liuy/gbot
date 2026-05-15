@@ -2444,8 +2444,6 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	})
 
 	// Pre-load messages and set ContextTokens above auto-compact threshold.
-	// Pre-turn compact uses ContextTokens (35000) as realTokens.
-	// Compact delta = 10000-4000 = 6000, display: 35.0k → 29.0k
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
@@ -2471,10 +2469,16 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 		t.Fatal("expected compact output event")
 	}
 
-	// Pre-turn compact uses ContextTokens directly (35000).
-	// Compact delta = 10000-4000 = 6000, display: 34.2k → 28.3k (1024 base)
-	if !strings.Contains(compactDisplayOutput, "token: 34.2k → 28.3k") {
-		t.Errorf("expected compact output to show real tokens (34.2k → 28.3k), got:\n%s", compactDisplayOutput)
+	// runCompact uses compactor's BeforeTokens/AfterTokens directly (no delta).
+	if !strings.Contains(compactDisplayOutput, "token: 9.8k → 3.9k") {
+		t.Errorf("expected compact output to show compactor tokens (9.8k → 3.9k), got:\n%s", compactDisplayOutput)
+	}
+
+	eng.mu.RLock()
+	ctxTokens := eng.ContextTokens
+	eng.mu.RUnlock()
+	if ctxTokens != 4005 {
+		t.Errorf("ContextTokens = %d, want 4005 (AfterTokens + post-compact API output)", ctxTokens)
 	}
 }
 

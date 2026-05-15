@@ -487,7 +487,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 				ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 			})
 			e.fireCompactHooks(ctx, "auto", "pre")
-			result, compactErr := e.runCompact(ctx, "pre-turn compact")
+			result, compactErr := e.runCompact(ctx)
 			if compactErr != nil {
 				e.emitEvent(types.QueryEvent{
 					Type: types.EventToolEnd,
@@ -618,7 +618,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 						ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 					})
 					e.fireCompactHooks(ctx, "auto", "pre")
-					result, compactErr := e.runCompact(ctx, "reactive compact")
+					result, compactErr := e.runCompact(ctx)
 					if compactErr == nil {
 						e.fireCompactHooks(ctx, "auto", "post")
 						e.emitEvent(types.QueryEvent{
@@ -740,7 +740,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 							ToolUse: &types.ToolUseEvent{ID: compactID, Name: "Compact"},
 						})
 						e.fireCompactHooks(ctx, "auto", "pre")
-						result, compactErr := e.runCompact(ctx, "context window recovery")
+						result, compactErr := e.runCompact(ctx)
 						if compactErr != nil {
 							e.emitEvent(types.QueryEvent{
 								Type: types.EventToolEnd,
@@ -753,16 +753,11 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 							// Compact failed — fall through to existing terminal path.
 						} else {
 							e.fireCompactHooks(ctx, "auto", "post")
-							if result != nil {
-								e.mu.Lock()
-								e.ContextTokens = result.AfterTokens
-								e.mu.Unlock()
-							}
 							e.emitEvent(types.QueryEvent{
 								Type: types.EventToolEnd,
 								ToolResult: &types.ToolResultEvent{
 									ToolUseID:     compactID,
-									DisplayOutput: "Context compacted. Continuing response...",
+									DisplayOutput: formatCompactOutput(result),
 								},
 							})
 							e.appendMessage(types.Message{
@@ -1692,40 +1687,21 @@ func (e *Engine) shouldAutoCompact() bool {
 	return tokens > threshold
 }
 
-// runCompact runs the compactor and applies the result to engine state.
-// It atomically updates messages and ContextTokens, eliminates the redundant
-// messageDelta calculation, and rewrites BeforeTokens/AfterTokens to use real
-// API token values for display. Returns the rewritten result for event emission.
-// The caller handles pre-conditions, event emissions, hooks, and post-compact bookkeeping.
-//
-// Goroutine safety: There is a theoretical TOCTOU window between the RLock
-// (reading realTokens) and the later Lock (updating messages + ContextTokens).
-// This is safe in practice because both reactive and proactive compact are
-// serialized within the query loop — only one compact can run at a time.
-func (e *Engine) runCompact(ctx context.Context, logLabel string) (*CompactResult, error) {
+// runCompact runs the compactor and atomically applies the result (messages + ContextTokens).
+func (e *Engine) runCompact(ctx context.Context) (*CompactResult, error) {
 	e.mu.RLock()
-	realTokens := e.ContextTokens
 	sm := e.sessionMemory
 	comp := e.compactor
 	e.mu.RUnlock()
 
-	// Try SM-compact first if session memory is available.
-	// TS source: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
+	// TS: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
 	if sm != nil {
 		if ac, ok := comp.(*AutoCompactor); ok {
 			if result, _ := ac.TrySMCompact(e.Messages(), sm); result != nil {
-				// SM-compact succeeded
-				messageDelta := result.BeforeTokens - result.AfterTokens
 				e.mu.Lock()
 				e.messages = result.Messages
-				e.ContextTokens = e.ContextTokens - messageDelta
-				if e.ContextTokens < 0 {
-					e.logger.Error(logLabel+": contextTokens went negative (sm-compact)",
-						"before", e.ContextTokens+messageDelta, "delta", messageDelta)
-				}
+				e.ContextTokens = result.AfterTokens
 				e.mu.Unlock()
-				result.BeforeTokens = realTokens
-				result.AfterTokens = realTokens - messageDelta
 				return result, nil
 			}
 		}
@@ -1737,25 +1713,10 @@ func (e *Engine) runCompact(ctx context.Context, logLabel string) (*CompactResul
 		return nil, err
 	}
 
-	// Atomically update messages and ContextTokens to prevent
-	// concurrent readers from seeing new messages with stale token counts.
-	messageDelta := result.BeforeTokens - result.AfterTokens
 	e.mu.Lock()
 	e.messages = result.Messages
-	e.ContextTokens = e.ContextTokens - messageDelta
-	if e.ContextTokens < 0 {
-		e.logger.Error(logLabel+": contextTokens went negative",
-			"before", e.ContextTokens+messageDelta, "delta", messageDelta)
-	}
+	e.ContextTokens = result.AfterTokens
 	e.mu.Unlock()
-
-	// Replace heuristic BeforeTokens/AfterTokens with real API values.
-	result.BeforeTokens = realTokens
-	result.AfterTokens = realTokens - messageDelta
-	if result.AfterTokens < 0 {
-		e.logger.Error(logLabel+": AfterTokens went negative",
-			"realTokens", realTokens, "messageDelta", messageDelta)
-	}
 	return result, nil
 }
 
