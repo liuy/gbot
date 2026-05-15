@@ -6080,13 +6080,24 @@ func TestQuery_RetryContextCancellation(t *testing.T) {
 	}
 }
 
-// TestQuery_SubagentNoRetry verifies sub-agents skip retry and fail immediately.
-func TestQuery_SubagentNoRetry(t *testing.T) {
+// TestQuery_SubagentRetriesStreamError verifies sub-agents retry once on
+// stream errors (SSE timeout, incomplete stream) and succeed on retry.
+func TestQuery_SubagentRetriesStreamError(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	// Stream interrupted — would normally trigger retry
+	// First attempt: stream interrupted (no message_stop)
 	mp.addResponse(partialTextEvents("test", "partial"), nil)
+	// Second attempt: complete response
+	successEvents := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "retry succeeded"}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}},
+		{Type: "message_stop"},
+	}
+	mp.addResponse(successEvents, nil)
 
 	parentTools := map[string]tool.Tool{}
 	parent := New(&Params{
@@ -6095,7 +6106,6 @@ func TestQuery_SubagentNoRetry(t *testing.T) {
 		Dispatcher: newEventCollector(),
 	})
 
-	// Create sub-engine (isSubagent = true)
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
 		Tools:     parentTools,
@@ -6105,22 +6115,19 @@ func TestQuery_SubagentNoRetry(t *testing.T) {
 	sub.dispatcher = tc
 
 	result := sub.QuerySync(context.Background(), "explore", nil)
-	if result.Error == nil {
-		t.Fatal("expected error for sub-agent stream failure, got nil")
+	if result.Error != nil {
+		t.Fatalf("expected success after retry, got: %v", result.Error)
 	}
-		if !strings.Contains(result.Error.Error(), "stream interrupted") {
-			t.Errorf("sub-agent error should mention stream, got: %v", result.Error)
-		}
 
-	// Sub-agent should NOT retry — no EventRetryAttempt
+	// Sub-agent should have retried once
 	retryEvents := tc.FindEvents(types.EventRetryAttempt)
-	if len(retryEvents) != 0 {
-		t.Errorf("sub-agent should not retry, got %d EventRetryAttempt", len(retryEvents))
+	if len(retryEvents) != 1 {
+		t.Errorf("expected 1 retry attempt, got %d", len(retryEvents))
 	}
 
-	// Should fail immediately — only 1 provider call
-	if mp.index != 1 {
-		t.Errorf("expected 1 provider call (no retry), got %d", mp.index)
+	// Should have made 2 provider calls (initial + retry)
+	if mp.index != 2 {
+		t.Errorf("expected 2 provider calls, got %d", mp.index)
 	}
 }
 

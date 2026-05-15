@@ -1028,11 +1028,6 @@ func retryErrorType(err error) types.RetryErrorType {
 // AbortError is never retried because callLLM mutates e.messages on ctx cancellation.
 // Only stream-level errors are retried; API errors (429/5xx) are handled by the provider.
 func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
-	// Sub-agents bypass retry to prevent deadlock.
-	if e.isSubagent {
-		return e.callLLM(ctx, systemPrompt)
-	}
-
 	cfg := e.retryConfig
 	if cfg == nil {
 		cfg = llm.DefaultRetryConfig()
