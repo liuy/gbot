@@ -379,17 +379,16 @@ func TestRenderResult_Files(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()
 	output := &glob.Output{
-		Files: []string{"src/a.go", "src/b.go", "src/c.go"},
-		Count: 3,
+		Files:      []string{"src/a.go", "src/b.go", "src/c.go"},
+		Count:      3,
+		DurationMs: 12,
 	}
 	result := tt.RenderResult(output)
-	for _, f := range output.Files {
-		if !strings.Contains(result, f) {
-			t.Errorf("RenderResult(files) = %q, should contain %q", result, f)
-		}
+	if result != "Found 3 files" {
+		t.Errorf("RenderResult(files) = %q, want %q", result, "Found 3 files")
 	}
-	if strings.Contains(result, `"filenames"`) {
-		t.Errorf("RenderResult(files) = %q, should not contain raw JSON keys", result)
+	if strings.Contains(result, `src/a.go`) {
+		t.Errorf("RenderResult should be summary only, not contain file paths")
 	}
 }
 
@@ -401,8 +400,8 @@ func TestRenderResult_NoMatches(t *testing.T) {
 		Count: 0,
 	}
 	result := tt.RenderResult(output)
-	if result != "No files matched" {
-		t.Errorf("RenderResult(no matches) = %q, want %q", result, "No files matched")
+	if result != "No files found" {
+		t.Errorf("RenderResult(no matches) = %q, want %q", result, "No files found")
 	}
 }
 
