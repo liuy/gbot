@@ -21,7 +21,7 @@ import (
 //	P1: //nolint suppressions — fix the issue, not hide it
 //	P2: time.Sleep in tests — use synctest.Test or channels
 //	P3: len(x) > 0 — no exact count check
-//	P3: time.Now in tests — use synctest.Test or injectable nowFunc
+//	P3: time.Now in tests — use synctest.Test
 //
 // Exemptions:
 //   - defer { _ = ... } / t.Cleanup — cleanup is acceptable

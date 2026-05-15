@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -103,234 +104,231 @@ func pipelineStreamEvents(model, text string) []llm.StreamEvent {
 //  3. Token count still exceeds threshold → auto-compact triggers
 //  4. Mock LLM generates summary → compact boundary appears
 func TestCompactPipeline_MicroThenAuto(t *testing.T) {
-	// Override time for microcompact trigger
-	origNow := nowFunc
-	defer func() { nowFunc = origNow }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig = MicrocompactConfig{
-		TimeBased: TimeBasedMCConfig{
-			Enabled:             true,
-			GapThresholdMinutes: 60,
-			KeepRecent:          3, // keep last 3 tool_use IDs
-		},
-	}
-
-	// Set up Store + AutoCompactor
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := short.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
-
-	session, err := store.CreateSession(tmpDir, "test-model")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-
-	// Mock provider: Complete returns summary for auto-compact
-	p := &pipelineProvider{}
-	p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
-
-	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
-	tc := newEventCollector()
-	eng := New(&Params{
-		Provider:   p,
-		Model:      "test-model",
-		Compactor:  compactor,
-		AutoCompact: AutoCompactConfig{
-			ContextWindow: 500,
-		},
-		Logger:     slog.Default(),
-		Dispatcher: tc,
-	})
-
-	// Build messages: old tool_use + tool_result pairs, timestamp > 60 min ago.
-	// Each pair contributes ~400 chars of tool_result content (~100 tokens).
-	// Plus large text messages to push past auto-compact threshold.
-	oldTime := baseTime.Add(-61 * time.Minute)
-	var messages []types.Message
-
-	// 10 tool_use/result pairs with old timestamps → microcompact clears these
-	bigResult := strings.Repeat("x", 400) // ~100 tokens each
-	for i := range 10 {
-		id := fmt.Sprintf("tool-%d", i)
-		messages = append(messages, types.Message{
-			Role:      types.RoleAssistant,
-			Timestamp: oldTime,
-			Content: []types.ContentBlock{
-				types.NewToolUseBlock(id, "Read", json.RawMessage(`{"path":"/file"}`)),
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig = MicrocompactConfig{
+			TimeBased: TimeBasedMCConfig{
+				Enabled:             true,
+				GapThresholdMinutes: 60,
+				KeepRecent:          3, // keep last 3 tool_use IDs
 			},
-		})
-		messages = append(messages, types.Message{
-			Role:      types.RoleUser,
-			Timestamp: oldTime,
-			Content: []types.ContentBlock{
-				types.NewToolResultBlock(id, json.RawMessage(`"`+bigResult+`"`), false),
-			},
-		})
-	}
-
-	// Add large text messages to ensure auto-compact still triggers
-	// even after microcompact clears tool_results.
-	// 6 messages × 200 chars = ~1200 chars = ~300 tokens > 50% of 500
-	largeText := strings.Repeat("y", 2000)
-	for i := range 6 {
-		role := types.RoleUser
-		if i%2 == 1 {
-			role = types.RoleAssistant
 		}
-		messages = append(messages, types.Message{
-			Role:      role,
-			Timestamp: oldTime,
-			Content:   []types.ContentBlock{types.NewTextBlock(largeText)},
+
+		// Set up Store + AutoCompactor
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+		store, err := short.NewStore(dbPath)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		defer store.Close()
+
+		session, err := store.CreateSession(tmpDir, "test-model")
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+
+		// Mock provider: Complete returns summary for auto-compact
+		p := &pipelineProvider{}
+		p.addStream(pipelineStreamEvents("test-model", "Response after both compacts."), nil)
+
+		compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
+		tc := newEventCollector()
+		eng := New(&Params{
+			Provider:   p,
+			Model:      "test-model",
+			Compactor:  compactor,
+			AutoCompact: AutoCompactConfig{
+				ContextWindow: 500,
+			},
+			Logger:     slog.Default(),
+			Dispatcher: tc,
 		})
-	}
 
-	eng.SetMessages(messages)
+		// Build messages: old tool_use + tool_result pairs, timestamp > 60 min ago.
+		// Each pair contributes ~400 chars of tool_result content (~100 tokens).
+		// Plus large text messages to push past auto-compact threshold.
+		oldTime := baseTime.Add(-61 * time.Minute)
+		var messages []types.Message
 
-	// Run Query
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		// 10 tool_use/result pairs with old timestamps → microcompact clears these
+		bigResult := strings.Repeat("x", 400) // ~100 tokens each
+		for i := range 10 {
+			id := fmt.Sprintf("tool-%d", i)
+			messages = append(messages, types.Message{
+				Role:      types.RoleAssistant,
+				Timestamp: oldTime,
+				Content: []types.ContentBlock{
+					types.NewToolUseBlock(id, "Read", json.RawMessage(`{"path":"/file"}`)),
+				},
+			})
+			messages = append(messages, types.Message{
+				Role:      types.RoleUser,
+				Timestamp: oldTime,
+				Content: []types.ContentBlock{
+					types.NewToolResultBlock(id, json.RawMessage(`"`+bigResult+`"`), false),
+				},
+			})
+		}
 
-	result := eng.QuerySync(ctx, "continue", nil)
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
-	}
+		// Add large text messages to ensure auto-compact still triggers
+		// even after microcompact clears tool_results.
+		// 6 messages × 200 chars = ~1200 chars = ~300 tokens > 50% of 500
+		largeText := strings.Repeat("y", 2000)
+		for i := range 6 {
+			role := types.RoleUser
+			if i%2 == 1 {
+				role = types.RoleAssistant
+			}
+			messages = append(messages, types.Message{
+				Role:      role,
+				Timestamp: oldTime,
+				Content:   []types.ContentBlock{types.NewTextBlock(largeText)},
+			})
+		}
 
-	// Verify auto-compact fired: compact_boundary should exist in result messages
-	// When compact-all fires (keepFrom=len), all messages are replaced with
-	// [boundary, summary] and cleared tool_results are not separately observable.
-	foundBoundary := false
-	for _, msg := range result.Messages {
-		for _, block := range msg.Content {
-			if block.Type == types.ContentTypeText {
-				var content struct {
-					Subtype string `json:"subtype"`
-				}
-				if json.Unmarshal([]byte(block.Text), &content) == nil &&
-					content.Subtype == "compact_boundary" {
-					foundBoundary = true
+		eng.SetMessages(messages)
+
+		// Run Query
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result := eng.QuerySync(ctx, "continue", nil)
+		if result.Error != nil {
+			t.Fatalf("unexpected error: %v", result.Error)
+		}
+
+		// Verify auto-compact fired: compact_boundary should exist in result messages
+		// When compact-all fires (keepFrom=len), all messages are replaced with
+		// [boundary, summary] and cleared tool_results are not separately observable.
+		foundBoundary := false
+		for _, msg := range result.Messages {
+			for _, block := range msg.Content {
+				if block.Type == types.ContentTypeText {
+					var content struct {
+						Subtype string `json:"subtype"`
+					}
+					if json.Unmarshal([]byte(block.Text), &content) == nil &&
+						content.Subtype == "compact_boundary" {
+						foundBoundary = true
+					}
 				}
 			}
 		}
-	}
-	if !foundBoundary {
-		t.Error("expected auto-compact to produce a compact_boundary message")
-	}
+		if !foundBoundary {
+			t.Error("expected auto-compact to produce a compact_boundary message")
+		}
+	})
 }
 
 // TestCompactPipeline_MicroOnlyNoAuto verifies that microcompact fires
 // when time gap is exceeded but auto-compact does NOT trigger because
 // token count stays below threshold after clearing.
 func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
-	origNow := nowFunc
-	defer func() { nowFunc = origNow }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig = MicrocompactConfig{
-		TimeBased: TimeBasedMCConfig{
-			Enabled:             true,
-			GapThresholdMinutes: 60,
-			KeepRecent:          1,
-		},
-	}
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig = MicrocompactConfig{
+			TimeBased: TimeBasedMCConfig{
+				Enabled:             true,
+				GapThresholdMinutes: 60,
+				KeepRecent:          1,
+			},
+		}
 
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-	store, err := short.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "test.db")
+		store, err := short.NewStore(dbPath)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		defer store.Close()
 
-	session, err := store.CreateSession(tmpDir, "test-model")
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
+		session, err := store.CreateSession(tmpDir, "test-model")
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
 
-	p := &pipelineProvider{}
-	p.addStream(pipelineStreamEvents("test-model", "Response after microcompact only."), nil)
+		p := &pipelineProvider{}
+		p.addStream(pipelineStreamEvents("test-model", "Response after microcompact only."), nil)
 
-	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 40000)
-	eng := New(&Params{
-		Provider:   p,
-		Model:      "test-model",
-		Compactor:  compactor,
-		AutoCompact: AutoCompactConfig{
-			ContextWindow: 100000, // high threshold → auto-compact won't trigger
-		},
-		Logger: slog.Default(),
+		compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 40000)
+		eng := New(&Params{
+			Provider:   p,
+			Model:      "test-model",
+			Compactor:  compactor,
+			AutoCompact: AutoCompactConfig{
+				ContextWindow: 100000, // high threshold → auto-compact won't trigger
+			},
+			Logger: slog.Default(),
+		})
+		tc := newEventCollector()
+		eng.dispatcher = tc
+
+		// Small messages with old tool_results → microcompact fires but auto-compact won't
+		oldTime := baseTime.Add(-61 * time.Minute)
+		smallResult := strings.Repeat("z", 40) // ~10 tokens
+		var messages []types.Message
+		for i := range 3 {
+			id := fmt.Sprintf("t-%d", i)
+			messages = append(messages, types.Message{
+				Role:      types.RoleAssistant,
+				Timestamp: oldTime,
+				Content: []types.ContentBlock{
+					types.NewToolUseBlock(id, "Bash", json.RawMessage(`{"cmd":"ls"}`)),
+				},
+			})
+			messages = append(messages, types.Message{
+				Role:      types.RoleUser,
+				Timestamp: oldTime,
+				Content: []types.ContentBlock{
+					types.NewToolResultBlock(id, json.RawMessage(`"`+smallResult+`"`), false),
+				},
+			})
+		}
+
+		eng.SetMessages(messages)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result := eng.QuerySync(ctx, "test", nil)
+		if result.Error != nil {
+			t.Fatalf("unexpected error: %v", result.Error)
+		}
+
+		// Verify microcompact fired
+		foundCleared := false
+		for _, msg := range result.Messages {
+			for _, block := range msg.Content {
+				if block.Type == types.ContentTypeToolResult &&
+					string(block.Content) == `"`+TimeBasedMCClearedMessage+`"` {
+					foundCleared = true
+				}
+			}
+		}
+		if !foundCleared {
+			t.Error("expected microcompact to clear old tool_results")
+		}
+
+		// Verify auto-compact did NOT fire
+		for _, msg := range result.Messages {
+			for _, block := range msg.Content {
+				if block.Type == types.ContentTypeText {
+					var content struct {
+						Subtype string `json:"subtype"`
+					}
+					if json.Unmarshal([]byte(block.Text), &content) == nil &&
+						content.Subtype == "compact_boundary" {
+						t.Error("auto-compact should NOT have triggered with high ContextWindow")
+					}
+				}
+			}
+		}
 	})
-	tc := newEventCollector()
-	eng.dispatcher = tc
-
-	// Small messages with old tool_results → microcompact fires but auto-compact won't
-	oldTime := baseTime.Add(-61 * time.Minute)
-	smallResult := strings.Repeat("z", 40) // ~10 tokens
-	var messages []types.Message
-	for i := range 3 {
-		id := fmt.Sprintf("t-%d", i)
-		messages = append(messages, types.Message{
-			Role:      types.RoleAssistant,
-			Timestamp: oldTime,
-			Content: []types.ContentBlock{
-				types.NewToolUseBlock(id, "Bash", json.RawMessage(`{"cmd":"ls"}`)),
-			},
-		})
-		messages = append(messages, types.Message{
-			Role:      types.RoleUser,
-			Timestamp: oldTime,
-			Content: []types.ContentBlock{
-				types.NewToolResultBlock(id, json.RawMessage(`"`+smallResult+`"`), false),
-			},
-		})
-	}
-
-	eng.SetMessages(messages)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result := eng.QuerySync(ctx, "test", nil)
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
-	}
-
-	// Verify microcompact fired
-	foundCleared := false
-	for _, msg := range result.Messages {
-		for _, block := range msg.Content {
-			if block.Type == types.ContentTypeToolResult &&
-				string(block.Content) == `"`+TimeBasedMCClearedMessage+`"` {
-				foundCleared = true
-			}
-		}
-	}
-	if !foundCleared {
-		t.Error("expected microcompact to clear old tool_results")
-	}
-
-	// Verify auto-compact did NOT fire
-	for _, msg := range result.Messages {
-		for _, block := range msg.Content {
-			if block.Type == types.ContentTypeText {
-				var content struct {
-					Subtype string `json:"subtype"`
-				}
-				if json.Unmarshal([]byte(block.Text), &content) == nil &&
-					content.Subtype == "compact_boundary" {
-					t.Error("auto-compact should NOT have triggered with high ContextWindow")
-				}
-			}
-		}
-	}
 }

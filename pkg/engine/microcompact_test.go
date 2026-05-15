@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -390,56 +391,53 @@ func TestEvaluateTimeBasedTrigger_UnderThreshold(t *testing.T) {
 }
 
 func TestEvaluateTimeBasedTrigger_OverThreshold(t *testing.T) {
-	// Save/restore nowFunc
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
-
-	// Assistant message from 61 minutes ago
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
-	}
-	result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
-	if result == nil {
-		t.Fatal("evaluateTimeBasedTrigger should fire when gap >= threshold")
-	}
-	if result.GapMinutes < 60 {
-		t.Errorf("gap should be >= 60, got %f", result.GapMinutes)
-	}
+		// Assistant message from 61 minutes ago
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
+		}
+		result := EvaluateTimeBasedTrigger(messages, QuerySourceReplMainThread)
+		if result == nil {
+			t.Fatal("evaluateTimeBasedTrigger should fire when gap >= threshold")
+		}
+		if result.GapMinutes < 60 {
+			t.Errorf("gap should be >= 60, got %f", result.GapMinutes)
+		}
+	})
 }
 
 func TestEvaluateTimeBasedTrigger_WrongSource(t *testing.T) {
-	// Empty querySource → nil (time-based requires explicit source)
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)}, // REAL-TIME: needed for message timestamp in test
-	}
-	result := EvaluateTimeBasedTrigger(messages, "")
-	if result != nil {
-		t.Error("evaluateTimeBasedTrigger should return nil for empty querySource")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// Empty querySource → nil (time-based requires explicit source)
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: time.Now().Add(-61 * time.Minute)},
+		}
+		result := EvaluateTimeBasedTrigger(messages, "")
+		if result != nil {
+			t.Error("evaluateTimeBasedTrigger should return nil for empty querySource")
+		}
 
-	result = EvaluateTimeBasedTrigger(messages, "agent:builtin:Explore")
-	if result != nil {
-		t.Error("evaluateTimeBasedTrigger should return nil for non-main-thread source")
-	}
+		result = EvaluateTimeBasedTrigger(messages, "agent:builtin:Explore")
+		if result != nil {
+			t.Error("evaluateTimeBasedTrigger should return nil for non-main-thread source")
+		}
+	})
 }
 
 func TestEvaluateTimeBasedTrigger_PrefixSource(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
-
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
-	}
-	result := EvaluateTimeBasedTrigger(messages, "repl_main_thread:outputStyle:custom")
-	if result == nil {
-		t.Error("evaluateTimeBasedTrigger should fire for prefix-matched source")
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute)},
+		}
+		result := EvaluateTimeBasedTrigger(messages, "repl_main_thread:outputStyle:custom")
+		if result == nil {
+			t.Error("evaluateTimeBasedTrigger should fire for prefix-matched source")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -458,136 +456,131 @@ func TestMaybeTimeBasedMicrocompact_NoTrigger(t *testing.T) {
 }
 
 func TestMaybeTimeBasedMicrocompact_ClearsOldResults(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+		// Create messages: assistant with 3 tool_uses, user with 3 tool_results
+		// keepRecent=5 → all kept, none cleared → should return nil
+		// Let's use a custom config with keepRecent=1
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 1
 
-	// Create messages: assistant with 3 tool_uses, user with 3 tool_results
-	// keepRecent=5 → all kept, none cleared → should return nil
-	// Let's use a custom config with keepRecent=1
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 1
+		messages := []types.Message{
+			0: {Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("tool3", "Read", json.RawMessage(`{}`)),
+			}},
+			1: {Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("tool1", json.RawMessage(`"file content 1"`), false),
+				types.NewToolResultBlock("tool2", json.RawMessage(`"file content 2"`), false),
+				types.NewToolResultBlock("tool3", json.RawMessage(`"file content 3"`), false),
+			}},
+		}
 
-	messages := []types.Message{
-		0: {Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("tool3", "Read", json.RawMessage(`{}`)),
-		}},
-		1: {Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("tool1", json.RawMessage(`"file content 1"`), false),
-			types.NewToolResultBlock("tool2", json.RawMessage(`"file content 2"`), false),
-			types.NewToolResultBlock("tool3", json.RawMessage(`"file content 3"`), false),
-		}},
-	}
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		if result == nil {
+			t.Fatal("maybeTimeBasedMicrocompact should clear results")
+		}
 
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	if result == nil {
-		t.Fatal("maybeTimeBasedMicrocompact should clear results")
-	}
-
-	// keepRecent=1 → tool3 kept, tool1+tool2 cleared
-	resultMsg := result.Messages[1] // user message with tool_results
-	cleared := 0
-	kept := 0
-	for _, block := range resultMsg.Content {
-		if block.Type == types.ContentTypeToolResult {
-			content := string(block.Content)
-			if content == `"[Old tool result content cleared]"` {
-				cleared++
-			} else {
-				kept++
+		// keepRecent=1 → tool3 kept, tool1+tool2 cleared
+		resultMsg := result.Messages[1] // user message with tool_results
+		cleared := 0
+		kept := 0
+		for _, block := range resultMsg.Content {
+			if block.Type == types.ContentTypeToolResult {
+				content := string(block.Content)
+				if content == `"[Old tool result content cleared]"` {
+					cleared++
+				} else {
+					kept++
+				}
 			}
 		}
-	}
-	if cleared != 2 {
-		t.Errorf("cleared %d tool_results, want 2", cleared)
-	}
-	if kept != 1 {
-		t.Errorf("kept %d tool_results, want 1", kept)
-	}
+		if cleared != 2 {
+			t.Errorf("cleared %d tool_results, want 2", cleared)
+		}
+		if kept != 1 {
+			t.Errorf("kept %d tool_results, want 1", kept)
+		}
+	})
 }
 
 func TestMaybeTimeBasedMicrocompact_KeepsMinOne(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // should floor to 1
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // should floor to 1
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
+			}},
+		}
 
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	// keepRecent=0 → floor to 1 → tool1 kept → clearSet empty → nil
-	if result != nil {
-		t.Error("with 1 tool and keepRecent=0 (floored to 1), nothing to clear → nil")
-	}
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		// keepRecent=0 → floor to 1 → tool1 kept → clearSet empty → nil
+		if result != nil {
+			t.Error("with 1 tool and keepRecent=0 (floored to 1), nothing to clear → nil")
+		}
+	})
 }
 
 func TestMaybeTimeBasedMicrocompact_NothingToClear(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 100 // keep all
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 100 // keep all
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("tool1", json.RawMessage(`"content"`), false),
+			}},
+		}
 
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	if result != nil {
-		t.Error("keepRecent=100 with 1 tool → nothing to clear → nil")
-	}
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		if result != nil {
+			t.Error("keepRecent=100 with 1 tool → nothing to clear → nil")
+		}
+	})
 }
 
 func TestMaybeTimeBasedMicrocompact_AlreadyCleared(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // floor to 1
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0 // floor to 1
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			// Already cleared — should be skipped, tokensSaved = 0
-			types.NewToolResultBlock("tool1", json.RawMessage(`"[Old tool result content cleared]"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("tool1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("tool2", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				// Already cleared — should be skipped, tokensSaved = 0
+				types.NewToolResultBlock("tool1", json.RawMessage(`"[Old tool result content cleared]"`), false),
+			}},
+		}
 
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	// tool1 is already cleared, tool2 has no result → tokensSaved = 0 → nil
-	if result != nil {
-		t.Error("already-cleared results should be skipped, tokensSaved=0 → nil")
-	}
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		// tool1 is already cleared, tool2 has no result → tokensSaved = 0 → nil
+		if result != nil {
+			t.Error("already-cleared results should be skipped, tokensSaved=0 → nil")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -595,43 +588,42 @@ func TestMaybeTimeBasedMicrocompact_AlreadyCleared(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMicrocompactMessages_TimeBasedFires(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("t1", json.RawMessage(`"content1"`), false),
-			types.NewToolResultBlock("t2", json.RawMessage(`"content2"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("t1", json.RawMessage(`"content1"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"content2"`), false),
+			}},
+		}
 
-	result := MicrocompactMessages(messages, QuerySourceReplMainThread, nil)
-	if result.CompactionInfo != nil {
-		t.Error("time-based MC should not set CompactionInfo (that's cached-MC)")
-	}
+		result := MicrocompactMessages(messages, QuerySourceReplMainThread, nil)
+		if result.CompactionInfo != nil {
+			t.Error("time-based MC should not set CompactionInfo (that's cached-MC)")
+		}
 
-	// Verify content was cleared
-	cleared := 0
-	for _, block := range result.Messages[1].Content {
-		if block.Type == types.ContentTypeToolResult {
-			if string(block.Content) == `"[Old tool result content cleared]"` {
-				cleared++
+		// Verify content was cleared
+		cleared := 0
+		for _, block := range result.Messages[1].Content {
+			if block.Type == types.ContentTypeToolResult {
+				if string(block.Content) == `"[Old tool result content cleared]"` {
+					cleared++
+				}
 			}
 		}
-	}
-	if cleared != 1 { // keepRecent=0 → floor 1 → keep t2, clear t1
-		t.Errorf("cleared %d, want 1", cleared)
-	}
+		if cleared != 1 { // keepRecent=0 → floor 1 → keep t2, clear t1
+			t.Errorf("cleared %d, want 1", cleared)
+		}
+	})
 }
 
 func TestMicrocompactMessages_TimeBasedSkips(t *testing.T) {
@@ -658,33 +650,32 @@ func TestMicrocompactMessages_ClearsWarningSuppression(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
 
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
-			types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
+			}},
+		}
 
-	maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, logger)
-	if !strings.Contains(buf.String(), "engine:time_based_mc") {
-		t.Errorf("expected engine:time_based_mc in log output, got: %s", buf.String())
-	}
+		maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, logger)
+		if !strings.Contains(buf.String(), "engine:time_based_mc") {
+			t.Errorf("expected engine:time_based_mc in log output, got: %s", buf.String())
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -692,31 +683,30 @@ func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMaybeTimeBasedMicrocompact_CallsNotifyCacheDeletion(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
-			types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
+			}},
+		}
 
-	// This should not panic — NotifyCacheDeletion is a real function
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
+		// This should not panic — NotifyCacheDeletion is a real function
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -751,48 +741,47 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 }
 
 func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
-	orig := nowFunc
-	defer func() { nowFunc = orig }()
-	baseTime := time.Now() // REAL-TIME: seed for nowFunc override (frozen via nowFunc)
-	nowFunc = func() time.Time { return baseTime }
+	synctest.Test(t, func(t *testing.T) {
+		baseTime := time.Now()
 
-	origCfg := defaultMicrocompactConfig
-	defer func() { defaultMicrocompactConfig = origCfg }()
-	defaultMicrocompactConfig.TimeBased.KeepRecent = 0
+		origCfg := defaultMicrocompactConfig
+		defer func() { defaultMicrocompactConfig = origCfg }()
+		defaultMicrocompactConfig.TimeBased.KeepRecent = 0
 
-	messages := []types.Message{
-		{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
-			types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
-			types.NewToolUseBlock("t2", "Bash", json.RawMessage(`{}`)),
-		}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
-			types.NewTextBlock("keep this text"),
-			types.NewToolResultBlock("t2", json.RawMessage(`"bash output"`), false),
-		}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock("response"),
-		}},
-	}
+		messages := []types.Message{
+			{Role: types.RoleAssistant, Timestamp: baseTime.Add(-61 * time.Minute), Content: []types.ContentBlock{
+				types.NewToolUseBlock("t1", "Read", json.RawMessage(`{}`)),
+				types.NewToolUseBlock("t2", "Bash", json.RawMessage(`{}`)),
+			}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{
+				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
+				types.NewTextBlock("keep this text"),
+				types.NewToolResultBlock("t2", json.RawMessage(`"bash output"`), false),
+			}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{
+				types.NewTextBlock("response"),
+			}},
+		}
 
-	result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if len(result.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
-	}
-	// Text block should be preserved
-	if result.Messages[1].Content[1].Text != "keep this text" {
-		t.Error("non-tool-result blocks should be preserved")
-	}
-	// Tool result t1 should be cleared (oldest), t2 kept (keepRecent=1)
-	if string(result.Messages[1].Content[0].Content) != `"[Old tool result content cleared]"` {
-		t.Error("tool result t1 should be cleared")
-	}
-	if string(result.Messages[1].Content[2].Content) != `"bash output"` {
-		t.Error("tool result t2 should be kept")
-	}
+		result := maybeTimeBasedMicrocompact(messages, QuerySourceReplMainThread, nil)
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if len(result.Messages) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+		}
+		// Text block should be preserved
+		if result.Messages[1].Content[1].Text != "keep this text" {
+			t.Error("non-tool-result blocks should be preserved")
+		}
+		// Tool result t1 should be cleared (oldest), t2 kept (keepRecent=1)
+		if string(result.Messages[1].Content[0].Content) != `"[Old tool result content cleared]"` {
+			t.Error("tool result t1 should be cleared")
+		}
+		if string(result.Messages[1].Content[2].Content) != `"bash output"` {
+			t.Error("tool result t2 should be kept")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

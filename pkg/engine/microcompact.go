@@ -346,13 +346,6 @@ func TokenCountWithEstimation(messages []types.Message) int {
 }
 
 // ---------------------------------------------------------------------------
-// nowFunc — injectable clock for testing
-// ---------------------------------------------------------------------------
-
-// nowFunc can be overridden in tests to mock time.
-var nowFunc = time.Now
-
-// ---------------------------------------------------------------------------
 // EvaluateTimeBasedTrigger — source: microCompact.ts:422-444
 // ---------------------------------------------------------------------------
 
@@ -378,7 +371,7 @@ func EvaluateTimeBasedTrigger(messages []types.Message, querySource string) *Tim
 	}
 
 	// Source: microCompact.ts:438-439
-	gapMinutes := nowFunc().Sub(lastAssistant.Timestamp).Minutes()
+	gapMinutes := time.Since(lastAssistant.Timestamp).Minutes()
 	if math.IsInf(gapMinutes, 0) || math.IsNaN(gapMinutes) || gapMinutes < float64(config.GapThresholdMinutes) {
 		return nil
 	}
