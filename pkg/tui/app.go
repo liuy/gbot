@@ -47,6 +47,13 @@ type TaskSummary struct {
 // taskListFn reads tasks for display. Set via SetTaskListFn from main.go.
 type taskListFn func() []TaskSummary
 
+// pendingQueueItem tracks a user message queued during streaming.
+// Matched by UUID when the engine drains the attachment and emits EventAttachment.
+type pendingQueueItem struct {
+	ID   string // UUID matching QueuedItem.UUID
+	Text string // original user input text
+}
+
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
 type App struct {
@@ -107,8 +114,8 @@ type App struct {
 	completions *Completions
 
 	// Paste reference state
-	pasteStore   map[int]string
-	nextPasteID  int
+	pasteStore  map[int]string
+	nextPasteID int
 
 	// Spinner progress state
 	progressStart    time.Time
@@ -158,6 +165,9 @@ type App struct {
 	taskListCache string      // rendered task list, rebuilt when dirty
 	taskListDirty bool
 	killAllFn     func() // set from main.go to kill all background tasks
+
+	pendingQueue []pendingQueueItem // user messages queued during streaming
+
 	// Cache token tracking for spinner display
 	cacheReadTokens     int
 	cacheCreationTokens int
@@ -406,6 +416,7 @@ func (a *App) resetDisplayState() {
 	a.retryRemaining = 0
 	a.retryStart = time.Time{}
 	a.retryErrorType = ""
+	a.pendingQueue = nil
 	a.status.SetUsage(types.Usage{})
 }
 
@@ -516,6 +527,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the active (uncommitted) content + progress + input.
+// renderQueueBox renders dim ○-prefixed queued messages between progress and input.
+func (a *App) renderQueueBox() string {
+	if len(a.pendingQueue) == 0 {
+		return ""
+	}
+	maxWidth := max(a.width-renderedPromptWidth, 10)
+	var sb strings.Builder
+	prefix := styleDim.Render("○ ")
+	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+	for _, item := range a.pendingQueue {
+		wrapped := wordWrap(item.Text, maxWidth)
+		lines := strings.Split(wrapped, "\n")
+		for li, line := range lines {
+			if li == 0 {
+				sb.WriteString(prefix + line)
+			} else {
+				sb.WriteString("\n" + indent + line)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 // Committed messages are in terminal scrollback via tea.Println — never re-rendered.
 // When uncommitted content exceeds terminal height, a scroll window is applied so
 // only the visible portion is rendered, preventing Bubble Tea's inline renderer from
@@ -672,7 +707,7 @@ func (a *App) View() string {
 		// Retry display: show user-friendly error + countdown for attempts >= 4
 		// Source: TS SystemAPIErrorMessage.tsx — hidden for attempts < 4
 		if a.retryActive && a.retryAttempt >= 4 && a.responseCharCount == 0 && !a.thinkingActive {
-			secs := max(int((a.retryRemaining - time.Since(a.retryStart)).Seconds())+1, 0)
+			secs := max(int((a.retryRemaining-time.Since(a.retryStart)).Seconds())+1, 0)
 			errLine := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(formatRetryError(a.retryErrorType))
 			countdownLine := lipgloss.NewStyle().Faint(true).Render(
 				fmt.Sprintf("Retrying in %ds… (attempt %d/%d)", secs, a.retryAttempt, a.retryMax))
@@ -699,6 +734,11 @@ func (a *App) View() string {
 			sb.WriteString(progressLine)
 			sb.WriteString("\n")
 		}
+	}
+
+	// Queue box: dim preview of messages queued during streaming
+	if queueStr := a.renderQueueBox(); queueStr != "" {
+		sb.WriteString(queueStr)
 	}
 
 	// Input: View() returns pure text, prepend prompt/indent here.

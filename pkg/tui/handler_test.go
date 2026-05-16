@@ -1163,3 +1163,68 @@ func TestConvertEventToMsg_RetryAttempt_NilRetryAttempt(t *testing.T) {
 		t.Errorf("EventRetryAttempt with nil RetryAttempt should return nil, got %T", msg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// convertEventToMsg — EventAttachment with ItemModePrompt (queued user message)
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_Attachment_PromptMode(t *testing.T) {
+	h := NewTUIHandler()
+	evt := types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModePrompt,
+				Prompt:     "remember to run tests",
+				SourceUUID: "uuid-123",
+			},
+		},
+	}
+	msg := h.convertEventToMsg(evt)
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.UserText != "remember to run tests" {
+		t.Errorf("UserText = %q, want %q", am.UserText, "remember to run tests")
+	}
+	if am.SourceUUID != "uuid-123" {
+		t.Errorf("SourceUUID = %q, want %q", am.SourceUUID, "uuid-123")
+	}
+	if am.JobID != "" {
+		t.Errorf("JobID should be empty for prompt mode, got %q", am.JobID)
+	}
+	if am.Preview != "" {
+		t.Errorf("Preview should be empty for prompt mode, got %q", am.Preview)
+	}
+}
+
+func TestConvertEventToMsg_Attachment_JobModeBackwardCompat(t *testing.T) {
+	h := NewTUIHandler()
+	xml := `<job-notification><job-id>bg-1</job-id><summary>task done</summary><status>completed</status></job-notification>`
+	evt := types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Prompt: xml,
+			},
+		},
+	}
+	msg := h.convertEventToMsg(evt)
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.JobID != "bg-1" {
+		t.Errorf("JobID = %q, want %q", am.JobID, "bg-1")
+	}
+	if am.Preview != "task done" {
+		t.Errorf("Preview = %q, want %q", am.Preview, "task done")
+	}
+	if am.Failed {
+		t.Errorf("Failed should be false for completed status")
+	}
+	if am.UserText != "" {
+		t.Errorf("UserText should be empty for job mode, got %q", am.UserText)
+	}
+}

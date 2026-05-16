@@ -360,3 +360,104 @@ func TestMarshalMessages_AttachmentStandalone(t *testing.T) {
 		t.Fatalf("marshalMessages returned %d messages, want 1", len(marshaled))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Multi-prompt attachment merge chain test
+// ---------------------------------------------------------------------------
+
+// TestPromptAttachment_MultiMergeChain verifies that multiple queued user
+// prompts are: enqueued → drained → created as individual attachment messages
+// → merged into a single user message by marshalMessages for the API call.
+//
+// This is the engine-side counterpart to the TUI call chain test: the TUI
+// shows each queued message independently, but the API sees them as one user
+// turn with multiple content blocks.
+func TestPromptAttachment_MultiMergeChain(t *testing.T) {
+	eng := New(&Params{})
+
+	// 1. Simulate two user prompts queued during streaming
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "first prompt",
+		Mode:      types.ItemModePrompt,
+		UUID:      "uuid-1",
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "second prompt",
+		Mode:      types.ItemModePrompt,
+		UUID:      "uuid-2",
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Date(2024, 1, 1, 0, 0, 1, 0, time.UTC),
+	})
+
+	// 2. Turn boundary drain — exactly what engine does after LLM response
+	drained := eng.attachments.DrainByPriority(types.PriorityNext)
+	if len(drained) != 2 {
+		t.Fatalf("drain: got %d items, want 2", len(drained))
+	}
+
+	// 3. Create attachment messages — one per queued item
+	attMsgs := eng.createAttachmentMessages(drained)
+	if len(attMsgs) != 2 {
+		t.Fatalf("createAttachmentMessages: got %d, want 2", len(attMsgs))
+	}
+	for i, m := range attMsgs {
+		if m.Role != types.RoleUser {
+			t.Errorf("attMsgs[%d].Role = %q, want user", i, m.Role)
+		}
+		if m.MessageType != types.MessageTypeAttachment {
+			t.Errorf("attMsgs[%d].MessageType = %q, want attachment", i, m.MessageType)
+		}
+		if m.HasFlag(types.FlagMeta) {
+			t.Errorf("attMsgs[%d] should not have FlagMeta for prompt mode", i)
+		}
+		if m.Attachment == nil {
+			t.Fatalf("attMsgs[%d].Attachment is nil", i)
+		}
+		if m.Attachment.Mode != types.ItemModePrompt {
+			t.Errorf("attMsgs[%d].Attachment.Mode = %q, want prompt", i, m.Attachment.Mode)
+		}
+		if m.Attachment.SourceUUID != drained[i].UUID {
+			t.Errorf("attMsgs[%d].SourceUUID = %q, want %q", i, m.Attachment.SourceUUID, drained[i].UUID)
+		}
+	}
+
+	// 4. Append to engine messages (includes prior user message for context)
+	eng.appendMessage(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("original question")},
+	})
+	eng.appendMessages(attMsgs)
+
+	// Verify all 3 messages in engine (1 original + 2 attachments)
+	engineMsgs := eng.Messages()
+	if len(engineMsgs) != 3 {
+		t.Fatalf("engine messages: got %d, want 3 (1 original + 2 attachments)", len(engineMsgs))
+	}
+
+	// 5. marshalMessages should merge the 2 attachments into the last user message
+	// Result: 1 user message with 3 content blocks (original + first + second)
+	marshaled := eng.marshalMessages()
+	if len(marshaled) != 1 {
+		t.Fatalf("marshalMessages: got %d messages, want 1 (all merged into original user message)", len(marshaled))
+	}
+	merged := marshaled[0]
+	if merged.Role != types.RoleUser {
+		t.Errorf("merged role = %q, want user", merged.Role)
+	}
+	if len(merged.Content) != 3 {
+		t.Fatalf("merged content blocks = %d, want 3 (original + 2 attachments)", len(merged.Content))
+	}
+	// First block is the original question
+	if merged.Content[0].Text != "original question" {
+		t.Errorf("content[0] = %q, want 'original question'", merged.Content[0].Text)
+	}
+	// Subsequent blocks are the queued prompts (wrapped by normalizeAttachmentForAPI)
+	if !strings.Contains(merged.Content[1].Text, "first prompt") {
+		t.Errorf("content[1] missing 'first prompt': %q", merged.Content[1].Text)
+	}
+	if !strings.Contains(merged.Content[2].Text, "second prompt") {
+		t.Errorf("content[2] missing 'second prompt': %q", merged.Content[2].Text)
+	}
+}

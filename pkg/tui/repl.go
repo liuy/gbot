@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/tool"
@@ -765,8 +766,25 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case attachmentMsg:
-		slog.Info("tui:attachment_msg", "streaming", a.repl.IsStreaming(), "job_id", m.JobID)
-		// Render notification in content area when drain event carries content
+		slog.Info("tui:attachment_msg", "streaming", a.repl.IsStreaming(), "job_id", m.JobID, "user_text", m.UserText != "")
+
+		// ItemModePrompt drain: queued user message → insert into conversation
+		if m.UserText != "" {
+			for i, item := range a.pendingQueue {
+				if item.ID == m.SourceUUID {
+					a.pendingQueue = append(a.pendingQueue[:i], a.pendingQueue[i+1:]...)
+					break
+				}
+			}
+			a.repl.messages = append(a.repl.messages, MessageView{
+				Role:   "user",
+				Blocks: []ContentBlock{{Type: BlockText, Text: m.UserText}},
+			})
+			a.markViewportDirty()
+			return true, a.readEvents()
+		}
+
+		// ItemModeJob drain: render notification
 		if m.JobID != "" {
 			// Same ● dot + color as tool results for UI consistency
 			var dotStr string
@@ -845,7 +863,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 	if a.repl.IsStreaming() {
-		return nil
+		return a.handleEnqueueMessage(text)
 	}
 
 	// Commit previous turn's messages to scrollback before starting new turn.
@@ -918,6 +936,30 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		}),
 		a.readEvents(),
 	)
+}
+
+// handleEnqueueMessage queues user input during streaming instead of discarding.
+func (a *App) handleEnqueueMessage(text string) tea.Cmd {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if _, ok := LookupSlashCommand(text); ok {
+		return nil
+	}
+	id := uuid.NewString()
+	a.engine.EnqueueAttachment(types.QueuedItem{
+		Value:    text,
+		Mode:     types.ItemModePrompt,
+		UUID:     id,
+		Priority: types.PriorityNext,
+		Origin:   &types.MessageOrigin{Kind: types.OriginHuman},
+	})
+	a.pendingQueue = append(a.pendingQueue, pendingQueueItem{ID: id, Text: text})
+	a.input.Reset()
+	a.pasteStore = make(map[int]string)
+	a.nextPasteID = 1
+	a.history.Add(text)
+	return nil
 }
 
 // readEvents reads the next event from TUIHandler.appCh.

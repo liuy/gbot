@@ -171,7 +171,14 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		if evt.Message == nil || evt.Message.Attachment == nil {
 			return nil
 		}
-		xml := evt.Message.Attachment.Prompt
+		att := evt.Message.Attachment
+		if att.Mode == types.ItemModePrompt {
+			return attachmentMsg{
+				UserText:   att.Prompt,
+				SourceUUID: att.SourceUUID,
+			}
+		}
+		xml := att.Prompt
 		status := extractXMLField(xml, "status")
 		return attachmentMsg{
 			JobID:   extractXMLField(xml, "job-id"),
