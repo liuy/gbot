@@ -168,15 +168,16 @@ func (h *TUIHandler) flushThinking() {
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	switch evt.Type {
 	case types.EventAttachment:
-		msg := attachmentMsg{}
-		if evt.Message != nil && evt.Message.Attachment != nil {
-			xml := evt.Message.Attachment.Prompt
-			msg.JobID = extractXMLField(xml, "job-id")
-			msg.Preview = extractXMLField(xml, "summary")
-			status := extractXMLField(xml, "status")
-			msg.Failed = status == "failed" || status == "killed"
+		if evt.Message == nil || evt.Message.Attachment == nil {
+			return nil
 		}
-		return msg
+		xml := evt.Message.Attachment.Prompt
+		status := extractXMLField(xml, "status")
+		return attachmentMsg{
+			JobID:   extractXMLField(xml, "job-id"),
+			Preview: extractXMLField(xml, "summary"),
+			Failed:  status == "failed" || status == "killed",
+		}
 
 	case types.EventTurnStart:
 		return turnStartMsg{}

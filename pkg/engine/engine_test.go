@@ -2714,37 +2714,6 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 // EnqueueAttachment + ProcessAttachments tests
 // ---------------------------------------------------------------------------
 
-func TestEnqueueAttachment_DispatchesHubEvent(t *testing.T) {
-	t.Parallel()
-
-	h := hub.NewHub()
-	handler := &hubMockHandler{}
-	h.Subscribe(handler)
-
-	eng := New(&Params{
-		Provider:   &mockProvider{},
-		Model:      "test-model",
-		Logger:     slog.Default(),
-		Dispatcher: h,
-	})
-
-	eng.EnqueueAttachment(types.QueuedItem{
-		Value: "bg task done",
-		Mode:  types.ItemModeJob,
-	})
-
-	events := handler.Events()
-	var found bool
-	for _, evt := range events {
-		if evt.Type == types.EventAttachment {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("EnqueueAttachment should dispatch EventAttachment via Hub")
-	}
-}
-
 func TestEnqueueAttachment_NoDispatcher_NoPanic(t *testing.T) {
 	t.Parallel()
 

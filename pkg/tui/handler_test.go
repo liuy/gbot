@@ -260,17 +260,13 @@ func TestConvertEventToMsg_Attachment_Killed(t *testing.T) {
 
 func TestConvertEventToMsg_Attachment_Empty(t *testing.T) {
 	h := NewTUIHandler()
-	// First dispatch from EnqueueAttachment has no content yet
+	// Empty attachment events (no Message) are no longer dispatched
 	msg := h.convertEventToMsg(types.QueryEvent{
 		Type:    types.EventAttachment,
 		Message: nil,
 	})
-	am := msg.(attachmentMsg)
-	if am.JobID != "" {
-		t.Errorf("empty attachment should have empty JobID, got %q", am.JobID)
-	}
-	if am.Preview != "" {
-		t.Errorf("empty attachment should have empty Preview, got %q", am.Preview)
+	if msg != nil {
+		t.Errorf("empty attachment should return nil, got %T", msg)
 	}
 }
 
@@ -736,12 +732,10 @@ func TestConvertEventToMsg_EventTextEnd(t *testing.T) {
 
 func TestConvertEventToMsg_EventAttachment(t *testing.T) {
 	h := NewTUIHandler()
+	// EventAttachment without Message returns nil
 	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventAttachment})
-	if msg == nil {
-		t.Fatal("EventAttachment should not return nil")
-	}
-	if _, ok := msg.(attachmentMsg); !ok {
-		t.Errorf("expected attachmentMsg, got %T", msg)
+	if msg != nil {
+		t.Errorf("EventAttachment without Message should return nil, got %T", msg)
 	}
 }
 

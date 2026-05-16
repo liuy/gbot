@@ -362,13 +362,8 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 		p = p[:80] + "..."
 	}
 	e.logger.Info("engine:attachment_enqueued", "mode", item.Mode, "priority", item.Priority, "value_preview", p)
-	if e.dispatcher != nil {
-		e.dispatcher.Dispatch(types.QueryEvent{
-			Type: types.EventAttachment,
-		})
-	}
 	// Auto-process when idle: engine takes responsibility for draining
-	// and running turns. TUI only needs to render events.
+	// and running turns. TUI renders notifications when attachments are drained.
 	e.startProcessAttachmentsIfIdle()
 }
 
