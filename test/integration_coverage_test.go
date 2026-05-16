@@ -106,7 +106,7 @@ var requiredScenarios = []RequiredScenario{
 		Feature:     "auto-compact",
 		Package:     "pkg/engine",
 		NamePattern: `Compact.*Concurrent|Concurrent.*Compact`,
-		Description: "Concurrent access: ProcessNotifications while compact in progress",
+		Description: "Concurrent access: ProcessAttachments while compact in progress",
 	},
 	{
 		Feature:     "auto-compact",

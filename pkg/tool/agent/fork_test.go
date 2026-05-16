@@ -258,10 +258,10 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 	}
 	xml := buildForkNotificationXML("fork-1", "call_abc", result, nil, "search code", "ship-audit")
 
-	if !strings.Contains(xml, "<task-notification>") {
-		t.Error("should contain <task-notification>")
+	if !strings.Contains(xml, "<job-notification>") {
+		t.Error("should contain <job-notification>")
 	}
-	if !strings.Contains(xml, "<task-id>fork-1</task-id>") {
+	if !strings.Contains(xml, "<job-id>fork-1</job-id>") {
 		t.Error("should contain task-id")
 	}
 	if !strings.Contains(xml, "<tool-use-id>call_abc</tool-use-id>") {
@@ -282,7 +282,7 @@ func TestBuildForkNotificationXML_Success(t *testing.T) {
 	if !strings.Contains(xml, "<agent-type>ship-audit</agent-type>") {
 		t.Error("should use agent name as agent-type")
 	}
-	if !strings.Contains(xml, "<summary>Fork agent search code completed</summary>") {
+	if !strings.Contains(xml, `<summary>Background agent "search code" completed</summary>`) {
 		t.Error("summary should use description, got:", xml)
 	}
 }

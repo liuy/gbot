@@ -408,6 +408,17 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case turnStartMsg:
+		// Set up streaming state if not already active (e.g. engine auto-processed
+		// an attachment while idle — TUI wasn't in streaming mode yet).
+		if !a.repl.IsStreaming() {
+			a.repl.StartQuery()
+			a.status.SetStreaming(true)
+			a.spinner.Start()
+			a.progressStart = time.Now()
+			a.thinkingActive = false
+			a.thinkingDuration = 0
+			a.status.SetUsage(types.Usage{})
+		}
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
 		return true, a.readEvents()
@@ -637,6 +648,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Commit happens when the user submits the next query.
 		a.contentCache = ""
 		a.contentDirty = false
+
 		// Keep listening for Hub events while idle (Path B: fork agent
 		// notifications). readEvents blocks on appCh.
 		return true, a.readEvents()
@@ -752,22 +764,28 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, a.readEvents()
 
-	case notificationPendingMsg:
-		if a.repl.IsStreaming() {
-			// Path A handles it — runTurns drains queue each iteration
-			return true, a.readEvents()
+	case attachmentMsg:
+		slog.Info("tui:attachment_msg", "streaming", a.repl.IsStreaming(), "job_id", m.JobID)
+		// Render notification in content area when drain event carries content
+		if m.JobID != "" {
+			// Same ● dot + color as tool results for UI consistency
+			var dotStr string
+			if m.Failed {
+				dotStr = styleDotError.Render("●")
+			} else {
+				dotStr = styleDotSuccess.Render("●")
+			}
+			preview := m.Preview
+			if !m.Failed {
+				preview = strings.TrimSuffix(preview, " (exit code 0)")
+			}
+			text := dotStr + " " + preview
+			a.repl.messages = append(a.repl.messages, MessageView{
+				Role:   "notification",
+				Blocks: []ContentBlock{{Type: BlockText, Text: text}},
+			})
+			a.markViewportDirty()
 		}
-		// Path B: idle — trigger ProcessNotifications
-		ctx, cancel := context.WithCancel(context.Background())
-		a.repl.cancelFunc = cancel
-		a.engine.ProcessNotifications(ctx, a.systemPrompt)
-		a.repl.StartQuery()
-		a.status.SetStreaming(true)
-		a.spinner.Start()
-		a.progressStart = time.Now()
-		a.thinkingActive = false
-		a.thinkingDuration = 0
-		a.status.SetUsage(types.Usage{})
 		return true, a.readEvents()
 
 	case idleAbortedMsg:

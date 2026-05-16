@@ -48,7 +48,7 @@ type Output struct {
 	Stderr           string `json:"stderr,omitempty"`
 	ExitCode         int    `json:"exitCode"`
 	TimedOut         bool   `json:"timed_out,omitempty"`
-	BackgroundTaskID string `json:"backgroundTaskId,omitempty"`
+	BackgroundJobID string `json:"backgroundTaskId,omitempty"`
 	CWD              string `json:"cwd,omitempty"`
 }
 
@@ -162,11 +162,11 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 				}
 				sb.WriteString("Command timed out")
 			}
-			if out.BackgroundTaskID != "" {
+			if out.BackgroundJobID != "" {
 				if sb.Len() > 0 {
 					sb.WriteByte('\n')
 				}
-				fmt.Fprintf(&sb, "Command timed out and was moved to background (task ID: %s)", out.BackgroundTaskID)
+				fmt.Fprintf(&sb, "Command timed out and was moved to background (task ID: %s)", out.BackgroundJobID)
 			}
 			return sb.String()
 		},
@@ -442,7 +442,7 @@ func executeNonPTYSync(ctx context.Context, in Input, cwd string, timeout time.D
 // Source: BashTool.tsx:967-971 — shellCommand.onTimeout → startBackgrounding
 //
 // When timeout fires, the process transitions to a background task instead of
-// being killed. The foreground result returns immediately with BackgroundTaskID set.
+// being killed. The foreground result returns immediately with BackgroundJobID set.
 // The process continues running; when it exits, task.Complete is called.
 func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Duration, s *StreamingOutput, registry *BackgroundTaskRegistry, outputCap int64) (*tool.ToolResult, error) {
 	// Use a cancellable context — NOT WithTimeout — so we control timeout manually.
@@ -823,7 +823,7 @@ func transitionToBackground(registry *BackgroundTaskRegistry, command string, pi
 
 	return &tool.ToolResult{
 		Data: &Output{
-			BackgroundTaskID: task.ID,
+			BackgroundJobID: task.ID,
 			CWD:              cwd,
 		},
 	}, nil

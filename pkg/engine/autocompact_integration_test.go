@@ -361,11 +361,11 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Integration Test 5: Concurrent compact + notifications
+// Integration Test 5: Concurrent compact + attachments
 // ---------------------------------------------------------------------------
 
 // TestAutoCompact_Concurrent_Compact verifies no race condition when
-// ProcessNotifications enqueues messages while a compact is in progress.
+// ProcessAttachments enqueues messages while a compact is in progress.
 func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	t.Parallel()
 
@@ -383,7 +383,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-	// Slow Complete to give time for concurrent notification
+	// Slow Complete to give time for concurrent attachment
 	p.completeFn = func(req *llm.Request) (*llm.Response, error) {
 		time.Sleep(50 * time.Millisecond) // REAL-TIME: needed to simulate slow LLM call for concurrent notification interleaving // REAL-TIME: simulates slow LLM to exercise concurrent paths
 		return &llm.Response{
@@ -398,7 +398,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 		}, nil
 	}
 	// Add enough stream responses for proactive compact + potential
-	// additional turns triggered by enqueued notifications.
+	// additional turns triggered by enqueued attachments.
 	for range 5 {
 		p.addStream(textStreamEvents("test-model", "Done."), nil)
 	}
@@ -415,15 +415,15 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	})
 	eng.SetMessages(makeLargeMessages(10, 100))
 
-	// Concurrently enqueue notifications while query runs
+	// Concurrently enqueue attachments while query runs
 	go func() {
 		for i := range 10 {
-			eng.EnqueueNotification(types.Message{
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock(fmt.Sprintf("notification %d", i))},
+			eng.EnqueueAttachment(types.QueuedItem{
+				Value:     fmt.Sprintf("notification %d", i),
+				Mode:      types.ItemModeJob,
 				Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 			})
-			time.Sleep(10 * time.Millisecond) // REAL-TIME: needed to stagger concurrent notifications // REAL-TIME: pacing notifications over time to test concurrency
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: needed to stagger concurrent attachments
 		}
 	}()
 

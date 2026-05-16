@@ -224,6 +224,19 @@ func TestIsSelectableUserMessage_FlagMeta(t *testing.T) {
 	}
 }
 
+func TestIsSelectableUserMessage_MessageTypeAttachment(t *testing.T) {
+	attMsg := types.Message{
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("<system-reminder>\njob done\n</system-reminder>"),
+		},
+	}
+	if isSelectableUserMessage(attMsg) {
+		t.Error("expected MessageTypeAttachment message to be filtered out of rewind selection")
+	}
+}
+
 func TestIsSelectableUserMessage_NonUserTags(t *testing.T) {
 	// Source: TS selectableUserMessagesFilter line 787-790
 	// Messages containing terminal/command output tags should be filtered.
@@ -238,7 +251,7 @@ func TestIsSelectableUserMessage_NonUserTags(t *testing.T) {
 		{"bash-stderr", "<bash-stderr>err</bash-stderr>", false},
 		{"tick", "<tick>heartbeat</tick>", false},
 		{"teammate-message", "<teammate-message>hello</teammate-message>", false},
-		{"task-notification", "<task-notification>done</task-notification>", false},
+		{"job-notification", "<job-notification>done</job-notification>", false},
 		{"normal text", "用户正常消息", true},
 	}
 	for _, tc := range cases {
@@ -690,11 +703,11 @@ func TestHandleRewind_CompactBoundarySkipped(t *testing.T) {
 	}
 }
 
-func TestHandleRewind_TaskNotificationSkipped(t *testing.T) {
+func TestHandleRewind_JobNotificationSkipped(t *testing.T) {
 	eng := newTestEngine()
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewTextBlock(`<task-notification><task-id>bg-1</task-id><status>completed</status></task-notification>`),
+			types.NewTextBlock(`<job-notification><job-id>bg-1</job-id><status>completed</status></job-notification>`),
 		}, Timestamp: testTime, ID: "uuid-task"},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			types.NewTextBlock("real user message"),
@@ -709,7 +722,7 @@ func TestHandleRewind_TaskNotificationSkipped(t *testing.T) {
 		t.Fatal("expected dialog")
 	}
 	if len(a.activeDialog.options) != 1 {
-		t.Fatalf("expected 1 option (task-notification filtered), got %d", len(a.activeDialog.options))
+		t.Fatalf("expected 1 option (job-notification filtered), got %d", len(a.activeDialog.options))
 	}
 }
 

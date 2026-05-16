@@ -114,7 +114,7 @@ func hasNonToolResultContent(msg types.Message) bool {
 
 // isSelectableUserMessage returns true if the message is a user message
 // that is selectable for rewind — contains actual user text, skipping
-// tool_result, synthetic, compact summary, and task notification messages.
+// tool_result, synthetic, compact summary, and job notification messages.
 // Source: TS selectableUserMessagesFilter in MessageSelector.tsx:767.
 func isSelectableUserMessage(msg types.Message) bool {
 	if msg.Role != types.RoleUser {
@@ -134,6 +134,10 @@ func isSelectableUserMessage(msg types.Message) bool {
 	if msg.HasFlag(types.FlagMeta) {
 		return false
 	}
+	// Attachment messages are not selectable for rewind.
+	if msg.MessageType == types.MessageTypeAttachment {
+		return false
+	}
 	// Source: TS selectableUserMessagesFilter line 780 — message.isCompactSummary || message.isVisibleInTranscriptOnly
 	// isVisibleInTranscriptOnly not implemented in gbot yet.
 
@@ -149,7 +153,7 @@ func isSelectableUserMessage(msg types.Message) bool {
 			return false
 		}
 	}
-	return !strings.Contains(text, "<task-notification>")
+	return !strings.Contains(text, "<job-notification>")
 }
 
 // lastSelectableUserMessageIndex returns the index of the last user message

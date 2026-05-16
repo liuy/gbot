@@ -148,6 +148,9 @@ func logEngineEvent(event Event) {
 	case types.EventQueryEnd:
 		slog.Info("engine:query_end")
 
+	case types.EventAttachment:
+		slog.Info("engine:attachment")
+
 	case types.EventQueryStart:
 		if event.Message != nil {
 			blockCount := len(event.Message.Content)

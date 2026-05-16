@@ -195,6 +195,86 @@ func TestTUIHandler_Handle_UnhandledEvent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// convertEventToMsg — EventAttachment
+// ---------------------------------------------------------------------------
+
+func TestConvertEventToMsg_Attachment_ExtractsXML(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Prompt: `<job-notification><job-id>bg-1</job-id><status>completed</status><summary>Background command "npm test" completed (exit code 0)</summary></job-notification>`,
+			},
+		},
+	})
+	if msg == nil {
+		t.Fatal("EventAttachment should not return nil")
+	}
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.JobID != "bg-1" {
+		t.Errorf("JobID = %q, want %q", am.JobID, "bg-1")
+	}
+	if am.Preview != `Background command "npm test" completed (exit code 0)` {
+		t.Errorf("Preview = %q, want summary text", am.Preview)
+	}
+	if am.Failed {
+		t.Error("completed status should not set Failed")
+	}
+}
+
+func TestConvertEventToMsg_Attachment_Failed(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Prompt: `<job-notification><job-id>bg-2</job-id><status>failed</status><summary>Background command "make" failed with exit code 1</summary></job-notification>`,
+			},
+		},
+	})
+	am := msg.(attachmentMsg)
+	if !am.Failed {
+		t.Error("failed status should set Failed=true")
+	}
+}
+
+func TestConvertEventToMsg_Attachment_Killed(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Prompt: `<job-notification><job-id>bg-3</job-id><status>killed</status><summary>Background command "sleep 99" was stopped</summary></job-notification>`,
+			},
+		},
+	})
+	am := msg.(attachmentMsg)
+	if !am.Failed {
+		t.Error("killed status should set Failed=true")
+	}
+}
+
+func TestConvertEventToMsg_Attachment_Empty(t *testing.T) {
+	h := NewTUIHandler()
+	// First dispatch from EnqueueAttachment has no content yet
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:    types.EventAttachment,
+		Message: nil,
+	})
+	am := msg.(attachmentMsg)
+	if am.JobID != "" {
+		t.Errorf("empty attachment should have empty JobID, got %q", am.JobID)
+	}
+	if am.Preview != "" {
+		t.Errorf("empty attachment should have empty Preview, got %q", am.Preview)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // convertEventToMsg — nil ToolUse in ToolUseStart
 // ---------------------------------------------------------------------------
 
@@ -654,14 +734,14 @@ func TestConvertEventToMsg_EventTextEnd(t *testing.T) {
 	}
 }
 
-func TestConvertEventToMsg_EventNotificationPending(t *testing.T) {
+func TestConvertEventToMsg_EventAttachment(t *testing.T) {
 	h := NewTUIHandler()
-	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventNotificationPending})
+	msg := h.convertEventToMsg(types.QueryEvent{Type: types.EventAttachment})
 	if msg == nil {
-		t.Fatal("EventNotificationPending should not return nil")
+		t.Fatal("EventAttachment should not return nil")
 	}
-	if _, ok := msg.(notificationPendingMsg); !ok {
-		t.Errorf("expected notificationPendingMsg, got %T", msg)
+	if _, ok := msg.(attachmentMsg); !ok {
+		t.Errorf("expected attachmentMsg, got %T", msg)
 	}
 }
 

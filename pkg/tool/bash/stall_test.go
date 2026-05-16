@@ -1106,14 +1106,14 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
-		receivedCh := make(chan TaskNotification, 1)
+		receivedCh := make(chan JobNotification, 1)
 		task := &BackgroundTask{
 			Output:      output,
 			Kind:        "bash",
 			ID:          "bg-test",
 			Command:     "test-cmd",
 			Description: "test desc",
-			onNotify: func(n TaskNotification) {
+			onNotify: func(n JobNotification) {
 				select {
 				case receivedCh <- n:
 				default:
@@ -1131,8 +1131,8 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 
 		select {
 		case received := <-receivedCh:
-			if received.TaskID != "bg-test" {
-				t.Errorf("TaskID = %q, want bg-test", received.TaskID)
+			if received.JobID != "bg-test" {
+				t.Errorf("JobID = %q, want bg-test", received.JobID)
 			}
 			if !received.IsStall {
 				t.Error("notification should be stall")
@@ -1160,7 +1160,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 			Kind:     "bash",
 			ID:       "bg-test",
 			Notified: true, // already notified — stall callback should bail
-			onNotify: func(n TaskNotification) {
+			onNotify: func(n JobNotification) {
 				select {
 				case calledCh <- struct{}{}:
 				default:
@@ -1189,13 +1189,13 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
-		receivedCh := make(chan TaskNotification, 1)
+		receivedCh := make(chan JobNotification, 1)
 		task := &BackgroundTask{
 			Output:  output,
 			Kind:    "bash",
 			ID:      "bg-test",
 			Command: "my-command",
-			onNotify: func(n TaskNotification) {
+			onNotify: func(n JobNotification) {
 				select {
 				case receivedCh <- n:
 				default:

@@ -33,7 +33,9 @@ type Message struct {
 	StopReason string         `json:"stop_reason,omitempty"`
 	Usage      *Usage         `json:"usage,omitempty"`
 	Timestamp  time.Time      `json:"timestamp"`
-	Flags      MessageFlag    `json:"flags,omitempty"`
+	Flags       MessageFlag    `json:"flags,omitempty"`
+	MessageType MessageType    `json:"message_type,omitempty"`
+	Attachment  *Attachment    `json:"attachment,omitempty"`
 }
 
 // MessageFlag is a bitmask for message metadata flags.
@@ -75,42 +77,50 @@ func (u Usage) TotalInputTokens() int {
 	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
 }
 
-// SetMetadataFromJSON restores Usage/Model/StopReason/Flags from a JSON metadata string.
+// SetMetadataFromJSON restores Usage/Model/StopReason/Flags/MessageType/Attachment from a JSON metadata string.
 // Used by storage layer to deserialize the metadata column back into message fields.
 func (m *Message) SetMetadataFromJSON(metadata string) {
 	if metadata == "" {
 		return
 	}
 	var meta struct {
-		Usage      *Usage      `json:"usage,omitempty"`
-		Model      string      `json:"model,omitempty"`
-		StopReason string      `json:"stop_reason,omitempty"`
-		Flags      MessageFlag `json:"flags,omitempty"`
+		Usage       *Usage       `json:"usage,omitempty"`
+		Model       string       `json:"model,omitempty"`
+		StopReason  string       `json:"stop_reason,omitempty"`
+		Flags       MessageFlag  `json:"flags,omitempty"`
+		MessageType MessageType  `json:"message_type,omitempty"`
+		Attachment  *Attachment  `json:"attachment,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(metadata), &meta); err == nil {
 		m.Usage = meta.Usage
 		m.Model = meta.Model
 		m.StopReason = meta.StopReason
 		m.Flags = meta.Flags
+		m.MessageType = meta.MessageType
+		m.Attachment = meta.Attachment
 	}
 }
 
-// MetadataToJSON serializes Usage/Model/StopReason/Flags to a JSON metadata string.
+// MetadataToJSON serializes Usage/Model/StopReason/Flags/MessageType/Attachment to a JSON metadata string.
 // Returns empty string if no metadata fields are set.
 func (m *Message) MetadataToJSON() string {
-	if m.Usage == nil && m.Model == "" && m.StopReason == "" && m.Flags == 0 {
+	if m.Usage == nil && m.Model == "" && m.StopReason == "" && m.Flags == 0 && m.MessageType == "" && m.Attachment == nil {
 		return ""
 	}
 	meta := struct {
-		Usage      *Usage      `json:"usage,omitempty"`
-		Model      string      `json:"model,omitempty"`
-		StopReason string      `json:"stop_reason,omitempty"`
-		Flags      MessageFlag `json:"flags,omitempty"`
+		Usage       *Usage       `json:"usage,omitempty"`
+		Model       string       `json:"model,omitempty"`
+		StopReason  string       `json:"stop_reason,omitempty"`
+		Flags       MessageFlag  `json:"flags,omitempty"`
+		MessageType MessageType  `json:"message_type,omitempty"`
+		Attachment  *Attachment  `json:"attachment,omitempty"`
 	}{
-		Usage:      m.Usage,
-		Model:      m.Model,
-		StopReason: m.StopReason,
-		Flags:      m.Flags,
+		Usage:       m.Usage,
+		Model:       m.Model,
+		StopReason:  m.StopReason,
+		Flags:       m.Flags,
+		MessageType: m.MessageType,
+		Attachment:  m.Attachment,
 	}
 	if b, err := json.Marshal(meta); err == nil {
 		return string(b)
@@ -332,7 +342,7 @@ const (
 	EventToolRun             QueryEventType = "tool_run"
 	EventUsage               QueryEventType = "usage"
 	EventError               QueryEventType = "error"
-	EventNotificationPending QueryEventType = "notification_pending"
+	EventAttachment QueryEventType = "attachment"
 
 	// Ask: engine requests user confirmation or input.
 	EventAsk QueryEventType = "ask"

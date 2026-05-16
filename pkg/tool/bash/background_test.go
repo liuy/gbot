@@ -436,20 +436,20 @@ func TestDefaultRegistry(t *testing.T) {
 // FormatXML / escapeXML
 // ---------------------------------------------------------------------------
 
-func TestTaskNotification_FormatXML_Completion(t *testing.T) {
+func TestJobNotification_FormatXML_Completion(t *testing.T) {
 	t.Parallel()
-	n := TaskNotification{
-		TaskID:     "bg-1",
+	n := JobNotification{
+		JobID:     "bg-1",
 		ToolUseID:  "tu-123",
 		Status:     "completed",
 		Summary:    `Background command "test" completed`,
 		OutputFile: "/tmp/output.txt",
 	}
 	xml := n.FormatXML()
-	if !contains(xml, "<task-notification>") {
-		t.Error("missing <task-notification>")
+	if !contains(xml, "<job-notification>") {
+		t.Error("missing <job-notification>")
 	}
-	if !contains(xml, "<task-id>bg-1</task-id>") {
+	if !contains(xml, "<job-id>bg-1</job-id>") {
 		t.Error("missing task-id")
 	}
 	if !contains(xml, "<tool-use-id>tu-123</tool-use-id>") {
@@ -469,10 +469,10 @@ func TestTaskNotification_FormatXML_Completion(t *testing.T) {
 	}
 }
 
-func TestTaskNotification_FormatXML_Stall(t *testing.T) {
+func TestJobNotification_FormatXML_Stall(t *testing.T) {
 	t.Parallel()
-	n := TaskNotification{
-		TaskID:  "bg-2",
+	n := JobNotification{
+		JobID:  "bg-2",
 		Status:  "",
 		Summary: `Background command "test" appears to be waiting for interactive input`,
 		IsStall: true,
@@ -494,10 +494,10 @@ func TestTaskNotification_FormatXML_Stall(t *testing.T) {
 	}
 }
 
-func TestTaskNotification_FormatXML_NoToolUseID(t *testing.T) {
+func TestJobNotification_FormatXML_NoToolUseID(t *testing.T) {
 	t.Parallel()
-	n := TaskNotification{
-		TaskID:  "bg-3",
+	n := JobNotification{
+		JobID:  "bg-3",
 		Status:  "failed",
 		Summary: `Background command "x" failed`,
 	}
@@ -510,10 +510,10 @@ func TestTaskNotification_FormatXML_NoToolUseID(t *testing.T) {
 	}
 }
 
-func TestTaskNotification_FormatXML_StallNoTail(t *testing.T) {
+func TestJobNotification_FormatXML_StallNoTail(t *testing.T) {
 	t.Parallel()
-	n := TaskNotification{
-		TaskID:  "bg-4",
+	n := JobNotification{
+		JobID:  "bg-4",
 		IsStall: true,
 		Summary: "stalled",
 	}
@@ -764,8 +764,8 @@ func TestBuildNotificationLocked_Completed(t *testing.T) {
 		ExitCode:   0,
 	}
 	n := task.buildNotificationLocked("completed")
-	if n.TaskID != "bg-1" {
-		t.Errorf("TaskID = %q, want bg-1", n.TaskID)
+	if n.JobID != "bg-1" {
+		t.Errorf("JobID = %q, want bg-1", n.JobID)
 	}
 	if n.Status != "completed" {
 		t.Errorf("Status = %q, want completed", n.Status)
@@ -841,8 +841,8 @@ func TestBuildNotification_Registry(t *testing.T) {
 	if n == nil {
 		t.Fatal("buildNotification returned nil")
 	}
-	if n.TaskID != task.ID {
-		t.Errorf("TaskID = %q, want %q", n.TaskID, task.ID)
+	if n.JobID != task.ID {
+		t.Errorf("JobID = %q, want %q", n.JobID, task.ID)
 	}
 }
 
@@ -859,15 +859,15 @@ func TestSendNotification_Nil(t *testing.T) {
 func TestSendNotification_NilCallback(t *testing.T) {
 	t.Parallel()
 	r := NewBackgroundTaskRegistry()
-	r.sendNotification(&TaskNotification{}) // OnNotify is nil, should not panic
+	r.sendNotification(&JobNotification{}) // OnNotify is nil, should not panic
 }
 
 func TestSendNotification_Callback(t *testing.T) {
 	t.Parallel()
 	called := false
 	r := NewBackgroundTaskRegistry()
-	r.OnNotify = func(n TaskNotification) { called = true }
-	r.sendNotification(&TaskNotification{TaskID: "bg-1"})
+	r.OnNotify = func(n JobNotification) { called = true }
+	r.sendNotification(&JobNotification{JobID: "bg-1"})
 	if !called {
 		t.Error("OnNotify should be called")
 	}
@@ -879,11 +879,11 @@ func TestSendNotification_Callback(t *testing.T) {
 
 func TestBackgroundTask_Complete_WithNotification(t *testing.T) {
 	t.Parallel()
-	var received *TaskNotification
+	var received *JobNotification
 	task := &BackgroundTask{
 		Status:   TaskRunning,
 		done:     make(chan struct{}),
-		onNotify: func(n TaskNotification) { received = &n },
+		onNotify: func(n JobNotification) { received = &n },
 	}
 	task.Complete(0, false)
 	if received == nil {
@@ -901,7 +901,7 @@ func TestBackgroundTask_Complete_AlreadyNotified(t *testing.T) {
 		Status:   TaskRunning,
 		Notified: true,
 		done:     make(chan struct{}),
-		onNotify: func(n TaskNotification) { called = true },
+		onNotify: func(n JobNotification) { called = true },
 	}
 	task.Complete(0, false)
 	if called {
@@ -1005,12 +1005,12 @@ func TestBackgroundTask_StartStallWatchdog_StartsWatchdog(t *testing.T) {
 func TestBackgroundTask_StartStallWatchdog_WithNotification(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
-	var received TaskNotification
+	var received JobNotification
 	task := &BackgroundTask{
 		Output:   output,
 		Kind:     "bash",
 		ID:       "bg-test",
-		onNotify: func(n TaskNotification) { received = n },
+		onNotify: func(n JobNotification) { received = n },
 	}
 	task.startStallWatchdog()
 	if task.cancelStall == nil {
@@ -1020,7 +1020,7 @@ func TestBackgroundTask_StartStallWatchdog_WithNotification(t *testing.T) {
 	// After immediate cancel, the watchdog goroutine exits before the
 	// stall interval elapses, so onNotify is never called and received
 	// stays zero-valued — that is the expected outcome.
-	if received != (TaskNotification{}) {
+	if received != (JobNotification{}) {
 		t.Errorf("received = %+v, want zero-value (watchdog cancelled before stall)", received)
 	}
 
@@ -1082,8 +1082,8 @@ func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) 
 	t.Parallel()
 	r := NewBackgroundTaskRegistry()
 
-	var gotNotify TaskNotification
-	r.OnNotify = func(n TaskNotification) {
+	var gotNotify JobNotification
+	r.OnNotify = func(n JobNotification) {
 		gotNotify = n
 	}
 
@@ -1096,8 +1096,8 @@ func TestBackgroundTaskRegistry_Kill_NotificationIncludesExitCode(t *testing.T) 
 	}
 
 	// Verify notification was sent
-	if gotNotify.TaskID != task.ID {
-		t.Errorf("Notification TaskID = %q, want %q", gotNotify.TaskID, task.ID)
+	if gotNotify.JobID != task.ID {
+		t.Errorf("Notification JobID = %q, want %q", gotNotify.JobID, task.ID)
 	}
 	if gotNotify.Status != "killed" {
 		t.Errorf("Notification Status = %q, want killed", gotNotify.Status)
@@ -1301,20 +1301,20 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 	}
 
 	output := result.Data.(*Output)
-	if output.BackgroundTaskID == "" {
-		t.Fatal("expected BackgroundTaskID (command should have auto-backgrounded)")
+	if output.BackgroundJobID == "" {
+		t.Fatal("expected BackgroundJobID (command should have auto-backgrounded)")
 	}
 
 	// Wait for the task to complete via the global registry
 	reg := DefaultRegistry()
-	waitCode, waitErr := reg.Wait(output.BackgroundTaskID)
+	waitCode, waitErr := reg.Wait(output.BackgroundJobID)
 	if waitErr != nil {
 		t.Fatalf("Wait() error: %v", waitErr)
 	}
 	t.Logf("background task exited with code %d", waitCode)
 
 	// Check that stderr content appears in the task output
-	task, ok := reg.Get(output.BackgroundTaskID)
+	task, ok := reg.Get(output.BackgroundJobID)
 	if !ok {
 		t.Fatal("task not found in registry")
 	}

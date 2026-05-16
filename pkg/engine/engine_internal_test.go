@@ -5265,23 +5265,23 @@ func TestQuery_EmitsQueryStart(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ProcessNotifications — async wrapper integration test
+// ProcessAttachments — async wrapper integration test
 // ---------------------------------------------------------------------------
 
-func TestProcessNotifications_EmptyDrain(t *testing.T) {
+func TestProcessAttachments_EmptyDrain(t *testing.T) {
 	eng := New(&Params{})
 	defer eng.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// No notifications — ProcessNotifications goroutine returns immediately
-	eng.ProcessNotifications(ctx, nil)
+	// No attachments — ProcessAttachments goroutine returns immediately
+	eng.ProcessAttachments(ctx, nil)
 	// Give goroutine time to run
 	runtime.Gosched()
 }
 
-func TestProcessNotifications_WithPending(t *testing.T) {
+func TestProcessAttachments_WithPending(t *testing.T) {
 	eventCh := make(chan types.QueryEvent, 10)
 	dispatcher := &chanDispatcher{ch: eventCh}
 
@@ -5299,28 +5299,28 @@ func TestProcessNotifications_WithPending(t *testing.T) {
 	})
 	defer eng.Close()
 
-	// Push a notification
-	eng.EnqueueNotification(types.Message{
-		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock("notification")},
+	// Push an attachment
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value: "notification",
+		Mode:  types.ItemModeJob,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.ProcessNotifications(ctx, nil)
+	eng.ProcessAttachments(ctx, nil)
 
-	// Should emit EventQueryStart for the notification.
-	// Engine may emit notification_pending first — drain it.
-	var gotQueryStart bool
-	for !gotQueryStart {
+	// Should emit EventAttachment for the attachment.
+	// Engine may emit EventAttachment (from EnqueueAttachment) first — drain it.
+	var gotAttachment bool
+	for !gotAttachment {
 		select {
 		case evt := <-eventCh:
-			if evt.Type == types.EventQueryStart {
-				gotQueryStart = true
+			if evt.Type == types.EventAttachment && evt.Message != nil {
+				gotAttachment = true
 			}
 		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for EventQueryStart from notification")
+			t.Fatal("timed out waiting for EventAttachment from attachment")
 		}
 	}
 }

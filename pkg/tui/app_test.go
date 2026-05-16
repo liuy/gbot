@@ -333,22 +333,22 @@ func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Update — notificationPendingMsg Path A (streaming) then Path B (idle)
+// Update — attachmentMsg Path A (streaming) then Path B (idle)
 // ---------------------------------------------------------------------------
 
-// TestApp_NotificationPending_PathA_ThenPathB verifies the full flow:
-// 1. notificationPendingMsg arrives during streaming (Path A: ignored)
+// TestApp_Attachment_PathA_ThenPathB verifies the full flow:
+// 1. attachmentMsg arrives during streaming (Path A: ignored)
 // 2. queryEndMsg → TUI goes idle
-// 3. Engine re-dispatches EventNotificationPending (via dispatchPendingNotifications)
-// 4. notificationPendingMsg arrives in idle mode (Path B: triggers ProcessNotifications)
-// Regression: notification arriving during last turn was silently dropped because
+// 3. Engine re-dispatches EventAttachment (via drain)
+// 4. attachmentMsg arrives in idle mode (Path B: triggers ProcessAttachments)
+// Regression: attachment arriving during last turn was silently dropped because
 // runTurns only drains queue at turn start, and queryEndMsg did not check.
-func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
+func TestApp_Attachment_PathA_ThenPathB(t *testing.T) {
 	t.Parallel()
 
 	mp := &tuiMockProvider{
 		responses: []tuiMockResponse{
-			{events: textStreamEvents("test-model", "Notification processed.")},
+			{events: textStreamEvents("test-model", "Attachment processed.")},
 		},
 	}
 
@@ -357,14 +357,14 @@ func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
 	app.spinner.Start()
 	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for progress bar elapsed time during streaming simulation
 
-	// Step 1: notification arrives while streaming (Path A — ignored)
-	model, cmd := app.Update(notificationPendingMsg{})
+	// Step 1: attachment arrives while streaming (Path A — ignored)
+	model, cmd := app.Update(attachmentMsg{})
 	if cmd == nil {
-		t.Error("notificationPendingMsg during streaming should return readEvents cmd")
+		t.Error("attachmentMsg during streaming should return readEvents cmd")
 	}
 	a := model.(*App)
 	if !a.repl.streaming {
-		t.Error("should still be streaming after notificationPendingMsg during stream")
+		t.Error("should still be streaming after attachmentMsg during stream")
 	}
 
 	// Step 2: query ends → TUI goes idle
@@ -374,14 +374,134 @@ func TestApp_NotificationPending_PathA_ThenPathB(t *testing.T) {
 		t.Error("should not be streaming after queryEndMsg")
 	}
 
-	// Step 3: Engine re-dispatches notificationPendingMsg (simulating dispatchPendingNotifications)
-	// Step 4: notificationPendingMsg arrives in idle mode (Path B)
-	model, _ = a.Update(notificationPendingMsg{})
+	// Step 3: Engine re-dispatches attachmentMsg (simulating drain)
+	// Step 4: attachmentMsg arrives in idle mode (Path B)
+	model, _ = a.Update(attachmentMsg{})
 	a = model.(*App)
 
-	// ProcessNotifications should start — streaming must be true again
-	if !a.repl.streaming {
-		t.Error("notificationPendingMsg in idle should trigger ProcessNotifications (Path B)")
+	// TUI is pure renderer — streaming is NOT set by attachmentMsg.
+	// Engine auto-processes and emits turnStartMsg which sets streaming state.
+	if a.repl.streaming {
+		t.Error("attachmentMsg in idle should NOT set streaming — engine auto-processes")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update — attachmentMsg notification rendering
+// ---------------------------------------------------------------------------
+
+func TestApp_Attachment_NotificationRendering(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	model, _ := app.Update(attachmentMsg{JobID: "bg-1", Preview: `Background command "npm test" completed (exit code 0)`})
+	a := model.(*App)
+
+	// StartQuery creates 1 assistant message, notification appends 1 more
+	if len(a.repl.messages) != 2 {
+		t.Fatalf("expected 2 messages (assistant + notification), got %d", len(a.repl.messages))
+	}
+	m := a.repl.messages[1] // second message is the notification
+	if m.Role != "notification" {
+		t.Errorf("Role = %q, want %q", m.Role, "notification")
+	}
+	if len(m.Blocks) != 1 || m.Blocks[0].Type != BlockText {
+		t.Fatalf("expected 1 text block, got %v", m.Blocks)
+	}
+	// Dot is rendered with ANSI color codes, so check content not exact match
+	text := m.Blocks[0].Text
+	if !strings.Contains(text, `● Background command "npm test" completed`) {
+		t.Errorf("Text = %q, want to contain %q", text, `● Background command "npm test" completed`)
+	}
+	if strings.Contains(text, "\x1b") {
+		if !strings.Contains(text, "10m") {
+			t.Error("expected green (10) ANSI color for success dot")
+		}
+	}
+}
+
+func TestApp_Attachment_NotificationRendering_Failed(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	model, _ := app.Update(attachmentMsg{JobID: "bg-2", Preview: `● Background command "make" failed with exit code 1`, Failed: true})
+	a := model.(*App)
+
+	// StartQuery creates 1 assistant message, notification appends 1 more
+	if len(a.repl.messages) != 2 {
+		t.Fatalf("expected 2 messages (assistant + notification), got %d", len(a.repl.messages))
+	}
+	text := a.repl.messages[1].Blocks[0].Text
+	if !strings.Contains(text, `● Background command "make" failed with exit code 1`) {
+		t.Errorf("Text = %q, want to contain %q", text, `● Background command "make" failed with exit code 1`)
+	}
+	if strings.Contains(text, "\x1b") {
+		if !strings.Contains(text, ";5;9m") && !strings.Contains(text, ";5;9;") {
+			t.Error("expected red (9) ANSI color for error dot")
+		}
+	}
+}
+
+func TestApp_Attachment_EmptyMsg_NoNotification(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	model, _ := app.Update(attachmentMsg{})
+	a := model.(*App)
+
+	// StartQuery creates 1 assistant message, but no notification added
+	if len(a.repl.messages) != 1 {
+		t.Errorf("empty attachmentMsg should not add notification, got %d messages", len(a.repl.messages))
+	}
+	if a.repl.messages[0].Role == "notification" {
+		t.Error("empty attachmentMsg should not create notification message")
+	}
+}
+// ---------------------------------------------------------------------------
+// Update — attachmentMsg after query end (Case 2: idle path)
+// ---------------------------------------------------------------------------
+
+// TestApp_Attachment_AfterQueryEnd_AutoProcessed verifies that when a bg task
+// completes after query end, the engine auto-processes the attachment (not TUI).
+// TUI attachmentMsg handler is pure rendering — no streaming state change.
+func TestApp_Attachment_AfterQueryEnd_AutoProcessed(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Step 1: query ends -> TUI goes idle
+	model, _ := app.Update(queryEndMsg{})
+	a := model.(*App)
+	if a.repl.streaming {
+		t.Fatal("should not be streaming after queryEndMsg")
+	}
+
+	// Step 2: bg task completes after query ended -> enqueue
+	app.engine.EnqueueAttachment(types.QueuedItem{
+		Value:  "<job-notification><job-id>bg-2</job-id><status>completed</status></job-notification>",
+		Mode:   types.ItemModeJob,
+		IsMeta: true,
+	})
+
+	// Step 3: attachmentMsg arrives while idle — TUI only renders, no streaming
+	model, _ = a.Update(attachmentMsg{})
+	a = model.(*App)
+
+	// TUI does NOT set streaming — engine auto-processes asynchronously
+	if a.repl.streaming {
+		t.Error("attachmentMsg in idle should NOT set streaming — engine auto-processes")
 	}
 }
 

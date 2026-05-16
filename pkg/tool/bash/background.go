@@ -41,16 +41,16 @@ func IsTerminalTaskStatus(s TaskStatus) bool {
 }
 
 // ---------------------------------------------------------------------------
-// TaskNotification — source: LocalShellTask.tsx:80-88 (stall), 160-165 (completion)
+// JobNotification — source: LocalShellTask.tsx:80-88 (stall), 160-165 (completion)
 // ---------------------------------------------------------------------------
 
-// TaskNotification represents a notification about a background task state change.
+// JobNotification represents a notification about a background task state change.
 // These are formatted as XML and injected into the LLM conversation so the model
 // can react to background task completions, failures, and stalls.
 //
 // Source: LocalShellTask.tsx:105-172 — enqueueShellNotification + startStallWatchdog
-type TaskNotification struct {
-	TaskID     string
+type JobNotification struct {
+	JobID      string
 	ToolUseID  string
 	Status     string // "completed", "failed", "killed", or "" (stall — no status tag)
 	Summary    string
@@ -63,23 +63,23 @@ type TaskNotification struct {
 //
 // Source: LocalShellTask.tsx:80-88 (stall notification format)
 // Source: LocalShellTask.tsx:160-165 (completion notification format)
-func (n TaskNotification) FormatXML() string {
+func (n JobNotification) FormatXML() string {
 	var sb strings.Builder
-	sb.WriteString("<task-notification>\n")
-	fmt.Fprintf(&sb, "<task-id>%s</task-id>\n", n.TaskID)
+	sb.WriteString("<job-notification>\n")
+	fmt.Fprintf(&sb, "<job-id>%s</job-id>\n", escapeXML(n.JobID))
 	if n.ToolUseID != "" {
-		fmt.Fprintf(&sb, "<tool-use-id>%s</tool-use-id>\n", n.ToolUseID)
+		fmt.Fprintf(&sb, "<tool-use-id>%s</tool-use-id>\n", escapeXML(n.ToolUseID))
 	}
 	if n.OutputFile != "" {
-		fmt.Fprintf(&sb, "<output-file>%s</output-file>\n", n.OutputFile)
+		fmt.Fprintf(&sb, "<output-file>%s</output-file>\n", escapeXML(n.OutputFile))
 	}
 	// Source: LocalShellTask.tsx:78-79 — stall notifications have no <status> tag.
 	// No <status> tag means print.ts treats it as a progress ping, not terminal.
 	if n.Status != "" && !n.IsStall {
-		fmt.Fprintf(&sb, "<status>%s</status>\n", n.Status)
+		fmt.Fprintf(&sb, "<status>%s</status>\n", escapeXML(n.Status))
 	}
 	fmt.Fprintf(&sb, "<summary>%s</summary>\n", escapeXML(n.Summary))
-	sb.WriteString("</task-notification>")
+	sb.WriteString("</job-notification>")
 
 	// Source: LocalShellTask.tsx:85-88 — stall includes tail and instructions
 	if n.IsStall && n.Tail != "" {
@@ -138,7 +138,7 @@ type BackgroundTask struct {
 	// Source: guards.ts:28 — agentId
 	AgentID string
 	// Notification callback — copied from registry at spawn time.
-	onNotify func(TaskNotification)
+	onNotify func(JobNotification)
 	// evictAfter is set when the task enters a terminal state.
 	// CleanupCompleted() removes tasks whose evictAfter has passed.
 	// Source: utils/task/framework.ts:213-249 — applyTaskOffsetsAndEvictions
@@ -158,7 +158,7 @@ type BackgroundTaskRegistry struct {
 	// OnNotify is called when a task completes or stalls.
 	// Set by the caller (e.g., engine integration) to route notifications
 	// into the LLM conversation. Source: LocalShellTask.tsx:89-94 + 166-171
-	OnNotify func(TaskNotification)
+	OnNotify func(JobNotification)
 }
 
 // NewBackgroundTaskRegistry creates a new registry.
@@ -346,7 +346,7 @@ func (r *BackgroundTaskRegistry) HasForegroundTasks() bool {
 
 // MarkNotified atomically sets the notified flag.
 // Used when backgrounding raced with completion — the tool result already
-// carries the full output, so the task_notification would be redundant.
+// carries the full output, so the job_notification would be redundant.
 // Returns true if it was newly marked (was not already notified).
 //
 // Source: LocalShellTask.tsx:481-486 — markTaskNotified
@@ -488,7 +488,7 @@ func (t *BackgroundTask) Complete(exitCode int, interrupted bool) {
 	}
 
 	// Build notification (if not already notified)
-	var notify *TaskNotification
+	var notify *JobNotification
 	if !t.Notified {
 		t.Notified = true
 		status := "completed"
@@ -507,10 +507,10 @@ func (t *BackgroundTask) Complete(exitCode int, interrupted bool) {
 	}
 }
 
-// buildNotification creates a TaskNotification from the task's current state.
+// buildNotification creates a JobNotification from the task's current state.
 // Must be called with task.mu held.
 // Source: LocalShellTask.tsx:146-156 — status-specific summary format
-func (t *BackgroundTask) buildNotificationLocked(status string) *TaskNotification {
+func (t *BackgroundTask) buildNotificationLocked(status string) *JobNotification {
 	desc := t.Description
 	if desc == "" {
 		desc = t.Command
@@ -528,8 +528,8 @@ func (t *BackgroundTask) buildNotificationLocked(status string) *TaskNotificatio
 	default:
 		summary = fmt.Sprintf("%s\"%s\" %s", BackgroundBashSummaryPrefix, desc, status)
 	}
-	return &TaskNotification{
-		TaskID:     t.ID,
+	return &JobNotification{
+		JobID:     t.ID,
 		ToolUseID:  t.ToolUseID,
 		Status:     status,
 		Summary:    summary,
@@ -537,15 +537,15 @@ func (t *BackgroundTask) buildNotificationLocked(status string) *TaskNotificatio
 	}
 }
 
-// buildNotification creates a TaskNotification for the registry-level methods.
-func (r *BackgroundTaskRegistry) buildNotification(task *BackgroundTask, status string) *TaskNotification {
+// buildNotification creates a JobNotification for the registry-level methods.
+func (r *BackgroundTaskRegistry) buildNotification(task *BackgroundTask, status string) *JobNotification {
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.buildNotificationLocked(status)
 }
 
 // sendNotification sends a notification via the registry's OnNotify callback.
-func (r *BackgroundTaskRegistry) sendNotification(notify *TaskNotification) {
+func (r *BackgroundTaskRegistry) sendNotification(notify *JobNotification) {
 	if notify == nil || r.OnNotify == nil {
 		return
 	}
@@ -580,8 +580,8 @@ func (t *BackgroundTask) startStallWatchdog() {
 		}
 		stallSummary := fmt.Sprintf("%s\"%s\" %s", BackgroundBashSummaryPrefix, desc, summary)
 		if t.onNotify != nil {
-			t.onNotify(TaskNotification{
-				TaskID:     t.ID,
+			t.onNotify(JobNotification{
+				JobID:     t.ID,
 				ToolUseID:  t.ToolUseID,
 				Summary:    stallSummary,
 				OutputFile: t.OutputPath,

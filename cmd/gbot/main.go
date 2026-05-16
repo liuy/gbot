@@ -334,9 +334,9 @@ func main() {
 	// Wire notification callbacks
 	agentTool.SetNotifyFn(
 		func(xml string) {
-			eng.EnqueueNotification(types.Message{
-				Role:      types.RoleUser,
-				Content:   []types.ContentBlock{types.NewTextBlock(xml)},
+			eng.EnqueueAttachment(types.QueuedItem{
+				Value:     xml,
+				Mode:      types.ItemModeJob,
 				Timestamp: time.Now(),
 			})
 		},
@@ -355,13 +355,13 @@ func main() {
 			})
 		}
 
-	// Wire background task notifications into the engine's notification queue.
+	// Wire background task notifications into the engine's attachment queue.
 	registry := bash.DefaultRegistry()
-	registry.OnNotify = func(n bash.TaskNotification) {
+	registry.OnNotify = func(n bash.JobNotification) {
 		xml := n.FormatXML()
-		eng.EnqueueNotification(types.Message{
-			Role:      types.RoleUser,
-			Content:   []types.ContentBlock{types.NewTextBlock(xml)},
+		eng.EnqueueAttachment(types.QueuedItem{
+			Value:     xml,
+			Mode:      types.ItemModeJob,
 			Timestamp: time.Now(),
 		})
 	}

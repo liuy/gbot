@@ -934,8 +934,8 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 	if len(notifications) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(notifications))
 	}
-	if !strings.Contains(notifications[0], "<task-notification>") {
-		t.Errorf("notification should contain <task-notification>, got %q", notifications[0])
+	if !strings.Contains(notifications[0], "<job-notification>") {
+		t.Errorf("notification should contain <job-notification>, got %q", notifications[0])
 	}
 	if !strings.Contains(notifications[0], "search complete") {
 		t.Errorf("notification should contain result content, got %q", notifications[0])

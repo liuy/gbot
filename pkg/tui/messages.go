@@ -104,9 +104,14 @@ type thinkingDeltaMsg struct {
 	Agent *types.AgentMeta // non-nil when from a sub-agent
 }
 
-// notificationPendingMsg signals that a background notification is available
-// in the engine's queue. TUI auto-triggers ProcessNotifications (Path B).
-type notificationPendingMsg struct{}
+// attachmentMsg signals that a background attachment was drained and injected.
+// Carries notification info for TUI rendering. Empty fields = first dispatch
+// from EnqueueAttachment (no content yet, TUI ignores).
+type attachmentMsg struct {
+	JobID   string // background job id
+	Preview string // summary text
+	Failed  bool   // true for "failed" or "killed"
+}
 
 // idleAbortedMsg is returned when an idle readEvents is cancelled
 // because the user started a new query. No-op for Update.

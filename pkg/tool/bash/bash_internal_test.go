@@ -570,7 +570,7 @@ func TestExecute_RunInBackground_PTY(t *testing.T) {
 // Integration test: bash spawnBackground ID must match registry + TaskStop
 // ---------------------------------------------------------------------------
 
-func TestExecute_RunInBackground_TaskIDMatchesRegistry(t *testing.T) {
+func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 	// Force non-PTY for deterministic behavior
 	orig := PtmxCheckPath()
 	SetPtmxCheckPath("/nonexistent/ptmx/gbot-test-id-match")
@@ -1212,8 +1212,8 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 	out := result.Data.(*Output)
 
 	// The command should have been auto-backgrounded, NOT killed.
-	if out.BackgroundTaskID == "" {
-		t.Fatalf("BackgroundTaskID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
+	if out.BackgroundJobID == "" {
+		t.Fatalf("BackgroundJobID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
 			"Got: TimedOut=%v ExitCode=%d Stdout=%q", out.TimedOut, out.ExitCode, out.Stdout)
 	}
 
@@ -1222,9 +1222,9 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 	}
 
 	// Verify task is registered in the background task registry
-	task, found := freshReg.Get(out.BackgroundTaskID)
+	task, found := freshReg.Get(out.BackgroundJobID)
 	if !found {
-		t.Fatalf("background task %q not found in registry", out.BackgroundTaskID)
+		t.Fatalf("background task %q not found in registry", out.BackgroundJobID)
 	}
 
 	task.mu.Lock()
@@ -1260,13 +1260,13 @@ func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 
 	out := result.Data.(*Output)
 
-	if out.BackgroundTaskID == "" {
-		t.Fatalf("BackgroundTaskID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
+	if out.BackgroundJobID == "" {
+		t.Fatalf("BackgroundJobID is empty, want non-empty — command should have been auto-backgrounded on timeout. "+
 			"Got: TimedOut=%v ExitCode=%d Stdout=%q", out.TimedOut, out.ExitCode, out.Stdout)
 	}
 
 	// Cleanup: kill the background task
-	if task, found := freshReg.Get(out.BackgroundTaskID); found {
+	if task, found := freshReg.Get(out.BackgroundJobID); found {
 		_ = freshReg.Kill(task.ID)
 	}
 }
@@ -1283,8 +1283,8 @@ func TestAutoBackground_FastCommandNotBackgrounded(t *testing.T) {
 	}
 
 	out := result.Data.(*Output)
-	if out.BackgroundTaskID != "" {
-		t.Errorf("BackgroundTaskID = %q, want empty — fast command should not be auto-backgrounded", out.BackgroundTaskID)
+	if out.BackgroundJobID != "" {
+		t.Errorf("BackgroundJobID = %q, want empty — fast command should not be auto-backgrounded", out.BackgroundJobID)
 	}
 	if out.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
@@ -1307,8 +1307,8 @@ func TestAutoBackground_SleepNotAutoBackgrounded(t *testing.T) {
 	}
 
 	out := result.Data.(*Output)
-	if out.BackgroundTaskID != "" {
-		t.Errorf("BackgroundTaskID = %q, want empty — sleep should NOT be auto-backgrounded", out.BackgroundTaskID)
+	if out.BackgroundJobID != "" {
+		t.Errorf("BackgroundJobID = %q, want empty — sleep should NOT be auto-backgrounded", out.BackgroundJobID)
 	}
 	if !out.TimedOut {
 		t.Error("TimedOut should be true — sleep should be killed on timeout, not backgrounded")

@@ -167,8 +167,16 @@ func (h *TUIHandler) flushThinking() {
 // Returns nil for unhandled event types.
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	switch evt.Type {
-	case types.EventNotificationPending:
-		return notificationPendingMsg{}
+	case types.EventAttachment:
+		msg := attachmentMsg{}
+		if evt.Message != nil && evt.Message.Attachment != nil {
+			xml := evt.Message.Attachment.Prompt
+			msg.JobID = extractXMLField(xml, "job-id")
+			msg.Preview = extractXMLField(xml, "summary")
+			status := extractXMLField(xml, "status")
+			msg.Failed = status == "failed" || status == "killed"
+		}
+		return msg
 
 	case types.EventTurnStart:
 		return turnStartMsg{}
@@ -312,4 +320,31 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	}
 
 	return nil
+}
+
+// extractXMLField extracts the text content of a simple XML tag and unescapes
+// XML entities. E.g. extractXMLField("<job-id>bg-1</job-id>", "job-id") returns "bg-1".
+func extractXMLField(xml, tag string) string {
+	start := "<" + tag + ">"
+	end := "</" + tag + ">"
+	i := strings.Index(xml, start)
+	if i < 0 {
+		return ""
+	}
+	i += len(start)
+	j := strings.Index(xml[i:], end)
+	if j < 0 {
+		return ""
+	}
+	return unescapeXML(xml[i : i+j])
+}
+
+// unescapeXML reverses the escaping done by escapeXML in background.go.
+func unescapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&apos;", "'")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	return s
 }
