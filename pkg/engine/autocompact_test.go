@@ -761,7 +761,7 @@ func TestShortMessageToEngine_ContentRoundTrip(t *testing.T) {
 		CreatedAt: original.Timestamp,
 	}
 
-	converted := ShortMessageToEngine(shortMsg)
+	converted := short.StoreMessageToEngine(shortMsg)
 	if converted.Role != original.Role {
 		t.Errorf("Role round-trip: got %s, want %s", converted.Role, original.Role)
 	}
@@ -782,7 +782,7 @@ func TestShortMessageToEngine_NonJSONContent(t *testing.T) {
 		CreatedAt: time.Now(), // REAL-TIME: needed for CreatedAt field in test
 	}
 
-	converted := ShortMessageToEngine(shortMsg)
+	converted := short.StoreMessageToEngine(shortMsg)
 	if converted.Role != types.RoleUser {
 		t.Errorf("Role: got %s, want user", converted.Role)
 	}
@@ -808,7 +808,7 @@ func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 		CreatedAt: time.Now(), // REAL-TIME: needed for CreatedAt field in test
 	}
 
-	converted := ShortMessageToEngine(shortMsg)
+	converted := short.StoreMessageToEngine(shortMsg)
 	if converted.Role != types.RoleAssistant {
 		t.Errorf("Role: got %s, want assistant", converted.Role)
 	}
@@ -949,7 +949,7 @@ func TestAutoCompactor_BuildResultMessages_WithSummary(t *testing.T) {
 }
 
 func TestShortMessageToEngine_Nil(t *testing.T) {
-	got := ShortMessageToEngine(nil)
+	got := short.StoreMessageToEngine(nil)
 	if got.Role != "" || len(got.Content) != 0 {
 		t.Errorf("expected empty message for nil, got %+v", got)
 	}
@@ -1120,7 +1120,10 @@ func newFindKeepFromHelper(t *testing.T, contextWindow int, msgs []types.Message
 	}
 	defer store.Close()
 	sc := NewAutoCompactor(store, "test-session", "test-model", &compactMockProvider{}, contextWindow)
-	shortMsgs := engineToShort(msgs)
+	shortMsgs, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		return 0
+	}
 	return sc.findKeepFrom(shortMsgs)
 }
 
@@ -1235,5 +1238,109 @@ func TestFindKeepFrom_AllFit_NothingToCompact(t *testing.T) {
 	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
 	if keepFrom != len(msgs) {
 		t.Errorf("all fit: should return len(%d), got %d", len(msgs), keepFrom)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Compact round-trip must preserve metadata (MessageType, Flags)
+//
+// ---------------------------------------------------------------------------
+
+func TestEngineToShort_PreservesMetadata(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: now},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: now},
+		// Queued message with MessageTypeAttachment
+		{Role: types.RoleUser, MessageType: types.MessageTypeAttachment, Content: []types.ContentBlock{types.NewTextBlock("123")}, Timestamp: now},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("ok")}, Timestamp: now},
+		// Skill message with FlagMeta
+		{Role: types.RoleUser, Flags: types.FlagMeta, Content: []types.ContentBlock{types.NewTextBlock("<command-message>test</command-message>")}, Timestamp: now},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: now},
+	}
+
+	// Convert engine → short → back to engine (simulates compact round-trip)
+	shortMsgs, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+	}
+
+	// Verify short messages have metadata
+	for i, sm := range shortMsgs {
+		msgType := msgs[i].MessageType
+		flags := msgs[i].Flags
+		if msgType != "" || flags != 0 {
+			if sm.Metadata == "" {
+				t.Errorf("shortMsg[%d] has empty metadata, but original had MessageType=%q Flags=%v", i, msgType, flags)
+			}
+		}
+	}
+
+	// Convert back to engine messages
+	for i, sm := range shortMsgs {
+		restored := short.StoreMessageToEngine(sm)
+		orig := msgs[i]
+
+		if orig.MessageType != "" && restored.MessageType != orig.MessageType {
+			t.Errorf("msg[%d]: MessageType lost: got %q, want %q", i, restored.MessageType, orig.MessageType)
+		}
+		if orig.Flags != 0 && restored.Flags != orig.Flags {
+			t.Errorf("msg[%d]: Flags lost: got %v, want %v", i, restored.Flags, orig.Flags)
+		}
+	}
+}
+
+func TestEngineToShort_PreservesAttachmentFields(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t.Parallel()
+	// Specific test: MessageTypeAttachment message survives engineToShort round-trip
+	msg := types.Message{
+		Role:        types.RoleUser,
+		MessageType: types.MessageTypeAttachment,
+		Content:     []types.ContentBlock{types.NewTextBlock("queued text")},
+		Timestamp:   now,
+	}
+
+	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+		}
+	if len(shortMsgs) != 1 {
+		t.Fatalf("expected 1 short message, got %d", len(shortMsgs))
+	}
+
+	// The short message MUST have metadata containing message_type
+	sm := shortMsgs[0]
+	if sm.Metadata == "" {
+		t.Fatal("metadata lost after EngineMessagesToStore: MessageTypeAttachment not preserved")
+	}
+
+	restored := short.StoreMessageToEngine(sm)
+	if restored.MessageType != types.MessageTypeAttachment {
+		t.Errorf("MessageType lost after round-trip: got %q, want %q", restored.MessageType, types.MessageTypeAttachment)
+	}
+}
+
+func TestEngineToShort_PreservesFlagMeta(t *testing.T) {
+	t.Parallel()
+	msg := types.Message{
+		Role:    types.RoleUser,
+		Flags:   types.FlagMeta,
+		Content: []types.ContentBlock{types.NewTextBlock("<command-message>skill</command-message>")},
+	}
+
+	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore: %v", err)
+		}
+	sm := shortMsgs[0]
+	if sm.Metadata == "" {
+		t.Fatal("metadata lost after EngineMessagesToStore: FlagMeta not preserved")
+	}
+
+	restored := short.StoreMessageToEngine(sm)
+	if !restored.HasFlag(types.FlagMeta) {
+		t.Errorf("FlagMeta lost after round-trip: Flags=%v, want FlagMeta(%v)", restored.Flags, types.FlagMeta)
 	}
 }

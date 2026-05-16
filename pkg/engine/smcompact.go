@@ -8,10 +8,12 @@ package engine
 // Gracefully falls back to LLM compact when session memory is unavailable.
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/memory/session"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -50,7 +52,10 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Determine how many recent messages to keep (reuse existing logic)
-	shortMsgs := engineToShort(messages)
+	shortMsgs, err := short.EngineMessagesToStore(messages)
+		if err != nil {
+			return nil, fmt.Errorf("convert messages: %w", err)
+		}
 	keepFrom := c.findKeepFrom(shortMsgs)
 	if keepFrom >= len(shortMsgs) || keepFrom <= 1 {
 		return nil, nil

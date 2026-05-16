@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/engine"
@@ -1682,5 +1683,144 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 				t.Errorf("Phase 4: pre-boundary content %q should not be in engine messages", text)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain: Rewind Menu Filter — Attachment & Skill Messages
+//
+// Tests that MessageTypeAttachment and FlagMeta messages are correctly
+// filtered from the rewind picker after persist→load (simulating restart).
+// Fixed: queued messages and skill content no longer appear in /rewind menu.
+// ---------------------------------------------------------------------------
+
+func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
+	a, store, _, _ := setupRewindIntegration(t)
+
+	// Simulate a conversation with mixed message types:
+	// - normal user messages (selectable)
+	// - queued/attachment messages (NOT selectable — MessageTypeAttachment)
+	// - skill messages with FlagMeta (NOT selectable)
+	msgID1 := "aaa11111-1111-1111-1111-111111111111"
+	msgID2 := "bbb22222-2222-2222-2222-222222222222"
+	msgID3 := "ccc33333-3333-3333-3333-333333333333"
+	msgID4 := "ddd44444-4444-4444-4444-444444444444"
+
+	msgs := []types.Message{
+		// Normal user message → selectable
+		{ID: msgID1, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+		// Queued message (prompt mode attachment) → NOT selectable
+		{ID: msgID2, Role: types.RoleUser, MessageType: types.MessageTypeAttachment, Content: []types.ContentBlock{types.NewTextBlock("123")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("got your message")}, Timestamp: testTime},
+		// Skill message (FlagMeta) → NOT selectable
+		{ID: msgID3, Role: types.RoleUser, Flags: types.FlagMeta, Content: []types.ContentBlock{types.NewTextBlock("<command-message>test-design</command-message>\nskill content here")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("ok")}, Timestamp: testTime},
+		// Another normal user message → selectable
+		{ID: msgID4, Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("goodbye")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("bye")}, Timestamp: testTime},
+	}
+
+	// --- Phase 1: Verify in-memory filter works ---
+	a.engine.SetMessages(msgs)
+	for i, msg := range msgs {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		selectable := isSelectableUserMessage(msg)
+		text := firstTextBlockContent(msg)
+		switch text {
+		case "hello", "goodbye":
+			if !selectable {
+				t.Errorf("Phase 1: msg[%d] %q should be selectable", i, text)
+			}
+		case "123", "<command-message>test-design</command-message>\nskill content here":
+			if selectable {
+				t.Errorf("Phase 1: msg[%d] %q should NOT be selectable (flags=%v, type=%q)", i, text, msg.Flags, msg.MessageType)
+			}
+		}
+	}
+
+	// --- Phase 2: Persist → Load → Verify filter still works ---
+	a.engine.SetMessages(msgs)
+	a.persistTurn()
+	if a.lastPersistedIdx != len(msgs) {
+		t.Fatalf("expected lastPersistedIdx=%d, got %d", len(msgs), a.lastPersistedIdx)
+	}
+
+	// Simulate restart: load from store
+	storeMsgs, err := store.LoadMessages(a.sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(storeMsgs) == 0 {
+		t.Fatal("expected messages in store after persist")
+	}
+
+	// Convert back to engine messages
+	storeMsgSlice := make([]short.TranscriptMessage, len(storeMsgs))
+	for i, m := range storeMsgs {
+		storeMsgSlice[i] = *m
+	}
+	loadedMsgs, err := StoreMessagesToEngine(storeMsgSlice)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+
+	// Verify MessageType and Flags survived the round-trip
+	for i, msg := range loadedMsgs {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		selectable := isSelectableUserMessage(msg)
+		text := firstTextBlockContent(msg)
+		switch text {
+		case "hello", "goodbye":
+			if !selectable {
+				t.Errorf("Phase 2: loaded msg[%d] %q should be selectable (flags=%v, type=%q)", i, text, msg.Flags, msg.MessageType)
+			}
+		case "123":
+			if selectable {
+				t.Errorf("Phase 2: loaded msg[%d] queued message %q should NOT be selectable (flags=%v, type=%q)", i, text, msg.Flags, msg.MessageType)
+			}
+			if msg.MessageType != types.MessageTypeAttachment {
+				t.Errorf("Phase 2: queued msg MessageType = %q, want %q", msg.MessageType, types.MessageTypeAttachment)
+			}
+		case "<command-message>test-design</command-message>\nskill content here":
+			if selectable {
+				t.Errorf("Phase 2: loaded msg[%d] skill message should NOT be selectable (flags=%v, type=%q)", i, msg.Flags, msg.MessageType)
+			}
+			if !msg.HasFlag(types.FlagMeta) {
+				t.Errorf("Phase 2: skill msg Flags=%v, want FlagMeta(%v)", msg.Flags, types.FlagMeta)
+			}
+		}
+	}
+
+	// --- Phase 3: handleRewind picker only shows selectable messages ---
+	a.engine.SetMessages(loadedMsgs)
+	_ = a.handleRewind(nil)
+	if a.activeDialog == nil {
+		t.Fatal("Phase 3: expected rewind dialog to open")
+	}
+
+	// Extract option labels
+	labels := make([]string, len(a.activeDialog.options))
+	for i, opt := range a.activeDialog.options {
+		labels[i] = opt.Label
+	}
+
+	// Should only show "hello" and "goodbye"
+	for _, label := range labels {
+		if strings.Contains(label, "123") {
+			t.Errorf("Phase 3: rewind picker should NOT show queued message '123', got label %q", label)
+		}
+		if strings.Contains(label, "command-message") {
+			t.Errorf("Phase 3: rewind picker should NOT show skill message, got label %q", label)
+		}
+	}
+
+	// Should have exactly 2 selectable options
+	if len(labels) != 2 {
+		t.Errorf("Phase 3: expected 2 rewind options, got %d: %v", len(labels), labels)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -77,7 +76,10 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	beforeTokens := TokenCountWithEstimation(messages)
 
 	// Convert engine types → short types for store operations
-	shortMsgs := engineToShort(messages)
+	shortMsgs, err := short.EngineMessagesToStore(messages)
+	if err != nil {
+		return nil, fmt.Errorf("convert messages: %w", err)
+	}
 
 	// Determine how many recent messages to keep.
 	// Walk backwards from tail, keep adding until token budget exceeded.
@@ -193,7 +195,7 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	// Convert head messages to engine messages for the API call.
 	apiMsgs := make([]types.Message, 0, len(messages)+1)
 	for _, m := range messages {
-		apiMsgs = append(apiMsgs, ShortMessageToEngine(m))
+		apiMsgs = append(apiMsgs, short.StoreMessageToEngine(m))
 	}
 
 	// Compact prompt as the last user message (TS: compact.ts:441-443)
@@ -202,6 +204,16 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 		Content: []types.ContentBlock{types.NewTextBlock(short.GetCompactPrompt(""))},
 	}
 	apiMsgs = append(apiMsgs, compactPromptUserMsg)
+
+	estimatedTokens := TokenCountWithEstimation(apiMsgs)
+	c.logger.Info("compact:summarize_request",
+		"headMessages", len(messages),
+		"apiMessages", len(apiMsgs),
+		"estimatedTokens", estimatedTokens,
+		"maxTokens", maxTokens,
+		"contextWindow", c.contextWindow,
+		"model", model,
+	)
 
 	sysPrompt, _ := json.Marshal("You are a helpful AI assistant tasked with summarizing conversations.")
 	req := &llm.Request{
@@ -273,7 +285,7 @@ func (c *AutoCompactor) buildResultMessages(result *short.CompactResult, summary
 
 	// Kept messages (converted back to types.Message)
 	for _, m := range result.MessagesToKeep {
-		converted := ShortMessageToEngine(m)
+		converted := short.StoreMessageToEngine(m)
 		msgs = append(msgs, converted)
 	}
 
@@ -407,61 +419,3 @@ func extractTextFromShortContent(content string) string {
 	return strings.TrimSpace(sb.String())
 }
 
-// engineToShort converts []types.Message → []*short.TranscriptMessage.
-func engineToShort(messages []types.Message) []*short.TranscriptMessage {
-	result := make([]*short.TranscriptMessage, 0, len(messages))
-	for _, m := range messages {
-		contentBytes, _ := json.Marshal(m.Content)
-		uid := uuid.New().String()
-		result = append(result, &short.TranscriptMessage{
-			UUID:       uid,
-			ParentUUID: "",
-			Type:       string(m.Role),
-			Content:    string(contentBytes),
-			CreatedAt:  m.Timestamp,
-		})
-	}
-	return result
-}
-
-// ShortMessageToEngine converts a *short.TranscriptMessage → types.Message.
-func ShortMessageToEngine(m *short.TranscriptMessage) types.Message {
-	if m == nil {
-		return types.Message{}
-	}
-
-	var blocks []short.ContentBlock
-	if err := json.Unmarshal([]byte(m.Content), &blocks); err != nil {
-		// Fall back: treat entire content as text
-		msg := types.Message{
-			Role:      types.Role(m.Type),
-			Content:   []types.ContentBlock{types.NewTextBlock(m.Content)},
-			Timestamp: m.CreatedAt,
-		}
-		msg.SetMetadataFromJSON(m.Metadata)
-		return msg
-	}
-
-	engineBlocks := make([]types.ContentBlock, 0, len(blocks))
-	for _, b := range blocks {
-		engineBlocks = append(engineBlocks, types.ContentBlock{
-			Type:      types.ContentType(b.Type),
-			Text:      b.Text,
-			ID:        b.ID,
-			Name:      b.Name,
-			Input:     b.Input,
-			ToolUseID: b.ToolUseID,
-			Content:   b.Content,
-			IsError:   b.IsError,
-			Data:      b.Data,
-		})
-	}
-
-	msg := types.Message{
-		Role:      types.Role(m.Type),
-		Content:   engineBlocks,
-		Timestamp: m.CreatedAt,
-	}
-	msg.SetMetadataFromJSON(m.Metadata)
-	return msg
-}
