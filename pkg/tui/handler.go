@@ -123,17 +123,6 @@ func (h *TUIHandler) Handle(event hub.Event) {
 	h.appCh <- msg
 }
 
-// Flush forces any accumulated text/thinking to be written to the channel.
-// Useful for benchmarks and cleanup. No-op if nothing is buffered.
-func (h *TUIHandler) Flush() {
-	h.flushAll()
-}
-
-// Dropped returns the total number of events dropped due to a full buffer.
-func (h *TUIHandler) Dropped() int64 {
-	return h.dropped.Load()
-}
-
 func (h *TUIHandler) flushAll() {
 	h.flushText()
 	h.flushThinking()

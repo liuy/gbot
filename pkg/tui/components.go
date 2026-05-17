@@ -96,16 +96,6 @@ func (i *Input) Focus() {
 	i.focused = true
 }
 
-// Blur blurs the input.
-func (i *Input) Blur() {
-	i.focused = false
-}
-
-// Focused returns whether the input is focused.
-func (i *Input) Focused() bool {
-	return i.focused
-}
-
 // Value returns the current input value as a string.
 func (i *Input) Value() string {
 	return string(i.value)
@@ -195,12 +185,6 @@ func (i *Input) cursorLine(lines []wrappedLine) int {
 		}
 	}
 	return len(lines) - 1
-}
-
-// HasWrappedLines returns true if the current value wraps to multiple visual lines.
-func (i *Input) HasWrappedLines() bool {
-	lines := i.wrapLines()
-	return len(lines) > 1
 }
 
 // CursorUp moves the cursor up one wrapped line.
@@ -389,24 +373,6 @@ func (i *Input) DeleteWordForward() string {
 	deleted := string(i.value[i.cursor:pos])
 	i.value = append(i.value[:i.cursor], i.value[pos:]...)
 	return deleted
-}
-
-// DeleteWord deletes the word before the cursor.
-func (i *Input) DeleteWord() {
-	if i.cursor == 0 {
-		return
-	}
-	// Skip trailing spaces
-	pos := i.cursor - 1
-	for pos > 0 && i.value[pos] == ' ' {
-		pos--
-	}
-	// Skip word characters
-	for pos > 0 && i.value[pos-1] != ' ' {
-		pos--
-	}
-	i.value = append(i.value[:pos], i.value[i.cursor:]...)
-	i.cursor = pos
 }
 
 // CursorLeft moves the cursor left one rune.
@@ -668,11 +634,6 @@ func (s *Spinner) Start() {
 func (s *Spinner) Stop() {
 	s.active = false
 	s.idx = 0
-}
-
-// Active returns whether the spinner is active.
-func (s *Spinner) Active() bool {
-	return s.active
 }
 
 // View renders the current spinner frame.

@@ -2431,6 +2431,18 @@ func (e *Engine) LastPersistedIdx() int {
 	return e.lastPersistedIdx
 }
 
+// ListSessions returns sessions for the current project directory.
+func (e *Engine) ListSessions(limit int) ([]*short.Session, error) {
+	e.mu.RLock()
+	store := e.store
+	projectDir := e.projectDir
+	e.mu.RUnlock()
+	if store == nil {
+		return nil, fmt.Errorf("engine: no store")
+	}
+	return store.ListSessions(projectDir, limit)
+}
+
 // RewindResult contains information about what was rewound.
 type RewindResult struct {
 	MessageCount  int      // number of messages after rewind

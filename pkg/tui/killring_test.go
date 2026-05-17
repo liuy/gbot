@@ -58,61 +58,8 @@ func TestKillRing_NewEntryAfterReset(t *testing.T) {
 	if k.Top() != "second" {
 		t.Errorf("Top() = %q, want %q", k.Top(), "second")
 	}
-	if k.Len() != 2 {
-		t.Errorf("Len() = %d, want 2", k.Len())
-	}
-}
-
-func TestKillRing_Pop(t *testing.T) {
-	t.Parallel()
-
-	k := NewKillRing()
-	k.Push("first", "")
-	k.Push("second", "")
-
-	top := k.Pop()
-	if top != "second" {
-		t.Errorf("Pop() = %q, want %q", top, "second")
-	}
-	if k.Top() != "first" {
-		t.Errorf("after Pop, Top() = %q, want %q", k.Top(), "first")
-	}
-}
-
-func TestKillRing_PopEmpty(t *testing.T) {
-	t.Parallel()
-
-	k := NewKillRing()
-	if k.Pop() != "" {
-		t.Error("Pop() on empty ring should return empty string")
-	}
-}
-
-func TestKillRing_Clear(t *testing.T) {
-	t.Parallel()
-
-	k := NewKillRing()
-	k.Push("hello", "")
-	k.Clear()
-	if k.Len() != 0 {
-		t.Errorf("after Clear, Len() = %d, want 0", k.Len())
-	}
-	if k.Top() != "" {
-		t.Errorf("after Clear, Top() = %q, want empty", k.Top())
-	}
-}
-
-func TestKillRing_Len(t *testing.T) {
-	t.Parallel()
-
-	k := NewKillRing()
-	if k.Len() != 0 {
-		t.Errorf("Len() = %d, want 0", k.Len())
-	}
-	k.Push("a", "")
-	k.Push("b", "")
-	if k.Len() != 2 {
-		t.Errorf("Len() = %d, want 2", k.Len())
+	if len(k.entries) != 2 {
+		t.Errorf("Len() = %d, want 2", len(k.entries))
 	}
 }
 
@@ -124,8 +71,8 @@ func TestKillRing_MaxSize(t *testing.T) {
 		k.ResetAccumulation()
 		k.Push(string(rune('a'+i)), "")
 	}
-	if k.Len() != killRingMaxSize {
-		t.Errorf("Len() = %d, want %d", k.Len(), killRingMaxSize)
+	if len(k.entries) != killRingMaxSize {
+		t.Errorf("Len() = %d, want %d", len(k.entries), killRingMaxSize)
 	}
 	// Oldest entries should have been evicted
 	if strings.Contains(k.Top(), "a") {

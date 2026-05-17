@@ -359,10 +359,6 @@ func (s *ReplState) FinishStream(err error) {
 	}
 }
 
-// CloseChannels clears the result channel.
-func (s *ReplState) CloseChannels() {
-}
-
 // IsStreaming returns whether a query is in progress.
 func (s *ReplState) IsStreaming() bool { return s.streaming }
 
@@ -636,13 +632,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.progressStart = time.Time{}
 		a.thinkingActive = false
 		a.thinkingDuration = 0
-
-		// Sync TUI persistence state from engine.
-		// Engine persists inside query loop; TUI just syncs its tracking fields.
-		// Only on success — error/abort paths do NOT persist.
-		if m.Err == nil {
-			a.syncPersistState()
-		}
 
 		// Don't commit yet — keep current turn in Bubble Tea view so
 		// Ctrl+O (expand/collapse tool output) remains interactive.

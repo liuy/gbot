@@ -78,10 +78,7 @@ type App struct {
 	systemPrompt json.RawMessage
 
 	// Persistence (short-term memory store)
-	store            *short.Store
 	sessionID        string
-	lastPersistedIdx int    // tracks how many engine messages have been persisted
-	forkParentUUID   string // rewind 后下一条新消息的 parent_uuid。空=无 rewind
 	projectDir       string // working directory for .gbot/meta.json
 	fileHistory      *filehistory.Tracker
 
@@ -273,11 +270,9 @@ func (a *App) persistModelSelection() {
 
 // SetStore configures persistence on the App after creation.
 // Called from main.go after auto-resume logic determines the session state.
-func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPersistedIdx int) {
-	a.store = store
+func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	a.sessionID = sessionID
 	a.projectDir = projectDir
-	a.lastPersistedIdx = lastPersistedIdx
 
 	// Propagate store to engine for persistence delegation
 	a.engine.SetStore(store, projectDir)
@@ -287,7 +282,7 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 
 	// Sync repl.messages from engine on resume.
 	// Without this, the TUI shows an empty conversation after restart.
-	if lastPersistedIdx > 0 {
+	if len(a.engine.Messages()) > 0 {
 		a.repl.messages = engineMessagesToViews(a.engine.Messages())
 		a.committedCount = len(a.repl.messages)
 	}

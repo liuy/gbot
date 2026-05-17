@@ -61,10 +61,8 @@ func setupRewindIntegration(t *testing.T) (*App, *short.Store, *filehistory.Trac
 
 	a := &App{
 		engine:           eng,
-		store:            store,
 		sessionID:        session.SessionID,
 		projectDir:       projectDir,
-		lastPersistedIdx: 0,
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
@@ -177,9 +175,9 @@ func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 	a.engine.SetMessages(msgs)
 
 	// Persist to store
-	a.persistTurn()
-	if a.lastPersistedIdx != 4 {
-		t.Fatalf("expected lastPersistedIdx=4, got %d", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 4 {
+		t.Fatalf("expected lastPersistedIdx=4, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// --- Execute: /rewind to first user message ---
@@ -230,14 +228,11 @@ func TestIntegration_Rewind_FileRestoreAndStoreCleanup(t *testing.T) {
 	}
 
 	// lastPersistedIdx should be updated to rewind point
-	if app.lastPersistedIdx != 0 {
-		t.Errorf("expected lastPersistedIdx=0, got %d", app.lastPersistedIdx)
+	if app.engine.LastPersistedIdx() != 0 {
+		t.Errorf("expected lastPersistedIdx=0, got %d", app.engine.LastPersistedIdx())
 	}
 
 	// forkParentUUID should be empty (rewound to beginning)
-	if app.forkParentUUID != "" {
-		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -324,9 +319,9 @@ func TestIntegration_Rewind_PersistenceRoundtrip(t *testing.T) {
 	a.engine.SetMessages(msgs)
 
 	// Persist all messages
-	a.persistTurn()
-	if a.lastPersistedIdx != 6 {
-		t.Fatalf("expected lastPersistedIdx=6, got %d", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 6 {
+		t.Fatalf("expected lastPersistedIdx=6, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Verify store has all messages before rewind
@@ -367,8 +362,8 @@ func TestIntegration_Rewind_PersistenceRoundtrip(t *testing.T) {
 	}
 
 	// lastPersistedIdx should be at the rewind point
-	if app.lastPersistedIdx != 2 {
-		t.Errorf("expected lastPersistedIdx=2, got %d", app.lastPersistedIdx)
+	if app.engine.LastPersistedIdx() != 2 {
+		t.Errorf("expected lastPersistedIdx=2, got %d", app.engine.LastPersistedIdx())
 	}
 }
 
@@ -515,7 +510,7 @@ func TestIntegration_Rewind_NoFileEdits(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("see you")}, Timestamp: testTime},
 	}
 	a.engine.SetMessages(msgs)
-	a.persistTurn()
+	a.engine.PersistNewMessages()
 
 	// --- Execute: /rewind to first user message ---
 	_ = a.handleRewind(nil)
@@ -539,9 +534,6 @@ func TestIntegration_Rewind_NoFileEdits(t *testing.T) {
 	}
 
 	// forkParentUUID should be empty (rewound to beginning, idx=0)
-	if app.forkParentUUID != "" {
-		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
-	}
 
 	// Input should be restored from the selected message
 	if app.input.Value() != "hello" {
@@ -598,7 +590,7 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 		history: NewHistory(""),
 	}
 	a.width = 80
-	a.SetStore(store, session.SessionID, projectDir, len(msgs))
+	a.SetStore(store, session.SessionID, projectDir)
 
 	// Verify SetStore created a Tracker and wired it to the engine.
 
@@ -821,10 +813,9 @@ func TestIntegration_Rewind_PersistenceSurvivesRestart(t *testing.T) {
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
-		lastPersistedIdx: 0,
 	}
 	app1.width = 80
-	app1.SetStore(store, session.SessionID, projectDir, 0)
+	app1.SetStore(store, session.SessionID, projectDir)
 
 	if err := app1.fileHistory.TrackEdit(testFile); err != nil {
 		t.Fatalf("TrackEdit: %v", err)
@@ -855,10 +846,9 @@ func TestIntegration_Rewind_PersistenceSurvivesRestart(t *testing.T) {
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
-		lastPersistedIdx: 0,
 	}
 	app2.width = 80
-	app2.SetStore(store, session.SessionID, projectDir, 0)
+	app2.SetStore(store, session.SessionID, projectDir)
 
 	// Verify SetStore loaded the persisted state
 	snapshots := app2.fileHistory.State().Snapshots
@@ -982,12 +972,12 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	}
 
 	// Persist messages and file history state
-	storeMsgs, err := EngineMessagesToStore(msgs1)
+	storeMsgs, err := short.EngineMessagesToStore(msgs1)
 	if err != nil {
 		t.Fatalf("EngineMessagesToStore: %v", err)
 	}
 	for _, sm := range storeMsgs {
-		if err := store.AppendMessage(session.SessionID, &sm); err != nil {
+		if err := store.AppendMessage(session.SessionID, sm); err != nil {
 			t.Fatalf("AppendMessage: %v", err)
 		}
 	}
@@ -1001,11 +991,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 		t.Fatalf("ResumeSession: %v", err)
 	}
 
-	storeMsgSlice := make([]short.TranscriptMessage, len(resumedMsgs))
-	for i, m := range resumedMsgs {
-		storeMsgSlice[i] = *m
-	}
-	engineMsgs, err := StoreMessagesToEngine(storeMsgSlice)
+		engineMsgs, err := short.StoreMessagesToEngine(resumedMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}
@@ -1044,10 +1030,8 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 
 	app := &App{
 		engine:           eng2,
-		store:            store,
 		sessionID:        session.SessionID,
 		projectDir:       projectDir,
-		lastPersistedIdx: len(engineMsgs),
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
@@ -1353,9 +1337,9 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 	a.engine.SetMessages(msgs)
 
 	// Persist all 6 messages
-	a.persistTurn()
-	if a.lastPersistedIdx != 6 {
-		t.Fatalf("expected lastPersistedIdx=6, got %d", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 6 {
+		t.Fatalf("expected lastPersistedIdx=6, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Verify store has all 6
@@ -1392,8 +1376,8 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 	if app.engine.LastPersistedIdx() != 2 {
 		t.Errorf("engine lastPersistedIdx = %d, want 2", app.engine.LastPersistedIdx())
 	}
-	if app.lastPersistedIdx != 2 {
-		t.Errorf("TUI lastPersistedIdx = %d, want 2 (synced from engine)", app.lastPersistedIdx)
+	if app.engine.LastPersistedIdx() != 2 {
+		t.Errorf("TUI lastPersistedIdx = %d, want 2 (synced from engine)", app.engine.LastPersistedIdx())
 	}
 
 	// --- Phase 3: Send 2 new turns (simulating user continuing after rewind) ---
@@ -1407,7 +1391,7 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 	app.engine.SetMessages(append(engMsgs[:2], newMsgs...))
 
 	// Persist new messages -- should use AppendMessagesWithForkPoint
-	app.persistTurn()
+	app.engine.PersistNewMessages()
 
 	// Engine fork state is internal; verify persist succeeded by checking store count
 
@@ -1466,7 +1450,7 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 
 // setupE2E creates a fully wired App for E2E testing.
 // Returns the App, store DB path (for restart), and cleanup.
-func setupE2E(t *testing.T) (*App, string) {
+func setupE2E(t *testing.T) (*App, *short.Store, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -1492,21 +1476,19 @@ func setupE2E(t *testing.T) (*App, string) {
 
 	a := &App{
 		engine:           eng,
-		store:            store,
 		sessionID:        session.SessionID,
 		projectDir:       projectDir,
-		lastPersistedIdx: 0,
 		repl:             NewReplState(),
 		input:            NewInput(),
 		history:          NewHistory(""),
 	}
 	a.width = 80
 
-	return a, filepath.Join(dir, "memory", "e2e.db")
+	return a, store, filepath.Join(dir, "memory", "e2e.db")
 }
 
 func TestE2E_RewindCompactResume(t *testing.T) {
-	a, dbPath := setupE2E(t)
+	a, store, dbPath := setupE2E(t)
 
 	// ================================================================
 	// Phase 1: Multi-turn conversation — 3 turns, all persisted
@@ -1526,9 +1508,9 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 
 	allMsgs := append(append(turn1, turn2...), turn3...)
 	a.engine.SetMessages(allMsgs)
-	a.persistTurn()
-	if a.lastPersistedIdx != 6 {
-		t.Fatalf("Phase 1: lastPersistedIdx=%d, want 6", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 6 {
+		t.Fatalf("Phase 1: lastPersistedIdx=%d, want 6", a.engine.LastPersistedIdx())
 	}
 
 	// ================================================================
@@ -1560,10 +1542,10 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 		{ID: "e2e-a4", Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("interfaces define behavior")}, Timestamp: testTime},
 	}
 	app.engine.SetMessages(append(engMsgs[:4], newTurns...))
-	app.persistTurn()
+	app.engine.PersistNewMessages()
 
 	// Store: 6 original + 2 new = 8 total (append-only)
-	allAfter, err := app.store.LoadMessages(app.sessionID)
+	allAfter, err := store.LoadMessages(app.sessionID)
 	if err != nil {
 		t.Fatalf("Phase 2: LoadMessages: %v", err)
 	}
@@ -1572,7 +1554,7 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 	}
 
 	// Chain: u1->a1->u2->a2->u4->a4 (6 messages, dead branch u3/a3 skipped)
-	chain, err := app.store.LoadChainMessages(app.sessionID)
+	chain, err := store.LoadChainMessages(app.sessionID)
 	if err != nil {
 		t.Fatalf("Phase 2: LoadChainMessages: %v", err)
 	}
@@ -1597,7 +1579,7 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 		Content:   `[{"type":"text","text":"[Compact summary: Go basics, hello world]"}]`,
 		CreatedAt: testTime,
 	}
-	if err := app.store.AppendMessage(app.sessionID, boundary); err != nil {
+	if err := store.AppendMessage(app.sessionID, boundary); err != nil {
 		t.Fatalf("Phase 3: AppendMessage boundary: %v", err)
 	}
 
@@ -1606,12 +1588,12 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 		{Type: "user", UUID: "e2e-u5", Content: `[{"type":"text","text":"what about generics?"}]`, CreatedAt: testTime},
 		{Type: "assistant", UUID: "e2e-a5", Content: `[{"type":"text","text":"type parameters"}]`, CreatedAt: testTime},
 	}
-	if err := app.store.AppendMessagesWithForkPoint(app.sessionID, postCompactMsgs, "e2e-boundary"); err != nil {
+	if err := store.AppendMessagesWithForkPoint(app.sessionID, postCompactMsgs, "e2e-boundary"); err != nil {
 		t.Fatalf("Phase 3: AppendMessagesWithForkPoint: %v", err)
 	}
 
 	// Verify LoadPostCompactChainMessages returns post-boundary chain
-	postCompact, err := app.store.LoadPostCompactChainMessages(app.sessionID)
+	postCompact, err := store.LoadPostCompactChainMessages(app.sessionID)
 	if err != nil {
 		t.Fatalf("Phase 3: LoadPostCompactChainMessages: %v", err)
 	}
@@ -1628,7 +1610,7 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 	// ================================================================
 	// Phase 4: Restart — new store + engine from same DB
 	// ================================================================
-	if err := app.store.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatalf("Phase 4: close store: %v", err)
 	}
 
@@ -1655,9 +1637,13 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 	// Convert to engine messages via TUI layer
 	// After compact, chain-walk stops at boundary (parent_uuid="") so
 	// only post-boundary chain is returned: boundary->u5->a5
-	engMsgs2, err := loadAndConvertMessages(store2, app.sessionID)
+	storeMsgs2, err := store2.LoadChainMessages(app.sessionID)
 	if err != nil {
-		t.Fatalf("Phase 4: loadAndConvertMessages: %v", err)
+		t.Fatalf("Phase 4: LoadChainMessages: %v", err)
+	}
+	engMsgs2, err := short.StoreMessagesToEngine(storeMsgs2)
+	if err != nil {
+		t.Fatalf("Phase 4: StoreMessagesToEngine: %v", err)
 	}
 	// Chain: boundary(system) + u5(user) + a5(assistant) = 3
 	if len(engMsgs2) != 3 {
@@ -1742,9 +1728,9 @@ func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
 
 	// --- Phase 2: Persist → Load → Verify filter still works ---
 	a.engine.SetMessages(msgs)
-	a.persistTurn()
-	if a.lastPersistedIdx != len(msgs) {
-		t.Fatalf("expected lastPersistedIdx=%d, got %d", len(msgs), a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != len(msgs) {
+		t.Fatalf("expected lastPersistedIdx=%d, got %d", len(msgs), a.engine.LastPersistedIdx())
 	}
 
 	// Simulate restart: load from store
@@ -1757,11 +1743,7 @@ func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
 	}
 
 	// Convert back to engine messages
-	storeMsgSlice := make([]short.TranscriptMessage, len(storeMsgs))
-	for i, m := range storeMsgs {
-		storeMsgSlice[i] = *m
-	}
-	loadedMsgs, err := StoreMessagesToEngine(storeMsgSlice)
+		loadedMsgs, err := short.StoreMessagesToEngine(storeMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}

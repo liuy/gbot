@@ -28,30 +28,11 @@ func TestNewInput(t *testing.T) {
 	if i == nil {
 		t.Fatal("NewInput() returned nil")
 	}
-	if !i.Focused() {
+	if !i.focused {
 		t.Error("NewInput() should be focused by default")
 	}
 	if i.Value() != "" {
 		t.Errorf("Value() = %q, want empty", i.Value())
-	}
-}
-
-func TestInput_FocusBlur(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	if !i.Focused() {
-		t.Error("expected focused after NewInput")
-	}
-
-	i.Blur()
-	if i.Focused() {
-		t.Error("expected blurred after Blur()")
-	}
-
-	i.Focus()
-	if !i.Focused() {
-		t.Error("expected focused after Focus()")
 	}
 }
 
@@ -149,45 +130,6 @@ func TestInput_Backspace_Empty(t *testing.T) {
 	}
 }
 
-func TestInput_DeleteWord(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	i.SetValue("hello world")
-	i.End()
-	i.DeleteWord()
-	if i.Value() != "hello " {
-		t.Errorf("Value() = %q, want %q", i.Value(), "hello ")
-	}
-}
-
-func TestInput_DeleteWord_MidWord(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	i.SetValue("hello world")
-	i.CursorLeft()
-	i.CursorLeft()
-	i.CursorLeft()
-	i.CursorLeft()
-	i.CursorLeft() // at position 6 (at 'w' in "world")
-	i.DeleteWord()
-	// DeleteWord deletes the word before cursor, leaving chars after cursor
-	if i.Value() != "world" {
-		t.Errorf("Value() = %q, want %q", i.Value(), "world")
-	}
-}
-
-func TestInput_DeleteWord_Empty(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	i.DeleteWord() // should be no-op
-	if i.Value() != "" {
-		t.Errorf("Value() = %q, want empty", i.Value())
-	}
-}
-
 func TestInput_CursorLeft(t *testing.T) {
 	t.Parallel()
 
@@ -262,27 +204,11 @@ func TestInput_View_Focused(t *testing.T) {
 	}
 }
 
-func TestInput_View_Blurred(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	i.SetValue("hello")
-	i.Blur()
-	v := i.View()
-	// Option C: Input.View() returns pure text, no prompt.
-	if strings.Contains(v, "❯") {
-		t.Error("View() should NOT contain prompt (Option C)")
-	}
-	if !strings.Contains(v, "hello") {
-		t.Error("View() should contain value when blurred")
-	}
-}
-
 func TestInput_View_Placeholder(t *testing.T) {
 	t.Parallel()
 
 	i := NewInput()
-	i.Blur()
+	i.focused = false
 	v := i.View()
 	if !strings.Contains(v, "Type a message...") {
 		t.Error("View() should contain placeholder when blurred and empty")
@@ -364,7 +290,7 @@ func TestNewSpinner(t *testing.T) {
 	t.Parallel()
 
 	s := NewSpinner()
-	if s.Active() {
+	if s.active {
 		t.Error("NewSpinner() should not be active")
 	}
 }
@@ -374,11 +300,11 @@ func TestSpinner_StartStop(t *testing.T) {
 
 	s := NewSpinner()
 	s.Start()
-	if !s.Active() {
+	if !s.active {
 		t.Error("expected active after Start()")
 	}
 	s.Stop()
-	if s.Active() {
+	if s.active {
 		t.Error("expected inactive after Stop()")
 	}
 }
@@ -1252,22 +1178,6 @@ func TestInput_View_Wrapping_NarrowWidth(t *testing.T) {
 	}
 }
 
-func TestInput_HasWrappedLines(t *testing.T) {
-	t.Parallel()
-
-	i := NewInput()
-	// Short text, no width set → no wrapping
-	if i.HasWrappedLines() {
-		t.Error("short text without width should not have wrapped lines")
-	}
-
-	i.SetWidth(10)
-	i.SetValue("hello world") // 11 chars > 10, should wrap
-	if !i.HasWrappedLines() {
-		t.Error("long text with narrow width should have wrapped lines")
-	}
-}
-
 func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 	t.Parallel()
 
@@ -1522,7 +1432,7 @@ func TestInput_RenderLineSingle_Unfocused(t *testing.T) {
 	i := NewInput()
 	i.SetWidth(80)
 	i.SetValue("hello")
-	i.Blur()
+	i.focused = false
 	v := i.View()
 	if !strings.Contains(v, "hello") {
 		t.Errorf("unfocused view should show value, got: %q", v)
@@ -2095,8 +2005,8 @@ func TestHistory_Save_ReadOnlyDir(t *testing.T) {
 	h.Add("test")
 	// MkdirAll should fail on read-only parent
 	// Verify no panic, entry still in memory
-	if h.Len() != 1 {
-		t.Errorf("Len() = %d, want 1", h.Len())
+	if len(h.items) != 1 {
+		t.Errorf("Len() = %d, want 1", len(h.items))
 	}
 }
 

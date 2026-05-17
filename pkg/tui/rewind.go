@@ -205,7 +205,6 @@ func (a *App) tryAutoRewind() bool {
 	_ = result
 
 	// Sync TUI persistence state from engine (fork point captured inside RewindTo)
-	a.syncPersistState()
 
 	if a.committedCount <= len(a.repl.messages) {
 		a.repl.messages = a.repl.messages[:a.committedCount]
@@ -339,7 +338,6 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 	if scope == engine.RewindAll || scope == engine.RewindMessagesOnly {
 		// Fork point capture now happens inside engine.RewindToScoped
 		// Sync TUI lastPersistedIdx from engine after rewind
-		a.syncPersistState()
 		// Reset TUI messages — rewind changes engine messages, rebuild from scratch
 		*a.repl = *NewReplState()
 		a.committedCount = 0

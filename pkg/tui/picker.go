@@ -58,7 +58,7 @@ func pickerItemsToOptions(items []PickerItem) []DialogOption {
 
 // openPicker loads sessions and opens the session picker dialog.
 func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
-	sessions, err := a.store.ListSessions(a.projectDir, 100)
+	sessions, err := a.engine.ListSessions(100)
 	if err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to list sessions: %v", err))
 	}
@@ -116,7 +116,6 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	}
 
 	a.sessionID = selected.SessionID
-	a.syncPersistState()
 
 	*a.repl = *NewReplState()
 	a.repl.messages = engineMessagesToViews(engineMsgs)

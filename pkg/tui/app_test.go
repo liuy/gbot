@@ -200,7 +200,7 @@ func TestApp_Update_ErrorMsg(t *testing.T) {
 	if a.repl.streaming {
 		t.Error("streaming should be false after error")
 	}
-	if a.spinner.Active() {
+	if a.spinner.active {
 		t.Error("spinner should be stopped after error")
 	}
 }
@@ -4510,9 +4510,6 @@ func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
 
 func TestApp_SetStore(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	if app.store != nil {
-		t.Error("expected nil store initially")
-	}
 
 	dir := t.TempDir()
 	store, err := short.NewStore(filepath.Join(dir, "test.db"))
@@ -4520,18 +4517,15 @@ func TestApp_SetStore(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	app.SetStore(store, "session-123", "/project", 5)
-	if app.store != store {
-		t.Error("store not set correctly")
-	}
+	app.SetStore(store, "session-123", "/project")
 	if app.sessionID != "session-123" {
 		t.Errorf("sessionID = %q, want %q", app.sessionID, "session-123")
 	}
 	if app.projectDir != "/project" {
 		t.Errorf("projectDir = %q, want %q", app.projectDir, "/project")
 	}
-	if app.lastPersistedIdx != 5 {
-		t.Errorf("lastPersistedIdx = %d, want 5", app.lastPersistedIdx)
+	if !app.engine.HasStore() {
+		t.Error("engine should have store after SetStore")
 	}
 }
 
@@ -4546,7 +4540,7 @@ func TestApp_HandleSlashCommand_Clear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	app.SetStore(store, "session-abc", "/project", 0)
+	app.SetStore(store, "session-abc", "/project")
 
 	cmd := app.handleSlashCommand(SlashCommand{Name: "clear"}, nil)
 	if cmd == nil {
@@ -4575,7 +4569,7 @@ func TestApp_OpenPicker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	app.SetStore(store, "session-abc", dir, 0)
+	app.SetStore(store, "session-abc", dir)
 
 	// Create some sessions
 	_, err = store.CreateSession(dir, "test-model")
@@ -4692,7 +4686,7 @@ func TestApp_Update_PickerMode_KeyMsg(t *testing.T) {
 	if _, err := store.CreateSession(dir, "model"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	app.SetStore(store, "existing-session", dir, 0)
+	app.SetStore(store, "existing-session", dir)
 
 	commitCmd := func() tea.Msg { return nil }
 	app.openPicker(commitCmd)
@@ -4716,7 +4710,7 @@ func TestApp_Update_PickerMode_SelectClosesPicker(t *testing.T) {
 	if _, err := store.CreateSession(dir, "model"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	app.SetStore(store, "existing-session", dir, 0)
+	app.SetStore(store, "existing-session", dir)
 
 	commitCmd := func() tea.Msg { return nil }
 	app.openPicker(commitCmd)
@@ -4739,7 +4733,7 @@ func TestApp_Update_PickerMode_WindowSize(t *testing.T) {
 	if _, err := store.CreateSession(dir, "model"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	app.SetStore(store, "existing-session", dir, 0)
+	app.SetStore(store, "existing-session", dir)
 
 	commitCmd := func() tea.Msg { return nil }
 	app.openPicker(commitCmd)
@@ -4818,7 +4812,7 @@ func TestApp_HandleSlashCommand_Switch(t *testing.T) {
 	if _, err := store.CreateSession(dir, "model"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	app.SetStore(store, "existing-session", dir, 0)
+	app.SetStore(store, "existing-session", dir)
 
 	app.handleSlashCommand(SlashCommand{Name: "session"}, nil)
 	if app.activeDialog == nil {
@@ -4833,14 +4827,14 @@ func TestApp_SlashCommand_PersistedToHistory(t *testing.T) {
 	if _, err := store.CreateSession(dir, "model"); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	app.SetStore(store, "existing-session", dir, 0)
+	app.SetStore(store, "existing-session", dir)
 
 	// Submit a slash command via Enter key
 	app.input.SetValue("/session")
 	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if app.history.Len() != 1 {
-		t.Errorf("history should contain 1 entry (the slash command), got %d", app.history.Len())
+	if len(app.history.items) != 1 {
+		t.Errorf("history should contain 1 entry (the slash command), got %d", len(app.history.items))
 	}
 	// Navigate up — should recall "/session"
 	result := app.history.Up("")

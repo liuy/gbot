@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"log/slog"
+
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -16,6 +19,12 @@ import (
 
 // testTime is a fixed timestamp for deterministic tests.
 var testTime = time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+
+func newTestEngine() *engine.Engine {
+	return engine.New(&engine.Params{
+		Logger: slog.Default(),
+	})
+}
 
 func TestMessagesAfterAreOnlySynthetic_Empty(t *testing.T) {
 	msgs := []types.Message{
@@ -359,16 +368,14 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 		history:          NewHistory(""),
 		committedCount:   0,
 		repl:             NewReplState(),
-		store:            store,
 		sessionID:        session.SessionID,
-		lastPersistedIdx: 0,
 	}
 	a.history.Add("hello")
 
 	// Persist messages to store (simulating persistTurn before ESC)
-	a.persistTurn()
-	if a.lastPersistedIdx != 2 {
-		t.Fatalf("setup: expected lastPersistedIdx=2, got %d", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 2 {
+		t.Fatalf("setup: expected lastPersistedIdx=2, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Verify store has the messages
@@ -396,8 +403,8 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 	if a.engine.LastPersistedIdx() != 0 {
 		t.Errorf("expected engine lastPersistedIdx=0 after auto-rewind, got %d", a.engine.LastPersistedIdx())
 	}
-	if a.lastPersistedIdx != 0 {
-		t.Errorf("expected TUI lastPersistedIdx=0 after auto-rewind, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 0 {
+		t.Errorf("expected TUI lastPersistedIdx=0 after auto-rewind, got %d", a.engine.LastPersistedIdx())
 	}
 }
 
@@ -812,9 +819,7 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 		engine:           eng,
 		input:            NewInput(),
 		repl:             NewReplState(),
-		store:            store,
 		sessionID:        sessionID,
-		lastPersistedIdx: 4,
 		fileHistory:      tracker,
 	}
 	a.width = 80
@@ -843,11 +848,8 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	if len(remaining) == 0 {
 		t.Error("expected store to retain messages after rewind (append-only)")
 	}
-	if app.lastPersistedIdx != 0 {
-		t.Errorf("lastPersistedIdx = %d, want 0", app.lastPersistedIdx)
-	}
-	if app.forkParentUUID != "" {
-		t.Errorf("expected empty forkParentUUID, got %q", app.forkParentUUID)
+	if app.engine.LastPersistedIdx() != 0 {
+		t.Errorf("lastPersistedIdx = %d, want 0", app.engine.LastPersistedIdx())
 	}
 
 	// Verify file was restored

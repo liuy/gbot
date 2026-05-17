@@ -52,12 +52,6 @@ func RegisterSlashCommands(cmds map[string]CommandDef) {
 	sortedCommands = AllCommands()
 }
 
-// ResetSlashCommands clears registered skill commands (for testing).
-func ResetSlashCommands() {
-	skillDefs = nil
-	sortedCommands = AllCommands()
-}
-
 // getCommandDef returns the CommandDef for a name, checking builtins then skills.
 func getCommandDef(name string) (CommandDef, bool) {
 	if def, ok := commandDefs[name]; ok {
@@ -162,7 +156,7 @@ func (a *App) handleClear(commitCmd tea.Cmd) tea.Cmd {
 	if a.repl.IsStreaming() {
 		return a.showInfo("Cannot clear while streaming")
 	}
-	if a.store == nil {
+	if !a.engine.HasStore() {
 		return a.showInfo("Session storage not available")
 	}
 	return a.createNewSession("", "Cleared", commitCmd)

@@ -493,7 +493,7 @@ func main() {
 		// 8. Create TUI App
 		app := tui.NewApp(eng, systemPrompt, h)
 		app.SetProviders(providerMap, cfg)
-		app.SetStore(store, sessionID, workingDir, eng.LastPersistedIdx())
+		app.SetStore(store, sessionID, workingDir)
 
 		// Estimate initial context usage
 		// CJK-aware estimation. Corrected after first API response.

@@ -61,30 +61,9 @@ func (k *KillRing) Top() string {
 	return k.entries[0]
 }
 
-// Pop removes and returns the most recent entry.
-func (k *KillRing) Pop() string {
-	if len(k.entries) == 0 {
-		return ""
-	}
-	top := k.entries[0]
-	k.entries = k.entries[1:]
-	return top
-}
-
 // ResetAccumulation marks that the next kill should start a new entry.
 // Source: Cursor.ts resetKillAccumulation
 func (k *KillRing) ResetAccumulation() {
 	k.lastActionKill = false
 }
 
-// Clear empties the kill ring.
-// Source: Cursor.ts clearKillRing
-func (k *KillRing) Clear() {
-	k.entries = k.entries[:0]
-	k.lastActionKill = false
-}
-
-// Len returns the number of entries.
-func (k *KillRing) Len() int {
-	return len(k.entries)
-}

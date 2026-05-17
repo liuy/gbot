@@ -32,10 +32,8 @@ func newSessionTestApp(t *testing.T) (*App, *short.Store) {
 
 	a := &App{
 		engine:           eng,
-		store:            store,
 		sessionID:        session.SessionID,
 		projectDir:       projectDir,
-		lastPersistedIdx: 0,
 		repl:             NewReplState(),
 	}
 	return a, store
@@ -68,8 +66,8 @@ func TestHandleSwitch_NewSessionNoTitle(t *testing.T) {
 	if a.sessionID == "" {
 		t.Error("expected non-empty session ID")
 	}
-	if a.lastPersistedIdx != 0 {
-		t.Errorf("expected lastPersistedIdx=0, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 0 {
+		t.Errorf("expected lastPersistedIdx=0, got %d", a.engine.LastPersistedIdx())
 	}
 	msgs := a.engine.Messages()
 	if len(msgs) != 0 {
@@ -131,10 +129,9 @@ func TestHandleSwitch_ForkSuccess(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	})
-	a.lastPersistedIdx = 0
-	a.persistTurn()
-	if a.lastPersistedIdx != 2 {
-		t.Fatalf("expected lastPersistedIdx=2 after persist, got %d", a.lastPersistedIdx)
+	a.engine.PersistNewMessages()
+	if a.engine.LastPersistedIdx() != 2 {
+		t.Fatalf("expected lastPersistedIdx=2 after persist, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Fork
@@ -224,7 +221,6 @@ func TestHandleClear_Success(t *testing.T) {
 	a.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 	})
-	a.lastPersistedIdx = 1
 	a.displayedInputTokens = 500
 	a.displayedOutputTokens = 100
 	a.thinkingActive = true
@@ -245,8 +241,8 @@ func TestHandleClear_Success(t *testing.T) {
 	}
 
 	// Persistence index should be 0
-	if a.lastPersistedIdx != 0 {
-		t.Errorf("lastPersistedIdx = %d, want 0", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 0 {
+		t.Errorf("lastPersistedIdx = %d, want 0", a.engine.LastPersistedIdx())
 	}
 
 	// Display state should be reset

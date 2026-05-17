@@ -26,7 +26,7 @@ func (a *App) handleSession(args string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	// Guard: no store
-	if a.store == nil {
+	if !a.engine.HasStore() {
 		return a.showInfo("Session storage not available")
 	}
 
@@ -59,7 +59,6 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	a.sessionID = a.engine.SessionID()
-	a.syncPersistState()
 
 	// Reset REPL state
 	*a.repl = *NewReplState()
@@ -98,7 +97,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	// Duplicate title detection
-	sessions, err := a.store.ListSessions(a.projectDir, 1000)
+	sessions, err := a.engine.ListSessions(1000)
 	if err != nil {
 		slog.Error("session: list sessions failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to check titles: %v", err))
@@ -118,7 +117,6 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	parentID := a.sessionID
 	a.sessionID = a.engine.SessionID()
-	a.syncPersistState()
 
 	// Reset REPL state
 		*a.repl = *NewReplState()

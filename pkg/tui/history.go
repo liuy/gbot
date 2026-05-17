@@ -170,11 +170,6 @@ func (h *History) ResetNav() {
 	h.savedDraft = ""
 }
 
-// Len returns the number of history entries.
-func (h *History) Len() int {
-	return len(h.items)
-}
-
 // RemoveLast removes the most recent history entry.
 // Used by auto-rewind to remove the entry added by the cancelled query.
 func (h *History) RemoveLast() {

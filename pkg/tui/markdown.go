@@ -55,15 +55,6 @@ func Render(text string) string {
 	return strings.TrimSpace(buf.String())
 }
 
-// RenderWidth renders markdown with word wrapping.
-func RenderWidth(text string, width int) string {
-	result := Render(text)
-	if width <= 0 {
-		return result
-	}
-	return wordWrap(result, width)
-}
-
 type listCtx struct {
 	ordered bool
 	counter int

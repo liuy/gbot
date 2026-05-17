@@ -281,14 +281,6 @@ func TestRender_NestedFormatting(t *testing.T) {
 	}
 }
 
-func TestRenderWidth(t *testing.T) {
-	t.Parallel()
-	result := RenderWidth("hello world", 40)
-	if !strings.Contains(result, "hello") {
-		t.Errorf("expected wrapped text, got: %q", result)
-	}
-}
-
 func TestHighlightCode_UnknownLang(t *testing.T) {
 	t.Parallel()
 	result := highlightCode("some code here", "unknownlang123")
@@ -511,14 +503,6 @@ func TestRender_Math(t *testing.T) {
 	result := Render("$E = mc^2$")
 	if !strings.Contains(result, "E = mc^2") {
 		t.Errorf("expected math content, got: %q", result)
-	}
-}
-
-func TestRenderWidth_ZeroWidth(t *testing.T) {
-	t.Parallel()
-	result := RenderWidth("hello", 0)
-	if !strings.Contains(result, "hello") {
-		t.Errorf("expected unwrapped text, got: %q", result)
 	}
 }
 

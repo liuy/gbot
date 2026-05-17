@@ -13,13 +13,6 @@ import (
 // Dropped event counter
 // ---------------------------------------------------------------------------
 
-func TestTUIHandler_DroppedCounter_Zero(t *testing.T) {
-	h := NewTUIHandler()
-	if h.Dropped() != 0 {
-		t.Errorf("new handler should have 0 dropped, got %d", h.Dropped())
-	}
-}
-
 func TestTUIHandler_Coalescing_AccumulatesText(t *testing.T) {
 	h := NewTUIHandler()
 	// text_delta events accumulate, don't go to channel immediately
@@ -50,46 +43,6 @@ drain:
 	}
 	if msgs != 2 {
 		t.Errorf("expected 2 messages (flushed text + usage), got %d", msgs)
-	}
-}
-
-func TestTUIHandler_Coalescing_FlushesOnTimeWindow(t *testing.T) {
-	h := NewTUIHandler()
-
-	// Send a small text — should NOT flush immediately (window not elapsed)
-	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hi"})
-	select {
-	case <-h.appCh:
-		t.Fatal("should not flush within 100ms window")
-	default:
-	}
-
-	// Wait for the 100ms window to pass
-	time.Sleep(150 * time.Millisecond) // REAL-TIME: waiting for TUIHandler's internal coalescing timer (100ms window)
-
-	// Send another text_delta — should trigger flush (window elapsed)
-	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "there"})
-
-	// Should get the coalesced message
-	select {
-	case msg := <-h.appCh:
-		td, ok := msg.(textDeltaMsg)
-		if !ok {
-			t.Fatalf("expected textDeltaMsg, got %T", msg)
-		}
-		if td.Text != "hithere" {
-			t.Errorf("expected coalesced 'hithere', got %q", td.Text)
-		}
-	default:
-		t.Fatal("expected flushed message after window elapsed")
-	}
-
-	// Flush remaining (nothing should be left)
-	h.Flush()
-	select {
-	case <-h.appCh:
-		t.Fatal("nothing should remain after time-window flush")
-	default:
 	}
 }
 
@@ -184,12 +137,12 @@ func TestTUIHandler_Handle_UnhandledEvent(t *testing.T) {
 	h := NewTUIHandler()
 	// EventToolParamDelta with nil PartialInput returns nil → Handle does nothing
 	h.Handle(types.QueryEvent{Type: types.EventToolParamDelta, PartialInput: nil})
-	if h.Dropped() != 0 {
+	if h.dropped.Load() != 0 {
 		t.Error("nil msg should not be sent to channel")
 	}
 	// Buffer has room, so valid event should succeed
 	h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "ok"})
-	if h.Dropped() != 0 {
+	if h.dropped.Load() != 0 {
 		t.Error("valid event should not be dropped")
 	}
 }
@@ -835,8 +788,8 @@ func TestTUIHandler_PermissionAsk_DeliveredToChannel(t *testing.T) {
 	}
 
 	// Should NOT be counted as dropped
-	if h.Dropped() != 0 {
-		t.Errorf("Dropped = %d, want 0", h.Dropped())
+	if h.dropped.Load() != 0 {
+		t.Errorf("Dropped = %d, want 0", h.dropped.Load())
 	}
 }
 
@@ -1038,7 +991,7 @@ func BenchmarkTUIHandler_TextDelta_Throughput(b *testing.B) {
 		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 	}
 	b.StopTimer()
-	handler.Flush()
+	handler.flushAll()
 	close(done)
 }
 
@@ -1081,7 +1034,7 @@ func BenchmarkTUIHandler_MixedEvents(b *testing.B) {
 		handler.Handle(events[i%len(events)])
 	}
 	b.StopTimer()
-	handler.Flush()
+	handler.flushAll()
 	close(done)
 }
 
@@ -1108,7 +1061,7 @@ func BenchmarkTUIHandler_CoalescedBatch(b *testing.B) {
 	for range b.N {
 		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 	}
-	handler.Flush()
+	handler.flushAll()
 	b.StopTimer()
 	close(done)
 

@@ -45,10 +45,8 @@ func newIntegrationApp(t *testing.T) (*App, *short.Store, string) {
 
 	a := &App{
 		engine:           eng,
-		store:            store,
 		sessionID:        session.SessionID,
 		projectDir:       projectDir,
-		lastPersistedIdx: 0,
 		repl:             NewReplState(),
 	}
 	return a, store, projectDir
@@ -57,7 +55,7 @@ func newIntegrationApp(t *testing.T) (*App, *short.Store, string) {
 // persistTestMessages persists current engine messages to the store.
 func persistTestMessages(t *testing.T, a *App) {
 	t.Helper()
-	a.persistTurn()
+	a.engine.PersistNewMessages()
 }
 
 // TestIntegration_PickerShowsAllSessionsAfterFork verifies the core bug:
@@ -70,8 +68,8 @@ func TestIntegration_PickerShowsAllSessionsAfterFork(t *testing.T) {
 
 	// Persist messages so fork has data to copy
 	persistTestMessages(t, a)
-	if a.lastPersistedIdx != 4 {
-		t.Fatalf("expected lastPersistedIdx=4 after persist, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 4 {
+		t.Fatalf("expected lastPersistedIdx=4 after persist, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// /session my-fork → fork current session
@@ -172,8 +170,8 @@ func TestIntegration_NewSessionIsEmpty(t *testing.T) {
 	if len(engMsgs) != 0 {
 		t.Errorf("new session should have 0 messages, got %d", len(engMsgs))
 	}
-	if a.lastPersistedIdx != 0 {
-		t.Errorf("new session lastPersistedIdx should be 0, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 0 {
+		t.Errorf("new session lastPersistedIdx should be 0, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// New session should have correct projectDir so picker can find it
@@ -336,8 +334,8 @@ func TestIntegration_ForkPreservesToolUseMessages(t *testing.T) {
 	}
 	a.engine.SetMessages(msgs)
 	persistTestMessages(t, a)
-	if a.lastPersistedIdx != 4 {
-		t.Fatalf("expected lastPersistedIdx=4, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 4 {
+		t.Fatalf("expected lastPersistedIdx=4, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Fork
@@ -446,8 +444,8 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 
 	// Persist 4 messages to original
 	persistTestMessages(t, a)
-	if a.lastPersistedIdx != 4 {
-		t.Fatalf("setup: expected lastPersistedIdx=4, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 4 {
+		t.Fatalf("setup: expected lastPersistedIdx=4, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Fork A
@@ -466,10 +464,9 @@ func TestIntegration_ForkIsolation_MessagesDontLeak(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("Fork A extra question")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("Fork A extra answer")}},
 	})
-	a.lastPersistedIdx = 4 // only persist the new 2 messages
 	persistTestMessages(t, a)
-	if a.lastPersistedIdx != 6 {
-		t.Fatalf("fork A: expected lastPersistedIdx=6, got %d", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 6 {
+		t.Fatalf("fork A: expected lastPersistedIdx=6, got %d", a.engine.LastPersistedIdx())
 	}
 
 	// Switch back to original via picker
@@ -624,8 +621,8 @@ func TestIntegration_ForkIsolation_EngineStateAfterSwitch(t *testing.T) {
 
 	// lastPersistedIdx should reflect fork X's state, not original's
 	// (handleSessionPickerDone loads fresh from store and resets)
-	if a.lastPersistedIdx != 4 {
-		t.Errorf("lastPersistedIdx = %d, want 4", a.lastPersistedIdx)
+	if a.engine.LastPersistedIdx() != 4 {
+		t.Errorf("lastPersistedIdx = %d, want 4", a.engine.LastPersistedIdx())
 	}
 
 	// Session ID should be fork X
@@ -649,11 +646,10 @@ func TestIntegration_DuplicateTitlePrevention(t *testing.T) {
 
 	// Switch back to original — not needed, the test continues with a2 below
 	// Then try to fork with the same title
-	a2, _, _ := newIntegrationApp(t)
+	a2, store, _ := newIntegrationApp(t)
 	persistTestMessages(t, a2)
 
 	// Create a titled session first
-	store := a2.store
 	session, _ := store.CreateSession(a2.projectDir, "test-model")
 	if err := store.UpdateSessionTitle(session.SessionID, "taken-title"); err != nil {
 		t.Fatalf("UpdateSessionTitle: %v", err)

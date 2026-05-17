@@ -15,8 +15,8 @@ func TestHistory_Add(t *testing.T) {
 	h.Add("hello")
 	h.Add("world")
 
-	if h.Len() != 2 {
-		t.Errorf("Len() = %d, want 2", h.Len())
+	if len(h.items) != 2 {
+		t.Errorf("Len() = %d, want 2", len(h.items))
 	}
 }
 
@@ -25,8 +25,8 @@ func TestHistory_AddEmpty(t *testing.T) {
 
 	h := NewHistory("")
 	h.Add("")
-	if h.Len() != 0 {
-		t.Errorf("empty Add should not create entry, got Len() = %d", h.Len())
+	if len(h.items) != 0 {
+		t.Errorf("empty Add should not create entry, got Len() = %d", len(h.items))
 	}
 }
 
@@ -36,8 +36,8 @@ func TestHistory_AddDuplicate(t *testing.T) {
 	h := NewHistory("")
 	h.Add("hello")
 	h.Add("hello")
-	if h.Len() != 1 {
-		t.Errorf("duplicate Add should not create entry, got Len() = %d", h.Len())
+	if len(h.items) != 1 {
+		t.Errorf("duplicate Add should not create entry, got Len() = %d", len(h.items))
 	}
 }
 
@@ -114,8 +114,8 @@ func TestHistory_MaxSize(t *testing.T) {
 	h.Add("c")
 	h.Add("d") // should evict "a"
 
-	if h.Len() != 3 {
-		t.Fatalf("Len() = %d, want 3", h.Len())
+	if len(h.items) != 3 {
+		t.Fatalf("Len() = %d, want 3", len(h.items))
 	}
 	if h.items[0] != "b" {
 		t.Errorf("items[0] = %q, want %q", h.items[0], "b")
@@ -131,14 +131,14 @@ func TestHistory_Persistence(t *testing.T) {
 	h1.Add("first command")
 	h1.Add("second command")
 
-	if h1.Len() != 2 {
-		t.Fatalf("h1.Len() = %d, want 2", h1.Len())
+	if len(h1.items) != 2 {
+		t.Fatalf("len(h1.items) = %d, want 2", len(h1.items))
 	}
 
 	// Load from file into new History
 	h2 := NewHistory(path)
-	if h2.Len() != 2 {
-		t.Fatalf("h2.Len() = %d, want 2", h2.Len())
+	if len(h2.items) != 2 {
+		t.Fatalf("len(h2.items) = %d, want 2", len(h2.items))
 	}
 	if h2.items[0] != "first command" {
 		t.Errorf("h2.items[0] = %q, want %q", h2.items[0], "first command")
@@ -159,8 +159,8 @@ func TestHistory_PersistenceAppend(t *testing.T) {
 	h2.Add("entry2")
 
 	h3 := NewHistory(path)
-	if h3.Len() != 2 {
-		t.Fatalf("h3.Len() = %d, want 2", h3.Len())
+	if len(h3.items) != 2 {
+		t.Fatalf("len(h3.items) = %d, want 2", len(h3.items))
 	}
 	if h3.items[0] != "entry1" {
 		t.Errorf("items[0] = %q, want %q", h3.items[0], "entry1")
@@ -180,8 +180,8 @@ func TestHistory_PersistenceEmptyFile(t *testing.T) {
 	}
 
 	h := NewHistory(path)
-	if h.Len() != 0 {
-		t.Errorf("empty file: Len() = %d, want 0", h.Len())
+	if len(h.items) != 0 {
+		t.Errorf("empty file: Len() = %d, want 0", len(h.items))
 	}
 }
 
@@ -195,8 +195,8 @@ func TestHistory_PersistenceMalformedLine(t *testing.T) {
 	}
 
 	h := NewHistory(path)
-	if h.Len() != 1 {
-		t.Fatalf("Len() = %d, want 1", h.Len())
+	if len(h.items) != 1 {
+		t.Fatalf("Len() = %d, want 1", len(h.items))
 	}
 	if h.items[0] != "good" {
 		t.Errorf("items[0] = %q, want %q", h.items[0], "good")
@@ -206,8 +206,8 @@ func TestHistory_PersistenceMalformedLine(t *testing.T) {
 func TestHistory_NoFilePath(t *testing.T) {
 	h := NewHistory("")
 	h.Add("test")
-	if h.Len() != 1 {
-		t.Errorf("Len() = %d, want 1", h.Len())
+	if len(h.items) != 1 {
+		t.Errorf("Len() = %d, want 1", len(h.items))
 	}
 	// No file created — no crash
 }
@@ -216,8 +216,8 @@ func TestHistory_NilFilePath(t *testing.T) {
 	h := NewHistory("")
 	h.Add("test")
 	// Should work fine without persistence
-	if h.Len() != 1 {
-		t.Errorf("Len() = %d, want 1", h.Len())
+	if len(h.items) != 1 {
+		t.Errorf("Len() = %d, want 1", len(h.items))
 	}
 }
 
@@ -229,8 +229,8 @@ func TestHistory_RelativePathRejected(t *testing.T) {
 	h := NewHistory("relative/path.jsonl")
 	h.Add("test")
 	// Relative path should disable persistence — no crash
-	if h.Len() != 1 {
-		t.Errorf("Len() = %d, want 1", h.Len())
+	if len(h.items) != 1 {
+		t.Errorf("Len() = %d, want 1", len(h.items))
 	}
 	if h.filePath != "" {
 		t.Errorf("filePath should be empty for relative path, got %q", h.filePath)
@@ -319,8 +319,8 @@ func TestHistory_Load_EmptyDisplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHistory(path)
-	if h.Len() != 0 {
-		t.Errorf("empty display should be skipped, Len() = %d", h.Len())
+	if len(h.items) != 0 {
+		t.Errorf("empty display should be skipped, Len() = %d", len(h.items))
 	}
 }
 
@@ -337,8 +337,8 @@ func TestHistory_Load_CapAtMaxSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHistory(path)
-	if h.Len() != 100 {
-		t.Errorf("should cap at 100, got Len() = %d", h.Len())
+	if len(h.items) != 100 {
+		t.Errorf("should cap at 100, got Len() = %d", len(h.items))
 	}
 }
 
@@ -376,14 +376,14 @@ func TestHistory_RemoveLast(t *testing.T) {
 	h.Add("second")
 	h.Add("third")
 
-	if h.Len() != 3 {
-		t.Fatalf("Len() = %d, want 3 before RemoveLast", h.Len())
+	if len(h.items) != 3 {
+		t.Fatalf("Len() = %d, want 3 before RemoveLast", len(h.items))
 	}
 
 	h.RemoveLast()
 
-	if h.Len() != 2 {
-		t.Fatalf("Len() = %d after RemoveLast, want 2", h.Len())
+	if len(h.items) != 2 {
+		t.Fatalf("Len() = %d after RemoveLast, want 2", len(h.items))
 	}
 	if h.items[0] != "first" {
 		t.Errorf("items[0] = %q, want %q", h.items[0], "first")
@@ -403,8 +403,8 @@ func TestHistory_RemoveLast(t *testing.T) {
 func TestHistory_RemoveLast_Empty(t *testing.T) {
 	h := NewHistory("")
 	h.RemoveLast() // should not panic
-	if h.Len() != 0 {
-		t.Errorf("Len() = %d after RemoveLast on empty, want 0", h.Len())
+	if len(h.items) != 0 {
+		t.Errorf("Len() = %d after RemoveLast on empty, want 0", len(h.items))
 	}
 	if h.historyIndex != 0 {
 		t.Errorf("historyIndex = %d, want 0", h.historyIndex)
@@ -415,8 +415,8 @@ func TestHistory_RemoveLast_SingleItem(t *testing.T) {
 	h := NewHistory("")
 	h.Add("only")
 	h.RemoveLast()
-	if h.Len() != 0 {
-		t.Errorf("Len() = %d, want 0", h.Len())
+	if len(h.items) != 0 {
+		t.Errorf("Len() = %d, want 0", len(h.items))
 	}
 	if h.historyIndex != 0 {
 		t.Errorf("historyIndex = %d, want 0", h.historyIndex)

@@ -723,13 +723,6 @@ func TestMultipleToolsInQuery(t *testing.T) {
 // CloseChannels
 // ---------------------------------------------------------------------------
 
-func TestCloseChannels(t *testing.T) {
-	t.Parallel()
-	s := freshState()
-	s.CloseChannels()
-	// Just verify it doesn't panic
-}
-
 // ---------------------------------------------------------------------------
 // Grandchild (depth 2) recursive search in findToolView / updateToolBlock
 // ---------------------------------------------------------------------------
