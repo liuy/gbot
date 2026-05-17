@@ -829,3 +829,4 @@ func transitionToBackground(registry *BackgroundTaskRegistry, command string, pi
 		},
 	}, nil
 }
+

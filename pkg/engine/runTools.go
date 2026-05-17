@@ -874,6 +874,10 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			displayOutput = *p
 		}
 	}
+	srk := tool.SearchReadKind{}
+	if ts, ok := t.(tool.ToolWithSearchOrRead); ok {
+		srk = ts.IsSearchOrRead(tt.Input)
+	}
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{
@@ -882,6 +886,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			DisplayOutput: displayOutput,
 			Timing:        elapsed,
 			IsBackground:  isBackgroundResult(result.Data),
+			IsSearch:      srk.IsSearch,
+			IsRead:        srk.IsRead,
+			IsList:        srk.IsList,
 		},
 	})
 	tt.Result = result

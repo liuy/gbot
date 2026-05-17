@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -82,10 +83,10 @@ func New() tool.Tool {
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
-			if out.Count == 0 {
-				return "No files found"
+			if len(out.Files) == 0 {
+				return ""
 			}
-			return fmt.Sprintf("Found %d %s", out.Count, tool.PluralWord(out.Count, "files"))
+			return strings.Join(out.Files, "\n")
 		},
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsSearch: true}

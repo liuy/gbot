@@ -225,6 +225,9 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 				IsError:   evt.ToolResult.IsError,
 				Timing:    evt.ToolResult.Timing,
 				Agent:     evt.Agent,
+				IsSearch:  evt.ToolResult.IsSearch,
+				IsRead:    evt.ToolResult.IsRead,
+				IsList:    evt.ToolResult.IsList,
 			}
 		}
 

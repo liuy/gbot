@@ -215,7 +215,7 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool
 }
 
 // PendingToolDone updates a tool call with its result.
-func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration) {
+func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration, srk tool.SearchReadKind) {
 	tcv, ok := s.pendingTool[id]
 	if !ok {
 		return
@@ -224,6 +224,9 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 	tcv.IsError = isError
 	tcv.Done = true
 	tcv.Elapsed = elapsed
+	if srk.IsCollapsible() {
+		tcv.SearchRead = srk
+	}
 	if start, ok := s.pendingToolStart[id]; ok {
 		if perceived := time.Since(start); perceived > elapsed {
 			tcv.Elapsed = perceived
@@ -533,7 +536,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 					slog.Warn("tui:background_tool_not_found", "id", m.ToolUseID)
 				}
 			} else {
-				a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing)
+				a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
 			}
 			a.taskListDirty = true
 		}

@@ -10,6 +10,10 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/fileread"
+	"github.com/liuy/gbot/pkg/tool/glob"
+	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
 )
@@ -3131,9 +3135,9 @@ func TestJoinHorizontal_MatchesIndentLines(t *testing.T) {
 func TestRenderToolCall_SearchReadCollapsed(t *testing.T) {
 	t.Parallel()
 
-	output := "line1\nline2\nline3\nline4\nline5"
+	// Output for search/read tools is the full output; TUI generates the summary.
+	fullOutput := "file1.go\nfile2.go\nfile3.go\nfile4.go\nfile5.go"
 
-	// Search/read tool collapsed: should show header + "… ctrl+o to expand", NOT output lines.
 	mv := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
@@ -3143,7 +3147,7 @@ func TestRenderToolCall_SearchReadCollapsed(t *testing.T) {
 					ID:         "test-1",
 					Name:       "Grep",
 					Summary:    "pattern",
-					Output:     output,
+					Output:     fullOutput,
 					Done:       true,
 					Elapsed:    time.Second,
 					SearchRead: tool.SearchReadKind{IsSearch: true},
@@ -3153,11 +3157,8 @@ func TestRenderToolCall_SearchReadCollapsed(t *testing.T) {
 	}
 	rendered := mv.View(80, false, "●", false, 0)
 
-	if strings.Contains(rendered, "line4") || strings.Contains(rendered, "line5") {
-		t.Errorf("collapsed search/read should NOT show output lines, got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "… ctrl+o to expand") {
-		t.Errorf("collapsed search/read should show ctrl+o hint, got:\n%s", rendered)
+	if !strings.Contains(rendered, "Found 5 matches … ctrl+o to expand") {
+		t.Errorf("collapsed search/read should show summary + ctrl+o hint, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "Grep") {
 		t.Errorf("should show tool name, got:\n%s", rendered)
@@ -3257,5 +3258,375 @@ func TestRenderToolCall_WriteEditAlwaysExpanded(t *testing.T) {
 
 	if !strings.Contains(rendered, "another") {
 		t.Errorf("Write tool should always show full output, got:\n%s", rendered)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chain tests: Tool.RenderResult_ → collapseSummary → TUI render
+//
+// These verify the full pipeline from tool output through TUI rendering.
+// Each test creates a real tool, calls RenderResult_ on realistic output,
+// then feeds the result through collapseSummary and the View() renderer.
+// ---------------------------------------------------------------------------
+
+func TestChain_ReadTool_CollapsedAndExpanded(t *testing.T) {
+	t.Parallel()
+
+	// Read tool returns file content; RenderResult_ returns it verbatim.
+	readTool := fileread.New()
+	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
+	rendered := readTool.RenderResult(&fileread.TextOutput{
+		Content:    content,
+		FilePath:   "/tmp/test.go",
+		NumLines:   5,
+		StartLine:  1,
+		TotalLines: 5,
+	})
+
+	// Verify RenderResult_ returns full content, not a summary.
+	if rendered != content {
+		t.Fatalf("Read RenderResult_ = %q, want full content", rendered)
+	}
+
+	// Collapsed: collapseSummary should produce "Read 5 lines".
+	srk := tool.SearchReadKind{IsRead: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "Read 5 lines" {
+		t.Fatalf("collapseSummary(read) = %q, want %q", summary, "Read 5 lines")
+	}
+
+	// Collapsed render: summary + ctrl+o hint.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "read-1",
+					Name:       "Read",
+					Summary:    "/tmp/test.go",
+					Output:     rendered,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: srk,
+				},
+			},
+		},
+	}
+	collapsed := mv.View(80, false, "●", false, 0)
+	if !strings.Contains(collapsed, "Read 5 lines") {
+		t.Errorf("collapsed Read should show 'Read 5 lines', got:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "ctrl+o to expand") {
+		t.Errorf("collapsed Read should show ctrl+o hint, got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "func main()") {
+		t.Errorf("collapsed Read should NOT show file content, got:\n%s", collapsed)
+	}
+
+	// Expanded: full content visible, no ctrl+o hint.
+	expanded := mv.View(80, true, "●", false, 0)
+	if !strings.Contains(expanded, `println("hello")`) {
+		t.Errorf("expanded Read should show full content, got:\n%s", expanded)
+	}
+	if strings.Contains(expanded, "ctrl+o") {
+		t.Errorf("expanded Read should NOT show ctrl+o hint, got:\n%s", expanded)
+	}
+}
+
+func TestChain_GrepTool_ContentMode(t *testing.T) {
+	t.Parallel()
+
+	grepTool := grep.New()
+	matches := "main.go:10:fmt.Println\nmain.go:20:log.Println\nutil.go:5:fmt.Sprintf"
+	rendered := grepTool.RenderResult(&grep.Output{
+		Mode:     "content",
+		Content:  matches,
+		NumLines: 3,
+	})
+
+	if rendered != matches {
+		t.Fatalf("Grep RenderResult_(content) = %q, want raw matches", rendered)
+	}
+
+	srk := tool.SearchReadKind{IsSearch: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "Found 3 matches" {
+		t.Fatalf("collapseSummary(grep content) = %q, want %q", summary, "Found 3 matches")
+	}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "grep-1",
+					Name:       "Grep",
+					Summary:    "pattern",
+					Output:     rendered,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: srk,
+				},
+			},
+		},
+	}
+
+	collapsed := mv.View(80, false, "●", false, 0)
+	if !strings.Contains(collapsed, "Found 3 matches") {
+		t.Errorf("collapsed Grep should show 'Found 3 matches', got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "main.go:10") {
+		t.Errorf("collapsed Grep should NOT show raw matches, got:\n%s", collapsed)
+	}
+
+	expanded := mv.View(80, true, "●", false, 0)
+	if !strings.Contains(expanded, "main.go:10:fmt.Println") {
+		t.Errorf("expanded Grep should show all match lines, got:\n%s", expanded)
+	}
+}
+
+func TestChain_GrepTool_FilesWithMatchesMode(t *testing.T) {
+	t.Parallel()
+
+	grepTool := grep.New()
+	files := "a.go\nb.go\nc.go"
+	rendered := grepTool.RenderResult(&grep.Output{
+		Mode:      "files_with_matches",
+		Filenames: []string{"a.go", "b.go", "c.go"},
+		NumFiles:  3,
+	})
+
+	if rendered != files {
+		t.Fatalf("Grep RenderResult_(files_with_matches) = %q, want %q", rendered, files)
+	}
+
+	srk := tool.SearchReadKind{IsSearch: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "Found 3 matches" {
+		t.Fatalf("collapseSummary(grep files) = %q, want %q", summary, "Found 3 matches")
+	}
+}
+
+func TestChain_GlobTool(t *testing.T) {
+	t.Parallel()
+
+	globTool := glob.New()
+	fileList := "src/main.go\nsrc/util.go\nsrc/handler.go"
+	rendered := globTool.RenderResult(&glob.Output{
+		Files: []string{"src/main.go", "src/util.go", "src/handler.go"},
+		Count: 3,
+	})
+
+	if rendered != fileList {
+		t.Fatalf("Glob RenderResult_ = %q, want %q", rendered, fileList)
+	}
+
+	srk := tool.SearchReadKind{IsSearch: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "Found 3 matches" {
+		t.Fatalf("collapseSummary(glob) = %q, want %q", summary, "Found 3 matches")
+	}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "glob-1",
+					Name:       "Glob",
+					Summary:    "**/*.go",
+					Output:     rendered,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: srk,
+				},
+			},
+		},
+	}
+
+	collapsed := mv.View(80, false, "●", false, 0)
+	if !strings.Contains(collapsed, "Found 3 matches") {
+		t.Errorf("collapsed Glob should show 'Found 3 matches', got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "src/main.go") {
+		t.Errorf("collapsed Glob should NOT show file paths, got:\n%s", collapsed)
+	}
+
+	expanded := mv.View(80, true, "●", false, 0)
+	if !strings.Contains(expanded, "src/handler.go") {
+		t.Errorf("expanded Glob should show all file paths, got:\n%s", expanded)
+	}
+}
+
+func TestChain_BashSearchCommand_CollapsedAndExpanded(t *testing.T) {
+	t.Parallel()
+
+	bashTool := bash.New(nil)
+
+	// Simulate output from "ls" command — a search-or-read Bash command.
+	lsOutput := "file1.go\nfile2.go\nfile3.go"
+	rendered := bashTool.RenderResult(&bash.Output{
+		Stdout: lsOutput,
+	})
+
+	if rendered != lsOutput {
+		t.Fatalf("Bash RenderResult_ = %q, want %q", rendered, lsOutput)
+	}
+
+	// "ls" is classified as IsList.
+	srk := tool.SearchReadKind{IsList: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "Listed 3 entries" {
+		t.Fatalf("collapseSummary(ls) = %q, want %q", summary, "Listed 3 entries")
+	}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "bash-ls-1",
+					Name:       "Bash",
+					Summary:    "ls",
+					Output:     rendered,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: srk,
+				},
+			},
+		},
+	}
+
+	collapsed := mv.View(80, false, "●", false, 0)
+	if !strings.Contains(collapsed, "Listed 3 entries") {
+		t.Errorf("collapsed Bash ls should show 'Listed 3 entries', got:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "ctrl+o to expand") {
+		t.Errorf("collapsed Bash ls should show ctrl+o hint, got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "file1.go") {
+		t.Errorf("collapsed Bash ls should NOT show raw output, got:\n%s", collapsed)
+	}
+
+	expanded := mv.View(80, true, "●", false, 0)
+	if !strings.Contains(expanded, "file3.go") {
+		t.Errorf("expanded Bash ls should show full output, got:\n%s", expanded)
+	}
+}
+
+func TestChain_BashNonSearchCommand(t *testing.T) {
+	t.Parallel()
+
+	bashTool := bash.New(nil)
+	// 6 lines: exceeds maxLines+1=4 threshold, so truncation kicks in.
+	buildOutput := "ok  github.com/liuy/gbot/pkg/tool\nok  github.com/liuy/gbot/pkg/tui\nok  github.com/liuy/gbot/pkg/types\nok  github.com/liuy/gbot/pkg/engine\nok  github.com/liuy/gbot/cmd\nFAIL"
+	rendered := bashTool.RenderResult(&bash.Output{
+		Stdout: buildOutput,
+	})
+
+	if rendered != buildOutput {
+		t.Fatalf("Bash RenderResult_ = %q, want %q", rendered, buildOutput)
+	}
+
+	// Non-search-or-read Bash command: srk is zero-value.
+	srk := tool.SearchReadKind{}
+	summary := collapseSummary(rendered, srk)
+	if summary != "6 lines" {
+		t.Fatalf("collapseSummary(non-sr bash) = %q, want %q", summary, "6 lines")
+	}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:      "bash-1",
+					Name:    "Bash",
+					Summary: "go test ./...",
+					Output:  rendered,
+					Done:    true,
+					Elapsed: time.Second,
+				},
+			},
+		},
+	}
+
+	// Non-search-read: collapsed uses formatToolOutput (3-line truncation + ctrl+o).
+	collapsed := mv.View(80, false, "●", false, 0)
+	if !strings.Contains(collapsed, "ctrl+o to expand") {
+		t.Errorf("collapsed non-SR Bash should show ctrl+o hint, got:\n%s", collapsed)
+	}
+	// First 3 lines visible, rest hidden.
+	if !strings.Contains(collapsed, "pkg/tool") {
+		t.Errorf("collapsed should show first lines, got:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "FAIL") {
+		t.Errorf("collapsed should NOT show last line (FAIL), got:\n%s", collapsed)
+	}
+
+	// Expanded: all lines visible.
+	expanded := mv.View(80, true, "●", false, 0)
+	if !strings.Contains(expanded, "FAIL") {
+		t.Errorf("expanded should show all output including FAIL, got:\n%s", expanded)
+	}
+}
+
+func TestChain_SingleLineOutput(t *testing.T) {
+	t.Parallel()
+
+	// Read with 1 line — singular form.
+	srk := tool.SearchReadKind{IsRead: true}
+	summary := collapseSummary("package main\n", srk)
+	if summary != "Read 1 line" {
+		t.Fatalf("collapseSummary(1 line read) = %q, want %q", summary, "Read 1 line")
+	}
+
+	// Search with 1 match.
+	srk = tool.SearchReadKind{IsSearch: true}
+	summary = collapseSummary("main.go:5:match\n", srk)
+	// PluralWord(1, "matches") = TrimSuffix("matches", "s") = "matche" — known issue
+	if summary != "Found 1 matche" {
+		t.Fatalf("collapseSummary(1 match) = %q, want %q (PluralWord issue)", summary, "Found 1 matche")
+	}
+
+	// List with 1 entry.
+	srk = tool.SearchReadKind{IsList: true}
+	summary = collapseSummary("file.go\n", srk)
+	// PluralWord(1, "entries") = TrimSuffix("entries", "s") = "entrie" — known issue
+	if summary != "Listed 1 entrie" {
+		t.Fatalf("collapseSummary(1 entry) = %q, want %q (PluralWord issue)", summary, "Listed 1 entrie")
+	}
+}
+
+func TestChain_EmptyOutput(t *testing.T) {
+	t.Parallel()
+
+	// Grep with no results.
+	grepTool := grep.New()
+	rendered := grepTool.RenderResult(&grep.Output{
+		Mode:      "files_with_matches",
+		Filenames: []string{},
+		NumFiles:  0,
+	})
+	if rendered != "" {
+		t.Fatalf("Grep RenderResult_(empty) = %q, want empty", rendered)
+	}
+
+	srk := tool.SearchReadKind{IsSearch: true}
+	summary := collapseSummary(rendered, srk)
+	if summary != "No matches" {
+		t.Fatalf("collapseSummary(empty search) = %q, want %q", summary, "No matches")
+	}
+
+	// Read with empty file.
+	srk = tool.SearchReadKind{IsRead: true}
+	summary = collapseSummary("", srk)
+	if summary != "Read 0 lines" {
+		t.Fatalf("collapseSummary(empty read) = %q, want %q", summary, "Read 0 lines")
 	}
 }

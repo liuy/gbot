@@ -1094,8 +1094,8 @@ func TestRenderResult_TextOutputPointer(t *testing.T) {
 		FilePath: "/tmp/test.txt",
 		NumLines: 42,
 	})
-	if result != "Read 42 lines" {
-		t.Errorf("renderResult(*TextOutput) = %q, want %q", result, "Read 42 lines")
+	if result != "hello world" {
+		t.Errorf("renderResult(*TextOutput) = %q, want %q", result, "hello world")
 	}
 }
 
@@ -1106,8 +1106,8 @@ func TestRenderResult_TextOutputValue(t *testing.T) {
 		FilePath: "/tmp/test.txt",
 		NumLines: 1,
 	})
-	if result != "Read 1 line" {
-		t.Errorf("renderResult(TextOutput) = %q, want %q", result, "Read 1 line")
+	if result != "hello world" {
+		t.Errorf("renderResult(TextOutput) = %q, want %q", result, "hello world")
 	}
 }
 
@@ -1118,8 +1118,8 @@ func TestRenderResult_TextOutputZeroLines(t *testing.T) {
 		FilePath: "/tmp/empty.txt",
 		NumLines: 0,
 	})
-	if result != "Read 0 lines" {
-		t.Errorf("renderResult(*TextOutput zero lines) = %q, want %q", result, "Read 0 lines")
+	if result != "" {
+		t.Errorf("renderResult(*TextOutput zero lines) = %q, want %q", result, "")
 	}
 }
 

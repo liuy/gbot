@@ -808,8 +808,8 @@ func TestRenderResult_ContentMode(t *testing.T) {
 		NumLines: 2,
 	}
 	result := tt.RenderResult(output)
-	if result != "2 lines" {
-		t.Errorf("RenderResult(content mode) = %q, want %q", result, "2 lines")
+	if result != "file.go:10:match here\nfile.go:20:another match" {
+		t.Errorf("RenderResult(content mode) = %q, want full content", result)
 	}
 }
 
@@ -822,8 +822,8 @@ func TestRenderResult_FilesWithMatches(t *testing.T) {
 		Filenames: []string{"a.go", "b.go"},
 	}
 	result := tt.RenderResult(output)
-	if result != "Found 2 files" {
-		t.Errorf("RenderResult(files_with_matches) = %q, want %q", result, "Found 2 files")
+	if result != "a.go\nb.go" {
+		t.Errorf("RenderResult(files_with_matches) = %q, want %q", result, "a.go\nb.go")
 	}
 }
 
@@ -872,8 +872,8 @@ func TestRenderResult_FilesWithMatchesEmpty(t *testing.T) {
 		Filenames: []string{},
 	}
 	result := tt.RenderResult(output)
-	if result != "No files matched" {
-		t.Errorf("RenderResult(empty files_with_matches) = %q, want %q", result, "No files matched")
+	if result != "" {
+		t.Errorf("RenderResult(empty files_with_matches) = %q, want %q", result, "")
 	}
 }
 

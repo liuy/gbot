@@ -919,12 +919,10 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
 			}
 		} else if tc.Output != "" {
-			// Search/read tools: collapsed view shows header + ctrl+o only, no output.
-			// Source: TS CollapsedReadSearchContent — verbose mode shows each tool,
-			// non-verbose shows summary line. We skip output lines when collapsed.
+			// Search/read tools: collapsed view shows summary + ctrl+o.
 			if tc.SearchRead.IsCollapsible() && !toolExpand {
-				hint := styleDim.Render("… ctrl+o to expand")
-				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, hint))
+				summary := styleDim.Render(collapseSummary(tc.Output, tc.SearchRead) + " … ctrl+o to expand")
+				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, "| "+summary))
 			} else {
 				output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
 				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
@@ -1455,3 +1453,35 @@ func (a *App) renderTaskList() string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// collapseSummary generates a one-line summary from full tool output
+// based on the search/read/list classification.
+func collapseSummary(output string, srk tool.SearchReadKind) string {
+	lines := strings.Count(output, "\n")
+	if output != "" && !strings.HasSuffix(output, "\n") {
+		lines++
+	}
+
+	switch {
+	case srk.IsSearch:
+		if lines == 0 {
+			return "No matches"
+		}
+		return fmt.Sprintf("Found %d %s", lines, tool.PluralWord(lines, "matches"))
+	case srk.IsRead:
+		if lines == 0 {
+			return "Read 0 lines"
+		}
+		return fmt.Sprintf("Read %d %s", lines, tool.PluralWord(lines, "lines"))
+	case srk.IsList:
+		if lines == 0 {
+			return "Empty listing"
+		}
+		return fmt.Sprintf("Listed %d %s", lines, tool.PluralWord(lines, "entries"))
+	default:
+		if lines <= 1 {
+			return output
+		}
+		return fmt.Sprintf("%d lines", lines)
+	}
+}

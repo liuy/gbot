@@ -410,9 +410,9 @@ func New() tool.Tool {
 func renderResult(data any) string {
 	switch out := data.(type) {
 	case *TextOutput:
-		return formatLineCount(out.NumLines)
+		return out.Content
 	case TextOutput:
-		return formatLineCount(out.NumLines)
+		return out.Content
 	case *ImageOutput:
 		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
 	case ImageOutput:
@@ -433,13 +433,6 @@ func renderResult(data any) string {
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
-}
-
-func formatLineCount(n int) string {
-	if n == 1 {
-		return "Read 1 line"
-	}
-	return fmt.Sprintf("Read %d lines", n)
 }
 
 // countLines returns total line count for a file path.

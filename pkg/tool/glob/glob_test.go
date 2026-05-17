@@ -384,11 +384,8 @@ func TestRenderResult_Files(t *testing.T) {
 		DurationMs: 12,
 	}
 	result := tt.RenderResult(output)
-	if result != "Found 3 files" {
-		t.Errorf("RenderResult(files) = %q, want %q", result, "Found 3 files")
-	}
-	if strings.Contains(result, `src/a.go`) {
-		t.Errorf("RenderResult should be summary only, not contain file paths")
+	if result != "src/a.go\nsrc/b.go\nsrc/c.go" {
+		t.Errorf("RenderResult(files) = %q, want %q", result, "src/a.go\nsrc/b.go\nsrc/c.go")
 	}
 }
 
@@ -400,8 +397,8 @@ func TestRenderResult_NoMatches(t *testing.T) {
 		Count: 0,
 	}
 	result := tt.RenderResult(output)
-	if result != "No files found" {
-		t.Errorf("RenderResult(no matches) = %q, want %q", result, "No files found")
+	if result != "" {
+		t.Errorf("RenderResult(no matches) = %q, want %q", result, "")
 	}
 }
 
