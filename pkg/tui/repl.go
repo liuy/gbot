@@ -202,12 +202,12 @@ func formatToolDisplayName(name string) string {
 }
 
 // PendingToolStarted records a new in-progress tool call.
-func (s *ReplState) PendingToolStarted(id, name, summary, input string) {
+func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool.SearchReadKind) {
 	m := s.lastMsg()
 	if m == nil {
 		return
 	}
-	tcv := &ToolCallView{ID: id, Name: formatToolDisplayName(name), Summary: summary, Input: input, Done: false}
+	tcv := &ToolCallView{ID: id, Name: formatToolDisplayName(name), Summary: summary, Input: input, Done: false, SearchRead: srk}
 	s.pendingTool[id] = tcv
 	s.toolCount++
 	s.pendingToolStart[id] = time.Now()
@@ -454,7 +454,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input)
+			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
+			a.repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input, srk)
 			if m.Name == "Agent" {
 				a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
 			}

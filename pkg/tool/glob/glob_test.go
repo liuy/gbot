@@ -429,6 +429,15 @@ func TestRenderResult_NilData(t *testing.T) {
 }
 
 // RenderResult with map data covers lines 82-85 in glob.go
+func TestGlobTool_IsSearchOrRead(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
+	if !srk.IsSearch || srk.IsRead || srk.IsList {
+		t.Errorf("GlobTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)
+	}
+}
+
 func TestRenderResult_MapData(t *testing.T) {
 	t.Parallel()
 	tt := glob.New()

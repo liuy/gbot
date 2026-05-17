@@ -411,18 +411,24 @@ type RetryAttemptEvent struct {
 
 // PartialInputEvent carries incremental input for a pending tool call.
 type PartialInputEvent struct {
-	ID      string `json:"id"`                // tool use ID
-	Name    string `json:"name"`              // tool name (e.g. "Read", "Bash")
-	Delta   string `json:"delta"`             // partial JSON string
-	Summary string `json:"summary,omitempty"` // pre-computed summary from engine
+	ID       string `json:"id"`                // tool use ID
+	Name     string `json:"name"`              // tool name (e.g. "Read", "Bash")
+	Delta    string `json:"delta"`             // partial JSON string
+	Summary  string `json:"summary,omitempty"` // pre-computed summary from engine
+	IsSearch bool   `json:"is_search,omitempty"`
+	IsRead   bool   `json:"is_read,omitempty"`
+	IsList   bool   `json:"is_list,omitempty"`
 }
 
 // ToolUseEvent represents a tool invocation event.
 type ToolUseEvent struct {
-	ID      string          `json:"id"`
-	Name    string          `json:"name"`
-	Input   json.RawMessage `json:"input"`
-	Summary string          `json:"summary,omitempty"` // pre-computed summary from engine
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	Summary   string          `json:"summary,omitempty"`   // pre-computed summary from engine
+	IsSearch  bool            `json:"is_search,omitempty"` // tool is a search operation (Grep, Glob, find)
+	IsRead    bool            `json:"is_read,omitempty"`   // tool is a read operation (Read, cat)
+	IsList    bool            `json:"is_list,omitempty"`   // tool is a list operation (ls, tree)
 }
 
 // ToolResultEvent represents a tool execution result event.

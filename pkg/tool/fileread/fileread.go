@@ -398,6 +398,9 @@ func New() tool.Tool {
 		},
 		Prompt_:            fileReadPrompt(),
 		RenderResult_:      renderResult,
+		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
+			return tool.SearchReadKind{IsRead: true}
+		},
 	})
 }
 

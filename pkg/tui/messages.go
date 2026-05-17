@@ -34,11 +34,14 @@ type streamMessageMsg struct {
 // toolStartMsg signals that the LLM has started a tool invocation.
 // Source: useStreaming hook onToolUseStart callback.
 type toolStartMsg struct {
-	ID      string
-	Name    string
-	Summary string // context-aware display name (e.g., "Listing 1 directory")
-	Input   string // pretty-printed JSON
-	Agent   *types.AgentMeta // non-nil when from a sub-agent
+	ID        string
+	Name      string
+	Summary   string // context-aware display name (e.g., "Listing 1 directory")
+	Input     string // pretty-printed JSON
+	Agent     *types.AgentMeta // non-nil when from a sub-agent
+	IsSearch  bool
+	IsRead    bool
+	IsList    bool
 }
 
 // toolParamDeltaMsg carries incremental input updates for a pending tool.
@@ -48,6 +51,9 @@ type toolParamDeltaMsg struct {
 	Delta   string // partial JSON delta
 	Summary string // pre-computed summary from engine
 	Agent   *types.AgentMeta // non-nil when from a sub-agent
+	IsSearch bool
+	IsRead   bool
+	IsList   bool
 }
 
 // toolOutputDeltaMsg carries streaming output lines from a tool in progress.

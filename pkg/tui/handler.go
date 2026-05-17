@@ -196,11 +196,14 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 	case types.EventToolStart:
 		if evt.ToolUse != nil {
 			return toolStartMsg{
-				ID:      evt.ToolUse.ID,
-				Name:    evt.ToolUse.Name,
-				Summary: evt.ToolUse.Summary,
-				Input:   prettyJSON(evt.ToolUse.Input),
-				Agent:   evt.Agent,
+				ID:       evt.ToolUse.ID,
+				Name:     evt.ToolUse.Name,
+				Summary:  evt.ToolUse.Summary,
+				Input:    prettyJSON(evt.ToolUse.Input),
+				Agent:    evt.Agent,
+				IsSearch: evt.ToolUse.IsSearch,
+				IsRead:   evt.ToolUse.IsRead,
+				IsList:   evt.ToolUse.IsList,
 			}
 		}
 
@@ -268,10 +271,13 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		// LLM streaming JSON input delta
 		if evt.PartialInput != nil {
 			return toolParamDeltaMsg{
-				ID:      evt.PartialInput.ID,
-				Delta:   evt.PartialInput.Delta,
-				Summary: evt.PartialInput.Summary,
-				Agent:   evt.Agent,
+				ID:       evt.PartialInput.ID,
+				Delta:    evt.PartialInput.Delta,
+				Summary:  evt.PartialInput.Summary,
+				Agent:    evt.Agent,
+				IsSearch: evt.PartialInput.IsSearch,
+				IsRead:   evt.PartialInput.IsRead,
+				IsList:   evt.PartialInput.IsList,
 			}
 		}
 		return nil

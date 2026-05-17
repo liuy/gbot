@@ -38,6 +38,15 @@ func (t *MCPTool) SearchHint() string {
 	return t.info.SearchHint
 }
 
+// IsSearchOrRead classifies MCP tools for TUI collapse behavior.
+// Delegates to the existing DiscoveredTool classification.
+func (t *MCPTool) IsSearchOrRead(_ json.RawMessage) tool.SearchReadKind {
+	if t.info.IsSearchOrRead() {
+		return tool.SearchReadKind{IsSearch: true}
+	}
+	return tool.SearchReadKind{}
+}
+
 func (t *MCPTool) Name() string                 { return t.info.Name }
 func (t *MCPTool) Aliases() []string            { return nil }
 func (t *MCPTool) InputSchema() json.RawMessage { return t.info.InputSchema }

@@ -876,6 +876,15 @@ func TestExecute_DedupDifferentOffset(t *testing.T) {
 // RenderResult — human-readable output for TUI
 // ---------------------------------------------------------------------------
 
+func TestReadTool_IsSearchOrRead(t *testing.T) {
+	t.Parallel()
+	tt := fileread.New()
+	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
+	if srk.IsSearch || !srk.IsRead || srk.IsList {
+		t.Errorf("ReadTool.IsSearchOrRead() = %+v, want {IsRead:true}", srk)
+	}
+}
+
 func TestRenderResult_TextOutput(t *testing.T) {
 	t.Parallel()
 	tt := fileread.New()

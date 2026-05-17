@@ -138,6 +138,7 @@ func New(registry *BackgroundTaskRegistry) tool.Tool {
 			}
 			return isReadOnlyCommand(in.Command)
 		},
+		IsSearchOrRead_: IsSearchOrRead,
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 30000,
 		Prompt_:            bashPrompt(),

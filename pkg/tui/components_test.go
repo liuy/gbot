@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
 )
@@ -3124,5 +3125,137 @@ func TestJoinHorizontal_MatchesIndentLines(t *testing.T) {
 				t.Errorf("JoinHorizontal != indentLines\nexpected: %q\n     got: %q", expected, result)
 			}
 		})
+	}
+}
+
+func TestRenderToolCall_SearchReadCollapsed(t *testing.T) {
+	t.Parallel()
+
+	output := "line1\nline2\nline3\nline4\nline5"
+
+	// Search/read tool collapsed: should show header + "… ctrl+o to expand", NOT output lines.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "test-1",
+					Name:       "Grep",
+					Summary:    "pattern",
+					Output:     output,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: tool.SearchReadKind{IsSearch: true},
+				},
+			},
+		},
+	}
+	rendered := mv.View(80, false, "●", false, 0)
+
+	if strings.Contains(rendered, "line4") || strings.Contains(rendered, "line5") {
+		t.Errorf("collapsed search/read should NOT show output lines, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "… ctrl+o to expand") {
+		t.Errorf("collapsed search/read should show ctrl+o hint, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Grep") {
+		t.Errorf("should show tool name, got:\n%s", rendered)
+	}
+}
+
+func TestRenderToolCall_SearchReadExpanded(t *testing.T) {
+	t.Parallel()
+
+	output := "line1\nline2\nline3\nline4\nline5"
+
+	// Search/read tool expanded: should show full output.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:         "test-1",
+					Name:       "Read",
+					Summary:    "file.go",
+					Output:     output,
+					Done:       true,
+					Elapsed:    time.Second,
+					SearchRead: tool.SearchReadKind{IsRead: true},
+				},
+			},
+		},
+	}
+	rendered := mv.View(80, true, "●", false, 0)
+
+	if !strings.Contains(rendered, "line5") {
+		t.Errorf("expanded search/read should show all output, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "ctrl+o") {
+		t.Errorf("expanded should not show ctrl+o hint, got:\n%s", rendered)
+	}
+}
+
+func TestRenderToolCall_NonSearchReadCollapsed(t *testing.T) {
+	t.Parallel()
+
+	output := "line1\nline2\nline3\nline4\nline5"
+
+	// Non-search/read tool collapsed: should show truncated output (3 lines) + ctrl+o.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:      "test-1",
+					Name:    "Bash",
+					Summary: "npm test",
+					Output:  output,
+					Done:    true,
+					Elapsed: time.Second,
+				},
+			},
+		},
+	}
+	rendered := mv.View(80, false, "●", false, 0)
+
+	if !strings.Contains(rendered, "line1") {
+		t.Errorf("collapsed non-search/read should show first 3 lines, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Errorf("collapsed non-search/read should show ctrl+o hint, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "line5") {
+		t.Errorf("collapsed non-search/read should truncate after 3 lines, got:\n%s", rendered)
+	}
+}
+
+func TestRenderToolCall_WriteEditAlwaysExpanded(t *testing.T) {
+	t.Parallel()
+
+	output := "+ added line\n- removed line\n+ another"
+
+	// Write/Edit tools are always expanded regardless of collapse state.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{
+				Type: BlockTool,
+				ToolCall: ToolCallView{
+					ID:      "test-1",
+					Name:    "Write",
+					Output:  output,
+					Done:    true,
+					Elapsed: time.Second,
+				},
+			},
+		},
+	}
+	rendered := mv.View(80, false, "●", false, 0)
+
+	if !strings.Contains(rendered, "another") {
+		t.Errorf("Write tool should always show full output, got:\n%s", rendered)
 	}
 }

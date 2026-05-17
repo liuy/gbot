@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
 )
@@ -685,6 +686,7 @@ type ToolCallView struct {
 	Blocks        []ContentBlock  // nested blocks for agent's sub-events (text/tool/thinking)
 	AgentType     string          // agent type name (e.g., "Explore", "Plan")
 	IsBackground  bool            // true = fork agent, keep "running in background..." until sub-engine queryEnd
+	SearchRead    tool.SearchReadKind // classification for collapse behavior
 }
 
 // ThinkingView renders a thinking block within a message.
@@ -917,8 +919,16 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
 			}
 		} else if tc.Output != "" {
-			output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
-			sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
+			// Search/read tools: collapsed view shows header + ctrl+o only, no output.
+			// Source: TS CollapsedReadSearchContent — verbose mode shows each tool,
+			// non-verbose shows summary line. We skip output lines when collapsed.
+			if tc.SearchRead.IsCollapsible() && !toolExpand {
+				hint := styleDim.Render("… ctrl+o to expand")
+				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, hint))
+			} else {
+				output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
+				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
+			}
 		}
 	}
 }

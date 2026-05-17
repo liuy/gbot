@@ -1453,13 +1453,17 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 					}
 					blockAcc[bidx] = acc
 					summary := e.computeSummary(cb.Name, cb.Input)
+					srk := e.computeSearchReadKind(cb.Name, cb.Input)
 					e.emitEvent(types.QueryEvent{
 						Type: types.EventToolStart,
 						ToolUse: &types.ToolUseEvent{
-							ID:      cb.ID,
-							Name:    cb.Name,
-							Input:   cb.Input,
-							Summary: summary,
+							ID:       cb.ID,
+							Name:     cb.Name,
+							Input:    cb.Input,
+							Summary:  summary,
+							IsSearch: srk.IsSearch,
+							IsRead:   srk.IsRead,
+							IsList:   srk.IsList,
 						},
 					})
 				case types.ContentTypeThinking:
@@ -1489,13 +1493,17 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 						acc := blockAcc[event.Index]
 						acc.toolInput.WriteString(event.Delta.PartialJSON)
 						summary := e.computeSummary(acc.toolName, json.RawMessage(acc.toolInput.String()))
+						srk := e.computeSearchReadKind(acc.toolName, json.RawMessage(acc.toolInput.String()))
 						e.emitEvent(types.QueryEvent{
 							Type: types.EventToolParamDelta,
 							PartialInput: &types.PartialInputEvent{
-								ID:      acc.toolID,
-								Name:    acc.toolName,
-								Delta:   event.Delta.PartialJSON,
-								Summary: summary,
+								ID:       acc.toolID,
+								Name:     acc.toolName,
+								Delta:    event.Delta.PartialJSON,
+								Summary:  summary,
+								IsSearch: srk.IsSearch,
+								IsRead:   srk.IsRead,
+								IsList:   srk.IsList,
 							},
 						})
 					}
@@ -1707,6 +1715,16 @@ func (e *Engine) computeSummary(name string, input json.RawMessage) string {
 	}
 	// 3. Final: extract from partial JSON
 	return extractSummaryFromPartial(name, string(input))
+}
+
+// computeSearchReadKind classifies a tool call as search/read/list.
+func (e *Engine) computeSearchReadKind(name string, input json.RawMessage) tool.SearchReadKind {
+	if t, ok := e.tools[name]; ok {
+		if ts, ok := t.(tool.ToolWithSearchOrRead); ok {
+			return ts.IsSearchOrRead(input)
+		}
+	}
+	return tool.SearchReadKind{}
 }
 
 // extractSummaryFromPartial extracts a summary from partial JSON using string matching.

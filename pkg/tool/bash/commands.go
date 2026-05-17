@@ -1,0 +1,216 @@
+package bash
+
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/liuy/gbot/pkg/tool"
+)
+
+// Command classification sets for TUI collapse behavior.
+var (
+	bashSearchCommands = map[string]bool{
+		"find": true, "grep": true, "rg": true, "ag": true, "ack": true,
+		"locate": true, "which": true, "whereis": true,
+	}
+	bashReadCommands = map[string]bool{
+		"cat": true, "head": true, "tail": true, "less": true, "more": true,
+		"wc": true, "sort": true, "uniq": true, "diff": true, "comm": true,
+		"file": true, "stat": true,
+	}
+	bashListCommands = map[string]bool{
+		"ls": true, "tree": true, "du": true,
+	}
+	bashNeutralCommands = map[string]bool{
+		"echo": true, "printf": true, "true": true, "false": true, ":": true,
+	}
+)
+
+// isSearchOrReadBashCommand classifies a bash command for TUI collapse behavior.
+//
+// Simplified vs TS: handles |, ||, &&, ; separators and redirect skipping.
+// Does NOT handle heredocs, subshells, continuation lines, or comment stripping.
+func isSearchOrReadBashCommand(command string) tool.SearchReadKind {
+	if command == "" {
+		return tool.SearchReadKind{}
+	}
+
+	parts := splitOnOperators(command)
+
+	var hasSearch, hasRead, hasList bool
+	hasNonNeutral := false
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Skip redirects and their targets
+		part = skipRedirects(part)
+
+		// Extract base command (first word)
+		baseCmd := extractBaseCommand(part)
+		if baseCmd == "" {
+			continue
+		}
+
+		if bashNeutralCommands[baseCmd] {
+			continue
+		}
+
+		hasNonNeutral = true
+
+		isSearch := bashSearchCommands[baseCmd]
+		isRead := bashReadCommands[baseCmd]
+		isList := bashListCommands[baseCmd]
+
+		if !isSearch && !isRead && !isList {
+			return tool.SearchReadKind{}
+		}
+
+		if isSearch {
+			hasSearch = true
+		}
+		if isRead {
+			hasRead = true
+		}
+		if isList {
+			hasList = true
+		}
+	}
+
+	if !hasNonNeutral {
+		return tool.SearchReadKind{}
+	}
+
+	return tool.SearchReadKind{
+		IsSearch: hasSearch,
+		IsRead:   hasRead,
+		IsList:   hasList,
+	}
+}
+
+// splitOnOperators splits a command string on shell operators ||, &&, |, ;
+// while respecting single and double quotes.
+func splitOnOperators(cmd string) []string {
+	var parts []string
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	i := 0
+
+	for i < len(cmd) {
+		ch := cmd[i]
+
+		if inSingle {
+			buf.WriteByte(ch)
+			if ch == '\'' {
+				inSingle = false
+			}
+			i++
+			continue
+		}
+
+		if inDouble {
+			buf.WriteByte(ch)
+			if ch == '"' && (i == 0 || cmd[i-1] != '\\') {
+				inDouble = false
+			}
+			i++
+			continue
+		}
+
+		// Not in quotes
+		switch {
+		case ch == '\'':
+			buf.WriteByte(ch)
+			inSingle = true
+			i++
+		case ch == '"':
+			buf.WriteByte(ch)
+			inDouble = true
+			i++
+		case ch == '|' && i+1 < len(cmd) && cmd[i+1] == '|':
+			// || operator
+			parts = append(parts, buf.String())
+			buf.Reset()
+			i += 2
+		case ch == '&' && i+1 < len(cmd) && cmd[i+1] == '&':
+			// && operator
+			parts = append(parts, buf.String())
+			buf.Reset()
+			i += 2
+		case ch == '|':
+			// | operator
+			parts = append(parts, buf.String())
+			buf.Reset()
+			i++
+		case ch == ';':
+			// ; operator
+			parts = append(parts, buf.String())
+			buf.Reset()
+			i++
+		default:
+			buf.WriteByte(ch)
+			i++
+		}
+	}
+
+	if buf.Len() > 0 {
+		parts = append(parts, buf.String())
+	}
+
+	return parts
+}
+
+// skipRedirects removes redirect clauses (>file, >>file, >&file) from a command part.
+func skipRedirects(part string) string {
+	// Simple approach: remove tokens that start with > or >> or >&
+	words := strings.Fields(part)
+	var filtered []string
+	skip := false
+	for _, w := range words {
+		if skip {
+			skip = false
+			continue
+		}
+		if w == ">" || w == ">>" || w == ">&" {
+			skip = true
+			continue
+		}
+		// Handle >file (no space)
+		if strings.HasPrefix(w, ">") && len(w) > 1 && w[1] != '>' {
+			continue
+		}
+		filtered = append(filtered, w)
+	}
+	return strings.Join(filtered, " ")
+}
+
+// extractBaseCommand returns the first word of a command string.
+func extractBaseCommand(part string) string {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return ""
+	}
+	// Split on whitespace, take first token
+	for i := 0; i < len(part); i++ {
+		if part[i] == ' ' || part[i] == '\t' {
+			return part[:i]
+		}
+	}
+	return part
+}
+
+// IsSearchOrRead implements tool.ToolWithSearchOrRead for the Bash tool.
+// This is called via the IsSearchOrRead_ field in the ToolDef builder pattern.
+func IsSearchOrRead(input json.RawMessage) tool.SearchReadKind {
+	var in struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(input, &in) != nil || in.Command == "" {
+		return tool.SearchReadKind{}
+	}
+	return isSearchOrReadBashCommand(in.Command)
+}

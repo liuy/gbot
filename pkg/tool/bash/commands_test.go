@@ -1,0 +1,82 @@
+package bash
+
+import (
+	"testing"
+
+	"github.com/liuy/gbot/pkg/tool"
+)
+
+func TestIsSearchOrReadBashCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    tool.SearchReadKind
+	}{
+		{"grep", `grep -r "pattern" .`, tool.SearchReadKind{IsSearch: true}},
+		{"rg", `rg "foo" --glob '*.go'`, tool.SearchReadKind{IsSearch: true}},
+		{"find", `find . -name "*.go"`, tool.SearchReadKind{IsSearch: true}},
+		{"cat", "cat file.txt", tool.SearchReadKind{IsRead: true}},
+		{"head", "head -20 file.go", tool.SearchReadKind{IsRead: true}},
+		{"wc", "wc -l file.go", tool.SearchReadKind{IsRead: true}},
+		{"ls", "ls -la", tool.SearchReadKind{IsList: true}},
+		{"tree", "tree src/", tool.SearchReadKind{IsList: true}},
+		{"du", "du -sh .", tool.SearchReadKind{IsList: true}},
+		{"git commit", `git commit -m "fix"`, tool.SearchReadKind{}},
+		{"npm test", "npm test", tool.SearchReadKind{}},
+		{"python", "python script.py", tool.SearchReadKind{}},
+		{"echo only", `echo "hello"`, tool.SearchReadKind{}},
+		{"empty", "", tool.SearchReadKind{}},
+		// Compound commands
+		{"pipe cat grep", "cat file | grep pattern", tool.SearchReadKind{IsSearch: true, IsRead: true}},
+		{"pipe wc sort", "wc -l file.go | sort", tool.SearchReadKind{IsRead: true}},
+		{"and find echo", `find . -name "*.go" && echo "found"`, tool.SearchReadKind{IsSearch: true}},
+		{"and echo git", `echo "hello" && git commit`, tool.SearchReadKind{}},
+		{"or grep echo", `grep foo || echo "not found"`, tool.SearchReadKind{IsSearch: true}},
+		{"semi ls cat", "ls dir1; cat file", tool.SearchReadKind{IsList: true, IsRead: true}},
+		{"redirect cat", "cat file > output.txt", tool.SearchReadKind{IsRead: true}},
+		{"pipe ls head", "ls -la | head -5", tool.SearchReadKind{IsList: true, IsRead: true}},
+		// Quoted strings preserved
+		{"grep quoted", `grep 'hello world' file.txt`, tool.SearchReadKind{IsSearch: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := isSearchOrReadBashCommand(tt.command)
+			if got != tt.want {
+				t.Errorf("isSearchOrReadBashCommand(%q) = %+v, want %+v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitOnOperators(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cmd  string
+		want int // expected number of parts
+	}{
+		{"simple", "grep foo", 1},
+		{"pipe", "cat file | grep foo", 2},
+		{"and", `echo hi && ls`, 2},
+		{"or", `grep foo || echo no`, 2},
+		{"semi", "ls; pwd", 2},
+		{"complex", `cat file | grep foo && echo yes`, 3},
+		{"quoted pipe", `echo "hello|world"`, 1},
+		{"quoted and", `echo 'hello&&world'`, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parts := splitOnOperators(tt.cmd)
+			if len(parts) != tt.want {
+				t.Errorf("splitOnOperators(%q) returned %d parts, want %d: %v", tt.cmd, len(parts), tt.want, parts)
+			}
+		})
+	}
+}

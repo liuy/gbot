@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // freshState creates a ReplState with a started query and one assistant message.
@@ -175,7 +177,7 @@ func TestAppendTextItem_CreatesEmptyTextBlock(t *testing.T) {
 func TestPendingToolStarted_AddsBlock(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls -la", `{"command":"ls -la"}`)
+	s.PendingToolStarted("t1", "Bash", "ls -la", `{"command":"ls -la"}`, tool.SearchReadKind{})
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
 	if blk.Type != BlockTool {
@@ -195,7 +197,7 @@ func TestPendingToolStarted_AddsBlock(t *testing.T) {
 func TestPendingToolDone_UpdatesBlock(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls", "{}")
+	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	s.PendingToolDone("t1", "file1.txt\nfile2.txt", false, 100*time.Millisecond)
 
 	msgs := s.Messages()
@@ -214,7 +216,7 @@ func TestPendingToolDone_UpdatesBlock(t *testing.T) {
 func TestPendingToolDone_MissingID_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls", "{}")
+	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// Different ID — should not crash or change existing tool
 	s.PendingToolDone("nonexistent", "output", false, time.Second)
 	msgs := s.Messages()
@@ -227,7 +229,7 @@ func TestPendingToolDone_MissingID_Noop(t *testing.T) {
 func TestPendingToolDone_PerceivesHigherElapsed(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls", "{}")
+	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// Wait a tiny bit so perceived > reported elapsed
 	time.Sleep(5 * time.Millisecond) // REAL-TIME: needed to test perceived elapsed time measurement
 	s.PendingToolDone("t1", "ok", false, 1*time.Nanosecond)
@@ -242,7 +244,7 @@ func TestPendingToolDone_PerceivesHigherElapsed(t *testing.T) {
 func TestPendingToolDone_AccumulatesSubAgentToolCount(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 	// Simulate sub-agent adding blocks directly to Blocks
 	tcv := s.pendingTool["agent1"]
 	tcv.Blocks = append(tcv.Blocks,
@@ -272,7 +274,7 @@ func TestPendingToolDone_AccumulatesSubAgentToolCount(t *testing.T) {
 func TestPendingToolDelta_UpdatesSummary(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Read", "", "{}")
+	s.PendingToolStarted("t1", "Read", "", "{}", tool.SearchReadKind{})
 	s.PendingToolDelta("t1", `{"file_path":"/tmp/test"}`, "/tmp/test")
 
 	msgs := s.Messages()
@@ -296,7 +298,7 @@ func TestPendingToolDelta_MissingID_Noop(t *testing.T) {
 func TestPendingToolOutput_UpdatesOutputAndDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls", "{}")
+	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	s.PendingToolOutput("t1", "line1\nline2", 50*time.Millisecond)
 
 	msgs := s.Messages()
@@ -422,7 +424,7 @@ func TestPendingThinkingDone_NilLastMsg_Noop(t *testing.T) {
 func TestBlocks_ToolStart(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	tcv.Blocks = append(tcv.Blocks, ContentBlock{
@@ -455,7 +457,7 @@ func TestBlocks_ToolStart(t *testing.T) {
 func TestBlocks_ToolEnd(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	tcv.Blocks = append(tcv.Blocks, ContentBlock{
@@ -482,7 +484,7 @@ func TestBlocks_ToolEnd(t *testing.T) {
 func TestBlocks_ToolEnd_WithError(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	tcv.Blocks = append(tcv.Blocks, ContentBlock{
@@ -504,7 +506,7 @@ func TestBlocks_ToolEnd_WithError(t *testing.T) {
 func TestBlocks_ThinkingStartAndEnd(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	// thinking_start adds a Thinking block
 	tcv := s.pendingTool["agent1"]
@@ -537,7 +539,7 @@ func TestBlocks_ThinkingStartAndEnd(t *testing.T) {
 func TestBlocks_ToolParamDelta(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	tcv.Blocks = append(tcv.Blocks, ContentBlock{
@@ -575,7 +577,7 @@ func TestBlocks_UnknownParent_Noop(t *testing.T) {
 func TestBlocks_TrimsOver50Entries(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	// Add 55 tool blocks directly
@@ -605,7 +607,7 @@ func TestBlocks_TrimsOver50Entries(t *testing.T) {
 func TestAgentUsage_Accumulates(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	tcv := s.pendingTool["agent1"]
 	tcv.TokensIn += 100
@@ -635,7 +637,7 @@ func TestAgentUsage_Accumulates(t *testing.T) {
 func TestSetAgentContextWindow(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	s.SetAgentContextWindow("agent1", 200000)
 
@@ -670,7 +672,7 @@ func TestAgentUsage_UnknownParent_Noop(t *testing.T) {
 func TestUpdateToolBlock_NotFound_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("t1", "Bash", "ls", "{}")
+	s.PendingToolStarted("t1", "Bash", "ls", "{}", tool.SearchReadKind{})
 	// PendingToolDone with nonexistent ID → updateToolBlock returns false,
 	// but PendingToolDone itself just returns (no-op)
 	s.PendingToolDone("nonexistent", "output", false, time.Second)
@@ -692,8 +694,8 @@ func TestMultipleToolsInQuery(t *testing.T) {
 	s := freshState()
 	s.AppendChunk("let me check")
 
-	s.PendingToolStarted("t1", "Read", "main.go", "{}")
-	s.PendingToolStarted("t2", "Grep", "TODO", "{}")
+	s.PendingToolStarted("t1", "Read", "main.go", "{}", tool.SearchReadKind{})
+	s.PendingToolStarted("t2", "Grep", "TODO", "{}", tool.SearchReadKind{})
 
 	s.PendingToolDone("t1", "package main...", false, 10*time.Millisecond)
 	s.PendingToolDone("t2", "3 matches found", false, 20*time.Millisecond)
@@ -733,7 +735,7 @@ func TestMultipleToolsInQuery(t *testing.T) {
 // This simulates a child agent that has spawned its own agent tool (grandchild).
 func setupNestedAgent() *ReplState {
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	// Simulate child agent spawning a grandchild tool inside the parent's Blocks
 	parent := s.pendingTool["agent1"]
@@ -784,7 +786,7 @@ func TestFindToolView_FindsTopLevel(t *testing.T) {
 func TestFindToolView_DeeplyNested(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("agent1", "Agent", "explore", "{}")
+	s.PendingToolStarted("agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	// Level 2: child inside agent1
 	parent := s.pendingTool["agent1"]
@@ -891,7 +893,7 @@ func TestGrandchildTextDelta(t *testing.T) {
 func TestToolEndMsg_IsBackground_NotMarkedDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}")
+	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}", tool.SearchReadKind{})
 
 	// Simulate toolEndMsg with IsBackground=true via direct state manipulation.
 	// The handler sets IsBackground=true and keeps Done=false.
@@ -923,7 +925,7 @@ func TestToolEndMsg_IsBackground_NotMarkedDone(t *testing.T) {
 func TestQueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}")
+	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}", tool.SearchReadKind{})
 	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second)  // REAL-TIME: pending tool start time
 
 	// Set parent as background
@@ -954,7 +956,7 @@ func TestQueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 func TestQueryEndMsg_ForkAgent_AlreadyDone_NoOp(t *testing.T) {
 	t.Parallel()
 	s := freshState()
-	s.PendingToolStarted("tool-bg-2", "Agent", "fork", "{}")
+	s.PendingToolStarted("tool-bg-2", "Agent", "fork", "{}", tool.SearchReadKind{})
 
 	// Set parent as background AND already done
 	tcv := s.findToolView("tool-bg-2")

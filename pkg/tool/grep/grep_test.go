@@ -889,3 +889,11 @@ func TestRenderResult_UnknownMode(t *testing.T) {
 		t.Errorf("RenderResult(unknown mode) = %q, should contain mode name", result)
 	}
 }
+
+func TestGrepTool_IsSearchOrRead(t *testing.T) {
+	tt := grep.New()
+	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
+	if !srk.IsSearch || srk.IsRead || srk.IsList {
+		t.Errorf("GrepTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)
+	}
+}

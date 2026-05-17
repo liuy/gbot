@@ -78,10 +78,16 @@ const (
 // ---------------------------------------------------------------------------
 
 // SearchReadKind classifies a tool call as search/read/list.
+// Source: Tool.ts:429-433 — isSearchOrReadCommand return type.
 type SearchReadKind struct {
 	IsSearch bool
 	IsRead   bool
 	IsList   bool
+}
+
+// IsCollapsible returns true if the tool call should be collapsed in the TUI.
+func (s SearchReadKind) IsCollapsible() bool {
+	return s.IsSearch || s.IsRead || s.IsList
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +223,15 @@ type ToolWithSummary interface {
 	Summary(input json.RawMessage) string
 }
 
+// ToolWithSearchOrRead is an optional interface for tools that classify as
+// search/read operations. Collapsed TUI rendering skips output lines for
+// these tools, showing only the header + ctrl+o hint.
+// Source: Tool.ts:429 — isSearchOrReadCommand?(input)
+type ToolWithSearchOrRead interface {
+	Tool
+	IsSearchOrRead(input json.RawMessage) SearchReadKind
+}
+
 // IsDeferredTool is an optional interface for tools that should be deferred
 // from the initial tool set and loaded on-demand via ToolSearch.
 // Source: TS prompt.ts:62-108 — isDeferredTool()
@@ -282,6 +297,10 @@ type ToolDef struct {
 	// Source: SkillTool.ts:843-861 — mapToolResultToToolResultBlockParam
 	FormatWireResult_ func(data any) string
 
+	// Search/read classification for TUI collapse behavior.
+	// If set, the built tool implements ToolWithSearchOrRead.
+	IsSearchOrRead_ func(input json.RawMessage) SearchReadKind
+
 		// Deferred loading
 		ShouldDefer_ bool   // mark tool as deferred for ToolSearch
 		SearchHint_  string // short description for search scoring
@@ -299,6 +318,28 @@ type builtWireFormatTool struct {
 
 func (t *builtWireFormatTool) FormatWireResult(data any) string {
 	return t.def.FormatWireResult_(data)
+}
+
+// builtSearchReadTool wraps a ToolDef and implements ToolWithSearchOrRead.
+type builtSearchReadTool struct {
+	builtTool
+}
+
+func (t *builtSearchReadTool) IsSearchOrRead(input json.RawMessage) SearchReadKind {
+	return t.def.IsSearchOrRead_(input)
+}
+
+// builtFullTool wraps a ToolDef and implements both ToolWithWireFormat and ToolWithSearchOrRead.
+type builtFullTool struct {
+	builtTool
+}
+
+func (t *builtFullTool) FormatWireResult(data any) string {
+	return t.def.FormatWireResult_(data)
+}
+
+func (t *builtFullTool) IsSearchOrRead(input json.RawMessage) SearchReadKind {
+	return t.def.IsSearchOrRead_(input)
 }
 
 // BuildTool fills defaults and returns a Tool interface.
@@ -331,8 +372,14 @@ func BuildTool(def ToolDef) Tool {
 			return string(b)
 		}
 	}
+	if def.FormatWireResult_ != nil && def.IsSearchOrRead_ != nil {
+		return &builtFullTool{builtTool{def: def}}
+	}
 	if def.FormatWireResult_ != nil {
 		return &builtWireFormatTool{builtTool{def: def}}
+	}
+	if def.IsSearchOrRead_ != nil {
+		return &builtSearchReadTool{builtTool{def: def}}
 	}
 	return &builtTool{def: def}
 }

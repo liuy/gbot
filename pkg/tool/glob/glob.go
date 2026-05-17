@@ -87,6 +87,9 @@ func New() tool.Tool {
 			}
 			return fmt.Sprintf("Found %d %s", out.Count, tool.PluralWord(out.Count, "files"))
 		},
+		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
+			return tool.SearchReadKind{IsSearch: true}
+		},
 	})
 }
 

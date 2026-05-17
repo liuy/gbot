@@ -184,6 +184,9 @@ func New() tool.Tool {
 				return string(b)
 			}
 		},
+		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
+			return tool.SearchReadKind{IsSearch: true}
+		},
 	})
 }
 

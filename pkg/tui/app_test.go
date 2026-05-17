@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1058,7 +1059,7 @@ func TestApp_Update_StreamToolDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 
 	model, _ := app.Update(toolParamDeltaMsg{ID: "t1", Delta: `{"file":"test.go"}`, Summary: "test.go"})
 	a := model.(*App)
@@ -1075,7 +1076,7 @@ func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Write", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Write", "", `{}`, tool.SearchReadKind{})
 
 	delta := `{"content":"package main\nfunc main() {}"}`
 	app.Update(toolParamDeltaMsg{ID: "t1", Delta: delta, Summary: "main.go"})
@@ -1122,7 +1123,7 @@ func TestReplState_AppendTextItem_NilLastMsg(t *testing.T) {
 
 func TestReplState_PendingToolStarted_NilLastMsg(t *testing.T) {
 	s := NewReplState()
-	s.PendingToolStarted("t1", "Read", "", `{}`)
+	s.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 	// No messages → lastMsg() returns nil → returns early
 	// pendingTool should NOT have the entry (early return)
 	if s.pendingTool["t1"] != nil {
@@ -1141,7 +1142,7 @@ func TestReplState_PendingToolDone_UnknownID(t *testing.T) {
 func TestReplState_PendingToolDelta(t *testing.T) {
 	s := NewReplState()
 	s.StartQuery()
-	s.PendingToolStarted("t1", "Read", "", `{}`)
+	s.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 	s.PendingToolDelta("t1", `{"file":"a.go"}`, "a.go")
 	tcv := s.pendingTool["t1"]
 	if tcv.Summary != "a.go" {
@@ -1240,7 +1241,7 @@ func TestApp_UpdateRepl_StreamToolResult(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 	_, cmd := app.updateRepl(toolEndMsg{ToolUseID: "t1", Output: "ok"})
 	if cmd == nil {
 		t.Error("toolEndMsg should return a readEvents cmd")
@@ -1255,7 +1256,7 @@ func TestApp_Update_RoutesAgentToolStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search code", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search code", "{}", tool.SearchReadKind{})
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 	_, cmd := app.Update(toolStartMsg{
 		ID:      "sub-1",
@@ -1272,7 +1273,7 @@ func TestApp_UpdateRepl_AgentToolStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 	_, cmd := app.updateRepl(toolStartMsg{
 		ID:      "sub-1",
@@ -1305,7 +1306,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -1344,7 +1345,7 @@ func TestApp_UpdateRepl_AgentToolParamDelta_SameDepth(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -1385,7 +1386,7 @@ func TestApp_UpdateRepl_AgentThinkingPreserved(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -1432,7 +1433,7 @@ func TestApp_SpinnerTick_MarksDirty(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_1", "Bash", "test", "{}")
+	app.repl.PendingToolStarted("call_1", "Bash", "test", "{}", tool.SearchReadKind{})
 	// Clear any existing dirty flag
 	app.contentDirty = false
 
@@ -1455,7 +1456,7 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	// Main model usage — snaps displayedInputTokens
 	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
@@ -1849,7 +1850,7 @@ func TestApp_HandleKey_CtrlY_EmptyRing(t *testing.T) {
 func TestReplState_AppendChunk_LastBlockIsTool(t *testing.T) {
 	s := NewReplState()
 	s.StartQuery()
-	s.PendingToolStarted("t1", "Read", "", `{}`)
+	s.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 	// Last block is a tool block, not text
 	s.AppendChunk("hello")
 	m := s.lastMsg()
@@ -2055,7 +2056,7 @@ func TestApp_FinishStream_WithTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.repl.PendingToolStarted("t1", "Read", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
 	app.repl.PendingToolDone("t1", "contents", false, 0)
 
 	app.repl.FinishStream(nil)
@@ -2471,7 +2472,7 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	v := app.View()
 	// Running state shows dim tool name + & suffix (no summary)
 	if !strings.Contains(v, "Bash") || !strings.Contains(v, "running...") {
@@ -3309,7 +3310,7 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Bash", "", `{}`, tool.SearchReadKind{})
 
 	model, _ := app.Update(toolOutputDeltaMsg{
 		ToolUseID:     "t1",
@@ -3348,7 +3349,7 @@ func TestApp_Update_StreamToolOutput_UpdatesElapsed(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "", `{}`)
+	app.repl.PendingToolStarted("t1", "Bash", "", `{}`, tool.SearchReadKind{})
 
 	// Set pendingToolStart BEFORE calling Update so it's available synchronously
 	app.repl.pendingToolStart["t1"] = time.Now().Add(-100 * time.Millisecond) // REAL-TIME: needed for tool elapsed time calculation
@@ -3544,7 +3545,7 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for expanded tool view timing
 
 	// Tool with long output
-	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`)
+	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`, tool.SearchReadKind{})
 	longOutput := strings.Repeat("output line\n", 50)
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 
@@ -3593,7 +3594,7 @@ func TestApp_View_ToolOutputCollapsed(t *testing.T) {
 	app.width = 80
 	app.height = 40
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	// 10 lines of output — should collapse to 3 lines + hint
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
@@ -3623,7 +3624,7 @@ func TestApp_View_ToolOutputExpanded(t *testing.T) {
 	app.height = 40
 	app.allToolsExpanded = true
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 	app.markViewportDirty()
@@ -3648,7 +3649,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	// Simulate full query lifecycle
 	app.repl.AddUserMessage("test")
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 	app.repl.AppendTextItem()
@@ -3752,7 +3753,7 @@ func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
 	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for truncation timing in assistant text preservation
 
 	// Tool with long output (takes many lines)
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := strings.Repeat("tool output line\n", 20)
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 
@@ -3786,7 +3787,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 
 	app.repl.AddUserMessage("test")
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`)
+	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	longOutput := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second)
 	app.repl.AppendTextItem()
@@ -4300,15 +4301,15 @@ func TestApp_ToolCount_IncrementOnToolStart(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("id1", "Read", "", "")
+	app.repl.PendingToolStarted("id1", "Read", "", "", tool.SearchReadKind{})
 	if app.repl.toolCount != 1 {
 		t.Errorf("toolCount should be 1 after one tool start, got %d", app.repl.toolCount)
 	}
-	app.repl.PendingToolStarted("id2", "Grep", "", "")
+	app.repl.PendingToolStarted("id2", "Grep", "", "", tool.SearchReadKind{})
 	if app.repl.toolCount != 2 {
 		t.Errorf("toolCount should be 2 after two tool starts, got %d", app.repl.toolCount)
 	}
-	app.repl.PendingToolStarted("id3", "Bash", "", "")
+	app.repl.PendingToolStarted("id3", "Bash", "", "", tool.SearchReadKind{})
 	if app.repl.toolCount != 3 {
 		t.Errorf("toolCount should be 3 after three tool starts, got %d", app.repl.toolCount)
 	}
@@ -4477,7 +4478,7 @@ func TestApp_AgentUsageMsg_DoesNotUpdateSetContext(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	// Main model sets context
 	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
@@ -5573,7 +5574,7 @@ func TestApp_UpdateRepl_SubAgentThinkingDelta_AppendsText(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -5604,7 +5605,7 @@ func TestApp_UpdateRepl_SubAgentThinkingEnd_MarksDone(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -5636,7 +5637,7 @@ func TestApp_UpdateRepl_SubAgentThinkingStartDeltaEnd_ContentPreserved(t *testin
 	// After end, thinking block should still exist (Done=true) with text preserved
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}")
+	app.repl.PendingToolStarted("call_abc", "Agent", "search", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_abc", AgentType: "Explore"}
 
@@ -5677,7 +5678,7 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 	app.repl.AppendTextItem()
 
 	// --- Step 1: Main agent starts an Agent tool ---
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 	app.repl.SetAgentContextWindow("call_agent1", 200000)
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
@@ -5773,7 +5774,7 @@ func TestApp_UpdateRepl_SubAgentTextDeltaViaMessageFlow(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
 
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -5814,7 +5815,7 @@ func TestApp_UpdateRepl_SubAgentNestedRendering(t *testing.T) {
 	app.repl.AppendTextItem()
 
 	// --- Step 1: Main agent starts an Agent tool ---
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 	app.repl.SetAgentContextWindow("call_agent1", 200000)
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
@@ -5935,7 +5936,7 @@ func TestApp_UpdateRepl_SubAgentThinkingPreservedAfterToolStart(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -5992,7 +5993,7 @@ func TestApp_UpdateRepl_SubAgentTextIndentation(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -6025,7 +6026,7 @@ func TestApp_UpdateRepl_SubAgentThinkingStreaming(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -6058,7 +6059,7 @@ func TestApp_UpdateRepl_SubAgentThinkingStreamingHasIndent(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -6100,7 +6101,7 @@ func TestApp_UpdateRepl_SubAgentTextCollapsedWhenNotExpanded(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -6129,7 +6130,7 @@ func TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
-	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}")
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
 
 	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
 
@@ -6228,7 +6229,7 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 	app.spinner.Start()
 
 	parentToolID := "tool-fork-parent-1"
-	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
+	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}", tool.SearchReadKind{})
 	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-2 * time.Second) // REAL-TIME: needed for fork agent parent elapsed time
 
 	// Set parent as background (simulates toolEndMsg with IsBackground=true)
@@ -6284,7 +6285,7 @@ func TestApp_QueryEndMsg_ForkAgent_ErrorMarksParentDone(t *testing.T) {
 	app.spinner.Start()
 
 	parentToolID := "tool-fork-err-1"
-	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}")
+	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}", tool.SearchReadKind{})
 	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for fork agent error elapsed time
 
 	tcv := app.repl.findToolView(parentToolID)
@@ -6326,7 +6327,7 @@ func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
 
 	// Set up two independent fork agents
 	for _, id := range []string{"tool-fork-a", "tool-fork-b"} {
-		app.repl.PendingToolStarted(id, "Agent", "fork", "{}")
+		app.repl.PendingToolStarted(id, "Agent", "fork", "{}", tool.SearchReadKind{})
 		app.repl.pendingToolStart[id] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for multiple fork agents elapsed time
 		tcv := app.repl.findToolView(id)
 		tcv.IsBackground = true
