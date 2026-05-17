@@ -816,7 +816,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		if len(uncommitted) > 0 {
 			// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 			// user's expand/collapse state.
-			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
 			errCommitCmd = tea.Println(rendered)
 		}
 		*a.repl = *NewReplState()
@@ -867,7 +867,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	if len(uncommitted) > 0 {
 		// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 		// user's expand/collapse state.
-		rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", true, 0)
+		rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
 		a.committedCount = len(a.repl.messages)
 		commitCmd = tea.Println(rendered)
 	}
@@ -992,7 +992,7 @@ func prettyJSON(raw json.RawMessage) string {
 
 // renderMessagesFull renders the complete message history without height truncation.
 // Terminal native scrollback handles scrolling — matching TS behavior.
-func renderMessagesFull(messages []MessageView, width int, expandTools bool, toolDot string, noHint bool, maxOutputLines int) string {
+func renderMessagesFull(messages []MessageView, width int, expandTools bool, toolDot string, streaming bool, noHint bool, maxOutputLines int) string {
 	if len(messages) == 0 {
 		welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 		return welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
@@ -1000,7 +1000,7 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 
 	var sb strings.Builder
 	for _, msg := range messages {
-		sb.WriteString(msg.View(width, expandTools, toolDot, noHint, maxOutputLines))
+		sb.WriteString(msg.View(width, expandTools, toolDot, streaming, noHint, maxOutputLines))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

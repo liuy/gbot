@@ -3668,7 +3668,7 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.Update(queryEndMsg{})
 
 	// Verify committed output is collapsed
-	rendered := renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	rendered := renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	if !strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("committed output should show collapsed tool hint, got:\n%s", rendered)
 	}
@@ -3694,13 +3694,13 @@ func TestRenderMessagesFull_Collapsed(t *testing.T) {
 	}
 
 	// Not expanded → should collapse
-	rendered := renderMessagesFull(messages, 80, false, "", false, 0)
+	rendered := renderMessagesFull(messages, 80, false, "", false, false, 0)
 	if !strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("renderMessagesFull(expand=false) should collapse tool output, got:\n%s", rendered)
 	}
 
 	// Expanded → should show all
-	rendered = renderMessagesFull(messages, 80, true, "", false, 0)
+	rendered = renderMessagesFull(messages, 80, true, "", false, false, 0)
 	if strings.Contains(rendered, "ctrl+o to expand") {
 		t.Errorf("renderMessagesFull(expand=true) should NOT collapse, got:\n%s", rendered)
 	}
@@ -3724,7 +3724,7 @@ func TestRenderMessagesFull_NoHintCommit(t *testing.T) {
 	}
 
 	// Collapsed + noHint=true: no ctrl+o but still collapsed
-	rendered := renderMessagesFull(messages, 80, false, "", true, 0)
+	rendered := renderMessagesFull(messages, 80, false, "", false, true, 0)
 	if strings.Contains(rendered, "ctrl+o") {
 		t.Errorf("noHint=true should suppress ctrl+o, got:\n%s", rendered)
 	}
@@ -3733,7 +3733,7 @@ func TestRenderMessagesFull_NoHintCommit(t *testing.T) {
 	}
 
 	// Expanded + noHint=true: shows all (same as expanded without noHint)
-	rendered = renderMessagesFull(messages, 80, true, "", true, 0)
+	rendered = renderMessagesFull(messages, 80, true, "", false, true, 0)
 	if strings.Contains(rendered, "ctrl+o") {
 		t.Errorf("expanded should not have ctrl+o, got:\n%s", rendered)
 	}
@@ -3802,7 +3802,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	// Simulate commit (renderMessagesFull with noHint=true but NOT forced expand)
 	// The commit should use expand=false (user's state), not expand=true
 	uncommitted := app.repl.messages[app.committedCount:]
-	rendered := renderMessagesFull(uncommitted, app.width, app.allToolsExpanded, "", true, 0)
+	rendered := renderMessagesFull(uncommitted, app.width, app.allToolsExpanded, "", false, true, 0)
 
 	// Should NOT show all lines — tools are collapsed
 	if strings.Contains(rendered, "line10") {
@@ -4898,7 +4898,7 @@ func TestApp_ModalPeek_Adaptive_SparseContent(t *testing.T) {
 	app := helperModalApp(t, 24)
 	helperAddMessages(app, 3, "Line")
 	// Populate cache directly (avoids fragile View()-then-reset pattern)
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 
 	view := app.View()
@@ -4922,7 +4922,7 @@ func TestApp_ModalPeek_Adaptive_AbundantContent(t *testing.T) {
 	app := helperModalApp(t, 24)
 	helperAddMessages(app, 100, "Content line that is reasonably long")
 	// Populate cache directly
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 
 	view := app.View()
@@ -4944,7 +4944,7 @@ func TestApp_ModalPeek_DialogShowsTitle(t *testing.T) {
 func TestApp_ModalPeek_TinyTerminal(t *testing.T) {
 	app := helperModalApp(t, 6)
 	helperAddMessages(app, 5, "Line")
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 	app.activeDialog = NewDialog("Test", []DialogOption{{Label: "A"}, {Label: "B"}})
 	app.activeDialog.width = app.width
@@ -4962,7 +4962,7 @@ func TestApp_ModalPeek_TinyTerminal(t *testing.T) {
 func TestApp_ModalPeek_ResizeRecalculates(t *testing.T) {
 	app := helperModalApp(t, 24)
 	helperAddMessages(app, 5, "Line")
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 	app.activeDialog = NewDialog("Test", []DialogOption{{Label: "A"}, {Label: "B"}})
 	app.activeDialog.width = app.width
@@ -4988,7 +4988,7 @@ func TestApp_ModalPeek_BoundaryContent(t *testing.T) {
 	app := helperModalApp(t, 24)
 	maxPeek := 24 - minModalHeight // = 19
 	helperAddMessages(app, maxPeek, "Boundary line")
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 
 	view := app.View()
@@ -5353,7 +5353,7 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 	if lastMsg == nil {
 		t.Fatal("expected at least one message after queryEnd")
 	}
-	statsText := lastMsg.View(200, false, "", false, 50)
+	statsText := lastMsg.View(200, false, "", false, false, 50)
 	if !strings.Contains(statsText, "34.2k") && !strings.Contains(statsText, "35000") {
 		// TotalInput = 22000 + 13000 = 35000 = 34.2k (1024 base)
 		t.Errorf("stats line should show engine accumulated total input (34.2k), got:\n%s", statsText)
@@ -5527,7 +5527,7 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	if lastMsg == nil {
 		t.Fatal("expected a message after abort")
 	}
-	text := lastMsg.View(200, false, "", false, 50)
+	text := lastMsg.View(200, false, "", false, false, 50)
 	if !strings.Contains(text, types.InterruptMessage) {
 		t.Errorf("expected inline interrupt message, got:\n%s", text)
 	}
@@ -5555,7 +5555,7 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 	if lastMsg == nil {
 		t.Fatal("expected a message after abort")
 	}
-	text := lastMsg.View(200, false, "", false, 50)
+	text := lastMsg.View(200, false, "", false, false, 50)
 	if !strings.Contains(text, types.InterruptMessage) {
 		t.Errorf("expected inline interrupt message, got:\n%s", text)
 	}
@@ -5752,7 +5752,7 @@ func TestApp_UpdateRepl_SubAgentToolFullLifecycle(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("no messages")
 	}
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	if !strings.Contains(plain, "Agent") {
@@ -5854,7 +5854,7 @@ func TestApp_UpdateRepl_SubAgentNestedRendering(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("no messages")
 	}
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 	lines := strings.Split(plain, "\n")
 
@@ -6008,7 +6008,7 @@ func TestApp_UpdateRepl_SubAgentTextIndentation(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("no messages")
 	}
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	t.Logf("rendered:\n%s", plain)
@@ -6041,7 +6041,7 @@ func TestApp_UpdateRepl_SubAgentThinkingStreaming(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("no messages")
 	}
-	rendered := msgs[0].View(80, false, "●", false, 0)
+	rendered := msgs[0].View(80, false, "●", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	t.Logf("rendered (streaming):\n%s", plain)
@@ -6067,7 +6067,7 @@ func TestApp_UpdateRepl_SubAgentThinkingStreamingHasIndent(t *testing.T) {
 	app.updateRepl(thinkingDeltaMsg{Text: "Analyzing the module structure...", Agent: agent})
 
 	msgs := app.repl.Messages()
-	rendered := msgs[0].View(80, false, "●", false, 0)
+	rendered := msgs[0].View(80, false, "●", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	t.Logf("rendered:\n%s", plain)
@@ -6112,7 +6112,7 @@ func TestApp_UpdateRepl_SubAgentTextCollapsedWhenNotExpanded(t *testing.T) {
 
 	msgs := app.repl.Messages()
 	// expand=false → should show collapse hint
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	t.Logf("rendered (collapsed):\n%s", plain)
@@ -6143,7 +6143,7 @@ func TestApp_UpdateRepl_SubAgentThinkingCollapsedWhenNotExpanded(t *testing.T) {
 
 	msgs := app.repl.Messages()
 	// expand=false → thinking content should be collapsed
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	plain := stripANSIPrintable(rendered)
 
 	t.Logf("rendered (collapsed):\n%s", plain)
@@ -6519,7 +6519,7 @@ func TestApp_RenderInputOverlay_WithPeekContent(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	helperAddMessages(app, 3, "Line")
-	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, 0)
+	app.contentCache = renderMessagesFull(app.repl.messages, app.width, false, "", false, false, 0)
 	app.contentDirty = false
 
 	ch := make(chan types.AskResponse, 1)
@@ -7044,7 +7044,7 @@ func TestApp_PasteMultiline_SubmitPreservesAllLines(t *testing.T) {
 	}
 
 	// Verify rendering preserves both lines
-	rendered := msgs[0].View(80, false, "", false, 0)
+	rendered := msgs[0].View(80, false, "", false, false, 0)
 	if !strings.Contains(rendered, "测试消息") {
 		t.Errorf("rendered should contain '测试消息', got: %s", rendered)
 	}

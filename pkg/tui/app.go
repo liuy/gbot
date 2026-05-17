@@ -582,7 +582,7 @@ func (a *App) View() string {
 				toolDot = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
 			}
 			// maxOutputLines=0 means unlimited — terminal scroll handles overflow
-			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot, false, 0)
+			a.contentCache = renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, toolDot, a.repl.IsStreaming(), false, 0)
 			a.contentDirty = false
 		}
 		contentStr = a.contentCache
@@ -1013,7 +1013,7 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		uncommitted := a.repl.messages[a.committedCount:]
 		if len(uncommitted) > 0 {
-			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, 0)
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, false, 0)
 			a.committedCount = len(a.repl.messages)
 			cmd = tea.Println(rendered)
 		}
@@ -1262,7 +1262,7 @@ func (a *App) getRenderedContent() string {
 	if a.contentCache != "" {
 		return a.contentCache
 	}
-	return renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, 0)
+	return renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, false, 0)
 }
 
 // lastNLines returns the last n lines of s without allocating a full slice.

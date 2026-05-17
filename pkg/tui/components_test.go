@@ -401,7 +401,7 @@ func TestMessageView_UserRole(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hello there"}},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "❯ hello there") {
 		t.Errorf("View() = %q, should contain ❯ prefix", v)
 	}
@@ -414,7 +414,7 @@ func TestMessageView_UserRole_MultiLine(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "this is a very long line that will wrap and continue on the next line"}},
 	}
-	v := m.View(30, false, "", false, 0) // narrow width triggers wrapping
+	v := m.View(30, false, "", false, false, 0) // narrow width triggers wrapping
 	// First line should have ❯ prefix
 	if !strings.Contains(v, "❯ this") {
 		t.Errorf("View() = %q, should start with ❯", v)
@@ -455,7 +455,7 @@ func TestMessageView_AssistantRole(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hi from gbot"}},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	// Role prefix is rendered by parent component (MessageList), not here
 	if !strings.Contains(v, "hi from gbot") {
 		t.Errorf("View() = %q, should contain content", v)
@@ -469,7 +469,7 @@ func TestMessageView_SystemRole(t *testing.T) {
 		Role:   "system",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "system msg"}},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "system msg") {
 		t.Errorf("View() = %q, should contain content", v)
 	}
@@ -485,7 +485,7 @@ func TestMessageView_WithToolCalls_Running(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Input: `{"file":"test.go"}`, Done: false}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	// "running..." suffix for running state
 	if !strings.Contains(v, "running...") {
 		t.Errorf("View() = %q, should contain 'running...' for running state", v)
@@ -505,7 +505,7 @@ func TestMessageView_WithToolCalls_Done(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Grep", Output: "found match", Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "done") {
 		t.Errorf("View() = %q, should contain 'done'", v)
 	}
@@ -525,7 +525,7 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "exit code 1", Done: true, IsError: true}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	// Error shows tool name with red dot
 	if !strings.Contains(v, "Bash") {
 		t.Errorf("View() = %q, should contain 'Bash'", v)
@@ -546,7 +546,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockText, Text: "Here is the result"},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "\n\n") {
 		t.Errorf("completed tool followed by text should have blank line, got: %q", v)
 	}
@@ -559,7 +559,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockText, Text: "should be no blank line"},
 		},
 	}
-	v2 := m2.View(80, false, "", false, 0)
+	v2 := m2.View(80, false, "", false, false, 0)
 	if strings.Contains(v2, "\n\n") {
 		t.Errorf("running tool followed by text should NOT have blank line, got: %q", v2)
 	}
@@ -571,7 +571,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "done", Done: true}},
 		},
 	}
-	v3 := m3.View(80, false, "", false, 0)
+	v3 := m3.View(80, false, "", false, false, 0)
 	if strings.Contains(v3, "\n\n") {
 		t.Errorf("tool at end should not have blank line, got: %q", v3)
 	}
@@ -588,7 +588,7 @@ func TestMessageView_ToolCallLongOutput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Read", Output: longOutput, Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	// Output longer than 200 chars should not be shown
 	if strings.Contains(v, strings.Repeat("x", 300)) {
 		t.Error("long output (>200 chars) should not appear in view")
@@ -609,7 +609,7 @@ func TestMessageView_ToolCallLongInput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Write", Input: longInput, Done: false}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	// Input longer than 200 chars should not be shown
 	if strings.Contains(v, strings.Repeat("y", 300)) {
 		t.Error("long input (>200 chars) should not appear in view")
@@ -624,7 +624,7 @@ func TestMessageView_WordWrap(t *testing.T) {
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "This is a very long sentence that should be wrapped properly"}},
 	}
-	v := m.View(20, false, "", false, 0)
+	v := m.View(20, false, "", false, false, 0)
 	lines := strings.SplitSeq(v, "\n")
 	// Each line should be reasonably short (no line longer than width + some ANSI margin)
 	for line := range lines {
@@ -642,7 +642,7 @@ func TestMessageView_WordWrap_Chinese(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "这是一段很长的中文文本需要被自动换行处理才能正确显示在终端中否则会超出屏幕宽度"}},
 	}
-	v := m.View(20, false, "", false, 0)
+	v := m.View(20, false, "", false, false, 0)
 	if !strings.Contains(v, "这") {
 		t.Error("should contain content")
 	}
@@ -663,7 +663,7 @@ func TestMessageView_ToolCallEmptyOutput(t *testing.T) {
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Output: "", Done: true, IsError: false}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "result") {
 		t.Errorf("View() should contain text content")
 	}
@@ -676,7 +676,7 @@ func TestMessageView_EmptyBlocks(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if v != "" {
 		t.Errorf("Empty Blocks should return empty string, got %q", v)
 	}
@@ -692,7 +692,7 @@ func TestRenderMessagesFull_NoTrailingNewline(t *testing.T) {
 	msgs := []MessageView{
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 	}
-	v := renderMessagesFull(msgs, 80, false, "", false, 0)
+	v := renderMessagesFull(msgs, 80, false, "", false, false, 0)
 	if strings.HasSuffix(v, "\n") {
 		t.Errorf("renderMessagesFull should have no trailing newline, got %q", v)
 	}
@@ -701,7 +701,7 @@ func TestRenderMessagesFull_NoTrailingNewline(t *testing.T) {
 func TestRenderMessagesFull_Empty(t *testing.T) {
 	t.Parallel()
 
-	v := renderMessagesFull([]MessageView{}, 80, false, "", false, 0)
+	v := renderMessagesFull([]MessageView{}, 80, false, "", false, false, 0)
 	if !strings.Contains(v, "Welcome to gbot") {
 		t.Errorf("renderMessagesFull(nil) = %q, should contain welcome", v)
 	}
@@ -714,7 +714,7 @@ func TestRenderMessagesFull_WithMessages(t *testing.T) {
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
 		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hi"}}},
 	}
-	v := renderMessagesFull(msgs, 80, false, "", false, 0)
+	v := renderMessagesFull(msgs, 80, false, "", false, false, 0)
 	if !strings.Contains(v, "hello") {
 		t.Error("should contain user message")
 	}
@@ -731,7 +731,7 @@ func TestRenderMessagesFull_AllMessagesIncluded(t *testing.T) {
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line2"}}},
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "line3"}}},
 	}
-	v := renderMessagesFull(msgs, 80, false, "", false, 0)
+	v := renderMessagesFull(msgs, 80, false, "", false, false, 0)
 	// renderMessagesFull includes ALL messages (terminal handles scrolling)
 	if !strings.Contains(v, "line1") {
 		t.Error("should contain line1")
@@ -997,7 +997,7 @@ func TestMessageView_View_MinWidth(t *testing.T) {
 		Role:   "assistant",
 		Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}},
 	}
-	v := m.View(5, false, "", false, 0) // below minimum of 10
+	v := m.View(5, false, "", false, false, 0) // below minimum of 10
 	if !strings.Contains(v, "hello") {
 		t.Errorf("View with small width should still render content, got: %q", v)
 	}
@@ -1032,7 +1032,7 @@ func TestMessageView_WithTool_DoneWithSummaryAndElapsed(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "Bash") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -1056,7 +1056,7 @@ func TestMessageView_WithTool_ErrorWithSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "Read") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -1077,7 +1077,7 @@ func TestMessageView_WithTool_DoneNoSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "Glob") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -1198,7 +1198,7 @@ func TestMessageView_ToolCallHeader_WrapsLongSummary(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(30, false, "", false, 0)
+	v := m.View(30, false, "", false, false, 0)
 	// Header should be wrapped — output should contain newlines
 	if !strings.Contains(v, "\n") {
 		t.Errorf("long tool header should wrap at width 30, got: %q", v)
@@ -1827,7 +1827,7 @@ func TestRenderToolCall_RunningState(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "running...") {
 		t.Errorf("running tool should show 'running...', got: %q", v)
 	}
@@ -1849,7 +1849,7 @@ func TestRenderToolCall_RunningWithToolDot(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "●", false, 0)
+	v := m.View(80, false, "●", false, false, 0)
 	if !strings.Contains(v, "Bash") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
@@ -1888,7 +1888,7 @@ func TestRenderToolCall_DoneStateWithSubBlocks_BlocksAreIndented(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 
 	// After header line, first sub-block line must have "| " prefix (indentation)
 	lines := strings.Split(v, "\n")
@@ -1927,7 +1927,7 @@ func TestRenderToolCall_RunningStateWithSubBlocks_BlocksAreIndented(t *testing.T
 			}},
 		},
 	}
-	v := m.View(80, false, "●", false, 0)
+	v := m.View(80, false, "●", false, false, 0)
 	stripped := stripANSIPrintable(v)
 
 	// Sub-block text "hello" should be at depth=1 (2-space indent), no "| " prefix
@@ -1964,7 +1964,7 @@ func TestRenderToolCall_NestedDepth2_GrandchildIndented(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	stripped := stripANSIPrintable(v)
 
 	// Grandchild text at depth=2 should have 4-space indent, no "| " prefix
@@ -2325,7 +2325,7 @@ func TestMessageView_WithThinkingBlock(t *testing.T) {
 			{Type: BlockText, Text: "Here is my answer."},
 		},
 	}
-	out := mv.View(80, false, "", false, 0)
+	out := mv.View(80, false, "", false, false, 0)
 	if !strings.Contains(out, "Thought") {
 		t.Errorf("should contain 'Thought', got %q", out)
 	}
@@ -2555,7 +2555,7 @@ func TestRenderToolCall_DoneSubBlocks_BlockTextHasPrefix(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	stripped := stripANSIPrintable(v)
 
 	// "hello world" should appear with 2-space indent (depth=1), no "| " prefix
@@ -2584,7 +2584,7 @@ func TestRenderToolCall_DoneSubBlocks_StatsHasPrefix(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	stripped := stripANSIPrintable(v)
 
 	// Stats line should appear with "| " prefix (depth=0 output)
@@ -2620,7 +2620,7 @@ func TestRenderToolCall_NestedDepth2_ChildAgentHasPrefix(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	stripped := stripANSIPrintable(v)
 	lines := strings.SplitSeq(stripped, "\n")
 
@@ -2657,7 +2657,7 @@ func TestRenderToolCall_BackgroundLabel(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "running in background...") {
 		t.Errorf("background tool should show 'running in background...', got: %q", v)
 	}
@@ -2676,7 +2676,7 @@ func TestRenderToolCall_NormalRunningLabel(t *testing.T) {
 			}},
 		},
 	}
-	v := m.View(80, false, "", false, 0)
+	v := m.View(80, false, "", false, false, 0)
 	if strings.Contains(v, "running in background...") {
 		t.Errorf("non-background tool should NOT show 'running in background...', got: %q", v)
 	}
@@ -3155,7 +3155,7 @@ func TestRenderToolCall_SearchReadCollapsed(t *testing.T) {
 			},
 		},
 	}
-	rendered := mv.View(80, false, "●", false, 0)
+	rendered := mv.View(80, false, "●", false, false, 0)
 
 	if !strings.Contains(rendered, "Found 5 matches … ctrl+o to expand") {
 		t.Errorf("collapsed search/read should show summary + ctrl+o hint, got:\n%s", rendered)
@@ -3188,7 +3188,7 @@ func TestRenderToolCall_SearchReadExpanded(t *testing.T) {
 			},
 		},
 	}
-	rendered := mv.View(80, true, "●", false, 0)
+	rendered := mv.View(80, true, "●", false, false, 0)
 
 	if !strings.Contains(rendered, "line5") {
 		t.Errorf("expanded search/read should show all output, got:\n%s", rendered)
@@ -3220,7 +3220,7 @@ func TestRenderToolCall_NonSearchReadCollapsed(t *testing.T) {
 			},
 		},
 	}
-	rendered := mv.View(80, false, "●", false, 0)
+	rendered := mv.View(80, false, "●", false, false, 0)
 
 	if !strings.Contains(rendered, "line1") {
 		t.Errorf("collapsed non-search/read should show first 3 lines, got:\n%s", rendered)
@@ -3254,7 +3254,7 @@ func TestRenderToolCall_WriteEditAlwaysExpanded(t *testing.T) {
 			},
 		},
 	}
-	rendered := mv.View(80, false, "●", false, 0)
+	rendered := mv.View(80, false, "●", false, false, 0)
 
 	if !strings.Contains(rendered, "another") {
 		t.Errorf("Write tool should always show full output, got:\n%s", rendered)
@@ -3313,7 +3313,7 @@ func TestChain_ReadTool_CollapsedAndExpanded(t *testing.T) {
 			},
 		},
 	}
-	collapsed := mv.View(80, false, "●", false, 0)
+	collapsed := mv.View(80, false, "●", false, false, 0)
 	if !strings.Contains(collapsed, "Read 5 lines") {
 		t.Errorf("collapsed Read should show 'Read 5 lines', got:\n%s", collapsed)
 	}
@@ -3325,7 +3325,7 @@ func TestChain_ReadTool_CollapsedAndExpanded(t *testing.T) {
 	}
 
 	// Expanded: full content visible, no ctrl+o hint.
-	expanded := mv.View(80, true, "●", false, 0)
+	expanded := mv.View(80, true, "●", false, false, 0)
 	if !strings.Contains(expanded, `println("hello")`) {
 		t.Errorf("expanded Read should show full content, got:\n%s", expanded)
 	}
@@ -3373,7 +3373,7 @@ func TestChain_GrepTool_ContentMode(t *testing.T) {
 		},
 	}
 
-	collapsed := mv.View(80, false, "●", false, 0)
+	collapsed := mv.View(80, false, "●", false, false, 0)
 	if !strings.Contains(collapsed, "Found 3 matches") {
 		t.Errorf("collapsed Grep should show 'Found 3 matches', got:\n%s", collapsed)
 	}
@@ -3381,7 +3381,7 @@ func TestChain_GrepTool_ContentMode(t *testing.T) {
 		t.Errorf("collapsed Grep should NOT show raw matches, got:\n%s", collapsed)
 	}
 
-	expanded := mv.View(80, true, "●", false, 0)
+	expanded := mv.View(80, true, "●", false, false, 0)
 	if !strings.Contains(expanded, "main.go:10:fmt.Println") {
 		t.Errorf("expanded Grep should show all match lines, got:\n%s", expanded)
 	}
@@ -3447,7 +3447,7 @@ func TestChain_GlobTool(t *testing.T) {
 		},
 	}
 
-	collapsed := mv.View(80, false, "●", false, 0)
+	collapsed := mv.View(80, false, "●", false, false, 0)
 	if !strings.Contains(collapsed, "Found 3 matches") {
 		t.Errorf("collapsed Glob should show 'Found 3 matches', got:\n%s", collapsed)
 	}
@@ -3455,7 +3455,7 @@ func TestChain_GlobTool(t *testing.T) {
 		t.Errorf("collapsed Glob should NOT show file paths, got:\n%s", collapsed)
 	}
 
-	expanded := mv.View(80, true, "●", false, 0)
+	expanded := mv.View(80, true, "●", false, false, 0)
 	if !strings.Contains(expanded, "src/handler.go") {
 		t.Errorf("expanded Glob should show all file paths, got:\n%s", expanded)
 	}
@@ -3501,7 +3501,7 @@ func TestChain_BashSearchCommand_CollapsedAndExpanded(t *testing.T) {
 		},
 	}
 
-	collapsed := mv.View(80, false, "●", false, 0)
+	collapsed := mv.View(80, false, "●", false, false, 0)
 	if !strings.Contains(collapsed, "Listed 3 entries") {
 		t.Errorf("collapsed Bash ls should show 'Listed 3 entries', got:\n%s", collapsed)
 	}
@@ -3512,7 +3512,7 @@ func TestChain_BashSearchCommand_CollapsedAndExpanded(t *testing.T) {
 		t.Errorf("collapsed Bash ls should NOT show raw output, got:\n%s", collapsed)
 	}
 
-	expanded := mv.View(80, true, "●", false, 0)
+	expanded := mv.View(80, true, "●", false, false, 0)
 	if !strings.Contains(expanded, "file3.go") {
 		t.Errorf("expanded Bash ls should show full output, got:\n%s", expanded)
 	}
@@ -3557,7 +3557,7 @@ func TestChain_BashNonSearchCommand(t *testing.T) {
 	}
 
 	// Non-search-read: collapsed uses formatToolOutput (3-line truncation + ctrl+o).
-	collapsed := mv.View(80, false, "●", false, 0)
+	collapsed := mv.View(80, false, "●", false, false, 0)
 	if !strings.Contains(collapsed, "ctrl+o to expand") {
 		t.Errorf("collapsed non-SR Bash should show ctrl+o hint, got:\n%s", collapsed)
 	}
@@ -3570,7 +3570,7 @@ func TestChain_BashNonSearchCommand(t *testing.T) {
 	}
 
 	// Expanded: all lines visible.
-	expanded := mv.View(80, true, "●", false, 0)
+	expanded := mv.View(80, true, "●", false, false, 0)
 	if !strings.Contains(expanded, "FAIL") {
 		t.Errorf("expanded should show all output including FAIL, got:\n%s", expanded)
 	}
@@ -3628,5 +3628,812 @@ func TestChain_EmptyOutput(t *testing.T) {
 	summary = collapseSummary("", srk)
 	if summary != "Read 0 lines" {
 		t.Fatalf("collapseSummary(empty read) = %q, want %q", summary, "Read 0 lines")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Group detection + groupSummaryText (Phase 2)
+// ---------------------------------------------------------------------------
+
+func makeBlockTool(srk tool.SearchReadKind, done bool) ContentBlock {
+	return ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			Name:       "Tool",
+			Done:       done,
+			SearchRead: srk,
+		},
+	}
+}
+
+func TestDetectToolGroups(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+	srList := tool.SearchReadKind{IsList: true}
+	srNone := tool.SearchReadKind{}
+
+	// 3 consecutive reads → 1 group of 3.
+	blocks := []ContentBlock{
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+		makeBlockTool(srRead, true),
+	}
+	groups := detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("3 reads: got %d groups, want 1", len(groups))
+	}
+	if len(groups[0].indices) != 3 {
+		t.Fatalf("3 reads: group size = %d, want 3", len(groups[0].indices))
+	}
+	if groups[0].readCount != 3 {
+		t.Fatalf("3 reads: readCount = %d, want 3", groups[0].readCount)
+	}
+
+	// Read+Grep+Read → 1 group of 3.
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		makeBlockTool(srSearch, true),
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("Read+Grep+Read: got %d groups, want 1", len(groups))
+	}
+	if groups[0].searchCount != 1 || groups[0].readCount != 2 {
+		t.Fatalf("Read+Grep+Read: search=%d read=%d, want search=1 read=2", groups[0].searchCount, groups[0].readCount)
+	}
+
+	// Read+Edit+Read → 0 groups (Edit breaks).
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		makeBlockTool(srNone, true), // Edit — not collapsible
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 0 {
+		t.Fatalf("Read+Edit+Read: got %d groups, want 0", len(groups))
+	}
+
+	// Read+thinking+Read → 1 group of 2 (thinking doesn't break).
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		{Type: BlockThinking, Thinking: ThinkingView{Text: "hmm", Done: true}},
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("Read+thinking+Read: got %d groups, want 1", len(groups))
+	}
+	if len(groups[0].indices) != 2 {
+		t.Fatalf("Read+thinking+Read: group size = %d, want 2", len(groups[0].indices))
+	}
+
+	// Single read → 0 groups (single-tool skipped).
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 0 {
+		t.Fatalf("single read: got %d groups, want 0", len(groups))
+	}
+
+	// Empty text doesn't break group.
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		{Type: BlockText, Text: ""},
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("Read+empty+Read: got %d groups, want 1", len(groups))
+	}
+
+	// Non-empty text breaks group.
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		{Type: BlockText, Text: "hello"},
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 0 {
+		t.Fatalf("Read+text+Read: got %d groups, want 0", len(groups))
+	}
+
+	// BlockStats breaks group.
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, true),
+		{Type: BlockStats, Text: "stats"},
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 0 {
+		t.Fatalf("Read+stats+Read: got %d groups, want 0", len(groups))
+	}
+
+	// Running tool sets anyRunning.
+	blocks = []ContentBlock{
+		makeBlockTool(srRead, false),
+		makeBlockTool(srRead, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("running tools: got %d groups, want 1", len(groups))
+	}
+	if !groups[0].anyRunning {
+		t.Fatal("running tools: anyRunning = false, want true")
+	}
+
+	// List counts tracked.
+	blocks = []ContentBlock{
+		makeBlockTool(srList, true),
+		makeBlockTool(srList, true),
+	}
+	groups = detectToolGroups(blocks)
+	if len(groups) != 1 {
+		t.Fatalf("2 lists: got %d groups, want 1", len(groups))
+	}
+	if groups[0].listCount != 2 {
+		t.Fatalf("2 lists: listCount = %d, want 2", groups[0].listCount)
+	}
+}
+
+func TestGroupSummaryText(t *testing.T) {
+	t.Parallel()
+
+	// Read only.
+	g := toolGroup{readCount: 3}
+	text := groupSummaryText(g, false)
+	if text != "Read 3 files" {
+		t.Fatalf("read-only: %q, want %q", text, "Read 3 files")
+	}
+
+	// Search only.
+	g = toolGroup{searchCount: 2}
+	text = groupSummaryText(g, false)
+	if text != "Searched for 2 patterns" {
+		t.Fatalf("search-only: %q, want %q", text, "Searched for 2 patterns")
+	}
+
+	// List only (single).
+	g = toolGroup{listCount: 1}
+	text = groupSummaryText(g, false)
+	if text != "Listed 1 directory" {
+		t.Fatalf("list-single: %q, want %q", text, "Listed 1 directory")
+	}
+
+	// Combined.
+	g = toolGroup{readCount: 3, searchCount: 1, listCount: 1}
+	text = groupSummaryText(g, false)
+	if text != "Searched for 1 pattern, read 3 files, listed 1 directory" {
+		t.Fatalf("combined: %q, want %q", text, "Searched for 1 pattern, read 3 files, listed 1 directory")
+	}
+
+	// Active (running) — present tense + trailing ellipsis.
+	g = toolGroup{readCount: 3, anyRunning: true}
+	text = groupSummaryText(g, true)
+	if text != "Reading 3 files…" {
+		t.Fatalf("active: %q, want %q", text, "Reading 3 files…")
+	}
+
+	// Active combined.
+	g = toolGroup{searchCount: 2, readCount: 3, anyRunning: true}
+	text = groupSummaryText(g, true)
+	if text != "Searching for 2 patterns, reading 3 files…" {
+		t.Fatalf("active-combined: %q, want %q", text, "Searching for 2 patterns, reading 3 files…")
+	}
+
+	// Single file.
+	g = toolGroup{readCount: 1}
+	text = groupSummaryText(g, false)
+	if text != "Read 1 file" {
+		t.Fatalf("single-file: %q, want %q", text, "Read 1 file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Group rendering tests (Phase 2)
+// ---------------------------------------------------------------------------
+
+func TestRenderGroupCollapsed(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "line1\nline2\nline3\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "line1\nline2\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "repl.go", Done: true,
+				Output: "line1\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Collapsed (expand=false): should show group summary line.
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(rendered, "Read 3 files") {
+		t.Fatalf("collapsed group missing 'Read 3 files':\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("collapsed group missing 'ctrl+o to expand':\n%s", rendered)
+	}
+	// Should NOT show individual tool headers.
+	if strings.Contains(rendered, "Read(main.go)") {
+		t.Fatalf("collapsed group shows individual tool:\n%s", rendered)
+	}
+}
+
+func TestRenderGroupExpanded(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\nfunc main() {}\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Expanded (expand=true): each tool renders individually with full output.
+	rendered := stripANSIPrintable(mv.View(80, true, dot, false, false, 3))
+	if !strings.Contains(rendered, "package main") {
+		t.Fatalf("expanded group missing 'package main':\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "package tui") {
+		t.Fatalf("expanded group missing 'package tui':\n%s", rendered)
+	}
+	// Should NOT show group summary.
+	if strings.Contains(rendered, "Read 2 files") {
+		t.Fatalf("expanded group shows summary:\n%s", rendered)
+	}
+}
+
+func TestRenderSingleToolNoGroup(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\nfunc main() {}\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Single tool: Phase 1 per-tool collapse, NOT group summary.
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if strings.Contains(rendered, "Read 1 file") {
+		t.Fatalf("single tool shows group summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Read 2 lines") {
+		t.Fatalf("single tool missing Phase 1 summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("single tool missing ctrl+o:\n%s", rendered)
+	}
+}
+
+func TestGroupBrokenByEdit(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Edit", Summary: "main.go", Done: true,
+				Output: "--- a\n+++ b\n",
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	// No group summary — Edit broke the group.
+	if strings.Contains(rendered, "Read 2 files") {
+		t.Fatalf("broken group shows summary:\n%s", rendered)
+	}
+	// Each Read should show Phase 1 per-tool collapse.
+	if strings.Count(rendered, "ctrl+o to expand") != 2 {
+		t.Fatalf("broken group: expected 2 ctrl+o hints, got %d:\n%s",
+			strings.Count(rendered, "ctrl+o to expand"), rendered)
+	}
+}
+
+func TestGroupBrokenByText(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\n", SearchRead: srRead,
+			}},
+			{Type: BlockText, Text: "Let me check something"},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	// No group summary — text broke the group.
+	if strings.Contains(rendered, "Read 2 files") {
+		t.Fatalf("text-broken group shows summary:\n%s", rendered)
+	}
+	// Text should be visible.
+	if !strings.Contains(rendered, "Let me check something") {
+		t.Fatalf("text block missing:\n%s", rendered)
+	}
+}
+
+func TestGroupSpansThinking(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\n", SearchRead: srRead,
+			}},
+			{Type: BlockThinking, Thinking: ThinkingView{
+				Text: "thinking...", Done: true, Duration: 100 * time.Millisecond,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Collapsed: group summary + thinking still rendered.
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(rendered, "Read 2 files") {
+		t.Fatalf("thinking-span group missing summary:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("thinking-span group missing ctrl+o:\n%s", rendered)
+	}
+	// Thinking block should still render between group tools.
+	// (Thinking renders in its own section — it's not consumed by the group.)
+}
+
+func TestGroupDotMatchesToolDot(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// All-done group: should use fixed green dot "●" regardless of toolDot value.
+	// toolDot="" (streaming off) should still show ● for completed group.
+	collapsed := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(collapsed, "●") {
+		t.Fatalf("completed group missing fixed dot ● when toolDot is empty:\n%s", collapsed)
+	}
+
+	// Running group: toolDot carries white-bold style from app.go blink logic.
+	// The group should use toolDot directly (no green wrapper).
+	mv2 := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: false,
+				Output: "", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: false,
+				Output: "", SearchRead: srRead,
+			}},
+		},
+	}
+	whiteDot := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+	running := mv2.View(80, false, whiteDot, true, false, 3)
+	// Running group uses toolDot as-is (already styled white), not re-wrapped green.
+	// stripANSI should reveal "●" from the white styled dot.
+	stripped := stripANSIPrintable(running)
+	if !strings.Contains(stripped, "●") {
+		t.Fatalf("running group missing blink dot:\n%s", stripped)
+	}
+	// Running group should use present tense.
+	if !strings.Contains(stripped, "Reading 2 files") {
+		t.Fatalf("running group missing present tense:\n%s", stripped)
+	}
+}
+
+func TestGroupRunningShowsBlankDot(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// One running + one done tool — group still forming.
+	// Normal tool with Done=false renders a space for the dot position.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: false,
+				Output: "", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "●", true, false, 3))
+	// Group should still render (2 tools) but with running-style dot (space, not ●).
+	// The summary should use present tense because anyRunning=true.
+	if !strings.Contains(rendered, "Reading 2 files") {
+		t.Fatalf("running group missing present tense:\n%s", rendered)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests (Phase 2) — full render chain
+// ---------------------------------------------------------------------------
+
+// TestIntegration_MixedMessage_RenderChain verifies a realistic assistant message
+// containing text, a search/read group, a non-collapsible tool (Edit), and a
+// lone search tool.  This tests the complete View() path:
+//
+//	Blocks → detectToolGroups → groupByFirstIdx/consumed → render loop → output
+//
+// Observable output must show:
+//   - intro text
+//   - collapsed group summary (not individual tools)
+//   - Edit tool header (Phase 1, not grouped)
+//   - outro text
+//   - single Grep tool (Phase 1, not grouped)
+func TestIntegration_MixedMessage_RenderChain(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			// Intro text
+			{Type: BlockText, Text: "Let me look at the codebase."},
+			// Search/read group: 3 tools
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\nfunc main() {}\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Grep", Summary: `"TODO"`, Done: true,
+				Output: "main.go:5:TODO fix\napp.go:12:TODO refactor\n", SearchRead: srSearch,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "app.go", Done: true,
+				Output: "package tui\n", SearchRead: srRead,
+			}},
+			// Non-collapsible tool breaks group
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Edit", Summary: "app.go #1-3", Done: true,
+				Output: "Applied edit.\n",
+			}},
+			// Outro text
+			{Type: BlockText, Text: "I've fixed the issue."},
+			// Single search tool (no group — only 1 tool)
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Grep", Summary: `"FIXME"`, Done: true,
+				Output: "no matches\n", SearchRead: srSearch,
+			}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+
+	// Group summary for Read+Grep+Read.
+	if !strings.Contains(rendered, "Searched for 1 pattern, read 2 files") {
+		t.Fatalf("missing group summary:\n%s", rendered)
+	}
+	// Group should not show individual Read/Grep headers when collapsed.
+	if strings.Contains(rendered, "Read(main.go)") {
+		t.Fatalf("collapsed group leaks individual tool:\n%s", rendered)
+	}
+
+	// Edit tool should render individually (not grouped).
+	if !strings.Contains(rendered, "Edit(app.go") {
+		t.Fatalf("missing Edit tool header:\n%s", rendered)
+	}
+
+	// Text blocks visible.
+	if !strings.Contains(rendered, "Let me look at the codebase.") {
+		t.Fatalf("missing intro text:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "I've fixed the issue.") {
+		t.Fatalf("missing outro text:\n%s", rendered)
+	}
+
+	// Single Grep tool: Phase 1 per-tool summary, not group.
+	if strings.Contains(rendered, "Searched for 1 pattern,") && strings.Count(rendered, "Searched for 1 pattern,") > 1 {
+		t.Fatalf("single tool got group summary:\n%s", rendered)
+	}
+	// The lone Grep should show its own Phase 1 summary.
+	if !strings.Contains(rendered, "ctrl+o to expand") {
+		t.Fatalf("single Grep missing ctrl+o:\n%s", rendered)
+	}
+
+	// Ctrl+o hints: group has 1 + single Grep has 1 = 2 total.
+	if got := strings.Count(rendered, "ctrl+o to expand"); got != 2 {
+		t.Fatalf("expected 2 ctrl+o hints, got %d:\n%s", got, rendered)
+	}
+}
+
+// TestIntegration_StreamingBuildUp simulates tools arriving one by one during
+// streaming.  At each step we re-render and verify the observable output:
+//
+//	Frame 1: 1 running Read → no group (single tool, Phase 1 running style)
+//	Frame 2: 2nd Read arrives → group of 2, present tense + running dot
+//	Frame 3: all done → group of 2, past tense + fixed dot
+func TestIntegration_StreamingBuildUp(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+
+	// Frame 1: single running tool — no group.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: false,
+				Output: "", SearchRead: srRead,
+			}},
+		},
+	}
+	f1 := stripANSIPrintable(mv.View(80, false, "●", true, false, 3))
+	// Single tool = no group summary. Should render as running tool.
+	if strings.Contains(f1, "Read 1 file") {
+		t.Fatalf("frame1: single running tool shows group summary:\n%s", f1)
+	}
+
+	// Frame 2: second tool arrives, first still running → group forms.
+	mv.Blocks = append(mv.Blocks, ContentBlock{
+		Type: BlockTool, ToolCall: ToolCallView{
+			Name: "Read", Summary: "app.go", Done: false,
+			Output: "", SearchRead: srRead,
+		},
+	})
+	f2 := stripANSIPrintable(mv.View(80, false, "●", true, false, 3))
+	if !strings.Contains(f2, "Reading 2 files") {
+		t.Fatalf("frame2: missing present-tense group summary:\n%s", f2)
+	}
+
+	// Frame 3: all done → past tense + fixed dot.
+	mv.Blocks[0].ToolCall.Done = true
+	mv.Blocks[0].ToolCall.Output = "package main\n"
+	mv.Blocks[1].ToolCall.Done = true
+	mv.Blocks[1].ToolCall.Output = "package tui\n"
+	f3 := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(f3, "Read 2 files") {
+		t.Fatalf("frame3: missing past-tense group summary:\n%s", f3)
+	}
+	if !strings.Contains(f3, "●") {
+		t.Fatalf("frame3: completed group missing fixed dot:\n%s", f3)
+	}
+	if strings.Contains(f3, "Reading") {
+		t.Fatalf("frame3: completed group uses present tense:\n%s", f3)
+	}
+}
+
+// TestIntegration_CtrlOToggle verifies the full collapsed → expanded → collapsed
+// cycle.  The only user-visible state change is the expand bool parameter.
+//
+//	Collapsed: group summary line, no individual tool output
+//	Expanded:  per-tool full output, no group summary
+//	Back to collapsed: identical to first collapsed render
+func TestIntegration_CtrlOToggle(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "main.go", Done: true,
+				Output: "package main\nfunc main() {}\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Grep", Summary: `"func"`, Done: true,
+				Output: "main.go:2:func main()\n", SearchRead: srSearch,
+			}},
+		},
+	}
+
+	// State 1: collapsed.
+	collapsed1 := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(collapsed1, "Searched for 1 pattern, read 1 file") {
+		t.Fatalf("collapsed1: missing group summary:\n%s", collapsed1)
+	}
+	if strings.Contains(collapsed1, "package main") {
+		t.Fatalf("collapsed1: shows full output:\n%s", collapsed1)
+	}
+	if !strings.Contains(collapsed1, "ctrl+o to expand") {
+		t.Fatalf("collapsed1: missing hint:\n%s", collapsed1)
+	}
+
+	// State 2: expanded (user pressed ctrl+o).
+	expanded := stripANSIPrintable(mv.View(80, true, "", false, false, 3))
+	if strings.Contains(expanded, "Searched for 1 pattern, read 1 file") {
+		t.Fatalf("expanded: shows group summary:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "package main") {
+		t.Fatalf("expanded: missing Read output:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "main.go:2:func main()") {
+		t.Fatalf("expanded: missing Grep output:\n%s", expanded)
+	}
+
+	// State 3: back to collapsed (user pressed ctrl+o again).
+	collapsed2 := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if collapsed1 != collapsed2 {
+		t.Fatalf("collapsed roundtrip mismatch:\nc1=%q\nc2=%q", collapsed1, collapsed2)
+	}
+}
+
+// TestGroupActiveWhenStreamingAllDone verifies the TS behavior:
+// even when all tools in the group are done, the group stays "active"
+// (present tense + blink dot) while streaming and no content follows.
+func TestGroupActiveWhenStreamingAllDone(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Non-streaming (toolDot="") → past tense + green dot.
+	still := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+	if !strings.Contains(still, "Read 2 files") {
+		t.Fatalf("non-streaming should use past tense:\n%s", still)
+	}
+	if !strings.Contains(still, "●") {
+		t.Fatalf("non-streaming should have green dot:\n%s", still)
+	}
+
+	// Streaming (toolDot=white-blink) → present tense + blink dot.
+	whiteDot := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+	streaming := stripANSIPrintable(mv.View(80, false, whiteDot, true, false, 3))
+	if !strings.Contains(streaming, "Reading 2 files") {
+		t.Fatalf("streaming should use present tense:\n%s", streaming)
+	}
+	if !strings.Contains(streaming, "●") {
+		t.Fatalf("streaming should have blink dot:\n%s", streaming)
+	}
+	if !strings.Contains(streaming, "…") {
+		t.Fatalf("streaming should have trailing ellipsis:\n%s", streaming)
+	}
+
+	// Streaming + text after group → NOT active (hasContentAfter).
+	mv2 := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+			{Type: BlockText, Text: "I found the issue."},
+		},
+	}
+	withText := stripANSIPrintable(mv2.View(80, false, whiteDot, true, false, 3))
+	if strings.Contains(withText, "Reading 2 files") {
+		t.Fatalf("streaming+text-after should use past tense:\n%s", withText)
+	}
+	if !strings.Contains(withText, "Read 2 files") {
+		t.Fatalf("streaming+text-after should use past tense:\n%s", withText)
+	}
+}
+
+// TestGroupBlinkDotNotGreen verifies that during streaming, the group dot
+// alternates between "" and white "●", never green. Green only appears
+// when streaming ends (toolDot="" + streaming=false).
+func TestGroupBlinkDotNotGreen(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "a.go", Done: true,
+				Output: "a\n", SearchRead: srRead,
+			}},
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Read", Summary: "b.go", Done: true,
+				Output: "b\n", SearchRead: srRead,
+			}},
+		},
+	}
+
+	// Blink ON frame: toolDot=white "●", streaming=true → shows dot + present tense.
+	wd := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+	onFrame := mv.View(80, false, wd, true, false, 3)
+	onClean := stripANSIPrintable(onFrame)
+	if !strings.Contains(onClean, "●") {
+		t.Fatalf("blink-on should show dot:\n%s", onClean)
+	}
+	if !strings.Contains(onClean, "Reading 2 files") {
+		t.Fatalf("blink-on should use present tense:\n%s", onClean)
+	}
+
+	// Blink OFF frame: toolDot="", streaming=true → blank space.
+	offFrame := mv.View(80, false, "", true, false, 3)
+	offClean := stripANSIPrintable(offFrame)
+	if strings.Contains(offClean, "●") {
+		t.Fatalf("blink-off should NOT show dot:\n%s", offClean)
+	}
+	if !strings.Contains(offClean, "Reading 2 files") {
+		t.Fatalf("blink-off should still use present tense:\n%s", offClean)
+	}
+
+	// Streaming ended: toolDot="", streaming=false → green dot + past tense.
+	doneFrame := mv.View(80, false, "", false, false, 3)
+	doneClean := stripANSIPrintable(doneFrame)
+	if !strings.Contains(doneClean, "●") {
+		t.Fatalf("done should show dot:\n%s", doneClean)
+	}
+	if !strings.Contains(doneClean, "Read 2 files") {
+		t.Fatalf("done should use past tense:\n%s", doneClean)
 	}
 }

@@ -698,7 +698,7 @@ type ThinkingView struct {
 
 // View renders the message with word wrapping at the given width.
 // When expand is true, tool output is shown fully instead of collapsed.
-func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, maxOutputLines int) string {
+func (m MessageView) View(width int, expand bool, toolDot string, streaming bool, noHint bool, maxOutputLines int) string {
 	if width < 10 {
 		width = 10
 	}
@@ -711,7 +711,73 @@ func (m MessageView) View(width int, expand bool, toolDot string, noHint bool, m
 	// Render using Blocks (interleaved text+tool, per TS).
 	if len(m.Blocks) > 0 {
 		isUser := m.Role == "user"
+
+		// Detect groups of consecutive search/read tools for collapsed rendering.
+		groups := detectToolGroups(m.Blocks)
+		groupByFirstIdx := make(map[int]*toolGroup, len(groups))
+		consumed := make(map[int]bool)
+		// Find the last group index (matches TS isActiveCollapsedGroup:
+		// last group in a streaming message is "active" even if all tools done).
+		lastGroupIdx := -1
+		for gi := range groups {
+			g := &groups[gi]
+			groupByFirstIdx[g.indices[0]] = g
+			for _, idx := range g.indices {
+				consumed[idx] = true
+			}
+			lastGroupIdx = g.indices[0]
+		}
+		isStreaming := streaming
+
 		for i, blk := range m.Blocks {
+			// Check if this block is the first of a group.
+			if g, ok := groupByFirstIdx[i]; ok && !expand {
+				// Collapsed group: render single summary line.
+				// Active = anyRunning || (streaming && last group && no content after).
+				// Matches TS: hasAnyToolInProgress || (isLoading && !hasContentAfter)
+				isActive := g.anyRunning
+				if !isActive && isStreaming && i == lastGroupIdx {
+					hasContentAfter := false
+					for j := i + 1; j < len(m.Blocks); j++ {
+						if consumed[j] {
+							continue
+						}
+						if m.Blocks[j].Type == BlockText && m.Blocks[j].Text != "" {
+							hasContentAfter = true
+							break
+						}
+						if m.Blocks[j].Type == BlockTool || m.Blocks[j].Type == BlockStats {
+							hasContentAfter = true
+							break
+						}
+					}
+					isActive = !hasContentAfter
+				}
+
+				var groupDotStr string
+				if isActive {
+					if toolDot != "" {
+						groupDotStr = toolDot
+					} else {
+						groupDotStr = " "
+					}
+				} else {
+					groupDotStr = styleDotSuccess.Render(dot)
+				}
+				summary := groupSummaryText(*g, isActive)
+				hint := ""
+				if !noHint {
+					hint = " … ctrl+o to expand"
+				}
+				sb.WriteString(groupDotStr + " " + styleDim.Render(summary+hint))
+				sb.WriteString("\n")
+				continue
+			}
+			if consumed[i] && !expand {
+				// Subsequent block in a collapsed group — skip.
+				continue
+			}
+
 			switch blk.Type {
 			case BlockText:
 				if blk.Text != "" {
@@ -1453,6 +1519,124 @@ func (a *App) renderTaskList() string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// toolGroup holds consecutive search/read tool blocks for group rendering.
+// Simplified from TS GroupAccumulator (collapseReadSearch.ts:270-330):
+// memory, MCP, git, hook fields deferred — gbot doesn't have these yet.
+type toolGroup struct {
+	indices     []int // indices into m.Blocks for the grouped tool blocks
+	searchCount int
+	readCount   int // operation count (unique file paths deferred)
+	listCount   int
+	anyRunning  bool // true if any tool in group has Done==false
+}
+
+// detectToolGroups scans blocks for consecutive collapsible search/read tools.
+// Returns groups with >= 2 tools only; single-tool groups are skipped so they
+// render as Phase 1 per-tool collapse.
+// Matches TS collapseReadSearchGroups() (collapseReadSearch.ts:771-930).
+func detectToolGroups(blocks []ContentBlock) []toolGroup {
+	var groups []toolGroup
+	var current toolGroup
+
+	flush := func() {
+		if len(current.indices) >= 2 {
+			groups = append(groups, current)
+		}
+		current = toolGroup{}
+	}
+
+	for i, blk := range blocks {
+		switch blk.Type {
+		case BlockTool:
+			tc := blk.ToolCall
+			if tc.SearchRead.IsCollapsible() {
+				current.indices = append(current.indices, i)
+				if tc.SearchRead.IsSearch {
+					current.searchCount++
+				}
+				if tc.SearchRead.IsRead {
+					current.readCount++
+				}
+				if tc.SearchRead.IsList {
+					current.listCount++
+				}
+				if !tc.Done {
+					current.anyRunning = true
+				}
+			} else {
+				// Non-collapsible tool breaks the group.
+				flush()
+			}
+		case BlockText:
+			if blk.Text != "" {
+				// Non-empty text breaks the group.
+				flush()
+			}
+			// Empty text doesn't break.
+		case BlockThinking:
+			// Thinking doesn't break the group — matches TS shouldSkipMessage().
+		case BlockStats:
+			flush()
+		}
+	}
+	flush()
+	return groups
+}
+
+// groupSummaryText generates a summary for a tool group.
+// Translates TS getSearchReadSummaryText() (collapseReadSearch.ts:930-1085).
+func groupSummaryText(g toolGroup, isActive bool) string {
+	var parts []string
+
+	add := func(verb, body string) {
+		if len(parts) == 0 {
+			parts = append(parts, strings.ToUpper(verb[:1])+verb[1:]+" "+body)
+		} else {
+			parts = append(parts, verb+" "+body)
+		}
+	}
+
+	if g.searchCount > 0 {
+		p := "pattern"
+		if g.searchCount != 1 {
+			p = "patterns"
+		}
+		if isActive {
+			add("searching for", fmt.Sprintf("%d %s", g.searchCount, p))
+		} else {
+			add("searched for", fmt.Sprintf("%d %s", g.searchCount, p))
+		}
+	}
+	if g.readCount > 0 {
+		f := "file"
+		if g.readCount != 1 {
+			f = "files"
+		}
+		if isActive {
+			add("reading", fmt.Sprintf("%d %s", g.readCount, f))
+		} else {
+			add("read", fmt.Sprintf("%d %s", g.readCount, f))
+		}
+	}
+	if g.listCount > 0 {
+		d := "directory"
+		if g.listCount != 1 {
+			d = "directories"
+		}
+		if isActive {
+			add("listing", fmt.Sprintf("%d %s", g.listCount, d))
+		} else {
+			add("listed", fmt.Sprintf("%d %s", g.listCount, d))
+		}
+	}
+
+	text := strings.Join(parts, ", ")
+	if isActive {
+		text += "…"
+	}
+	return text
+}
 
 // collapseSummary generates a one-line summary from full tool output
 // based on the search/read/list classification.
