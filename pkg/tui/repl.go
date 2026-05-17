@@ -442,11 +442,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		if m.Agent != nil {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			if parent != nil {
+				srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
 				parent.Blocks = append(parent.Blocks, ContentBlock{
 					Type: BlockTool,
 					ToolCall: ToolCallView{
 						ID: m.ID, Name: m.Name, Summary: m.Summary,
-						Input: m.Input, Done: false,
+						Input: m.Input, Done: false, SearchRead: srk,
 					},
 				})
 				parent.ToolCount++
@@ -517,6 +518,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						parent.Blocks[i].ToolCall.IsError = m.IsError
 						parent.Blocks[i].ToolCall.Output = m.Output
 						parent.Blocks[i].ToolCall.Elapsed = m.Timing
+						srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
+						if srk.IsCollapsible() {
+							parent.Blocks[i].ToolCall.SearchRead = srk
+						}
 						break
 					}
 				}

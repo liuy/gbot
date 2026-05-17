@@ -7951,3 +7951,99 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 		t.Errorf("conversation should contain the drained text, got %q", lastMsg.Blocks[0].Text)
 	}
 }
+
+// TestApp_UpdateRepl_SubAgentToolSearchRead verifies that sub-agent tool calls
+// (Read, Grep, Glob, Bash search commands) get their SearchRead field set so
+// group collapse works inside sub-agent blocks.
+func TestApp_UpdateRepl_SubAgentToolSearchRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		toolName string
+		isSearch bool
+		isRead   bool
+		isList   bool
+	}{
+		{"Grep_gets_IsSearch", "Grep", true, false, false},
+		{"Read_gets_IsRead", "Read", false, true, false},
+		{"Glob_gets_IsSearch", "Glob", true, false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newTestApp(&tuiMockProvider{})
+			app.repl.StartQuery()
+			app.repl.AppendTextItem()
+			app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
+			agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+			// Sub-agent starts a tool
+			app.updateRepl(toolStartMsg{
+				ID:       "sub_" + tc.toolName,
+				Name:     tc.toolName,
+				Summary:  "test",
+				Input:    "{}",
+				Agent:    agent,
+				IsSearch: tc.isSearch,
+				IsRead:   tc.isRead,
+				IsList:   tc.isList,
+			})
+
+			tcv := app.repl.pendingTool["call_agent1"]
+			if len(tcv.Blocks) != 1 {
+				t.Fatalf("expected 1 block, got %d", len(tcv.Blocks))
+			}
+			srk := tcv.Blocks[0].ToolCall.SearchRead
+			if srk.IsSearch != tc.isSearch {
+				t.Errorf("IsSearch = %v, want %v", srk.IsSearch, tc.isSearch)
+			}
+			if srk.IsRead != tc.isRead {
+				t.Errorf("IsRead = %v, want %v", srk.IsRead, tc.isRead)
+			}
+			if srk.IsList != tc.isList {
+				t.Errorf("IsList = %v, want %v", srk.IsList, tc.isList)
+			}
+		})
+	}
+}
+
+// TestApp_UpdateRepl_SubAgentToolEndSearchRead verifies that toolEndMsg for
+// sub-agent tools updates the SearchRead field (engine may re-classify at end).
+func TestApp_UpdateRepl_SubAgentToolEndSearchRead(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.repl.AppendTextItem()
+	app.repl.PendingToolStarted("call_agent1", "Agent", "explore", "{}", tool.SearchReadKind{})
+	agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Explore"}
+
+	// Sub-agent starts a Bash tool (no srk at start)
+	app.updateRepl(toolStartMsg{
+		ID:      "sub_bash1",
+		Name:    "Bash",
+		Summary: "ls",
+		Input:   `{"command":"ls"}`,
+		Agent:   agent,
+	})
+
+	// Sub-agent tool ends — engine classifies it as IsList
+	app.updateRepl(toolEndMsg{
+		ToolUseID: "sub_bash1",
+		Output:    "file1\nfile2",
+		IsError:   false,
+		Timing:    50 * time.Millisecond,
+		Agent:     agent,
+		IsList:    true,
+	})
+
+	tcv := app.repl.pendingTool["call_agent1"]
+	if len(tcv.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(tcv.Blocks))
+	}
+	srk := tcv.Blocks[0].ToolCall.SearchRead
+	if !srk.IsList {
+		t.Errorf("IsList = false, want true (toolEndMsg should set SearchRead)")
+	}
+}
