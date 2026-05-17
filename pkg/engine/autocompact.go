@@ -109,7 +109,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 			Summary:        summaryText,
 			BeforeTokens:   beforeTokens,
 			BeforeMessages: len(messages),
-			AfterTokens:    TokenCountWithEstimation(built),
+			AfterTokens:    EstimateMessagesTokens(built),
 			Messages:       built,
 		}, nil
 	}
@@ -121,7 +121,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 		Summary:        summaryText,
 		BeforeTokens:   beforeTokens,
 		BeforeMessages: len(messages),
-		AfterTokens:    TokenCountWithEstimation(built),
+		AfterTokens:    EstimateMessagesTokens(built),
 		Messages:       built,
 	}, nil
 }

@@ -336,7 +336,11 @@ func TokenCountWithEstimation(messages []types.Message) int {
 		// Source: TS tokens.ts:50-53 — getTokenCountFromUsage.
 		usage := msg.Usage
 		base := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens + usage.OutputTokens
-		// Estimate tokens for messages after this one.
+		// Skip zero-base Usage — API may return non-nil struct with all fields zero.
+		// TS source: tokens.ts:56 — getTokenCountFromUsage returns undefined for 0.
+		if base == 0 {
+			continue
+		}
 		delta := EstimateMessagesTokens(messages[i+1:])
 		return base + delta
 	}

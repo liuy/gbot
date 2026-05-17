@@ -1408,7 +1408,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 					Content:    contentBlocks,
 					Model:      model,
 					StopReason: stopReason,
-					Usage:      &usage,
+					Usage:      nil, // interrupted: no real usage from message_delta
 					Timestamp:  time.Now(),
 				})
 				if len(orphanedBlocks) > 0 {
@@ -1435,9 +1435,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 			if event.Message != nil {
 				model = event.Message.Model
 				usage = event.Message.Usage
-				// NOTE: do NOT emit EventUsage from message_start.
-				// MiniMax message_start usage is unreliable (often all-zero).
-				// Only emit from message_delta which is consistently accurate.
+				// message_start usage is often all-zero across providers.
+				// Real usage arrives in message_delta (stop_reason + final counts).
+				// ctx-cancelled paths set Usage: nil on the message because
+				// message_delta never fired — see the two interrupt blocks below.
 			}
 
 		case "content_block_start":
@@ -1660,7 +1661,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 					Content:    contentBlocks,
 					Model:      model,
 					StopReason: stopReason,
-					Usage:      &usage,
+					Usage:      nil, // interrupted: no real usage from message_delta
 					Timestamp:  time.Now(),
 				})
 				if len(orphanedBlocks) > 0 {

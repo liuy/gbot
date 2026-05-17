@@ -1101,3 +1101,53 @@ func TestTokenCountWithEstimation_AfterRewind(t *testing.T) {
 	}
 }
 
+func TestTokenCountWithEstimation_ZeroUsageSkipped(t *testing.T) {
+	// API may return Usage with all zeros (non-nil pointer).
+	// TokenCountWithEstimation should skip this and either find a real
+	// Usage or fall back to estimation. Must NOT return 0 for messages
+	// with real content.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello world this is a test")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Usage: &types.Usage{
+			InputTokens:              0,
+			OutputTokens:             0,
+			CacheReadInputTokens:     0,
+			CacheCreationInputTokens: 0,
+		}},
+	}
+
+	got := TokenCountWithEstimation(msgs)
+	if got == 0 {
+		t.Errorf("TokenCountWithEstimation returned 0 for messages with real content — should skip zero Usage and fall back to estimation")
+	}
+
+	// Must match pure estimation since zero Usage should be ignored
+	want := EstimateMessagesTokens(msgs)
+	if got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (pure estimation after skipping zero Usage)", got, want)
+	}
+}
+
+func TestTokenCountWithEstimation_ZeroUsageThenRealUsage(t *testing.T) {
+	// Last assistant has zero Usage, second-to-last has real Usage.
+	// Should skip the zero-Usage one and use the real one.
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}, Usage: &types.Usage{
+			InputTokens: 50000,
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("follow-up")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp2")}, Usage: &types.Usage{
+			// All zeros — should be skipped
+		}},
+	}
+
+	got := TokenCountWithEstimation(msgs)
+	// Should use base=50000 from resp1 + estimate for messages after it
+	base := 50000
+	delta := EstimateMessagesTokens(msgs[2:])
+	want := base + delta
+	if got != want {
+		t.Errorf("TokenCountWithEstimation = %d, want %d (50000 base + %d delta)", got, want, delta)
+	}
+}
