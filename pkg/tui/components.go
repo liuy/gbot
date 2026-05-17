@@ -913,7 +913,36 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
 			subIndent := strings.Repeat("  ", depth+1)
-			for _, sub := range tc.Blocks {
+			groups := detectToolGroups(tc.Blocks)
+			groupByFirstIdx := make(map[int]*toolGroup, len(groups))
+			consumed := make(map[int]bool)
+			for gi := range groups {
+				g := &groups[gi]
+				groupByFirstIdx[g.indices[0]] = g
+				for _, idx := range g.indices {
+					consumed[idx] = true
+				}
+			}
+			for i, sub := range tc.Blocks {
+				if g, ok := groupByFirstIdx[i]; ok && !expand {
+					isActive := g.anyRunning
+					var groupDotStr string
+					if isActive {
+						if toolDot != "" {
+							groupDotStr = toolDot
+						} else {
+							groupDotStr = " "
+						}
+					} else {
+						groupDotStr = styleDotSuccess.Render(dot)
+					}
+					summary := groupSummaryText(*g, isActive)
+					sb.WriteString("\n" + subIndent + groupDotStr + " " + styleDim.Render(summary+"…"))
+					continue
+				}
+				if consumed[i] && !expand {
+					continue
+				}
 				switch sub.Type {
 				case BlockTool:
 					sb.WriteString("\n")
@@ -957,7 +986,38 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, formatToolOutput(statsText, false, true, availWidth-resultPrefixWidth, true, 0, lipgloss.NewStyle())))
 		}
 		subIndent := strings.Repeat("  ", depth+1)
-		for _, sub := range tc.Blocks {
+		// Detect groups of consecutive search/read tools for collapsed rendering.
+		groups := detectToolGroups(tc.Blocks)
+		groupByFirstIdx := make(map[int]*toolGroup, len(groups))
+		consumed := make(map[int]bool)
+		for gi := range groups {
+			g := &groups[gi]
+			groupByFirstIdx[g.indices[0]] = g
+			for _, idx := range g.indices {
+				consumed[idx] = true
+			}
+		}
+
+		for i, sub := range tc.Blocks {
+			if g, ok := groupByFirstIdx[i]; ok && !expand {
+				isActive := g.anyRunning
+				var groupDotStr string
+				if isActive {
+					groupDotStr = " "
+				} else {
+					groupDotStr = styleDotSuccess.Render(dot)
+				}
+				summary := groupSummaryText(*g, isActive)
+				hint := ""
+				if !noHint {
+					hint = " … ctrl+o to expand"
+				}
+				sb.WriteString("\n" + subIndent + groupDotStr + " " + styleDim.Render(summary+hint))
+				continue
+			}
+			if consumed[i] && !expand {
+				continue
+			}
 			switch sub.Type {
 			case BlockTool:
 				sb.WriteString("\n")

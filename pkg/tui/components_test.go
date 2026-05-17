@@ -4437,3 +4437,47 @@ func TestGroupBlinkDotNotGreen(t *testing.T) {
 		t.Fatalf("done should use past tense:\n%s", doneClean)
 	}
 }
+
+// TestSubAgentToolGroupCollapse verifies that consecutive search/read tools
+// inside a sub-agent (Agent tool Blocks) are collapsed into a group summary,
+// just like top-level tools.
+func TestSubAgentToolGroupCollapse(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Agent", Summary: "explore", Done: true,
+				Blocks: []ContentBlock{
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Read", Summary: "a.go", Done: true,
+						Output: "line1\nline2\n", SearchRead: srRead,
+					}},
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Grep", Summary: "TODO", Done: true,
+						Output: "a.go:1: TODO\nb.go:2: TODO\nc.go:3: TODO\n", SearchRead: srSearch,
+					}},
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Read", Summary: "b.go", Done: true,
+						Output: "line3\nline4\n", SearchRead: srRead,
+					}},
+				},
+			}},
+		},
+	}
+
+	rendered := stripANSIPrintable(mv.View(80, false, "", false, false, 3))
+
+	// Group summary should merge the 3 tools into one line
+	if !strings.Contains(rendered, "Searched for 1 pattern, read 2 files") {
+		t.Fatalf("sub-agent should show group summary:\n%s", rendered)
+	}
+	// Individual tool names should NOT appear (consumed by group)
+	if strings.Contains(rendered, "Grep(TODO)") || strings.Contains(rendered, "Read(a.go)") {
+		t.Fatalf("sub-agent individual tool names should be hidden by group:\n%s", rendered)
+	}
+}
