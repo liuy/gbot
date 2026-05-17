@@ -32,6 +32,7 @@ func newIntegrationApp(t *testing.T) (*App, *short.Store, string) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, projectDir)
 
 	// Add conversation messages to engine
 	msgs := []types.Message{

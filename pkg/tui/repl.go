@@ -637,11 +637,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.thinkingActive = false
 		a.thinkingDuration = 0
 
-		// Persist successful turn to short-term memory.
-		// Only when err==nil — Ctrl+C and error paths do NOT persist,
-		// ensuring no partial/interrupted state is stored.
+		// Sync TUI persistence state from engine.
+		// Engine persists inside query loop; TUI just syncs its tracking fields.
+		// Only on success — error/abort paths do NOT persist.
 		if m.Err == nil {
-			a.persistTurn()
+			a.syncPersistState()
 		}
 
 		// Don't commit yet — keep current turn in Bubble Tea view so

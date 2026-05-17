@@ -53,24 +53,13 @@ func (a *App) handleSession(args string, commitCmd tea.Cmd) tea.Cmd {
 
 // createNewSession creates a new empty session and switches to it.
 func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
-	session, err := a.store.CreateSession(a.projectDir, a.engine.Model())
-	if err != nil {
+	if err := a.engine.NewSession(a.projectDir, title); err != nil {
 		slog.Error("session: create session failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to create session: %v", err))
 	}
 
-	if title != "" {
-		if err := a.store.UpdateSessionTitle(session.SessionID, title); err != nil {
-			slog.Error("session: set title failed", "error", err)
-		}
-	}
-
-	// Reset engine state for new session
-	a.engine.Reset()
-	a.engine.SetSessionID(session.SessionID)
-	a.sessionID = session.SessionID
-	a.lastPersistedIdx = 0
-	a.forkParentUUID = ""
+	a.sessionID = a.engine.SessionID()
+	a.syncPersistState()
 
 	// Reset REPL state
 	*a.repl = *NewReplState()
@@ -95,9 +84,9 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 
 	displayTitle := title
 	if displayTitle == "" {
-		displayTitle = session.SessionID[:8]
+		displayTitle = a.sessionID[:8]
 	}
-	slog.Info("session: created new session", "sessionID", session.SessionID, "title", title)
+	slog.Info("session: created new session", "sessionID", a.sessionID, "title", title)
 
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
 }
@@ -120,32 +109,16 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 		}
 	}
 
-	// Fork: forkPointSeq=0 means fork all messages
-	forked, err := a.store.ForkSession(a.sessionID, 0, "")
+	// Engine handles fork, load, and state update
+	engineMsgs, err := a.engine.ForkSession(title)
 	if err != nil {
 		slog.Error("session: fork session failed", "error", err)
 		return a.showInfo(fmt.Sprintf("Failed to fork session: %v", err))
 	}
 
-	// Set title on forked session
-	if err := a.store.UpdateSessionTitle(forked.SessionID, title); err != nil {
-		slog.Error("session: set fork title failed", "error", err)
-	}
-
-	// Load and convert forked messages
-	engineMsgs, err := loadAndConvertMessages(a.store, forked.SessionID)
-	if err != nil {
-		slog.Error("session: load/convert forked messages failed", "error", err)
-		return a.showInfo(fmt.Sprintf("Failed to load forked messages: %v", err))
-	}
-
-	// Update engine state
-	a.engine.SetMessages(engineMsgs)
-	a.engine.SetSessionID(forked.SessionID)
 	parentID := a.sessionID
-	a.sessionID = forked.SessionID
-	a.lastPersistedIdx = len(engineMsgs)
-	a.forkParentUUID = ""
+	a.sessionID = a.engine.SessionID()
+	a.syncPersistState()
 
 	// Reset REPL state
 		*a.repl = *NewReplState()
@@ -157,7 +130,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 		slog.Warn("session: write workspace meta failed", "error", err)
 	}
 
-	slog.Info("session: forked session", "parent", parentID, "child", forked.SessionID, "title", title)
+	slog.Info("session: forked session", "parent", parentID, "child", a.sessionID, "title", title)
 
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Forked session: %s", title)))
 }

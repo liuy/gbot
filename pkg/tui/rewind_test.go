@@ -350,6 +350,7 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 			{Type: types.ContentTypeThinking, Text: "thinking..."},
 		}, Timestamp: testTime},
 	}
+	eng.SetStore(store, "")
 	eng.SetMessages(msgs)
 
 	a := &App{
@@ -391,14 +392,12 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 		t.Fatal("expected store to retain messages after auto-rewind (append-only)")
 	}
 
-	// lastPersistedIdx should be at rewind point
-	if a.lastPersistedIdx != 0 {
-		t.Errorf("expected lastPersistedIdx=0 after auto-rewind, got %d", a.lastPersistedIdx)
+	// lastPersistedIdx should be synced from engine (rewound to 0)
+	if a.engine.LastPersistedIdx() != 0 {
+		t.Errorf("expected engine lastPersistedIdx=0 after auto-rewind, got %d", a.engine.LastPersistedIdx())
 	}
-
-	// forkParentUUID should be empty (rewound to beginning)
-	if a.forkParentUUID != "" {
-		t.Errorf("expected empty forkParentUUID after auto-rewind, got %q", a.forkParentUUID)
+	if a.lastPersistedIdx != 0 {
+		t.Errorf("expected TUI lastPersistedIdx=0 after auto-rewind, got %d", a.lastPersistedIdx)
 	}
 }
 

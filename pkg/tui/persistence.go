@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -10,81 +9,23 @@ import (
 )
 
 // persistTurn persists uncommitted engine messages to the short-term store.
+// Delegates to engine.PersistNewMessages() when engine has a store.
 // Called synchronously from the Bubble Tea Update loop on successful query end.
 //
 // Transaction semantics: only called when err == nil in queryEndMsg handler.
 // Ctrl+C and error paths do NOT call persistTurn, ensuring no partial state is stored.
 func (a *App) persistTurn() {
-	if a.store == nil || a.sessionID == "" {
-		return
-	}
+	a.engine.PersistNewMessages()
+	a.syncPersistState()
+}
 
-	engMsgs := a.engine.Messages() // returns copy under RLock
-	if len(engMsgs) <= a.lastPersistedIdx {
-		return // nothing new to persist
-	}
-
-	uncommitted := engMsgs[a.lastPersistedIdx:]
-	storeMsgs, err := EngineMessagesToStore(uncommitted)
-	if err != nil {
-		slog.Error("persistTurn: convert messages", "error", err)
-		return
-	}
-
-	// Convert []*short.TranscriptMessage for AppendMessages
-	ptrs := make([]*short.TranscriptMessage, len(storeMsgs))
-	for i := range storeMsgs {
-		ptrs[i] = &storeMsgs[i]
-	}
-
-	// Use fork-aware persist when rewind has set a fork point
-	if a.forkParentUUID != "" {
-		err = a.store.AppendMessagesWithForkPoint(a.sessionID, ptrs, a.forkParentUUID)
-	} else {
-		err = a.store.AppendMessages(a.sessionID, ptrs)
-	}
-	if err != nil {
-		slog.Error("persistTurn: append messages", "error", err)
-		return
-	}
-	a.forkParentUUID = "" // clear fork point after successful persist
-
-	if err := a.store.UpdateSessionTimestamp(a.sessionID); err != nil {
-		slog.Error("persistTurn: update session timestamp", "error", err)
-		// non-fatal: messages were persisted, timestamp is best-effort
-	}
-
-	if ct := a.engine.GetContextTokens(); ct > 0 {
-		if err := a.store.UpdateContextTokens(a.sessionID, ct); err != nil {
-			slog.Error("persistTurn: update context tokens", "error", err)
-		}
-	}
-
-	// Auto-title: extract first user prompt as session title (TS: saveCustomTitle)
-	// Only runs on the first persist to avoid overwriting user-set titles.
-	if a.lastPersistedIdx == 0 && len(storeMsgs) > 0 {
-		title := extractUserTitle(uncommitted)
-		if title != "" {
-			// Only set if no custom title exists (e.g. /session -n "my title")
-			if ses, err := a.store.GetSession(a.sessionID); err == nil && ses.Title == "" {
-				if err := a.store.UpdateSessionTitle(a.sessionID, title); err != nil {
-					slog.Error("persistTurn: auto-title", "error", err)
-				}
-				slog.Info("persistTurn: auto-titled session", "title", title)
-			}
-		}
-	}
-
-	a.lastPersistedIdx = len(engMsgs)
-	slog.Info("persistTurn: persisted messages",
-		"count", len(ptrs),
-		"total", a.lastPersistedIdx,
-		"session", fmt.Sprintf("%.8s", a.sessionID),
-	)
+// syncPersistState syncs TUI's lastPersistedIdx from engine after engine-driven persist.
+func (a *App) syncPersistState() {
+	a.lastPersistedIdx = a.engine.LastPersistedIdx()
+	a.forkParentUUID = "" // engine clears this on successful persist
 }
 
 // loadAndConvertMessages loads store messages and converts them to engine format.
-// Deduplicates the load→dereference→convert pattern used in auto-resume, picker, and fork.
 func loadAndConvertMessages(store *short.Store, sessionID string) ([]types.Message, error) {
 	storeMsgs, err := store.LoadChainMessages(sessionID)
 	if err != nil {
@@ -98,8 +39,6 @@ func loadAndConvertMessages(store *short.Store, sessionID string) ([]types.Messa
 }
 
 // extractUserTitle extracts the first user message text as a session title.
-// Skips tool_result and other non-text content. Truncates to 200 chars.
-// TS aligned: extractFirstPromptFromHead() (sessionStoragePortable.ts:135-201)
 func extractUserTitle(msgs []types.Message) string {
 	for _, m := range msgs {
 		if m.Role != types.RoleUser {
@@ -114,7 +53,6 @@ func extractUserTitle(msgs []types.Message) string {
 			if text == "" {
 				continue
 			}
-			// Skip XML-like tags (system messages, command-name, etc.)
 			if strings.HasPrefix(text, "<") {
 				continue
 			}

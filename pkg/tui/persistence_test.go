@@ -54,6 +54,9 @@ func TestPersistTurn_NoUncommittedMessages(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
+
 	a := &App{
 		engine:           eng,
 		store:            store,
@@ -85,6 +88,8 @@ func TestPersistTurn_SuccessfulPersist(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi there")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
@@ -138,6 +143,8 @@ func TestPersistTurn_Incremental(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 	})
@@ -196,6 +203,8 @@ func TestPersistTurn_AutoTitle(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("help me fix a bug in auth.go")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("sure, let me look")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
@@ -238,6 +247,8 @@ func TestPersistTurn_AutoTitle_DoesNotOverwrite(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("some prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
@@ -351,6 +362,8 @@ func TestPersistTurn_AutoTitle_SkipsSecondPersist(t *testing.T) {
 	}
 
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("first prompt")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},  // REAL-TIME: timestamp for persistence
@@ -415,6 +428,8 @@ func TestSetStore_SyncsReplMessagesFromEngine(t *testing.T) {
 
 	// Simulate auto-resume: load messages from store into engine
 	eng := newTestEngine()
+	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, "")
 	eng.SetMessages(msgs)
 
 	// Create App and call SetStore (as main.go does after resume)

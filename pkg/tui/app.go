@@ -279,6 +279,12 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string, lastPer
 	a.projectDir = projectDir
 	a.lastPersistedIdx = lastPersistedIdx
 
+	// Propagate store to engine for persistence delegation
+	a.engine.SetStore(store, projectDir)
+	if sessionID != "" {
+		a.engine.SetSessionID(sessionID)
+	}
+
 	// Sync repl.messages from engine on resume.
 	// Without this, the TUI shows an empty conversation after restart.
 	if lastPersistedIdx > 0 {

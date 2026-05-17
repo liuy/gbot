@@ -31,6 +31,7 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 
 	"github.com/liuy/gbot/pkg/memory/session"
+	"github.com/liuy/gbot/pkg/memory/short"
 
 	"github.com/google/uuid"
 )
@@ -202,6 +203,13 @@ type Engine struct {
 	// even though tool_result messages also have RoleUser and would confuse
 	// a "find last user message" search.
 	currentTurnMsgID string
+
+	// Persistence fields — owned by Engine, set via SetStore.
+	// TS align: QueryEngine.ts calls recordTranscript directly.
+	store            *short.Store
+	lastPersistedIdx int    // messages[:lastPersistedIdx] already persisted to store
+	forkParentUUID   string // rewind sets this; next persist uses AppendMessagesWithForkPoint
+	projectDir       string // working directory for workspace meta
 }
 
 // Params holds the constructor arguments for Engine.
@@ -951,6 +959,10 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
 			e.firePostTurnHooks(ctx)
+			// Persist messages after successful query (main engine only)
+			if !e.isSubagent {
+				e.PersistNewMessages()
+			}
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
 				InputTokens:              totalUsage.InputTokens,
 				OutputTokens:             totalUsage.OutputTokens,
@@ -1048,6 +1060,11 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Post-turn hooks (session memory extraction, etc.)
 		// TS: executePostSamplingHooks in query.ts after each sampling step.
 		e.firePostTurnHooks(ctx)
+	}
+
+	// Persist messages after successful query (main engine only)
+	if !e.isSubagent {
+		e.PersistNewMessages()
 	}
 
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
@@ -1850,6 +1867,7 @@ func (e *Engine) runCompact(ctx context.Context) (*CompactResult, error) {
 				e.mu.Lock()
 				e.messages = result.Messages
 				e.ContextTokens = result.AfterTokens
+				e.markAllPersisted()
 				e.mu.Unlock()
 				return result, nil
 			}
@@ -1865,6 +1883,7 @@ func (e *Engine) runCompact(ctx context.Context) (*CompactResult, error) {
 	e.mu.Lock()
 	e.messages = result.Messages
 	e.ContextTokens = result.AfterTokens
+	e.markAllPersisted()
 	e.mu.Unlock()
 	return result, nil
 }
@@ -2142,7 +2161,119 @@ func (e *Engine) Reset() {
 	e.turnCount = 0
 	e.ContextTokens = 0
 	e.toolSearch = newToolSearchState()
+	e.lastPersistedIdx = 0
+	e.forkParentUUID = ""
 	e.mu.Unlock()
+}
+
+// NewSession creates a new empty session and resets engine state.
+func (e *Engine) NewSession(projectDir, title string) error {
+	session, err := e.store.CreateSession(projectDir, e.model)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	if title != "" {
+		if err := e.store.UpdateSessionTitle(session.SessionID, title); err != nil {
+			slog.Error("NewSession: set title", "error", err)
+		}
+	}
+	e.Reset()
+	e.mu.Lock()
+	e.sessionID = session.SessionID
+	e.projectDir = projectDir
+	e.mu.Unlock()
+	return nil
+}
+
+// ForkSession forks the current session with the given title.
+// Returns the forked messages for TUI to render.
+func (e *Engine) ForkSession(title string) ([]types.Message, error) {
+	forked, err := e.store.ForkSession(e.sessionID, 0, "")
+	if err != nil {
+		return nil, fmt.Errorf("fork session: %w", err)
+	}
+	if title != "" {
+		if err := e.store.UpdateSessionTitle(forked.SessionID, title); err != nil {
+			slog.Error("ForkSession: set title", "error", err)
+		}
+	}
+	engineMsgs, err := e.LoadMessages(forked.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	e.messages = engineMsgs
+	e.sessionID = forked.SessionID
+	e.markAllPersisted()
+	e.forkParentUUID = ""
+	e.mu.Unlock()
+	return engineMsgs, nil
+}
+
+// SwitchSession switches to an existing session by loading its messages.
+// Returns the loaded messages for TUI to render.
+func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
+	engineMsgs, err := e.LoadMessages(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	e.messages = engineMsgs
+	e.sessionID = sessionID
+	e.markAllPersisted()
+	e.forkParentUUID = ""
+	e.mu.Unlock()
+	return engineMsgs, nil
+}
+
+// ResumeOrInitSession attempts to resume an existing session from workspace metadata,
+// or creates a new session if none is resumable. Returns the session ID.
+func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
+	if e.store == nil {
+		return "", nil
+	}
+
+	meta, _ := short.ReadWorkspaceMeta(workingDir)
+	if meta != nil && meta.CurrentSessionID != "" {
+		resumable, err := e.store.IsSessionResumable(meta.CurrentSessionID)
+		if err == nil && resumable {
+			_, msgs, err := e.store.ResumeSession(meta.CurrentSessionID)
+			if err == nil && len(msgs) > 0 {
+				engineMsgs, err := short.StoreMessagesToEngine(msgs)
+				if err == nil {
+					// Single lock section — avoid lock gaps between SetMessages/SetSessionID
+					e.mu.Lock()
+					e.messages = engineMsgs
+					e.sessionID = meta.CurrentSessionID
+					e.projectDir = workingDir
+					e.markAllPersisted()
+					e.mu.Unlock()
+					slog.Info("ResumeOrInitSession: resumed session", "sessionID", meta.CurrentSessionID, "messages", len(engineMsgs))
+					if ses, err := e.store.GetSession(meta.CurrentSessionID); err == nil && ses.ContextTokens > 0 {
+						e.mu.Lock()
+						e.ContextTokens = ses.ContextTokens
+						e.mu.Unlock()
+					}
+					return meta.CurrentSessionID, nil
+				}
+				slog.Warn("ResumeOrInitSession: failed to convert messages", "error", err)
+			}
+		}
+	}
+
+	// No resumable session — create new
+	session, err := e.store.CreateSession(workingDir, model)
+	if err != nil {
+		return "", fmt.Errorf("create session: %w", err)
+	}
+	e.mu.Lock()
+	e.sessionID = session.SessionID
+	e.projectDir = workingDir
+	e.lastPersistedIdx = 0
+	e.forkParentUUID = ""
+	e.mu.Unlock()
+	slog.Info("ResumeOrInitSession: created new session", "sessionID", session.SessionID)
+	return session.SessionID, nil
 }
 
 // appendMessage adds a message to the history under Lock.
@@ -2265,6 +2396,41 @@ func (e *Engine) SetFileHistoryWriter(fn func(filehistory.FileHistoryState)) {
 	e.fileHistoryWriter = fn
 }
 
+// markAllPersisted resets lastPersistedIdx to len(e.messages).
+// Called after operations that replace e.messages and already persisted them:
+// compact (RecordCompact), SetStore, ResumeOrInitSession, NewSession, ForkSession, SwitchSession.
+// MUST be called under e.mu.Lock().
+func (e *Engine) markAllPersisted() {
+	e.lastPersistedIdx = len(e.messages)
+}
+
+// SetStore wires the short-term store for persistence.
+// lastPersistedIdx is initialized via markAllPersisted() — an initial value that
+// will be overwritten by lifecycle methods (ResumeOrInitSession, NewSession).
+// AutoCompactor receives the same *short.Store pointer at creation time (main.go:446).
+func (e *Engine) SetStore(store *short.Store, projectDir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.store = store
+	e.projectDir = projectDir
+	e.markAllPersisted()
+	e.forkParentUUID = ""
+}
+
+// HasStore returns true if the engine has a persistence store wired.
+func (e *Engine) HasStore() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store != nil
+}
+
+// LastPersistedIdx returns the count of messages that have been persisted.
+func (e *Engine) LastPersistedIdx() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lastPersistedIdx
+}
+
 // RewindResult contains information about what was rewound.
 type RewindResult struct {
 	MessageCount  int      // number of messages after rewind
@@ -2345,6 +2511,18 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 		case RewindMessagesOnly:
 			e.fileHistory.TruncateSnapshotsFrom(snapshotID)
 		}
+	}
+
+	// Capture fork point if rewind crosses persisted boundary.
+	// Direct field access — RewindToScoped already holds e.mu.Lock().
+	if (scope == RewindAll || scope == RewindMessagesOnly) &&
+		e.store != nil && e.sessionID != "" && idx < e.lastPersistedIdx {
+		if idx > 0 {
+			e.forkParentUUID = e.messages[idx-1].ID
+		} else {
+			e.forkParentUUID = ""
+		}
+		e.lastPersistedIdx = idx
 	}
 
 	return result, nil

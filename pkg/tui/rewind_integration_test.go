@@ -57,6 +57,7 @@ func setupRewindIntegration(t *testing.T) (*App, *short.Store, *filehistory.Trac
 		t.Fatalf("CreateSession: %v", err)
 	}
 	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, projectDir)
 
 	a := &App{
 		engine:           eng,
@@ -1387,12 +1388,12 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 		t.Errorf("first msg = %q, want 'turn 1'", firstTextBlockContent(engMsgs[0]))
 	}
 
-	// Verify fork point captured
-	if app.forkParentUUID != "a1" {
-		t.Errorf("forkParentUUID = %q, want 'a1' (last surviving message ID)", app.forkParentUUID)
+	// Verify engine captured fork point (observable via persist)
+	if app.engine.LastPersistedIdx() != 2 {
+		t.Errorf("engine lastPersistedIdx = %d, want 2", app.engine.LastPersistedIdx())
 	}
 	if app.lastPersistedIdx != 2 {
-		t.Errorf("lastPersistedIdx = %d, want 2", app.lastPersistedIdx)
+		t.Errorf("TUI lastPersistedIdx = %d, want 2 (synced from engine)", app.lastPersistedIdx)
 	}
 
 	// --- Phase 3: Send 2 new turns (simulating user continuing after rewind) ---
@@ -1408,10 +1409,7 @@ func TestIntegration_Rewind_NewMessages_ChainReload(t *testing.T) {
 	// Persist new messages -- should use AppendMessagesWithForkPoint
 	app.persistTurn()
 
-	// forkParentUUID should be cleared after persist
-	if app.forkParentUUID != "" {
-		t.Errorf("forkParentUUID should be cleared after persist, got %q", app.forkParentUUID)
-	}
+	// Engine fork state is internal; verify persist succeeded by checking store count
 
 	// Store should have 10 messages total (6 original + 4 new, dead branches kept)
 	allAfter, err := store.LoadMessages(app.sessionID)
@@ -1490,6 +1488,7 @@ func setupE2E(t *testing.T) (*App, string) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	eng.SetSessionID(session.SessionID)
+	eng.SetStore(store, projectDir)
 
 	a := &App{
 		engine:           eng,
@@ -1551,8 +1550,8 @@ func TestE2E_RewindCompactResume(t *testing.T) {
 	if len(engMsgs) != 4 {
 		t.Fatalf("Phase 2: engine has %d messages after rewind, want 4", len(engMsgs))
 	}
-	if app.forkParentUUID != "e2e-a2" {
-		t.Errorf("Phase 2: forkParentUUID=%q, want e2e-a2", app.forkParentUUID)
+	if app.engine.LastPersistedIdx() != 4 {
+		t.Errorf("Phase 2: engine lastPersistedIdx=%d, want 4", app.engine.LastPersistedIdx())
 	}
 
 	// Send 1 new turn after rewind

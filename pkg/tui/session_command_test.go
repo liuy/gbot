@@ -28,6 +28,8 @@ func newSessionTestApp(t *testing.T) (*App, *short.Store) {
 	}
 	eng.SetSessionID(session.SessionID)
 
+	eng.SetStore(store, projectDir)
+
 	a := &App{
 		engine:           eng,
 		store:            store,

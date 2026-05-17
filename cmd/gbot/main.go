@@ -384,48 +384,17 @@ func main() {
 		}
 	}
 
-	// 7. Auto-resume: restore last session if workspace metadata exists
+	// 7. Auto-resume: restore last session or create new
 	var sessionID string
-	var lastPersistedIdx int
 	if store != nil {
-		meta, _ := short.ReadWorkspaceMeta(workingDir)
-		if meta != nil && meta.CurrentSessionID != "" {
-			resumable, err := store.IsSessionResumable(meta.CurrentSessionID)
-			if err == nil && resumable {
-				_, msgs, err := store.ResumeSession(meta.CurrentSessionID)
-				if err == nil && len(msgs) > 0 {
-					storeMsgs := make([]short.TranscriptMessage, len(msgs))
-					for i, m := range msgs {
-						storeMsgs[i] = *m
-					}
-					engineMsgs, err := tui.StoreMessagesToEngine(storeMsgs)
-					if err == nil {
-						eng.SetMessages(engineMsgs)
-						sessionID = meta.CurrentSessionID
-						lastPersistedIdx = len(engineMsgs)
-						eng.SetSessionID(sessionID)
-						slog.Info("main: resumed session", "sessionID", sessionID, "messages", len(engineMsgs))
-						if ses, err := store.GetSession(sessionID); err == nil && ses.ContextTokens > 0 {
-							eng.ContextTokens = ses.ContextTokens
-							slog.Info("main: restored context tokens", "tokens", ses.ContextTokens)
-						}
-					} else {
-						slog.Warn("main: failed to convert resumed messages", "error", err)
-					}
-				}
-			}
-		}
-		// No resumable session — create a new one
-		if sessionID == "" {
-			session, err := store.CreateSession(workingDir, model)
-			if err != nil {
-				slog.Warn("main: failed to create session", "error", err)
-			} else {
-				sessionID = session.SessionID
-				if err := tui.WriteWorkspaceMeta(workingDir, sessionID); err != nil {
-					slog.Warn("main: write workspace meta failed", "error", err)
-				}
-				slog.Info("main: created new session", "sessionID", sessionID)
+		eng.SetStore(store, workingDir)
+		id, err := eng.ResumeOrInitSession(workingDir, model)
+		if err != nil {
+			slog.Warn("main: session init failed", "error", err)
+		} else {
+			sessionID = id
+			if err := tui.WriteWorkspaceMeta(workingDir, sessionID); err != nil {
+				slog.Warn("main: write workspace meta failed", "error", err)
 			}
 		}
 	}
@@ -524,7 +493,7 @@ func main() {
 		// 8. Create TUI App
 		app := tui.NewApp(eng, systemPrompt, h)
 		app.SetProviders(providerMap, cfg)
-		app.SetStore(store, sessionID, workingDir, lastPersistedIdx)
+		app.SetStore(store, sessionID, workingDir, eng.LastPersistedIdx())
 
 		// Estimate initial context usage
 		// CJK-aware estimation. Corrected after first API response.

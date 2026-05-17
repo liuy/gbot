@@ -109,20 +109,18 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 		return a, a.showInfo("Already on this session")
 	}
 
-	// Resume the selected session
-	engineMsgs, err := loadAndConvertMessages(a.store, selected.SessionID)
+	// Resume the selected session via engine
+	engineMsgs, err := a.engine.SwitchSession(selected.SessionID)
 	if err != nil {
 		return a, a.showInfo(fmt.Sprintf("Failed to load session: %v", err))
 	}
 
-	a.engine.SetMessages(engineMsgs)
-	a.engine.SetSessionID(selected.SessionID)
 	a.sessionID = selected.SessionID
-	a.lastPersistedIdx = len(engineMsgs)
+	a.syncPersistState()
 
-		*a.repl = *NewReplState()
-		a.repl.messages = engineMessagesToViews(engineMsgs)
-		a.committedCount = len(a.repl.messages)
+	*a.repl = *NewReplState()
+	a.repl.messages = engineMessagesToViews(engineMsgs)
+	a.committedCount = len(a.repl.messages)
 
 	title := selected.Title
 	if title == "" {
