@@ -111,19 +111,15 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 		t.Error("expected compact end event with 'Context compacted' message")
 	}
 
-	// Verify continuation meta message was injected.
-	var foundContinuation bool
+	// Verify NO continuation meta message (context_window_exceeded just compacts and retries).
 	for _, msg := range result.Messages {
 		if msg.Role == types.RoleUser && msg.Flags&types.FlagMeta != 0 {
 			for _, block := range msg.Content {
 				if strings.Contains(block.Text, "Output token limit hit") {
-					foundContinuation = true
+					t.Error("context_window_exceeded should NOT produce continuation meta message")
 				}
 			}
 		}
-	}
-	if !foundContinuation {
-		t.Error("expected continuation meta message with 'Output token limit hit'")
 	}
 
 	// Verify the final response contains the continuation text.
@@ -139,15 +135,14 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 // TestContextWindowExceeded_RecoveryLimit verifies that recovery is limited to
 // maxTokensRecoveryLimit (3) attempts. On the 4th overflow, the response is
 // returned as-is without recovery.
-func TestContextWindowExceeded_RecoveryLimit(t *testing.T) {
+func TestContextWindowExceeded_RecoveryOnce(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	for i := range maxTokensRecoveryLimit {
-		mp.addResponse(textEventsWithStopReason("test", "truncated "+string(rune('A'+i)), stopReasonContextWindowExceeded), nil)
-	}
-	// 4th response: limit reached, falls through to terminal.
-	mp.addResponse(textEventsWithStopReason("test", "final truncated D", stopReasonContextWindowExceeded), nil)
+	// First response: context_window_exceeded → compact once + continuation.
+	mp.addResponse(textEventsWithStopReason("test", "truncated A", stopReasonContextWindowExceeded), nil)
+	// Second response: still context_window_exceeded → recovery already done, falls through.
+	mp.addResponse(textEventsWithStopReason("test", "truncated B", stopReasonContextWindowExceeded), nil)
 
 	tc := newEventCollector()
 	eng := New(&Params{
@@ -167,7 +162,7 @@ func TestContextWindowExceeded_RecoveryLimit(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", result.Error)
 	}
 
-	// Verify exactly maxTokensRecoveryLimit compact events.
+	// Verify exactly 1 compact event (recovery only fires once).
 	toolStartEvents := tc.FindEvents(types.EventToolStart)
 	compactCount := 0
 	for _, evt := range toolStartEvents {
@@ -175,17 +170,17 @@ func TestContextWindowExceeded_RecoveryLimit(t *testing.T) {
 			compactCount++
 		}
 	}
-	if compactCount != maxTokensRecoveryLimit {
-		t.Errorf("expected %d compact events, got %d", maxTokensRecoveryLimit, compactCount)
+	if compactCount != 1 {
+		t.Errorf("expected 1 compact event, got %d", compactCount)
 	}
 
-	// Verify the last assistant message is the 4th truncated response.
+	// Verify the last assistant message is the 2nd truncated response (terminal).
 	lastMsg := result.Messages[len(result.Messages)-1]
 	if lastMsg.Role != types.RoleAssistant {
 		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
 	}
-	if !strings.Contains(lastMsg.Content[0].Text, "final truncated D") {
-		t.Errorf("expected 'final truncated D' in last message, got %q", lastMsg.Content[0].Text)
+	if !strings.Contains(lastMsg.Content[0].Text, "truncated B") {
+		t.Errorf("expected 'truncated B' in last message, got %q", lastMsg.Content[0].Text)
 	}
 
 	// Verify EventQueryEnd was emitted (terminal path reached).
@@ -323,69 +318,6 @@ func TestContextWindowExceeded_CompactFails(t *testing.T) {
 	}
 }
 
-// TestMaxTokens_ContinueWithoutCompact verifies that stop_reason="max_tokens"
-// triggers continuation WITHOUT compacting (context still has room).
-func TestMaxTokens_ContinueWithoutCompact(t *testing.T) {
-	t.Parallel()
-
-	mp := &testProvider{}
-	mp.addResponse(textEventsWithStopReason("test", "This response was cut off at max", stopReasonMaxTokens), nil)
-	mp.addResponse(subTextEvents("test", "...and here is the rest!"), nil)
-
-	tc := newEventCollector()
-	eng := New(&Params{
-		Provider:   mp,
-		Model:      "test",
-		Dispatcher: tc,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result := eng.QuerySync(ctx, "tell me a joke", nil)
-	if result.Error != nil {
-		t.Fatalf("expected success, got: %v", result.Error)
-	}
-
-	// Verify NO compact events (max_tokens doesn't compact).
-	toolStartEvents := tc.FindEvents(types.EventToolStart)
-	for _, evt := range toolStartEvents {
-		if evt.ToolUse != nil && evt.ToolUse.Name == "Compact" {
-			t.Error("max_tokens recovery should NOT trigger compact")
-		}
-	}
-
-	// Verify continuation meta message exists.
-	var foundContinuation bool
-	for _, msg := range result.Messages {
-		if msg.Role == types.RoleUser && msg.Flags&types.FlagMeta != 0 {
-			for _, block := range msg.Content {
-				if strings.Contains(block.Text, "Output token limit hit") {
-					foundContinuation = true
-				}
-			}
-		}
-	}
-	if !foundContinuation {
-		t.Error("expected continuation meta message for max_tokens")
-	}
-
-	// Verify the final response has the continuation text.
-	lastMsg := result.Messages[len(result.Messages)-1]
-	if lastMsg.Role != types.RoleAssistant {
-		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
-	}
-	if !strings.Contains(lastMsg.Content[0].Text, "here is the rest") {
-		t.Errorf("expected 'here is the rest' in final response, got %q", lastMsg.Content[0].Text)
-	}
-
-	// Verify at least 2 TurnEnd events (recovery turn + final turn).
-	turnEndEvents := tc.FindEvents(types.EventTurnEnd)
-	if len(turnEndEvents) < 2 {
-		t.Errorf("expected at least 2 EventTurnEnd, got %d", len(turnEndEvents))
-	}
-}
-
 // TestContextWindowExceeded_WithToolUse verifies that recovery does NOT trigger
 // when the response contains tool_use blocks (streamingExecutor != nil).
 func TestContextWindowExceeded_WithToolUse(t *testing.T) {
@@ -457,5 +389,112 @@ func TestContextWindowExceeded_WithToolUse(t *testing.T) {
 	}
 	if !strings.Contains(lastMsg.Content[0].Text, "Done after tool") {
 		t.Errorf("expected 'Done after tool', got %q", lastMsg.Content[0].Text)
+	}
+}
+
+// TestMaxTokens_ContinueWithoutCompact verifies that stop_reason="max_tokens"
+// triggers continuation WITHOUT compacting (context still has room).
+func TestMaxTokens_ContinueWithoutCompact(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	mp.addResponse(textEventsWithStopReason("test", "This response was cut off at max", stopReasonMaxTokens), nil)
+	mp.addResponse(subTextEvents("test", "...and here is the rest!"), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "tell me a joke", nil)
+	if result.Error != nil {
+		t.Fatalf("expected success, got: %v", result.Error)
+	}
+
+	// Verify NO compact events (max_tokens doesn't compact).
+	toolStartEvents := tc.FindEvents(types.EventToolStart)
+	for _, evt := range toolStartEvents {
+		if evt.ToolUse != nil && evt.ToolUse.Name == "Compact" {
+			t.Error("max_tokens recovery should NOT trigger compact")
+		}
+	}
+
+	// Verify continuation meta message exists.
+	var foundContinuation bool
+	for _, msg := range result.Messages {
+		if msg.Role == types.RoleUser && msg.Flags&types.FlagMeta != 0 {
+			for _, block := range msg.Content {
+				if strings.Contains(block.Text, "Output token limit hit") {
+					foundContinuation = true
+				}
+			}
+		}
+	}
+	if !foundContinuation {
+		t.Error("expected continuation meta message for max_tokens")
+	}
+
+	// Verify the final response has the continuation text.
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleAssistant {
+		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
+	}
+	if !strings.Contains(lastMsg.Content[0].Text, "here is the rest") {
+		t.Errorf("expected 'here is the rest' in final response, got %q", lastMsg.Content[0].Text)
+	}
+
+	// Verify at least 2 TurnEnd events (recovery turn + final turn).
+	turnEndEvents := tc.FindEvents(types.EventTurnEnd)
+	if len(turnEndEvents) < 2 {
+		t.Errorf("expected at least 2 EventTurnEnd, got %d", len(turnEndEvents))
+	}
+}
+
+// TestMaxTokens_RecoveryLimit verifies that recovery is limited to
+// maxTokensRecoveryLimit (3) attempts. On the 4th overflow, the response is
+// returned as-is without recovery.
+func TestMaxTokens_RecoveryLimit(t *testing.T) {
+	t.Parallel()
+
+	mp := &testProvider{}
+	for i := range maxTokensRecoveryLimit {
+		mp.addResponse(textEventsWithStopReason("test", "truncated "+string(rune('A'+i)), stopReasonMaxTokens), nil)
+	}
+	// 4th response: limit reached, falls through to terminal.
+	mp.addResponse(textEventsWithStopReason("test", "final truncated D", stopReasonMaxTokens), nil)
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: tc,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "test", nil)
+	if result.Error != nil {
+		t.Fatalf("expected no error, got: %v", result.Error)
+	}
+
+	// Verify the last assistant message is the 4th truncated response.
+	lastMsg := result.Messages[len(result.Messages)-1]
+	if lastMsg.Role != types.RoleAssistant {
+		t.Fatalf("expected assistant message, got %s", lastMsg.Role)
+	}
+	if !strings.Contains(lastMsg.Content[0].Text, "final truncated D") {
+		t.Errorf("expected 'final truncated D' in last message, got %q", lastMsg.Content[0].Text)
+	}
+
+	// Verify EventQueryEnd was emitted (terminal path reached).
+	queryEndEvents := tc.FindEvents(types.EventQueryEnd)
+	if len(queryEndEvents) != 1 {
+		t.Fatalf("expected 1 EventQueryEnd, got %d", len(queryEndEvents))
 	}
 }

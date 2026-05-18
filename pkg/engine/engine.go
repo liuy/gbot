@@ -608,6 +608,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 	e.setMessages(mcResult.Messages)
 
 	reactiveCompactDone := false
+	contextWindowRecoveryDone := false
 	maxTokensRecoveryCount := 0
 
 	for e.maxTurns == 0 || e.turnCount < e.maxTurns {
@@ -874,12 +875,13 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			// Stop reason recovery: compact (context_window_exceeded) or continue
 			// directly (max_tokens), then append continuation meta message.
 			// Source: TS query.ts:1223-1256.
-			if (resp.StopReason == stopReasonContextWindowExceeded || resp.StopReason == stopReasonMaxTokens) && maxTokensRecoveryCount < maxTokensRecoveryLimit {
+			// context_window_exceeded: compact once, then continue. No counter —
+			// compact either frees enough space (no re-trigger) or fails (falls through).
+			if resp.StopReason == stopReasonContextWindowExceeded && !contextWindowRecoveryDone {
 				src := e.querySource()
 				if src != QuerySourceCompact && src != QuerySourceSessionMemory {
-					maxTokensRecoveryCount++
 
-					if resp.StopReason == stopReasonContextWindowExceeded && e.compactor != nil {
+					if e.compactor != nil {
 						// Context window exceeded: compact to free space for next turn.
 						compactID := "compact-recovery-" + uuid.New().String()[:8]
 						e.emitEvent(types.QueryEvent{
@@ -915,31 +917,26 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 									DisplayOutput: formatCompactOutput(result),
 								},
 							})
-							e.appendMessage(types.Message{
-								Role: types.RoleUser,
-								Content: []types.ContentBlock{
-									types.NewTextBlock(continuationPrompt),
-								},
-								Flags: types.FlagMeta,
-							})
+							contextWindowRecoveryDone = true
 							e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 							continue
 						}
-					} else if resp.StopReason == stopReasonMaxTokens {
-						// max_tokens: context not full, just hit output limit.
-						e.appendMessage(types.Message{
-							Role: types.RoleUser,
-							Content: []types.ContentBlock{
-								types.NewTextBlock(continuationPrompt),
-							},
-							Flags: types.FlagMeta,
-						})
-						e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
-						continue
 					}
 				}
 			}
-
+			// max_tokens: continuation is safe for all agents (no compact involved).
+			if resp.StopReason == stopReasonMaxTokens && maxTokensRecoveryCount < maxTokensRecoveryLimit {
+				maxTokensRecoveryCount++
+				e.appendMessage(types.Message{
+					Role: types.RoleUser,
+					Content: []types.ContentBlock{
+						types.NewTextBlock(continuationPrompt),
+					},
+					Flags: types.FlagMeta,
+				})
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+				continue
+			}
 				// Stop/SubagentStop hook — blocking result gives LLM another turn.
 				// Source: stopHooks.ts — handleStopHooks.
 				if blockResult := e.runStopHook(ctx); blockResult != nil {

@@ -1,26 +1,11 @@
 package config
 
-import "strings"
-
 // DefaultCapabilities returns fallback context_window and max_tokens for known models.
 // Provider config values take precedence; this is the fallback when config fields are 0.
-// Source reference: TS utils/context.ts getContextWindowForModel +
-// utils/model/modelCapabilities.ts getMaxOutputTokensForModel.
+// 32k maxTokens is a universal default for modern LLMs (100k-200k context windows).
+// Users can override via provider config if their model needs a different limit.
 func DefaultCapabilities(model string) (contextWindow, maxTokens int) {
-	switch {
-	case strings.HasPrefix(model, "glm-5.1"):
-		return 200 * 1024, 128 * 1024
-	case strings.HasPrefix(model, "glm-5-turbo"):
-		return 200 * 1024, 128 * 1024
-	case strings.HasPrefix(model, "glm-5"):
-		return 200 * 1024, 128 * 1024
-	case strings.HasPrefix(model, "glm-4"):
-		return 200 * 1024, 128 * 1024
-	case strings.HasPrefix(model, "minimax-2"):
-		return 200 * 1024, 128 * 1024
-	default:
-		return 200 * 1024, 16 * 1024
-	}
+	return 200 * 1024, 32 * 1024
 }
 
 // ResolveCapabilities returns the effective context_window and max_tokens,

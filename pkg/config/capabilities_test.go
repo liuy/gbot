@@ -8,27 +8,23 @@ func TestDefaultCapabilities(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		model                 string
-		wantContext, wantMax  int
+		model string
 	}{
-		{"glm-5", 200 * 1024, 128 * 1024},
-		{"glm-5.1", 200 * 1024, 128 * 1024},
-		{"glm-5-turbo", 200 * 1024, 128 * 1024},
-		{"glm-4.7", 200 * 1024, 128 * 1024},
-		{"minimax-2.7", 200 * 1024, 128 * 1024},
-		{"unknown-model", 200 * 1024, 16 * 1024},
-		{"claude-sonnet-4-6", 200 * 1024, 16 * 1024},
+		{"glm-5"},
+		{"glm-5.1"},
+		{"claude-sonnet-4-6"},
+		{"unknown-model"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.model, func(t *testing.T) {
 			t.Parallel()
 			cw, mt := DefaultCapabilities(tc.model)
-			if cw != tc.wantContext {
-				t.Errorf("contextWindow = %d, want %d", cw, tc.wantContext)
+			if cw != 200*1024 {
+				t.Errorf("contextWindow = %d, want %d", cw, 200*1024)
 			}
-			if mt != tc.wantMax {
-				t.Errorf("maxTokens = %d, want %d", mt, tc.wantMax)
+			if mt != 32*1024 {
+				t.Errorf("maxTokens = %d, want %d", mt, 32*1024)
 			}
 		})
 	}
@@ -53,25 +49,25 @@ func TestResolveCapabilities_ConfigOverrides(t *testing.T) {
 func TestResolveCapabilities_FallbackToDefault(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{} // no config values
+	p := &Provider{}
 	cw, mt := p.ResolveCapabilities("glm-5")
 	if cw != 200*1024 {
 		t.Errorf("fallback contextWindow = %d, want %d", cw, 200*1024)
 	}
-	if mt != 128*1024 {
-		t.Errorf("fallback maxTokens = %d, want %d", mt, 128*1024)
+	if mt != 32*1024 {
+		t.Errorf("fallback maxTokens = %d, want %d", mt, 32*1024)
 	}
 }
 
 func TestResolveCapabilities_PartialOverride(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{ContextWindow: 64000} // only context set
+	p := &Provider{ContextWindow: 64000}
 	cw, mt := p.ResolveCapabilities("glm-5")
 	if cw != 64000 {
 		t.Errorf("partial override contextWindow = %d, want 64000", cw)
 	}
-	if mt != 128*1024 {
-		t.Errorf("fallback maxTokens = %d, want %d", mt, 128*1024)
+	if mt != 32*1024 {
+		t.Errorf("fallback maxTokens = %d, want %d", mt, 32*1024)
 	}
 }
