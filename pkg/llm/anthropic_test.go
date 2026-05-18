@@ -421,7 +421,8 @@ func TestIsContextOverflow(t *testing.T) {
 		err      error
 		overflow bool
 	}{
-		{name: "prompt too long", err: &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"}, overflow: true},
+		{name: "prompt too long 400", err: &llm.APIError{Status: 400, ErrorCode: "prompt_too_long"}, overflow: true},
+		{name: "prompt too long 413 (Vertex)", err: &llm.APIError{Status: 413, ErrorCode: "prompt_too_long"}, overflow: true},
 		{name: "400 other error", err: &llm.APIError{Status: 400, ErrorCode: "other"}, overflow: false},
 		{name: "500 error", err: &llm.APIError{Status: 500}, overflow: false},
 		{name: "generic error", err: fmt.Errorf("error"), overflow: false},
@@ -1689,6 +1690,49 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 // ---------------------------------------------------------------------------
 // ParseAPIError — additional edge case tests
 // ---------------------------------------------------------------------------
+
+func TestParseAPIError_PromptTooLongMessage(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 137500 tokens > 135000 maximum"}}`
+	apiErr := p.ParseAPIError([]byte(body), 400)
+
+	if apiErr.ErrorCode != "prompt_too_long" {
+		t.Errorf("ErrorCode = %q, want %q", apiErr.ErrorCode, "prompt_too_long")
+	}
+	if apiErr.Status != 400 {
+		t.Errorf("Status = %d, want 400", apiErr.Status)
+	}
+	if apiErr.Message != "prompt is too long: 137500 tokens > 135000 maximum" {
+		t.Errorf("Message = %q, want original message preserved", apiErr.Message)
+	}
+}
+
+func TestParseAPIError_PromptTooLongCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	// Vertex returns capitalized "Prompt is too long"
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"Prompt is too long: 137500 tokens > 135000 maximum"}}`
+	apiErr := p.ParseAPIError([]byte(body), 400)
+
+	if apiErr.ErrorCode != "prompt_too_long" {
+		t.Errorf("ErrorCode = %q, want %q (case-insensitive match)", apiErr.ErrorCode, "prompt_too_long")
+	}
+}
+
+func TestParseAPIError_NonOverflowKeepsErrorCodeEmpty(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	body := `{"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}}`
+	apiErr := p.ParseAPIError([]byte(body), 429)
+
+	if apiErr.ErrorCode != "" {
+		t.Errorf("ErrorCode = %q, want empty for non-overflow error", apiErr.ErrorCode)
+	}
+}
 
 func TestParseAPIError_EmptyBody(t *testing.T) {
 	t.Parallel()

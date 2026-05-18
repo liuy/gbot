@@ -186,7 +186,7 @@ func IsRetryable(err error) bool {
 func IsContextOverflow(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status == 400 && apiErr.ErrorCode == "prompt_too_long"
+		return apiErr.ErrorCode == "prompt_too_long"
 	}
 	return false
 }

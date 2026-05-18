@@ -450,5 +450,13 @@ func (p *AnthropicProvider) ParseAPIError(body []byte, statusCode int) *APIError
 		apiErr.Message = string(body)
 	}
 
+	// Anthropic has no native "prompt_too_long" error code — it returns
+	// HTTP 400 with message "prompt is too long: ...". Match on message text
+	// (case-insensitive) to align with OpenAI's context_length_exceeded mapping.
+	// Source: TS errors.ts:560 — same approach.
+	if strings.Contains(strings.ToLower(apiErr.Message), "prompt is too long") {
+		apiErr.ErrorCode = "prompt_too_long"
+	}
+
 	return apiErr
 }
