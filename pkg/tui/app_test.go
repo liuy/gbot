@@ -7662,8 +7662,8 @@ func TestRenderQueueBox_SingleItem(t *testing.T) {
 	if result == "" {
 		t.Fatal("renderQueueBox with 1 item returned empty string")
 	}
-	if !strings.Contains(result, "○") {
-		t.Errorf("renderQueueBox should contain ○, got %q", result)
+	if !strings.Contains(result, "❯") {
+		t.Errorf("renderQueueBox should contain ❯, got %q", result)
 	}
 	if !strings.Contains(result, "run tests") {
 		t.Errorf("renderQueueBox should contain item text 'run tests', got %q", result)

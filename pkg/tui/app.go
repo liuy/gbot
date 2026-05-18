@@ -528,14 +528,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the active (uncommitted) content + progress + input.
-// renderQueueBox renders dim ○-prefixed queued messages between progress and input.
+// renderQueueBox renders dim ❯-prefixed queued messages between progress and input.
 func (a *App) renderQueueBox() string {
 	if len(a.pendingQueue) == 0 {
 		return ""
 	}
 	maxWidth := max(a.width-renderedPromptWidth, 10)
 	var sb strings.Builder
-	prefix := styleDim.Render("○ ")
+	prefix := styleDim.Render("❯ ")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 	for _, item := range a.pendingQueue {
 		wrapped := wordWrap(item.Text, maxWidth)
