@@ -30,13 +30,13 @@ type mockCompactor struct {
 	err       error
 }
 
-func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.callCount++
 	m.lastInput = msgs
 	if m.result != nil {
-		return &CompactResult{
+		return &short.CompactResult{
 			BeforeTokens: len(msgs) * 100,
 			AfterTokens:  len(m.result) * 100,
 			Messages:     m.result,
@@ -47,7 +47,7 @@ func (m *mockCompactor) Compact(_ context.Context, msgs []types.Message) (*Compa
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("[Previous conversation compacted]")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("[Summary acknowledged]")}},
 	}
-	return &CompactResult{
+	return &short.CompactResult{
 		BeforeTokens: len(msgs) * 100,
 		AfterTokens:  len(msgs2) * 100,
 		Messages:     msgs2,

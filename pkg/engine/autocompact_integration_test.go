@@ -456,13 +456,23 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	}
 
 	p := &integrationProvider{}
-
 	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 40000)
 
+	eng := New(&Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		Logger:    slog.Default(),
+	})
+	eng.SetStore(store, tmpDir)
+	eng.SetSessionID(session.SessionID)
+
 	msgs := makeMessages(10, 5000)
-	result, err := compactor.Compact(context.Background(), msgs)
+	eng.SetMessages(msgs)
+
+	result, err := eng.runCompact(context.Background())
 	if err != nil {
-		t.Fatalf("Compact failed: %v", err)
+		t.Fatalf("runCompact failed: %v", err)
 	}
 
 	// Verify compact produced result with boundary
@@ -479,7 +489,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	// The store should have the boundary marker persisted
 	foundBoundary := false
 	for _, m := range storeMsgs {
-		if strings.Contains(m.Content, "compact_boundary") {
+		if m.Type == "system" && m.Subtype == "compact_boundary" {
 			foundBoundary = true
 		}
 	}

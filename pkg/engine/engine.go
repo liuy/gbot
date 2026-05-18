@@ -41,7 +41,7 @@ import (
 // (proactive) or when the API returns a context overflow error (reactive).
 // TS align: autoCompact.ts + reactiveCompact.ts
 type Compactor interface {
-	Compact(ctx context.Context, messages []types.Message) (*CompactResult, error)
+	Compact(ctx context.Context, messages []types.Message) (*short.CompactResult, error)
 }
 
 // PostTurnHook is called after each successful turn in the agentic loop.
@@ -1873,30 +1873,39 @@ func (e *Engine) shouldAutoCompact() bool {
 }
 
 // runCompact runs the compactor and atomically applies the result (messages + ContextTokens).
-func (e *Engine) runCompact(ctx context.Context) (*CompactResult, error) {
+// Regardless of which compact strategy succeeds (SM-compact or LLM compact),
+// RecordCompact is called exactly once to persist the boundary to the DB.
+func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	e.mu.RLock()
 	sm := e.sessionMemory
 	comp := e.compactor
 	e.mu.RUnlock()
 
+	var result *short.CompactResult
+
 	// TS: sessionMemoryCompact.ts — trySessionMemoryCompaction runs before LLM compact.
 	if sm != nil {
 		if ac, ok := comp.(*AutoCompactor); ok {
-			if result, _ := ac.TrySMCompact(e.Messages(), sm); result != nil {
-				e.mu.Lock()
-				e.messages = result.Messages
-				e.ContextTokens = result.AfterTokens
-				e.markAllPersisted()
-				e.mu.Unlock()
-				return result, nil
+			if smResult, _ := ac.TrySMCompact(e.Messages(), sm); smResult != nil {
+				result = smResult
 			}
 		}
 	}
 
 	// Fall back to LLM summarization compact
-	result, err := comp.Compact(ctx, e.Messages())
-	if err != nil {
-		return nil, err
+	if result == nil {
+		var err error
+		result, err = comp.Compact(ctx, e.Messages())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Persist boundary to DB — single point for all compact strategies
+	if result.BoundaryMarker != nil && e.store != nil {
+		if err := e.store.RecordCompact(e.sessionID, result); err != nil {
+			e.logger.Warn("RecordCompact failed", "error", err)
+		}
 	}
 
 	e.mu.Lock()

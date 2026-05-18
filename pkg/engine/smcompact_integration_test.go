@@ -558,3 +558,117 @@ func TestExtraction_ReceivesConversationContext(t *testing.T) {
 		t.Errorf("first message text = %q, want %q", firstText, "hello")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Integration Test: SM-compact must persist boundary to DB
+// ---------------------------------------------------------------------------
+
+// TestSMCompact_WritesBoundaryToDB verifies that runCompact writes a compact_boundary
+// to the store when SM-compact succeeds. Without this, resume loads ALL historical
+// messages instead of just the post-compact chain.
+//
+// Call chain: runCompact() → TrySMCompact() → [RecordCompact] → DB
+// Observable output: store has a message with type=system, subtype=compact_boundary.
+func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
+	setTempHome(t)
+
+	tmpDir := t.TempDir()
+	memDir := long.GetMemoryPath(tmpDir)
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write real session memory content so TrySMCompact succeeds
+	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+	notesContent := `# Session Notes
+
+## Session Title
+Boundary persistence test
+
+## Current State
+Verifying SM-compact writes boundary to DB
+
+## Files and Functions
+smcompact_integration_test.go — boundary test
+`
+	if err := os.WriteFile(notesPath, []byte(notesContent), 0644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	// Set up store + session
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	sess, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Persist messages so PartialCompact has real data to split
+	msgs := makeLargeMessages(20, 500)
+	storeMsgs, err := short.EngineMessagesToStore(msgs)
+	if err != nil {
+		t.Fatalf("convert messages: %v", err)
+	}
+	for i, m := range storeMsgs {
+		if i > 0 {
+			m.ParentUUID = storeMsgs[i-1].UUID
+		}
+		if err := store.AppendMessage(sess.SessionID, m); err != nil {
+			t.Fatalf("persist message %d: %v", i, err)
+		}
+	}
+
+	p := &integrationProvider{}
+	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 40000)
+
+	eng := New(&Params{
+		Provider:  p,
+		Model:     "test-model",
+		Compactor: compactor,
+		Logger:    slog.Default(),
+	})
+	eng.SetStore(store, tmpDir)
+	eng.SetSessionID(sess.SessionID)
+	eng.SetMessages(msgs)
+
+	// Set up session memory (already extracted — file exists on disk)
+	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+	eng.SetSessionMemory(sm)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := eng.runCompact(ctx)
+	if err != nil {
+		t.Fatalf("runCompact failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("runCompact returned nil result")
+	}
+	if len(result.Messages) == 0 {
+		t.Fatal("runCompact returned empty messages")
+	}
+
+	// RED LIGHT: Verify DB has compact_boundary record
+	dbMsgs, err := store.LoadMessages(sess.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	foundBoundary := false
+	for _, m := range dbMsgs {
+		if m.Type == "system" && m.Subtype == "compact_boundary" {
+			foundBoundary = true
+			break
+		}
+	}
+	if !foundBoundary {
+		t.Errorf("SM-compact did not write boundary to DB — got %d messages, none with subtype=compact_boundary. "+
+			"Resume will reload ALL historical messages instead of post-compact chain.", len(dbMsgs))
+	}
+}

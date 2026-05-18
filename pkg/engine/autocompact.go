@@ -17,19 +17,9 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// CompactResult carries structured results from a compact operation.
-// Returned by Compactor.Compact() for the engine to emit as a virtual tool call.
-type CompactResult struct {
-	Summary        string          // LLM-generated conversation summary (may be empty)
-	BeforeTokens   int             // estimated token count before compact
-	AfterTokens    int             // estimated token count after compact
-	BeforeMessages int             // message count before compact
-	Messages       []types.Message // post-compact message array
-}
-
 // formatCompactOutput builds the display text for a successful compact result.
 // Structure: stats line first (fills collapse preview), then summary content.
-func formatCompactOutput(result *CompactResult) string {
+func formatCompactOutput(result *short.CompactResult) string {
 	output := fmt.Sprintf("Conversation compacted (msg: %d → %d, token: %s → %s)",
 		result.BeforeMessages, len(result.Messages),
 		types.FormatTokenCount(result.BeforeTokens), types.FormatTokenCount(result.AfterTokens))
@@ -69,7 +59,7 @@ func NewAutoCompactor(store *short.Store, sessionID, model string, provider llm.
 //  1. Keeping the most recent messages (enough for recent context)
 //  2. Summarizing the older messages via LLM
 //  3. Returning CompactResult with summary, token stats, and post-compact messages.
-func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (*CompactResult, error) {
+func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (*short.CompactResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
@@ -101,29 +91,28 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 			c.logger.Error("PartialCompact failed", "error", err)
 			return nil, err
 		}
-		if err := c.store.RecordCompact(c.sessionID, pcr); err != nil {
-			c.logger.Warn("RecordCompact failed", "error", err)
-		}
+
 		built := c.buildResultMessages(pcr, summaryText)
-		return &CompactResult{
-			Summary:        summaryText,
-			BeforeTokens:   beforeTokens,
-			BeforeMessages: len(messages),
-			AfterTokens:    EstimateMessagesTokens(built),
-			Messages:       built,
-		}, nil
+		pcr.Summary = summaryText
+		pcr.BeforeTokens = beforeTokens
+		pcr.BeforeMessages = len(messages)
+		pcr.AfterTokens = EstimateMessagesTokens(built)
+		pcr.Messages = built
+		return pcr, nil
 	}
 
 	// keepFrom == len: compact everything (tail=0).
-	// Build [boundary, summary] directly — no PartialCompact needed.
-	built := c.buildCompactAllResult(summaryText)
-	return &CompactResult{
-		Summary:        summaryText,
-		BeforeTokens:   beforeTokens,
-		BeforeMessages: len(messages),
-		AfterTokens:    EstimateMessagesTokens(built),
-		Messages:       built,
-	}, nil
+		// Build [boundary, summary] directly — no PartialCompact needed.
+		built := c.buildCompactAllResult(summaryText)
+		boundary := short.CreateCompactBoundaryMessage("auto", 0, "")
+		return &short.CompactResult{
+			BoundaryMarker:  boundary,
+			Summary:         summaryText,
+			BeforeTokens:    beforeTokens,
+			BeforeMessages:  len(messages),
+			AfterTokens:     EstimateMessagesTokens(built),
+			Messages:        built,
+		}, nil
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).

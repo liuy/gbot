@@ -9,6 +9,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // textEventsWithStopReason creates stream events for a text response with a
@@ -27,11 +28,11 @@ func textEventsWithStopReason(model, text, stopReason string) []llm.StreamEvent 
 // recoveryCompactor succeeds and returns reduced AfterTokens.
 type recoveryCompactor struct{}
 
-func (c *recoveryCompactor) Compact(_ context.Context, messages []types.Message) (*CompactResult, error) {
+func (c *recoveryCompactor) Compact(_ context.Context, messages []types.Message) (*short.CompactResult, error) {
 	if len(messages) == 0 {
-		return &CompactResult{AfterTokens: 0, Messages: messages}, nil
+		return &short.CompactResult{AfterTokens: 0, Messages: messages}, nil
 	}
-	return &CompactResult{
+	return &short.CompactResult{
 		BeforeTokens: len(messages) * 100,
 		AfterTokens:  len(messages) * 50,
 		Messages:     messages[:1],
@@ -41,7 +42,7 @@ func (c *recoveryCompactor) Compact(_ context.Context, messages []types.Message)
 // failingRecoveryCompactor always returns an error.
 type failingRecoveryCompactor struct{ err string }
 
-func (c *failingRecoveryCompactor) Compact(_ context.Context, _ []types.Message) (*CompactResult, error) {
+func (c *failingRecoveryCompactor) Compact(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 	return nil, &compactTestError{msg: c.err}
 }
 

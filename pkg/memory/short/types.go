@@ -6,6 +6,8 @@ package short
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // TranscriptMessage represents a single message in a session transcript.
@@ -60,12 +62,20 @@ type ContentBlock struct {
 // CompactResult holds the output of a compact operation.
 // Aligned with TS CompactionResult.
 type CompactResult struct {
-	BoundaryMarker   *TranscriptMessage   // system, subtype=compact_boundary
-	SummaryMessages  []*TranscriptMessage // user, isCompactSummary=true
-	MessagesToKeep   []*TranscriptMessage // partial compact preserved messages
-	Attachments      []*TranscriptMessage // reinjected attachments
-	PreCompactTokens  int
-	PostCompactTokens int
+	// Store/persistence fields (used by RecordCompact)
+	BoundaryMarker    *TranscriptMessage   // system, subtype=compact_boundary
+	SummaryMessages   []*TranscriptMessage // user, isCompactSummary=true
+	MessagesToKeep    []*TranscriptMessage // partial compact preserved messages
+	Attachments       []*TranscriptMessage // reinjected attachments
+	PreCompactTokens  int                  // tokens in the compacted head
+	PostCompactTokens int                  // tokens after compact
+
+	// Engine/display fields
+	Summary        string          // summary text (LLM-generated or session memory)
+	BeforeMessages int             // total messages before compact
+	BeforeTokens   int             // total tokens before compact (all messages)
+	AfterTokens    int             // total tokens after compact
+	Messages       []types.Message // post-compact engine messages
 }
 
 // SearchOptions configures a full-text search query.

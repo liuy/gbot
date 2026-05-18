@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -2031,8 +2032,8 @@ func TestMarshalToolOutput(t *testing.T) {
 
 type internalMockCompactor struct{}
 
-func (c *internalMockCompactor) Compact(_ context.Context, messages []types.Message) (*CompactResult, error) {
-	return &CompactResult{
+func (c *internalMockCompactor) Compact(_ context.Context, messages []types.Message) (*short.CompactResult, error) {
+	return &short.CompactResult{
 		BeforeTokens: len(messages) * 100,
 		AfterTokens:  len(messages) * 100,
 		Messages:     messages,
@@ -2339,9 +2340,9 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 
 	compactCalled := false
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, messages []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, messages []types.Message) (*short.CompactResult, error) {
 			compactCalled = true
-			return &CompactResult{
+			return &short.CompactResult{
 				BeforeTokens:   35000,
 				AfterTokens:    4000,
 				BeforeMessages: len(messages),
@@ -2392,10 +2393,10 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 
 // funcCompactor is a test helper that delegates Compact to a function.
 type funcCompactor struct {
-	fn func(context.Context, []types.Message) (*CompactResult, error)
+	fn func(context.Context, []types.Message) (*short.CompactResult, error)
 }
 
-func (c *funcCompactor) Compact(ctx context.Context, messages []types.Message) (*CompactResult, error) {
+func (c *funcCompactor) Compact(ctx context.Context, messages []types.Message) (*short.CompactResult, error) {
 	return c.fn(ctx, messages)
 }
 
@@ -2417,8 +2418,8 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 
 	var compactDisplayOutput string
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, messages []types.Message) (*CompactResult, error) {
-			return &CompactResult{
+		fn: func(_ context.Context, messages []types.Message) (*short.CompactResult, error) {
+			return &short.CompactResult{
 				BeforeTokens:   10000,
 				AfterTokens:    4000,
 				BeforeMessages: len(messages),
@@ -2508,9 +2509,9 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 
 	compactCalled := false
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
 			compactCalled = true
-			return &CompactResult{
+			return &short.CompactResult{
 				BeforeTokens:   35000,
 				AfterTokens:    4000,
 				BeforeMessages: len(msgs),
@@ -2592,7 +2593,7 @@ func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
 
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 			return nil, errors.New("compact failed: LLM error")
 		},
 	}
@@ -2644,7 +2645,7 @@ func TestQuery_PreTurnCompact_ColdStart_NoCompact(t *testing.T) {
 
 	compactCalled := false
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 			compactCalled = true
 			return nil, errors.New("should not be called")
 		},
@@ -2689,9 +2690,9 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 
 	compactCalled := false
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
 			compactCalled = true
-			return &CompactResult{
+			return &short.CompactResult{
 				// Compact barely reduces: 35000 → 33000 (still over blocking limit 31000).
 				BeforeTokens:   35000,
 				AfterTokens:    33000,
@@ -2750,7 +2751,7 @@ func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
 
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 			return nil, errors.New("compact failed")
 		},
 	}
@@ -2814,9 +2815,9 @@ func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
 
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, msgs []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
 			// Simulate AutoCompactor no-op: returns same messages with no token reduction.
-			return &CompactResult{
+			return &short.CompactResult{
 				BeforeTokens:   35000,
 				AfterTokens:    35000, // Same! No reduction.
 				BeforeMessages: len(msgs),
@@ -3618,7 +3619,7 @@ func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
 // blockingCompactor blocks on ctx until cancelled, then returns error.
 type blockingCompactor struct{}
 
-func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*CompactResult, error) {
+func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*short.CompactResult, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -5483,7 +5484,7 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	tmp.addResponse(textStreamEvents("test-model", "Success after prune"), nil)
 
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 			return nil, errors.New("nothing to compact: all messages within keep target")
 		},
 	}
@@ -5554,7 +5555,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	tmp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
 
 	compactor := &funcCompactor{
-		fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 			return nil, errors.New("nothing to compact")
 		},
 	}
@@ -5619,7 +5620,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 		tmp.addResponse(textStreamEvents("test-model", "normal response"), nil)
 
 		compactor := &funcCompactor{
-			fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 				return nil, errors.New("nothing to compact")
 			},
 		}
@@ -5679,7 +5680,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 		tmp.addResponse(textStreamEvents("test-model", "sub-agent response"), nil)
 
 		compactor := &funcCompactor{
-			fn: func(_ context.Context, _ []types.Message) (*CompactResult, error) {
+			fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
 				return nil, errors.New("nothing to compact")
 			},
 		}

@@ -21,7 +21,7 @@ import (
 // Returns nil if SM-compact cannot be used (no session memory, empty, or error),
 // which causes the caller to fall back to LLM summarization.
 // TS source: sessionMemoryCompact.ts:514-630 — trySessionMemoryCompaction.
-func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.SessionMemory) (*CompactResult, error) {
+func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.SessionMemory) (*short.CompactResult, error) {
 	if sm == nil {
 		return nil, nil
 	}
@@ -80,13 +80,13 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 		"before_messages", len(messages),
 		"after_messages", len(built))
 
-	return &CompactResult{
-		Summary:        summaryText,
-		BeforeTokens:   beforeTokens,
-		BeforeMessages: len(messages),
-		AfterTokens:    afterTokens,
-		Messages:       built,
-	}, nil
+	// Preserve store fields from PartialCompact for RecordCompact
+	pcr.Summary = summaryText
+	pcr.BeforeTokens = beforeTokens
+	pcr.BeforeMessages = len(messages)
+	pcr.AfterTokens = afterTokens
+	pcr.Messages = built
+	return pcr, nil
 }
 
 // formatSMSummary formats session memory content as a compact summary.
