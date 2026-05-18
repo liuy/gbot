@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -85,9 +86,9 @@ type App struct {
 	systemPrompt json.RawMessage
 
 	// Persistence (short-term memory store)
-	sessionID        string
-	projectDir       string // working directory for .gbot/meta.json
-	fileHistory      *filehistory.Tracker
+	sessionID   string
+	projectDir  string // working directory for .gbot/meta.json
+	fileHistory *filehistory.Tracker
 
 	// Active dialog overlay (unified for list picking and permission asking)
 	activeDialog *Dialog
@@ -1193,9 +1194,7 @@ func (a *App) handleStash() (tea.Model, tea.Cmd) {
 	} else if strings.TrimSpace(input) != "" {
 		// Push: save current input and clear
 		pasteCopy := make(map[int]string, len(a.pasteStore))
-		for k, v := range a.pasteStore {
-			pasteCopy[k] = v
-		}
+		maps.Copy(pasteCopy, a.pasteStore)
 		a.stashed = &stashedPrompt{
 			text:        input,
 			cursor:      a.input.Cursor(),
