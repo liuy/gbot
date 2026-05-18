@@ -497,6 +497,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = m.Height
 		a.input.SetWidth(a.width - 4 - renderedPromptWidth)
 		a.status.SetWidth(a.width)
+		a.contentDirty = true
 		return a, nil
 
 	case tea.KeyMsg:
