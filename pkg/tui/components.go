@@ -713,33 +713,27 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 		isUser := m.Role == "user"
 
 		// Detect groups of consecutive search/read tools for collapsed rendering.
-		groups := detectToolGroups(m.Blocks)
-		groupByFirstIdx := make(map[int]*toolGroup, len(groups))
-		consumed := make(map[int]bool)
+		gl := buildGroupLookup(m.Blocks)
 		// Find the last group index (matches TS isActiveCollapsedGroup:
 		// last group in a streaming message is "active" even if all tools done).
 		lastGroupIdx := -1
-		for gi := range groups {
-			g := &groups[gi]
-			groupByFirstIdx[g.indices[0]] = g
-			for _, idx := range g.indices {
-				consumed[idx] = true
+		for _, g := range gl.byFirstIdx {
+			if g.indices[0] > lastGroupIdx {
+				lastGroupIdx = g.indices[0]
 			}
-			lastGroupIdx = g.indices[0]
 		}
 		isStreaming := streaming
 
 		for i, blk := range m.Blocks {
 			// Check if this block is the first of a group.
-			if g, ok := groupByFirstIdx[i]; ok && !expand {
-				// Collapsed group: render single summary line.
+			if g, ok := gl.byFirstIdx[i]; ok && !expand {
 				// Active = anyRunning || (streaming && last group && no content after).
 				// Matches TS: hasAnyToolInProgress || (isLoading && !hasContentAfter)
 				isActive := g.anyRunning
 				if !isActive && isStreaming && i == lastGroupIdx {
 					hasContentAfter := false
 					for j := i + 1; j < len(m.Blocks); j++ {
-						if consumed[j] {
+						if gl.consumed[j] {
 							continue
 						}
 						if m.Blocks[j].Type == BlockText && m.Blocks[j].Text != "" {
@@ -754,26 +748,11 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 					isActive = !hasContentAfter
 				}
 
-				var groupDotStr string
-				if isActive {
-					if toolDot != "" {
-						groupDotStr = toolDot
-					} else {
-						groupDotStr = " "
-					}
-				} else {
-					groupDotStr = styleDotSuccess.Render(dot)
-				}
-				summary := groupSummaryText(*g, isActive)
-				hint := ""
-				if !noHint {
-					hint = " … ctrl+o to expand"
-				}
-				sb.WriteString(groupDotStr + " " + styleDim.Render(summary+hint))
+				writeGroupSummary(&sb, "", g, isActive, toolDot, noHint)
 				sb.WriteString("\n")
 				continue
 			}
-			if consumed[i] && !expand {
+			if gl.consumed[i] && !expand {
 				// Subsequent block in a collapsed group — skip.
 				continue
 			}
@@ -789,7 +768,7 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 					sb.WriteString("\n")
 				}
 			case BlockTool:
-				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0)
+				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0, isStreaming)
 				sb.WriteString("\n")
 				// Blank line between completed tool and following text block
 				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
@@ -867,7 +846,7 @@ func renderStatsText(tcv *ToolCallView) string {
 //
 // Nested tools inside an Agent's Blocks render at depth+1, adding 2 more spaces
 // before ALL lines (header and output alike).
-func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, maxOutputLines int, depth int) {
+func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expand bool, toolDot string, noHint bool, maxOutputLines int, depth int, streaming bool) {
 	if blk.Type != BlockTool {
 		return
 	}
@@ -913,40 +892,45 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
 			subIndent := strings.Repeat("  ", depth+1)
-			groups := detectToolGroups(tc.Blocks)
-			groupByFirstIdx := make(map[int]*toolGroup, len(groups))
-			consumed := make(map[int]bool)
-			for gi := range groups {
-				g := &groups[gi]
-				groupByFirstIdx[g.indices[0]] = g
-				for _, idx := range g.indices {
-					consumed[idx] = true
+			gl := buildGroupLookup(tc.Blocks)
+			// Find the last group index for isActive streaming logic.
+			lastGroupIdx := -1
+			for _, g := range gl.byFirstIdx {
+				if g.indices[0] > lastGroupIdx {
+					lastGroupIdx = g.indices[0]
 				}
 			}
 			for i, sub := range tc.Blocks {
-				if g, ok := groupByFirstIdx[i]; ok && !expand {
+				if g, ok := gl.byFirstIdx[i]; ok && !expand {
 					isActive := g.anyRunning
-					var groupDotStr string
-					if isActive {
-						if toolDot != "" {
-							groupDotStr = toolDot
-						} else {
-							groupDotStr = " "
+					if !isActive && streaming && i == lastGroupIdx {
+						hasContentAfter := false
+						for j := i + 1; j < len(tc.Blocks); j++ {
+							if gl.consumed[j] {
+								continue
+							}
+							if tc.Blocks[j].Type == BlockText && tc.Blocks[j].Text != "" {
+								hasContentAfter = true
+								break
+							}
+							if tc.Blocks[j].Type == BlockTool || tc.Blocks[j].Type == BlockStats {
+								hasContentAfter = true
+								break
+							}
 						}
-					} else {
-						groupDotStr = styleDotSuccess.Render(dot)
+						isActive = !hasContentAfter
 					}
-					summary := groupSummaryText(*g, isActive)
-					sb.WriteString("\n" + subIndent + groupDotStr + " " + styleDim.Render(summary+"…"))
+					sb.WriteString("\n" + subIndent)
+					writeGroupSummary(sb, "", g, isActive, toolDot, true)
 					continue
 				}
-				if consumed[i] && !expand {
+				if gl.consumed[i] && !expand {
 					continue
 				}
 				switch sub.Type {
 				case BlockTool:
 					sb.WriteString("\n")
-					sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
+					sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1, streaming)
 				case BlockText:
 					if sub.Text != "" {
 						sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, expand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
@@ -987,41 +971,22 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		}
 		subIndent := strings.Repeat("  ", depth+1)
 		// Detect groups of consecutive search/read tools for collapsed rendering.
-		groups := detectToolGroups(tc.Blocks)
-		groupByFirstIdx := make(map[int]*toolGroup, len(groups))
-		consumed := make(map[int]bool)
-		for gi := range groups {
-			g := &groups[gi]
-			groupByFirstIdx[g.indices[0]] = g
-			for _, idx := range g.indices {
-				consumed[idx] = true
-			}
-		}
+		gl := buildGroupLookup(tc.Blocks)
 
 		for i, sub := range tc.Blocks {
-			if g, ok := groupByFirstIdx[i]; ok && !expand {
+			if g, ok := gl.byFirstIdx[i]; ok && !expand {
 				isActive := g.anyRunning
-				var groupDotStr string
-				if isActive {
-					groupDotStr = " "
-				} else {
-					groupDotStr = styleDotSuccess.Render(dot)
-				}
-				summary := groupSummaryText(*g, isActive)
-				hint := ""
-				if !noHint {
-					hint = " … ctrl+o to expand"
-				}
-				sb.WriteString("\n" + subIndent + groupDotStr + " " + styleDim.Render(summary+hint))
+				sb.WriteString("\n" + subIndent)
+				writeGroupSummary(sb, "", g, isActive, "", noHint)
 				continue
 			}
-			if consumed[i] && !expand {
+			if gl.consumed[i] && !expand {
 				continue
 			}
 			switch sub.Type {
 			case BlockTool:
 				sb.WriteString("\n")
-				sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1)
+				sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1, streaming)
 			case BlockText:
 				if sub.Text != "" {
 					sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, expand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
@@ -1581,6 +1546,53 @@ func (a *App) renderTaskList() string {
 // ---------------------------------------------------------------------------
 
 // toolGroup holds consecutive search/read tool blocks for group rendering.
+// groupLookup holds the pre-computed mapping from block index to group,
+// and the set of indices consumed by groups (to skip in the main loop).
+type groupLookup struct {
+	byFirstIdx map[int]*toolGroup
+	consumed   map[int]bool
+}
+
+// buildGroupLookup runs detectToolGroups and builds the lookup maps.
+func buildGroupLookup(blocks []ContentBlock) groupLookup {
+	groups := detectToolGroups(blocks)
+	gl := groupLookup{
+		byFirstIdx: make(map[int]*toolGroup, len(groups)),
+		consumed:   make(map[int]bool),
+	}
+	for gi := range groups {
+		g := &groups[gi]
+		gl.byFirstIdx[g.indices[0]] = g
+		for _, idx := range g.indices {
+			gl.consumed[idx] = true
+		}
+	}
+	return gl
+}
+
+// writeGroupSummary renders one collapsed group summary line into sb.
+// prefix is the line prefix (e.g. subIndent or "").
+// toolDot is the current blink frame (empty string on blink-off).
+// noHint suppresses the "ctrl+o to expand" hint.
+func writeGroupSummary(sb *strings.Builder, prefix string, g *toolGroup, isActive bool, toolDot string, noHint bool) {
+	var dotStr string
+	if isActive {
+		if toolDot != "" {
+			dotStr = toolDot
+		} else {
+			dotStr = " "
+		}
+	} else {
+		dotStr = styleDotSuccess.Render(dot)
+	}
+	summary := groupSummaryText(*g, isActive)
+	hint := ""
+	if !noHint {
+		hint = " … ctrl+o to expand"
+	}
+	sb.WriteString(prefix + dotStr + " " + styleDim.Render(summary+hint))
+}
+
 // Simplified from TS GroupAccumulator (collapseReadSearch.ts:270-330):
 // memory, MCP, git, hook fields deferred — gbot doesn't have these yet.
 type toolGroup struct {

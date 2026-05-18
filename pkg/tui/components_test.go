@@ -1010,7 +1010,7 @@ func TestMessageView_View_MinWidth(t *testing.T) {
 func TestRenderToolCall_NonToolBlock(t *testing.T) {
 	var sb strings.Builder
 	blk := ContentBlock{Type: BlockText, Text: "hello"}
-	blk.renderToolCall(&sb, 80, false, "", false, 0, 0)
+	blk.renderToolCall(&sb, 80, false, "", false, 0, 0, false)
 	if sb.Len() != 0 {
 		t.Error("renderToolCall on text block should produce nothing")
 	}
@@ -4479,6 +4479,75 @@ func TestSubAgentToolGroupCollapse(t *testing.T) {
 	// Individual tool names should NOT appear (consumed by group)
 	if strings.Contains(rendered, "Grep(TODO)") || strings.Contains(rendered, "Read(a.go)") {
 		t.Fatalf("sub-agent individual tool names should be hidden by group:\n%s", rendered)
+	}
+}
+
+// TestSubAgentGroupBlinkDotNotGreen verifies that during streaming, a sub-agent's
+// group dot alternates between blank and white "●", never green — matching the
+// main agent behavior. Green only appears when streaming ends.
+func TestSubAgentGroupBlinkDotNotGreen(t *testing.T) {
+	t.Parallel()
+
+	srRead := tool.SearchReadKind{IsRead: true}
+	srSearch := tool.SearchReadKind{IsSearch: true}
+
+	// Sub-agent with 3 tools all Done=true, but still streaming (LLM hasn't
+	// finished generating yet). This is the exact scenario the user saw:
+	// all tools finish fast → anyRunning=false → group dot turns green
+	// immediately instead of staying active.
+	mv := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name: "Agent", Summary: "explore", Done: false,
+				Blocks: []ContentBlock{
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Read", Summary: "a.go", Done: true,
+						Output: "a\n", SearchRead: srRead,
+					}},
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Grep", Summary: "TODO", Done: true,
+						Output: "match\n", SearchRead: srSearch,
+					}},
+					{Type: BlockTool, ToolCall: ToolCallView{
+						Name: "Read", Summary: "b.go", Done: true,
+						Output: "b\n", SearchRead: srRead,
+					}},
+				},
+			}},
+		},
+	}
+
+	wd := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true).Render(dot)
+
+	// Blink ON frame: toolDot=white "●", streaming=true → shows dot + present tense.
+	onFrame := mv.View(80, false, wd, true, false, 3)
+	onClean := stripANSIPrintable(onFrame)
+	if !strings.Contains(onClean, "●") {
+		t.Fatalf("sub-agent blink-on should show dot:\n%s", onClean)
+	}
+	if !strings.Contains(onClean, "Searching for 1 pattern, reading 2 files") {
+		t.Fatalf("sub-agent blink-on should use present tense:\n%s", onClean)
+	}
+
+	// Blink OFF frame: toolDot="", streaming=true → blank space + present tense.
+	offFrame := mv.View(80, false, "", true, false, 3)
+	offClean := stripANSIPrintable(offFrame)
+	if strings.Contains(offClean, "●") {
+		t.Fatalf("sub-agent blink-off should NOT show dot:\n%s", offClean)
+	}
+	if !strings.Contains(offClean, "Searching for 1 pattern, reading 2 files") {
+		t.Fatalf("sub-agent blink-off should use present tense:\n%s", offClean)
+	}
+
+	// Streaming ended: toolDot="", streaming=false → green dot + past tense.
+	doneFrame := mv.View(80, false, "", false, false, 3)
+	doneClean := stripANSIPrintable(doneFrame)
+	if !strings.Contains(doneClean, "●") {
+		t.Fatalf("sub-agent done should show dot:\n%s", doneClean)
+	}
+	if !strings.Contains(doneClean, "Searched for 1 pattern, read 2 files") {
+		t.Fatalf("sub-agent done should use past tense:\n%s", doneClean)
 	}
 }
 
