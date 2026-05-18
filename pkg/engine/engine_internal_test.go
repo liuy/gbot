@@ -1110,6 +1110,48 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 	}
 }
 
+func TestMarshalMessages_ThinkingBlockJSONField(t *testing.T) {
+	t.Parallel()
+
+	eng := New(&Params{
+		Provider: &testProvider{},
+		Model:    "test",
+	})
+	eng.messages = []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeThinking, Thinking: "Let me analyze this"},
+			},
+		},
+	}
+
+	got := eng.marshalMessages()
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(got))
+	}
+
+	// Verify the ContentBlock itself has Thinking field populated
+	block := got[0].Content[0]
+	if block.Type != types.ContentTypeThinking {
+		t.Fatalf("block type = %q, want thinking", block.Type)
+	}
+	if block.Thinking != "Let me analyze this" {
+		t.Errorf("Thinking = %q, want %q", block.Thinking, "Let me analyze this")
+	}
+
+	// Verify JSON serialization uses "thinking" field (not "text")
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	raw := string(data)
+	if !strings.Contains(raw, `"thinking":"Let me analyze this"`) {
+		t.Errorf("JSON should contain thinking field with content, got: %s", raw)
+	}
+}
+
 func TestMarshalMessages_PreservesToolUseAndResult(t *testing.T) {
 	t.Parallel()
 

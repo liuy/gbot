@@ -384,7 +384,7 @@ func engineMessagesToViews(msgs []types.Message) []MessageView {
 			case types.ContentTypeThinking:
 				mv.Blocks = append(mv.Blocks, ContentBlock{
 					Type:     BlockThinking,
-					Thinking: ThinkingView{Text: block.Text},
+					Thinking: ThinkingView{Text: block.Thinking},
 				})
 			}
 		}

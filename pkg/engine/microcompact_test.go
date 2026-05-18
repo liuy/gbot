@@ -269,7 +269,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 	thinkingText := "Let me think about this carefully"
 	messages := []types.Message{
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: thinkingText},
+			{Type: types.ContentTypeThinking, Thinking: thinkingText},
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
@@ -720,7 +720,7 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 			types.NewToolResultBlock("id1", json.RawMessage(`"tool output"`), false),
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "thinking text"},
+			{Type: types.ContentTypeThinking, Thinking: "thinking text"},
 			types.NewTextBlock("assistant text"),
 			types.NewToolUseBlock("id2", "Read", json.RawMessage(`{"path":"/x"}`)),
 		}},

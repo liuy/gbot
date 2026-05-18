@@ -235,7 +235,7 @@ func (p *OpenAIProvider) translateResponse(body []byte) (*Response, error) {
 	if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
 		content = append(content, types.ContentBlock{
 			Type: types.ContentTypeThinking,
-			Text: *choice.Message.ReasoningContent,
+			Thinking: *choice.Message.ReasoningContent,
 		})
 	}
 
@@ -437,7 +437,7 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					send(ctx, eventCh, StreamEvent{
 						Type:         "content_block_start",
 						Index:        thinkingContentIndex,
-						ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking, Text: ""},
+						ContentBlock: &types.ContentBlock{Type: types.ContentTypeThinking, Thinking: ""},
 					})
 					thinkingBlockOpen = true
 				}

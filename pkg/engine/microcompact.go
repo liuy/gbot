@@ -295,7 +295,7 @@ func EstimateMessagesTokens(messages []types.Message) int {
 				totalTokens += calculateToolResultTokens(block.Content)
 
 			case types.ContentTypeThinking:
-				totalTokens += EstimateTokens(block.Text)
+				totalTokens += EstimateTokens(block.Thinking)
 
 			case types.ContentTypeRedacted:
 				totalTokens += EstimateTokens(block.Data)

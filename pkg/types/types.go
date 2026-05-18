@@ -156,8 +156,12 @@ type CacheControlConfig struct {
 type ContentBlock struct {
 	Type ContentType `json:"type"`
 
-	// Text content (type == "text" or "thinking")
+	// Text content (type == "text")
 	Text string `json:"text,omitempty"`
+
+	// Thinking content (type == "thinking")
+	// Anthropic API requires "thinking" field (not "text") for thinking blocks.
+	Thinking string `json:"thinking,omitempty"`
 
 	// Tool use fields (type == "tool_use")
 	ID    string          `json:"id,omitempty"`

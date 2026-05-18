@@ -1577,7 +1577,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 					})
 					streamingExecutor.AddTool(*cb)
 				case types.ContentTypeThinking:
-					cb.Text = currentText.String()
+					cb.Thinking = currentText.String()
 					currentText.Reset()
 					elapsed := time.Since(thinkingStart)
 					e.emitEvent(types.QueryEvent{

@@ -39,7 +39,7 @@ func TestMessagesAfterAreOnlySynthetic_OnlyThinking(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "thinking..."},
+			{Type: types.ContentTypeThinking, Thinking: "thinking..."},
 		}},
 	}
 	if !messagesAfterAreOnlySynthetic(msgs, 0) {
@@ -90,7 +90,7 @@ func TestMessagesAfterAreOnlySynthetic_AnotherUser(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "..."},
+			{Type: types.ContentTypeThinking, Thinking: "..."},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("another")}},
 	}
@@ -104,7 +104,7 @@ func TestMessagesAfterAreOnlySynthetic_Mixed(t *testing.T) {
 	msgs1 := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "deep thoughts"},
+			{Type: types.ContentTypeThinking, Thinking: "deep thoughts"},
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
 			types.NewTextBlock(""), // empty text
@@ -118,7 +118,7 @@ func TestMessagesAfterAreOnlySynthetic_Mixed(t *testing.T) {
 	msgs2 := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "deep thoughts"},
+			{Type: types.ContentTypeThinking, Thinking: "deep thoughts"},
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
 			types.NewTextBlock("actual response"),
@@ -296,7 +296,7 @@ func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "thinking..."},
+			{Type: types.ContentTypeThinking, Thinking: "thinking..."},
 		}, Timestamp: testTime},
 	})
 
@@ -356,7 +356,7 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "thinking..."},
+			{Type: types.ContentTypeThinking, Thinking: "thinking..."},
 		}, Timestamp: testTime},
 	}
 	eng.SetStore(store, "")

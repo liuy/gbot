@@ -87,7 +87,7 @@ func TestIntegration_AutoRewind_FullChain(t *testing.T) {
 	a.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello world")}, Timestamp: testTime},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			{Type: types.ContentTypeThinking, Text: "let me think..."},
+			{Type: types.ContentTypeThinking, Thinking: "let me think..."},
 		}, Timestamp: testTime},
 	})
 
