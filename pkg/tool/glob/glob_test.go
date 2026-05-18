@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -118,13 +117,13 @@ func TestExecute_MatchGoFiles(t *testing.T) {
 		t.Errorf("Truncated = true, want false for 2 files")
 	}
 
-	// Results should be sorted
-	expected := []string{"main.go", "util.go"}
-	sort.Strings(expected)
-	for i, e := range expected {
-		if output.Files[i] != e {
-			t.Errorf("Files[%d] = %q, want %q", i, output.Files[i], e)
-		}
+	// Results should contain both .go files (order depends on mtime)
+	found := make(map[string]bool)
+	for _, f := range output.Files {
+		found[f] = true
+	}
+	if !found["main.go"] || !found["util.go"] {
+		t.Errorf("Files = %v, want main.go and util.go", output.Files)
 	}
 }
 
