@@ -1299,3 +1299,60 @@ func TestNeedsBlockSeparator_NonBlockParent(t *testing.T) {
 		t.Error("child of ListItem should not need block separator")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// stripColorFromLeadingWhitespace
+// ---------------------------------------------------------------------------
+
+func TestStripColorFromLeadingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "multiline string indent not colored",
+			// Chroma output for multi-line string: line 1 ends with color, line 2
+			// starts with same color on leading spaces — the bug we're fixing.
+			in:   "fmt.Sprint(\x1b[38;5;186m\"hello \\\n\x1b[38;5;186m    world\"\x1b[0m)",
+			want: "fmt.Sprint(\x1b[38;5;186m\"hello \\\n    \x1b[38;5;186mworld\"\x1b[0m)",
+		},
+		{
+			name: "no leading whitespace unchanged",
+			in:   "fmt.Sprint(\x1b[38;5;186m\"hello\"\x1b[0m)",
+			want: "fmt.Sprint(\x1b[38;5;186m\"hello\"\x1b[0m)",
+		},
+		{
+			name: "plain text unchanged",
+			in:   "hello\nworld",
+			want: "hello\nworld",
+		},
+		{
+			name: "colored indent at start of first line",
+			in:   "\x1b[38;5;186m    indented string\"\x1b[0m",
+			want: "    \x1b[38;5;186mindented string\"\x1b[0m",
+		},
+		{
+			name: "tab indent not colored",
+			in:   "\x1b[38;5;186m\tindented\"\x1b[0m",
+			want: "\t\x1b[38;5;186mindented\"\x1b[0m",
+		},
+		{
+			name: "mixed spaces and tabs",
+			in:   "foo\n\x1b[38;5;186m  \t  text\x1b[0m",
+			want: "foo\n  \t  \x1b[38;5;186mtext\x1b[0m",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripColorFromLeadingWhitespace(tc.in)
+			if got != tc.want {
+				t.Errorf("got:  %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}

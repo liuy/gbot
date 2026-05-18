@@ -565,6 +565,56 @@ func highlightCode(code, language string) string {
 
 	var buf bytes.Buffer
 	_ = formatter.Format(&buf, style, iterator)
+	return stripColorFromLeadingWhitespace(buf.String())
+}
+
+// stripColorFromLeadingWhitespace moves ANSI color codes after leading whitespace
+// on each line. Chroma colors multi-line tokens (strings, comments) as a single
+// span, which paints indentation whitespace with the token's color. This post-
+// processor strips that: "\x1b[...m    text" → "    \x1b[...mtext".
+func stripColorFromLeadingWhitespace(in string) string {
+	lines := strings.Split(in, "\n")
+	var buf strings.Builder
+	buf.Grow(len(in))
+	for i, line := range lines {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		// Collect leading ANSI escapes
+		rest := line
+		escEnd := 0
+		for escEnd < len(rest) {
+			if rest[escEnd] != '\x1b' {
+				break
+			}
+			idx := strings.IndexByte(rest[escEnd:], 'm')
+			if idx < 0 {
+				break
+			}
+			escEnd += idx + 1
+		}
+		if escEnd == 0 {
+			buf.WriteString(line)
+			continue
+		}
+		escapes := rest[:escEnd]
+		rest = rest[escEnd:]
+
+		// Count leading whitespace
+		wsEnd := 0
+		for wsEnd < len(rest) && (rest[wsEnd] == ' ' || rest[wsEnd] == '\t') {
+			wsEnd++
+		}
+		if wsEnd == 0 {
+			buf.WriteString(line)
+			continue
+		}
+
+		// Whitespace first (uncolored), then escapes, then rest
+		buf.WriteString(rest[:wsEnd])
+		buf.WriteString(escapes)
+		buf.WriteString(rest[wsEnd:])
+	}
 	return buf.String()
 }
 
