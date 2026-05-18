@@ -54,6 +54,13 @@ type pendingQueueItem struct {
 	Text string // original user input text
 }
 
+type stashedPrompt struct {
+	text        string
+	cursor      int
+	pasteStore  map[int]string
+	nextPasteID int
+}
+
 // App is the root bubbletea Model.
 // Source: App.tsx → bubbletea root Model
 type App struct {
@@ -164,6 +171,8 @@ type App struct {
 	killAllFn     func() // set from main.go to kill all background tasks
 
 	pendingQueue []pendingQueueItem // user messages queued during streaming
+
+	stashed *stashedPrompt // Ctrl+S stashed input (survives /clear and Ctrl+C)
 
 	// Cache token tracking for spinner display
 	cacheReadTokens     int
@@ -743,6 +752,11 @@ func (a *App) View() string {
 		sb.WriteString(queueStr)
 	}
 
+	// Stash notice: dim indicator when input is stashed
+	if stashStr := a.renderStashNotice(); stashStr != "" {
+		sb.WriteString(stashStr)
+	}
+
 	// Input: View() returns pure text, prepend prompt/indent here.
 	inputView := a.input.View()
 	inputLines := strings.Split(inputView, "\n")
@@ -898,6 +912,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlW:
 		a.handleKillWord()
 		return a, nil
+
+	case tea.KeyCtrlS:
+		return a.handleStash()
 
 	case tea.KeyTab:
 		if a.completions.Visible() && a.input.cursor == len(a.input.value) {
@@ -1160,6 +1177,58 @@ func (a *App) handleKillWord() {
 	a.killRing.Push(word, "prepend")
 	a.input.value = append(a.input.value[:pos], a.input.value[a.input.cursor:]...)
 	a.input.cursor = pos
+}
+
+// handleStash toggles Ctrl+S stash: push (save + clear) or pop (restore).
+// Source: TS PromptInput.tsx:1356-1381 — chat:stash handler.
+func (a *App) handleStash() (tea.Model, tea.Cmd) {
+	input := a.input.Value()
+	if strings.TrimSpace(input) == "" && a.stashed != nil {
+		// Pop: restore stashed input
+		a.input.SetValue(a.stashed.text)
+		a.input.SetCursor(a.stashed.cursor)
+		a.pasteStore = a.stashed.pasteStore
+		a.nextPasteID = a.stashed.nextPasteID
+		a.stashed = nil
+	} else if strings.TrimSpace(input) != "" {
+		// Push: save current input and clear
+		pasteCopy := make(map[int]string, len(a.pasteStore))
+		for k, v := range a.pasteStore {
+			pasteCopy[k] = v
+		}
+		a.stashed = &stashedPrompt{
+			text:        input,
+			cursor:      a.input.Cursor(),
+			pasteStore:  pasteCopy,
+			nextPasteID: a.nextPasteID,
+		}
+		a.input.Reset()
+		a.pasteStore = make(map[int]string)
+		a.nextPasteID = 1
+	}
+	return a, nil
+}
+
+// restoreStash restores stashed input to the input field.
+// Called at each submit point after input.Reset()+pasteStore clear.
+func (a *App) restoreStash() {
+	if a.stashed == nil {
+		return
+	}
+	a.input.SetValue(a.stashed.text)
+	a.input.SetCursor(a.stashed.cursor)
+	a.pasteStore = a.stashed.pasteStore
+	a.nextPasteID = a.stashed.nextPasteID
+	a.stashed = nil
+}
+
+// renderStashNotice renders the stash indicator above the input.
+// Source: TS PromptInputStashNotice.tsx — dim ‣ Stashed notice.
+func (a *App) renderStashNotice() string {
+	if a.stashed == nil {
+		return ""
+	}
+	return styleDim.Render("  ‣ Stashed (auto-restores after submit)") + "\n"
 }
 
 // ---------------------------------------------------------------------------

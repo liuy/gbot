@@ -890,6 +890,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.input.Reset()
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1
+	a.restoreStash()
 	a.scrollOffset = 0
 	a.scrollTotal = 0
 	a.userScrolled = false
@@ -956,6 +957,7 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	a.input.Reset()
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1
+	a.restoreStash()
 	a.history.Add(text)
 	return nil
 }

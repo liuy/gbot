@@ -108,6 +108,22 @@ func (i *Input) SetValue(v string) {
 	i.cursor = len(i.value)
 }
 
+// SetCursor sets the cursor position, clamped to [0, len(value)].
+func (i *Input) SetCursor(pos int) {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(i.value) {
+		pos = len(i.value)
+	}
+	i.cursor = pos
+}
+
+// Cursor returns the current cursor position.
+func (i *Input) Cursor() int {
+	return i.cursor
+}
+
 // Reset clears the input.
 func (i *Input) Reset() {
 	i.value = nil

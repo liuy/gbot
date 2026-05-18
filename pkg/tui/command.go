@@ -110,19 +110,22 @@ func LookupSlashCommand(text string) (SlashCommand, bool) {
 func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 	slog.Info("tui:slash_command", "name", cmd.Name, "args", cmd.Args)
 
+	var resultCmd tea.Cmd
 	switch cmd.Name {
 	case "session":
-		return a.handleSession(cmd.Args, commitCmd)
+		resultCmd = a.handleSession(cmd.Args, commitCmd)
 	case "clear":
-		return a.handleClear(commitCmd)
+		resultCmd = a.handleClear(commitCmd)
 	case "model":
-		return a.handleModel(cmd.Args, commitCmd)
+		resultCmd = a.handleModel(cmd.Args, commitCmd)
 	case "rewind":
-		return a.handleRewind(commitCmd)
+		resultCmd = a.handleRewind(commitCmd)
 	default:
 		slog.Warn("tui:unknown slash command", "name", cmd.Name)
-		return commitCmd
+		resultCmd = commitCmd
 	}
+	a.restoreStash()
+	return resultCmd
 }
 
 // handleClear implements the /clear command.
