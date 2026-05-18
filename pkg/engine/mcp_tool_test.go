@@ -651,3 +651,36 @@ func TestMCPTool_Call_WithToolUseContext_NoProgress(t *testing.T) {
 		t.Error("OnProgress should not be called for a tool that doesn't send progress")
 	}
 }
+
+func TestMCPTool_IsSearchOrRead(t *testing.T) {
+	tests := []struct {
+		name      string
+		info      mcp.DiscoveredTool
+		wantIsSet bool
+	}{
+		{
+			"search tool returns IsSearch",
+			mcp.DiscoveredTool{
+				Name: "mcp__ripgrep__search", OriginalName: "search", ServerName: "ripgrep",
+				Annotations: mcp.ToolAnnotations{ReadOnlyHint: true},
+			},
+			true,
+		},
+		{
+			"non-search tool returns zero",
+			mcp.DiscoveredTool{
+				Name: "mcp__server__run", OriginalName: "run", ServerName: "server",
+			},
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tl := NewMCPTool(tt.info, nil)
+			srk := tl.IsSearchOrRead(nil)
+			if srk.IsCollapsible() != tt.wantIsSet {
+				t.Errorf("IsSearchOrRead() = %+v, want IsCollapsible=%v", srk, tt.wantIsSet)
+			}
+		})
+	}
+}

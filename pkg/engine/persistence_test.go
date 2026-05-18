@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -362,5 +363,371 @@ func TestMarkAllPersisted_AfterCompact(t *testing.T) {
 
 	if eng.LastPersistedIdx() != 5 {
 		t.Errorf("lastPersistedIdx after compact = %d, want 5", eng.LastPersistedIdx())
+	}
+}
+
+func TestLoadMessages(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	// Empty session — should return nil, nil
+	msgs, err := eng.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages empty: %v", err)
+	}
+	if msgs != nil {
+		t.Errorf("expected nil for empty session, got %d messages", len(msgs))
+	}
+
+	// Persist a message then load it
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	loaded, err := eng.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after persist: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(loaded))
+	}
+	text := ""
+	for _, b := range loaded[0].Content {
+		if b.Type == types.ContentTypeText {
+			text = b.Text
+		}
+	}
+	if text != "hello" {
+		t.Errorf("loaded text = %q, want %q", text, "hello")
+	}
+
+	// Non-existent session returns nil (store treats it like empty)
+	empty, err := eng.LoadMessages("nonexistent")
+	if err != nil {
+		t.Errorf("LoadMessages nonexistent: unexpected error: %v", err)
+	}
+	if empty != nil {
+		t.Errorf("expected nil for nonexistent session, got %d messages", len(empty))
+	}
+}
+
+func TestNewSession(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	err := eng.NewSession("/tmp/project", "My Title")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	eng.mu.RLock()
+	sid := eng.sessionID
+	pd := eng.projectDir
+	eng.mu.RUnlock()
+	if sid == "" {
+		t.Error("sessionID should be set")
+	}
+	if pd != "/tmp/project" {
+		t.Errorf("projectDir = %q, want /tmp/project", pd)
+	}
+
+	// Verify title was set
+	ses, err := store.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if ses.Title != "My Title" {
+		t.Errorf("title = %q, want %q", ses.Title, "My Title")
+	}
+
+	// Empty title should not error
+	err = eng.NewSession("/tmp/other", "")
+	if err != nil {
+		t.Fatalf("NewSession no title: %v", err)
+	}
+}
+
+func TestNewSession_NoStore(t *testing.T) {
+	eng := New(&Params{Logger: slog.Default()})
+	err := eng.NewSession("/tmp/project", "title")
+	if err == nil {
+		t.Fatal("expected error with no store")
+	}
+	if !strings.Contains(err.Error(), "no store") {
+		t.Errorf("error = %q, want mention of no store", err.Error())
+	}
+}
+
+func TestListSessions(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "/tmp/project")
+
+	_, err := store.CreateSession("/tmp/project", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	_, err = store.CreateSession("/tmp/project", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession 2: %v", err)
+	}
+
+	sessions, err := eng.ListSessions(10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("expected 2 sessions, got %d", len(sessions))
+	}
+
+	// Limit works
+	sessions, err = eng.ListSessions(1)
+	if err != nil {
+		t.Fatalf("ListSessions limit: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session with limit, got %d", len(sessions))
+	}
+}
+
+func TestListSessions_NoStore(t *testing.T) {
+	eng := New(&Params{Logger: slog.Default()})
+	_, err := eng.ListSessions(10)
+	if err == nil {
+		t.Fatal("expected error with no store")
+	}
+	if !strings.Contains(err.Error(), "no store") {
+		t.Errorf("error = %q, want mention of no store", err.Error())
+	}
+}
+
+func TestSwitchSession(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	// Create and populate session 1
+	session1, err := store.CreateSession("/tmp/p1", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession 1: %v", err)
+	}
+	eng.SetSessionID(session1.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	// Create session 2
+	session2, err := store.CreateSession("/tmp/p2", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession 2: %v", err)
+	}
+	eng.SetSessionID(session2.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg2")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	// Switch back to session 1
+	msgs, err := eng.SwitchSession(session1.SessionID)
+	if err != nil {
+		t.Fatalf("SwitchSession: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message from session1, got %d", len(msgs))
+	}
+	text := ""
+	for _, b := range msgs[0].Content {
+		if b.Type == types.ContentTypeText {
+			text = b.Text
+		}
+	}
+	if text != "msg1" {
+		t.Errorf("switched message text = %q, want %q", text, "msg1")
+	}
+
+	eng.mu.RLock()
+	sid := eng.sessionID
+	eng.mu.RUnlock()
+	if sid != session1.SessionID {
+		t.Errorf("sessionID = %q, want %q", sid, session1.SessionID)
+	}
+
+	// Non-existent session: store returns nil, SwitchSession succeeds with empty messages
+	emptyMsgs, err := eng.SwitchSession("nonexistent")
+	if err != nil {
+		t.Errorf("SwitchSession nonexistent: unexpected error: %v", err)
+	}
+	if emptyMsgs != nil {
+		t.Errorf("expected nil messages for nonexistent session, got %d", len(emptyMsgs))
+	}
+}
+
+func TestForkSession(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	session, err := store.CreateSession("/tmp/project", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("original")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	// Fork with title
+	forkedMsgs, err := eng.ForkSession("Forked Title")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if len(forkedMsgs) != 2 {
+		t.Fatalf("expected 2 forked messages, got %d", len(forkedMsgs))
+	}
+
+	// Engine should now be on the forked session
+	eng.mu.RLock()
+	sid := eng.sessionID
+	fork := eng.forkParentUUID
+	eng.mu.RUnlock()
+	if sid == session.SessionID {
+		t.Error("sessionID should have changed to forked session")
+	}
+	if fork != "" {
+		t.Errorf("forkParentUUID = %q, want empty (cleared by ForkSession)", fork)
+	}
+
+	// Verify title was set on the forked session
+	ses, err := store.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if ses.Title != "Forked Title" {
+		t.Errorf("forked title = %q, want %q", ses.Title, "Forked Title")
+	}
+}
+
+func TestForkSession_NoTitle(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	session, err := store.CreateSession("/tmp/project", "model1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	eng.SetSessionID(session.SessionID)
+
+	_, err = eng.ForkSession("")
+	if err != nil {
+		t.Fatalf("ForkSession no title: %v", err)
+	}
+}
+
+func TestResumeOrInitSession_NoStore(t *testing.T) {
+	eng := New(&Params{Logger: slog.Default()})
+	sid, err := eng.ResumeOrInitSession("/tmp/project", "model1")
+	if err != nil {
+		t.Fatalf("ResumeOrInitSession no store: %v", err)
+	}
+	if sid != "" {
+		t.Errorf("expected empty session ID with no store, got %q", sid)
+	}
+}
+
+func TestResumeOrInitSession_NewSession(t *testing.T) {
+	store := newTestStore(t)
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, "")
+
+	dir := t.TempDir()
+	sid, err := eng.ResumeOrInitSession(dir, "model1")
+	if err != nil {
+		t.Fatalf("ResumeOrInitSession: %v", err)
+	}
+	if sid == "" {
+		t.Fatal("expected non-empty session ID")
+	}
+
+	eng.mu.RLock()
+	pd := eng.projectDir
+	eng.mu.RUnlock()
+	if pd != dir {
+		t.Errorf("projectDir = %q, want %q", pd, dir)
+	}
+}
+
+func TestResumeOrInitSession_ResumesExisting(t *testing.T) {
+	store := newTestStore(t)
+	dir := t.TempDir()
+
+	// Create a session and persist a message
+	session, err := store.CreateSession(dir, "model1")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := New(&Params{Logger: slog.Default()})
+	eng.SetStore(store, dir)
+	eng.SetSessionID(session.SessionID)
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+	eng.PersistNewMessages()
+
+	// Write workspace meta pointing to this session
+	metaDir := filepath.Join(dir, ".gbot")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	metaData, _ := json.Marshal(short.WorkspaceMeta{CurrentSessionID: session.SessionID})
+	if err := os.WriteFile(filepath.Join(metaDir, "meta.json"), metaData, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// New engine should resume the session
+	eng2 := New(&Params{Logger: slog.Default()})
+	eng2.SetStore(store, "")
+
+	sid, err := eng2.ResumeOrInitSession(dir, "model1")
+	if err != nil {
+		t.Fatalf("ResumeOrInitSession: %v", err)
+	}
+	if sid != session.SessionID {
+		t.Errorf("resumed sessionID = %q, want %q", sid, session.SessionID)
+	}
+
+	eng2.mu.RLock()
+	msgCount := len(eng2.messages)
+	eng2.mu.RUnlock()
+	if msgCount != 1 {
+		t.Errorf("resumed messages count = %d, want 1", msgCount)
 	}
 }

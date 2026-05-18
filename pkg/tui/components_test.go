@@ -4481,3 +4481,18 @@ func TestSubAgentToolGroupCollapse(t *testing.T) {
 		t.Fatalf("sub-agent individual tool names should be hidden by group:\n%s", rendered)
 	}
 }
+
+func TestTruncateSummary(t *testing.T) {
+	t.Parallel()
+	if got := truncateSummary("short", 10); got != "short" {
+		t.Errorf("short string: got %q, want %q", got, "short")
+	}
+	long := strings.Repeat("a", 20)
+	want := strings.Repeat("a", 7) + "..."
+	if got := truncateSummary(long, 10); got != want {
+		t.Errorf("long string: got %q, want %q", got, want)
+	}
+	if got := truncateSummary("exact10!!", 10); got != "exact10!!" {
+		t.Errorf("exact length: got %q, want %q", got, "exact10!!")
+	}
+}

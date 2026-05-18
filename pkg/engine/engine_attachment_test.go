@@ -461,3 +461,26 @@ func TestPromptAttachment_MultiMergeChain(t *testing.T) {
 		t.Errorf("content[2] missing 'second prompt': %q", merged.Content[2].Text)
 	}
 }
+
+func TestPriorityOrder_UnknownPriority(t *testing.T) {
+	// Unknown priority should sort same as PriorityNext (value 1)
+	q := &attachmentQueue{}
+	q.Enqueue(types.QueuedItem{Value: "unknown", Priority: types.QueuePriority("unknown")})
+	q.Enqueue(types.QueuedItem{Value: "next", Priority: types.PriorityNext})
+	q.Enqueue(types.QueuedItem{Value: "later", Priority: types.PriorityLater})
+
+	items := q.DrainByPriority(types.PriorityNext)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (unknown + next), got %d", len(items))
+	}
+	// Both unknown and next should have same priority order
+	if items[0].Value != "next" && items[1].Value != "unknown" && items[0].Value != "unknown" && items[1].Value != "next" {
+		t.Errorf("unexpected order: %q, %q", items[0].Value, items[1].Value)
+	}
+
+	// Later should remain
+	items2 := q.DrainAll()
+	if len(items2) != 1 || items2[0].Value != "later" {
+		t.Errorf("expected later to remain, got %v", items2)
+	}
+}

@@ -4681,3 +4681,46 @@ func TestE2E_Interrupt_DuringToolExecution_MessagePairing(t *testing.T) {
 		t.Fatalf("next query failed: %v — message sequence invalid after interrupt", result2.Error)
 	}
 }
+
+// searchReadStub implements tool.Tool + ToolWithSearchOrRead for testing.
+type searchReadStub struct {
+	stubTool
+	srk tool.SearchReadKind
+}
+
+func (s *searchReadStub) IsSearchOrRead(json.RawMessage) tool.SearchReadKind {
+	return s.srk
+}
+
+func TestComputeSearchReadKind(t *testing.T) {
+	eng := New(&Params{
+		Logger: slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				"Grep": &searchReadStub{
+					stubTool: stubTool{name: "Grep"},
+					srk:      tool.SearchReadKind{IsSearch: true},
+				},
+				"Bash": &stubTool{name: "Bash"},
+			}
+		},
+	})
+
+	// Tool with ToolWithSearchOrRead
+	srk := eng.computeSearchReadKind("Grep", json.RawMessage(`{"pattern":"TODO"}`))
+	if !srk.IsSearch {
+		t.Errorf("Grep: expected IsSearch=true, got %+v", srk)
+	}
+
+	// Tool without ToolWithSearchOrRead
+	srk = eng.computeSearchReadKind("Bash", json.RawMessage(`{"command":"ls"}`))
+	if srk.IsCollapsible() {
+		t.Errorf("Bash: expected zero SearchReadKind, got %+v", srk)
+	}
+
+	// Non-existent tool
+	srk = eng.computeSearchReadKind("NonExistent", nil)
+	if srk.IsCollapsible() {
+		t.Errorf("NonExistent: expected zero SearchReadKind, got %+v", srk)
+	}
+}

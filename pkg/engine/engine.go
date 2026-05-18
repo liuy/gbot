@@ -2187,6 +2187,9 @@ func (e *Engine) Reset() {
 
 // NewSession creates a new empty session and resets engine state.
 func (e *Engine) NewSession(projectDir, title string) error {
+	if e.store == nil {
+		return fmt.Errorf("engine: no store")
+	}
 	session, err := e.store.CreateSession(projectDir, e.model)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)

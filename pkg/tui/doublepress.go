@@ -69,5 +69,6 @@ func (d *DoublePress) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pending = false
+	d.keyName = ""
 	d.lastTime = time.Time{}
 }

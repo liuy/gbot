@@ -43,3 +43,44 @@ func TestDoublePress_Expired(t *testing.T) {
 	}
 }
 
+func TestDoublePress_IsPending(t *testing.T) {
+	d := NewDoublePress()
+	if d.IsPending() {
+		t.Error("should not be pending initially")
+	}
+	d.Press("ctrl-c")
+	if !d.IsPending() {
+		t.Error("should be pending after first press")
+	}
+	d.Press("ctrl-c")
+	if d.IsPending() {
+		t.Error("should not be pending after double press")
+	}
+}
+
+func TestDoublePress_KeyName(t *testing.T) {
+	d := NewDoublePress()
+	if d.KeyName() != "" {
+		t.Errorf("expected empty key name, got %q", d.KeyName())
+	}
+	d.Press("ctrl-c")
+	if d.KeyName() != "ctrl-c" {
+		t.Errorf("expected 'ctrl-c', got %q", d.KeyName())
+	}
+}
+
+func TestDoublePress_Reset(t *testing.T) {
+	d := NewDoublePress()
+	d.Press("ctrl-c")
+	if !d.IsPending() {
+		t.Fatal("should be pending before reset")
+	}
+	d.Reset()
+	if d.IsPending() {
+		t.Error("should not be pending after reset")
+	}
+	if d.KeyName() != "" {
+		t.Errorf("key name should be cleared, got %q", d.KeyName())
+	}
+}
+

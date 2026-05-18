@@ -93,6 +93,43 @@ func TestNewApp(t *testing.T) {
 	if app == nil {
 		t.Fatal("NewApp returned nil")
 	}
+}
+
+func TestSetInitialContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no engine tokens uses param", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.SetInitialContext(100, 200000)
+		view := app.status.View()
+		if !strings.Contains(view, "100") {
+			t.Errorf("status view should contain 100, got:\n%s", view)
+		}
+	})
+
+	t.Run("engine tokens overrides param", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.engine.ContextTokens = 500
+		app.SetInitialContext(100, 200000)
+		view := app.status.View()
+		if !strings.Contains(view, "500") {
+			t.Errorf("status view should contain 500 (from engine), got:\n%s", view)
+		}
+	})
+
+	t.Run("zero engine tokens uses param", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.engine.ContextTokens = 0
+		app.SetInitialContext(42, 200000)
+		view := app.status.View()
+		if !strings.Contains(view, "42") {
+			t.Errorf("status view should contain 42 (from param), got:\n%s", view)
+		}
+	})
+}
+
+func TestNewAppInputAndEngine(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
 	if app.input == nil {
 		t.Error("input should be initialized")
 	}
