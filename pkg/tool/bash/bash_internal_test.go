@@ -430,39 +430,39 @@ func TestExecute_RunInBackground_NonPTY(t *testing.T) {
 	if out.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", out.ExitCode)
 	}
-	if !strings.Contains(out.Stdout, "Background task started") {
-		t.Errorf("Stdout = %q, want background task message", out.Stdout)
+	if !strings.Contains(out.Stdout, "Background job started") {
+		t.Errorf("Stdout = %q, want background job message", out.Stdout)
 	}
 	if !strings.Contains(out.Stdout, "bg-") {
-		t.Errorf("Stdout = %q, want task ID", out.Stdout)
+		t.Errorf("Stdout = %q, want job ID", out.Stdout)
 	}
 
-	// Step 2: Verify the task was registered in the default registry
+	// Step 2: Verify the job was registered in the default registry
 	registry := DefaultRegistry()
 	tasks := registry.List()
 	found := false
-	for _, task := range tasks {
-		if strings.Contains(task.Command, "echo bg-hello") {
+	for _, job := range tasks {
+		if strings.Contains(job.Command, "echo bg-hello") {
 			found = true
 			// Wait for completion
 			select {
-			case <-task.done:
-				if task.Status != TaskCompleted {
-					t.Errorf("task Status = %q, want %q", task.Status, TaskCompleted)
+			case <-job.done:
+				if job.Status != JobCompleted {
+					t.Errorf("job Status = %q, want %q", job.Status, JobCompleted)
 				}
 			case <-time.After(5 * time.Second):
-				t.Error("background task did not complete within timeout")
+				t.Error("background job did not complete within timeout")
 			}
 			break
 		}
 	}
 	if !found {
-		t.Error("background task not found in registry")
+		t.Error("background job not found in registry")
 	}
 
 	// Step 3: Clean up
-	for _, task := range tasks {
-		registry.Remove(task.ID)
+	for _, job := range tasks {
+		registry.Remove(job.ID)
 	}
 }
 
@@ -477,25 +477,25 @@ func TestExecute_RunInBackground_CompletesWithOutput(t *testing.T) {
 	}
 
 	out := result.Data.(*Output)
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
 	registry := DefaultRegistry()
-	for _, task := range registry.List() {
-		if strings.Contains(task.Command, "echo bg-output-123") {
+	for _, job := range registry.List() {
+		if strings.Contains(job.Command, "echo bg-output-123") {
 			select {
-			case <-task.done:
-				if task.Output != nil {
-					output := task.Output.String()
+			case <-job.done:
+				if job.Output != nil {
+					output := job.Output.String()
 					if !strings.Contains(output, "bg-output-123") {
-						t.Errorf("task output = %q, want to contain bg-output-123", output)
+						t.Errorf("job output = %q, want to contain bg-output-123", output)
 					}
 				}
 			case <-time.After(5 * time.Second):
-				t.Error("task did not complete")
+				t.Error("job did not complete")
 			}
-			registry.Remove(task.ID)
+			registry.Remove(job.ID)
 			break
 		}
 	}
@@ -512,25 +512,25 @@ func TestExecute_RunInBackground_ExitError(t *testing.T) {
 	}
 
 	out := result.Data.(*Output)
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Fatalf("unexpected output: %q", out.Stdout)
 	}
 
 	registry := DefaultRegistry()
-	for _, task := range registry.List() {
-		if strings.Contains(task.Command, "exit 7") {
+	for _, job := range registry.List() {
+		if strings.Contains(job.Command, "exit 7") {
 			select {
-			case <-task.done:
-				if task.ExitCode != 7 {
-					t.Errorf("ExitCode = %d, want 7", task.ExitCode)
+			case <-job.done:
+				if job.ExitCode != 7 {
+					t.Errorf("ExitCode = %d, want 7", job.ExitCode)
 				}
-				if task.Status != TaskFailed {
-					t.Errorf("Status = %q, want %q", task.Status, TaskFailed)
+				if job.Status != JobFailed {
+					t.Errorf("Status = %q, want %q", job.Status, JobFailed)
 				}
 			case <-time.After(5 * time.Second):
-				t.Error("task did not complete")
+				t.Error("job did not complete")
 			}
-			registry.Remove(task.ID)
+			registry.Remove(job.ID)
 			break
 		}
 	}
@@ -547,20 +547,20 @@ func TestExecute_RunInBackground_PTY(t *testing.T) {
 	if !ok {
 		t.Fatalf("result.Data type = %T, want *Output", result.Data)
 	}
-	if !strings.Contains(out.Stdout, "Background task started") {
-		t.Errorf("Stdout = %q, want background task message", out.Stdout)
+	if !strings.Contains(out.Stdout, "Background job started") {
+		t.Errorf("Stdout = %q, want background job message", out.Stdout)
 	}
 
 	registry := DefaultRegistry()
-	for _, task := range registry.List() {
-		if strings.Contains(task.Command, "echo pty-bg-test") {
+	for _, job := range registry.List() {
+		if strings.Contains(job.Command, "echo pty-bg-test") {
 			select {
-			case <-task.done:
+			case <-job.done:
 				// Task completed in background
 			case <-time.After(5 * time.Second):
-				t.Error("PTY background task did not complete")
+				t.Error("PTY background job did not complete")
 			}
-			registry.Remove(task.ID)
+			registry.Remove(job.ID)
 			break
 		}
 	}
@@ -578,17 +578,17 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 
 	registry := DefaultRegistry()
 	// Clean slate
-	for _, task := range registry.List() {
-		registry.Remove(task.ID)
+	for _, job := range registry.List() {
+		registry.Remove(job.ID)
 	}
 	defer func() {
-		for _, task := range registry.List() {
-			registry.Remove(task.ID)
+		for _, job := range registry.List() {
+			registry.Remove(job.ID)
 		}
 	}()
 
-	// Step 1: Run a background task via Execute
-	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg task"}`), nil)
+	// Step 1: Run a background job via Execute
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg job"}`), nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
@@ -598,15 +598,15 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 		t.Fatalf("result.Data type = %T, want *Output", result.Data)
 	}
 
-	// Step 2: Extract task ID from the output message
-	// Output format: "Background task started with ID: bg-XXXXX\n..."
+	// Step 2: Extract job ID from the output message
+	// Output format: "Background job started with ID: bg-XXXXX\n..."
 	outputID := extractBgID(out.Stdout)
 	if outputID == "" {
 		t.Fatalf("could not extract bg- ID from output: %q", out.Stdout)
 	}
 
 	// Step 3: Verify the ID exists in the default registry
-	task, found := registry.Get(outputID)
+	job, found := registry.Get(outputID)
 	if !found {
 		// List all tasks to show what's actually registered
 		tasks := registry.List()
@@ -616,8 +616,8 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 		}
 		t.Fatalf("registry.Get(%q) not found. Registry contains: %v (ID mismatch bug!)", outputID, ids)
 	}
-	if task.Command != "sleep 10" {
-		t.Errorf("task.Command = %q, want sleep 10", task.Command)
+	if job.Command != "sleep 10" {
+		t.Errorf("job.Command = %q, want sleep 10", job.Command)
 	}
 
 	// Step 4: Verify TaskStop can find it via MultiRegistry + JobInfoAdapter
@@ -635,19 +635,19 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 		t.Fatalf("JobInfoAdapter.Kill(%q) error: %v — TaskStop would fail", outputID, err)
 	}
 
-	// Step 6: Verify task is now in terminal state
+	// Step 6: Verify job is now in terminal state
 	select {
-	case <-task.done:
-		if task.Status != TaskKilled && task.Status != TaskCompleted {
-			t.Errorf("task.Status after kill = %q, want killed or completed", task.Status)
+	case <-job.done:
+		if job.Status != JobKilled && job.Status != JobCompleted {
+			t.Errorf("job.Status after kill = %q, want killed or completed", job.Status)
 		}
 	case <-time.After(3 * time.Second):
-		t.Error("task did not terminate after kill within timeout")
+		t.Error("job did not terminate after kill within timeout")
 	}
 }
 
 // extractBgID extracts a bg-XXXXX ID from a string like
-// "Background task started with ID: bg-12345\n..."
+// "Background job started with ID: bg-12345\n..."
 func extractBgID(s string) string {
 	// Find "bg-" followed by digits
 	idx := strings.Index(s, "bg-")
@@ -813,15 +813,15 @@ func TestSpawnBackground_NonPTY(t *testing.T) {
 		t.Fatalf("Execute() error: %v", err)
 	}
 	out := result.Data.(*Output)
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 	// Wait for completion
 	registry := DefaultRegistry()
-	for _, task := range registry.List() {
-		if strings.Contains(task.Command, "spawn-nonpty") {
-			<-task.done
-			registry.Remove(task.ID)
+	for _, job := range registry.List() {
+		if strings.Contains(job.Command, "spawn-nonpty") {
+			<-job.done
+			registry.Remove(job.ID)
 			break
 		}
 	}
@@ -924,20 +924,20 @@ func TestSpawnBackground_PTYPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("result.Data type = %T, want *Output", result.Data)
 	}
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 
 	registry := DefaultRegistry()
-	for _, task := range registry.List() {
-		if strings.Contains(task.Command, "pty-bg-test") {
+	for _, job := range registry.List() {
+		if strings.Contains(job.Command, "pty-bg-test") {
 			select {
-			case <-task.done:
+			case <-job.done:
 				// Task completed in background
 			case <-time.After(5 * time.Second):
-				t.Error("PTY background task did not complete")
+				t.Error("PTY background job did not complete")
 			}
-			registry.Remove(task.ID)
+			registry.Remove(job.ID)
 			break
 		}
 	}
@@ -977,20 +977,20 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 		t.Fatalf("spawnBackground() error: %v", err)
 	}
 	out := result.Data.(*Output)
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 }
 
 // ---------------------------------------------------------------------------
 // spawnBackground — PID must be set for Kill to work
-//PTY path hardcodes task.PID = 0, making Kill a no-op
+//PTY path hardcodes job.PID = 0, making Kill a no-op
 // ---------------------------------------------------------------------------
 
 func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	// Swap in a fresh registry so we don't pollute the global one
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundTaskRegistry()
+	freshRegistry := NewBackgroundJobRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -1002,25 +1002,25 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
-		t.Fatal("no background tasks registered")
+		t.Fatal("no background jobs registered")
 	}
-	task := tasks[0]
+	job := tasks[0]
 
 	// Poll for PID to be set by the goroutine
 	var pid int
 	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: polling deadline
 	for time.Now().Before(deadline) {  // REAL-TIME: polling deadline
-		task.mu.Lock()
-		pid = task.PID
-		task.mu.Unlock()
+		job.mu.Lock()
+		pid = job.PID
+		job.mu.Unlock()
 		if pid != 0 {
 			break
 		}
 		runtime.Gosched()
 	}
 
-	// Cleanup: kill the task regardless of test result
-	_ = freshRegistry.Kill(task.ID)
+	// Cleanup: kill the job regardless of test result
+	_ = freshRegistry.Kill(job.ID)
 
 	// Verify Execute returned a valid result
 	if result.Data == nil {
@@ -1028,22 +1028,22 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 	}
 
 	if pid == 0 {
-		t.Errorf("PID = 0, want non-zero — background task cannot be killed")
+		t.Errorf("PID = 0, want non-zero — background job cannot be killed")
 	}
 }
 
 // ---------------------------------------------------------------------------
 // spawnBackground — two bugs:
-//   Bug 1 (PTY): task.Complete called before ptyCommand finishes → immediate
+//   Bug 1 (PTY): job.Complete called before ptyCommand finishes → immediate
 //     completion with exit code 0, process never actually runs.
 //   Bug 2 (all paths): taskCtx derived from parent ctx → cancelling parent
-//     (query ending) kills the background task (exit code 137).
+//     (query ending) kills the background job (exit code 137).
 // ---------------------------------------------------------------------------
 
 func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	// Use a fresh registry to avoid polluting global state
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundTaskRegistry()
+	freshRegistry := NewBackgroundJobRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -1061,39 +1061,39 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	}
 
 	// Give the goroutine time to start the command.
-	// With Bug 1 (PTY sync), task.Complete(0, false) is called immediately
-	// before the process even starts, so the task will be TaskCompleted here.
+	// With Bug 1 (PTY sync), job.Complete(0, false) is called immediately
+	// before the process even starts, so the job will be JobCompleted here.
 	runtime.Gosched()
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
-		t.Fatal("no background tasks registered")
+		t.Fatal("no background jobs registered")
 	}
-	task := tasks[0]
+	job := tasks[0]
 
-	task.mu.Lock()
-	status := task.Status
-	exitCode := task.ExitCode
-	task.mu.Unlock()
+	job.mu.Lock()
+	status := job.Status
+	exitCode := job.ExitCode
+	job.mu.Unlock()
 
-	// Cleanup: kill the task regardless of test result
-	if !IsTerminalTaskStatus(status) {
-		_ = freshRegistry.Kill(task.ID)
+	// Cleanup: kill the job regardless of test result
+	if !IsTerminalJobStatus(status) {
+		_ = freshRegistry.Kill(job.ID)
 	}
 
-	if status != TaskRunning {
-		t.Errorf("task status = %q (exit code %d), want TaskRunning — "+
-			"background task should not complete immediately (PTY sync bug) or "+
+	if status != JobRunning {
+		t.Errorf("job status = %q (exit code %d), want JobRunning — "+
+			"background job should not complete immediately (PTY sync bug) or "+
 			"be killed by parent context (context lifecycle bug)",
 			status, exitCode)
 	}
 }
 
 func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
-	// Background task should keep running even after the spawning context is cancelled.
-	// Bug 2: taskCtx is derived from parent ctx, so cancelling parent kills the task.
+	// Background job should keep running even after the spawning context is cancelled.
+	// Bug 2: taskCtx is derived from parent ctx, so cancelling parent kills the job.
 	orig := defaultRegistry
-	freshRegistry := NewBackgroundTaskRegistry()
+	freshRegistry := NewBackgroundJobRegistry()
 	defaultRegistry = freshRegistry
 	defer func() { defaultRegistry = orig }()
 
@@ -1114,7 +1114,7 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	runtime.Gosched()
 
 	// Cancel the parent context — simulates the query lifecycle ending.
-	// The background task should NOT be affected.
+	// The background job should NOT be affected.
 	parentCancel()
 
 	// Give cancellation time to propagate (if it's going to)
@@ -1122,23 +1122,23 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 
 	tasks := freshRegistry.List()
 	if len(tasks) == 0 {
-		t.Fatal("no background tasks registered")
+		t.Fatal("no background jobs registered")
 	}
-	task := tasks[0]
+	job := tasks[0]
 
-	task.mu.Lock()
-	status := task.Status
-	exitCode := task.ExitCode
-	task.mu.Unlock()
+	job.mu.Lock()
+	status := job.Status
+	exitCode := job.ExitCode
+	job.mu.Unlock()
 
 	// Cleanup
-	if !IsTerminalTaskStatus(status) {
-		_ = freshRegistry.Kill(task.ID)
+	if !IsTerminalJobStatus(status) {
+		_ = freshRegistry.Kill(job.ID)
 	}
 
-	if status != TaskRunning {
-		t.Errorf("task status = %q (exit code %d) after parent context cancelled, want TaskRunning — "+
-			"background task context should be independent of parent context",
+	if status != JobRunning {
+		t.Errorf("job status = %q (exit code %d) after parent context cancelled, want JobRunning — "+
+			"background job context should be independent of parent context",
 			status, exitCode)
 	}
 }
@@ -1185,7 +1185,7 @@ func TestIsAutobackgroundingAllowed(t *testing.T) {
 
 // TestAutoBackground_NonPTYTimeoutTransitionsToBackground verifies that when
 // shouldAutoBackground=true and the command times out, it transitions to a
-// background task instead of being killed.
+// background job instead of being killed.
 //
 // RED LIGHT: This should fail because auto-background is not yet implemented.
 // The command will be killed (TimedOut=true) instead of being backgrounded.
@@ -1197,7 +1197,7 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundTaskRegistry()
+	freshReg := NewBackgroundJobRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -1221,21 +1221,21 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 		t.Error("TimedOut should be false — command was auto-backgrounded, not killed")
 	}
 
-	// Verify task is registered in the background task registry
-	task, found := freshReg.Get(out.BackgroundJobID)
+	// Verify job is registered in the background job registry
+	job, found := freshReg.Get(out.BackgroundJobID)
 	if !found {
-		t.Fatalf("background task %q not found in registry", out.BackgroundJobID)
+		t.Fatalf("background job %q not found in registry", out.BackgroundJobID)
 	}
 
-	task.mu.Lock()
-	pid := task.PID
-	task.mu.Unlock()
+	job.mu.Lock()
+	pid := job.PID
+	job.mu.Unlock()
 
-	// Cleanup: kill the background task
-	_ = freshReg.Kill(task.ID)
+	// Cleanup: kill the background job
+	_ = freshReg.Kill(job.ID)
 
 	if pid == 0 {
-		t.Errorf("PID = 0, want non-zero — background task should have a real PID")
+		t.Errorf("PID = 0, want non-zero — background job should have a real PID")
 	}
 }
 
@@ -1246,7 +1246,7 @@ func TestAutoBackground_NonPTYTimeoutTransitionsToBackground(t *testing.T) {
 func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundTaskRegistry()
+	freshReg := NewBackgroundJobRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
@@ -1265,9 +1265,9 @@ func TestAutoBackground_PTYTimeoutTransitionsToBackground(t *testing.T) {
 			"Got: TimedOut=%v ExitCode=%d Stdout=%q", out.TimedOut, out.ExitCode, out.Stdout)
 	}
 
-	// Cleanup: kill the background task
-	if task, found := freshReg.Get(out.BackgroundJobID); found {
-		_ = freshReg.Kill(task.ID)
+	// Cleanup: kill the background job
+	if job, found := freshReg.Get(out.BackgroundJobID); found {
+		_ = freshReg.Kill(job.ID)
 	}
 }
 
@@ -1327,17 +1327,17 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 
 	// Use a fresh registry
 	origReg := defaultRegistry
-	freshReg := NewBackgroundTaskRegistry()
+	freshReg := NewBackgroundJobRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 
 	// Set a non-existent working directory to trigger cmd.Start() error
 	result, err := spawnBackground(context.Background(), Input{Command: "echo test"}, "/nonexistent/dir/xyz/gbot-test", 10*time.Second, freshReg, nil)
 	if err != nil {
-		t.Fatalf("spawnBackground() error: %v (returns nil error, task completes with -1)", err)
+		t.Fatalf("spawnBackground() error: %v (returns nil error, job completes with -1)", err)
 	}
 	out := result.Data.(*Output)
-	if !strings.Contains(out.Stdout, "Background task started") {
+	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
 
@@ -1346,14 +1346,14 @@ func TestSpawnBackground_NonPTY_StartError(t *testing.T) {
 	if len(tasks) == 0 {
 		t.Fatal("no tasks registered")
 	}
-	task := tasks[0]
+	job := tasks[0]
 	select {
-	case <-task.done:
-		if task.ExitCode != -1 {
-			t.Errorf("ExitCode = %d, want -1 (start error)", task.ExitCode)
+	case <-job.done:
+		if job.ExitCode != -1 {
+			t.Errorf("ExitCode = %d, want -1 (start error)", job.ExitCode)
 		}
 	case <-time.After(5 * time.Second):
-		t.Error("background task did not complete within timeout")
+		t.Error("background job did not complete within timeout")
 	}
 }
 
@@ -1448,7 +1448,7 @@ func TestExecutePTYAutoBg_TmuxOverrides(t *testing.T) {
 
 	// Fresh registry for isolation
 	origReg := defaultRegistry
-	freshReg := NewBackgroundTaskRegistry()
+	freshReg := NewBackgroundJobRegistry()
 	defaultRegistry = freshReg
 	defer func() { defaultRegistry = origReg }()
 

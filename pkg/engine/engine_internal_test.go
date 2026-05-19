@@ -5786,8 +5786,8 @@ func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
 		t.Skip("skipped under root — no PTY needed")
 	}
 
-	// Real Bash tool with a real BackgroundTaskRegistry
-	registry := bash.NewBackgroundTaskRegistry()
+	// Real Bash tool with a real BackgroundJobRegistry
+	registry := bash.NewBackgroundJobRegistry()
 	bashTool := bash.New(registry)
 
 	// Capture AskEvent

@@ -2032,7 +2032,7 @@ func TestEngine_EnqueueAttachment(t *testing.T) {
 		Logger:   slog.Default(),
 	})
 
-	// Enqueue a notification from another goroutine (simulates background task callback)
+	// Enqueue a notification from another goroutine (simulates background job callback)
 	eng.EnqueueAttachment(types.QueuedItem{
 		Value: "<job-notification><job-id>bg-1</job-id></job-notification>",
 		Mode:  types.ItemModeJob,
@@ -2203,7 +2203,7 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	mp.addResponse(textStreamEvents("test-model", "I see the background task result."), nil)
+	mp.addResponse(textStreamEvents("test-model", "I see the background job result."), nil)
 
 	ec := newEventCollector()
 	eng := New(&Params{
@@ -2752,7 +2752,7 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 	t.Parallel()
 
 	mp := &mockProvider{}
-	mp.addResponse(textStreamEvents("test-model", "Background task completed."), nil)
+	mp.addResponse(textStreamEvents("test-model", "background job completed."), nil)
 
 	ec := newEventCollector()
 	eng := New(&Params{

@@ -734,7 +734,7 @@ func TestRenderResult_BackgroundJobID(t *testing.T) {
 	result := tt.RenderResult(&bash.Output{
 		BackgroundJobID: "bg-12345",
 	})
-	want := "Command timed out and was moved to background (task ID: bg-12345)"
+	want := "Command timed out and was moved to background (job ID: bg-12345)"
 	if result != want {
 		t.Errorf("RenderResult(background only) = %q, want %q", result, want)
 	}
@@ -748,7 +748,7 @@ func TestRenderResult_StdoutAndBackgroundJobID(t *testing.T) {
 		Stdout:           "partial output",
 		BackgroundJobID: "bg-99999",
 	})
-	want := "partial output\nCommand timed out and was moved to background (task ID: bg-99999)"
+	want := "partial output\nCommand timed out and was moved to background (job ID: bg-99999)"
 	if result != want {
 		t.Errorf("RenderResult(stdout+bg) = %q, want %q", result, want)
 	}
@@ -774,6 +774,6 @@ func TestRenderResult_AllFieldsWithBackground(t *testing.T) {
 		t.Error("missing timed out message")
 	}
 	if !strings.Contains(result, "bg-42") {
-		t.Error("missing background task ID")
+		t.Error("missing background job ID")
 	}
 }

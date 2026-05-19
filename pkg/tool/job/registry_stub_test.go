@@ -64,6 +64,7 @@ func (e *errorKillRegistry) Get(string) (*JobInfo, bool) { return nil, false }
 func (e *errorKillRegistry) Kill(string) error           { return fmt.Errorf("%s", e.err) }
 func (e *errorKillRegistry) List() []*JobInfo            { return nil }
 func (e *errorKillRegistry) Wait(string) (int, error)    { return -1, ErrNotFound }
+func (e *errorKillRegistry) CleanupCompleted()           {}
 
 // cleanupStubRegistry implements Registry and cleanupAware for testing.
 type cleanupStubRegistry struct {

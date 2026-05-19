@@ -45,7 +45,7 @@ func bashPrompt() string {
 		"   - Do not sleep between commands that can run immediately — just run them.\n" +
 		"   - If your command is long running and you would like to be notified when it finishes — use " + bt + "run_in_background" + bt + ". No sleep needed.\n" +
 		"   - Do not retry failing commands in a sleep loop — diagnose the root cause.\n" +
-		"   - If waiting for a background task you started with " + bt + "run_in_background" + bt + ", you will be notified when it completes — do not poll.\n" +
+		"   - If waiting for a background job you started with " + bt + "run_in_background" + bt + ", you will be notified when it completes — do not poll.\n" +
 		"   - If you must poll an external process, use a check command (e.g. " + bt + "gh run view" + bt + ") rather than sleeping first.\n" +
 		"   - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user."
 }

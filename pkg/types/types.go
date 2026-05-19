@@ -502,7 +502,7 @@ type AgentDefinition struct {
 	Color                  string         // color — agent color name for TUI
 	Effort                 string         // effort — "low","medium","high","max", or int as string
 	PermissionModeField    PermissionMode // permissionMode — validated against existing constants
-	Background             bool           // background — always run as background task
+	Background             bool           // background — always run as background job
 	InitialPrompt          string         // initialPrompt — prepended to first user turn
 	Memory                 string         // memory — "user","project","local"
 	Isolation              string         // isolation — "worktree" (future)

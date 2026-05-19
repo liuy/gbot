@@ -10,7 +10,7 @@ import "errors"
 // to check for this condition rather than string matching.
 var ErrNotFound = errors.New("job not found")
 
-// JobInfo is a snapshot of a background task's state.
+// JobInfo is a snapshot of a background job's state.
 // Source: TaskOutputTool.tsx — TaskOutput type
 type JobInfo struct {
 	ID          string `json:"job_id"`
@@ -27,8 +27,8 @@ type JobInfo struct {
 	DurationMs int64  `json:"duration_ms,omitempty"`
 }
 
-// Registry is the interface for querying and managing background tasks.
-// bash.BackgroundTaskRegistry satisfies this interface via JobInfoAdapter.
+// Registry is the interface for querying and managing background jobs.
+// bash.BackgroundJobRegistry satisfies this interface via JobInfoAdapter.
 type Registry interface {
 	// Get returns task info by ID. Returns (nil, false) if not found.
 	Get(id string) (*JobInfo, bool)
@@ -38,6 +38,7 @@ type Registry interface {
 	List() []*JobInfo
 	// Wait blocks until the task finishes, returning the exit code.
 	Wait(id string) (int, error)
+
 }
 
 // Prefixer is an optional interface that Registries can implement to declare

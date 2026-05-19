@@ -169,7 +169,7 @@ type App struct {
 	autoCleanupFn func() bool // checked every render; cleans tasks and jobs, returns true if reset happened
 	taskListCache string      // rendered task list, rebuilt when dirty
 	taskListDirty bool
-	killAllFn     func() // set from main.go to kill all background tasks
+	killAllFn     func() // set from main.go to kill all background jobs
 
 	pendingQueue []pendingQueueItem // user messages queued during streaming
 
@@ -262,7 +262,7 @@ func (a *App) SetAutoCleanupFn(fn func() bool) {
 	a.autoCleanupFn = fn
 }
 
-// SetKillAllFn sets the callback to kill all background tasks on double-press Escape.
+// SetKillAllFn sets the callback to kill all background jobs on double-press Escape.
 func (a *App) SetKillAllFn(fn func()) {
 	a.killAllFn = fn
 }

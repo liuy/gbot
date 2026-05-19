@@ -815,10 +815,10 @@ func TestStreamStallWatcher_Check_OutputGrows(t *testing.T) {
 	t.Parallel()
 	output := NewStreamingOutput(nil)
 	mustWriteStream(t, output, []byte("hello"))
-	task := &BackgroundTask{Output: output}
+	job := &BackgroundJob{Output: output}
 
 	w := &streamStallWatcher{
-		task:       task,
+		job:       job,
 		lastGrowth: time.Now(),  // REAL-TIME: stall threshold comparison
 		onStall:    func(summary, tail string) {},
 	}
@@ -836,7 +836,7 @@ func TestStreamStallWatcher_Check_NilOutput(t *testing.T) {
 	t.Parallel()
 	past := time.Now().Add(-60 * time.Second)  // REAL-TIME: stall threshold comparison
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: nil},
+		job:       &BackgroundJob{Output: nil},
 		lastGrowth: past,
 		onStall:    func(summary, tail string) {},
 	}
@@ -851,7 +851,7 @@ func TestStreamStallWatcher_Check_NilOutput(t *testing.T) {
 func TestStreamStallWatcher_Check_Cancelled(t *testing.T) {
 	t.Parallel()
 	w := &streamStallWatcher{
-		task:    &BackgroundTask{},
+		job:    &BackgroundJob{},
 		onStall: func(summary, tail string) {},
 	}
 	w.cancelled.Store(true)
@@ -868,7 +868,7 @@ func TestStreamStallWatcher_Check_UnderThreshold(t *testing.T) {
 	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: output},
+		job:       &BackgroundJob{Output: output},
 		lastGrowth: time.Now(), // REAL-TIME: just now — under threshold
 		onStall:    func(summary, tail string) { t.Error("should not stall") },
 	}
@@ -885,7 +885,7 @@ func TestStreamStallWatcher_Check_StalledNoPrompt(t *testing.T) {
 	mustWriteStream(t, output, []byte("building...\ncompiling..."))
 
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: output},
+		job:       &BackgroundJob{Output: output},
 		lastSize:   100, // force no growth
 		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    func(summary, tail string) { t.Error("should not stall for non-prompt") },
@@ -907,7 +907,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt(t *testing.T) {
 
 	stalled := false
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: output},
+		job:       &BackgroundJob{Output: output},
 		lastSize:   100, // force no growth
 		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall: func(summary, tail string) {
@@ -930,7 +930,7 @@ func TestStreamStallWatcher_Check_StalledWithPrompt_NilCallback(t *testing.T) {
 	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: output},
+		job:       &BackgroundJob{Output: output},
 		lastSize:   100,
 		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
@@ -948,7 +948,7 @@ func TestStreamStallWatcher_Check_CancelledAfterReadTail(t *testing.T) {
 	mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 	w := &streamStallWatcher{
-		task:       &BackgroundTask{Output: output},
+		job:       &BackgroundJob{Output: output},
 		lastSize:   100,
 		lastGrowth: time.Now().Add(-60 * time.Second),  // REAL-TIME: stall threshold comparison
 		onStall:    nil,
@@ -971,13 +971,13 @@ func TestWatchForStallStream_DetectsPrompt(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Building...\nContinue? (y/n)"))
 
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output: output,
 			Kind:   "bash",
 		}
 
 		detected := make(chan string, 1)
-		cancel := watchForStallStream(task, func(summary, tail string) {
+		cancel := watchForStallStream(job, func(summary, tail string) {
 			select {
 			case detected <- summary:
 			default:
@@ -1003,13 +1003,13 @@ func TestWatchForStallStream_CancelStops(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output: output,
 			Kind:   "bash",
 		}
 
 		calledCh := make(chan struct{}, 1)
-		cancel := watchForStallStream(task, func(summary, tail string) {
+		cancel := watchForStallStream(job, func(summary, tail string) {
 			select {
 			case calledCh <- struct{}{}:
 			default:
@@ -1034,13 +1034,13 @@ func TestWatchForStallStream_NoPrompt(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Building...\nCompiling...\nTests passed"))
 
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output: output,
 			Kind:   "bash",
 		}
 
 		detected := make(chan string, 1)
-		cancel := watchForStallStream(task, func(summary, tail string) {
+		cancel := watchForStallStream(job, func(summary, tail string) {
 			select {
 			case detected <- summary:
 			default:
@@ -1063,13 +1063,13 @@ func TestWatchForStallStream_OutputGrowth(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output: output,
 			Kind:   "bash",
 		}
 
 		detected := make(chan string, 1)
-		cancel := watchForStallStream(task, func(summary, tail string) {
+		cancel := watchForStallStream(job, func(summary, tail string) {
 			select {
 			case detected <- summary:
 			default:
@@ -1107,7 +1107,7 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		receivedCh := make(chan JobNotification, 1)
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output:      output,
 			Kind:        "bash",
 			ID:          "bg-test",
@@ -1121,8 +1121,8 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 			},
 		}
 
-		task.startStallWatchdog()
-		if task.cancelStall == nil {
+		job.startStallWatchdog()
+		if job.cancelStall == nil {
 			t.Fatal("cancelStall should be set")
 		}
 
@@ -1144,7 +1144,7 @@ func TestStartStallWatchdog_FiresNotification(t *testing.T) {
 			t.Fatal("no notification received")
 		}
 
-		task.cancelStall()
+		job.cancelStall()
 	})
 }
 
@@ -1155,7 +1155,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		calledCh := make(chan struct{}, 1)
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output:   output,
 			Kind:     "bash",
 			ID:       "bg-test",
@@ -1168,7 +1168,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 			},
 		}
 
-		task.startStallWatchdog()
+		job.startStallWatchdog()
 
 		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
 
@@ -1179,7 +1179,7 @@ func TestStartStallWatchdog_SkipsAlreadyNotified(t *testing.T) {
 			// Expected
 		}
 
-		task.cancelStall()
+		job.cancelStall()
 	})
 }
 
@@ -1190,7 +1190,7 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
 		receivedCh := make(chan JobNotification, 1)
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output:  output,
 			Kind:    "bash",
 			ID:      "bg-test",
@@ -1203,7 +1203,7 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 			},
 		}
 
-		task.startStallWatchdog()
+		job.startStallWatchdog()
 
 		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
 
@@ -1216,7 +1216,7 @@ func TestStartStallWatchdog_UsesCommandWhenNoDescription(t *testing.T) {
 			t.Fatal("no notification received")
 		}
 
-		task.cancelStall()
+		job.cancelStall()
 	})
 }
 
@@ -1226,7 +1226,7 @@ func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
 		output := NewStreamingOutput(nil)
 		mustWriteStream(t, output, []byte("Continue? (y/n)"))
 
-		task := &BackgroundTask{
+		job := &BackgroundJob{
 			Output:   output,
 			Kind:     "bash",
 			ID:       "bg-test",
@@ -1234,11 +1234,11 @@ func TestStartStallWatchdog_NilOnNotify(t *testing.T) {
 			onNotify: nil,
 		}
 
-		task.startStallWatchdog()
+		job.startStallWatchdog()
 
 		// Should not panic
 		time.Sleep(stallThreshold + stallCheckInterval + time.Second)
 
-		task.cancelStall()
+		job.cancelStall()
 	})
 }

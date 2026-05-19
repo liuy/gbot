@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Stall detection — watchdog for interactive prompts in background tasks
+// Stall detection — watchdog for interactive prompts in background jobs
 // Source: LocalShellTask.tsx:24-104
 // ---------------------------------------------------------------------------
 
@@ -174,7 +174,7 @@ func (w *stallWatcher) check() (stop bool) {
 
 // streamStallWatcher tracks StreamingOutput growth to detect stalled commands.
 type streamStallWatcher struct {
-	task       *BackgroundTask
+	job       *BackgroundJob
 	lastSize   int64
 	lastGrowth time.Time
 	cancelled  atomic.Bool
@@ -186,9 +186,9 @@ type streamStallWatcher struct {
 // onStall is called. Returns a CancelFunc that stops the watchdog.
 //
 // Source: LocalShellTask.tsx:46-104 — startStallWatchdog (same algorithm, streaming data source)
-func watchForStallStream(task *BackgroundTask, onStall func(summary, tail string)) func() {
+func watchForStallStream(job *BackgroundJob, onStall func(summary, tail string)) func() {
 	w := &streamStallWatcher{
-		task:       task,
+		job:       job,
 		lastGrowth: time.Now(),
 		onStall:    onStall,
 	}
@@ -229,8 +229,8 @@ func (w *streamStallWatcher) check() (stop bool) {
 
 	// Source: LocalShellTask.tsx:53 — stat(outputPath).then(s => s.size)
 	var size int64
-	if w.task.Output != nil {
-		size = w.task.Output.TotalBytes()
+	if w.job.Output != nil {
+		size = w.job.Output.TotalBytes()
 	}
 
 	if size > w.lastSize {
@@ -246,8 +246,8 @@ func (w *streamStallWatcher) check() (stop bool) {
 	// Output stalled — check if tail looks like a prompt
 	// Source: LocalShellTask.tsx:60-61 — tailFile(outputPath, STALL_TAIL_BYTES)
 	var tail string
-	if w.task.Output != nil {
-		tail = w.task.Output.LastLines()
+	if w.job.Output != nil {
+		tail = w.job.Output.LastLines()
 	}
 
 	if w.cancelled.Load() {

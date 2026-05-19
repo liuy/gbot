@@ -109,33 +109,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Create tools
-	reg := createTools()
-
-	// Resolve working directory early (needed for skill registry, MCP, and system prompt)
+	// 3. Resolve working directory early
 	workingDir, _ := os.Getwd()
 
-	// Skill registry
+	// Skill registry (shared across all engines)
 	skillReg := skills.NewRegistry(workingDir)
 	if err := skillReg.Load(); err != nil {
 		slog.Warn("main: skill registry load failed", "error", err)
 	}
-	reg.MustRegister(skilltool.New(skillReg))
 
-	// SetNotifyFn with stubs creates forkReg so JobAdapter() works.
-	agentTool := agenttool.New()
-	agentTool.SetWorkingDir(workingDir)
-	agentTool.SetGitStatus(ctxbuild.LoadGitStatus(workingDir))
-	agentTool.SetSkillRegistry(skillReg)
-	agentTool.SetNotifyFn(
-		func(xml string) {},                   // stub — replaced after engine creation
-		func() json.RawMessage { return nil }, // stub — replaced after engine creation
-	)
-	reg.MustRegister(agentTool)
-
-	replTool := repl.New()
-	reg.MustRegister(replTool)
-
+	// Agent definitions — loaded once globally
 	agenttool.InitLoader(workingDir)
 
 	// Plugin system — discover and load plugins before MCP/hooks/skills
@@ -144,17 +127,7 @@ func main() {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
 	}
 
-	bashJobReg := bash.NewJobInfoAdapter(bash.DefaultRegistry())
-	forkJobReg := agentTool.JobAdapter()
-	jobReg := job.NewMultiRegistry(bashJobReg, forkJobReg)
-	reg.MustRegister(job.NewJobOutput(jobReg))
-	reg.MustRegister(job.NewJobStop(jobReg))
-
 	taskList := tasklist.NewList("")
-	reg.MustRegister(tasklist.NewTaskCreate(taskList))
-	reg.MustRegister(tasklist.NewTaskGet(taskList))
-	reg.MustRegister(tasklist.NewTaskList(taskList))
-	reg.MustRegister(tasklist.NewTaskUpdate(taskList))
 
 	// Create engine
 	logger := slog.Default()
@@ -233,141 +206,42 @@ func main() {
 		permCheckerIface = permChecker
 	}
 
+	// Construct shared dependencies (immutable across all engines)
+	gitStatus := ctxbuild.LoadGitStatus(workingDir)
+	deps := toolDeps{
+		workingDir: workingDir,
+		gitStatus:  gitStatus,
+		skillReg:   skillReg,
+		taskList:   taskList,
+		mcpReg:     mcpRegistry,
+		hooks:      hookSystem,
+	}
+
+	// Create per-engine tool instances for the main engine
+	mainRefs := createTools(deps)
+
 	eng := engine.New(&engine.Params{
-		Provider:         provider,
-		ToolsProvider:    reg.ToolMapFn(),
-		Model:            model,
-		MaxTokens:        maxTokens,
-		TokenBudget:      contextWindow,
-		Logger:           logger,
-		Dispatcher:       h,
-		MCPRegistry:      mcpRegistry,
-		Hooks:            hookSystem,
+		Provider:          provider,
+		ToolsProvider:     mainRefs.reg.ToolMapFn(),
+		Model:             model,
+		MaxTokens:         maxTokens,
+		TokenBudget:       contextWindow,
+		Logger:            logger,
+		Dispatcher:        h,
+		MCPRegistry:       mcpRegistry,
+		Hooks:             hookSystem,
 		PermissionChecker: permCheckerIface,
 		WorkingDir:        workingDir,
 	})
 
 	eng.SetOnClose(func(sessionID string) {
-		replTool.CleanSession(sessionID)
+		mainRefs.repl.CleanSession(sessionID)
 	})
 
-	// Wire agent factory
-	agentTool.SetFactory(
-		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
-			startTime := time.Now()
-			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				SystemPrompt:    string(opts.SystemPrompt),
-				Tools:           opts.Tools,
-				MaxTurns:        opts.MaxTurns,
-				Model:           opts.Model,
-				ParentToolUseID: opts.ParentToolUseID,
-				AgentType:       opts.AgentType,
-			})
-
-			// Fire SubagentStart hook — collect additional context from plugins.
-			// Source: runAgent.ts:530-555
-			hookInput := &hooks.HookInput{
-				HookEventName: "SubagentStart",
-				AgentID:       subEng.SessionID(),
-				AgentType:     opts.AgentType,
-			}
-			for _, r := range hookSystem.SubagentStart(ctx, hookInput) {
-				if r.AdditionalContext != "" {
-				opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
-				})
-				}
-			}
-
-			messages := opts.UserContextMessages
-			if opts.Prompt != "" {
-				messages = append(messages, types.Message{
-					ID:      uuid.New().String(),
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
-				})
-			}
-			if len(opts.ForkMessages) > 0 {
-				messages = append(opts.ForkMessages, messages...)
-			}
-			var result engine.QueryResult
-			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
-				result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
-			} else {
-				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
-			}
-			if result.Error != nil {
-				if ctx.Err() != nil {
-					// Source: agentToolUtils.ts:640-668 — AbortError path:
-					// return partial output, nil error. FinalizeResult handles
-					// the interrupt message; no separate cancel marker needed.
-					r := agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0)
-					return r, nil
-				}
-				return nil, result.Error
-			}
-			toolUseCount := agenttool.CountToolUses(result.Messages)
-			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
-		},
-		eng.Tools,
-	)
-
-	// Wire MCP connect
-	if mcpRegistry != nil {
-		agentTool.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
-			handle, err := mcpRegistry.ConnectAgentServers(ctx, agentID, rawSpecs)
-			if err != nil || handle == nil {
-				return nil, err
-			}
-			mcpTools := make(map[string]tool.Tool)
-			for name, dt := range handle.Tools() {
-				mcpTools[name] = engine.NewMCPTool(dt, mcpRegistry)
-			}
-			return &agenttool.McpConnectResult{
-				Tools:   mcpTools,
-				Cleanup: handle.Cleanup,
-			}, nil
-		})
-	}
-
-	// Wire notification callbacks
-	agentTool.SetNotifyFn(
-		func(xml string) {
-			eng.EnqueueAttachment(types.QueuedItem{
-				Value:     xml,
-				Mode:      types.ItemModeJob,
-				Timestamp: time.Now(),
-			})
-		},
-		func() json.RawMessage { return eng.SystemPrompt() },
-	)
-
-		// Wire REPL tool executor
-		// Delegates to Engine.ExecuteTool which encapsulates the three-phase
-		// permission check shared with StreamingToolExecutor (runTools.go:609-695).
-		{
-			var replAskMu sync.Mutex
-			replSessionAllowed := make(map[string]bool)
-
-			replTool.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
-				return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
-			})
-		}
-
-	// Wire background task notifications into the engine's attachment queue.
-	registry := bash.DefaultRegistry()
-	registry.OnNotify = func(n bash.JobNotification) {
-		xml := n.FormatXML()
-		eng.EnqueueAttachment(types.QueuedItem{
-			Value:     xml,
-			Mode:      types.ItemModeJob,
-			Timestamp: time.Now(),
-		})
-	}
+	wireEngine(eng, mainRefs, deps)
 
 	// 5. Build system prompt using context builder
-	systemPrompt := buildSystemPrompt(workingDir, reg, skillReg, contextWindow)
+	systemPrompt := buildSystemPrompt(workingDir, mainRefs.reg, skillReg, contextWindow)
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
@@ -498,7 +372,7 @@ func main() {
 		// Estimate initial context usage
 		// CJK-aware estimation. Corrected after first API response.
 		initialTokens := types.EstimateTokens(string(systemPrompt))
-		for _, t := range reg.EnabledTools() {
+		for _, t := range mainRefs.reg.EnabledTools() {
 			if b, err := json.Marshal(t.InputSchema()); err == nil {
 				initialTokens += types.EstimateTokens(string(b))
 			}
@@ -508,7 +382,7 @@ func main() {
 	// Wire task list panel reader
 	app.SetAutoCleanupFn(func() bool {
 		// Clean up terminal jobs from bash and fork agent registries.
-		jobReg.CleanupCompleted()
+		mainRefs.jobReg.CleanupCompleted()
 		// Clean up completed tasks if 5s has elapsed (or session resume).
 		if taskList.ShouldCleanupCompleted(5 * time.Second) {
 			_ = taskList.CleanupCompleted()
@@ -557,9 +431,9 @@ func main() {
 		return result
 	})
 	app.SetKillAllFn(func() {
-		for _, t := range jobReg.List() {
+		for _, t := range mainRefs.jobReg.List() {
 			if t.Status == "running" {
-				_ = jobReg.Kill(t.ID)
+				_ = mainRefs.jobReg.Kill(t.ID)
 			}
 		}
 	})
@@ -573,7 +447,7 @@ func main() {
 	}
 
 	// Clean shutdown: close REPL sessions and MCP connections
-	replTool.Close()
+	mainRefs.repl.Close()
 	eng.Close()
 }
 
@@ -630,21 +504,196 @@ func loadConfig() (*config.Config, error) {
 	return config.Load()
 }
 
-// createTools instantiates all core tools and registers them.
-func createTools() *tool.Registry {
+// toolDeps holds shared dependencies that don't vary per engine.
+type toolDeps struct {
+	workingDir string
+	gitStatus  *ctxbuild.GitStatusInfo
+	skillReg   *skills.Registry
+	taskList   *tasklist.List
+	mcpReg     *mcp.Registry
+	hooks      *hooks.Hooks
+}
+
+// toolRefs holds one engine's independent tool instances.
+type toolRefs struct {
+	reg     *tool.Registry
+	bashReg *bash.BackgroundJobRegistry
+	agent   *agenttool.AgentTool
+	repl    *repl.REPLTool
+	jobReg  *job.MultiRegistry
+}
+
+// createTools creates a fresh, complete set of tool instances for one engine.
+// Notification wiring (OnNotify, SetFactory) is done separately by wireEngine.
+func createTools(deps toolDeps) toolRefs {
+	bashReg := bash.NewBackgroundJobRegistry()
+
 	reg := tool.NewRegistry()
-	reg.MustRegister(bash.New(bash.DefaultRegistry()))
+	reg.MustRegister(bash.New(bashReg))
 	reg.MustRegister(fileread.New())
 	reg.MustRegister(fileedit.New())
 	reg.MustRegister(filewrite.New())
 	reg.MustRegister(glob.New())
 	reg.MustRegister(grep.New())
 
-	// Background task management tools are registered in main() after
-	// the fork agent adapter is available (need MultiRegistry for both
-	// bash and fork agent tasks).
+	at := agenttool.New()
+	at.SetWorkingDir(deps.workingDir)
+	at.SetGitStatus(deps.gitStatus)
+	at.SetSkillRegistry(deps.skillReg)
+	// Stub SetNotifyFn — must be called before JobAdapter() so forkReg is initialized.
+	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+	reg.MustRegister(at)
 
-	return reg
+	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
+	reg.MustRegister(job.NewJobOutput(jobReg))
+	reg.MustRegister(job.NewJobStop(jobReg))
+
+	reg.MustRegister(tasklist.NewTaskCreate(deps.taskList))
+	reg.MustRegister(tasklist.NewTaskGet(deps.taskList))
+	reg.MustRegister(tasklist.NewTaskList(deps.taskList))
+	reg.MustRegister(tasklist.NewTaskUpdate(deps.taskList))
+
+	reg.MustRegister(skilltool.New(deps.skillReg))
+
+	replTool := repl.New()
+	reg.MustRegister(replTool)
+
+	return toolRefs{reg: reg, bashReg: bashReg, agent: at, repl: replTool, jobReg: jobReg}
+}
+
+// wireEngine recursively wires notification callbacks and the agent factory
+// for an engine and its tool set. Each sub-engine created through the factory
+// gets its own fresh tool instances via createTools.
+func wireEngine(eng *engine.Engine, refs toolRefs, deps toolDeps) {
+	// 1. Bash background job notifications → this engine.
+	refs.bashReg.OnNotify = func(n bash.JobNotification) {
+		eng.EnqueueAttachment(types.QueuedItem{
+			Value:     n.FormatXML(),
+			Mode:      types.ItemModeJob,
+			Timestamp: time.Now(),
+		})
+	}
+
+	// 2. Fork agent notifications → this engine (overrides stub from createTools).
+	refs.agent.SetNotifyFn(
+		func(xml string) {
+			eng.EnqueueAttachment(types.QueuedItem{
+				Value:     xml,
+				Mode:      types.ItemModeJob,
+				Timestamp: time.Now(),
+			})
+		},
+		func() json.RawMessage { return eng.SystemPrompt() },
+	)
+
+	// 3. Agent factory — creates fresh tool set per sub-engine (recursive).
+	refs.agent.SetFactory(
+		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+			startTime := time.Now()
+			subRefs := createTools(deps)
+
+			// Merge MCP tools into sub-registry (equivalent to main engine's refreshTools).
+			if deps.mcpReg != nil {
+				for _, dt := range deps.mcpReg.GetTools() {
+					subRefs.reg.MustRegister(engine.NewMCPTool(dt, deps.mcpReg))
+				}
+			}
+
+			// agent.go's ResolveAgentTools already decided which tool names are allowed.
+			// Map those names to fresh instances from the new registry.
+			subTools := subRefs.reg.ToolMap()
+			if len(opts.Tools) > 0 {
+				filtered := make(map[string]tool.Tool, len(opts.Tools))
+				for name := range opts.Tools {
+					if t, ok := subTools[name]; ok {
+						filtered[name] = t
+					}
+				}
+				subTools = filtered
+			}
+
+			subEng := eng.NewSubEngine(engine.SubEngineOptions{
+				Tools:           subTools,
+				SystemPrompt:    string(opts.SystemPrompt),
+				MaxTurns:        opts.MaxTurns,
+				Model:           opts.Model,
+				ParentToolUseID: opts.ParentToolUseID,
+				AgentType:       opts.AgentType,
+			})
+
+			wireEngine(subEng, subRefs, deps)
+
+			// Fire SubagentStart hook — collect additional context from plugins.
+			hookInput := &hooks.HookInput{
+				HookEventName: "SubagentStart",
+				AgentID:       subEng.SessionID(),
+				AgentType:     opts.AgentType,
+			}
+			for _, r := range deps.hooks.SubagentStart(ctx, hookInput) {
+				if r.AdditionalContext != "" {
+					opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
+						Role:    types.RoleUser,
+						Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
+					})
+				}
+			}
+
+			messages := opts.UserContextMessages
+			if opts.Prompt != "" {
+				messages = append(messages, types.Message{
+					ID:      uuid.New().String(),
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+				})
+			}
+			if len(opts.ForkMessages) > 0 {
+				messages = append(opts.ForkMessages, messages...)
+			}
+			var result engine.QueryResult
+			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
+				result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
+			} else {
+				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+			}
+			if result.Error != nil {
+				if ctx.Err() != nil {
+					r := agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0)
+					return r, nil
+				}
+				return nil, result.Error
+			}
+			toolUseCount := agenttool.CountToolUses(result.Messages)
+			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
+		},
+		refs.reg.ToolMap,
+	)
+
+	// 4. MCP connect — agent-specific MCP servers.
+	if deps.mcpReg != nil {
+		refs.agent.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
+			handle, err := deps.mcpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
+			if err != nil || handle == nil {
+				return nil, err
+			}
+			mcpTools := make(map[string]tool.Tool)
+			for name, dt := range handle.Tools() {
+				mcpTools[name] = engine.NewMCPTool(dt, deps.mcpReg)
+			}
+			return &agenttool.McpConnectResult{
+				Tools:   mcpTools,
+				Cleanup: handle.Cleanup,
+			}, nil
+		})
+	}
+
+	// 5. REPL tool executor → this engine.
+	{
+		var replAskMu sync.Mutex
+		replSessionAllowed := make(map[string]bool)
+		refs.repl.SetToolExecutor(func(toolCtx context.Context, name string, args json.RawMessage) (string, error) {
+			return eng.ExecuteTool(toolCtx, name, args, replSessionAllowed, &replAskMu)
+		})
+	}
 }
 
 // buildSystemPrompt builds the system prompt using the context builder.

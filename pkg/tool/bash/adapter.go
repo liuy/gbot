@@ -7,28 +7,28 @@ import (
 	"github.com/liuy/gbot/pkg/tool/job"
 )
 
-// JobInfoAdapter adapts BackgroundTaskRegistry to the job.Registry interface.
-// This is the bridge between the bash package's internal BackgroundTask type
-// and the task package's public TaskInfo type.
+// JobInfoAdapter adapts BackgroundJobRegistry to the job.Registry interface.
+// This is the bridge between the bash package's internal BackgroundJob type
+// and the job package's public TaskInfo type.
 type JobInfoAdapter struct {
-	reg *BackgroundTaskRegistry
+	reg *BackgroundJobRegistry
 }
 
-// NewJobInfoAdapter creates an adapter wrapping a BackgroundTaskRegistry.
-func NewJobInfoAdapter(reg *BackgroundTaskRegistry) *JobInfoAdapter {
+// NewJobInfoAdapter creates an adapter wrapping a BackgroundJobRegistry.
+func NewJobInfoAdapter(reg *BackgroundJobRegistry) *JobInfoAdapter {
 	return &JobInfoAdapter{reg: reg}
 }
 
-// Get returns task info by ID.
+// Get returns job info by ID.
 func (a *JobInfoAdapter) Get(id string) (*job.JobInfo, bool) {
 	bt, ok := a.reg.Get(id)
 	if !ok {
 		return nil, false
 	}
-	return backgroundTaskToInfo(bt), true
+	return backgroundJobToInfo(bt), true
 }
 
-// Kill terminates a running task by ID.
+// Kill terminates a running job by ID.
 // Translates bash-specific "not found" errors into job.ErrNotFound
 // so that MultiRegistry can properly skip to the next registry.
 func (a *JobInfoAdapter) Kill(id string) error {
@@ -45,12 +45,12 @@ func (a *JobInfoAdapter) List() []*job.JobInfo {
 	tasks := a.reg.List()
 	result := make([]*job.JobInfo, len(tasks))
 	for i, bt := range tasks {
-		result[i] = backgroundTaskToInfo(bt)
+		result[i] = backgroundJobToInfo(bt)
 	}
 	return result
 }
 
-// Wait blocks until the task finishes, returning the exit code.
+// Wait blocks until the job finishes, returning the exit code.
 // Translates bash-specific "not found" errors into job.ErrNotFound.
 func (a *JobInfoAdapter) Wait(id string) (int, error) {
 	code, err := a.reg.Wait(id)
@@ -60,15 +60,15 @@ func (a *JobInfoAdapter) Wait(id string) (int, error) {
 	return code, err
 }
 
-// isBashNotFound detects the bash registry's ad-hoc "task X not found" error.
-// BackgroundTaskRegistry doesn't import the task package, so it uses
-// fmt.Errorf("task %q not found") instead of wrapping job.ErrNotFound.
+// isBashNotFound detects the bash registry's ad-hoc "job X not found" error.
+// BackgroundJobRegistry doesn't import the job package, so it uses
+// fmt.Errorf("job %q not found") instead of wrapping job.ErrNotFound.
 func isBashNotFound(err error) bool {
 	return strings.Contains(err.Error(), "not found")
 }
 
-// backgroundTaskToInfo converts a BackgroundTask to a TaskInfo snapshot.
-func backgroundTaskToInfo(bt *BackgroundTask) *job.JobInfo {
+// backgroundJobToInfo converts a BackgroundJob to a TaskInfo snapshot.
+func backgroundJobToInfo(bt *BackgroundJob) *job.JobInfo {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
 
@@ -88,5 +88,5 @@ func backgroundTaskToInfo(bt *BackgroundTask) *job.JobInfo {
 	return info
 }
 
-// Prefix returns the ID prefix for bash background tasks.
+// Prefix returns the ID prefix for bash background jobs.
 func (a *JobInfoAdapter) Prefix() string { return "bg-" }
