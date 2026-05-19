@@ -165,6 +165,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			return attachmentMsg{
 				UserText:   att.Prompt,
 				SourceUUID: att.SourceUUID,
+				Agent:      evt.Agent,
 			}
 		}
 		xml := att.Prompt
@@ -173,6 +174,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 			JobID:   extractXMLField(xml, "job-id"),
 			Preview: extractXMLField(xml, "summary"),
 			Failed:  status == "failed" || status == "killed",
+			Agent:   evt.Agent,
 		}
 
 	case types.EventTurnStart:

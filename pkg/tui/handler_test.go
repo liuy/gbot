@@ -1152,6 +1152,63 @@ func TestConvertEventToMsg_Attachment_PromptMode(t *testing.T) {
 	}
 }
 
+func TestConvertEventToMsg_Attachment_WithAgent(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Agent: &types.AgentMeta{ParentToolUseID: "call_agent_1", AgentType: "General", Depth: 0},
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Prompt: `<job-notification><job-id>bg-1</job-id><status>completed</status><summary>Background command "npm test" completed (exit code 0)</summary></job-notification>`,
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.Agent == nil {
+		t.Fatal("Agent should not be nil for sub-agent attachment events")
+	}
+	if am.Agent.ParentToolUseID != "call_agent_1" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", am.Agent.ParentToolUseID, "call_agent_1")
+	}
+	if am.Agent.AgentType != "General" {
+		t.Errorf("Agent.AgentType = %q, want %q", am.Agent.AgentType, "General")
+	}
+	if am.JobID != "bg-1" {
+		t.Errorf("JobID = %q, want %q", am.JobID, "bg-1")
+	}
+}
+
+func TestConvertEventToMsg_Attachment_WithAgent_PromptMode(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventAttachment,
+		Agent: &types.AgentMeta{ParentToolUseID: "call_agent_2", AgentType: "Explore", Depth: 0},
+		Message: &types.Message{
+			Attachment: &types.Attachment{
+				Mode:       types.ItemModePrompt,
+				Prompt:     "queued sub-agent message",
+				SourceUUID: "uuid-456",
+			},
+		},
+	})
+	am, ok := msg.(attachmentMsg)
+	if !ok {
+		t.Fatalf("expected attachmentMsg, got %T", msg)
+	}
+	if am.Agent == nil {
+		t.Fatal("Agent should not be nil for sub-agent prompt attachments")
+	}
+	if am.Agent.ParentToolUseID != "call_agent_2" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", am.Agent.ParentToolUseID, "call_agent_2")
+	}
+	if am.UserText != "queued sub-agent message" {
+		t.Errorf("UserText = %q, want %q", am.UserText, "queued sub-agent message")
+	}
+}
+
 func TestConvertEventToMsg_Attachment_JobModeBackwardCompat(t *testing.T) {
 	h := NewTUIHandler()
 	xml := `<job-notification><job-id>bg-1</job-id><summary>task done</summary><status>completed</status></job-notification>`

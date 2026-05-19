@@ -764,27 +764,35 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case attachmentMsg:
-		slog.Info("tui:attachment_msg", "streaming", a.repl.IsStreaming(), "job_id", m.JobID, "user_text", m.UserText != "")
+		slog.Info("tui:attachment_msg", "streaming", a.repl.IsStreaming(), "job_id", m.JobID, "user_text", m.UserText != "", "agent", m.Agent != nil)
 
 		// ItemModePrompt drain: queued user message → insert into conversation
 		if m.UserText != "" {
-			for i, item := range a.pendingQueue {
-				if item.ID == m.SourceUUID {
-					a.pendingQueue = append(a.pendingQueue[:i], a.pendingQueue[i+1:]...)
-					break
+			if m.Agent != nil {
+				parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+				if parent != nil {
+					parent.Blocks = append(parent.Blocks, ContentBlock{Type: BlockText, Text: m.UserText})
+					a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+					a.markViewportDirty()
 				}
+			} else {
+				for i, item := range a.pendingQueue {
+					if item.ID == m.SourceUUID {
+						a.pendingQueue = append(a.pendingQueue[:i], a.pendingQueue[i+1:]...)
+						break
+					}
+				}
+				a.repl.messages = append(a.repl.messages, MessageView{
+					Role:   "user",
+					Blocks: []ContentBlock{{Type: BlockText, Text: m.UserText}},
+				})
+				a.markViewportDirty()
 			}
-			a.repl.messages = append(a.repl.messages, MessageView{
-				Role:   "user",
-				Blocks: []ContentBlock{{Type: BlockText, Text: m.UserText}},
-			})
-			a.markViewportDirty()
 			return true, a.readEvents()
 		}
 
 		// ItemModeJob drain: render notification
 		if m.JobID != "" {
-			// Same ● dot + color as tool results for UI consistency
 			var dotStr string
 			if m.Failed {
 				dotStr = styleDotError.Render("●")
@@ -796,11 +804,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				preview = strings.TrimSuffix(preview, " (exit code 0)")
 			}
 			text := dotStr + " " + preview
-			a.repl.messages = append(a.repl.messages, MessageView{
-				Role:   "notification",
-				Blocks: []ContentBlock{{Type: BlockText, Text: text}},
-			})
-			a.markViewportDirty()
+
+			if m.Agent != nil {
+				parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+				if parent != nil {
+					parent.Blocks = append(parent.Blocks, ContentBlock{Type: BlockText, Text: text})
+					a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
+					a.markViewportDirty()
+				}
+			} else {
+				a.repl.messages = append(a.repl.messages, MessageView{
+					Role:   "notification",
+					Blocks: []ContentBlock{{Type: BlockText, Text: text}},
+				})
+				a.markViewportDirty()
+			}
 		}
 		return true, a.readEvents()
 

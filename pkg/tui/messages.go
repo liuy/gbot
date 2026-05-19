@@ -117,11 +117,12 @@ type thinkingDeltaMsg struct {
 // Carries notification info for TUI rendering. Empty fields = first dispatch
 // from EnqueueAttachment (no content yet, TUI ignores).
 type attachmentMsg struct {
-	JobID      string // background job id
-	Preview    string // summary text
-	Failed     bool   // true for "failed" or "killed"
-	UserText   string // plain text from ItemModePrompt attachment
-	SourceUUID string // UUID for matching pendingQueue entries
+	JobID      string            // background job id
+	Preview    string            // summary text
+	Failed     bool              // true for "failed" or "killed"
+	UserText   string            // plain text from ItemModePrompt attachment
+	SourceUUID string            // UUID for matching pendingQueue entries
+	Agent      *types.AgentMeta  // non-nil when from a sub-agent
 }
 
 // idleAbortedMsg is returned when an idle readEvents is cancelled

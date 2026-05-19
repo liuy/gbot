@@ -5475,7 +5475,7 @@ func TestApp_HandleEscape_DoublePress_KillAll(t *testing.T) {
 		t.Error("first Escape should NOT call killAllFn")
 	}
 
-	// Second Escape within 800ms: kills all background tasks
+	// Second Escape within 800ms: kills all background jobs
 	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if !killAllCalled {
 		t.Error("second Escape should call killAllFn")
@@ -5516,18 +5516,18 @@ func TestApp_HandleEscape_SinglePress_NoKillAll(t *testing.T) {
 func TestApp_HandleEscape_DoublePress_NotStreaming_StillKillsAll(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	// Not streaming — but background tasks may still be running
+	// Not streaming — but background jobs may still be running
 
 	killAllCalled := false
 	app.killAllFn = func() {
 		killAllCalled = true
 	}
 
-	// Two quick presses while not streaming — still kills background tasks
+	// Two quick presses while not streaming — still kills background jobs
 	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	app.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if !killAllCalled {
-		t.Error("double-press should kill background tasks even when not streaming")
+		t.Error("double-press should kill background jobs even when not streaming")
 	}
 }
 
@@ -8082,5 +8082,153 @@ func TestApp_UpdateRepl_SubAgentToolEndSearchRead(t *testing.T) {
 	srk := tcv.Blocks[0].ToolCall.SearchRead
 	if !srk.IsList {
 		t.Errorf("IsList = false, want true (toolEndMsg should set SearchRead)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// attachmentMsg with Agent — sub-agent notification routing
+// ---------------------------------------------------------------------------
+
+// TestAttachmentMsg_Agent_RoutesToParentToolView verifies the full chain:
+// sub-engine background job completes → attachmentMsg{Agent: ...} arrives at TUI
+// → notification rendered inside parent tool view's blocks, NOT in main conversation.
+func TestAttachmentMsg_Agent_RoutesToParentToolView(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	// Set up parent Agent tool view (simulates agent tool started)
+	parentToolID := "call_agent_001"
+	app.repl.PendingToolStarted(parentToolID, "Agent", "running sub-agent", "{}", tool.SearchReadKind{})
+	app.repl.pendingToolStart[parentToolID] = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Simulate sub-agent background job completion notification
+	agent := &types.AgentMeta{ParentToolUseID: parentToolID, AgentType: "General", Depth: 0}
+	model, _ := app.Update(attachmentMsg{
+		JobID:   "bg-1",
+		Preview: `Background command "npm test" completed (exit code 0)`,
+		Agent:   agent,
+	})
+	a := model.(*App)
+
+	// Notification should be inside parent tool view, NOT in main message list
+	mainNotifications := 0
+	for _, m := range a.repl.messages {
+		if m.Role == "notification" {
+			mainNotifications++
+		}
+	}
+	if mainNotifications != 0 {
+		t.Errorf("sub-agent attachment should NOT add notification to main messages, got %d notifications", mainNotifications)
+	}
+
+	// Parent tool view should have the notification block appended
+	tcv := a.repl.findToolView(parentToolID)
+	if tcv == nil {
+		t.Fatal("parent tool view should exist")
+	}
+	found := false
+	for _, b := range tcv.Blocks {
+		if b.Type == BlockText && strings.Contains(b.Text, "npm test") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		var blockTypes []string
+		for _, b := range tcv.Blocks {
+			blockTypes = append(blockTypes, fmt.Sprintf("%d", b.Type))
+		}
+		t.Fatalf("parent tool view should contain notification text block. Block types: %v", blockTypes)
+	}
+}
+
+// TestAttachmentMsg_NoAgent_RoutesToMainConversation verifies that main engine
+// attachment notifications go to the main conversation, not to any tool view.
+func TestAttachmentMsg_NoAgent_RoutesToMainConversation(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	// Main engine notification — no Agent field
+	model, _ := app.Update(attachmentMsg{
+		JobID:   "bg-main",
+		Preview: `Background command "go test" completed (exit code 0)`,
+		Agent:   nil,
+	})
+	a := model.(*App)
+
+	// Should add notification to main messages
+	found := false
+	for _, m := range a.repl.messages {
+		if m.Role == "notification" {
+			found = true
+			if !strings.Contains(m.Blocks[0].Text, "go test") {
+				t.Errorf("notification text = %q, should contain 'go test'", m.Blocks[0].Text)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("main engine attachment should add notification to main conversation")
+	}
+}
+
+// TestAttachmentMsg_NestedAgent_RoutesToCorrectParent verifies that a grandchild
+// sub-agent's notification routes to its direct parent (depth-1), not the root.
+func TestAttachmentMsg_NestedAgent_RoutesToCorrectParent(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+	app.spinner.Start()
+
+	// Root agent tool
+	rootID := "call_root_agent"
+	app.repl.PendingToolStarted(rootID, "Agent", "root", "{}", tool.SearchReadKind{})
+	app.repl.pendingToolStart[rootID] = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Child agent tool inside root
+	childID := "call_child_agent"
+	rootTCV := app.repl.findToolView(rootID)
+	rootTCV.Blocks = append(rootTCV.Blocks, ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			ID: childID, Name: "Agent", Summary: "child agent",
+			Input: "{}", Done: false,
+		},
+	})
+	rootTCV.ToolCount++
+	app.repl.updateToolBlock(rootID, rootTCV)
+
+	// Grandchild notification arrives — routed to child agent's tool view
+	grandchildAgent := &types.AgentMeta{ParentToolUseID: childID, AgentType: "General", Depth: 1}
+	model, _ := app.Update(attachmentMsg{
+		JobID:   "bg-nested",
+		Preview: `Background command "echo nested" completed (exit code 0)`,
+		Agent:   grandchildAgent,
+	})
+	a := model.(*App)
+
+	// Notification should be inside child tool view, not root
+	childTCV := a.repl.findToolView(childID)
+	if childTCV == nil {
+		t.Fatal("child tool view should exist")
+	}
+	found := false
+	for _, b := range childTCV.Blocks {
+		if b.Type == BlockText && strings.Contains(b.Text, "echo nested") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("grandchild notification should be in child tool view blocks")
+	}
+
+	// Root should NOT have the notification text directly (only via child block)
+	rootTCV2 := a.repl.findToolView(rootID)
+	for _, b := range rootTCV2.Blocks {
+		if b.Type == BlockText && strings.Contains(b.Text, "echo nested") {
+			t.Error("grandchild notification should NOT be directly in root blocks")
+		}
 	}
 }

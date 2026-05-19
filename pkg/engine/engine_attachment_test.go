@@ -286,9 +286,9 @@ func TestMarshalMessages_AttachmentMerge(t *testing.T) {
 func TestJobAttachment_FullChain_TurnBoundaryDrain(t *testing.T) {
 	eng := New(&Params{})
 
-	// 1. Background task completes — external goroutine calls EnqueueAttachment
+	// 1. background job completes — external goroutine calls EnqueueAttachment
 	eng.EnqueueAttachment(types.QueuedItem{
-		Value:     "background task output: exit code 0",
+		Value:     "background job output: exit code 0",
 		Mode:      types.ItemModeJob,
 		IsMeta:    true,
 		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
@@ -328,7 +328,7 @@ func TestJobAttachment_FullChain_TurnBoundaryDrain(t *testing.T) {
 	found := false
 	for _, m := range msgs {
 		if m.MessageType == types.MessageTypeAttachment && m.Attachment != nil && m.Attachment.Mode == types.ItemModeJob {
-			if strings.Contains(m.Attachment.Prompt, "background task output") {
+			if strings.Contains(m.Attachment.Prompt, "background job output") {
 				found = true
 				break
 			}
@@ -459,6 +459,89 @@ func TestPromptAttachment_MultiMergeChain(t *testing.T) {
 	}
 	if !strings.Contains(merged.Content[2].Text, "second prompt") {
 		t.Errorf("content[2] missing 'second prompt': %q", merged.Content[2].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end: sub-engine attachment → taggedDispatcher → AgentMeta
+// ---------------------------------------------------------------------------
+
+// TestSubEngine_AttachmentEmit_WithAgentMeta verifies the full chain:
+// sub-engine EnqueueAttachment → processAttachments → taggedDispatcher.Dispatch
+// → emitted EventAttachment carries AgentMeta from the sub-engine.
+//
+// This is the engine-side E2E test. The TUI-side counterpart validates
+// that the EventAttachment with AgentMeta is correctly converted to
+// attachmentMsg{Agent: ...} by the TUI handler.
+func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
+	// 1. Parent engine with event collector
+	collector := newEventCollector()
+	parent := New(&Params{
+		Provider:    &testProvider{},
+		Model:       "test",
+		Dispatcher:  collector,
+	})
+
+	// 2. Create sub-engine with SystemPrompt and ParentToolUseID (triggers taggedDispatcher)
+	sub := parent.NewSubEngine(SubEngineOptions{
+		SystemPrompt:    `{"role":"system","content":"sub-agent"}`,
+		ParentToolUseID: "call_agent_123",
+		AgentType:       "General",
+	})
+
+	// Verify sub-engine has a dispatcher (taggedDispatcher)
+	if sub.dispatcher == nil {
+		t.Fatal("sub-engine should have a taggedDispatcher wrapping parent's dispatcher")
+	}
+
+	// 3. Enqueue attachment on sub-engine (simulates background job completion)
+	xml := `<job-notification><job-id>bg-1</job-id><status>completed</status><summary>test done</summary></job-notification>`
+	sub.EnqueueAttachment(types.QueuedItem{
+		Value:     xml,
+		Mode:      types.ItemModeJob,
+		IsMeta:    true,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
+	})
+
+	// 4. Wait for processAttachments to emit events
+	// processAttachments runs async in a goroutine, and it also calls runTurns
+	// which would need a provider response. The test provider returns empty by default,
+	// so runTurns should terminate quickly.
+	var attachEvents []types.QueryEvent
+	deadline := time.After(5 * time.Second)
+	for len(attachEvents) == 0 {
+		select {
+		case <-deadline:
+			allEvents := collector.Events()
+			t.Fatalf("timed out waiting for EventAttachment from sub-engine. Total events: %d", len(allEvents))
+		default:
+		}
+		for _, e := range collector.Events() {
+			if e.Type == types.EventAttachment {
+				attachEvents = append(attachEvents, e)
+			}
+		}
+	}
+
+	// 5. Verify the EventAttachment carries AgentMeta
+	evt := attachEvents[0]
+	if evt.Agent == nil {
+		t.Fatal("EventAttachment from sub-engine should carry AgentMeta (injected by taggedDispatcher)")
+	}
+	if evt.Agent.ParentToolUseID != "call_agent_123" {
+		t.Errorf("Agent.ParentToolUseID = %q, want %q", evt.Agent.ParentToolUseID, "call_agent_123")
+	}
+	if evt.Agent.AgentType != "General" {
+		t.Errorf("Agent.AgentType = %q, want %q", evt.Agent.AgentType, "General")
+	}
+
+	// 6. Verify the attachment message content
+	if evt.Message == nil || evt.Message.Attachment == nil {
+		t.Fatal("EventAttachment should have Message.Attachment")
+	}
+	if !strings.Contains(evt.Message.Attachment.Prompt, "bg-1") {
+		t.Errorf("Attachment.Prompt = %q, should contain job-id bg-1", evt.Message.Attachment.Prompt)
 	}
 }
 

@@ -2807,6 +2807,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 			onCloseFn:            e.onCloseFn,
 		fileHistory:          e.fileHistory, // share same Tracker — sub-agent edits tracked too
 			workingDir:            e.workingDir,
+		systemPrompt:          json.RawMessage(opts.SystemPrompt),
 	}
 }
 
