@@ -408,6 +408,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case turnStartMsg:
+		// Sub-engine turnStart (from processAttachments → runTurns): do NOT
+		// start a new query. Sub-engine text goes to the parent tool view via
+		// Agent metadata, and sub-engine's queryEndMsg skips FinishStream().
+		// Starting a query here would leave the TUI stuck in streaming=true.
+		if m.Agent != nil {
+			return true, a.readEvents()
+		}
 		// Set up streaming state if not already active (e.g. engine auto-processed
 		// an attachment while idle — TUI wasn't in streaming mode yet).
 		if !a.repl.IsStreaming() {
@@ -473,7 +480,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			if parent != nil && m.Summary != "" {
 				for i := len(parent.Blocks) - 1; i >= 0; i-- {
-					if parent.Blocks[i].Type == BlockTool && !parent.Blocks[i].ToolCall.Done {
+					if parent.Blocks[i].Type == BlockTool && parent.Blocks[i].ToolCall.ID == m.ID {
 						parent.Blocks[i].ToolCall.Summary = m.Summary
 						break
 					}
@@ -513,7 +520,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			if parent != nil {
 				for i := len(parent.Blocks) - 1; i >= 0; i-- {
-					if parent.Blocks[i].Type == BlockTool && !parent.Blocks[i].ToolCall.Done {
+					if parent.Blocks[i].Type == BlockTool && parent.Blocks[i].ToolCall.ID == m.ToolUseID {
 						parent.Blocks[i].ToolCall.Done = true
 						parent.Blocks[i].ToolCall.IsError = m.IsError
 						parent.Blocks[i].ToolCall.Output = m.Output

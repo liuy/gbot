@@ -178,7 +178,7 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		}
 
 	case types.EventTurnStart:
-		return turnStartMsg{}
+		return turnStartMsg{Agent: evt.Agent}
 
 	case types.EventTextStart:
 		return textStartMsg{Agent: evt.Agent}

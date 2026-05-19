@@ -29,7 +29,18 @@ func (e *Engine) PersistNewMessages() {
 	}
 
 	uncommitted := e.messages[e.lastPersistedIdx:]
-	storeMsgs, err := short.EngineMessagesToStore(uncommitted)
+
+	// Attachment messages are ephemeral context for the current LLM call —
+	// they should never be persisted to the conversation DB.
+	var persistable []types.Message
+	for i := range uncommitted {
+		if uncommitted[i].MessageType == types.MessageTypeAttachment {
+			continue
+		}
+		persistable = append(persistable, uncommitted[i])
+	}
+
+	storeMsgs, err := short.EngineMessagesToStore(persistable)
 	if err != nil {
 		slog.Error("PersistNewMessages: convert messages", "error", err)
 		return

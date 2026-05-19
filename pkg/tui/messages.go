@@ -23,7 +23,7 @@ type textDeltaMsg struct {
 
 // turnStartMsg signals that the engine has started a new agentic turn.
 // Source: useStreaming hook onStreamStart callback.
-type turnStartMsg struct{}
+type turnStartMsg struct{ Agent *types.AgentMeta }
 
 // streamMessageMsg delivers a full message added to conversation history.
 // Source: useStreaming hook onMessage callback.

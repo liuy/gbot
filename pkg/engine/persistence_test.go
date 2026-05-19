@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
@@ -645,6 +646,100 @@ func TestForkSession_NoTitle(t *testing.T) {
 	_, err = eng.ForkSession("")
 	if err != nil {
 		t.Fatalf("ForkSession no title: %v", err)
+	}
+}
+
+// TestPersistNewMessages_AttachmentNotStored verifies the full production chain:
+// background job completes → EnqueueAttachment → processAttachments → runTurns
+// → PersistNewMessages → DB should contain the LLM's response but NOT the
+// raw attachment XML.
+//
+// Regression: attachment messages (job notifications, scope info) were being
+// written to the conversation DB as user messages. They are ephemeral context
+// for the current LLM call only and should never be persisted.
+func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	mp := &mockProvider{}
+	// First query: normal user question
+	mp.addResponse(textStreamEvents("test-model", "Sure, I'll help."), nil)
+	// Second query: LLM processes the attachment (triggered by processAttachments)
+	mp.addResponse(textStreamEvents("test-model", "Background task completed successfully."), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+	eng.SetSystemPrompt(json.RawMessage(`{"role":"system","content":"You are a helpful assistant."}`))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Run a normal query to establish the conversation
+	result := eng.QuerySync(ctx, "Run a background task", nil)
+	if result.Error != nil {
+		t.Fatalf("first query: %v", result.Error)
+	}
+
+	// 2. Background job completes — enqueue attachment into the queue directly
+	//    (same as EnqueueAttachment but without triggering the async goroutine)
+	jobXML := `<job-notification><job-id>bg-1</job-id><status>completed</status><summary>echo done</summary></job-notification>`
+	eng.attachments.Enqueue(types.QueuedItem{
+		Value:     jobXML,
+		Mode:      types.ItemModeJob,
+		IsMeta:    true,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2026, 5, 19, 20, 0, 0, 0, time.UTC),
+	})
+
+	// 3. Call processAttachments synchronously (same package, no goroutine).
+	//    This creates the attachment message, appends it to e.messages,
+	//    calls runTurns (LLM responds), and calls PersistNewMessages.
+	eng.processAttachments(ctx, eng.systemPrompt)
+
+	// 4. Run a third query — PersistNewMessages will persist the new user
+	//    message + LLM response, but the attachment message should have been
+	//    filtered during step 3's PersistNewMessages already.
+	//    This step verifies the attachment wasn't left in an uncommitted state.
+	mp.addResponse(textStreamEvents("test-model", "Got it, thanks for letting me know."), nil)
+	result2 := eng.QuerySync(ctx, "How did the background task go?", nil)
+	if result2.Error != nil {
+		t.Fatalf("third query: %v", result2.Error)
+	}
+
+	// 5. Verify DB contents
+	msgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected messages in store, got 0")
+	}
+
+	// The LLM's response to the notification must be in DB
+	var foundLLMResponse bool
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "Background task completed") {
+			foundLLMResponse = true
+		}
+	}
+	if !foundLLMResponse {
+		t.Error("LLM response to attachment should be persisted in DB")
+	}
+
+	// KEY CHECK: the raw attachment XML must NOT be in DB.
+	// json.Marshal escapes < to \u003c, so check the unescaped keyword.
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "job-notification") {
+			t.Errorf("attachment XML should NOT be in DB, found: %s", m.Content[:min(len(m.Content), 200)])
+		}
 	}
 }
 

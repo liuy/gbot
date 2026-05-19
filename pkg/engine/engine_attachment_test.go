@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"context"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -566,4 +570,112 @@ func TestPriorityOrder_UnknownPriority(t *testing.T) {
 	if len(items2) != 1 || items2[0].Value != "later" {
 		t.Errorf("expected later to remain, got %v", items2)
 	}
+}
+
+// TestSubEngine_AttachmentRunsTurns verifies that processAttachments on a
+// sub-engine calls runTurns when it has attachments — sub-engines process
+// their own background task notifications via the agentic loop.
+func TestSubEngine_AttachmentRunsTurns(t *testing.T) {
+	collector := newEventCollector()
+
+	// trackingProvider records Stream() calls so we can verify runTurns was invoked.
+	prov := &trackingProvider{}
+
+	parent := New(&Params{
+		Provider:   prov,
+		Model:      "test",
+		Dispatcher: collector,
+	})
+
+	sub := parent.NewSubEngine(SubEngineOptions{
+		SystemPrompt:    `{"role":"system","content":"sub-agent"}`,
+		ParentToolUseID: "call_agent_001",
+		AgentType:       "General",
+	})
+
+	// Enqueue attachment on sub-engine
+	xml := `<job-notification><job-id>bg-1</job-id><status>completed</status><summary>done</summary></job-notification>`
+	sub.EnqueueAttachment(types.QueuedItem{
+		Value:     xml,
+		Mode:      types.ItemModeJob,
+		IsMeta:    true,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
+	})
+
+	// Wait for runTurns to complete by polling for EventQueryEnd
+	timeout := time.After(3 * time.Second)
+waitLoop:
+	for {
+		for _, e := range collector.Events() {
+			if e.Type == types.EventQueryEnd {
+				break waitLoop
+			}
+		}
+		select {
+		case <-timeout:
+			break waitLoop
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	// Verify EventAttachment was emitted with AgentMeta
+	var foundAttach bool
+	for _, e := range collector.Events() {
+		if e.Type == types.EventAttachment {
+			foundAttach = true
+			if e.Agent == nil {
+				t.Fatal("EventAttachment should carry AgentMeta")
+			}
+			if e.Agent.ParentToolUseID != "call_agent_001" {
+				t.Errorf("ParentToolUseID = %q, want call_agent_001", e.Agent.ParentToolUseID)
+			}
+		}
+	}
+	if !foundAttach {
+		t.Fatal("expected EventAttachment from sub-engine")
+	}
+
+	// KEY CHECK: sub-engine should have called the LLM via runTurns
+	// to process its own attachment.
+	if prov.streamCalls.Load() == 0 {
+		t.Fatal("sub-engine processAttachments should call LLM (runTurns) for its attachment")
+	}
+
+	// Verify agentic events were emitted
+	var foundTurnStart bool
+	for _, e := range collector.Events() {
+		if e.Type == types.EventTurnStart {
+			foundTurnStart = true
+		}
+	}
+	if !foundTurnStart {
+		t.Error("sub-engine processAttachments should emit EventTurnStart")
+	}
+}
+
+// trackingProvider is a test provider that counts Stream() calls and returns a
+// minimal valid stream so runTurns completes normally instead of retrying forever.
+type trackingProvider struct {
+	streamCalls atomic.Int32
+}
+
+func (p *trackingProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+func (p *trackingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	p.streamCalls.Add(1)
+	ch := make(chan llm.StreamEvent, 6)
+	go func() {
+		defer close(ch)
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test"}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "ok"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 1}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+	}()
+	return ch, nil
 }
