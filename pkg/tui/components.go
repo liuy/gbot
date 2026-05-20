@@ -1255,6 +1255,7 @@ func wordWrap(text string, width int) string {
 	var lines []string
 	var currentLine strings.Builder
 	currentLen := 0
+	var activeANSI strings.Builder // track active SGR codes to re-emit after wrap
 
 	i := 0
 	for i < len(text) {
@@ -1263,6 +1264,7 @@ func wordWrap(text string, width int) string {
 			lines = append(lines, currentLine.String())
 			currentLine.Reset()
 			currentLen = 0
+			activeANSI.Reset()
 			i++
 			continue
 		}
@@ -1271,6 +1273,14 @@ func wordWrap(text string, width int) string {
 		if text[i] == '\x1b' {
 			seq := consumeAnsiEscape(text[i:])
 			currentLine.WriteString(seq)
+			// Track SGR codes for re-emission after wrap
+			if strings.HasSuffix(seq, "m") {
+				if seq == "\x1b[0m" {
+					activeANSI.Reset()
+				} else {
+					activeANSI.WriteString(seq)
+				}
+			}
 			i += len(seq)
 			continue
 		}
@@ -1280,9 +1290,16 @@ func wordWrap(text string, width int) string {
 		rw := runeDisplayWidth(r)
 
 		if currentLen+rw > width && currentLen > 0 {
+			// Close color on old line, re-open on new line
+			if activeANSI.Len() > 0 {
+				currentLine.WriteString("\x1b[0m")
+			}
 			lines = append(lines, currentLine.String())
 			currentLine.Reset()
 			currentLen = 0
+			if activeANSI.Len() > 0 {
+				currentLine.WriteString(activeANSI.String())
+			}
 		}
 
 		currentLine.WriteRune(r)
