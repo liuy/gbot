@@ -887,7 +887,22 @@ func extractCompactMetadata(boundary *TranscriptMessage) (*CompactMetadata, erro
 // Returns the auto-increment seq for FTS indexing.
 // insertOrReplaceMessageTx inserts or replaces a message row.
 // Used for kept messages whose UUIDs already exist from a previous PersistNewMessages.
+// Must delete the old FTS map entry first because messages_fts_map.seq has a FK
+// referencing messages(seq) — INSERT OR REPLACE deletes the old message row which
+// would violate that FK if the FTS map still references it.
 func (s *Store) insertOrReplaceMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMessage) (int64, error) {
+	// Find old seq for this UUID to clean up FTS map before replacing.
+	var oldSeq int64
+	err := tx.QueryRow("SELECT seq FROM messages WHERE uuid = ?", msg.UUID).Scan(&oldSeq)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("lookup old seq for uuid %s: %w", msg.UUID, err)
+	}
+	if oldSeq > 0 {
+		if _, err := tx.Exec("DELETE FROM messages_fts_map WHERE seq = ?", oldSeq); err != nil {
+			return 0, fmt.Errorf("delete fts map for old seq %d: %w", oldSeq, err)
+		}
+	}
+
 	createdAt := msg.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()

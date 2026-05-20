@@ -2514,6 +2514,7 @@ func TestRecordCompact_InsertSummaryError_DupUUID(t *testing.T) {
 }
 
 func TestRecordCompact_InsertKeptError_DupUUID(t *testing.T) {
+	// INSERT OR REPLACE handles duplicate kept UUIDs by replacing the old row.
 	store := openTestStore(t)
 	sessionID := "test-session"
 	createTestSession(t, store, sessionID)
@@ -2527,15 +2528,31 @@ func TestRecordCompact_InsertKeptError_DupUUID(t *testing.T) {
 	result := &CompactResult{
 		BoundaryMarker:  boundary,
 		SummaryMessages: []*TranscriptMessage{},
-		MessagesToKeep:  []*TranscriptMessage{kept}, // Same UUID
+		MessagesToKeep:  []*TranscriptMessage{kept}, // Same UUID — should succeed via INSERT OR REPLACE
 		Attachments:     []*TranscriptMessage{},
 	}
 	err := store.RecordCompact(sessionID, result)
-	if err == nil {
-		t.Fatal("RecordCompact should fail with duplicate UUID in kept message")
+	if err != nil {
+		t.Fatalf("RecordCompact should succeed with INSERT OR REPLACE for duplicate kept UUID: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insert kept") {
-		t.Errorf("error should mention 'insert kept', got: %v", err)
+
+	// Verify: load post-compact should see boundary + kept message (replaced)
+	msgs, err := store.LoadPostCompactMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPostCompactMessages: %v", err)
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages (boundary + kept), got %d", len(msgs))
+	}
+	foundKept := false
+	for _, m := range msgs {
+		if m.UUID == "kept-dup-uuid" {
+			foundKept = true
+			break
+		}
+	}
+	if !foundKept {
+		t.Error("kept message with duplicate UUID should be present after RecordCompact")
 	}
 }
 
@@ -2685,7 +2702,7 @@ func TestRecordCompact_InsertSummaryError_V2(t *testing.T) {
 	}
 }
 
-// TestRecordCompact_InsertKeptError_V2 uses duplicate UUID to trigger insert error.
+// TestRecordCompact_InsertKeptError_V2 verifies INSERT OR REPLACE handles duplicate kept UUIDs.
 func TestRecordCompact_InsertKeptError_V2(t *testing.T) {
 	store := openTestStore(t)
 	sessionID := "test-session"
@@ -2704,11 +2721,16 @@ func TestRecordCompact_InsertKeptError_V2(t *testing.T) {
 	}
 
 	err := store.RecordCompact(sessionID, result)
-	if err == nil {
-		t.Fatal("RecordCompact should fail with duplicate kept UUID")
+	if err != nil {
+		t.Fatalf("RecordCompact should succeed with INSERT OR REPLACE for duplicate kept UUID: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insert kept") && !strings.Contains(err.Error(), "insert boundary") {
-		t.Errorf("error should mention insert kept or insert boundary, got: %v", err)
+
+	msgs, err := store.LoadPostCompactMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPostCompactMessages: %v", err)
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 messages (boundary + kept), got %d", len(msgs))
 	}
 }
 
@@ -2881,9 +2903,11 @@ func TestRecordCompact_KeptMessagesAlreadyPersisted(t *testing.T) {
 		{UUID: "kept-asst-3", Type: "assistant", Content: `[{"type":"text","text":"looks good"}]`},
 	}
 	for _, m := range origMsgs {
-		if _, err := store.insertMessageTx(nil, sessionID, m); err != nil {
+		seq, err := store.insertMessageTx(nil, sessionID, m)
+		if err != nil {
 			t.Fatalf("persist message %s: %v", m.UUID, err)
 		}
+		store.indexMessageFTS(store.db, seq, m.Content)
 	}
 
 	// Verify all 6 messages are in DB.
