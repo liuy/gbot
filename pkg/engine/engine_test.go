@@ -1235,11 +1235,11 @@ func TestQuery_StreamingTextDeltas(t *testing.T) {
 	}
 
 	textEvents := ec.FindEvents(types.EventTextDelta)
-	if len(textEvents) != 2 {
-		t.Fatalf("expected 2 text deltas, got %d", len(textEvents))
+	if len(textEvents) != 1 {
+		t.Fatalf("expected 1 coalesced text delta, got %d", len(textEvents))
 	}
-	if textEvents[0].Text != "Hello " || textEvents[1].Text != "world!" {
-		t.Errorf("unexpected deltas: %v %v", textEvents[0].Text, textEvents[1].Text)
+	if textEvents[0].Text != "Hello world!" {
+		t.Errorf("coalesced text = %q, want %q", textEvents[0].Text, "Hello world!")
 	}
 }
 
@@ -2083,19 +2083,16 @@ func TestQuery_AttachmentDrainedAfterToolResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
 
-	// The attachment should have been injected as EventAttachment
-	var attachmentMsgSeen bool
+	// Job-mode attachments no longer emit EventAttachment.
+	// Verify no EventAttachment was emitted for the job notification.
 	for _, evt := range ec.FindEvents(types.EventAttachment) {
 		if evt.Message != nil {
 			for _, block := range evt.Message.Content {
 				if strings.HasPrefix(block.Text, "<job-notification>") {
-					attachmentMsgSeen = true
+					t.Error("job-mode attachment should NOT emit EventAttachment")
 				}
 			}
 		}
-	}
-	if !attachmentMsgSeen {
-		t.Error("expected attachment message to be emitted as EventAttachment")
 	}
 
 	// Verify the attachment text is in the final message history (merged into user message by marshalMessages)
@@ -2228,10 +2225,8 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 		t.Fatal("auto-process did not complete within timeout")
 	}
 
-	// Verify full call chain: EventAttachment -> EventTurnStart -> EventTextDelta -> EventQueryEnd
-	if len(ec.FindEvents(types.EventAttachment)) == 0 {
-		t.Error("expected EventAttachment - attachment message should be dispatched")
-	}
+		// Job-mode attachments no longer emit EventAttachment (TUI notification suppressed)
+		// Only prompt-mode attachments emit events. Verify LLM turn still runs.
 	if len(ec.FindEvents(types.EventTurnStart)) == 0 {
 		t.Error("expected EventTurnStart - LLM turn should begin")
 	}
@@ -2777,24 +2772,25 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 		t.Fatal("timed out waiting for query end")
 	}
 
-	gotAttachment := len(ec.FindEvents(types.EventAttachment)) > 0
-	gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
-	gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
-	gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
-	if !gotAttachment {
-		t.Error("expected EventAttachment for attachment message")
-	}
-	if !gotTurnStart {
-		t.Error("expected EventTurnStart")
-	}
-	if !gotTextDelta {
-		t.Error("expected EventTextDelta (LLM response)")
-	}
-	if !gotQueryEnd {
-		t.Error("expected EventQueryEnd")
-	}
-}
+		gotAttachment := len(ec.FindEvents(types.EventAttachment)) > 0
+		gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
+		gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
+		gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
+		// Job-mode attachments no longer emit EventAttachment
+		if gotAttachment {
+			t.Error("job-mode attachment should NOT emit EventAttachment")
+		}
+		if !gotTurnStart {
+			t.Error("expected EventTurnStart")
+		}
+		if !gotTextDelta {
+			t.Error("expected EventTextDelta (LLM response)")
+		}
+		if !gotQueryEnd {
+			t.Error("expected EventQueryEnd")
+		}
 
+}
 func TestProcessAttachments_ContextCancelled(t *testing.T) {
 	t.Parallel()
 

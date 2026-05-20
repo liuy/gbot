@@ -57,6 +57,10 @@ const (
 	maxOutputTokensForSummary = 20_000 // MAX_OUTPUT_TOKENS_FOR_SUMMARY: reserve for compact output
 	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: blocking limit buffer
 
+	// coalesceWindow is the time window for batching streaming deltas.
+	// Matches TS's Ink 16ms render throttle effective rate.
+	coalesceWindow = 100 * time.Millisecond
+
 	stopReasonContextWindowExceeded = "model_context_window_exceeded"
 	stopReasonMaxTokens            = "max_tokens"
 	maxTokensRecoveryLimit         = 3
@@ -176,6 +180,15 @@ type Engine struct {
 	// Nil when no permission rules are configured (default allow).
 	// Source: permissionsLoader.ts — loadAllPermissionRulesFromDisk.
 	permissionChecker permission.PermissionChecker
+
+	// Per-engine coalescing buffers. emitEvent is single-goroutine
+	// (queryActive prevents concurrent queryLoop/processAttachments),
+	// so no mutex needed.
+	textCoalesce  coalesceBuf
+	thinkCoalesce coalesceBuf
+
+	// window overrides coalesceWindow for testing. Zero = use default.
+	window time.Duration
 
 	// contentReplacementState tracks per-message tool result budget decisions
 	// across turns for prompt cache stability.
@@ -441,10 +454,14 @@ func (e *Engine) processAttachments(ctx context.Context, systemPrompt json.RawMe
 	attachmentMsgs := e.createAttachmentMessages(pendingItems)
 	e.appendMessages(attachmentMsgs)
 	for i := range attachmentMsgs {
-		e.emitEvent(types.QueryEvent{
-			Type:    types.EventAttachment,
-			Message: &attachmentMsgs[i],
-		})
+		if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
+			e.emitEvent(types.QueryEvent{
+				Type:    types.EventAttachment,
+				Message: &attachmentMsgs[i],
+			})
+		} else {
+			e.logger.Info("engine:attachment_drained_silently", "mode", "job")
+		}
 	}
 	e.runTurns(ctx, systemPrompt)
 }
@@ -490,7 +507,7 @@ func (e *Engine) createAttachmentMessages(items []types.QueuedItem) []types.Mess
 func wrapOriginText(raw string, origin *types.MessageOrigin) string {
 	switch {
 	case origin != nil && origin.Kind == types.OriginJob:
-		return "A background agent completed a task:\n" + raw
+		return "A background agent completed a job:\n" + raw
 	case origin != nil && origin.Kind == types.OriginCoordinator:
 		return "The coordinator sent a message while you were working:\n" + raw +
 			"\n\nAddress this before completing your current task."
@@ -531,14 +548,87 @@ func normalizeAttachmentForAPI(msg types.Message) types.Message {
 	return result
 }
 
-// emitEvent sends an event via the dispatcher (Hub).
-// When no dispatcher is set (sub-engine), events are silently discarded
-// and results are returned via the function return value.
-func (e *Engine) emitEvent(event types.QueryEvent) {
-	if e.dispatcher != nil {
-		e.dispatcher.Dispatch(event)
+// coalesceBuf holds a per-event-type coalescing buffer.
+// Not safe for concurrent use — only called from Engine's single goroutine.
+type coalesceBuf struct {
+	buf       strings.Builder
+	lastFlush time.Time
+}
+
+// write appends text to the buffer. If the coalesce window has expired
+// since the last flush, it calls onFlush first to drain accumulated data.
+func (c *coalesceBuf) write(text string, window time.Duration, onFlush func()) {
+	if !c.lastFlush.IsZero() && time.Since(c.lastFlush) >= window {
+		onFlush()
 	}
-	// No dispatcher (sub-engine): silently discard
+	c.buf.WriteString(text)
+	if c.lastFlush.IsZero() {
+		c.lastFlush = time.Now()
+	}
+}
+
+// flush drains the buffer and calls dispatch with the accumulated text.
+func (c *coalesceBuf) flush(dispatch func(string)) {
+	if c.buf.Len() == 0 {
+		return
+	}
+	text := c.buf.String()
+	c.buf.Reset()
+	c.lastFlush = time.Now()
+	dispatch(text)
+}
+
+// emitEvent sends an event via the dispatcher (Hub).
+// Streaming deltas (text_delta, thinking_delta) are buffered per-engine and
+// coalesced to reduce channel writes. Non-delta events flush pending buffers
+// first to preserve ordering.
+func (e *Engine) emitEvent(event types.QueryEvent) {
+	if e.dispatcher == nil {
+		return
+	}
+
+	switch event.Type {
+	case types.EventTextDelta:
+		e.textCoalesce.write(event.Text, e.effectiveWindow(), e.flushTextBuf)
+		return
+
+	case types.EventThinkingDelta:
+		if event.Thinking != nil && event.Thinking.Text != "" {
+			e.thinkCoalesce.write(event.Thinking.Text, e.effectiveWindow(), e.flushThinkBuf)
+		}
+		return
+	}
+
+	// Non-delta event: flush all buffers first to preserve ordering
+	e.flushBufs()
+	e.dispatcher.Dispatch(event)
+}
+
+func (e *Engine) effectiveWindow() time.Duration {
+	if e.window > 0 {
+		return e.window
+	}
+	return coalesceWindow
+}
+
+func (e *Engine) flushBufs() {
+	e.flushTextBuf()
+	e.flushThinkBuf()
+}
+
+func (e *Engine) flushTextBuf() {
+	e.textCoalesce.flush(func(text string) {
+		e.dispatcher.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: text})
+	})
+}
+
+func (e *Engine) flushThinkBuf() {
+	e.thinkCoalesce.flush(func(text string) {
+		e.dispatcher.Dispatch(types.QueryEvent{
+			Type:     types.EventThinkingDelta,
+			Thinking: &types.ThinkingEvent{Text: text},
+		})
+	})
 }
 
 // queryLoop is the main agentic loop.
@@ -1012,16 +1102,20 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 		// Drains PriorityNow + PriorityNext items (e.g. prompt input, job notifications).
 		// PriorityLater items wait for DrainAll() at query end.
 		// See types.QueuePriority for full drain timing documentation.
-		if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
-			attachmentMsgs := e.createAttachmentMessages(drainedItems)
-			for i := range attachmentMsgs {
-				e.appendMessage(attachmentMsgs[i])
-				e.emitEvent(types.QueryEvent{
-					Type:    types.EventAttachment,
-					Message: &attachmentMsgs[i],
-				})
+			if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
+				attachmentMsgs := e.createAttachmentMessages(drainedItems)
+				for i := range attachmentMsgs {
+					e.appendMessage(attachmentMsgs[i])
+					if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
+						e.emitEvent(types.QueryEvent{
+							Type:    types.EventAttachment,
+							Message: &attachmentMsgs[i],
+						})
+					} else {
+						e.logger.Info("engine:attachment_drained_silently", "mode", "job")
+					}
+				}
 			}
-		}
 
 		// Stage 23: Post-tool-execution abort check.
 		// Source: query.ts:1485-1516 — tool execution complete, check abort.
@@ -2769,7 +2863,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
 	var dispatcher types.EventDispatcher
-	if e.dispatcher != nil && opts.ParentToolUseID != "" {
+	if e.dispatcher != nil && opts.ParentToolUseID != "" && opts.AgentType != "fork" {
 		depth := e.agentMetaDepth + 1
 		dispatcher = &taggedDispatcher{
 			parent: e.dispatcher,

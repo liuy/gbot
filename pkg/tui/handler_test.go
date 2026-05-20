@@ -13,24 +13,14 @@ import (
 // Dropped event counter
 // ---------------------------------------------------------------------------
 
-func TestTUIHandler_Coalescing_AccumulatesText(t *testing.T) {
+func TestTUIHandler_PassThrough(t *testing.T) {
 	h := NewTUIHandler()
-	// text_delta events accumulate, don't go to channel immediately
+	// text_delta events pass through immediately (coalescing is per-engine)
 	for range 10 {
 		h.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 	}
 
-	// Channel should be empty — text is coalesced
-	select {
-	case <-h.appCh:
-		t.Fatal("expected no messages yet, text should be coalesced")
-	default:
-	}
-
-	// Non-text event triggers flush
-	h.Handle(types.QueryEvent{Type: types.EventUsage, Usage: &types.UsageEvent{}})
-
-	// Now channel should have: flushed text + usage = 2 messages
+	// All 10 text_delta messages should be in the channel
 	msgs := 0
 drain:
 	for {
@@ -41,8 +31,8 @@ drain:
 			break drain
 		}
 	}
-	if msgs != 2 {
-		t.Errorf("expected 2 messages (flushed text + usage), got %d", msgs)
+	if msgs != 10 {
+		t.Errorf("expected 10 messages (pass-through), got %d", msgs)
 	}
 }
 
@@ -991,7 +981,6 @@ func BenchmarkTUIHandler_TextDelta_Throughput(b *testing.B) {
 		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
 	}
 	b.StopTimer()
-	handler.flushAll()
 	close(done)
 }
 
@@ -1034,44 +1023,7 @@ func BenchmarkTUIHandler_MixedEvents(b *testing.B) {
 		handler.Handle(events[i%len(events)])
 	}
 	b.StopTimer()
-	handler.flushAll()
 	close(done)
-}
-
-// BenchmarkTUIHandler_CoalescedBatch measures the effective message rate
-// after coalescing: how many batched messages/sec reach the channel.
-// This is the metric that matters for bubbletea Update() call pressure.
-func BenchmarkTUIHandler_CoalescedBatch(b *testing.B) {
-	handler := NewTUIHandler()
-
-	msgCount := int64(0)
-	done := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-handler.appCh:
-				msgCount++
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	b.ResetTimer()
-	for range b.N {
-		handler.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "x"})
-	}
-	handler.flushAll()
-	b.StopTimer()
-	close(done)
-
-	// Report the ratio: how many channel messages vs Handle() calls.
-	// Without coalescing this would be ~1.0. With coalescing it should be
-	// ~1/512 = 0.002 (one channel message per 512 Handle calls).
-	if b.N > 0 {
-		ratio := float64(msgCount) / float64(b.N)
-		b.ReportMetric(ratio, "msg/call")
-	}
 }
 
 func TestConvertEventToMsg_RetryAttempt(t *testing.T) {

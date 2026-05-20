@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -131,7 +132,7 @@ func TestCreateAttachmentMessages_PromptMode_NoFlagMeta(t *testing.T) {
 
 func TestWrapOriginText_JobOrigin(t *testing.T) {
 	got := wrapOriginText("job output", &types.MessageOrigin{Kind: types.OriginJob})
-	want := "A background agent completed a task:\njob output"
+	want := "A background agent completed a job:\njob output"
 	if got != want {
 		t.Errorf("wrapOriginText(job) = %q, want %q", got, want)
 	}
@@ -195,7 +196,7 @@ func TestNormalizeAttachmentForAPI_Job(t *testing.T) {
 	if !strings.Contains(text, "<system-reminder>") {
 		t.Errorf("Content not wrapped in <system-reminder>: %q", text)
 	}
-	if !strings.Contains(text, "A background agent completed a task:") {
+	if !strings.Contains(text, "A background agent completed a job:") {
 		t.Errorf("Content missing job origin prefix: %q", text)
 	}
 }
@@ -508,45 +509,48 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 		Timestamp: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 	})
 
-	// 4. Wait for processAttachments to emit events
-	// processAttachments runs async in a goroutine, and it also calls runTurns
-	// which would need a provider response. The test provider returns empty by default,
-	// so runTurns should terminate quickly.
-	var attachEvents []types.QueryEvent
-	deadline := time.After(5 * time.Second)
-	for len(attachEvents) == 0 {
-		select {
-		case <-deadline:
+		// 4. Wait for processAttachments to complete
+		// Job-mode attachments no longer emit EventAttachment.
+		// processAttachments does not emit EventQueryEnd, so wait for
+		// EventTurnStart from runTurns as completion signal.
+		deadline := time.After(5 * time.Second)
+		for {
 			allEvents := collector.Events()
-			t.Fatalf("timed out waiting for EventAttachment from sub-engine. Total events: %d", len(allEvents))
-		default:
-		}
-		for _, e := range collector.Events() {
-			if e.Type == types.EventAttachment {
-				attachEvents = append(attachEvents, e)
+			for _, e := range allEvents {
+				if e.Type == types.EventAttachment {
+					t.Fatal("job-mode attachment should NOT emit EventAttachment")
+				}
+			}
+			gotTurn := false
+			for _, e := range allEvents {
+				if e.Type == types.EventTurnStart {
+					gotTurn = true
+				}
+			}
+			if gotTurn {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("timed out waiting for EventTurnStart. Total events: %d", len(allEvents))
+			default:
+				runtime.Gosched()
 			}
 		}
-	}
 
-	// 5. Verify the EventAttachment carries AgentMeta
-	evt := attachEvents[0]
-	if evt.Agent == nil {
-		t.Fatal("EventAttachment from sub-engine should carry AgentMeta (injected by taggedDispatcher)")
-	}
-	if evt.Agent.ParentToolUseID != "call_agent_123" {
-		t.Errorf("Agent.ParentToolUseID = %q, want %q", evt.Agent.ParentToolUseID, "call_agent_123")
-	}
-	if evt.Agent.AgentType != "General" {
-		t.Errorf("Agent.AgentType = %q, want %q", evt.Agent.AgentType, "General")
-	}
-
-	// 6. Verify the attachment message content
-	if evt.Message == nil || evt.Message.Attachment == nil {
-		t.Fatal("EventAttachment should have Message.Attachment")
-	}
-	if !strings.Contains(evt.Message.Attachment.Prompt, "bg-1") {
-		t.Errorf("Attachment.Prompt = %q, should contain job-id bg-1", evt.Message.Attachment.Prompt)
-	}
+		// 5. Verify the attachment message was added to sub-engine messages
+		msgs := sub.Messages()
+		found := false
+		for _, m := range msgs {
+			for _, b := range m.Content {
+				if strings.Contains(b.Text, "bg-1") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Error("attachment content should appear in sub-engine messages")
+		}
 }
 
 func TestPriorityOrder_UnknownPriority(t *testing.T) {
@@ -620,22 +624,13 @@ waitLoop:
 		}
 	}
 
-	// Verify EventAttachment was emitted with AgentMeta
-	var foundAttach bool
-	for _, e := range collector.Events() {
-		if e.Type == types.EventAttachment {
-			foundAttach = true
-			if e.Agent == nil {
-				t.Fatal("EventAttachment should carry AgentMeta")
-			}
-			if e.Agent.ParentToolUseID != "call_agent_001" {
-				t.Errorf("ParentToolUseID = %q, want call_agent_001", e.Agent.ParentToolUseID)
+		// Job-mode attachments no longer emit EventAttachment.
+		// Verify no EventAttachment was emitted but LLM turn ran.
+		for _, e := range collector.Events() {
+			if e.Type == types.EventAttachment {
+				t.Fatal("job-mode attachment should NOT emit EventAttachment")
 			}
 		}
-	}
-	if !foundAttach {
-		t.Fatal("expected EventAttachment from sub-engine")
-	}
 
 	// KEY CHECK: sub-engine should have called the LLM via runTurns
 	// to process its own attachment.
@@ -678,4 +673,101 @@ func (p *trackingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm
 		ch <- llm.StreamEvent{Type: "message_stop"}
 	}()
 	return ch, nil
+}
+
+// TestForkAgent_NoEventLeak_OnlyAttachment verifies that a fork (background)
+// sub-engine does NOT dispatch any events (thinking, tooling, text) to the
+// parent's dispatcher. The parent should only receive the attachment message
+// delivered via the notifyFn → EnqueueAttachment path.
+//
+// This is the engine-side Red-light test for the fork-agent event leak fix.
+// Without the fix, NewSubEngine creates a taggedDispatcher for fork agents,
+// causing their intermediate events to render in the parent TUI and interrupt
+// the user's conversation.
+func TestForkAgent_NoEventLeak_OnlyAttachment(t *testing.T) {
+	collector := newEventCollector()
+	prov := &trackingProvider{}
+
+	parent := New(&Params{
+		Provider:   prov,
+		Model:      "test",
+		Dispatcher: collector,
+	})
+	parent.SetSystemPrompt(json.RawMessage(`{"role":"system","content":"parent"}`))
+
+	// Create a fork (background) sub-engine.
+	sub := parent.NewSubEngine(SubEngineOptions{
+		SystemPrompt:    `{"role":"system","content":"fork-agent"}`,
+		ParentToolUseID: "call_fork_001",
+		AgentType:       "fork",
+	})
+
+	// KEY ASSERTION: fork sub-engine must NOT have a dispatcher.
+	// If it does, thinking/tooling/text events will leak to the parent TUI.
+	if sub.dispatcher != nil {
+		t.Fatal("fork sub-engine should NOT have a dispatcher — events would leak to parent TUI")
+	}
+
+	// Run the fork sub-engine query — it generates text events internally
+	// (trackingProvider returns "ok" text). Since dispatcher is nil, none
+	// should reach the parent collector.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := sub.QuerySync(ctx, "do background work", json.RawMessage(`{"role":"system","content":"fork-agent"}`))
+	if result.Error != nil {
+		t.Fatalf("fork query failed: %v", result.Error)
+	}
+
+		// Verify NO events from the fork sub-engine reached the parent.
+		events := collector.Events()
+		if count := len(events); count != 0 {
+			for _, e := range events {
+				t.Errorf("unexpected event from fork sub-engine: type=%s", e.Type)
+			}
+			t.Fatalf("expected 0 events on parent after fork query, got %d", count)
+		}
+
+	// Simulate fork completion notification (as notifyFn would do in production).
+	// This is the ONLY way the parent should learn about the fork agent's result.
+	xml := `<job-notification><job-id>fork-1</job-id><tool-use-id>call_fork_001</tool-use-id><status>completed</status><summary>Background agent "test" completed</summary><result>done</result></job-notification>`
+	parent.EnqueueAttachment(types.QueuedItem{
+		Value:     xml,
+		Mode:      types.ItemModeJob,
+		IsMeta:    true,
+		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
+		Timestamp: time.Date(2026, 5, 19, 20, 0, 0, 0, time.UTC),
+	})
+
+	// Wait for the attachment to be processed (processAttachments → runTurns → EventQueryEnd).
+	deadline := time.After(5 * time.Second)
+	for {
+		events := collector.Events()
+		hasEnd := false
+		for _, e := range events {
+			if e.Type == types.EventQueryEnd {
+				hasEnd = true
+			}
+		}
+		if hasEnd {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for attachment processing. Events so far: %d", len(events))
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	// The parent's collector should have attachment-processing events only
+	// (EventAttachment, EventTurnStart, EventText, EventQueryEnd from the parent's
+	// own attachment-triggered runTurns). Crucially, NONE of these events should
+	// carry the fork agent's AgentMeta — that would mean the fork sub-engine leaked.
+	for _, e := range collector.Events() {
+		if e.Agent != nil && e.Agent.AgentType == "fork" {
+			t.Errorf("event with fork AgentMeta leaked to parent: type=%s, agentType=%s, parentToolUseID=%s",
+				e.Type, e.Agent.AgentType, e.Agent.ParentToolUseID)
+		}
+	}
 }

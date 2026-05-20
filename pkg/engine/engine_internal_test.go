@@ -5353,19 +5353,25 @@ func TestProcessAttachments_WithPending(t *testing.T) {
 
 	eng.ProcessAttachments(ctx, nil)
 
-	// Should emit EventAttachment for the attachment.
-	// Engine may emit EventAttachment (from EnqueueAttachment) first — drain it.
-	var gotAttachment bool
-	for !gotAttachment {
-		select {
-		case evt := <-eventCh:
-			if evt.Type == types.EventAttachment && evt.Message != nil {
-				gotAttachment = true
+		// Job-mode attachments no longer emit EventAttachment.
+		// Verify LLM turn runs (EventTurnStart + EventQueryEnd) without EventAttachment.
+		var gotTurn, gotEnd bool
+		for !gotTurn || !gotEnd {
+			select {
+			case evt := <-eventCh:
+				if evt.Type == types.EventAttachment {
+					t.Error("job-mode attachment should NOT emit EventAttachment")
+				}
+				if evt.Type == types.EventTurnStart {
+					gotTurn = true
+				}
+				if evt.Type == types.EventQueryEnd {
+					gotEnd = true
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for LLM turn after job attachment")
 			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for EventAttachment from attachment")
 		}
-	}
 }
 
 // ---------------------------------------------------------------------------

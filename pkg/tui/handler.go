@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	handlerBufSize    = 1024           // channel buffer size
-	coalesceWindow    = 100 * time.Millisecond // flush accumulated text every 100ms (matches TS)
+	handlerBufSize = 1024 // channel buffer size
 )
 
 // TUIHandler implements hub.EventHandler, bridging Hub events to bubbletea.
@@ -22,31 +21,17 @@ const (
 // Handle converts the event to a tea.Msg and writes to a buffered channel.
 // readEvents() Cmd reads from this channel on the bubbletea side.
 //
-// High-frequency streaming events (text_delta, thinking_delta) are coalesced:
-// small chunks accumulate in a buffer and flush when either:
-//   - 100ms has elapsed since the last flush (time window, matching TS behavior)
-//   - a non-streaming event arrives (preserves ordering)
+// Coalescing is done per-engine in Engine.emitEvent — this handler is a pure
+// pass-through.
 type TUIHandler struct {
 	appCh   chan tea.Msg
 	dropped atomic.Int64
-
-	// Coalescing buffers. Handle() is called from a single engine goroutine,
-	// so no mutex is needed.
-	textBuf     strings.Builder
-	textAgent   *types.AgentMeta
-	lastTextFlush time.Time
-	thinkBuf    strings.Builder
-	thinkAge    *types.AgentMeta
-	lastThinkFlush time.Time
 }
 
 // NewTUIHandler creates a TUIHandler with a 1024-buffered channel.
 func NewTUIHandler() *TUIHandler {
-	now := time.Now()
 	return &TUIHandler{
-		appCh:         make(chan tea.Msg, handlerBufSize),
-		lastTextFlush: now,
-		lastThinkFlush: now,
+		appCh: make(chan tea.Msg, handlerBufSize),
 	}
 }
 
@@ -54,7 +39,6 @@ func NewTUIHandler() *TUIHandler {
 //
 // All SSE events use blocking writes — this provides natural backpressure:
 // if the TUI is slow, the engine goroutine waits for the channel to drain.
-// Coalescing reduces channel writes by ~512x, so blocking is cheap.
 //
 // The only exception is permission_ask: it uses a 5s timeout with auto-deny
 // to avoid blocking the engine forever if the TUI is unresponsive.
@@ -64,94 +48,37 @@ func (h *TUIHandler) Handle(event hub.Event) {
 		return
 	}
 
-	// --- Permission ask: blocking with timeout + auto-deny ---
-	if permMsg, ok := msg.(permissionAskMsg); ok {
-		h.flushAll()
+	switch m := msg.(type) {
+	case permissionAskMsg:
 		select {
-		case h.appCh <- permMsg:
+		case h.appCh <- m:
 		case <-time.After(5 * time.Second):
 			slog.Warn("TUIHandler: permission ask timed out, auto-denying")
-			if permMsg.event != nil && permMsg.event.ResponseCh != nil {
+			if m.event != nil && m.event.ResponseCh != nil {
 				select {
-				case permMsg.event.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}:
+				case m.event.ResponseCh <- types.AskResponse{Decision: types.DecisionDeny}:
 				default:
 				}
 			}
 		}
-		return
-	}
-
-	// --- Input ask: blocking with timeout + auto-abort ---
-	if inputMsg, ok := msg.(inputAskMsg); ok {
-		h.flushAll()
+	case inputAskMsg:
 		select {
-		case h.appCh <- inputMsg:
+		case h.appCh <- m:
 		case <-time.After(60 * time.Second):
 			slog.Warn("TUIHandler: input ask timed out, auto-aborting")
-			if inputMsg.event != nil && inputMsg.event.ResponseCh != nil {
+			if m.event != nil && m.event.ResponseCh != nil {
 				select {
-				case inputMsg.event.ResponseCh <- types.AskResponse{Aborted: true}:
+				case m.event.ResponseCh <- types.AskResponse{Aborted: true}:
 				default:
 				}
 			}
 		}
-		return
+	default:
+		h.appCh <- msg
 	}
-
-	// --- Coalesce text_delta ---
-	if td, ok := msg.(textDeltaMsg); ok {
-		h.textBuf.WriteString(td.Text)
-		h.textAgent = td.Agent
-		if time.Since(h.lastTextFlush) >= coalesceWindow {
-			h.flushText()
-		}
-		return
-	}
-
-	// --- Coalesce thinking_delta ---
-	if td, ok := msg.(thinkingDeltaMsg); ok {
-		h.thinkBuf.WriteString(td.Text)
-		h.thinkAge = td.Agent
-		if time.Since(h.lastThinkFlush) >= coalesceWindow {
-			h.flushThinking()
-		}
-		return
-	}
-
-	// --- All other SSE events: flush + blocking write (no timeout) ---
-	h.flushAll()
-	h.appCh <- msg
 }
 
-func (h *TUIHandler) flushAll() {
-	h.flushText()
-	h.flushThinking()
-}
-
-func (h *TUIHandler) flushText() {
-	if h.textBuf.Len() == 0 {
-		return
-	}
-	text := h.textBuf.String()
-	h.textBuf.Reset()
-	agent := h.textAgent
-	h.textAgent = nil
-	h.lastTextFlush = time.Now()
-	h.appCh <- textDeltaMsg{Text: text, Agent: agent}
-}
-
-func (h *TUIHandler) flushThinking() {
-	if h.thinkBuf.Len() == 0 {
-		return
-	}
-	text := h.thinkBuf.String()
-	h.thinkBuf.Reset()
-	agent := h.thinkAge
-	h.thinkAge = nil
-	h.lastThinkFlush = time.Now()
-	h.appCh <- thinkingDeltaMsg{Text: text, Agent: agent}
-}
-
+// convertEventToMsg converts a types.QueryEvent to a bubbletea message.
 // convertEventToMsg converts a types.QueryEvent to a bubbletea message.
 // Returns nil for unhandled event types.
 func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
