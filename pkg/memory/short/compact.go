@@ -35,7 +35,7 @@ type CompactMetadata struct {
 // CreateCompactBoundaryMessage creates a compact boundary marker message.
 // TS align: messages.ts:4530-4555
 func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactUUID string) *TranscriptMessage {
-	now := time.Now().UTC()
+	now := time.Now()
 	msgUUID := uuid.New().String()
 
 	compactMetadata := CompactMetadata{

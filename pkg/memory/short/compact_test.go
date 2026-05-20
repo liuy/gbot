@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
@@ -102,6 +103,26 @@ func TestCreateCompactBoundaryMessage_Fields(t *testing.T) {
 				t.Error("logicalParentUuid should not be set when lastUUID is empty")
 			}
 		})
+	}
+}
+
+func TestCreateCompactBoundaryMessage_CreatedAtIsLocalTime(t *testing.T) {
+	msg := CreateCompactBoundaryMessage("auto", 1000, "")
+
+	// CreatedAt should use local time (same as AppendMessage), not UTC.
+	// If UTC is used, the zone offset is 0, which differs from local zone.
+	now := time.Now() // REAL-TIME: verifying timezone is local, not UTC
+	if msg.CreatedAt.Location() == time.UTC {
+		t.Errorf("CreatedAt uses UTC (%v), should use local time (%v)", msg.CreatedAt, now.Location())
+	}
+
+	// Should be within 1 second of now
+	diff := now.Sub(msg.CreatedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > time.Second {
+		t.Errorf("CreatedAt %v is more than 1s from now %v", msg.CreatedAt, now)
 	}
 }
 

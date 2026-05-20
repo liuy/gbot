@@ -431,7 +431,7 @@ func stripSystemReminders(text string) string {
 // updateSessionFTS updates the updated_at timestamp for search result freshness.
 // Called when messages are added to a session to keep search results ordered by recency.
 func (s *Store) updateSessionFTS(db dbExec, sessionID string) error {
-	now := time.Now().UTC()
+	now := time.Now()
 	_, err := db.Exec(`
 		UPDATE sessions SET updated_at = ? WHERE session_id = ?`,
 		now, sessionID)
