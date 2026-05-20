@@ -7193,3 +7193,181 @@ func TestEngine_GetContextTokens_Zero(t *testing.T) {
 		t.Errorf("GetContextTokens() = %d, want 0", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// queryActive guard for RunForkedQuery / QuerySync
+// ---------------------------------------------------------------------------
+
+// TestRunForkedQuery_BlocksConcurrentProcessAttachments verifies that while
+// RunForkedQuery is running, an EnqueueAttachment + startProcessAttachmentsIfIdle
+// does NOT spawn a concurrent processAttachments goroutine. The root cause of
+// the sub-agent text interleaving bug was that RunForkedQuery never set
+// queryActive=1, so fork-agent completion notifications arriving via
+// EnqueueAttachment could spawn a second goroutine sharing the non-thread-safe
+// coalesceBuf.
+func TestRunForkedQuery_BlocksConcurrentProcessAttachments(t *testing.T) {
+	// Use a channel-based provider that blocks until released.
+	streamCh := make(chan llm.StreamEvent, 16)
+	started := make(chan struct{})
+
+	provider := &blockingProvider{
+		streamCh: streamCh,
+		started:  started,
+	}
+
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   provider,
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	eng.systemPrompt = json.RawMessage(`{"role":"system","content":"test"}`)
+
+	// Pre-fill the stream with a complete response so the turn loop finishes
+	// cleanly after we unblock. The goroutine will block on reading from streamCh
+	// until we send these events.
+	// (We send them later, after verifying queryActive.)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan QueryResult, 1)
+	msgs := []types.Message{
+		{ID: "msg1", Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("do it")}},
+	}
+	go func() {
+		result := eng.RunForkedQuery(ctx, msgs, eng.systemPrompt)
+		done <- result
+	}()
+
+	// Wait for the provider to start streaming (proving RunForkedQuery is executing).
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunForkedQuery to start")
+	}
+
+	// At this point queryActive MUST be 1.
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d during RunForkedQuery, want 1", v)
+	}
+
+	// Enqueue an attachment and call startProcessAttachmentsIfIdle.
+	// Without the fix, this would spawn a concurrent processAttachments.
+	eng.attachments.Enqueue(types.QueuedItem{
+		Value: "<job-id>bg-1</job-id><summary>test</summary><status>done</status>",
+		Mode:  types.ItemModeJob,
+	})
+	eng.startProcessAttachmentsIfIdle()
+
+	// queryActive must still be 1 (no second goroutine changed it).
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d after startProcessAttachmentsIfIdle, want 1 (concurrent goroutine spawned!)", v)
+	}
+
+	// Release: send a complete response so the turn loop ends.
+	streamCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test"}}
+	streamCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+	streamCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}}
+	streamCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+	streamCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}}
+	streamCh <- llm.StreamEvent{Type: "message_stop"}
+	close(streamCh)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for RunForkedQuery to finish")
+	}
+}
+
+// TestQuerySync_BlocksConcurrentProcessAttachments is the same guard check
+// for QuerySync.
+func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
+	streamCh := make(chan llm.StreamEvent, 16)
+	started := make(chan struct{})
+
+	provider := &blockingProvider{
+		streamCh: streamCh,
+		started:  started,
+	}
+
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   provider,
+		Model:      "test",
+		Logger:     slog.Default(),
+		Dispatcher: md,
+	})
+	eng.systemPrompt = json.RawMessage(`{"role":"system","content":"test"}`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan QueryResult, 1)
+	go func() {
+		result := eng.QuerySync(ctx, "hello", eng.systemPrompt)
+		done <- result
+	}()
+
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for QuerySync to start")
+	}
+
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d during QuerySync, want 1", v)
+	}
+
+	eng.attachments.Enqueue(types.QueuedItem{
+		Value: "<job-id>bg-2</job-id><summary>test</summary><status>done</status>",
+		Mode:  types.ItemModeJob,
+	})
+	eng.startProcessAttachmentsIfIdle()
+
+	if v := atomic.LoadInt32(&eng.queryActive); v != 1 {
+		t.Fatalf("queryActive = %d after startProcessAttachmentsIfIdle, want 1 (concurrent goroutine spawned!)", v)
+	}
+
+	// Release: complete response
+	streamCh <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test"}}
+	streamCh <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+	streamCh <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}}
+	streamCh <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+	streamCh <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}}
+	streamCh <- llm.StreamEvent{Type: "message_stop"}
+	close(streamCh)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for QuerySync to finish")
+	}
+}
+
+// blockingProvider is a test llm.Provider that signals when Stream is called
+// and returns events from a caller-controlled channel. Only the first Stream
+// call signals started and returns streamCh; subsequent calls return nil.
+type blockingProvider struct {
+	streamCh  chan llm.StreamEvent
+	started   chan struct{}
+	streamOnce sync.Once
+}
+
+func (p *blockingProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+func (p *blockingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	first := false
+	p.streamOnce.Do(func() {
+		close(p.started)
+		first = true
+	})
+	if !first {
+		return nil, nil
+	}
+	return p.streamCh, nil
+}

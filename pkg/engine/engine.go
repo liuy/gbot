@@ -616,14 +616,23 @@ func (e *Engine) flushBufs() {
 	e.flushThinkBuf()
 }
 
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func (e *Engine) flushTextBuf() {
 	e.textCoalesce.flush(func(text string) {
+		slog.Info("engine:flush_text", "agent", e.agentType, "len", len(text), "preview", truncate(text, 40))
 		e.dispatcher.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: text})
 	})
 }
 
 func (e *Engine) flushThinkBuf() {
 	e.thinkCoalesce.flush(func(text string) {
+		slog.Info("engine:flush_think", "agent", e.agentType, "len", len(text), "preview", truncate(text, 40))
 		e.dispatcher.Dispatch(types.QueryEvent{
 			Type:     types.EventThinkingDelta,
 			Thinking: &types.ThinkingEvent{Text: text},
@@ -2828,6 +2837,7 @@ type taggedDispatcher struct {
 
 func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
 	event.Agent = d.meta
+	slog.Info("tagged:dispatch", "type", event.Type, "agentType", d.meta.AgentType, "parentID", d.meta.ParentToolUseID, "text", truncate(event.Text, 40))
 	d.parent.Dispatch(event)
 }
 
@@ -2942,6 +2952,11 @@ func (e *Engine) querySource() string {
 // Used by sub-agents created via AgentTool. EventCh is nil — events are silently discarded.
 // Source: TS sync sub-agents execute runAgent() directly in the caller's context.
 func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
+	atomic.StoreInt32(&e.queryActive, 1)
+	defer func() {
+		atomic.StoreInt32(&e.queryActive, 0)
+		e.startProcessAttachmentsIfIdle()
+	}()
 	return e.queryLoop(ctx, userMessage, systemPrompt)
 }
 
@@ -2949,6 +2964,11 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // pre-constructed messages (no user message injection). Used by fork agents
 // that build their own conversation history.
 func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
+	atomic.StoreInt32(&e.queryActive, 1)
+	defer func() {
+		atomic.StoreInt32(&e.queryActive, 0)
+		e.startProcessAttachmentsIfIdle()
+	}()
 	e.setMessages(messages)
 	// Set currentTurnMsgID from the last user message in the provided messages.
 	// Used by TrackEdit and MakeSnapshot for consistent messageID.
