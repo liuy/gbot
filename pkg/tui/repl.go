@@ -775,11 +775,20 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						break
 					}
 				}
-				a.repl.messages = append(a.repl.messages, MessageView{
-					Role:   "user",
-					Blocks: []ContentBlock{{Type: BlockText, Text: m.UserText}},
-				})
-				a.markViewportDirty()
+				if !a.repl.IsStreaming() {
+					// processAttachments path: new user message for next query
+					a.repl.messages = append(a.repl.messages, MessageView{
+						Role:   "user",
+						Blocks: []ContentBlock{{Type: BlockText, Text: m.UserText}},
+					})
+					a.markViewportDirty()
+				} else {
+					// Mid-turn drain: append as visual block in current assistant message
+					if last := a.repl.lastMsg(); last != nil {
+						last.Blocks = append(last.Blocks, ContentBlock{Type: BlockUser, Text: m.UserText})
+						a.markViewportDirty()
+					}
+				}
 			}
 			return true, a.readEvents()
 		}

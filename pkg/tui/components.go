@@ -41,6 +41,7 @@ const (
 	BlockTool
 	BlockThinking // thinking block with collapsible content
 	BlockStats    // TUI-only stats line embedded in assistant message
+	BlockUser     // mid-turn queued user input, visual only
 )
 
 // ContentBlock represents a single block in an assistant message.
@@ -794,6 +795,9 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 				sb.WriteString("\n")
 			case BlockStats:
 				sb.WriteString(blk.Text)
+				sb.WriteString("\n")
+			case BlockUser:
+				sb.WriteString(prefixUserLine(blk.Text))
 				sb.WriteString("\n")
 			}
 		}
@@ -1660,6 +1664,8 @@ func detectToolGroups(blocks []ContentBlock) []toolGroup {
 		case BlockThinking:
 			// Thinking doesn't break the group — matches TS shouldSkipMessage().
 		case BlockStats:
+			flush()
+		case BlockUser:
 			flush()
 		}
 	}

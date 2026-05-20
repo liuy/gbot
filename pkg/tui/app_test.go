@@ -7746,7 +7746,8 @@ func TestRenderQueueBox_MultilineIndent(t *testing.T) {
 func TestAttachmentMsg_UserPrompt_QueueRemoval(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.spinner.Start()
+	app.status.SetStreaming(true)
+	app.repl.FinishStream(nil) // processAttachments path: streaming=false
 
 	uuid := "test-uuid-abc"
 	app.pendingQueue = []pendingQueueItem{{ID: uuid, Text: "original queued text"}}
@@ -7770,7 +7771,8 @@ func TestAttachmentMsg_UserPrompt_QueueRemoval(t *testing.T) {
 func TestAttachmentMsg_UserPrompt_UUIDMismatch(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.spinner.Start()
+	app.status.SetStreaming(true)
+	app.repl.FinishStream(nil) // processAttachments path: streaming=false
 
 	app.pendingQueue = []pendingQueueItem{{ID: "abc", Text: "queued"}}
 
@@ -7864,11 +7866,14 @@ func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	app.width = 80
 	app.height = 24
 	app.repl.StartQuery()
-	app.spinner.Start()
+	app.status.SetStreaming(true)
 
 	// Step 1: enqueue two messages while streaming
 	app.handleEnqueueMessage("first queued msg")
 	app.handleEnqueueMessage("second queued msg")
+
+	// Query ends — processAttachments path (streaming=false)
+	app.repl.FinishStream(nil)
 
 	// Step 2: verify pendingQueue has both entries
 	if len(app.pendingQueue) != 2 {
@@ -7989,12 +7994,15 @@ func TestQueueMessage_CallChain_ResetOnQueryEnd(t *testing.T) {
 func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.spinner.Start()
+	app.status.SetStreaming(true)
 
 	app.handleEnqueueMessage("my message")
 	if len(app.pendingQueue) != 1 {
 		t.Fatalf("setup: pendingQueue should have 1, got %d", len(app.pendingQueue))
 	}
+
+	// Query ends — processAttachments path (streaming=false)
+	app.repl.FinishStream(nil)
 
 	// Drain with wrong UUID
 	model, _ := app.Update(attachmentMsg{UserText: "wrong message", SourceUUID: "nonexistent-uuid"})
@@ -8005,9 +8013,12 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 		t.Errorf("pendingQueue should still have 1 entry after UUID mismatch, got %d", len(app.pendingQueue))
 	}
 
-	// But a user message was still appended (engine drained something, just not our item)
+	// User message was appended (engine drained something, just not our item)
 	msgs := app.repl.messages
 	lastMsg := msgs[len(msgs)-1]
+	if lastMsg.Role != "user" {
+		t.Fatalf("expected user message, got role=%q", lastMsg.Role)
+	}
 	if lastMsg.Blocks[0].Text != "wrong message" {
 		t.Errorf("conversation should contain the drained text, got %q", lastMsg.Blocks[0].Text)
 	}
