@@ -302,7 +302,7 @@ func TestExtractFirstPrompt_NoContentKey(t *testing.T) {
 
 // Line 252-253: ExtractFirstPrompt — second command-name (should not override fallback)
 func TestExtractFirstPrompt_MultipleCommandNames(t *testing.T) {
-	content := `{"type":"user","message":{"content":"<command-name>first</command-name>"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"<command-name>first</command-name>"}]}}`
 	result := ExtractFirstPrompt(content)
 	if result != "first" {
 		t.Errorf("got %q, want first", result)
@@ -340,8 +340,8 @@ func TestExtractTextBlocks_BlockNotMap(t *testing.T) {
 
 func TestExtractTextBlocks_StringContent(t *testing.T) {
 	texts := extractTextBlocks("plain string content")
-	if len(texts) != 1 || texts[0] != "plain string content" {
-		t.Errorf("got %v for string content", texts)
+	if len(texts) != 0 {
+		t.Errorf("got %d texts, want 0 (string is not a valid content format)", len(texts))
 	}
 }
 
@@ -360,9 +360,7 @@ func TestExtractTextBlocks_IntContent(t *testing.T) {
 }
 
 func TestExtractFirstPrompt_ObjectContent(t *testing.T) {
-	// ExtractFirstPrompt takes a JSON string containing {"message":{"content":"string"}}
-	// where content is a string (legacy format)
-	input := `{"message":{"content":"hello world"}}`
+	input := `{"message":{"content":[{"type":"text","text":"hello world"}]}}`
 	prompt := ExtractFirstPrompt(input)
 	if prompt != "hello world" {
 		t.Errorf("got %q, want hello world", prompt)

@@ -101,7 +101,7 @@ type checkPattern struct {
 }
 
 var checkPatterns = []checkPattern{
-		{
+	{
 			Name:     "discarded variable in test (_ = identifier)",
 			Regex:    regexp.MustCompile(`^\s*_ = [a-zA-Z_][a-zA-Z0-9_]*\s*(//.*)?$`),
 			Level:    "P1",

@@ -418,7 +418,7 @@ func TestDeleteSession_NotFound(t *testing.T) {
 
 // TestExtractFirstPrompt_SimpleText verifies ExtractFirstPrompt extracts simple text.
 func TestExtractFirstPrompt_SimpleText(t *testing.T) {
-	content := `{"type":"user","message":{"content":"Hello, world!"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"Hello, world!"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "Hello, world!" {
@@ -436,20 +436,10 @@ func TestExtractFirstPrompt_ArrayContent(t *testing.T) {
 	}
 }
 
-// TestExtractFirstPrompt_StringContent verifies ExtractFirstPrompt handles string content (legacy format).
-func TestExtractFirstPrompt_StringContent(t *testing.T) {
-	content := `{"type":"user","message":{"content":"Just a string message"}}`
-
-	result := ExtractFirstPrompt(content)
-	if result != "Just a string message" {
-		t.Errorf("ExtractFirstPrompt = %q, want %q", result, "Just a string message")
-	}
-}
-
 // TestExtractFirstPrompt_TruncatesTo200 verifies ExtractFirstPrompt truncates to 200 chars.
 func TestExtractFirstPrompt_TruncatesTo200(t *testing.T) {
 	longText := strings.Repeat("a", 250)
-	content := `{"type":"user","message":{"content":"` + longText + `"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"` + longText + `"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if len(result) != 203 { // 200 + "…"
@@ -462,7 +452,7 @@ func TestExtractFirstPrompt_TruncatesTo200(t *testing.T) {
 
 // TestExtractFirstPrompt_SkipCommandName verifies ExtractFirstPrompt skips command-name but remembers fallback.
 func TestExtractFirstPrompt_SkipCommandName(t *testing.T) {
-	content := `{"type":"user","message":{"content":"<command-name>test-command</command-name>"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"<command-name>test-command</command-name>"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "test-command" {
@@ -472,7 +462,7 @@ func TestExtractFirstPrompt_SkipCommandName(t *testing.T) {
 
 // TestExtractFirstPrompt_BashInputPrefix verifies ExtractFirstPrompt adds "!" prefix for bash input.
 func TestExtractFirstPrompt_BashInputPrefix(t *testing.T) {
-	content := `{"type":"user","message":{"content":"<bash-input>ls -la</bash-input>"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"<bash-input>ls -la</bash-input>"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "! ls -la" {
@@ -482,7 +472,7 @@ func TestExtractFirstPrompt_BashInputPrefix(t *testing.T) {
 
 // TestExtractFirstPrompt_SkipXmlTags verifies ExtractFirstPrompt skips XML-like tags.
 func TestExtractFirstPrompt_SkipXmlTags(t *testing.T) {
-	content := `{"type":"user","message":{"content":"<session-hook>some metadata</session-hook>"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"<session-hook>some metadata</session-hook>"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "" {
@@ -492,7 +482,7 @@ func TestExtractFirstPrompt_SkipXmlTags(t *testing.T) {
 
 // TestExtractFirstPrompt_SkipInterruptMarker verifies ExtractFirstPrompt skips interrupt markers.
 func TestExtractFirstPrompt_SkipInterruptMarker(t *testing.T) {
-	content := `{"type":"user","message":{"content":"[Request interrupted by user]"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "" {
@@ -502,7 +492,7 @@ func TestExtractFirstPrompt_SkipInterruptMarker(t *testing.T) {
 
 // TestExtractFirstPrompt_ReplacesNewlines verifies ExtractFirstPrompt replaces newlines with spaces.
 func TestExtractFirstPrompt_ReplacesNewlines(t *testing.T) {
-	content := `{"type":"user","message":{"content":"Line1\nLine2\nLine3"}}`
+	content := `{"type":"user","message":{"content":[{"type":"text","text":"Line1\nLine2\nLine3"}]}}`
 
 	result := ExtractFirstPrompt(content)
 	if result != "Line1 Line2 Line3" {

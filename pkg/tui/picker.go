@@ -129,7 +129,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 }
 
 // NewListPicker creates a Dialog from PickerItem slice with optional functional options.
-// Convenience wrapper for test and legacy callers.
+// Convenience wrapper for test callers.
 func NewListPicker(title string, items []PickerItem, opts ...func(*Dialog)) *Dialog {
 	d := NewDialog(title, pickerItemsToOptions(items))
 	for _, opt := range opts {

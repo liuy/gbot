@@ -60,7 +60,7 @@ func (b *Builder) Build() (json.RawMessage, error) {
 		buf.WriteString("\n\n")
 		buf.WriteString(memPrompt)
 	} else if len(b.MemoryFiles) > 0 {
-		// Fallback: legacy format when typed-memory is disabled
+		// Fallback: plain string format when typed-memory is disabled
 		buf.WriteString(FormatMemorySection(b.MemoryFiles))
 	}
 

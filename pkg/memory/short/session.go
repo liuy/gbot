@@ -311,28 +311,25 @@ func ExtractFirstPrompt(contentJSON string) string {
 	return ""
 }
 
-// extractTextBlocks extracts text strings from parsed message content.
-// Content can be a string (legacy) or array of ContentBlock.
 func extractTextBlocks(content any) []string {
 	var texts []string
 
-	switch v := content.(type) {
-	case string:
-		texts = append(texts, v)
-	case []any:
-		for _, item := range v {
-			block, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			blockType, _ := block["type"].(string)
-			if blockType != "text" {
-				continue
-			}
-			text, _ := block["text"].(string)
-			if text != "" {
-				texts = append(texts, text)
-			}
+	v, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+	for _, item := range v {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		blockType, _ := block["type"].(string)
+		if blockType != "text" {
+			continue
+		}
+		text, _ := block["text"].(string)
+		if text != "" {
+			texts = append(texts, text)
 		}
 	}
 

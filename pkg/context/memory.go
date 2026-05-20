@@ -17,22 +17,13 @@ type MemoryFile struct {
 }
 
 // LoadMemoryFiles loads memory files from the gbot memory directory.
-// Source: memdir/memdir.ts loadMemoryPrompt.
-// Uses long.GetMemoryPath() for new centralized path.
-// Migrates from legacy .gbot/memory/ on first use.
-// Falls back to scanning .md files if MEMORY.md doesn't exist.
+// Falls back to scanning .md files if MEMORY.md index doesn't exist.
 func LoadMemoryFiles(workingDir string) []MemoryFile {
 	if !long.IsAutoMemoryEnabled() {
 		return nil
 	}
 
 	memDir := long.GetMemoryPath(workingDir)
-
-	// Ensure directory exists
-	_ = long.EnsureMemoryDir(workingDir)
-
-	// Try migration from legacy path
-	migrateLegacyMemory(workingDir, memDir)
 
 	// Try loading via MEMORY.md index first
 	idx, err := long.LoadMemoryIndex(memDir)
@@ -132,57 +123,6 @@ func scanMemoryFiles(memDir string) []MemoryFile {
 	}
 
 	return files
-}
-
-// migrateLegacyMemory copies files from old .gbot/memory/ to new centralized path.
-// Adds default YAML frontmatter to files that don't have it.
-// Only runs when new path is empty and old path has files.
-func migrateLegacyMemory(workingDir, newDir string) {
-	// Check if new dir already has content
-	newEntries, err := os.ReadDir(newDir)
-	if err == nil && len(newEntries) > 0 {
-		return // New dir has content, skip migration
-	}
-
-	// Check old paths
-	oldDirs := []string{
-		filepath.Join(workingDir, ".gbot", "memory"),
-	}
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		oldDirs = append(oldDirs, filepath.Join(homeDir, ".gbot", "memory"))
-	}
-
-	for _, oldDir := range oldDirs {
-		entries, err := os.ReadDir(oldDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !isMarkdownFile(entry.Name()) {
-				continue
-			}
-			srcPath := filepath.Join(oldDir, entry.Name())
-			data, err := os.ReadFile(srcPath)
-			if err != nil {
-				continue
-			}
-			content := strings.TrimSpace(string(data))
-			if content == "" {
-				continue
-			}
-
-			// Add default frontmatter if not present
-			if !strings.HasPrefix(content, "---\n") {
-				name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-				content = long.FormatFrontmatter(name, "Migrated from legacy memory", long.MemoryTypeProject, content)
-			}
-
-			dstPath := filepath.Join(newDir, entry.Name())
-			if err := os.WriteFile(dstPath, []byte(content), 0o644); err != nil {
-				continue
-			}
-		}
-	}
 }
 
 // isMarkdownFile checks if a filename has a markdown extension.

@@ -97,7 +97,6 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 
 func TestBuildSystemPrompt_NonexistentDir(t *testing.T) {
 	t.Parallel()
-	// Nonexistent dir: LoadGitStatus returns zero-value info, Build() still succeeds.
 	result := context.BuildSystemPrompt("/nonexistent/path/that/does/not/exist", nil, "")
 	if result == nil {
 		t.Fatal("BuildSystemPrompt returned nil for nonexistent dir")
@@ -107,7 +106,6 @@ func TestBuildSystemPrompt_NonexistentDir(t *testing.T) {
 	if err := json.Unmarshal(result, &promptStr); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	// Should still contain the base system prompt.
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("prompt should contain base system prompt even for nonexistent dir")
 	}
@@ -117,7 +115,6 @@ func TestBuildSystemPrompt_EmptyToolPrompts(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	// Empty strings in toolPrompts slice should be filtered by Builder.
 	toolPrompts := []string{"", "valid prompt", ""}
 	result := context.BuildSystemPrompt(tmpDir, toolPrompts, "")
 
