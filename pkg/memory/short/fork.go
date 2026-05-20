@@ -1,6 +1,7 @@
 package short
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -67,7 +68,7 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 	// Load parent messages from fork point
 	query := `
 		SELECT seq, uuid, parent_uuid, logical_parent_uuid,
-		       is_sidechain, type, subtype, content, created_at
+		       is_sidechain, type, subtype, content, metadata, created_at
 		FROM messages
 		WHERE session_id = ? AND seq >= ?
 		ORDER BY seq ASC
@@ -88,10 +89,11 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 		var msgUUID, parentUUID, logicalParentUUID string
 		var isSidechain int
 		var msgType, subtype, content string
+		var metadata sql.NullString
 		var createdAt time.Time
 
 		if err := rows.Scan(&seq, &msgUUID, &parentUUID, &logicalParentUUID,
-			&isSidechain, &msgType, &subtype, &content, &createdAt); err != nil {
+			&isSidechain, &msgType, &subtype, &content, &metadata, &createdAt); err != nil {
 			return fmt.Errorf("scan message: %w", err)
 		}
 
@@ -116,10 +118,10 @@ func (s *Store) copyMessagesToFork(parentSessionID, childSessionID string, forkP
 		// Insert into child session
 		_, err := tx.Exec(`
 			INSERT INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
-			                     is_sidechain, type, subtype, content, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			                     is_sidechain, type, subtype, content, metadata, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, childSessionID, newUUID, newParentUUID, logicalParentUUID,
-			isSidechain, msgType, subtype, content, createdAt)
+			isSidechain, msgType, subtype, content, metadata.String, createdAt)
 		if err != nil {
 			return fmt.Errorf("insert forked message: %w", err)
 		}

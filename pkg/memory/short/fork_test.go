@@ -119,6 +119,66 @@ func TestForkSession_ChainIntegrity(t *testing.T) {
 	}
 }
 
+// TestForkSession_MetadataPreserved verifies that fork copies the metadata column
+// (which stores usage, model, stop_reason) from parent to child. Without this,
+// forked sessions lose all usage data, causing TokenCountWithEstimation to fall
+// back to pure estimation and trigger premature auto-compact.
+func TestForkSession_MetadataPreserved(t *testing.T) {
+	store := openTestStore(t)
+
+	parentID := "parent-meta-test"
+	createTestSession(t, store, parentID)
+
+	msgs := []*TranscriptMessage{
+		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
+		{
+			Type:    "assistant",
+			UUID:    "uuid-2",
+			Content: `[{"type":"text","text":"hi"}]`,
+			Metadata: `{"usage":{"input_tokens":50000,"output_tokens":100,"cache_read_input_tokens":30000},"model":"glm-5.1","stop_reason":"end_turn"}`,
+			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"next?"}]`),
+	}
+	for _, msg := range msgs {
+		if err := store.AppendMessage(parentID, msg); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	child, err := store.ForkSession(parentID, 1, "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+
+	childMsgs, err := store.LoadMessages(child.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	// Find the assistant message in child
+	var foundAssistant *TranscriptMessage
+	for _, m := range childMsgs {
+		if m.Type == "assistant" {
+			foundAssistant = m
+			break
+		}
+	}
+	if foundAssistant == nil {
+		t.Fatal("no assistant message found in child session")
+	}
+	if foundAssistant.Metadata == "" {
+		t.Fatal("forked assistant message has empty metadata — usage data lost. " +
+			"copyMessagesToFork must include the metadata column in SELECT and INSERT.")
+	}
+	if !strings.Contains(foundAssistant.Metadata, "input_tokens") {
+		t.Errorf("metadata missing usage: %q", foundAssistant.Metadata)
+	}
+	if !strings.Contains(foundAssistant.Metadata, "glm-5.1") {
+		t.Errorf("metadata missing model: %q", foundAssistant.Metadata)
+	}
+}
+
 func TestGetForkChildren(t *testing.T) {
 	store := openTestStore(t)
 
