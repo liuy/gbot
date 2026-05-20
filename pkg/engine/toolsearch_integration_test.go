@@ -186,9 +186,9 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 		Provider: cp,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 	})
 
@@ -209,14 +209,14 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 		t.Error("Read should be present")
 	}
 	// Deferred tools should NOT be in toolDefs (undiscovered)
-	if tsContainsStr(names, "TaskList") {
-		t.Error("TaskList should NOT be in toolDefs (undiscovered deferred)")
+	if tsContainsStr(names, "DeferredA") {
+		t.Error("DeferredA should NOT be in toolDefs (undiscovered deferred)")
 	}
-	if tsContainsStr(names, "TaskUpdate") {
-		t.Error("TaskUpdate should NOT be in toolDefs (undiscovered deferred)")
+	if tsContainsStr(names, "DeferredB") {
+		t.Error("DeferredB should NOT be in toolDefs (undiscovered deferred)")
 	}
-	if tsContainsStr(names, "TaskCreate") {
-		t.Error("TaskCreate should NOT be in toolDefs (undiscovered deferred)")
+	if tsContainsStr(names, "DeferredC") {
+		t.Error("DeferredC should NOT be in toolDefs (undiscovered deferred)")
 	}
 
 	// Deferred tools should be announced in a synthetic user message
@@ -225,14 +225,14 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 		for _, block := range msg.Content {
 			if strings.Contains(block.Text, "<available-deferred-tools>") {
 				hasAnnouncement = true
-				if !strings.Contains(block.Text, "TaskList") {
-					t.Error("announcement should list TaskList")
+				if !strings.Contains(block.Text, "DeferredA") {
+					t.Error("announcement should list DeferredA")
 				}
-				if !strings.Contains(block.Text, "TaskUpdate") {
-					t.Error("announcement should list TaskUpdate")
+				if !strings.Contains(block.Text, "DeferredB") {
+					t.Error("announcement should list DeferredB")
 				}
-				if !strings.Contains(block.Text, "TaskCreate") {
-					t.Error("announcement should list TaskCreate")
+				if !strings.Contains(block.Text, "DeferredC") {
+					t.Error("announcement should list DeferredC")
 				}
 				if !strings.Contains(block.Text, "</available-deferred-tools>") {
 					t.Error("announcement should have closing tag")
@@ -261,7 +261,7 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 	sp := &sequentialProvider{
 		responses: [][]llm.StreamEvent{
-			tsToolUseEvents(ToolSearchToolName, `{"query":"select:TaskList"}`),
+			tsToolUseEvents(ToolSearchToolName, `{"query":"select:DeferredA"}`),
 			tsTextEvents("Done"),
 		},
 	}
@@ -271,9 +271,9 @@ func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 		Provider: sp,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 		MaxTurns: 5,
 	})
@@ -292,26 +292,26 @@ func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 	if !tsContainsStr(names1, "Read") {
 		t.Error("turn 1: Read should be present")
 	}
-	if tsContainsStr(names1, "TaskList") {
-		t.Error("turn 1: TaskList should NOT be present (undiscovered)")
+	if tsContainsStr(names1, "DeferredA") {
+		t.Error("turn 1: DeferredA should NOT be present (undiscovered)")
 	}
-	if tsContainsStr(names1, "TaskUpdate") {
-		t.Error("turn 1: TaskUpdate should NOT be present (undiscovered)")
+	if tsContainsStr(names1, "DeferredB") {
+		t.Error("turn 1: DeferredB should NOT be present (undiscovered)")
 	}
-	if tsContainsStr(names1, "TaskCreate") {
-		t.Error("turn 1: TaskCreate should NOT be present (undiscovered)")
+	if tsContainsStr(names1, "DeferredC") {
+		t.Error("turn 1: DeferredC should NOT be present (undiscovered)")
 	}
 
-	// Turn 2: TaskList discovered and present, others still undiscovered
+	// Turn 2: DeferredA discovered and present, others still undiscovered
 	names2 := toolDefNames(sp.requests[1].Tools)
-	if !tsContainsStr(names2, "TaskList") {
-		t.Error("turn 2: TaskList should be present (discovered via ToolSearch)")
+	if !tsContainsStr(names2, "DeferredA") {
+		t.Error("turn 2: DeferredA should be present (discovered via ToolSearch)")
 	}
-	if tsContainsStr(names2, "TaskUpdate") {
-		t.Error("turn 2: TaskUpdate should NOT be present (still undiscovered)")
+	if tsContainsStr(names2, "DeferredB") {
+		t.Error("turn 2: DeferredB should NOT be present (still undiscovered)")
 	}
-	if tsContainsStr(names2, "TaskCreate") {
-		t.Error("turn 2: TaskCreate should NOT be present (still undiscovered)")
+	if tsContainsStr(names2, "DeferredC") {
+		t.Error("turn 2: DeferredC should NOT be present (still undiscovered)")
 	}
 }
 
@@ -322,7 +322,7 @@ func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 func TestToolSearchIntegration_MultiToolDiscovery(t *testing.T) {
 	sp := &sequentialProvider{
 		responses: [][]llm.StreamEvent{
-			tsToolUseEvents(ToolSearchToolName, `{"query":"select:TaskList,TaskUpdate"}`),
+			tsToolUseEvents(ToolSearchToolName, `{"query":"select:DeferredA,DeferredB"}`),
 			tsTextEvents("Done"),
 		},
 	}
@@ -332,9 +332,9 @@ func TestToolSearchIntegration_MultiToolDiscovery(t *testing.T) {
 		Provider: sp,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 		MaxTurns: 5,
 	})
@@ -346,14 +346,14 @@ func TestToolSearchIntegration_MultiToolDiscovery(t *testing.T) {
 	}
 
 	names2 := toolDefNames(sp.requests[1].Tools)
-	if !tsContainsStr(names2, "TaskList") {
-		t.Error("TaskList should be discovered")
+	if !tsContainsStr(names2, "DeferredA") {
+		t.Error("DeferredA should be discovered")
 	}
-	if !tsContainsStr(names2, "TaskUpdate") {
-		t.Error("TaskUpdate should be discovered")
+	if !tsContainsStr(names2, "DeferredB") {
+		t.Error("DeferredB should be discovered")
 	}
-	if tsContainsStr(names2, "TaskCreate") {
-		t.Error("TaskCreate should NOT be discovered (not selected)")
+	if tsContainsStr(names2, "DeferredC") {
+		t.Error("DeferredC should NOT be discovered (not selected)")
 	}
 }
 
@@ -370,7 +370,7 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 	// Phase 1: Engine discovers tools via ToolSearch
 	sp1 := &sequentialProvider{
 		responses: [][]llm.StreamEvent{
-			tsToolUseEvents(ToolSearchToolName, `{"query":"select:TaskList"}`),
+			tsToolUseEvents(ToolSearchToolName, `{"query":"select:DeferredA"}`),
 			tsTextEvents("Done"),
 		},
 	}
@@ -379,9 +379,9 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 		Provider: sp1,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 		MaxTurns: 5,
 	})
@@ -390,9 +390,9 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 		t.Fatalf("phase 1 error: %v", result.Error)
 	}
 
-	// Verify eng1 actually discovered TaskList
-	if !eng1.toolSearch.IsDiscovered("TaskList") {
-		t.Fatal("phase 1: TaskList should be discovered")
+	// Verify eng1 actually discovered DeferredA
+	if !eng1.toolSearch.IsDiscovered("DeferredA") {
+		t.Fatal("phase 1: DeferredA should be discovered")
 	}
 
 	// Phase 2: Simulate compact boundary from eng1's state
@@ -411,9 +411,9 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 		Provider: cp2,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 	})
 
@@ -429,16 +429,16 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 	}
 	names2 := toolDefNames(req2.Tools)
 
-	// TaskList should be active (restored from compact boundary)
-	if !tsContainsStr(names2, "TaskList") {
-		t.Error("phase 2: TaskList should be active after compact recovery")
+	// DeferredA should be active (restored from compact boundary)
+	if !tsContainsStr(names2, "DeferredA") {
+		t.Error("phase 2: DeferredA should be active after compact recovery")
 	}
 	// Other deferred tools still undiscovered
-	if tsContainsStr(names2, "TaskUpdate") {
-		t.Error("phase 2: TaskUpdate should NOT be active (not in compact boundary)")
+	if tsContainsStr(names2, "DeferredB") {
+		t.Error("phase 2: DeferredB should NOT be active (not in compact boundary)")
 	}
-	if tsContainsStr(names2, "TaskCreate") {
-		t.Error("phase 2: TaskCreate should NOT be active (not in compact boundary)")
+	if tsContainsStr(names2, "DeferredC") {
+		t.Error("phase 2: DeferredC should NOT be active (not in compact boundary)")
 	}
 }
 
@@ -453,7 +453,7 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 
 func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 	// Build a transcript with a ToolSearch tool_result containing <function> blocks
-	resultContent := `<function>{"name": "TaskList", "description": "List tasks"}</function>`
+	resultContent := `<function>{"name": "DeferredA", "description": "List tasks"}</function>`
 	resultJSON, _ := json.Marshal(resultContent)
 
 	transcript := []types.Message{
@@ -461,7 +461,7 @@ func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 		{
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
-				{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: ToolSearchToolName, Input: json.RawMessage(`{"query":"TaskList"}`)},
+				{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: ToolSearchToolName, Input: json.RawMessage(`{"query":"DeferredA"}`)},
 			},
 		},
 		{
@@ -479,9 +479,9 @@ func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 		Provider: cp,
 		ToolsProvider: tsToolsProvider(
 			tsStubTool("Read"),
-			deferredStubTool("TaskList"),
-			deferredStubTool("TaskUpdate"),
-			deferredStubTool("TaskCreate"),
+			deferredStubTool("DeferredA"),
+			deferredStubTool("DeferredB"),
+			deferredStubTool("DeferredC"),
 		),
 	})
 
@@ -496,13 +496,13 @@ func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 	}
 	names := toolDefNames(req.Tools)
 
-	if !tsContainsStr(names, "TaskList") {
-		t.Error("TaskList should be active after tool_result recovery")
+	if !tsContainsStr(names, "DeferredA") {
+		t.Error("DeferredA should be active after tool_result recovery")
 	}
-	if tsContainsStr(names, "TaskUpdate") {
-		t.Error("TaskUpdate should NOT be active (not in tool_result)")
+	if tsContainsStr(names, "DeferredB") {
+		t.Error("DeferredB should NOT be active (not in tool_result)")
 	}
-	if tsContainsStr(names, "TaskCreate") {
-		t.Error("TaskCreate should NOT be active (not in tool_result)")
+	if tsContainsStr(names, "DeferredC") {
+		t.Error("DeferredC should NOT be active (not in tool_result)")
 	}
 }

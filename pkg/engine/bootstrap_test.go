@@ -13,7 +13,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
-	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -25,7 +25,7 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -35,7 +35,7 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 	expectedTools := []string{
 		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
 		"Agent", "JobOutput", "JobStop",
-		"TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+		"Task",
 		"Skill", "Repl",
 	}
 	toolMap := refs.Reg.ToolMap()
@@ -50,7 +50,7 @@ func TestCreateTools_ReturnsNonNullInstances(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -78,7 +78,7 @@ func TestCreateTools_IndependentInstancesPerCall(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -101,7 +101,7 @@ func TestCreateTools_ToolMapFnReturnsCurrentTools(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -122,7 +122,7 @@ func TestCreateTools_AgentToolConfigured(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -148,14 +148,14 @@ func TestCreateTools_BashToolRegistered(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
 	refs := CreateTools(deps)
-	if refs.Reg.Size() < 15 {
-		t.Errorf("expected at least 15 tools registered, got %d", refs.Reg.Size())
+	if refs.Reg.Size() < 12 {
+		t.Errorf("expected at least 12 tools registered, got %d", refs.Reg.Size())
 	}
 }
 
@@ -167,7 +167,7 @@ func newTestDepsAndRefs(t *testing.T) (SharedDeps, ToolRefs, *Engine) {
 	t.Helper()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -249,7 +249,7 @@ func TestWireEngine_NilMcpReg_NoPanic(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 		McpReg:     nil, // explicitly nil
@@ -271,7 +271,7 @@ func TestWireEngine_NilHooks_NoPanic(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      nil, // explicitly nil
 	}
@@ -362,7 +362,7 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -408,7 +408,7 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -457,7 +457,7 @@ func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -507,7 +507,7 @@ func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -552,7 +552,7 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -603,7 +603,7 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -652,7 +652,7 @@ func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 	t.Parallel()
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   tasklist.NewList(t.TempDir()),
+		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}

@@ -886,19 +886,15 @@ func TestReset_ClearsToolSearchState(t *testing.T) {
 	})
 
 	// Pre-populate toolSearch state (simulating discovered tools from a prior session).
-	eng.toolSearch.DiscoverTools([]string{"TaskList", "TaskUpdate"})
-	if !eng.toolSearch.IsDiscovered("TaskList") {
-		t.Fatal("precondition: TaskList should be discovered")
+	eng.toolSearch.DiscoverTools([]string{"Task"})
+	if !eng.toolSearch.IsDiscovered("Task") {
+		t.Fatal("precondition: Tasks should be discovered")
 	}
 
 	eng.Reset()
 
-	// After reset, toolSearch state should be cleared.
-	if eng.toolSearch.IsDiscovered("TaskList") {
-		t.Error("expected TaskList to NOT be discovered after Reset")
-	}
-	if eng.toolSearch.IsDiscovered("TaskUpdate") {
-		t.Error("expected TaskUpdate to NOT be discovered after Reset")
+	if eng.toolSearch.IsDiscovered("Task") {
+		t.Error("expected Tasks to NOT be discovered after Reset")
 	}
 }
 
@@ -1089,22 +1085,15 @@ func TestSetMessages_RestoresToolSearchState(t *testing.T) {
 	// Simulate a transcript with a compact boundary carrying preCompactDiscoveredTools.
 	msgs := []types.Message{
 		{Role: types.RoleSystem, Content: []types.ContentBlock{
-			{Type: types.ContentTypeText, Text: `{"subtype":"compact_boundary","preCompactDiscoveredTools":["TaskList","TaskUpdate"]}`},
+			{Type: types.ContentTypeText, Text: `{"subtype":"compact_boundary","preCompactDiscoveredTools":["Task"]}`},
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 	}
 
 	eng.SetMessages(msgs)
 
-	// ToolSearch state should be restored from the compact boundary.
-	if !eng.toolSearch.IsDiscovered("TaskList") {
-		t.Error("expected TaskList to be discovered after SetMessages with compact boundary")
-	}
-	if !eng.toolSearch.IsDiscovered("TaskUpdate") {
-		t.Error("expected TaskUpdate to be discovered after SetMessages with compact boundary")
-	}
-	if eng.toolSearch.IsDiscovered("TaskCreate") {
-		t.Error("expected TaskCreate to NOT be discovered")
+	if !eng.toolSearch.IsDiscovered("Task") {
+		t.Error("expected Tasks to be discovered after SetMessages with compact boundary")
 	}
 }
 

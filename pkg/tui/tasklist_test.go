@@ -7,7 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/liuy/gbot/pkg/tool/tasks"
+	"github.com/liuy/gbot/pkg/tool/task"
 )
 
 func newTaskTestApp() *App {
@@ -198,14 +198,14 @@ func TestApp_TaskListAutoHide_NoTasks(t *testing.T) {
 func TestApp_TaskListAutoReset_E2E(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
-		taskList := tasks.NewList(dir)
+		taskList := task.NewList(dir)
 
 		// Create and complete 2 tasks.
 		_, _ = taskList.CreateTask("task 1", "", "", nil)
 		_, _ = taskList.CreateTask("task 2", "", "", nil)
-		completed := tasks.StatusCompleted
-		_, _, _ = taskList.UpdateTask("1", tasks.TaskUpdates{Status: &completed})
-		_, _, _ = taskList.UpdateTask("2", tasks.TaskUpdates{Status: &completed})
+		completed := task.StatusCompleted
+		_, _, _ = taskList.UpdateTask("1", task.TaskUpdates{Status: &completed})
+		_, _, _ = taskList.UpdateTask("2", task.TaskUpdates{Status: &completed})
 
 		app := newTaskTestApp()
 		app.width = 80
@@ -258,16 +258,16 @@ func TestApp_TaskListAutoReset_SessionResume(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
 
-		// Previous session: create and complete tasks.
-		l1 := tasks.NewList(dir)
+		// Previous session: create and complete task.
+		l1 := task.NewList(dir)
 		_, _ = l1.CreateTask("task 1", "", "", nil)
 		_, _ = l1.CreateTask("task 2", "", "", nil)
-		completed := tasks.StatusCompleted
-		_, _, _ = l1.UpdateTask("1", tasks.TaskUpdates{Status: &completed})
-		_, _, _ = l1.UpdateTask("2", tasks.TaskUpdates{Status: &completed})
+		completed := task.StatusCompleted
+		_, _, _ = l1.UpdateTask("1", task.TaskUpdates{Status: &completed})
+		_, _, _ = l1.UpdateTask("2", task.TaskUpdates{Status: &completed})
 
 		// New session: fresh List, allDoneSince lost.
-		l2 := tasks.NewList(dir)
+		l2 := task.NewList(dir)
 		app := newTaskTestApp()
 		app.width = 80
 		app.height = 24

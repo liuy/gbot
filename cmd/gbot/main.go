@@ -41,7 +41,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
-	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
 )
 
@@ -127,7 +127,7 @@ func main() {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
 	}
 
-	taskList := tasklist.NewList("")
+	taskList := task.NewList("")
 
 	// Create engine
 	logger := slog.Default()
@@ -282,7 +282,7 @@ func main() {
 
 		// Initialize task list storage
 		if sessionID != "" {
-			if dir, err := tasklist.TasksDir(sessionID); err == nil {
+			if dir, err := task.TasksDir(sessionID); err == nil {
 				if err := taskList.SetDir(dir); err != nil {
 					slog.Warn("main: tasks init failed", "error", err)
 				}
@@ -409,7 +409,7 @@ func main() {
 		completedIDs := make(map[string]bool)
 		subjectByID := make(map[string]string)
 		for _, t := range allTasks {
-			if t.Status == tasklist.StatusCompleted {
+			if t.Status == task.StatusCompleted {
 				completedIDs[t.ID] = true
 			}
 			subjectByID[t.ID] = t.Subject

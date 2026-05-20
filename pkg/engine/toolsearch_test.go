@@ -175,9 +175,9 @@ func TestFilterToolsForRequest_WithDeferred(t *testing.T) {
 	tools := tsBuildToolMap(
 		tsStubTool("Read"),
 		tsStubTool("Edit"),
-		deferredStubTool("TaskList"),
-		deferredStubTool("TaskUpdate"),
-		deferredStubTool("TaskCreate"),
+		deferredStubTool("DeferredA"),
+		deferredStubTool("DeferredB"),
+		deferredStubTool("DeferredC"),
 	)
 	state := newToolSearchState()
 	order := tsToolOrder(tools)
@@ -196,8 +196,8 @@ func TestFilterToolsForRequest_WithDeferred(t *testing.T) {
 		t.Error("expected Edit in active tools")
 	}
 	// Deferred tools should NOT be active (none discovered yet)
-	if tsContainsStr(activeToolNames, "TaskList") {
-		t.Error("expected TaskList to NOT be active (undiscovered)")
+	if tsContainsStr(activeToolNames, "DeferredA") {
+		t.Error("expected DeferredA to NOT be active (undiscovered)")
 	}
 	// Deferred names should list all 3
 	if len(deferredNames) != 3 {
@@ -208,12 +208,12 @@ func TestFilterToolsForRequest_WithDeferred(t *testing.T) {
 func TestFilterToolsForRequest_WithDiscovered(t *testing.T) {
 	tools := tsBuildToolMap(
 		tsStubTool("Read"),
-		deferredStubTool("TaskList"),
-		deferredStubTool("TaskUpdate"),
-		deferredStubTool("TaskCreate"),
+		deferredStubTool("DeferredA"),
+		deferredStubTool("DeferredB"),
+		deferredStubTool("DeferredC"),
 	)
 	state := newToolSearchState()
-	state.DiscoverTools([]string{"TaskList"}) // discover one
+	state.DiscoverTools([]string{"DeferredA"}) // discover one
 
 	order := tsToolOrder(tools)
 	active, deferredNames, activated := FilterToolsForRequest(tools, state, order)
@@ -223,19 +223,19 @@ func TestFilterToolsForRequest_WithDiscovered(t *testing.T) {
 	}
 
 	activeToolNames := tsExtractToolNames(active)
-	if !tsContainsStr(activeToolNames, "TaskList") {
-		t.Error("expected discovered TaskList to be active")
+	if !tsContainsStr(activeToolNames, "DeferredA") {
+		t.Error("expected discovered DeferredA to be active")
 	}
-	if tsContainsStr(activeToolNames, "TaskUpdate") {
-		t.Error("expected undiscovered TaskUpdate to NOT be active")
+	if tsContainsStr(activeToolNames, "DeferredB") {
+		t.Error("expected undiscovered DeferredB to NOT be active")
 	}
-	if tsContainsStr(activeToolNames, "TaskCreate") {
-		t.Error("expected undiscovered TaskCreate to NOT be active")
+	if tsContainsStr(activeToolNames, "DeferredC") {
+		t.Error("expected undiscovered DeferredC to NOT be active")
 	}
 
 	// Only undiscovered deferred tools in deferred list
 	if len(deferredNames) != 2 {
-		t.Fatalf("expected 2 deferred names (TaskUpdate, TaskCreate), got %d: %v", len(deferredNames), deferredNames)
+		t.Fatalf("expected 2 deferred names (DeferredB, DeferredC), got %d: %v", len(deferredNames), deferredNames)
 	}
 }
 
@@ -270,9 +270,9 @@ func TestFilterToolsForRequest_AlwaysLoadMCPNotDeferred(t *testing.T) {
 	tools := tsBuildToolMap(
 		tsStubTool("Read"),
 		alwaysLoadMCPTool("mcp__server__important"),
-		deferredStubTool("TaskList"),
-		deferredStubTool("TaskUpdate"),
-		deferredStubTool("TaskCreate"),
+		deferredStubTool("DeferredA"),
+		deferredStubTool("DeferredB"),
+		deferredStubTool("DeferredC"),
 	)
 	state := newToolSearchState()
 	order := tsToolOrder(tools)
@@ -297,7 +297,7 @@ func TestFilterToolsForRequest_AlwaysLoadMCPNotDeferred(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeferredToolsAnnouncement(t *testing.T) {
-	tools := []tool.Tool{deferredStubTool("TaskList"), deferredStubTool("TaskUpdate"), deferredStubTool("mcp__server__tool1")}
+	tools := []tool.Tool{deferredStubTool("DeferredA"), deferredStubTool("DeferredB"), deferredStubTool("mcp__server__tool1")}
 	result := DeferredToolsAnnouncement(tools)
 
 	if !strings.Contains(result, "<available-deferred-tools>") {
@@ -306,15 +306,15 @@ func TestDeferredToolsAnnouncement(t *testing.T) {
 	if !strings.Contains(result, "</available-deferred-tools>") {
 		t.Error("expected closing tag")
 	}
-	if !strings.Contains(result, "TaskList") {
-		t.Error("expected TaskList in announcement")
+	if !strings.Contains(result, "DeferredA") {
+		t.Error("expected DeferredA in announcement")
 	}
 	if !strings.Contains(result, "mcp__server__tool1") {
 		t.Error("expected mcp__server__tool1 in announcement")
 	}
 	// Verify hints are included
-	if !strings.Contains(result, "search hint for TaskList") {
-		t.Error("expected search hint for TaskList")
+	if !strings.Contains(result, "search hint for DeferredA") {
+		t.Error("expected search hint for DeferredA")
 	}
 }
 
@@ -333,11 +333,11 @@ func TestDeferredToolsAnnouncement_MCPToolFallbackToDescription(t *testing.T) {
 
 func TestDeferredToolsAnnouncement_SearchHintPreferred(t *testing.T) {
 	// When both SearchHint and Description exist, SearchHint should win.
-	builtWithHint := deferredStubTool("TaskList")
+	builtWithHint := deferredStubTool("DeferredA")
 	mcpNoHint := deferredMCPTool("mcp__server__tool1")
 	result := DeferredToolsAnnouncement([]tool.Tool{builtWithHint, mcpNoHint})
 
-	if !strings.Contains(result, "search hint for TaskList") {
+	if !strings.Contains(result, "search hint for DeferredA") {
 		t.Error("expected SearchHint for built-in tool")
 	}
 	if !strings.Contains(result, "mcp__server__tool1 MCP tool") {
@@ -371,19 +371,19 @@ func TestExtractDiscoveredToolNamesFromResult_Nil(t *testing.T) {
 func TestExtractDiscoveredToolNamesFromResult_FunctionBlocks(t *testing.T) {
 	// Simulate ToolSearch result with <function> blocks
 	data := `<functions>
-<function>{"description": "List tasks", "name": "TaskList", "parameters": {"type": "object"}}</function>
-<function>{"description": "Update task", "name": "TaskUpdate", "parameters": {"type": "object"}}</function>
+<function>{"description": "List tasks", "name": "DeferredA", "parameters": {"type": "object"}}</function>
+<function>{"description": "Update task", "name": "DeferredB", "parameters": {"type": "object"}}</function>
 </functions>`
 
 	names := ExtractDiscoveredToolNamesFromResult(data)
 	if len(names) != 2 {
 		t.Fatalf("expected 2 tool names, got %d: %v", len(names), names)
 	}
-	if names[0] != "TaskList" {
-		t.Errorf("expected first name to be TaskList, got %s", names[0])
+	if names[0] != "DeferredA" {
+		t.Errorf("expected first name to be DeferredA, got %s", names[0])
 	}
-	if names[1] != "TaskUpdate" {
-		t.Errorf("expected second name to be TaskUpdate, got %s", names[1])
+	if names[1] != "DeferredB" {
+		t.Errorf("expected second name to be DeferredB, got %s", names[1])
 	}
 }
 
@@ -404,8 +404,8 @@ func TestExtractDiscoveredToolNamesFromResult_JSONStringWrapper(t *testing.T) {
 func TestExtractDiscoveredToolNamesFromResult_MapWithTools(t *testing.T) {
 	data := map[string]any{
 		"tools": []any{
-			map[string]any{"name": "TaskList"},
-			map[string]any{"name": "TaskUpdate"},
+			map[string]any{"name": "DeferredA"},
+			map[string]any{"name": "DeferredB"},
 		},
 	}
 	names := ExtractDiscoveredToolNamesFromResult(data)
@@ -432,7 +432,7 @@ func TestRestoreToolSearchState_CompactBoundary(t *testing.T) {
 	state := newToolSearchState()
 
 	// Simulate a compact boundary message with preCompactDiscoveredTools
-	boundaryContent := `{"subtype":"compact_boundary","preCompactDiscoveredTools":["TaskList","TaskUpdate"]}`
+	boundaryContent := `{"subtype":"compact_boundary","preCompactDiscoveredTools":["DeferredA","DeferredB"]}`
 	messages := []types.Message{
 		{
 			Role: types.RoleSystem,
@@ -444,14 +444,14 @@ func TestRestoreToolSearchState_CompactBoundary(t *testing.T) {
 
 	RestoreToolSearchState(messages, state)
 
-	if !state.IsDiscovered("TaskList") {
-		t.Error("expected TaskList to be discovered from compact boundary")
+	if !state.IsDiscovered("DeferredA") {
+		t.Error("expected DeferredA to be discovered from compact boundary")
 	}
-	if !state.IsDiscovered("TaskUpdate") {
-		t.Error("expected TaskUpdate to be discovered from compact boundary")
+	if !state.IsDiscovered("DeferredB") {
+		t.Error("expected DeferredB to be discovered from compact boundary")
 	}
-	if state.IsDiscovered("TaskCreate") {
-		t.Error("expected TaskCreate to NOT be discovered (not in boundary)")
+	if state.IsDiscovered("DeferredC") {
+		t.Error("expected DeferredC to NOT be discovered (not in boundary)")
 	}
 }
 
@@ -485,7 +485,7 @@ func TestRestoreToolSearchState_MixedMessages(t *testing.T) {
 	state := newToolSearchState()
 
 	// Compact boundary + tool_result
-	boundaryContent := `{"subtype":"compact_boundary","preCompactDiscoveredTools":["TaskList"]}`
+	boundaryContent := `{"subtype":"compact_boundary","preCompactDiscoveredTools":["DeferredA"]}`
 	resultContent := `<function>{"name": "Grep", "description": "Search"}</function>`
 	resultJSON, _ := json.Marshal(resultContent)
 
@@ -506,8 +506,8 @@ func TestRestoreToolSearchState_MixedMessages(t *testing.T) {
 
 	RestoreToolSearchState(messages, state)
 
-	if !state.IsDiscovered("TaskList") {
-		t.Error("expected TaskList from compact boundary")
+	if !state.IsDiscovered("DeferredA") {
+		t.Error("expected DeferredA from compact boundary")
 	}
 	if !state.IsDiscovered("Grep") {
 		t.Error("expected Grep from tool_result")
@@ -524,7 +524,7 @@ func TestIsDeferred_BuiltTool(t *testing.T) {
 		t.Error("expected regular tool to NOT be deferred")
 	}
 
-	deferred := deferredStubTool("TaskList")
+	deferred := deferredStubTool("DeferredA")
 	if !tool.IsDeferred(deferred) {
 		t.Error("expected deferred tool to be deferred")
 	}
@@ -549,9 +549,9 @@ func TestIsDeferred_MCPTool(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolSearchActivationError(t *testing.T) {
-	err := &ToolSearchActivationError{ToolName: "TaskList"}
+	err := &ToolSearchActivationError{ToolName: "DeferredA"}
 	msg := err.Error()
-	if !strings.Contains(msg, "TaskList") {
+	if !strings.Contains(msg, "DeferredA") {
 		t.Errorf("error should mention tool name, got: %s", msg)
 	}
 	if !strings.Contains(msg, ToolSearchToolName) {
@@ -571,9 +571,9 @@ func TestFilterToolsForRequest_ToolSearchAlwaysIncluded(t *testing.T) {
 	tools := tsBuildToolMap(
 		tsStubTool("Read"),
 		tsStubTool(ToolSearchToolName), // The ToolSearch tool itself
-		deferredStubTool("TaskList"),
-		deferredStubTool("TaskUpdate"),
-		deferredStubTool("TaskCreate"),
+		deferredStubTool("DeferredA"),
+		deferredStubTool("DeferredB"),
+		deferredStubTool("DeferredC"),
 	)
 	state := newToolSearchState()
 	order := tsToolOrder(tools)
@@ -717,12 +717,12 @@ func TestFilterToolsForRequest_DisabledInActivePartition(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Read":             tsStubTool("Read"),
 		"DisabledDeferred": disabled,
-		"TaskList":         deferredStubTool("TaskList"),
-		"TaskUpdate":       deferredStubTool("TaskUpdate"),
-		"TaskCreate":       deferredStubTool("TaskCreate"),
+		"DeferredA":         deferredStubTool("DeferredA"),
+		"DeferredB":       deferredStubTool("DeferredB"),
+		"DeferredC":       deferredStubTool("DeferredC"),
 	}
 	state := newToolSearchState()
-	order := []string{"Read", "DisabledDeferred", "TaskList", "TaskUpdate", "TaskCreate"}
+	order := []string{"Read", "DisabledDeferred", "DeferredA", "DeferredB", "DeferredC"}
 
 	active, _, activated := FilterToolsForRequest(tools, state, order)
 	if !activated {
@@ -741,9 +741,9 @@ func TestFilterToolsForRequest_ToolSearchNameMatch(t *testing.T) {
 	tools := tsBuildToolMap(
 		tsStubTool("Read"),
 		tsStubTool(ToolSearchToolName),
-		deferredStubTool("TaskList"),
-		deferredStubTool("TaskUpdate"),
-		deferredStubTool("TaskCreate"),
+		deferredStubTool("DeferredA"),
+		deferredStubTool("DeferredB"),
+		deferredStubTool("DeferredC"),
 	)
 	state := newToolSearchState()
 	// Don't discover ToolSearch — it should still be active via name check
@@ -885,9 +885,9 @@ func TestRestoreFromToolResult_InvalidJSON(t *testing.T) {
 
 func TestToolSearchActivationError_ErrorMethod(t *testing.T) {
 	// Test Error() method (lines 359-364)
-	err := &ToolSearchActivationError{ToolName: "TaskList"}
+	err := &ToolSearchActivationError{ToolName: "DeferredA"}
 	msg := err.Error()
-	if !strings.Contains(msg, "TaskList") {
+	if !strings.Contains(msg, "DeferredA") {
 		t.Errorf("error should contain tool name, got: %s", msg)
 	}
 	if !strings.Contains(msg, "deferred") {
@@ -913,12 +913,12 @@ func TestFilterToolsForRequest_DeferredToolSearchAlwaysActive(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Read":             tsStubTool("Read"),
 		ToolSearchToolName: deferredTS,
-		"TaskList":         deferredStubTool("TaskList"),
-		"TaskUpdate":       deferredStubTool("TaskUpdate"),
-		"TaskCreate":       deferredStubTool("TaskCreate"),
+		"DeferredA":         deferredStubTool("DeferredA"),
+		"DeferredB":       deferredStubTool("DeferredB"),
+		"DeferredC":       deferredStubTool("DeferredC"),
 	}
 	state := newToolSearchState()
-	order := []string{"Read", ToolSearchToolName, "TaskList", "TaskUpdate", "TaskCreate"}
+	order := []string{"Read", ToolSearchToolName, "DeferredA", "DeferredB", "DeferredC"}
 
 	active, _, activated := FilterToolsForRequest(tools, state, order)
 	if !activated {

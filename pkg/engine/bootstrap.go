@@ -22,7 +22,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/repl"
-	tasklist "github.com/liuy/gbot/pkg/tool/tasks"
+	"github.com/liuy/gbot/pkg/tool/task"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -32,7 +32,7 @@ type SharedDeps struct {
 	WorkingDir string
 	GitStatus  *ctxbuild.GitStatusInfo
 	SkillReg   *skills.Registry
-	TaskList   *tasklist.List
+	TaskList   *task.List
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
 }
@@ -71,10 +71,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	reg.MustRegister(job.NewJobOutput(jobReg))
 	reg.MustRegister(job.NewJobStop(jobReg))
 
-	reg.MustRegister(tasklist.NewTaskCreate(deps.TaskList))
-	reg.MustRegister(tasklist.NewTaskGet(deps.TaskList))
-	reg.MustRegister(tasklist.NewTaskList(deps.TaskList))
-	reg.MustRegister(tasklist.NewTaskUpdate(deps.TaskList))
+	reg.MustRegister(task.New(deps.TaskList))
 
 	reg.MustRegister(skilltool.New(deps.SkillReg))
 

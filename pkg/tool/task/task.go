@@ -1,7 +1,6 @@
-// Package tasks implements the Task List system (TodoWrite V2) for gbot.
-// It provides file-based task storage with CRUD operations, dependency tracking,
-// and high-water-mark ID allocation — aligned with TS utils/tasks.ts.
-package tasks
+// Package task implements file-based task storage with CRUD operations,
+// dependency tracking, and high-water-mark ID allocation.
+package task
 
 import (
 	"crypto/rand"
@@ -81,7 +80,6 @@ func NewList(dir string) *List {
 	return &List{dir: dir}
 }
 
-// Dir returns the storage directory path.
 func (l *List) Dir() string {
 	return l.dir
 }
@@ -460,7 +458,6 @@ func (l *List) readTaskLocked(id string) (*Task, error) {
 	return &task, nil
 }
 
-// writeTaskLocked writes a task to disk via atomicWrite.
 func (l *List) writeTaskLocked(task *Task) error {
 	path := l.taskPath(task.ID)
 	data, err := json.MarshalIndent(task, "", "  ")
@@ -568,7 +565,6 @@ func (l *List) writeHighWaterMark(value int) error {
 	return atomicWrite(path, []byte(strconv.Itoa(value)))
 }
 
-// taskPath returns the file path for a task ID.
 func (l *List) taskPath(id string) string {
 	return filepath.Join(l.dir, id+".json")
 }
@@ -590,17 +586,14 @@ func sanitizePathComponent(input string) string {
 	return b.String()
 }
 
-// max returns the larger of two ints.
 func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
 }
-// Uses random suffix to avoid temp file collisions.
-// Only safe when called under List.mu.
+// Atomic write via temp file + rename. The mutex protects data consistency, not the temp file itself.
 func atomicWrite(path string, data []byte) error {
-	// Generate random suffix for temp file.
 	suffix := make([]byte, 8)
 	if _, err := rand.Read(suffix); err != nil {
 		return fmt.Errorf("generate random suffix: %w", err)
@@ -617,7 +610,6 @@ func atomicWrite(path string, data []byte) error {
 	return nil
 }
 
-// removeString returns a new slice with all occurrences of v removed.
 func removeString(s []string, v string) []string {
 	var result []string
 	for _, x := range s {
