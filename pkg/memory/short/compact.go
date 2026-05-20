@@ -126,10 +126,12 @@ func (s *Store) RecordCompact(sessionID string, result *CompactResult) error {
 		lastUUID = summary.UUID
 	}
 
-	// 3. Insert kept messages (preserve original chain)
+	// 3. Insert kept messages (preserve original chain).
+	// INSERT OR REPLACE handles the case where kept messages were already
+	// persisted by PersistNewMessages — the old row is replaced with a new
+	// seq after the boundary.
 	for _, kept := range result.MessagesToKeep {
-		// Keep original ParentUUID for chain integrity
-		seq, err := s.insertMessageTx(tx, sessionID, kept)
+		seq, err := s.insertOrReplaceMessageTx(tx, sessionID, kept)
 		if err != nil {
 			return fmt.Errorf("insert kept message: %w", err)
 		}
@@ -883,6 +885,29 @@ func extractCompactMetadata(boundary *TranscriptMessage) (*CompactMetadata, erro
 
 // insertMessageTx inserts a message within a transaction (ignores parent tracking).
 // Returns the auto-increment seq for FTS indexing.
+// insertOrReplaceMessageTx inserts or replaces a message row.
+// Used for kept messages whose UUIDs already exist from a previous PersistNewMessages.
+func (s *Store) insertOrReplaceMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMessage) (int64, error) {
+	createdAt := msg.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	query := `
+		INSERT OR REPLACE INTO messages (session_id, uuid, parent_uuid, logical_parent_uuid,
+		                     is_sidechain, type, subtype, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	result, err := tx.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
+		msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
+		createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
 func (s *Store) insertMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMessage) (int64, error) {
 	createdAt := msg.CreatedAt
 	if createdAt.IsZero() {

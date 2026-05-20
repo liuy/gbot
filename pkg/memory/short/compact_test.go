@@ -2852,3 +2852,106 @@ func TestApplySnipRemovals_ResolveDeletedParentNotFound(t *testing.T) {
 		t.Errorf("survivor parent = %q, want empty (deleted parent not resolvable)", result[1].ParentUUID)
 	}
 }
+
+// TestRecordCompact_KeptMessagesAlreadyPersisted reproduces a real bug:
+// Messages are first persisted via insertMessageTx (simulating PersistNewMessages),
+// then RecordCompact tries to re-INSERT kept messages with the same UUIDs.
+// Before the fix, the UNIQUE constraint on messages.uuid caused a transaction
+// rollback, losing the entire compact result. On restart, LoadPostCompactMessages
+// would load all old messages, causing an early compact trigger.
+func TestRecordCompact_KeptMessagesAlreadyPersisted(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+
+	// --- Phase 1: Simulate normal engine operation ---
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	sessionID := "test-uuid-collision"
+	createTestSession(t, store, sessionID)
+
+	// Persist messages like PersistNewMessages would.
+	origMsgs := []*TranscriptMessage{
+		{UUID: "old-user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`},
+		{UUID: "old-asst-1", Type: "assistant", Content: `[{"type":"text","text":"hi"}]`},
+		{UUID: "old-user-2", Type: "user", Content: `[{"type":"text","text":"do stuff"}]`},
+		{UUID: "old-asst-2", Type: "assistant", Content: `[{"type":"text","text":"done"}]`},
+		// These two will be "kept" by the compact — same UUIDs used in CompactResult.
+		{UUID: "kept-user-3", Type: "user", Content: `[{"type":"text","text":"review"}]`},
+		{UUID: "kept-asst-3", Type: "assistant", Content: `[{"type":"text","text":"looks good"}]`},
+	}
+	for _, m := range origMsgs {
+		if _, err := store.insertMessageTx(nil, sessionID, m); err != nil {
+			t.Fatalf("persist message %s: %v", m.UUID, err)
+		}
+	}
+
+	// Verify all 6 messages are in DB.
+	loaded, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 6 {
+		t.Fatalf("pre-compact: got %d messages, want 6", len(loaded))
+	}
+
+	// --- Phase 2: RecordCompact with kept messages that already exist in DB ---
+	boundary := CreateCompactBoundaryMessage("auto", 5000, "")
+	result := &CompactResult{
+		BoundaryMarker: boundary,
+		SummaryMessages: []*TranscriptMessage{
+			{UUID: "summary-1", Type: "user", Content: `[{"type":"text","text":"Summary of old chat"}]`},
+		},
+		MessagesToKeep: []*TranscriptMessage{
+			// Same UUIDs as origMsgs[4] and origMsgs[5] — already in DB!
+			{UUID: "kept-user-3", Type: "user", Content: `[{"type":"text","text":"review"}]`},
+			{UUID: "kept-asst-3", Type: "assistant", Content: `[{"type":"text","text":"looks good"}]`},
+		},
+		Attachments: []*TranscriptMessage{},
+	}
+
+	if err := store.RecordCompact(sessionID, result); err != nil {
+		t.Fatalf("RecordCompact failed (UUID collision bug): %v", err)
+	}
+
+	// Close store (simulate process exit)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// --- Phase 3: Restart — new store from same DB file ---
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore (restart): %v", err)
+	}
+	defer store2.Close()
+
+	// LoadPostCompactMessages should return boundary + summary + kept (4 messages),
+	// NOT the full 6+4=10 messages that would result from a failed compact.
+	restartMsgs, err := store2.LoadPostCompactMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPostCompactMessages (restart): %v", err)
+	}
+
+	// Should have: boundary + summary + 2 kept = 4
+	if len(restartMsgs) != 4 {
+		t.Errorf("post-restart: got %d messages, want 4 (boundary + summary + 2 kept)", len(restartMsgs))
+		for i, m := range restartMsgs {
+			t.Logf("  msg[%d]: uuid=%s type=%s", i, m.UUID, m.Type)
+		}
+	}
+
+	// Verify order: boundary -> summary -> kept messages
+	if len(restartMsgs) >= 1 && restartMsgs[0].Subtype != "compact_boundary" {
+		t.Errorf("first message should be boundary, got subtype=%s", restartMsgs[0].Subtype)
+	}
+	if len(restartMsgs) >= 2 && restartMsgs[1].UUID != "summary-1" {
+		t.Errorf("second message should be summary-1, got %s", restartMsgs[1].UUID)
+	}
+	if len(restartMsgs) >= 3 && restartMsgs[2].UUID != "kept-user-3" {
+		t.Errorf("third message should be kept-user-3, got %s", restartMsgs[2].UUID)
+	}
+	if len(restartMsgs) >= 4 && restartMsgs[3].UUID != "kept-asst-3" {
+		t.Errorf("fourth message should be kept-asst-3, got %s", restartMsgs[3].UUID)
+	}
+}
