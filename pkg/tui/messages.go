@@ -73,7 +73,6 @@ type toolEndMsg struct {
 	IsError      bool
 	Timing       time.Duration // elapsed time
 	Agent        *types.AgentMeta // non-nil when from a sub-agent
-	IsBackground bool            // true = fork agent launched async, keep in running state
 	IsSearch     bool            // search/read/list classification
 	IsRead       bool
 	IsList       bool

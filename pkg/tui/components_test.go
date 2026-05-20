@@ -2641,47 +2641,24 @@ func TestRenderToolCall_NestedDepth2_ChildAgentHasPrefix(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// renderToolCall — IsBackground label
+// renderToolCall — running label
 // ---------------------------------------------------------------------------
 
-func TestRenderToolCall_BackgroundLabel(t *testing.T) {
+func TestRenderToolCall_RunningLabel(t *testing.T) {
 	t.Parallel()
 	m := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockTool, ToolCall: ToolCallView{
-				Name:         "Agent",
-				Summary:      "fork agent task",
-				Done:         false,
-				IsBackground: true,
+				Name:    "Agent",
+				Summary: "fork agent task",
+				Done:    false,
 			}},
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if !strings.Contains(v, "running in background...") {
-		t.Errorf("background tool should show 'running in background...', got: %q", v)
-	}
-}
-
-func TestRenderToolCall_NormalRunningLabel(t *testing.T) {
-	t.Parallel()
-	m := MessageView{
-		Role: "assistant",
-		Blocks: []ContentBlock{
-			{Type: BlockTool, ToolCall: ToolCallView{
-				Name:         "Bash",
-				Summary:      "ls -la",
-				Done:         false,
-				IsBackground: false,
-			}},
-		},
-	}
-	v := m.View(80, false, "", false, false, 0)
-	if strings.Contains(v, "running in background...") {
-		t.Errorf("non-background tool should NOT show 'running in background...', got: %q", v)
-	}
 	if !strings.Contains(v, "running...") {
-		t.Errorf("non-background running tool should show 'running...', got: %q", v)
+		t.Errorf("running tool should show 'running...', got: %q", v)
 	}
 }
 

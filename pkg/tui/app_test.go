@@ -6269,15 +6269,9 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 	app.repl.PendingToolStarted(parentToolID, "Agent", "fork", "{}", tool.SearchReadKind{})
 	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-2 * time.Second) // REAL-TIME: needed for fork agent parent elapsed time
 
-	// Set parent as background (simulates toolEndMsg with IsBackground=true)
-	tcv := app.repl.findToolView(parentToolID)
-	tcv.IsBackground = true
-	tcv.Output = "Fork agent launched"
-	app.repl.updateToolBlock(parentToolID, tcv)
-
 	// Verify parent is NOT done yet
 	if app.repl.findToolView(parentToolID).Done {
-		t.Fatal("parent should NOT be Done before fork agent completes")
+		t.Fatal("parent should NOT be Done before sub-agent completes")
 	}
 
 	// Sub-agent queryEndMsg arrives
@@ -6293,7 +6287,7 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 
 	handled, _ := app.updateRepl(msg)
 	if !handled {
-		t.Fatal("updateRepl should handle fork agent queryEndMsg")
+		t.Fatal("updateRepl should handle sub-agent queryEndMsg")
 	}
 
 	// Verify parent card is now Done
@@ -6302,7 +6296,7 @@ func TestApp_QueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 		t.Fatal("parent card should still exist")
 	}
 	if !parent.Done {
-		t.Error("parent card should be Done after fork agent queryEndMsg")
+		t.Error("parent card should be Done after sub-agent queryEndMsg")
 	}
 	if parent.Elapsed < time.Second {
 		t.Errorf("parent Elapsed should be >= 1s, got %v", parent.Elapsed)
@@ -6326,10 +6320,9 @@ func TestApp_QueryEndMsg_ForkAgent_ErrorMarksParentDone(t *testing.T) {
 	app.repl.pendingToolStart[parentToolID] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for fork agent error elapsed time
 
 	tcv := app.repl.findToolView(parentToolID)
-	tcv.IsBackground = true
 	app.repl.updateToolBlock(parentToolID, tcv)
 
-	// Fork agent completes with error
+	// Sub-agent completes with error
 	msg := queryEndMsg{
 		Err:        fmt.Errorf("fork agent failed: timeout"),
 		TotalUsage: types.Usage{InputTokens: 10, OutputTokens: 5},
@@ -6367,7 +6360,6 @@ func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
 		app.repl.PendingToolStarted(id, "Agent", "fork", "{}", tool.SearchReadKind{})
 		app.repl.pendingToolStart[id] = time.Now().Add(-1 * time.Second) // REAL-TIME: needed for multiple fork agents elapsed time
 		tcv := app.repl.findToolView(id)
-		tcv.IsBackground = true
 		app.repl.updateToolBlock(id, tcv)
 	}
 
@@ -6388,9 +6380,6 @@ func TestApp_QueryEndMsg_MultipleForkAgents_Independent(t *testing.T) {
 	}
 	if b.Done {
 		t.Error("tool-fork-b should NOT be Done — only fork-a completed")
-	}
-	if b.IsBackground != true {
-		t.Error("tool-fork-b should still be IsBackground=true")
 	}
 
 	// Second fork agent completes
@@ -6426,6 +6415,42 @@ func TestApp_SetKillAllFn(t *testing.T) {
 	}
 }
 
+// TestApp_ToolEndMsg_IsBackground_MarkedDone verifies that when the main engine
+// calls a fork agent, the tool_end with IsBackground=true marks the card Done
+// immediately — same as bash background jobs. The fork agent sub-engine has nil
+// dispatcher, so no queryEndMsg will arrive to transition the card later.
+func TestApp_ToolEndMsg_IsBackground_MarkedDone(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.StartQuery()
+
+	// Main engine calls Agent tool with fork → tool_start
+	toolID := "tool-fork-main"
+	app.repl.PendingToolStarted(toolID, "Agent", "fork agent test", "{}", tool.SearchReadKind{})
+
+	// tool_end with IsBackground=true (fork agent launched async), Agent=nil (main engine)
+	msg := toolEndMsg{
+		ToolUseID:    toolID,
+		Output:       "Fork agent \"fork-1\" launched in background",
+	}
+	handled, _ := app.updateRepl(msg)
+	if !handled {
+		t.Fatal("updateRepl should handle toolEndMsg")
+	}
+
+	// Card should be Done immediately — same as bash background jobs
+	tcv := app.repl.findToolView(toolID)
+	if tcv == nil {
+		t.Fatal("tool card should exist")
+	}
+	if !tcv.Done {
+		t.Error("fork agent card should be Done immediately after tool_end (like bash background)")
+	}
+	if tcv.Output != "Fork agent \"fork-1\" launched in background" {
+		t.Errorf("expected output 'Fork agent \"fork-1\" launched in background', got %q", tcv.Output)
+	}
+}
+
 func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
@@ -6435,7 +6460,6 @@ func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
 	msg := toolEndMsg{
 		ToolUseID:    "nonexistent-tool",
 		Output:       "Fork agent launched",
-		IsBackground: true,
 	}
 	// Should not panic, and should log a warning (verified by slog output)
 	handled, _ := app.updateRepl(msg)

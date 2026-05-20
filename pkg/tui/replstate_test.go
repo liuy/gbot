@@ -887,53 +887,16 @@ func TestGrandchildTextDelta(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// toolEndMsg with IsBackground — card stays Done=false
+// queryEndMsg from sub-agent — marks parent card Done
 // ---------------------------------------------------------------------------
 
-func TestToolEndMsg_IsBackground_NotMarkedDone(t *testing.T) {
-	t.Parallel()
-	s := freshState()
-	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}", tool.SearchReadKind{})
-
-	// Simulate toolEndMsg with IsBackground=true via direct state manipulation.
-	// The handler sets IsBackground=true and keeps Done=false.
-	tcv := s.findToolView("tool-bg-1")
-	if tcv == nil {
-		t.Fatal("tool-bg-1 should exist")
-	}
-	tcv.IsBackground = true
-	tcv.Output = "Fork agent launched"
-	s.updateToolBlock("tool-bg-1", tcv)
-
-	// Verify Done is still false
-	got := s.findToolView("tool-bg-1")
-	if got.Done {
-		t.Error("IsBackground tool should NOT be marked Done")
-	}
-	if !got.IsBackground {
-		t.Error("IsBackground should be true")
-	}
-	if got.Output != "Fork agent launched" {
-		t.Errorf("expected output 'Fork agent launched', got %q", got.Output)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// queryEndMsg from fork agent — marks parent card Done
-// ---------------------------------------------------------------------------
-
-func TestQueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
+func TestQueryEndMsg_SubAgent_MarksParentDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}", tool.SearchReadKind{})
 	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second)  // REAL-TIME: pending tool start time
 
-	// Set parent as background
-	tcv := s.findToolView("tool-bg-1")
-	tcv.IsBackground = true
-	s.updateToolBlock("tool-bg-1", tcv)
-
-	// Simulate fork agent completion: manually set Done and Elapsed
+	// Simulate sub-agent completion: manually set Done and Elapsed
 	// (the queryEndMsg handler does this)
 	parent := s.findToolView("tool-bg-1")
 	if parent == nil {
@@ -946,21 +909,20 @@ func TestQueryEndMsg_ForkAgent_MarksParentDone(t *testing.T) {
 	// Verify
 	got := s.findToolView("tool-bg-1")
 	if !got.Done {
-		t.Error("parent card should be Done after fork agent queryEnd")
+		t.Error("parent card should be Done after sub-agent queryEnd")
 	}
 	if got.Elapsed < 500*time.Millisecond {
 		t.Errorf("expected Elapsed >= 500ms, got %v", got.Elapsed)
 	}
 }
 
-func TestQueryEndMsg_ForkAgent_AlreadyDone_NoOp(t *testing.T) {
+func TestQueryEndMsg_SubAgent_AlreadyDone_NoOp(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("tool-bg-2", "Agent", "fork", "{}", tool.SearchReadKind{})
 
-	// Set parent as background AND already done
+	// Set parent as already done
 	tcv := s.findToolView("tool-bg-2")
-	tcv.IsBackground = true
 	tcv.Done = true
 	tcv.Elapsed = 2 * time.Second
 	s.updateToolBlock("tool-bg-2", tcv)
