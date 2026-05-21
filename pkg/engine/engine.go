@@ -2071,12 +2071,25 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 		// Sanitize tool_use blocks with partial/invalid JSON input.
 		// Stream interruption may leave tool_use input as incomplete JSON.
 		// OpenAI-compatible APIs require valid JSON in function arguments.
+		// Strip thinking blocks with empty Thinking field (left by
+		// compact/storage) and sanitize tool_use input. Empty thinking
+		// blocks cause "missing field thinking" API errors.
+		n := 0
 		for i := range msg.Content {
+			if msg.Content[i].Type == types.ContentTypeThinking && msg.Content[i].Thinking == "" {
+				continue
+			}
 			if msg.Content[i].Type == types.ContentTypeToolUse {
 				if !json.Valid(msg.Content[i].Input) {
 					msg.Content[i].Input = json.RawMessage("{}")
 				}
 			}
+			msg.Content[n] = msg.Content[i]
+			n++
+		}
+		msg.Content = msg.Content[:n]
+		if len(msg.Content) == 0 {
+			continue
 		}
 		result = append(result, msg)
 	}

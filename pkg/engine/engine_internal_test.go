@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1253,6 +1254,66 @@ func TestNormalizeMessagesForAPI_OnlySystemMessages(t *testing.T) {
 
 	if len(result) != 0 {
 		t.Fatalf("len(result) = %d, want 0 (all system filtered)", len(result))
+	}
+}
+
+func TestNormalizeMessagesForAPI_StripsEmptyThinkingBlocks(t *testing.T) {
+	t.Parallel()
+
+	// Thinking blocks with empty Thinking field must be stripped.
+	// Compact/storage can leave {"type":"thinking"} without the required field,
+	// causing "missing field thinking" API errors on resume.
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking}, // empty Thinking — must be removed
+			types.NewTextBlock("response"),
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		// Assistant with valid thinking — must be kept
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Thinking: "let me think"},
+			types.NewTextBlock("answer"),
+		}},
+		// Assistant with only empty thinking — entire message must be dropped
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking},
+		}},
+	}
+
+	result := NormalizeMessagesForAPI(messages)
+
+	// Expect: msg0 (thinking stripped, text kept), msg1, msg2 (thinking kept, text kept)
+	// msg3 dropped entirely (only had empty thinking)
+	if len(result) != 3 {
+		t.Fatalf("len(result) = %d, want 3 (msg3 dropped)", len(result))
+	}
+
+	// msg0: empty thinking stripped, only text block remains
+	if len(result[0].Content) != 1 {
+		t.Errorf("msg0: len(content) = %d, want 1 (thinking stripped)", len(result[0].Content))
+	}
+	if result[0].Content[0].Text != "response" {
+		t.Errorf("msg0: content = %q, want 'response'", result[0].Content[0].Text)
+	}
+
+	// msg2: valid thinking kept
+	if len(result[2].Content) != 2 {
+		t.Fatalf("msg2: len(content) = %d, want 2 (thinking+text)", len(result[2].Content))
+	}
+	if result[2].Content[0].Thinking != "let me think" {
+		t.Errorf("msg2: thinking = %q, want 'let me think'", result[2].Content[0].Thinking)
+	}
+
+	// Verify serialized JSON has no thinking block without "thinking" field
+	for i, msg := range result {
+		for j, block := range msg.Content {
+			if block.Type == types.ContentTypeThinking {
+				raw, _ := json.Marshal(block)
+				if !bytes.Contains(raw, []byte(`"thinking":`)) {
+					t.Errorf("result[%d].Content[%d]: serialized thinking block missing 'thinking' field: %s", i, j, raw)
+				}
+			}
+		}
 	}
 }
 
