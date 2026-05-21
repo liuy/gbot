@@ -3459,8 +3459,7 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	}
 	reg.MustRegister(&mockTool{name: "Skill", enabled: true})
 	reg.MustRegister(&mockTool{name: "Agent", enabled: true})
-	reg.MustRegister(&mockTool{name: "JobOutput", enabled: true})
-	reg.MustRegister(&mockTool{name: "JobStop", enabled: true})
+	reg.MustRegister(&mockTool{name: "Job", enabled: true})
 
 	// New() — ToolsProvider snapshots all 10 tools
 	eng := New(&Params{
@@ -3470,8 +3469,8 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	})
 
 	got := len(eng.AllTools())
-	if got != 10 {
-		t.Errorf("AllTools() = %d tools, want 10. "+
+	if got != 9 {
+		t.Errorf("AllTools() = %d tools, want 9. "+
 			"All tools registered before New() but count is wrong.", got)
 	}
 }

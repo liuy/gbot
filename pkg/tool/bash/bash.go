@@ -797,7 +797,7 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 	// Return immediately with job ID (matches TS: backgroundTaskId returned)
 	return &tool.ToolResult{
 		Data: &Output{
-			Stdout:   fmt.Sprintf("Background job started with ID: %s\nOutput is being captured. Use the background job registry to read output.", job.ID),
+			Stdout:   fmt.Sprintf("Background job started with ID: %s\nOutput is being captured. Use the Job tool to read output.", job.ID),
 			ExitCode: 0,
 			CWD:      cwd,
 		},

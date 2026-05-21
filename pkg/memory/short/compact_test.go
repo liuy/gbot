@@ -244,9 +244,9 @@ func TestRecordCompact_WriteVerification(t *testing.T) {
 	err := store.RecordCompact(sessionID, result)
 	// Session does not exist in this test, so RecordCompact should fail.
 	if err == nil {
-	if !strings.Contains(err.Error(), "session") && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "exist") {
-		t.Errorf("error should mention session issue, got: %v", err)
-	}
+		if !strings.Contains(err.Error(), "session") && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "exist") {
+			t.Errorf("error should mention session issue, got: %v", err)
+		}
 	}
 }
 
@@ -1475,7 +1475,7 @@ func TestRoughTokenCount(t *testing.T) {
 
 	// CJK messages
 	cjkMessages := []*TranscriptMessage{
-		{Content: "你好"}, // 2 CJK -> 3 tokens
+		{Content: "你好"},    // 2 CJK -> 3 tokens
 		{Content: "world"}, // 5 nonCJK -> 1 token
 	}
 	got := roughTokenCount(cjkMessages)
@@ -3027,7 +3027,7 @@ func TestRecordCompact_ParentChainIntegrityAfterResume(t *testing.T) {
 
 	// Build 20 messages via AppendMessages (ensures proper parent chain)
 	var allMsgs []*TranscriptMessage
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		allMsgs = append(allMsgs, &TranscriptMessage{
 			UUID:    fmt.Sprintf("u%d", i),
 			Type:    "user",

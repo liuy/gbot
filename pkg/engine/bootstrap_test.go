@@ -34,7 +34,7 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 
 	expectedTools := []string{
 		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
-		"Agent", "JobOutput", "JobStop",
+		"Agent", "Job",
 		"Task",
 		"Skill", "Repl",
 	}
@@ -154,8 +154,8 @@ func TestCreateTools_BashToolRegistered(t *testing.T) {
 	}
 
 	refs := CreateTools(deps)
-	if refs.Reg.Size() < 12 {
-		t.Errorf("expected at least 12 tools registered, got %d", refs.Reg.Size())
+	if refs.Reg.Size() < 11 {
+		t.Errorf("expected at least 11 tools registered, got %d", refs.Reg.Size())
 	}
 }
 

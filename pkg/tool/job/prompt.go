@@ -1,18 +1,19 @@
 package job
 
-func jobOutputPrompt() string {
-	return `- Retrieves output from a running or completed background job (background shell, agent, or remote session)
-- Takes a job_id parameter identifying the job
-- Returns the job output along with status information
-- Use block=true (default) to wait for job completion
-- Use block=false for non-blocking check of current status
-- Job IDs can be found using the /tasks command
-- Works with all job types: background shells, async agents, and remote sessions`
-}
+func jobPrompt() string {
+	return `Manages background jobs (background shell, agent, or remote session).
 
-func jobStopPrompt() string {
-	return `- Stops a running background job by its ID
-- Takes a job_id parameter identifying the job to stop
-- Returns a success or failure status
-- Use this tool when you need to terminate a long-running job`
+Supports three operations, which can be combined in a single call:
+- list: list all background jobs and their statuses
+- poll: retrieve output from a running or completed job
+  - block=true (default): wait for job completion before returning
+  - block=false: non-blocking check of current status
+  - timeout: max wait time in ms (default 30000)
+- stop: terminate a running job by its ID
+
+Returns a retrieval_status for poll: success, timeout, or not_ready
+Returns a status for stop: killed (with the original command/description)
+Returns a jobs array for list: each entry has job_id, status, command
+
+Works with all job types: background shells, async agents, and remote sessions`
 }
