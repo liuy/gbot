@@ -126,16 +126,19 @@ func (s *Store) RecordCompact(sessionID string, result *CompactResult) error {
 		lastUUID = summary.UUID
 	}
 
-	// 3. Insert kept messages (preserve original chain).
+	// 3. Insert kept messages (re-link to post-compact chain).
 	// INSERT OR REPLACE handles the case where kept messages were already
 	// persisted by PersistNewMessages — the old row is replaced with a new
-	// seq after the boundary.
+	// seq after the boundary. Each kept message is chained after the previous
+	// one so the chain-walk can traverse boundary → summary → kept → kept...
 	for _, kept := range result.MessagesToKeep {
+		kept.ParentUUID = lastUUID
 		seq, err := s.insertOrReplaceMessageTx(tx, sessionID, kept)
 		if err != nil {
 			return fmt.Errorf("insert kept message: %w", err)
 		}
 		s.indexMessageFTS(tx, seq, kept.Content)
+		lastUUID = kept.UUID
 	}
 
 	// 4. Insert attachments

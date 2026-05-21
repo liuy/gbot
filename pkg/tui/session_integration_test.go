@@ -294,7 +294,7 @@ func TestIntegration_SwitchViaPickerUpdatesWorkspaceMeta(t *testing.T) {
 		t.Fatalf("sessionID = %q, want %q", a.sessionID, originalSessionID)
 	}
 
-	// BUG: meta.json should be updated to original session
+	// meta.json should be updated to original session
 	meta, _ = short.ReadWorkspaceMeta(projectDir)
 	if meta == nil {
 		t.Fatal("workspace meta should exist")

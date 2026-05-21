@@ -1024,15 +1024,21 @@ func TestRecordCompact_FullResult(t *testing.T) {
 		t.Errorf("sixth message should be att-1, got %v", messages[5].UUID)
 	}
 
-	// Verify parent chaining
+	// Verify parent chaining: boundary → summary-1 → summary-2 → kept-1 → kept-2 → att-1
 	if messages[1].ParentUUID != boundary.UUID {
 		t.Errorf("summary-1 parent should be boundary, got %v", messages[1].ParentUUID)
 	}
 	if messages[2].ParentUUID != "summary-1" {
 		t.Errorf("summary-2 parent should be summary-1, got %v", messages[2].ParentUUID)
 	}
-	if messages[5].ParentUUID != "summary-2" {
-		t.Errorf("attachment parent should be last summary, got %v", messages[5].ParentUUID)
+	if messages[3].ParentUUID != "summary-2" {
+		t.Errorf("kept-1 parent should be summary-2, got %v", messages[3].ParentUUID)
+	}
+	if messages[4].ParentUUID != "kept-1" {
+		t.Errorf("kept-2 parent should be kept-1, got %v", messages[4].ParentUUID)
+	}
+	if messages[5].ParentUUID != "kept-2" {
+		t.Errorf("attachment parent should be kept-2, got %v", messages[5].ParentUUID)
 	}
 }
 
@@ -2998,5 +3004,189 @@ func TestRecordCompact_KeptMessagesAlreadyPersisted(t *testing.T) {
 	}
 	if len(restartMsgs) >= 4 && restartMsgs[3].UUID != "kept-asst-3" {
 		t.Errorf("fourth message should be kept-asst-3, got %s", restartMsgs[3].UUID)
+	}
+}
+
+// TestRecordCompact_ParentChainIntegrityAfterResume verifies the full lifecycle:
+// 20 messages → compact (keep 10) → 5 new messages → restart → resume loads 15 messages
+// → fork → switch back → still 15 messages.
+//
+// The "15" = 10 kept + 5 new (chain participants after boundary).
+// Boundary and summary are also in the chain but the core assertion is that
+// kept messages are properly parent-linked so chain-walk doesn't skip them.
+func TestRecordCompact_ParentChainIntegrityAfterResume(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+
+	// --- Phase 1: Create 20 messages (10 user/assistant pairs) ---
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	sessionID := "test-chain-integrity"
+	createTestSession(t, store, sessionID)
+
+	// Build 20 messages via AppendMessages (ensures proper parent chain)
+	var allMsgs []*TranscriptMessage
+	for i := 0; i < 10; i++ {
+		allMsgs = append(allMsgs, &TranscriptMessage{
+			UUID:    fmt.Sprintf("u%d", i),
+			Type:    "user",
+			Content: fmt.Sprintf(`[{"type":"text","text":"user msg %d"}]`, i),
+		})
+		allMsgs = append(allMsgs, &TranscriptMessage{
+			UUID:    fmt.Sprintf("a%d", i),
+			Type:    "assistant",
+			Content: fmt.Sprintf(`[{"type":"text","text":"assistant reply %d"}]`, i),
+		})
+	}
+	if err := store.AppendMessages(sessionID, allMsgs); err != nil {
+		t.Fatalf("AppendMessages: %v", err)
+	}
+
+	// Verify chain before compact
+	chain, err := store.BuildConversationChain(sessionID)
+	if err != nil {
+		t.Fatalf("BuildConversationChain before compact: %v", err)
+	}
+	if len(chain) != 20 {
+		t.Fatalf("pre-compact chain: got %d, want 20", len(chain))
+	}
+
+	// --- Phase 2: RecordCompact — keep last 10 messages (5 pairs: u5-u9, a5-a9) ---
+	keptMessages := []*TranscriptMessage{}
+	for i := 5; i < 10; i++ {
+		keptMessages = append(keptMessages,
+			&TranscriptMessage{
+				UUID:    fmt.Sprintf("u%d", i),
+				Type:    "user",
+				Content: fmt.Sprintf(`[{"type":"text","text":"user msg %d"}]`, i),
+			},
+			&TranscriptMessage{
+				UUID:    fmt.Sprintf("a%d", i),
+				Type:    "assistant",
+				Content: fmt.Sprintf(`[{"type":"text","text":"assistant reply %d"}]`, i),
+			},
+		)
+	}
+
+	boundary := CreateCompactBoundaryMessage("auto", 5000, "")
+	result := &CompactResult{
+		BoundaryMarker: boundary,
+		SummaryMessages: []*TranscriptMessage{
+			{UUID: "summary-1", Type: "assistant", Content: `[{"type":"text","text":"Summary of conversation"}]`},
+		},
+		MessagesToKeep: keptMessages,
+		Attachments:    []*TranscriptMessage{},
+	}
+
+	if err := store.RecordCompact(sessionID, result); err != nil {
+		t.Fatalf("RecordCompact: %v", err)
+	}
+
+	// Verify post-compact messages have proper parent chain
+	loadedAfterCompact, err := store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages after compact: %v", err)
+	}
+
+	// Find the boundary seq — only check messages AFTER boundary
+	var boundarySeq int64
+	for _, m := range loadedAfterCompact {
+		if m.Subtype == "compact_boundary" {
+			boundarySeq = m.Seq
+			break
+		}
+	}
+
+	for _, m := range loadedAfterCompact {
+		if m.Seq <= boundarySeq {
+			continue // skip pre-compact and boundary itself
+		}
+		// All post-boundary messages MUST have a parent_uuid (chained)
+		if m.ParentUUID == "" {
+			t.Errorf("post-compact message %s (type=%s, seq=%d) has empty parent_uuid — chain is broken!", m.UUID, m.Type, m.Seq)
+		}
+	}
+
+	// --- Phase 3: Add 5 new messages after compact ---
+	newMsgs := []*TranscriptMessage{
+		{UUID: "new-u0", Type: "user", Content: `[{"type":"text","text":"post-compact q1"}]`},
+		{UUID: "new-a0", Type: "assistant", Content: `[{"type":"text","text":"post-compact a1"}]`},
+		{UUID: "new-u1", Type: "user", Content: `[{"type":"text","text":"post-compact q2"}]`},
+		{UUID: "new-a1", Type: "assistant", Content: `[{"type":"text","text":"post-compact a2"}]`},
+		{UUID: "new-u2", Type: "user", Content: `[{"type":"text","text":"post-compact q3"}]`},
+	}
+	if err := store.AppendMessages(sessionID, newMsgs); err != nil {
+		t.Fatalf("AppendMessages (new): %v", err)
+	}
+
+	// --- Phase 4: Restart — new store from same DB ---
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore (restart): %v", err)
+	}
+	defer store2.Close()
+
+	// Resume via LoadPostCompactChainMessages (what ResumeSession uses)
+	resumedMsgs, err := store2.LoadPostCompactChainMessages(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPostCompactChainMessages: %v", err)
+	}
+
+	// Expected: boundary(1) + summary(1) + kept(10) + new(5) = 17 chain messages
+	// If kept messages have broken parent chain, chain-walk skips them → RED
+	wantChainLen := 17
+	if len(resumedMsgs) != wantChainLen {
+		t.Errorf("resume chain: got %d messages, want %d (boundary + summary + 10 kept + 5 new)", len(resumedMsgs), wantChainLen)
+		for i, m := range resumedMsgs {
+			t.Logf("  resumed[%d]: uuid=%s type=%s parent=%s", i, m.UUID, m.Type, m.ParentUUID)
+		}
+	}
+
+	// Verify all kept and new messages are present
+	expectedUUIDs := map[string]bool{
+		"summary-1": false, "u5": false, "a5": false, "u6": false, "a6": false,
+		"u7": false, "a7": false, "u8": false, "a8": false, "u9": false, "a9": false,
+		"new-u0": false, "new-a0": false, "new-u1": false, "new-a1": false, "new-u2": false,
+	}
+	for _, m := range resumedMsgs {
+		if _, ok := expectedUUIDs[m.UUID]; ok {
+			expectedUUIDs[m.UUID] = true
+		}
+	}
+	for uuid, found := range expectedUUIDs {
+		if !found {
+			t.Errorf("resume chain: expected message %s not found", uuid)
+		}
+	}
+
+	// --- Phase 5: Fork session, switch back, verify same messages ---
+	forked, err := store2.ForkSession(sessionID, 0, "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+
+	forkChain, err := store2.BuildConversationChain(forked.SessionID)
+	if err != nil {
+		t.Fatalf("BuildConversationChain (fork): %v", err)
+	}
+	// Fork copies ALL messages (pre-compact + post-compact) and rebuilds parent chain
+	// so the chain-walk traverses all of them: 10 pre-compact + boundary + summary + 10 kept + 5 new = 27
+	totalMessages := 10 + 1 + 1 + 10 + 5 // pre-compact + boundary + summary + kept + new
+	if len(forkChain) != totalMessages {
+		t.Errorf("fork chain: got %d messages, want %d", len(forkChain), totalMessages)
+	}
+
+	// Switch back to original
+	origChain, err := store2.BuildConversationChain(sessionID)
+	if err != nil {
+		t.Fatalf("BuildConversationChain (switch back): %v", err)
+	}
+	if len(origChain) != wantChainLen {
+		t.Errorf("switch back: original chain has %d messages, want %d", len(origChain), wantChainLen)
 	}
 }
