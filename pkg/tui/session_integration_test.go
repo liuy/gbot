@@ -263,6 +263,47 @@ func TestIntegration_SwitchBackViaPickerRestoreMessages(t *testing.T) {
 	}
 }
 
+// TestIntegration_SwitchViaPickerUpdatesWorkspaceMeta verifies that switching
+// sessions via the picker updates .gbot/meta.json so that restart resumes
+// the correct session.
+func TestIntegration_SwitchViaPickerUpdatesWorkspaceMeta(t *testing.T) {
+	a, _, projectDir := newIntegrationApp(t)
+	originalSessionID := a.sessionID
+
+	// Fork to create a second session
+	a.handleSession("fork-session", nil)
+	forkedSessionID := a.sessionID
+	if forkedSessionID == originalSessionID {
+		t.Fatal("fork should change session ID")
+	}
+
+	// Fork updates meta — verify it points to forked session
+	meta, _ := short.ReadWorkspaceMeta(projectDir)
+	if meta == nil || meta.CurrentSessionID != forkedSessionID {
+		t.Fatalf("meta should point to forked session %q, got %v", forkedSessionID, meta)
+	}
+
+	// Switch back to original via picker
+	captured := helperSelectSession(t, a, []SessionItem{
+		{SessionID: forkedSessionID, Title: "fork-session"},
+		{SessionID: originalSessionID, Title: ""},
+	}, 1)
+	a.handleSessionPickerDone(a.activeDialog, captured)
+
+	if a.sessionID != originalSessionID {
+		t.Fatalf("sessionID = %q, want %q", a.sessionID, originalSessionID)
+	}
+
+	// BUG: meta.json should be updated to original session
+	meta, _ = short.ReadWorkspaceMeta(projectDir)
+	if meta == nil {
+		t.Fatal("workspace meta should exist")
+	}
+	if meta.CurrentSessionID != originalSessionID {
+		t.Errorf("workspace meta should point to original session %q after picker switch, got %q", originalSessionID, meta.CurrentSessionID)
+	}
+}
+
 // TestIntegration_ForkThenNewThenPickerShowsAll is the full end-to-end
 // scenario: start → persist → fork → new → picker should show all 3.
 func TestIntegration_ForkThenNewThenPickerShowsAll(t *testing.T) {

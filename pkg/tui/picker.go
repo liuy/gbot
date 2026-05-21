@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -120,6 +121,13 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	*a.repl = *NewReplState()
 	a.repl.messages = engineMessagesToViews(engineMsgs)
 	a.committedCount = len(a.repl.messages)
+
+	slog.Info("session: switched via picker", "sessionID", selected.SessionID, "messages", len(engineMsgs))
+
+	// Update workspace meta so restart resumes the correct session
+	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
+		slog.Warn("session picker: write workspace meta failed", "error", err)
+	}
 
 	title := selected.Title
 	if title == "" {
