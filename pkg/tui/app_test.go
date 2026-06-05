@@ -6906,7 +6906,7 @@ func TestRetryView_AutoHideWhenStreaming(t *testing.T) {
 		shouldShowRetry bool
 	}{
 		{"no response yet", 0, false, true},
-		{"text started", 10, false, false},
+		{"text started", 10, false, true},
 		{"thinking started", 0, true, false},
 		{"both active", 10, true, false},
 	}

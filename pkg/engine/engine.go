@@ -1252,7 +1252,7 @@ type StreamInterruptedError struct {
 }
 
 func (e *StreamInterruptedError) Error() string {
-	return "stream interrupted: response incomplete (no stop_reason received)"
+	return "Connection interrupted. The response was lost mid-stream"
 }
 
 // StreamEndedError indicates the stream ended without any content
@@ -3003,6 +3003,12 @@ func (e *Engine) SystemPrompt() json.RawMessage { return e.systemPrompt }
 
 // SetSystemPrompt stores the system prompt for later access by fork agents.
 func (e *Engine) SetSystemPrompt(sp json.RawMessage) { e.systemPrompt = sp }
+
+// SetSkillListing stores the formatted skill listing for /context breakdown.
+func (e *Engine) SetSkillListing(sl string) { e.skillListing = sl }
+
+// SetAgentDefs stores agent definitions for /context breakdown.
+func (e *Engine) SetAgentDefs(defs []*types.AgentDefinition) { e.agentDefs = defs }
 
 // subMaxTurns returns the max turns for a sub-engine.
 // 0 or negative means no limit (same as TS built-in agents).

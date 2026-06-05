@@ -718,7 +718,7 @@ func (a *App) View() string {
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		// Retry display: show user-friendly error + countdown for attempts >= 4
 		// Source: TS SystemAPIErrorMessage.tsx — hidden for attempts < 4
-		if a.retryActive && a.retryAttempt >= 4 && a.responseCharCount == 0 && !a.thinkingActive {
+		if a.retryActive && a.retryAttempt >= 4 && !a.thinkingActive {
 			secs := max(int((a.retryRemaining-time.Since(a.retryStart)).Seconds())+1, 0)
 			errLine := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(formatRetryError(a.retryErrorType))
 			countdownLine := lipgloss.NewStyle().Faint(true).Render(
