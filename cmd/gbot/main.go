@@ -252,6 +252,8 @@ func main() {
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
+	eng.SetSkillListing(skillListing)
+	eng.SetAgentDefs(agenttool.ListAgentDefinitions())
 	// 6. Initialize short-term memory store
 	configDir, _ = config.ConfigDir()
 	var store *short.Store

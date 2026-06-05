@@ -94,6 +94,10 @@ type App struct {
 	activeDialog *Dialog
 	onDialogDone func(*Dialog) (tea.Model, tea.Cmd)
 
+	// Info overlay (read-only text, dismiss with Esc/q)
+	infoOverlay       string
+	infoOverlayScroll int
+
 	// Active input dialog overlay (interactive PTY input with countdown)
 	activeInput *InputDialog
 
@@ -500,6 +504,46 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Info overlay: intercept Esc/q to dismiss, scroll to navigate.
+	if a.infoOverlay != "" {
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			a.width = msg.Width
+			a.height = msg.Height
+			return a, nil
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "esc", "q", "ctrl+c":
+				a.infoOverlay = ""
+				a.infoOverlayScroll = 0
+				return a, nil
+			case "up", "k":
+				a.infoOverlayScroll = max(a.infoOverlayScroll-1, 0)
+				return a, nil
+			case "down", "j":
+				a.infoOverlayScroll++
+				return a, nil
+			case "pgup":
+				a.infoOverlayScroll = max(a.infoOverlayScroll-max(a.height/2, 1), 0)
+				return a, nil
+			case "pgdown":
+				a.infoOverlayScroll += max(a.height/2, 1)
+				return a, nil
+			}
+			return a, nil
+		case tea.MouseMsg:
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				a.infoOverlayScroll = max(a.infoOverlayScroll-3, 0)
+			case tea.MouseButtonWheelDown:
+				a.infoOverlayScroll += 3
+			}
+			return a, nil
+		default:
+			return a, nil
+		}
+	}
+
 	switch m := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -575,6 +619,11 @@ func (a *App) View() string {
 	// Dialog overlay (unified for list picking and permission asking)
 	if a.activeDialog != nil {
 		return a.renderModalView()
+	}
+
+	// Info overlay (read-only text, dismiss with Esc/q)
+	if a.infoOverlay != "" {
+		return a.renderInfoOverlay()
 	}
 
 	// Input dialog overlay (interactive PTY input with countdown)
@@ -1286,6 +1335,38 @@ func (a *App) renderModalView() string {
 		return dialogView
 	}
 	return peek + "\n" + dialogView
+}
+
+// renderInfoOverlay renders the info overlay: peek content + bordered content + hint.
+func (a *App) renderInfoOverlay() string {
+	peek := a.computePeek()
+
+	content := a.infoOverlay
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+
+	// Reserve: 2 border + 2 padding + 1 hint = 5; plus peek lines
+	peekLines := a.countPeekLines(peek)
+	maxContent := max(a.height-5-peekLines, 1)
+
+	// Clamp scroll
+	if a.infoOverlayScroll > totalLines-maxContent {
+		a.infoOverlayScroll = max(totalLines-maxContent, 0)
+	}
+	if a.infoOverlayScroll < 0 {
+		a.infoOverlayScroll = 0
+	}
+
+	end := min(a.infoOverlayScroll+maxContent, totalLines)
+	visible := strings.Join(lines[a.infoOverlayScroll:end], "\n")
+
+	hint := dialogHint.Render("↑/k up · ↓/j down · PgUp/PgDown · Esc close")
+	border := dialogBorderStyle.Render(visible + "\n\n" + hint)
+
+	if peek == "" {
+		return border
+	}
+	return peek + "\n" + border
 }
 
 // renderInputOverlay renders the InputDialog overlay with transcript peek.

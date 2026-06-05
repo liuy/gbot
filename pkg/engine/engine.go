@@ -112,6 +112,8 @@ type Engine struct {
 	workingDir    string
 	attachments *attachmentQueue
 	systemPrompt  json.RawMessage // stored system prompt for fork agent access
+	skillListing  string          // formatted skill listing for /context breakdown
+	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
 	queryActive   int32          // atomic: 1 = query/turn loop running, 0 = idle
 
 	// isSubagent is true for sub-agent engines created by AgentTool.
@@ -937,6 +939,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) Que
 			e.mu.Lock()
 			e.ContextTokens = resp.Usage.TotalInputTokens() + resp.Usage.OutputTokens
 			e.mu.Unlock()
+			e.persistContextTokens()
 		}
 
 		// Add assistant message to history
@@ -1260,7 +1263,7 @@ func (e *StreamInterruptedError) Error() string {
 type StreamEndedError struct{}
 
 func (e *StreamEndedError) Error() string {
-	return "stream ended without content or completion signal"
+	return "Connection lost. No response was received"
 }
 
 // isStreamError reports whether err is a transient stream failure safe to retry
@@ -2013,6 +2016,7 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	e.ContextTokens = result.AfterTokens
 	e.markAllPersisted()
 	e.mu.Unlock()
+	e.persistContextTokens()
 	return result, nil
 }
 
@@ -2397,6 +2401,7 @@ func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
 						e.mu.Lock()
 						e.ContextTokens = ses.ContextTokens
 						e.mu.Unlock()
+						slog.Info("ResumeOrInitSession: restored ContextTokens", "tokens", ses.ContextTokens)
 					}
 					return meta.CurrentSessionID, nil
 				}
@@ -2561,6 +2566,39 @@ func (e *Engine) SetStore(store *short.Store, projectDir string) {
 	e.forkParentUUID = ""
 }
 
+// persistContextTokens saves the current ContextTokens to the session store.
+// Called after API responses, autocompact, and rewind — all places that update
+// ContextTokens — so restarts can restore the value for /context.
+// Caller must NOT hold e.mu (uses RLock internally).
+func (e *Engine) persistContextTokens() {
+	e.mu.RLock()
+	store := e.store
+	sid := e.sessionID
+	tokens := e.ContextTokens
+	e.mu.RUnlock()
+	if store == nil || sid == "" {
+		return
+	}
+	if err := store.UpdateContextTokens(sid, tokens); err != nil {
+		slog.Error("persistContextTokens", "error", err, "session", sid)
+	}
+}
+
+// persistContextTokensLocked is the same as persistContextTokens but for call
+// sites that already hold e.mu for writing. Reads fields directly without
+// re-acquiring the lock.
+func (e *Engine) persistContextTokensLocked() {
+	store := e.store
+	sid := e.sessionID
+	tokens := e.ContextTokens
+	if store == nil || sid == "" {
+		return
+	}
+	if err := store.UpdateContextTokens(sid, tokens); err != nil {
+		slog.Error("persistContextTokensLocked", "error", err, "session", sid)
+	}
+}
+
 // HasStore returns true if the engine has a persistence store wired.
 func (e *Engine) HasStore() bool {
 	e.mu.RLock()
@@ -2640,6 +2678,7 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 		// so after rewind it naturally returns the correct count. gbot stores
 		// ContextTokens, so recalculate from remaining messages with usage.
 		e.ContextTokens = TokenCountWithEstimation(e.messages)
+		e.persistContextTokensLocked()
 	}
 
 	if scope == RewindAll || scope == RewindFilesOnly {
@@ -2827,6 +2866,21 @@ func (e *Engine) GetContextTokens() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.ContextTokens
+}
+
+// SetContextTokens sets the total context token count. Used by tests and
+// internal callers that need to simulate API response state without
+// actually calling the LLM.
+func (e *Engine) SetContextTokens(n int) {
+	e.mu.Lock()
+	e.ContextTokens = n
+	e.mu.Unlock()
+}
+
+// PersistContextTokens exports persistContextTokens for use by external
+// test packages that need to verify persistence behavior.
+func (e *Engine) PersistContextTokens() {
+	e.persistContextTokens()
 }
 
 // SetMaxTokens updates the max output tokens for the current model.

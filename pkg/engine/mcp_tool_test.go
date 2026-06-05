@@ -306,7 +306,8 @@ func TestEngine_RefreshTools_MergesMCPTools(t *testing.T) {
 
 // stubTool is a minimal tool.Tool implementation for testing.
 type stubTool struct {
-	name string
+	name   string
+	prompt string
 }
 
 func (s *stubTool) Name() string                                { return s.name }
@@ -316,7 +317,7 @@ func (s *stubTool) Description(json.RawMessage) (string, error) { return "", nil
 func (s *stubTool) IsEnabled() bool                             { return true }
 func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.InterruptCancel }
 func (s *stubTool) MaxResultSize() int                          { return 0 }
-func (s *stubTool) Prompt() string                              { return "" }
+func (s *stubTool) Prompt() string                              { return s.prompt }
 func (s *stubTool) RenderResult(any) string                     { return "" }
 func (s *stubTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil

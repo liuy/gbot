@@ -28,6 +28,7 @@ var commandDefs = map[string]CommandDef{
 	"clear":   {Description: "Clear conversation", HasArgs: false},
 	"model":   {Description: "Switch model", HasArgs: true},
 	"rewind":  {Description: "Restore conversation to a previous point", HasArgs: false},
+	"context": {Description: "Visualize context window usage", HasArgs: false},
 }
 
 // skillDefs maps plugin/user skill names for completion display only.
@@ -120,6 +121,8 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 		resultCmd = a.handleModel(cmd.Args, commitCmd)
 	case "rewind":
 		resultCmd = a.handleRewind(commitCmd)
+	case "context":
+		resultCmd = a.handleContext(commitCmd)
 	default:
 		slog.Warn("tui:unknown slash command", "name", cmd.Name)
 		resultCmd = commitCmd
