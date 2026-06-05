@@ -175,6 +175,16 @@ func logEngineEvent(event Event) {
 		errMsg := fmt.Sprintf("%v", event.Error)
 		slog.Info("engine:error", "error", errMsg)
 
+	case types.EventRetryAttempt:
+		if event.RetryAttempt != nil {
+			slog.Info("engine:retry_attempt",
+				"attempt", event.RetryAttempt.Attempt,
+				"maxRetries", event.RetryAttempt.MaxRetries,
+				"retryInMs", event.RetryAttempt.RetryInMs,
+				"errorType", event.RetryAttempt.ErrorType,
+			)
+		}
+
 	case types.EventAsk:
 		if event.Ask != nil {
 			slog.Info("engine:permission_ask", "tool", event.Ask.ToolName)
