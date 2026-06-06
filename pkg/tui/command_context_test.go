@@ -104,7 +104,6 @@ func TestRenderContextView_ContainsAllSections(t *testing.T) {
 
 	wantSections := []string{
 		"Context Usage",
-		"Estimated usage by category",
 		"System prompt",
 		"Messages",
 		"MCP tools",
@@ -480,7 +479,6 @@ func TestHandleContext_FullChain_ContextOutput(t *testing.T) {
 		"tokens",
 		"System prompt",
 		"Messages",
-		"Estimated usage by category",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q\nfull output:\n%s", want, output)

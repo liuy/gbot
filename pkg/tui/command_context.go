@@ -51,27 +51,20 @@ func (a *App) handleContext(commitCmd tea.Cmd) tea.Cmd {
 //
 //	Context Usage
 //	─────
-//	[grid 10×10]   model-name
-//	[grid ...]     XX.Xk / XXXk tokens (XX.X%)
-//	[grid ...]     (empty)
-//	               Estimated usage by category
-//	               ⛁ System prompt: XX.Xk tokens (XX.X%)
-//	               ⛁ ...
+//	[grid 10×10]
+//	[grid ...]
+//	[grid ...]
+//
+//	model-name
+//	XX.Xk / XXXk tokens (XX.X%)
+//	█ System prompt    XX.Xk (XX.X%)
+//	█ Messages         XX.Xk (XX.X%)
+//	░ Free space       XX.Xk (XX.X%)
+//	▒ Autocompact      XX.Xk (XX.X%)
 //
 //	MCP tools
 //	  Loaded
 //	    └ name: XX tokens
-//	  Available
-//	    └ name
-//
-//	Custom agents
-//	  └ name: XX tokens
-//
-//	Memory files
-//	  └ path: XX tokens
-//
-//	Skills
-//	  └ name: XX tokens
 //
 //	Message breakdown
 //	  Tool calls: XX.Xk
@@ -87,10 +80,16 @@ func renderContextView(bd *engine.ContextBreakdown, width int) string {
 		strings.Repeat("─", min(width-1, 60))))
 	sb.WriteString("\n")
 
-	// Grid + legend side by side.
+	// Grid — standalone block.
 	gridLines := renderGrid(bd)
-	legendLines := renderLegend(bd)
-	sb.WriteString(joinGridLegend(gridLines, legendLines))
+	for _, line := range gridLines {
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+
+	// Category legend below grid.
+	sb.WriteString("\n")
+	sb.WriteString(renderCategories(bd))
 	sb.WriteString("\n")
 
 	// Detail sections.
@@ -145,76 +144,41 @@ func renderGrid(bd *engine.ContextBreakdown) []string {
 	return lines
 }
 
-func renderLegend(bd *engine.ContextBreakdown) []string {
+func renderCategories(bd *engine.ContextBreakdown) string {
 	used := types.FormatTokenCount(bd.TotalTokens)
 	window := types.FormatTokenCount(bd.ContextWindow)
-	pct := bd.Percentage
 
+	var sb strings.Builder
 	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246"))
-	categoryStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	freeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	sb.WriteString(modelStyle.Render(bd.Model))
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "%s / %s tokens (%.1f%%)\n", used, window, bd.Percentage)
 
-	lines := []string{
-		modelStyle.Render(bd.Model),
-		fmt.Sprintf("%s / %s tokens (%.1f%%)", used, window, pct),
-		"",
-		headerStyle.Render("Estimated usage by category"),
-	}
-
+	// Compute column widths for alignment.
+	// Name field: left-padded with color symbol.
+	const nameWidth = 18
 	for _, c := range bd.Categories {
-		var prefix string
-		var style lipgloss.Style
+		sym := engine.SymFilledPart
 		switch {
 		case c.IsFree:
-			prefix = engine.SymFreeSpace + " "
-			style = freeStyle
+			sym = engine.SymFreeSpace
 		case c.IsReserved:
-			prefix = engine.SymReserved + " "
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Color))
-		default:
-			sym := engine.SymFilledPart
-			if c.Percentage >= 70 {
-				sym = engine.SymFilledFull
-			}
-			prefix = sym + " "
-			style = categoryStyle
+			sym = engine.SymReserved
+		case c.Percentage >= 70:
+			sym = engine.SymFilledFull
 		}
-		// Apply the category's own color when non-free/reserved.
-		if !c.IsFree {
-			style = lipgloss.NewStyle().Foreground(lipgloss.Color(c.Color))
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Color))
+		name := c.Name
+		// Pad or truncate name to nameWidth.
+		if len(name) > nameWidth {
+			name = name[:nameWidth-1] + "…"
 		}
-		lines = append(lines, style.Render(fmt.Sprintf(
-			"%s%s: %s tokens (%.1f%%)",
-			prefix,
-			c.Name,
-			types.FormatTokenCount(c.Tokens),
-			c.Percentage,
-		)))
+		padded := name + strings.Repeat(" ", max(nameWidth-len(name), 0))
+		sb.WriteString(style.Render(fmt.Sprintf("%s %s %s (%4.1f%%)",
+			sym, padded, types.FormatTokenCount(c.Tokens), c.Percentage)))
+		sb.WriteString("\n")
 	}
-	return lines
-}
-
-func joinGridLegend(gridLines, legendLines []string) string {
-	gap := "  "
-	n := max(len(legendLines), len(gridLines))
-	var sb strings.Builder
-	for i := range n {
-		var g, l string
-		if i < len(gridLines) {
-			g = gridLines[i]
-		}
-		if i < len(legendLines) {
-			l = legendLines[i]
-		}
-		sb.WriteString(g)
-		sb.WriteString(gap)
-		sb.WriteString(l)
-		if i < n-1 {
-			sb.WriteString("\n")
-		}
-	}
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // -----------------------------------------------------------------------

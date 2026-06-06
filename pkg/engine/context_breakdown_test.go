@@ -114,19 +114,9 @@ func TestContextBreakdown_GridDimensions(t *testing.T) {
 		t.Errorf("GridRows = %d, want %d", len(bd.GridRows), GridHeight)
 	}
 	for i, row := range bd.GridRows {
-		if len(row) != GridWidth(bd.ContextWindow) {
-			t.Errorf("row %d width = %d, want %d", i, len(row), GridWidth(bd.ContextWindow))
+		if len(row) != GridWidth {
+			t.Errorf("row %d width = %d, want %d", i, len(row), GridWidth)
 		}
-	}
-}
-
-// TestContextBreakdown_1MUses20ColGrid verifies 1M context uses 20-col grid.
-func TestContextBreakdown_1MUses20ColGrid(t *testing.T) {
-	if GridWidth(500_000) != 10 {
-		t.Errorf("GridWidth(500K) = %d, want 10", GridWidth(500_000))
-	}
-	if GridWidth(1_000_000) != 20 {
-		t.Errorf("GridWidth(1M) = %d, want 20", GridWidth(1_000_000))
 	}
 }
 
@@ -144,7 +134,7 @@ func TestContextBreakdown_ReservedAtEnd(t *testing.T) {
 	for i, row := range bd.GridRows {
 		for j, sq := range row {
 			if sq.CategoryName == "Autocompact buffer" {
-				idx := i*GridWidth(bd.ContextWindow) + j
+				idx := i*GridWidth + j
 				if idx > lastReservedIdx {
 					lastReservedIdx = idx
 				}
@@ -154,7 +144,7 @@ func TestContextBreakdown_ReservedAtEnd(t *testing.T) {
 	for i, row := range bd.GridRows {
 		for j, sq := range row {
 			if sq.CategoryName != "Autocompact buffer" && sq.CategoryName != "Free space" {
-				idx := i*GridWidth(bd.ContextWindow) + j
+				idx := i*GridWidth + j
 				if lastReservedIdx >= 0 && idx > lastReservedIdx {
 					t.Errorf("non-reserved square at idx %d appears after reserved at %d", idx, lastReservedIdx)
 				}

@@ -169,18 +169,15 @@ const (
 	ColorReserved     = "160" // red
 )
 
-// 200K models → 10 cols; 1M+ models → 20 cols. Source: analyzeContext.ts:1110-1120
-func GridWidth(contextWindow int) int {
-	if contextWindow >= 1_000_000 {
-		return 20
-	}
-	return 10
-}
+// GridWidth is always 20 columns.
+const GridWidth = 20
 
-const GridHeight = 10
+// GridHeight is always 5 rows.
+const GridHeight = 5
 
+// TotalSquares is GridWidth × GridHeight = 100.
 func TotalSquares(contextWindow int) int {
-	return GridWidth(contextWindow) * GridHeight
+	return GridWidth * GridHeight
 }
 
 // Grid symbols — block characters for intuitive fullness representation.
@@ -670,7 +667,7 @@ func buildCategories(scaled scaledComponents, free, reserved, total int) []Conte
 // Source: analyzeContext.ts:1176-1300 — buildGrid
 func BuildGrid(cats []ContextCategory, contextWindow int) [][]GridSquare {
 	totalSquares := TotalSquares(contextWindow)
-	width := GridWidth(contextWindow)
+	width := GridWidth
 
 	// Compute non-reserved, non-free total for proportional share.
 	shareTotal := 0
