@@ -1028,6 +1028,7 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 	var sb strings.Builder
 	for _, msg := range messages {
 		sb.WriteString(msg.View(width, expandTools, toolDot, streaming, noHint, maxOutputLines))
+		sb.WriteString("\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

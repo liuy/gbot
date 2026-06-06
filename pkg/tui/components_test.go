@@ -535,10 +535,11 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 	}
 }
 
-func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
+func TestMessageView_NoBlankLineBetweenBlocks(t *testing.T) {
 	t.Parallel()
 
-	// Completed tool followed by text block → should have double newline (blank line)
+	// Completed tool followed by text block: no extra blank line at block level.
+	// Blank lines are now added uniformly at the message level in renderMessagesFull.
 	m := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
@@ -547,11 +548,11 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if !strings.Contains(v, "\n\n") {
-		t.Errorf("completed tool followed by text should have blank line, got: %q", v)
+	if strings.Contains(v, "\n\n") {
+		t.Errorf("block-level should have no blank line, got: %q", v)
 	}
 
-	// Running tool (not done) → no blank line
+	// Running tool (not done) → also no blank line
 	m2 := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
@@ -564,7 +565,7 @@ func TestMessageView_BlankLineAfterToolBeforeText(t *testing.T) {
 		t.Errorf("running tool followed by text should NOT have blank line, got: %q", v2)
 	}
 
-	// Tool at end (no following block) → no extra blank line (no \n\n)
+	// Tool at end (no following block) → no extra blank line
 	m3 := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{

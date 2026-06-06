@@ -4939,10 +4939,11 @@ func TestApp_ModalPeek_Adaptive_SparseContent(t *testing.T) {
 	app.contentDirty = false
 
 	view := app.View()
-	// 3 content lines, maxPeek = 19 → peek=3, modalHeight = 24-3 = 21
+	// 3 messages → 3 content lines + 2 separator lines = 5 rendered lines.
+	// maxPeek = 19 → peek = 5, modalHeight = 24 - 5 = 19.
 	assertModalContains(t, view, "Line 2", "Test Dialog")
-	if app.activeDialog.height != 21 {
-		t.Errorf("dialog height = %d, want 21 (3 peek lines)", app.activeDialog.height)
+	if app.activeDialog.height != 19 {
+		t.Errorf("dialog height = %d, want 19 (5 peek lines)", app.activeDialog.height)
 	}
 	// Verify layout order: content before dialog title
 	contentIdx := strings.Index(view, "Line 2")
@@ -5014,14 +5015,15 @@ func TestApp_ModalPeek_ResizeRecalculates(t *testing.T) {
 	if h2 <= h1 {
 		t.Errorf("after resize to larger terminal, height should increase: %d → %d", h1, h2)
 	}
-	// 5 content lines, maxPeek at h=40 is 35, 5<=35 → peek=5, modalHeight = 40-5 = 35
-	if h2 != 35 {
-		t.Errorf("dialog height after resize = %d, want 35", h2)
+	// 5 messages → 5 content lines + 4 separator lines = 9 rendered lines.
+	// maxPeek at h=40 is 35, 9 <= 35 → peek=9, modalHeight = 40-9 = 31.
+	if h2 != 31 {
+		t.Errorf("dialog height after resize = %d, want 31", h2)
 	}
 }
 
 func TestApp_ModalPeek_BoundaryContent(t *testing.T) {
-	// Exactly maxPeek lines → show all (not capped)
+	// maxPeek messages → rendered lines exceed maxPeek, so peek is capped.
 	app := helperModalApp(t, 24)
 	maxPeek := 24 - minModalHeight // = 19
 	helperAddMessages(app, maxPeek, "Boundary line")
@@ -5029,10 +5031,10 @@ func TestApp_ModalPeek_BoundaryContent(t *testing.T) {
 	app.contentDirty = false
 
 	view := app.View()
-	// maxPeek lines == maxPeek → show all → peek=maxPeek=19
+	// 19 messages → 37 rendered lines > maxPeek(19) → abundant, peek capped to modalPeekRows=2.
 	assertModalContains(t, view, "Test Dialog")
-	if app.activeDialog.height != 24-maxPeek {
-		t.Errorf("dialog height = %d, want %d", app.activeDialog.height, 24-maxPeek)
+	if app.activeDialog.height != 22 {
+		t.Errorf("dialog height = %d, want 22", app.activeDialog.height)
 	}
 }
 
@@ -5056,8 +5058,9 @@ func TestApp_ModalPeek_GetRenderedContent_NoCache(t *testing.T) {
 
 	view := app.View()
 	assertModalContains(t, view, "Test Dialog", "CacheMiss 2")
-	if app.activeDialog.height != 21 {
-		t.Errorf("dialog height = %d, want 21 (3 peek, no cache)", app.activeDialog.height)
+	// 3 messages → 5 rendered lines, maxPeek=19, peek=5, modalHeight=24-5=19.
+	if app.activeDialog.height != 19 {
+		t.Errorf("dialog height = %d, want 19 (5 peek, no cache)", app.activeDialog.height)
 	}
 }
 

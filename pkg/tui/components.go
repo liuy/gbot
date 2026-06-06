@@ -786,10 +786,6 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 			case BlockTool:
 				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0, isStreaming)
 				sb.WriteString("\n")
-				// Blank line between completed tool and following text block
-				if blk.ToolCall.Done && i+1 < len(m.Blocks) && m.Blocks[i+1].Type == BlockText {
-					sb.WriteString("\n")
-				}
 			case BlockThinking:
 				blk.renderThinkingBlock(&sb, availWidth, expand, toolDot, noHint, 0)
 				sb.WriteString("\n")
