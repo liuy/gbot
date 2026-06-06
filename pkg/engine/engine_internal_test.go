@@ -6519,6 +6519,40 @@ type disabledTool struct {
 func (d *disabledTool) Name() string    { return "DisabledTool" }
 func (d *disabledTool) IsEnabled() bool { return false }
 
+// promptTool has a non-empty Prompt() — simulates a real tool like Edit/Bash.
+type promptTool struct {
+	minimalTool
+}
+
+func (p *promptTool) Description(json.RawMessage) (string, error) {
+	return "Short description", nil
+}
+func (p *promptTool) Prompt() string {
+	return "Full multi-line usage instructions that the LLM should see"
+}
+
+func TestBuildToolDefs_UsesPromptAsDescription(t *testing.T) {
+	tools := []tool.Tool{&promptTool{}}
+	defs := buildToolDefs(tools)
+	if len(defs) != 1 {
+		t.Fatalf("buildToolDefs returned %d defs, want 1", len(defs))
+	}
+	if defs[0].Description != "Full multi-line usage instructions that the LLM should see" {
+		t.Errorf("Description = %q, want Prompt() content", defs[0].Description)
+	}
+}
+
+func TestBuildToolDefs_EmptyPromptSendsEmptyDescription(t *testing.T) {
+	tools := []tool.Tool{&minimalTool{}}
+	defs := buildToolDefs(tools)
+	if len(defs) != 1 {
+		t.Fatalf("buildToolDefs returned %d defs, want 1", len(defs))
+	}
+	if defs[0].Description != "" {
+		t.Errorf("Description = %q, want empty", defs[0].Description)
+	}
+}
+
 func TestBuildToolDefs_SkipsDisabledTools(t *testing.T) {
 	tools := []tool.Tool{
 		&minimalTool{},

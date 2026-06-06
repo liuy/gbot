@@ -1226,6 +1226,7 @@ func (e *Engine) fireCompactHooks(ctx context.Context, trigger string, phase str
 }
 
 // buildToolDefs converts a slice of tools into LLM tool definitions.
+// TS: tool.prompt() is the API description; Description() is UI-only.
 func buildToolDefs(tools []tool.Tool) []llm.ToolDef {
 	defs := make([]llm.ToolDef, 0, len(tools))
 	for _, t := range tools {
@@ -1233,13 +1234,9 @@ func buildToolDefs(tools []tool.Tool) []llm.ToolDef {
 			continue
 		}
 		schema := t.InputSchema()
-		desc, err := t.Description(nil)
-		if err != nil {
-			desc = t.Name()
-		}
 		defs = append(defs, llm.ToolDef{
 			Name:        t.Name(),
-			Description: desc,
+			Description: t.Prompt(),
 			InputSchema: schema,
 		})
 	}
@@ -2181,6 +2178,136 @@ func (e *Engine) Messages() []types.Message {
 // Tools returns the tool map used by the engine.
 func (e *Engine) Tools() map[string]tool.Tool {
 	return e.tools
+}
+
+// APIRequestDump holds the assembled request data for /context dump.
+// Mirrors what callLLM would send to the API, but without side effects
+// (no refreshTools, no applyBudget, no provider.Stream).
+type APIRequestDump struct {
+	Model         string
+	MaxTokens     int
+	ContextWindow int
+	ContextTokens int
+	IsSubagent    bool
+	WorkingDir    string
+	SystemPrompt  json.RawMessage
+	Messages      []types.Message
+	Tools         []llm.ToolDef
+}
+
+// DumpAPIRequest snapshots engine state and assembles the request exactly as
+// callLLM would, but without side effects. Skips refreshTools (uses current
+// tool snapshot), skips applyBudget (no recordWriter side effect).
+// Used by /context dump for debugging.
+func (e *Engine) DumpAPIRequest() *APIRequestDump {
+	e.mu.RLock()
+	messages := slicesCloneMessages(e.messages)
+	toolsSnapshot := toolsClone(e.tools)
+	toolSearchSnap := e.toolSearch
+	toolOrderCopy := make([]string, len(e.toolOrder))
+	copy(toolOrderCopy, e.toolOrder)
+	systemPromptRaw := slicesCloneRawMessage(e.systemPrompt)
+	workingDir := e.workingDir
+	isSubagent := e.isSubagent
+	model := e.model
+	maxTokens := e.maxTokens
+	contextWindow := e.autoCompactConfig.ContextWindow
+	contextTokens := e.ContextTokens
+	e.mu.RUnlock()
+
+	// ToolSearch filtering (pure function, no side effects).
+	_, toolSearchActive := toolsSnapshot[ToolSearchToolName]
+	var toolsToBuild []tool.Tool
+	if toolSearchActive {
+		activeTools, _, _ := FilterToolsForRequest(toolsSnapshot, toolSearchSnap, toolOrderCopy)
+		if len(activeTools) > 0 {
+			toolsToBuild = activeTools
+		}
+	}
+	if len(toolsToBuild) == 0 {
+		for _, name := range toolOrderCopy {
+			if t, ok := toolsSnapshot[name]; ok && t.IsEnabled() {
+				toolsToBuild = append(toolsToBuild, t)
+			}
+		}
+	}
+	toolDefs := buildToolDefs(toolsToBuild)
+
+	// Marshal messages: deep copy + normalize (same as callLLM path).
+	// We reuse marshalMessages logic but operate on our snapshot.
+	// Since marshalMessages reads e.messages directly, we inline the
+	// essential steps here on our snapshot.
+	apiMessages := marshalMessagesFrom(messages)
+	apiMessages = NormalizeMessagesForAPI(apiMessages)
+	// Intentionally skip applyBudget — it has a write side effect.
+
+	// Prepend user context (CLAUDE.md/AGENTS.md/currentDate).
+	if !isSubagent {
+		ctxMap := ctxbuild.LoadContextFiles(workingDir)
+		if len(ctxMap) > 0 {
+			ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
+			ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+			if ctxText != "" {
+				ctxMsg := types.Message{
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+					Flags:   types.FlagMeta,
+				}
+				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
+			}
+		}
+	}
+
+	// Prepend deferred tools announcement.
+	if toolSearchActive {
+		_, deferredTools, _ := FilterToolsForRequest(toolsSnapshot, toolSearchSnap, toolOrderCopy)
+		if ann := DeferredToolsAnnouncement(deferredTools); ann != "" && len(apiMessages) > 0 {
+			prefixMsg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(ann)},
+			}
+			apiMessages = append([]types.Message{prefixMsg}, apiMessages...)
+		}
+	}
+
+	return &APIRequestDump{
+		Model:         model,
+		MaxTokens:     maxTokens,
+		ContextWindow: contextWindow,
+		ContextTokens: contextTokens,
+		IsSubagent:    isSubagent,
+		WorkingDir:    workingDir,
+		SystemPrompt:  systemPromptRaw,
+		Messages:      apiMessages,
+		Tools:         toolDefs,
+	}
+}
+
+// marshalMessagesFrom is a pure-function version of marshalMessages that
+// operates on a pre-snapshotted message slice instead of reading e.messages.
+func marshalMessagesFrom(messages []types.Message) []types.Message {
+	var out []types.Message
+	for _, msg := range messages {
+		if msg.Role == types.RoleSystem {
+			continue
+		}
+		// Deep copy content blocks.
+		blocks := make([]types.ContentBlock, len(msg.Content))
+		copy(blocks, msg.Content)
+		out = append(out, types.Message{
+			Role:    msg.Role,
+			Content: blocks,
+			Flags:   msg.Flags,
+		})
+	}
+	// Set cache_control on the last block of the last message.
+	if len(out) > 0 && len(out[len(out)-1].Content) > 0 {
+		last := &out[len(out)-1].Content[len(out[len(out)-1].Content)-1]
+		if last.CacheControl == nil {
+			last.CacheControl = &types.CacheControlConfig{Type: "ephemeral"}
+		}
+	}
+	return out
 }
 
 // refreshTools rebuilds the tool map and order from the provider if set,

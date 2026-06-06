@@ -77,7 +77,7 @@ func TestBuild_WithGitStatus(t *testing.T) {
 	}
 }
 
-func TestBuild_WithToolPrompts(t *testing.T) {
+func TestBuild_WithToolPrompts_NoLongerInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
 	b.ToolPrompts = []string{"Tool 1: Use wisely", "Tool 2: Be carefully"}
@@ -92,11 +92,11 @@ func TestBuild_WithToolPrompts(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
-	if !strings.Contains(promptStr, "Tool 1: Use wisely") {
-		t.Error("built prompt missing tool prompt 1")
+	if strings.Contains(promptStr, "Tool 1: Use wisely") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
-	if !strings.Contains(promptStr, "Tool 2: Be carefully") {
-		t.Error("built prompt missing tool prompt 2")
+	if strings.Contains(promptStr, "Tool 2: Be carefully") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("built prompt should still contain 'You are gbot'")
@@ -112,7 +112,6 @@ func TestBuild_AllSections(t *testing.T) {
 		DefaultBranch: "main",
 		IsDirty:       true,
 	}
-	b.ToolPrompts = []string{"Bash tool: Use for shell commands."}
 
 	result, err := b.Build()
 	if err != nil {
@@ -130,7 +129,6 @@ func TestBuild_AllSections(t *testing.T) {
 		"Git branch: develop",
 		"Default branch: main",
 		"dirty",
-		"Bash tool: Use for shell commands.",
 	}
 
 	for _, part := range expectedParts {
@@ -138,17 +136,9 @@ func TestBuild_AllSections(t *testing.T) {
 			t.Errorf("built prompt missing expected part: %q", part)
 		}
 	}
-
-	systemPromptIdx := strings.Index(promptStr, "You are gbot")
-	toolPromptIdx := strings.Index(promptStr, "Bash tool: Use for shell commands.")
-	if systemPromptIdx == -1 || toolPromptIdx == -1 {
-		t.Error("both system prompt and tool definitions should be present")
-	} else if systemPromptIdx > toolPromptIdx {
-		t.Error("system prompt should appear before tool definitions")
-	}
 }
 
-func TestBuild_EmptyToolPrompts(t *testing.T) {
+func TestBuild_EmptyToolPrompts_NotInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
 	b.ToolPrompts = []string{"", "valid prompt", ""}
@@ -163,8 +153,8 @@ func TestBuild_EmptyToolPrompts(t *testing.T) {
 		t.Fatalf("Build() result is not a valid JSON string: %v", err)
 	}
 
-	if !strings.Contains(promptStr, "valid prompt") {
-		t.Error("built prompt missing valid tool prompt")
+	if strings.Contains(promptStr, "valid prompt") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
 }
 
@@ -412,7 +402,7 @@ func TestBuild_WithSkillListing(t *testing.T) {
 	}
 }
 
-func TestBuild_MarshalError(t *testing.T) {
+func TestBuild_ToolPromptsIgnored(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
 	b.ToolPrompts = []string{"p1", "", "p3"}
@@ -429,10 +419,11 @@ func TestBuild_MarshalError(t *testing.T) {
 	if err := json.Unmarshal(result, &promptStr); err != nil {
 		t.Fatalf("result not valid JSON: %v", err)
 	}
-	if !strings.Contains(promptStr, "p1") {
-		t.Error("missing tool prompt p1")
+	// Tool prompts go into tool defs, not system prompt.
+	if strings.Contains(promptStr, "p1") {
+		t.Error("tool prompt p1 must not be in system prompt")
 	}
-	if !strings.Contains(promptStr, "p3") {
-		t.Error("missing tool prompt p3")
+	if strings.Contains(promptStr, "p3") {
+		t.Error("tool prompt p3 must not be in system prompt")
 	}
 }

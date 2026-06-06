@@ -26,7 +26,7 @@ func TestBuildSystemPrompt_Basic(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_WithToolPrompts(t *testing.T) {
+func TestBuildSystemPrompt_ToolPromptsNotInSystemPrompt(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
@@ -37,11 +37,11 @@ func TestBuildSystemPrompt_WithToolPrompts(t *testing.T) {
 	if err := json.Unmarshal(result, &promptStr); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	if !strings.Contains(promptStr, "Bash: execute shell commands") {
-		t.Error("prompt missing first tool prompt")
+	if strings.Contains(promptStr, "Bash: execute shell commands") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
-	if !strings.Contains(promptStr, "Grep: search file contents") {
-		t.Error("prompt missing second tool prompt")
+	if strings.Contains(promptStr, "Grep: search file contents") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
 }
 
@@ -68,9 +68,8 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 
-	toolPrompts := []string{"Edit: edit files"}
 	skillListing := "/test - run tests"
-	result := context.BuildSystemPrompt(tmpDir, toolPrompts, skillListing)
+	result := context.BuildSystemPrompt(tmpDir, nil, skillListing)
 	if result == nil {
 		t.Fatal("BuildSystemPrompt returned nil")
 	}
@@ -82,7 +81,6 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 
 	expectedParts := []string{
 		"You are gbot",
-		"Edit: edit files",
 		"## Available Skills",
 		"/test - run tests",
 		tmpDir,
@@ -122,7 +120,7 @@ func TestBuildSystemPrompt_EmptyToolPrompts(t *testing.T) {
 	if err := json.Unmarshal(result, &promptStr); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	if !strings.Contains(promptStr, "valid prompt") {
-		t.Error("prompt missing valid tool prompt")
+	if strings.Contains(promptStr, "valid prompt") {
+		t.Error("tool prompts must not appear in system prompt")
 	}
 }

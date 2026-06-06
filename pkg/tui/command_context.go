@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,10 +36,20 @@ type contextSuggestion struct {
 // /context handler
 // -----------------------------------------------------------------------
 
-func (a *App) handleContext(commitCmd tea.Cmd) tea.Cmd {
+func (a *App) handleContext(args string, commitCmd tea.Cmd) tea.Cmd {
 	if a.repl.IsStreaming() {
 		return a.showInfo("Cannot show context while streaming")
 	}
+
+	switch strings.TrimSpace(strings.ToLower(args)) {
+	case "dump":
+		return a.handleContextDump(commitCmd)
+	case "":
+		// original /context behavior
+	default:
+		return a.showInfo(fmt.Sprintf("Unknown /context sub-command: %q (use: /context or /context dump)", args))
+	}
+
 	bd := a.engine.ContextBreakdown()
 	if bd == nil || bd.TotalTokens == 0 {
 		return a.showInfo("Send a message first to see context usage.")
@@ -44,6 +57,102 @@ func (a *App) handleContext(commitCmd tea.Cmd) tea.Cmd {
 	a.infoOverlay = renderContextView(bd, a.width)
 	a.infoOverlayScroll = 0
 	return commitCmd
+}
+
+func (a *App) handleContextDump(commitCmd tea.Cmd) tea.Cmd {
+	dump := a.engine.DumpAPIRequest()
+	outPath := "/tmp/gbot-context.txt"
+	content := renderContextDump(dump)
+	if err := os.WriteFile(outPath, []byte(content), 0o644); err != nil {
+		return a.showInfo(fmt.Sprintf("Failed to write dump: %v", err))
+	}
+	return a.showInfo(fmt.Sprintf("Context dump written to %s", outPath))
+}
+
+func renderContextDump(d *engine.APIRequestDump) string {
+	var sb strings.Builder
+
+	sb.WriteString("=== gbot Context Dump ===\n")
+	fmt.Fprintf(&sb, "Generated: %s\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(&sb, "Model:          %s\n", d.Model)
+	fmt.Fprintf(&sb, "MaxTokens:      %d\n", d.MaxTokens)
+	fmt.Fprintf(&sb, "ContextWindow:  %d\n", d.ContextWindow)
+	fmt.Fprintf(&sb, "ContextTokens:  %d\n", d.ContextTokens)
+	fmt.Fprintf(&sb, "IsSubagent:     %v\n", d.IsSubagent)
+	fmt.Fprintf(&sb, "WorkingDir:     %s\n", d.WorkingDir)
+	sb.WriteString("\n")
+
+	// System prompt (decode from JSON string if possible).
+	sb.WriteString("=== System Prompt ===\n")
+	if len(d.SystemPrompt) > 0 {
+		var promptStr string
+		if err := json.Unmarshal(d.SystemPrompt, &promptStr); err == nil {
+			sb.WriteString(promptStr)
+		} else {
+			sb.WriteString(string(d.SystemPrompt))
+		}
+	} else {
+		sb.WriteString("(none)")
+	}
+	sb.WriteString("\n\n")
+
+	// Messages.
+	fmt.Fprintf(&sb, "=== Messages (%d) ===\n", len(d.Messages))
+	for i, msg := range d.Messages {
+		fmt.Fprintf(&sb, "\n--- Message [%d] — %s ---\n", i, msg.Role)
+		for _, block := range msg.Content {
+			switch block.Type {
+			case types.ContentTypeText:
+				sb.WriteString(block.Text)
+				sb.WriteString("\n")
+			case types.ContentTypeToolUse:
+				fmt.Fprintf(&sb, "[tool_use: %s] input: %s\n", block.Name, string(block.Input))
+			case types.ContentTypeToolResult:
+				fmt.Fprintf(&sb, "[tool_result for %s]\n", block.ToolUseID)
+				if len(block.Content) > 0 {
+					// Content is JSON-encoded array of content blocks.
+					var parts []struct{ Text string `json:"text"` }
+					if err := json.Unmarshal(block.Content, &parts); err == nil {
+						for _, p := range parts {
+							sb.WriteString(p.Text)
+						}
+						sb.WriteString("\n")
+					} else {
+						sb.WriteString(string(block.Content))
+						sb.WriteString("\n")
+					}
+				}
+			case types.ContentTypeThinking:
+				if block.Thinking != "" {
+					fmt.Fprintf(&sb, "[thinking: %s]\n", block.Thinking)
+				}
+			default:
+				raw, _ := json.Marshal(block)
+				sb.WriteString(string(raw))
+				sb.WriteString("\n")
+			}
+		}
+	}
+	sb.WriteString("\n")
+
+	// Tools.
+	fmt.Fprintf(&sb, "=== Tools (%d) ===\n", len(d.Tools))
+	for _, t := range d.Tools {
+		fmt.Fprintf(&sb, "[%s] %s\n", t.Name, t.Description)
+		if len(t.InputSchema) > 0 {
+			sb.WriteString("  schema: ")
+			var schema any
+			if err := json.Unmarshal(t.InputSchema, &schema); err == nil {
+				pretty, _ := json.MarshalIndent(schema, "  ", "  ")
+				sb.WriteString(string(pretty))
+			} else {
+				sb.WriteString(string(t.InputSchema))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
 }
 
 // renderContextView builds the full /context rendering as plain text with

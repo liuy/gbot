@@ -64,15 +64,7 @@ func (b *Builder) Build() (json.RawMessage, error) {
 		buf.WriteString(FormatMemorySection(b.MemoryFiles))
 	}
 
-	// 6. Tool prompts
-	for _, prompt := range b.ToolPrompts {
-		if prompt != "" {
-			buf.WriteString("\n\n")
-			buf.WriteString(prompt)
-		}
-	}
-
-	// 7. Skill listing
+	// 6. Skill listing
 	if b.SkillListing != "" {
 		buf.WriteString("\n\n## Available Skills\n\n")
 		buf.WriteString(b.SkillListing)

@@ -464,7 +464,7 @@ func TestHandleContext_FullChain_ContextOutput(t *testing.T) {
 		}},
 	})
 
-	cmd := app.handleContext(nil)
+	cmd := app.handleContext("", nil)
 	if cmd != nil {
 		t.Fatal("handleContext should return nil cmd (sets infoOverlay instead)")
 	}
@@ -496,7 +496,7 @@ func TestHandleContext_ColdStart_NoData(t *testing.T) {
 	app := newAppWithEngineState(t)
 	// Don't set ContextTokens or messages — cold start state.
 
-	cmd := app.handleContext(nil)
+	cmd := app.handleContext("", nil)
 	if cmd == nil {
 		t.Fatal("handleContext returned nil cmd")
 	}
@@ -519,7 +519,7 @@ func TestHandleContext_StreamingBlocked(t *testing.T) {
 	// Simulate streaming state.
 	app.repl.streaming = true
 
-	cmd := app.handleContext(nil)
+	cmd := app.handleContext("", nil)
 	if cmd == nil {
 		t.Fatal("handleContext returned nil cmd during streaming")
 	}
@@ -603,7 +603,7 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 	app.history = NewHistory("")
 	app.width = 80
 
-	cmd := app.handleContext(nil)
+	cmd := app.handleContext("", nil)
 	if cmd != nil {
 		t.Fatal("handleContext should return nil cmd (sets infoOverlay instead)")
 	}
@@ -627,4 +627,128 @@ func newTestStoreForTUI(t *testing.T) *short.Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+// -----------------------------------------------------------------------
+// /context dump tests
+// -----------------------------------------------------------------------
+
+// TestHandleContext_Dump_WritesFile verifies /context dump writes to /tmp/gbot-context.txt.
+func TestHandleContext_Dump_WritesFile(t *testing.T) {
+	app := newAppWithEngineState(t)
+	app.engine.SetContextTokens(48_000)
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hello"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hi there"},
+		}},
+	})
+
+	cmd := app.handleContext("dump", nil)
+	if cmd == nil {
+		t.Fatal("handleContext dump should return a cmd (showInfo)")
+	}
+	msg := cmd()
+	info, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want infoMsg", msg)
+	}
+	if !strings.Contains(string(info), "/tmp/gbot-context.txt") {
+		t.Errorf("expected path in message, got: %q", string(info))
+	}
+
+	// Verify file was written.
+	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	if err != nil {
+		t.Fatalf("failed to read dump file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "=== System Prompt ===") {
+		t.Error("dump missing System Prompt section")
+	}
+	if !strings.Contains(content, "=== Messages") {
+		t.Error("dump missing Messages section")
+	}
+	if !strings.Contains(content, "=== Tools") {
+		t.Error("dump missing Tools section")
+	}
+	if !strings.Contains(content, "Hello") {
+		t.Error("dump missing user message content")
+	}
+	if !strings.Contains(content, "Hi there") {
+		t.Error("dump missing assistant message content")
+	}
+}
+
+// TestHandleContext_Dump_ContainsTools verifies tool definitions appear in dump.
+func TestHandleContext_Dump_ContainsTools(t *testing.T) {
+	app := newAppWithEngineState(t)
+	app.engine.SetContextTokens(48_000)
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "test"},
+		}},
+	})
+
+	app.handleContext("dump", nil)
+	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	if err != nil {
+		t.Fatalf("read dump: %v", err)
+	}
+	content := string(data)
+	// Tools section header should always appear (even with 0 tools).
+	if !strings.Contains(content, "=== Tools") {
+		t.Error("dump missing Tools section header")
+	}
+}
+
+// TestHandleContext_Dump_ToolUseAndResult verifies tool_use and tool_result rendering.
+func TestHandleContext_Dump_ToolUseAndResult(t *testing.T) {
+	app := newAppWithEngineState(t)
+	app.engine.SetContextTokens(48_000)
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Read main.go"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "t1", Name: "Read", Input: json.RawMessage(`{"file_path":"main.go"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "t1", Content: json.RawMessage(`[{"type":"text","text":"package main"}]`)},
+		}},
+	})
+
+	app.handleContext("dump", nil)
+	data, err := os.ReadFile("/tmp/gbot-context.txt")
+	if err != nil {
+		t.Fatalf("read dump: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[tool_use: Read]") {
+		t.Error("dump missing tool_use block")
+	}
+	if !strings.Contains(content, "package main") {
+		t.Error("dump missing tool_result content")
+	}
+}
+
+// TestHandleContext_UnknownArgs verifies unknown sub-commands produce an error.
+func TestHandleContext_UnknownArgs(t *testing.T) {
+	app := newAppWithEngineState(t)
+	app.engine.SetContextTokens(48_000)
+
+	cmd := app.handleContext("badarg", nil)
+	if cmd == nil {
+		t.Fatal("handleContext with bad args should return a cmd")
+	}
+	msg := cmd()
+	info, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want infoMsg", msg)
+	}
+	if !strings.Contains(string(info), "Unknown") {
+		t.Errorf("expected 'Unknown' in message, got: %q", string(info))
+	}
 }

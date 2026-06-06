@@ -330,7 +330,7 @@ func TestCompletions_Render_SelectedHighlight(t *testing.T) {
 	}
 	// Selected line should differ from unstyled plain text
 	// (lipgloss may or may not emit ANSI in test environments)
-	plainLine := "  /context - Visualize context window usage"
+	plainLine := "  /context - Visualize context window usage (args: dump)"
 	if stripANSI(lines[1]) != plainLine {
 		t.Errorf("second line content = %q, want %q", stripANSI(lines[1]), plainLine)
 	}
@@ -475,8 +475,8 @@ func TestCompletions_Accept_NonZeroIndex(t *testing.T) {
 	if fillText != "/context " {
 		t.Errorf("non-zero index Accept = %q, want %q", fillText, "/context ")
 	}
-	if !shouldExec {
-		t.Error("context has no args, should auto-execute")
+	if shouldExec {
+		t.Error("context has args, should NOT auto-execute")
 	}
 }
 

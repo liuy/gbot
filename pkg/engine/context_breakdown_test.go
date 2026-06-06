@@ -434,3 +434,48 @@ func TestIsMCPToolName(t *testing.T) {
 		t.Error("Bash should not be MCP")
 	}
 }
+
+// TestDumpAPIRequest_SnapshotsState verifies DumpAPIRequest returns a non-nil
+// dump with the correct engine state and messages.
+func TestDumpAPIRequest_SnapshotsState(t *testing.T) {
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	e.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hello"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "Hi there"},
+		}},
+	})
+
+	dump := e.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	if dump.Model != "claude-test" {
+		t.Errorf("Model = %q, want claude-test", dump.Model)
+	}
+	if dump.MaxTokens != 16000 {
+		t.Errorf("MaxTokens = %d, want 16000", dump.MaxTokens)
+	}
+	if dump.ContextWindow != 200000 {
+		t.Errorf("ContextWindow = %d, want 200000", dump.ContextWindow)
+	}
+	if dump.IsSubagent {
+		t.Error("IsSubagent should be false")
+	}
+	// 2 original messages + 1 prepended context message = 3.
+	if len(dump.Messages) != 3 {
+		t.Errorf("Messages count = %d, want 3 (2 original + 1 context prepend)", len(dump.Messages))
+	}
+	if len(dump.SystemPrompt) == 0 {
+		t.Error("SystemPrompt should not be empty")
+	}
+
+	// Verify messages include prepended context (CLAUDE.md).
+	// The first message should be a user message with <system-reminder>.
+	if dump.Messages[0].Role != types.RoleUser {
+		t.Errorf("first message role = %q, want user (context prepend)", dump.Messages[0].Role)
+	}
+}
