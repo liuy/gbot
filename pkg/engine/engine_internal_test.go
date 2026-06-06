@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -6565,6 +6566,99 @@ func TestBuildToolDefs_SkipsDisabledTools(t *testing.T) {
 	if defs[0].Name != "test" {
 		t.Errorf("def name = %q, want %q", defs[0].Name, "test")
 	}
+}
+
+// --- Task context injection tests ---
+
+func TestDumpAPIRequest_NoTasks_NoInjection(t *testing.T) {
+	dir := t.TempDir()
+	tl := task.NewList(dir)
+	eng := newTestEngineForBreakdown(t)
+	eng.taskList = tl
+	eng.addMessage(types.RoleUser, "hello")
+	eng.addMessage(types.RoleAssistant, "hi")
+
+	dump := eng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	for _, msg := range dump.Messages {
+		if strings.Contains(msg.Content[0].Text, "pending tasks") {
+			t.Error("should not inject pending tasks text when no tasks exist")
+		}
+	}
+}
+
+func TestDumpAPIRequest_PendingTasks_Injected(t *testing.T) {
+	dir := t.TempDir()
+	tl := task.NewList(dir)
+	eng := newTestEngineForBreakdown(t)
+	eng.taskList = tl
+
+	id, err := tl.CreateTask("Fix auth bug", "OAuth token refresh fails", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, _, err = tl.UpdateTask(id, task.TaskUpdates{Status: &[]task.TaskStatus{task.StatusInProgress}[0]})
+	if err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	eng.addMessage(types.RoleUser, "fix the auth bug")
+	eng.addMessage(types.RoleAssistant, "on it")
+
+	dump := eng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	if len(dump.Messages) == 0 {
+		t.Fatal("no messages")
+	}
+	first := dump.Messages[0].Content[0].Text
+	if !strings.Contains(first, "Fix auth bug") {
+		t.Errorf("first message should contain task subject, got:\n%s", first)
+	}
+	if !strings.Contains(first, "in_progress") {
+		t.Errorf("first message should contain task status, got:\n%s", first)
+	}
+}
+
+func TestDumpAPIRequest_TaskRecovery_AfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	tl := task.NewList(dir)
+	_, err := tl.CreateTask("Migrate DB", "Add migration 0042", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	_, err = tl.CreateTask("Write tests", "Cover edge cases", "", nil)
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Simulate restart: new engine, same task dir.
+	eng := newTestEngineForBreakdown(t)
+	eng.taskList = task.NewList(dir)
+	eng.addMessage(types.RoleUser, "continue")
+	eng.addMessage(types.RoleAssistant, "ok")
+
+	dump := eng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+	first := dump.Messages[0].Content[0].Text
+	if !strings.Contains(first, "Migrate DB") {
+		t.Errorf("recovered engine should inject task 'Migrate DB', got:\n%s", first)
+	}
+	if !strings.Contains(first, "Write tests") {
+		t.Errorf("recovered engine should inject task 'Write tests', got:\n%s", first)
+	}
+}
+
+func (e *Engine) addMessage(role types.Role, text string) {
+	e.messages = append(e.messages, types.Message{
+		Role:    role,
+		Content: []types.ContentBlock{types.NewTextBlock(text)},
+	})
 }
 
 func TestQuerySource_AutoDream(t *testing.T) {

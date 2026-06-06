@@ -25,6 +25,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
@@ -197,6 +198,9 @@ type Engine struct {
 	// TS: ContentReplacementState (toolResultStorage.ts:390-393)
 	contentReplacementState *toolresult.ContentReplacementState
 
+	// taskList provides access to file-backed task storage for context injection.
+	taskList *task.List
+
 	// toolSearch tracks which deferred tools have been discovered via ToolSearch.
 	// When ToolSearch is active (any deferred tools exist),
 	// undiscovered deferred tools are omitted from the API request and listed by name
@@ -243,7 +247,8 @@ type Params struct {
 	MCPRegistry       *mcp.Registry
 	Hooks             *hooks.Hooks
 	PermissionChecker permission.PermissionChecker
-	WorkingDir        string // working directory for file history snapshots
+	WorkingDir        string     // working directory for file history snapshots
+	TaskList          *task.List // file-backed task storage for context injection
 }
 
 // QueryResult is the final result of a query.
@@ -366,6 +371,7 @@ func New(p *Params) *Engine {
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:         0,
 		toolSearch:             newToolSearchState(),
+		taskList:               p.TaskList,
 	}
 }
 
@@ -1402,6 +1408,16 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
 			}
 		}
+
+		// Inject pending tasks into context so LLM knows about them after restart/compact.
+		if pendingText := e.formatPendingTasks(); pendingText != "" {
+			taskMsg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(pendingText)},
+				Flags:   types.FlagMeta,
+			}
+			apiMessages = append([]types.Message{taskMsg}, apiMessages...)
+		}
 	}
 
 	// ToolSearch: prepend deferred tools announcement to first user message.
@@ -2255,6 +2271,16 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 				}
 				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
 			}
+		}
+
+		// Inject pending tasks into context so LLM knows about them after restart/compact.
+		if pendingText := e.formatPendingTasks(); pendingText != "" {
+			taskMsg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(pendingText)},
+				Flags:   types.FlagMeta,
+			}
+			apiMessages = append([]types.Message{taskMsg}, apiMessages...)
 		}
 	}
 
@@ -3117,6 +3143,37 @@ func isBuiltInAgent(agentType string) bool {
 		return true
 	}
 	return false
+}
+
+// formatPendingTasks returns a formatted summary of pending/in_progress tasks,
+// or empty string if none exist. Called during prepend to inject task context.
+func (e *Engine) formatPendingTasks() string {
+	if e.taskList == nil {
+		return ""
+	}
+	tasks, err := e.taskList.ListTasks()
+	if err != nil || len(tasks) == 0 {
+		return ""
+	}
+	var pending []*task.Task
+	for _, t := range tasks {
+		if t.Status == task.StatusPending || t.Status == task.StatusInProgress {
+			pending = append(pending, t)
+		}
+	}
+	if len(pending) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("You have the following pending tasks:\n")
+	for _, t := range pending {
+		fmt.Fprintf(&b, "- [#%s] %s (%s)", t.ID, t.Subject, t.Status)
+		if t.Description != "" {
+			fmt.Fprintf(&b, ": %s", t.Description)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // querySource returns the query source identifier for prompt caching and microcompact.

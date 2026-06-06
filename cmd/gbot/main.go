@@ -232,6 +232,7 @@ func main() {
 		Hooks:             hookSystem,
 		PermissionChecker: permCheckerIface,
 		WorkingDir:        workingDir,
+		TaskList:          taskList,
 	})
 
 	eng.SetOnClose(func(sessionID string) {
