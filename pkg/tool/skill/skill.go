@@ -124,8 +124,15 @@ func New(registry *skills.Registry) tool.Tool {
 		// TUI render: what the user sees in the terminal.
 		// Source: UI.tsx:20-46 — renderToolResultMessage
 		RenderResult_: func(data any) string {
-			out, ok := data.(skillOutput)
-			if !ok {
+			var out skillOutput
+			switch v := data.(type) {
+			case skillOutput:
+				out = v
+			case json.RawMessage:
+				if err := json.Unmarshal(v, &out); err != nil {
+					return string(v)
+				}
+			default:
 				return fmt.Sprintf("%v", data)
 			}
 			if out.Status == "forked" {

@@ -319,6 +319,7 @@ func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.In
 func (s *stubTool) MaxResultSize() int                          { return 0 }
 func (s *stubTool) Prompt() string                              { return s.prompt }
 func (s *stubTool) RenderResult(any) string                     { return "" }
+func (s *stubTool) NewResultType() any { return nil }
 func (s *stubTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }

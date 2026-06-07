@@ -61,12 +61,27 @@ type fileReadResult struct {
 // renderEditResult converts Edit tool output to a human-readable string for TUI.
 // Source: FileEditTool/UI.tsx — renderToolResultMessage → FileEditToolUpdatedMessage
 func renderEditResult(data any) string {
-	out, ok := data.(*Output)
-	if !ok {
+	var out *Output
+	switch v := data.(type) {
+	case *Output:
+		out = v
+	case json.RawMessage:
+		out = &Output{}
+		if err := json.Unmarshal(v, out); err != nil {
+			return string(v)
+		}
+	case string:
+		return renderEditError(v)
+	default:
 		return fmt.Sprintf("%v", data)
 	}
 
 	hunks := convertEditHunks(out.StructuredPatch)
+	// StructuredPatch is empty when deserialized from persisted JSON (resume path).
+	// Reconstruct hunks from OldString/NewString.
+	if len(hunks) == 0 && (out.OldString != "" || out.NewString != "") {
+		hunks = editStringsToHunks(out.OldString, out.NewString)
+	}
 	added, removed := tool.CountPatchChanges(hunks)
 	summary := tool.FormatDiffSummary(added, removed)
 	diff := tool.RenderDiff(hunks)
@@ -74,6 +89,36 @@ func renderEditResult(data any) string {
 		return summary
 	}
 	return summary + "\n" + diff
+}
+
+// renderEditError converts Edit error messages to short summaries for TUI.
+// Source: FileEditTool/UI.tsx — renderToolUseErrorMessage.
+func renderEditError(msg string) string {
+	if strings.Contains(msg, "File has not been read yet") {
+		return "File must be read first"
+	}
+	if strings.Contains(msg, "not found") {
+		return "Error editing file"
+	}
+	return msg
+}
+
+// editStringsToHunks converts old/new strings to DiffHunks for rendering.
+func editStringsToHunks(old, new_ string) []tool.DiffHunk {
+	oldLines := strings.Split(old, "\n")
+	newLines := strings.Split(new_, "\n")
+	var lines []string
+	for _, l := range oldLines {
+		lines = append(lines, "-"+l)
+	}
+	for _, l := range newLines {
+		lines = append(lines, "+"+l)
+	}
+	return []tool.DiffHunk{{
+		OldStart: 1, OldLines: len(oldLines),
+		NewStart: 1, NewLines: len(newLines),
+		Lines: lines,
+	}}
 }
 
 // convertEditHunks converts fileedit-specific hunks to tool.DiffHunk.

@@ -108,7 +108,7 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			}
 			// TS renderToolUseMessage: always show the command, not the LLM description
 			if in.Command != "" {
-				return truncate(in.Command, 78), nil
+				return in.Command, nil
 			}
 			return "", nil
 		},
@@ -143,8 +143,16 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 		MaxResultSizeChars: 30000,
 		Prompt_:            bashPrompt(),
 		RenderResult_: func(data any) string {
-			out, ok := data.(*Output)
-			if !ok {
+			var out *Output
+			switch v := data.(type) {
+			case *Output:
+				out = v
+			case json.RawMessage:
+				out = &Output{}
+				if err := json.Unmarshal(v, out); err != nil {
+					return string(v)
+				}
+			default:
 				return fmt.Sprintf("%v", data)
 			}
 			var sb strings.Builder

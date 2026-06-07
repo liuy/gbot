@@ -48,8 +48,9 @@ type Session struct {
 
 // ContentBlock represents a parsed block from a message's content JSON.
 type ContentBlock struct {
-	Type       string          `json:"type"`             // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
+	Type       string          `json:"type"`                     // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 	Text       string          `json:"text,omitempty"`
+	Thinking   string          `json:"thinking,omitempty"`       // thinking block content
 	ID         string          `json:"id,omitempty"`             // tool_use block id
 	Name       string          `json:"name,omitempty"`           // tool name for tool_use
 	Input      json.RawMessage `json:"input,omitempty"`          // tool_use input parameters

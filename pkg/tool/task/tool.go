@@ -491,11 +491,21 @@ func tasksHandleList(list *List) *ListResult {
 }
 
 func tasksRenderResult(data any) string {
-	out, ok := data.(*TasksOutput)
-	if !ok {
+	switch v := data.(type) {
+	case *TasksOutput:
+		return renderTasksOutput(v)
+	case json.RawMessage:
+		var out TasksOutput
+		if err := json.Unmarshal(v, &out); err != nil {
+			return string(v)
+		}
+		return renderTasksOutput(&out)
+	default:
 		return fmt.Sprintf("%v", data)
 	}
+}
 
+func renderTasksOutput(out *TasksOutput) string {
 	var sections []string
 
 	if len(out.Created) > 0 {

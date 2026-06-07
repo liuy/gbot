@@ -75,6 +75,8 @@ func (t *MCPTool) RenderResult(data any) string {
 	}
 }
 
+func (t *MCPTool) NewResultType() any { return nil } // MCP tools return string data
+
 // Call routes the tool invocation through MCP.
 // Source: client.ts:3029-3245 — callMCPTool
 func (t *MCPTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -22,6 +23,8 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -299,7 +302,7 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	// via tea.Println. View() returns "Loading..." while width==0, so there's
 	// no double-render between SetStore and WindowSizeMsg.
 	if len(a.engine.Messages()) > 0 {
-		a.repl.messages = engineMessagesToViews(a.engine.Messages())
+		a.repl.messages = engineMessagesToViews(a.engine.Messages(), a.engine.AllTools())
 	}
 
 	// Cleanup old backup session directories (older than 30 days).
@@ -357,36 +360,293 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 
 // engineMessagesToViews converts engine messages to TUI MessageViews for display.
 // Used on session resume to populate repl.messages from persisted state.
-// Only renders text blocks — tool_use and thinking are not useful in scrollback.
-func engineMessagesToViews(msgs []types.Message) []MessageView {
-	views := make([]MessageView, 0, len(msgs))
+// Renders text, thinking, and tool blocks so resume looks close to the original session.
+func engineMessagesToViews(msgs []types.Message, tools map[string]tool.Tool) []MessageView {
+	// First pass: collect all tool_results keyed by tool_use_id across all messages.
+	// tool_result blocks live in user messages (the API response), while tool_use
+	// blocks live in assistant messages — they're never in the same message.
+	toolResults := make(map[string]types.ContentBlock)
 	for _, msg := range msgs {
-		// Skip system-generated messages (context prepend, skill injection, etc.)
+		for _, block := range msg.Content {
+			if block.Type == types.ContentTypeToolResult && block.ToolUseID != "" {
+				toolResults[block.ToolUseID] = block
+			}
+		}
+	}
+
+	views := make([]MessageView, 0, len(msgs))
+	var current *MessageView
+
+	for _, msg := range msgs {
 		if msg.Flags&types.FlagMeta != 0 {
 			continue
 		}
-		mv := MessageView{}
-		switch msg.Role {
-		case types.RoleUser:
-			mv.Role = "user"
-		case types.RoleAssistant:
-			mv.Role = "assistant"
-		default:
-			continue
-		}
 
-		for _, block := range msg.Content {
-			if block.Type == types.ContentTypeText && strings.TrimSpace(block.Text) != "" {
-				mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
+		switch msg.Role {
+		case types.RoleAssistant:
+			// If current was flushed (nil) or we're accumulating, just keep going.
+			// Text within a single message doesn't break the accumulation.
+			if current == nil {
+				current = &MessageView{Role: "assistant"}
+			}
+			for _, block := range msg.Content {
+				switch block.Type {
+				case types.ContentTypeText:
+					if strings.TrimSpace(block.Text) != "" {
+						current.Blocks = append(current.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
+					}
+				case types.ContentTypeThinking:
+					if strings.TrimSpace(block.Thinking) != "" {
+						current.Blocks = append(current.Blocks, ContentBlock{
+							Type: BlockThinking,
+							Thinking: ThinkingView{
+								Text: block.Thinking,
+								Done: true,
+							},
+						})
+					}
+				case types.ContentTypeToolUse:
+					inputStr := formatToolInput(block.Input)
+					srk := classifyToolName(block.Name, block.Input)
+					result, hasResult := toolResults[block.ID]
+					output := ""
+					isErr := false
+					elapsed := time.Duration(0)
+					if hasResult {
+						output, elapsed = renderToolOutput(block.Name, result.Content, tools)
+						isErr = result.IsError
+					}
+					current.Blocks = append(current.Blocks, ContentBlock{
+						Type: BlockTool,
+						ToolCall: ToolCallView{
+							ID:         block.ID,
+							Name:       formatToolDisplayName(block.Name),
+							Summary:    computeToolSummary(block.Name, block.Input, tools),
+							Input:      inputStr,
+							Output:     output,
+							IsError:    isErr,
+							Done:       true,
+							Elapsed:    elapsed,
+							SearchRead: srk,
+						},
+					})
+				}
+			}
+		case types.RoleUser:
+			hasNonToolResult := false
+			for _, block := range msg.Content {
+				if block.Type != types.ContentTypeToolResult {
+					hasNonToolResult = true
+					break
+				}
+			}
+			if hasNonToolResult {
+				if current != nil && len(current.Blocks) > 0 {
+					views = append(views, *current)
+					current = nil
+				}
+				mv := MessageView{Role: "user"}
+				for _, block := range msg.Content {
+					if block.Type == types.ContentTypeText && strings.TrimSpace(block.Text) != "" {
+						mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
+					}
+				}
+				if len(mv.Blocks) > 0 {
+					views = append(views, mv)
+				}
 			}
 		}
+	}
+	if current != nil && len(current.Blocks) > 0 {
+		views = append(views, *current)
+	}
 
-		// Skip messages with no text blocks
-		if len(mv.Blocks) > 0 {
-			views = append(views, mv)
+	return views
+}
+
+// formatToolInput returns a pretty-printed JSON string for tool input.
+func formatToolInput(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
+}
+
+// renderToolOutput renders persisted tool_result content using the tool's own
+// RenderResult logic. This produces the same display as normal streaming.
+func renderToolOutput(toolName string, raw json.RawMessage, tools map[string]tool.Tool) (string, time.Duration) {
+	if len(raw) == 0 {
+		return "", 0
+	}
+
+	// Unwrap: tool_result content is a JSON string (gbot's double-wrapped format).
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		// Try as array of content blocks (Anthropic format).
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &blocks) == nil {
+			var parts []string
+			for _, b := range blocks {
+				if b.Type == "text" && b.Text != "" {
+					parts = append(parts, b.Text)
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, "\n"), 0
+			}
+		}
+		return string(raw), 0
+	}
+
+	// Parse duration prefix: "[Tool spent Xs]"
+	rest := s
+	elapsed := time.Duration(0)
+	if strings.HasPrefix(rest, "[Tool spent ") {
+		if idx := strings.Index(rest, "]"); idx >= 0 {
+			inner := strings.TrimPrefix(rest[:idx+1], "[Tool spent ")
+			inner = strings.TrimSuffix(inner, "s]")
+			if sec, err := strconv.ParseFloat(inner, 64); err == nil {
+				elapsed = time.Duration(sec * float64(time.Second))
+			}
+			rest = rest[idx+1:]
 		}
 	}
-	return views
+	if rest == "" {
+		return "", elapsed
+	}
+
+	// Handle <persisted-output>: read file from disk, then render via tool.
+	if strings.HasPrefix(rest, "<persisted-output>") {
+		if data := readPersistedFile(rest); data != nil {
+			if rendered := renderViaTool(toolName, data, tools); rendered != "" {
+				return rendered, elapsed
+			}
+		}
+		// Fallback: show preview
+		return extractPersistedPreview(rest), elapsed
+	}
+
+	// Try tool's RenderResult with the raw JSON content.
+	// If the tool exists, its RenderResult is authoritative — even empty output
+	// means the tool handled it (e.g. Bash with no stdout). Don't fallback.
+	if t, ok := tools[toolName]; ok {
+		return t.RenderResult(json.RawMessage(rest)), elapsed
+	}
+
+	// Fallback: try unwrapping one more level (gbot's {"output":"..."} format).
+	var obj struct {
+		Output string `json:"output"`
+	}
+	if json.Unmarshal([]byte(rest), &obj) == nil && obj.Output != "" {
+		return obj.Output, elapsed
+	}
+
+	return rest, elapsed
+}
+
+// renderViaTool finds the tool and calls RenderResult with the raw JSON.
+func renderViaTool(toolName string, raw json.RawMessage, tools map[string]tool.Tool) string {
+	t, ok := tools[toolName]
+	if !ok {
+		return ""
+	}
+	return t.RenderResult(raw)
+}
+
+// readPersistedFile extracts the file path from a <persisted-output> block
+// and reads the full content from disk.
+func readPersistedFile(s string) json.RawMessage {
+	_, after, ok := strings.Cut(s, "Full output saved to: ")
+	if !ok {
+		return nil
+	}
+	pathEnd := strings.IndexByte(after, '\n')
+	if pathEnd < 0 {
+		pathEnd = len(after)
+	}
+	filePath := strings.TrimSpace(after[:pathEnd])
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(data)
+}
+
+// extractPersistedPreview is a last-resort fallback showing the preview text.
+func extractPersistedPreview(s string) string {
+	_, after, ok := strings.Cut(s, "Preview (")
+	if !ok {
+		return "<output saved to file>"
+	}
+	newlineIdx := strings.Index(after, "):\n")
+	if newlineIdx < 0 {
+		return "<output saved to file>"
+	}
+	preview := after[newlineIdx+3:]
+	lines := strings.SplitN(preview, "\n", 6)
+	if len(lines) > 5 {
+		lines = lines[:5]
+		lines = append(lines, "...")
+	}
+	result := strings.Join(lines, "\n")
+	if result == "" {
+		return "<output saved to file>"
+	}
+	return result
+}
+
+// classifyToolName returns SearchReadKind based on tool name and input.
+// Best-effort for resume — streaming path has richer classification.
+func classifyToolName(name string, input json.RawMessage) tool.SearchReadKind {
+	switch name {
+	case "Read":
+		return tool.SearchReadKind{IsRead: true}
+	case "Grep", "Glob":
+		return tool.SearchReadKind{IsSearch: true}
+	case "Bash":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) == nil && in.Command != "" {
+			srk := bash.IsSearchOrRead(input)
+			if srk.IsCollapsible() {
+				return srk
+			}
+		}
+	}
+	return tool.SearchReadKind{}
+}
+
+// computeToolSummary generates a summary string for a tool call during resume,
+// using the tool's own Description function — same path as normal rendering.
+func computeToolSummary(name string, input json.RawMessage, tools map[string]tool.Tool) string {
+	t, ok := tools[name]
+	if !ok {
+		return ""
+	}
+	desc, err := t.Description(input)
+	if err != nil {
+		return ""
+	}
+	return desc
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 // resetDisplayState zeros all App-level display fields for a clean session.

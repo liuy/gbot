@@ -337,8 +337,16 @@ type Output struct {
 // renderWriteResult converts Write tool output to a human-readable string for TUI.
 // Source: FileWriteTool/UI.tsx — renderToolResultMessage
 func renderWriteResult(data any) string {
-	out, ok := data.(*Output)
-	if !ok {
+	var out *Output
+	switch v := data.(type) {
+	case *Output:
+		out = v
+	case json.RawMessage:
+		out = &Output{}
+		if err := json.Unmarshal(v, out); err != nil {
+			return string(v)
+		}
+	default:
 		return fmt.Sprintf("%v", data)
 	}
 

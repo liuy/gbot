@@ -164,8 +164,16 @@ func New() tool.Tool {
 		MaxResultSizeChars: 20000,
 		Prompt_:            grepPrompt(),
 		RenderResult_: func(data any) string {
-			out, ok := data.(*Output)
-			if !ok {
+			var out *Output
+			switch v := data.(type) {
+			case *Output:
+				out = v
+			case json.RawMessage:
+				out = &Output{}
+				if err := json.Unmarshal(v, out); err != nil {
+					return string(v)
+				}
+			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}
@@ -178,7 +186,6 @@ func New() tool.Tool {
 				}
 				return strings.Join(out.Filenames, "\n")
 			case "count":
-				// count mode has no per-line content; return the count summary
 				return fmt.Sprintf("%d %s in %d %s", out.NumMatches, tool.PluralWord(out.NumMatches, "matches"), out.NumFiles, tool.PluralWord(out.NumFiles, "files"))
 			default:
 				b, _ := json.Marshal(data)

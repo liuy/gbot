@@ -1038,7 +1038,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 		fileHistory:      tracker2,
 	}
 	app.width = 80
-	app.repl.messages = engineMessagesToViews(engineMsgs)
+	app.repl.messages = engineMessagesToViews(engineMsgs, nil)
 	app.committedCount = len(app.repl.messages)
 
 	// === Simulate post-resume edit: user asks to edit file again (v2 → v3) ===
@@ -1062,7 +1062,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}, Timestamp: testTime},
 	}...)
 	eng2.SetMessages(newMsgs)
-	app.repl.messages = engineMessagesToViews(newMsgs)
+	app.repl.messages = engineMessagesToViews(newMsgs, nil)
 	app.committedCount = len(app.repl.messages)
 
 	// Verify current disk state is v3 before rewind

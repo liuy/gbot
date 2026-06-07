@@ -13,6 +13,7 @@ func EngineBlockToStore(eb types.ContentBlock) ContentBlock {
 	return ContentBlock{
 		Type:      string(eb.Type),
 		Text:      eb.Text,
+		Thinking:  eb.Thinking,
 		ID:        eb.ID,
 		Name:      eb.Name,
 		Input:     eb.Input,
@@ -28,6 +29,7 @@ func StoreBlockToEngine(sb ContentBlock) types.ContentBlock {
 	return types.ContentBlock{
 		Type:      types.ContentType(sb.Type),
 		Text:      sb.Text,
+		Thinking:  sb.Thinking,
 		ID:        sb.ID,
 		Name:      sb.Name,
 		Input:     sb.Input,

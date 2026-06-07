@@ -119,7 +119,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	a.sessionID = selected.SessionID
 
 	*a.repl = *NewReplState()
-	a.repl.messages = engineMessagesToViews(engineMsgs)
+	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 	a.committedCount = len(a.repl.messages)
 
 	slog.Info("session: switched via picker", "sessionID", selected.SessionID, "messages", len(engineMsgs))

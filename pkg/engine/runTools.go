@@ -863,7 +863,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	tt.Duration = elapsed
 
 	if err != nil {
-		e.emitToolError(tt, err, elapsed)
+		e.emitToolError(t, tt, err, elapsed)
 		return
 	}
 
@@ -951,23 +951,18 @@ func marshalToolOutput(t tool.Tool, data any, doubleWrap bool) []byte {
 
 // emitToolError emits error events and result blocks for a failed tool.
 // Source: StreamingToolExecutor.ts:354-364 — Bash errors cancel siblings.
-func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapsed time.Duration) {
+func (e *StreamingToolExecutor) emitToolError(t tool.Tool, tt *TrackedTool, err error, elapsed time.Duration) {
 	e.firePostToolUseHook(tt, true)
 	// Error content must be a JSON string (not object) for Anthropic API compatibility.
 	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
 	fullErr := err.Error()
 	errJSON, _ := json.Marshal(fullErr)
 	errJSON = prependDuration(errJSON, elapsed)
-	// DisplayOutput is for the TUI; only show the first line so that error
-	// messages containing file content (e.g. Edit "string not found" errors
-	// that append the search string) don't dump large text into the UI.
-	// The full error is still sent to the LLM via Output (errJSON).
-	// Source: FileEditTool/UI.tsx renderToolUseErrorMessage — TS shows only
-	// short summaries like "Error editing file", "File must be read first".
-	displayErr := fullErr
-	if before, _, ok := strings.Cut(fullErr, "\n"); ok {
-		displayErr = before
-	}
+	// Let the tool decide how to display its own errors via RenderResult.
+	// Tools like Edit override this to show short summaries instead of
+	// dumping the full search string. The full error is still sent to
+	// the LLM via Output (errJSON).
+	displayErr := t.RenderResult(fullErr)
 	e.doEmit(types.QueryEvent{
 		Type: types.EventToolEnd,
 		ToolResult: &types.ToolResultEvent{

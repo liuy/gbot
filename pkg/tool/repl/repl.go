@@ -215,6 +215,8 @@ func (t *REPLTool) RenderResult(data any) string {
 	return s
 }
 
+func (t *REPLTool) NewResultType() any { return nil } // REPL returns string data
+
 // CleanSession removes a session from the map and closes it.
 // Call this when the owning engine/sub-engine shuts down.
 func (t *REPLTool) CleanSession(sessionID string) {

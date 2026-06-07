@@ -372,6 +372,8 @@ func (t *AgentTool) RenderResult(data any) string {
 	return result.Content
 }
 
+func (t *AgentTool) NewResultType() any { return &types.SubQueryResult{} }
+
 // FormatWireResult formats the tool result for the LLM wire format.
 // Source: AgentTool.tsx:1340-1374
 // Note: TS sends array-of-blocks, Go sends joined string. Valid per API.

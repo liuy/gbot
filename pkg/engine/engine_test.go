@@ -221,7 +221,13 @@ func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
 func (t *mockTool) IsEnabled() bool                           { return t.enabled }
 func (t *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *mockTool) Prompt() string                            { return "" }
-func (t *mockTool) RenderResult(any) string                   { return "" }
+func (m *mockTool) NewResultType() any { return nil }
+func (t *mockTool) RenderResult(data any) string {
+	if s, ok := data.(string); ok {
+		return s
+	}
+	return ""
+}
 
 func (*mockTool) MaxResultSize() int { return 50000 }
 

@@ -42,6 +42,7 @@ func (m *mockTool) MaxResultSize() int                                          
 func (m *mockTool) Prompt() string                                              { return "" }
 func (m *mockTool) IsDeferred() bool                                            { return m.deferred }
 func (m *mockTool) SearchHint() string                                          { return m.searchHint }
+func (m *mockTool) NewResultType() any                                          { return nil }
 
 // helper to create a deferred tool
 func deferredTool(name, desc string) *mockTool {

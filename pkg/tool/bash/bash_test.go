@@ -450,23 +450,20 @@ func TestConstants(t *testing.T) {
 // Description — long strings get truncated via truncate()
 // ---------------------------------------------------------------------------
 
-func TestDescription_Truncation(t *testing.T) {
+func TestDescription_NoTruncation(t *testing.T) {
 	t.Parallel()
 
 	tt := bash.New(nil)
 
-	// Command longer than 80 chars should be truncated
+	// Command longer than 80 chars should NOT be truncated (shows full command)
 	longCmd := strings.Repeat("a", 100)
 	input := json.RawMessage(`{"command":"` + longCmd + `"}`)
 	desc, err := tt.Description(input)
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
 	}
-	if len(desc) > 80 {
-		t.Errorf("Description() length = %d, want <= 80", len(desc))
-	}
-	if !strings.HasSuffix(desc, "...") {
-		t.Errorf("Description() = %q, should end with ...", desc)
+	if desc != longCmd {
+		t.Errorf("Description() = %q, want %q", desc, longCmd)
 	}
 
 	// Command + description: Description shows command, ignores description field

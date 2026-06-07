@@ -42,6 +42,7 @@ func (t *testTool) IsEnabled() bool                            { return true }
 func (t *testTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
 func (t *testTool) Prompt() string                             { return "" }
 func (t *testTool) RenderResult(any) string                      { return "" }
+func (t *testTool) NewResultType() any { return nil }
 
 func (t *testTool) MaxResultSize() int { return 50000 }
 
@@ -102,7 +103,12 @@ func (t *concurrentTool) IsConcurrencySafe(json.RawMessage) bool    { return t.i
 func (t *concurrentTool) IsEnabled() bool                           { return true }
 func (t *concurrentTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *concurrentTool) Prompt() string                            { return "" }
-func (t *concurrentTool) RenderResult(any) string                     { return "" }
+func (t *concurrentTool) RenderResult(data any) string {
+	if s, ok := data.(string); ok {
+		return s
+	}
+	return ""
+}
 
 func (t *concurrentTool) MaxResultSize() int { return 50000 }
 

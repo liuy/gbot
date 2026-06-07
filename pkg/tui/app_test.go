@@ -18,6 +18,8 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
+	taskpkg "github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -8431,5 +8433,305 @@ func TestWidthZero_ViewReturnsLoading(t *testing.T) {
 	view2 := app.View()
 	if view2 == "Loading..." {
 		t.Error("View() after WindowSizeMsg should not show Loading...")
+	}
+}
+
+func TestResume_ThinkingAndToolBlocks(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Simulate engine messages with thinking, tool_use, tool_result, and text.
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "read the file"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeThinking, Thinking: "Let me think about this..."},
+			{Type: types.ContentTypeText, Text: "I'll read the file."},
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/tmp/test.go"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"package main\nfunc main() {}"}]`)},
+			{Type: types.ContentTypeText, Text: "Here's the file content."},
+		}},
+	})
+
+	app.SetStore(store, "session-resume", "/project")
+
+	if len(app.repl.messages) != 2 {
+		t.Fatalf("repl.messages = %d, want 2", len(app.repl.messages))
+	}
+
+	// User message
+	if app.repl.messages[0].Role != "user" {
+		t.Errorf("msg[0].Role = %q, want user", app.repl.messages[0].Role)
+	}
+	if len(app.repl.messages[0].Blocks) != 1 || app.repl.messages[0].Blocks[0].Type != BlockText {
+		t.Errorf("msg[0] should have 1 text block")
+	}
+
+	// Assistant message: thinking + text + tool + text
+	asst := app.repl.messages[1]
+	if asst.Role != "assistant" {
+		t.Errorf("msg[1].Role = %q, want assistant", asst.Role)
+	}
+	// tool_result is consumed by tool_use, so: thinking, text, tool, text = 4 blocks
+	if len(asst.Blocks) != 4 {
+		t.Fatalf("msg[1].Blocks = %d, want 4 (thinking + text + tool + text)", len(asst.Blocks))
+	}
+	if asst.Blocks[0].Type != BlockThinking {
+		t.Errorf("block[0] = %v, want BlockThinking", asst.Blocks[0].Type)
+	}
+	if asst.Blocks[0].Thinking.Text != "Let me think about this..." {
+		t.Errorf("thinking text = %q, want thinking content", asst.Blocks[0].Thinking.Text)
+	}
+	if !asst.Blocks[0].Thinking.Done {
+		t.Error("thinking should be Done=true for resume")
+	}
+	if asst.Blocks[1].Type != BlockText {
+		t.Errorf("block[1] = %v, want BlockText", asst.Blocks[1].Type)
+	}
+	if asst.Blocks[2].Type != BlockTool {
+		t.Errorf("block[2] = %v, want BlockTool", asst.Blocks[2].Type)
+	}
+	tc := asst.Blocks[2].ToolCall
+	if tc.Name != "Read" {
+		t.Errorf("tool name = %q, want Read", tc.Name)
+	}
+	if !tc.Done {
+		t.Error("tool should be Done=true for resume")
+	}
+	if tc.IsError {
+		t.Error("tool should not be IsError")
+	}
+	if !tc.SearchRead.IsRead {
+		t.Error("Read tool should have IsRead=true")
+	}
+	if !strings.Contains(tc.Output, "package main") {
+		t.Errorf("tool output = %q, want file content", tc.Output)
+	}
+	if asst.Blocks[3].Type != BlockText {
+		t.Errorf("block[3] = %v, want BlockText", asst.Blocks[3].Type)
+	}
+}
+
+func TestResume_ToolGroupCollapses(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Grep", Input: json.RawMessage(`{"pattern":"todo"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"found 3 matches"}]`)},
+			{Type: types.ContentTypeToolUse, ID: "toolu_2", Name: "Grep", Input: json.RawMessage(`{"pattern":"fixme"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_2", Content: json.RawMessage(`[{"type":"text","text":"found 1 match"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	if len(views[0].Blocks) != 2 {
+		t.Fatalf("blocks = %d, want 2 (both Grep tools)", len(views[0].Blocks))
+	}
+	for i, b := range views[0].Blocks {
+		if b.Type != BlockTool {
+			t.Errorf("block[%d] = %v, want BlockTool", i, b.Type)
+		}
+		if !b.ToolCall.SearchRead.IsSearch {
+			t.Errorf("block[%d] Grep should have IsSearch=true", i)
+		}
+	}
+	// Verify group collapse works via renderMessagesFull
+	rendered := renderMessagesFull(views, 80, false, "", false, false, 0)
+	// Group summary should show pattern count, not individual tool outputs
+	if !strings.Contains(rendered, "Searched for 2 patterns") {
+		t.Errorf("rendered should show group summary, got:\n%s", rendered)
+	}
+}
+
+func TestResume_ToolResultError(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls /nonexist"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", IsError: true, Content: json.RawMessage(`[{"type":"text","text":"exit code 1"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	if len(views) != 1 || len(views[0].Blocks) != 1 {
+		t.Fatalf("views=%d blocks=%d", len(views), len(views[0].Blocks))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if !tc.IsError {
+		t.Error("tool should be IsError=true")
+	}
+	if !strings.Contains(tc.Output, "exit code 1") {
+		t.Errorf("output = %q, want error content", tc.Output)
+	}
+}
+
+func TestResume_MessagesWithOnlyTools_NoSkip(t *testing.T) {
+	// Before: messages with only tool blocks were skipped (no text → no view).
+	// Now: tool-only messages should be rendered.
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"file1.go\nfile2.go"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1 (tool-only message should render)", len(views))
+	}
+	if views[0].Blocks[0].Type != BlockTool {
+		t.Errorf("block type = %v, want BlockTool", views[0].Blocks[0].Type)
+	}
+}
+
+func TestResume_ToolResultInSeparateUserMessage(t *testing.T) {
+	// tool_use lives in assistant message, tool_result in the next user message.
+	// This is the actual persisted format (Anthropic API convention).
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_abc", Name: "Bash", Input: json.RawMessage(`{"command":"make check"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_abc", Content: json.RawMessage(`[{"type":"text","text":"0 issues.\nPASS"}]`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, nil)
+	// The user message with only tool_result should not produce a separate view.
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1 (tool_result user msg should not appear)", len(views))
+	}
+	// The assistant message should have the tool with output populated.
+	if views[0].Role != "assistant" {
+		t.Errorf("view role = %q, want assistant", views[0].Role)
+	}
+	if len(views[0].Blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(views[0].Blocks))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if tc.Name != "Bash" {
+		t.Errorf("tool name = %q, want Bash", tc.Name)
+	}
+	if !strings.Contains(tc.Output, "0 issues") {
+		t.Errorf("tool output should contain result, got: %q", tc.Output)
+	}
+}
+
+// TestResume_BashEmptyOutput_NoRawJSON verifies that Bash tools with empty
+// output (e.g. git status on clean repo) don't display raw JSON.
+func TestResume_BashEmptyOutput_NoRawJSON(t *testing.T) {
+	bashTool := bash.New(nil)
+	tools := map[string]tool.Tool{"Bash": bashTool}
+
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "bash_1", Name: "Bash", Input: json.RawMessage(`{"command":"git status --short"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "bash_1", Content: json.RawMessage(`"[Tool spent 0.3s]{\"output\":\"\",\"exitCode\":0,\"cwd\":\"/home/yliu/repos/gbot\"}"`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, tools)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	if len(views[0].Blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(views[0].Blocks))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if tc.Output != "" {
+		t.Errorf("Bash empty output should be empty string, got: %q", tc.Output)
+	}
+}
+
+// TestResume_TaskOutput_NotRawBytes verifies that Task tool output is
+// rendered as human-readable text, not raw byte arrays.
+func TestResume_TaskOutput_NotRawBytes(t *testing.T) {
+	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()))
+	tools := map[string]tool.Tool{"Task": taskTool}
+
+	taskResult := `[Tool spent 0.1s]{"updated":[{"success":true,"taskId":"34","updatedFields":["status"],"statusChange":{"from":"in_progress","to":"completed"}}]}`
+	taskResultJSON, _ := json.Marshal(taskResult)
+
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"updates":[{"taskId":"34","status":"completed"}]}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: taskResultJSON},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, tools)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if strings.Contains(tc.Output, "[123") || strings.Contains(tc.Output, "34 117") {
+		t.Errorf("Task output should not show raw bytes, got: %q", tc.Output)
+	}
+	if tc.Output == "" {
+		t.Errorf("Task output should not be empty, got empty string")
+	}
+}
+
+// TestResume_BashWithOutput_NoRawJSON verifies that Bash tools with actual
+// output are rendered via RenderResult, not as raw JSON.
+func TestResume_BashWithOutput_NoRawJSON(t *testing.T) {
+	bashTool := bash.New(nil)
+	tools := map[string]tool.Tool{"Bash": bashTool}
+
+	bashResult := `[Tool spent 0.3s]{"output":"0 issues.\ngo fix ./...\nmake[1]: Leaving directory","exitCode":0,"cwd":"/home/yliu/repos/gbot"}`
+	bashResultJSON, _ := json.Marshal(bashResult)
+
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "bash_1", Name: "Bash", Input: json.RawMessage(`{"command":"make check"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "bash_1", Content: bashResultJSON},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, tools)
+	tc := views[0].Blocks[0].ToolCall
+	if !strings.Contains(tc.Output, "0 issues") {
+		t.Errorf("Bash output should contain '0 issues', got: %q", tc.Output)
+	}
+	if strings.Contains(tc.Output, `"exitCode"`) || strings.Contains(tc.Output, `"cwd"`) {
+		t.Errorf("Bash output should not contain raw JSON, got: %q", tc.Output)
+	}
+}
+
+// TestResume_TaskSummary_UsesToolDescription verifies that Task tool summary
+// is generated via the tool's Description function (e.g. "Create 3 tasks"),
+// not left empty.
+func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
+	taskTool := taskpkg.New(taskpkg.NewList(t.TempDir()))
+	tools := map[string]tool.Tool{"Task": taskTool}
+
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "task_1", Name: "Task", Input: json.RawMessage(`{"creates":[{"subject":"Read config","description":"read it"},{"subject":"Check git","description":"check it"},{"subject":"Build","description":"build it"}]}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "task_1", Content: json.RawMessage(`"[Tool spent 0.1s]{\"created\":[{\"id\":\"1\",\"subject\":\"Read config\"},{\"id\":\"2\",\"subject\":\"Check git\"},{\"id\":\"3\",\"subject\":\"Build\"}]}"`)},
+		}},
+	}
+
+	views := engineMessagesToViews(msgs, tools)
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	tc := views[0].Blocks[0].ToolCall
+	if !strings.Contains(tc.Summary, "Create") {
+		t.Errorf("Task summary should contain 'Create', got: %q", tc.Summary)
 	}
 }

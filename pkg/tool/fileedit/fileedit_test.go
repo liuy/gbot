@@ -1028,8 +1028,8 @@ func TestRenderResult_NoPatch(t *testing.T) {
 		StructuredPatch: nil,
 	}
 	got := tt.RenderResult(out)
-	if got != "" {
-		t.Errorf("expected empty for no patch, got: %q", got)
+	if got == "" {
+		t.Errorf("expected diff from OldString/NewString fallback, got empty")
 	}
 }
 
@@ -1039,6 +1039,21 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 	got := tt.RenderResult(42)
 	if !strings.Contains(got, "42") {
 		t.Errorf("expected fallback string representation, got: %q", got)
+	}
+}
+
+func TestRenderResult_ErrorString(t *testing.T) {
+	t.Parallel()
+	tt := fileedit.New()
+	// Edit error messages include the full search string after newline.
+	// TS renderToolUseErrorMessage shows only a short summary.
+	errMsg := "String to replace not found in file.\nString: func main() {\n\tfmt.Println(\"hello\")\n}"
+	got := tt.RenderResult(errMsg)
+	if strings.Contains(got, "func main()") {
+		t.Errorf("error output should not contain the search string, got: %q", got)
+	}
+	if !strings.Contains(got, "Error editing file") {
+		t.Errorf("error output should contain 'Error editing file', got: %q", got)
 	}
 }
 

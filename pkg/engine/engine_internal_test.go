@@ -68,6 +68,7 @@ func (m *minimalTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (m *minimalTool) Prompt() string          { return "" }
 func (m *minimalTool) RenderResult(any) string { return "" }
+func (m *minimalTool) NewResultType() any { return nil }
 
 func (m *minimalTool) MaxResultSize() int { return 50000 }
 
@@ -737,6 +738,7 @@ func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *nonStreamingSuccessTool) Prompt() string          { return "" }
 func (t *nonStreamingSuccessTool) RenderResult(any) string { return "rendered output" }
+func (t *nonStreamingSuccessTool) NewResultType() any { return nil }
 
 func (*nonStreamingSuccessTool) MaxResultSize() int { return 50000 }
 
@@ -863,6 +865,7 @@ func (t *slowCancelTool) IsEnabled() bool                           { return tru
 func (t *slowCancelTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *slowCancelTool) Prompt() string                            { return "" }
 func (t *slowCancelTool) RenderResult(any) string                   { return "" }
+func (t *slowCancelTool) NewResultType() any { return nil }
 
 func (*slowCancelTool) MaxResultSize() int { return 50000 }
 
@@ -895,6 +898,7 @@ func (t *neverRunTool) IsEnabled() bool                           { return true 
 func (t *neverRunTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *neverRunTool) Prompt() string                            { return "" }
 func (t *neverRunTool) RenderResult(any) string                   { return "" }
+func (t *neverRunTool) NewResultType() any { return nil }
 
 func (*neverRunTool) MaxResultSize() int { return 50000 }
 
@@ -940,6 +944,7 @@ func (t *discardSlowTool) IsEnabled() bool                           { return tr
 func (t *discardSlowTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *discardSlowTool) Prompt() string                            { return "" }
 func (t *discardSlowTool) RenderResult(any) string                   { return "" }
+func (t *discardSlowTool) NewResultType() any { return nil }
 
 func (*discardSlowTool) MaxResultSize() int { return 50000 }
 func (t *discardSlowTool) WasCancelled() bool {
@@ -1794,6 +1799,7 @@ func (t *captureMessagesTool) IsEnabled() bool                           { retur
 func (t *captureMessagesTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *captureMessagesTool) Prompt() string                            { return "" }
 func (t *captureMessagesTool) RenderResult(any) string                   { return "" }
+func (t *captureMessagesTool) NewResultType() any { return nil }
 
 func (t *captureMessagesTool) MaxResultSize() int { return 50000 }
 
@@ -3107,6 +3113,7 @@ func (t *callbackTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *callbackTool) Prompt() string          { return "" }
 func (t *callbackTool) RenderResult(any) string { return "" }
+func (t *callbackTool) NewResultType() any { return nil }
 func (t *callbackTool) MaxResultSize() int      { return 50000 }
 
 func TestAbortError_TypeDiscrimination(t *testing.T) {
@@ -4333,6 +4340,7 @@ func (t *streamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *streamingSuccessTool) Prompt() string          { return "" }
 func (t *streamingSuccessTool) RenderResult(any) string { return "streamed" }
+func (t *streamingSuccessTool) NewResultType() any { return nil }
 func (*streamingSuccessTool) MaxResultSize() int        { return 50000 }
 
 type errorTool struct{ name string }
@@ -4354,6 +4362,7 @@ func (t *errorTool) IsEnabled() bool                           { return true }
 func (t *errorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *errorTool) Prompt() string                            { return "" }
 func (t *errorTool) RenderResult(any) string                   { return "" }
+func (t *errorTool) NewResultType() any { return nil }
 func (*errorTool) MaxResultSize() int                          { return 50000 }
 
 type nilResultTool struct{ name string }
@@ -4375,6 +4384,7 @@ func (t *nilResultTool) IsEnabled() bool                           { return true
 func (t *nilResultTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *nilResultTool) Prompt() string                            { return "" }
 func (t *nilResultTool) RenderResult(any) string                   { return "" }
+func (t *nilResultTool) NewResultType() any { return nil }
 func (*nilResultTool) MaxResultSize() int                          { return 50000 }
 
 type interruptBlockTool struct{ name string }
@@ -4395,7 +4405,9 @@ func (t *interruptBlockTool) IsConcurrencySafe(json.RawMessage) bool    { return
 func (t *interruptBlockTool) IsEnabled() bool                           { return true }
 func (t *interruptBlockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
 func (t *interruptBlockTool) Prompt() string                            { return "" }
+
 func (t *interruptBlockTool) RenderResult(any) string                   { return "executed" }
+func (t *interruptBlockTool) NewResultType() any { return nil }
 func (*interruptBlockTool) MaxResultSize() int                          { return 50000 }
 
 // ---------------------------------------------------------------------------
@@ -4763,7 +4775,9 @@ func (t *streamingErrorTool) IsConcurrencySafe(json.RawMessage) bool    { return
 func (t *streamingErrorTool) IsEnabled() bool                           { return true }
 func (t *streamingErrorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *streamingErrorTool) Prompt() string                            { return "" }
+
 func (t *streamingErrorTool) RenderResult(any) string                   { return "error" }
+func (t *streamingErrorTool) NewResultType() any { return nil }
 func (*streamingErrorTool) MaxResultSize() int                          { return 50000 }
 
 // ---------------------------------------------------------------------------
@@ -5009,7 +5023,9 @@ func (t *nilResultNonStreamingTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *nilResultNonStreamingTool) MaxResultSize() int      { return 50000 }
 func (t *nilResultNonStreamingTool) Prompt() string          { return "" }
+
 func (t *nilResultNonStreamingTool) RenderResult(any) string { return "" }
+func (t *nilResultNonStreamingTool) NewResultType() any { return nil }
 func (t *nilResultNonStreamingTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
@@ -5071,7 +5087,9 @@ func (t *backgroundNonStreamTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *backgroundNonStreamTool) MaxResultSize() int      { return 50000 }
 func (t *backgroundNonStreamTool) Prompt() string          { return "" }
+
 func (t *backgroundNonStreamTool) RenderResult(any) string { return "background done" }
+func (t *backgroundNonStreamTool) NewResultType() any { return nil }
 func (t *backgroundNonStreamTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}, nil
 }

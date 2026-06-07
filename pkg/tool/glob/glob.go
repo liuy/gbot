@@ -87,8 +87,16 @@ func New() tool.Tool {
 		MaxResultSizeChars: 100000,
 		Prompt_:            globPrompt(),
 		RenderResult_: func(data any) string {
-			out, ok := data.(*Output)
-			if !ok {
+			var out *Output
+			switch v := data.(type) {
+			case *Output:
+				out = v
+			case json.RawMessage:
+				out = &Output{}
+				if err := json.Unmarshal(v, out); err != nil {
+					return string(v)
+				}
+			default:
 				b, _ := json.Marshal(data)
 				return string(b)
 			}

@@ -120,7 +120,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	// Reset REPL state
 		*a.repl = *NewReplState()
-		a.repl.messages = engineMessagesToViews(engineMsgs)
+		a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 		a.committedCount = len(a.repl.messages)
 
 	// Update workspace meta
