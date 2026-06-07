@@ -868,6 +868,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	outputJSON := marshalToolOutput(t, result.Data, true)
 	pr := toolresult.MaybePersistLargeToolResult(outputJSON, t.Name(), t.MaxResultSize(), tt.ID, e.sessionID)
 	outputJSON = pr.Output
+	outputJSON = prependDuration(outputJSON, elapsed)
 	displayOutput := t.RenderResult(result.Data)
 	if displayOutput == "" {
 		if p := lastDisplayOutput.Load(); p != nil && *p != "" {
@@ -948,6 +949,7 @@ func (e *StreamingToolExecutor) emitToolError(tt *TrackedTool, err error, elapse
 	// MiniMax/Anthropic API ignores objects in tool_result.content → LLM sees "null".
 	fullErr := err.Error()
 	errJSON, _ := json.Marshal(fullErr)
+	errJSON = prependDuration(errJSON, elapsed)
 	// DisplayOutput is for the TUI; only show the first line so that error
 	// messages containing file content (e.g. Edit "string not found" errors
 	// that append the search string) don't dump large text into the UI.
@@ -1126,4 +1128,19 @@ func extractFilePathFromInput(input json.RawMessage) string {
 		return ""
 	}
 	return parsed.FilePath
+}
+
+// prependDuration adds a [spent Xs] prefix to tool result content for LLM context.
+// outputJSON is a JSON-encoded string like "some output" — we decode, prepend, re-encode.
+func prependDuration(outputJSON json.RawMessage, d time.Duration) json.RawMessage {
+	var s string
+	if json.Unmarshal(outputJSON, &s) != nil {
+		return outputJSON
+	}
+	prefix := fmt.Sprintf("[Tool spent %.1fs]", d.Seconds())
+	prefixed, err := json.Marshal(prefix + s)
+	if err != nil {
+		return outputJSON
+	}
+	return prefixed
 }
