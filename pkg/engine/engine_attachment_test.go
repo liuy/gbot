@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -675,16 +677,10 @@ func (p *trackingProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm
 	return ch, nil
 }
 
-// TestForkAgent_NoEventLeak_OnlyAttachment verifies that a fork (background)
-// sub-engine does NOT dispatch any events (thinking, tooling, text) to the
-// parent's dispatcher. The parent should only receive the attachment message
-// delivered via the notifyFn → EnqueueAttachment path.
-//
-// This is the engine-side Red-light test for the fork-agent event leak fix.
-// Without the fix, NewSubEngine creates a taggedDispatcher for fork agents,
-// causing their intermediate events to render in the parent TUI and interrupt
-// the user's conversation.
-func TestForkAgent_NoEventLeak_OnlyAttachment(t *testing.T) {
+// TestForkAgent_EventsForwarded verifies that a fork sub-engine dispatches
+// events to the parent's dispatcher. This is needed so synchronous fork agents
+// show their progress (tool calls, text output) in the parent TUI.
+func TestForkAgent_EventsForwarded(t *testing.T) {
 	collector := newEventCollector()
 	prov := &trackingProvider{}
 
@@ -695,79 +691,37 @@ func TestForkAgent_NoEventLeak_OnlyAttachment(t *testing.T) {
 	})
 	parent.SetSystemPrompt(json.RawMessage(`{"role":"system","content":"parent"}`))
 
-	// Create a fork (background) sub-engine.
+	// Create a fork sub-engine.
 	sub := parent.NewSubEngine(SubEngineOptions{
 		SystemPrompt:    `{"role":"system","content":"fork-agent"}`,
 		ParentToolUseID: "call_fork_001",
 		AgentType:       "fork",
 	})
 
-	// KEY ASSERTION: fork sub-engine must NOT have a dispatcher.
-	// If it does, thinking/tooling/text events will leak to the parent TUI.
-	if sub.dispatcher != nil {
-		t.Fatal("fork sub-engine should NOT have a dispatcher — events would leak to parent TUI")
+	// Fork sub-engine SHOULD have a dispatcher so events reach the parent TUI.
+	if sub.dispatcher == nil {
+		t.Fatal("fork sub-engine should have a dispatcher for event forwarding")
 	}
 
-	// Run the fork sub-engine query — it generates text events internally
-	// (trackingProvider returns "ok" text). Since dispatcher is nil, none
-	// should reach the parent collector.
+	// Run the fork sub-engine query — it generates text events internally.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := sub.QuerySync(ctx, "do background work", json.RawMessage(`{"role":"system","content":"fork-agent"}`))
+	result := sub.QuerySync(ctx, "do work", json.RawMessage(`{"role":"system","content":"fork-agent"}`))
 	if result.Error != nil {
 		t.Fatalf("fork query failed: %v", result.Error)
 	}
 
-		// Verify NO events from the fork sub-engine reached the parent.
-		events := collector.Events()
-		if count := len(events); count != 0 {
-			for _, e := range events {
-				t.Errorf("unexpected event from fork sub-engine: type=%s", e.Type)
-			}
-			t.Fatalf("expected 0 events on parent after fork query, got %d", count)
-		}
-
-	// Simulate fork completion notification (as notifyFn would do in production).
-	// This is the ONLY way the parent should learn about the fork agent's result.
-	xml := `<job-notification><job-id>fork-1</job-id><tool-use-id>call_fork_001</tool-use-id><status>completed</status><summary>Background agent "test" completed</summary><result>done</result></job-notification>`
-	parent.EnqueueAttachment(types.QueuedItem{
-		Value:     xml,
-		Mode:      types.ItemModeJob,
-		IsMeta:    true,
-		Origin:    &types.MessageOrigin{Kind: types.OriginJob},
-		Timestamp: time.Date(2026, 5, 19, 20, 0, 0, 0, time.UTC),
-	})
-
-	// Wait for the attachment to be processed (processAttachments → runTurns → EventQueryEnd).
-	deadline := time.After(5 * time.Second)
-	for {
-		events := collector.Events()
-		hasEnd := false
-		for _, e := range events {
-			if e.Type == types.EventQueryEnd {
-				hasEnd = true
-			}
-		}
-		if hasEnd {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for attachment processing. Events so far: %d", len(events))
-		default:
-			runtime.Gosched()
-		}
+	// Verify events from the fork sub-engine reached the parent.
+	events := collector.Events()
+	if count := len(events); count == 0 {
+		t.Fatal("expected events from fork sub-engine to reach parent, got 0")
 	}
 
-	// The parent's collector should have attachment-processing events only
-	// (EventAttachment, EventTurnStart, EventText, EventQueryEnd from the parent's
-	// own attachment-triggered runTurns). Crucially, NONE of these events should
-	// carry the fork agent's AgentMeta — that would mean the fork sub-engine leaked.
-	for _, e := range collector.Events() {
-		if e.Agent != nil && e.Agent.AgentType == "fork" {
-			t.Errorf("event with fork AgentMeta leaked to parent: type=%s, agentType=%s, parentToolUseID=%s",
-				e.Type, e.Agent.AgentType, e.Agent.ParentToolUseID)
+	// Verify events have AgentMeta with the correct ParentToolUseID.
+	for _, e := range events {
+		if e.Agent == nil || e.Agent.ParentToolUseID != "call_fork_001" {
+			t.Errorf("event type=%s missing AgentMeta or wrong ParentToolUseID", e.Type)
 		}
 	}
 }
@@ -855,3 +809,130 @@ func TestTimestampInjection_ZeroTimestampSkipped(t *testing.T) {
 		t.Errorf("zero-timestamp text = %q, want %q", got[0].Content[0].Text, "no timestamp")
 	}
 }
+
+// TestToolUseContext_ReceivesConversationHistory verifies that when the engine
+// executes a tool during streaming, the ToolUseContext.Messages contains the
+// full conversation history — even when the tool goroutine starts before the
+// stream ends (and thus before the post-stream SetMessages call).
+//
+// Scenario: AddTool starts a goroutine that calls buildToolCtx before
+// the LLM stream finishes. SetMessages only runs AFTER the stream ends.
+// The tool goroutine sees empty messages → fork agents get no history.
+//
+// This test uses a gated provider: it sends tool_use events, then blocks
+// the stream before message_stop. The tool goroutine runs while the stream
+// is blocked, deterministically reproducing the empty-messages condition.
+//
+// Without the early SetMessages call at executor creation time, this test
+// fails because the goroutine sees no conversation history.
+func TestToolUseContext_ReceivesConversationHistory(t *testing.T) {
+	var capturedMessages []types.Message
+	var capturedMu sync.Mutex
+	toolCalled := make(chan struct{})
+
+	probe := &mockTool{
+		name:    "HistoryProbe",
+		enabled: true,
+		callFn: func(_ context.Context, _ json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			capturedMu.Lock()
+			capturedMessages = tctx.Messages
+			capturedMu.Unlock()
+			close(toolCalled)
+			return &tool.ToolResult{Data: "ok"}, nil
+		},
+	}
+
+	gate := make(chan struct{})
+	prov := &gatedProvider{
+		toolName: "HistoryProbe",
+		gate:     gate,
+	}
+
+	eng := New(&Params{
+		Provider: prov,
+		Model:    "test",
+		Tools:    []tool.Tool{probe},
+	})
+
+	eng.appendMessage(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("圣斗士星矢")},
+	})
+	eng.appendMessage(types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("好看的动画")},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Run Query in background — stream blocks at gate after sending tool_use
+	queryDone := make(chan struct{})
+	go func() {
+		defer close(queryDone)
+		eng.Query(ctx, "test", nil)
+	}()
+
+	// Wait for the tool to be called (goroutine ran during blocked stream)
+	select {
+	case <-toolCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool to be called")
+	}
+
+	// Check captured messages BEFORE closing the gate (before SetMessages)
+	capturedMu.Lock()
+	msgs := capturedMessages
+	capturedMu.Unlock()
+
+	// Let the stream finish so Query can complete
+	close(gate)
+	<-queryDone
+
+	if len(msgs) == 0 {
+		t.Fatal("tool received empty Messages — SetMessages not called before goroutine start")
+	}
+
+	found := false
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "圣斗士星矢") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("tool Messages does not contain history: got %d messages, none contain '圣斗士星矢'", len(msgs))
+	}
+}
+
+// gatedProvider sends tool_use events immediately, then blocks on gate
+// before sending message_stop. This simulates LLM network delay after
+// tool_use but before stream end, reproducing the deterministic bug where
+// the tool goroutine runs before SetMessages.
+type gatedProvider struct {
+	toolName string
+	gate     chan struct{}
+}
+
+func (p *gatedProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return nil, nil
+}
+
+func (p *gatedProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	ch := make(chan llm.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "test"}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_1", Name: p.toolName}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{}`}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		// Block here — simulates LLM network delay. Tool goroutine runs
+		// during this pause, before SetMessages is called.
+		<-p.gate
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 10}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+	}()
+	return ch, nil
+}
+

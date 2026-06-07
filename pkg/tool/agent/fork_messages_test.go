@@ -305,3 +305,118 @@ func TestBuildForkDirective_ContainsRequiredElements(t *testing.T) {
 		t.Error("should contain no sub-agents rule")
 	}
 }
+
+// TestBuildForkMessages_ContainsLatestUserMessage verifies that fork agent
+// inherits the latest user message from the parent conversation.
+// This is the "fork" guarantee: the child sees everything the parent saw.
+func TestBuildForkMessages_ContainsLatestUserMessage(t *testing.T) {
+	t.Parallel()
+
+	// Simulate tctx.Messages as passed to callFork:
+	// [user("old"), assistant("old reply"), user("神斗士星矢"), assistant(trigger with tool_use)]
+	userOld := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("old question")},
+	}
+	assistantOld := types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("old reply")},
+	}
+	userNew := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("我小时候喜欢看动画片神斗士星矢")},
+	}
+	assistantTrigger := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("let me fork"),
+			{Type: types.ContentTypeToolUse, ID: "tu_1", Name: "Agent", Input: json.RawMessage(`{"fork":true}`)},
+		},
+	}
+	messages := []types.Message{userOld, assistantOld, userNew, assistantTrigger}
+
+	// callFork splits at the last assistant message
+	var triggerAssistant *types.Message
+	var contextHistory []types.Message
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == types.RoleAssistant {
+			msg := messages[i]
+			triggerAssistant = &msg
+			contextHistory = messages[:i]
+			break
+		}
+	}
+
+	forkMessages := BuildForkMessages(triggerAssistant, contextHistory, "recall context")
+
+	found := false
+	for _, m := range forkMessages {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "神斗士星矢") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("fork messages do not contain '神斗士星矢'")
+	}
+}
+
+// TestCallFork_PreservesHistoryWhenNoAssistantYet reproduces the production
+// scenario where the tool goroutine runs mid-stream, before the assistant
+// response is appended to e.messages. In this case tctx.Messages contains
+// only [userOld, assistantOld, userNew("神斗士星矢")] with no trigger
+// assistant. The old callFork logic scanned backward for assistant, found
+// the old one, and truncated — dropping userNew.
+//
+// After the change: callFork passes the full tctx.Messages through
+// FilterIncompleteToolCalls + directive append, without splitting.
+func TestBuildForkMessages_NilTriggerPreservesHistory(t *testing.T) {
+	t.Parallel()
+
+	userOld := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("old question")},
+	}
+	assistantOld := types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("old reply")},
+	}
+	userNew := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("我小时候喜欢看动画片神斗士星矢")},
+	}
+
+	messages := []types.Message{userOld, assistantOld, userNew}
+
+	// New callFork logic: FilterIncompleteToolCalls + append directive
+	filtered := FilterIncompleteToolCalls(messages)
+	directive := buildForkDirective("recall context")
+	filtered = append(filtered, types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock(directive)},
+	})
+
+	found := false
+	for _, m := range filtered {
+		for _, b := range m.Content {
+			if b.Type == types.ContentTypeText && strings.Contains(b.Text, "神斗士星矢") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("fork messages dropped user message '神斗士星矢': got %d messages", len(filtered))
+		for i, m := range filtered {
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeText {
+					preview := b.Text
+					if len(preview) > 80 {
+						preview = preview[:80] + "..."
+					}
+					t.Logf("  [%d] %s: %q", i, m.Role, preview)
+				}
+			}
+		}
+	}
+}

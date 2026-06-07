@@ -170,7 +170,8 @@ func (t *AgentTool) InputSchema() json.RawMessage {
     "subagent_type": {"type": "string", "description": "Agent type to use"},
     "name": {"type": "string", "description": "Name for the spawned agent. Makes it addressable via SendMessage while running."},
     "model": {"type": "string", "enum": ["sonnet","opus","haiku"]},
-    "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background"}
+    "run_in_background": {"type": "boolean", "description": "Set to true to run this agent in the background"},
+    "fork": {"type": "boolean", "description": "Set to true to inherit parent agent's conversation context"}
   },
   "required": ["description","prompt"]
 }`)
@@ -194,8 +195,11 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		return nil, fmt.Errorf("cannot spawn agents from within a fork agent")
 	}
 
-	// Step 1.6: Fork routing — background agent path
-	if agentInput.RunInBackground && t.forkReg != nil {
+	// Step 1.6: Fork routing — inherit parent context
+	if agentInput.Fork {
+		if t.forkReg == nil {
+			return nil, fmt.Errorf("fork mode is not available: fork agent registry not initialized")
+		}
 		return t.callFork(ctx, agentInput, tctx)
 	}
 
@@ -404,27 +408,26 @@ func (t *AgentTool) FormatWireResult(data any) string {
 // Source: forkSubagent.ts — FORK_AGENT.maxTurns = 200
 const forkMaxTurns = 200
 
-// callFork spawns a background fork agent and returns immediately.
-// Source: AgentTool.tsx — fork path in call()
+// callFork handles the fork path — inherits parent conversation context.
+// If run_in_background is true, spawns asynchronously via Spawn.
+// Otherwise, runs synchronously via the factory (RunForkedQuery).
 func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	parentTools := t.parentTools()
 
-	// Split messages: find the triggering assistant message and context history
-	var triggerAssistant *types.Message
+	// Source: runAgent.ts:370-373 — [...filterIncompleteToolCalls(forkContextMessages), ...promptMessages]
+	// Source: AgentTool.tsx:239 — assistantMessage parameter passed to call()
 	var contextHistory []types.Message
-	if tctx != nil && len(tctx.Messages) > 0 {
-		for i := len(tctx.Messages) - 1; i >= 0; i-- {
-			if tctx.Messages[i].Role == types.RoleAssistant {
-				msg := tctx.Messages[i]
-				triggerAssistant = &msg
-				contextHistory = tctx.Messages[:i]
-				break
+	var triggerAssistantMsg *types.Message
+	if tctx != nil {
+		contextHistory = tctx.Messages
+		if len(tctx.AssistantContent) > 0 {
+			triggerAssistantMsg = &types.Message{
+				Role:    types.RoleAssistant,
+				Content: tctx.AssistantContent,
 			}
 		}
 	}
-
-	// Build fork messages (contextHistory is filtered for incomplete tool calls)
-	forkMessages := BuildForkMessages(triggerAssistant, contextHistory, input.Prompt)
+	forkMessages := BuildForkMessages(triggerAssistantMsg, contextHistory, input.Prompt)
 
 	// Get parent system prompt (rendered bytes, not recomputed)
 	var systemPrompt json.RawMessage
@@ -443,21 +446,33 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		model = ""
 	}
 
-	// Build the runFn closure
+	agentType := "fork"
+	if input.SubagentType != "" {
+		agentType = input.SubagentType
+	}
+
+	opts := AgentOpts{
+		ForkMessages:       forkMessages,
+		SystemPrompt:       systemPrompt,
+		Tools:              parentTools,
+		MaxTurns:           forkMaxTurns,
+		Model:              model,
+		AgentType:          agentType,
+		ParentToolUseID:    parentToolUseID,
+		ParentSystemPrompt: systemPrompt,
+	}
+
+	// Sync path: run fork in-process and return result directly
+	if !input.RunInBackground {
+		result, err := t.factory(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("fork agent execution failed: %w", err)
+		}
+		return &tool.ToolResult{Data: result}, nil
+	}
+
+	// Async path: spawn in background
 	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
-		opts := AgentOpts{
-			ForkMessages:       forkMessages,
-			SystemPrompt:       systemPrompt,
-			Tools:              parentTools,
-			MaxTurns:           forkMaxTurns,
-			Model:              model,
-			AgentType:          "fork",
-			ParentToolUseID:    parentToolUseID,
-			ParentSystemPrompt: systemPrompt,
-		}
-		if input.SubagentType != "" {
-			opts.AgentType = input.SubagentType
-		}
 		return t.factory(runCtx, opts)
 	}
 
@@ -467,15 +482,11 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		if t.notifyFn != nil {
 			t.notifyFn(xml)
 		}
-		// CleanupCompleted is NOT called here — the adapter handles lazy cleanup
-		// to avoid deleting agents before TaskOutput can query them.
 	}
 
 	// Detached context — fork agents must survive parent query lifecycle.
-	// Source: TS forkSubagent.ts — fork agents have their own AbortController.
-	// The parent query's context is cancelled by ReplState.FinishStream on
-	// normal completion; if we derived from it, the fork agent would be killed.
-	// Explicit cancellation is handled via ForkAgentRegistry.Cancel().
+	// CleanupCompleted is NOT called here — the adapter handles lazy cleanup
+	// to avoid deleting agents before TaskOutput can query them.
 	detachedCtx := context.Background()
 
 	state, err := t.forkReg.Spawn(detachedCtx, runFn, forkNotifyFn, input.Description, parentToolUseID)

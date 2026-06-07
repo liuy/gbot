@@ -1679,6 +1679,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 							func(evt types.QueryEvent) { e.emitEvent(evt) },
 							ctx,
 						)
+						streamingExecutor.SetMessages(e.messages)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
 						streamingExecutor.SetFileHistory(e.fileHistory)
@@ -1694,6 +1695,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 							Name: cb.Name,
 						},
 					})
+					streamingExecutor.SetAssistantContent(contentBlocks)
 					streamingExecutor.AddTool(*cb)
 				case types.ContentTypeThinking:
 					cb.Thinking = currentText.String()
@@ -3118,7 +3120,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 
 	// If parent has a dispatcher, wrap it to tag sub-agent events.
 	var dispatcher types.EventDispatcher
-	if e.dispatcher != nil && opts.ParentToolUseID != "" && opts.AgentType != "fork" {
+	if e.dispatcher != nil && opts.ParentToolUseID != "" {
 		depth := e.agentMetaDepth + 1
 		dispatcher = &taggedDispatcher{
 			parent: e.dispatcher,

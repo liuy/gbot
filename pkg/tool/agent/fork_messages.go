@@ -57,33 +57,27 @@ func FilterIncompleteToolCalls(messages []types.Message) []types.Message {
 }
 
 // BuildForkMessages constructs the synthetic conversation for a fork child agent.
-// triggerAssistantMsg: the assistant message containing the Agent tool_use block (NOT filtered)
-// contextHistory: parent conversation BEFORE the trigger message (filtered for incomplete tool calls)
-// prompt: the user's actual prompt for the fork agent
 // Source: forkSubagent.ts:107-169 — buildForkedMessages()
 func BuildForkMessages(triggerAssistantMsg *types.Message, contextHistory []types.Message, prompt string) []types.Message {
-	// Step 1: Filter context history for incomplete tool calls
 	filteredHistory := FilterIncompleteToolCalls(contextHistory)
 
-	// Step 2: If no trigger assistant, return a simple user message with the directive
 	if triggerAssistantMsg == nil {
-		return []types.Message{
-			{
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(buildForkDirective(prompt))},
-			},
-		}
+		// Source: runAgent.ts:370-373 — [...filterIncompleteToolCalls(forkContextMessages), ...promptMessages]
+		result := make([]types.Message, 0, len(filteredHistory)+1)
+		result = append(result, filteredHistory...)
+		result = append(result, types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(buildForkDirective(prompt))},
+		})
+		return result
 	}
 
-	// Step 3: Clone the assistant message (preserve all content blocks)
 	clonedAssistant := types.Message{
 		Role:    types.RoleAssistant,
 		Content: make([]types.ContentBlock, len(triggerAssistantMsg.Content)),
 	}
 	copy(clonedAssistant.Content, triggerAssistantMsg.Content)
 
-	// Step 4: Collect tool_use blocks and build placeholder tool_results
-	// Source: forkSubagent.ts:142-150 — content is array of content blocks, not a bare string
 	var toolResultBlocks []types.ContentBlock
 	for _, block := range triggerAssistantMsg.Content {
 		if block.Type == types.ContentTypeToolUse && block.ID != "" {
@@ -99,21 +93,14 @@ func BuildForkMessages(triggerAssistantMsg *types.Message, contextHistory []type
 		}
 	}
 
-	// Step 5: Build user message with placeholder tool_results + directive
 	userContent := make([]types.ContentBlock, 0, len(toolResultBlocks)+1)
 	userContent = append(userContent, toolResultBlocks...)
 	userContent = append(userContent, types.NewTextBlock(buildForkDirective(prompt)))
 
-	userMsg := types.Message{
-		Role:    types.RoleUser,
-		Content: userContent,
-	}
-
-	// Step 6: Assemble: [...filteredHistory, clonedAssistant, userMsg]
 	result := make([]types.Message, 0, len(filteredHistory)+2)
 	result = append(result, filteredHistory...)
 	result = append(result, clonedAssistant)
-	result = append(result, userMsg)
+	result = append(result, types.Message{Role: types.RoleUser, Content: userContent})
 	return result
 }
 

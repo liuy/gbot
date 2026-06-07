@@ -35,15 +35,16 @@ type FileState struct {
 
 // ToolUseContext carries the execution context for each tool call.
 type ToolUseContext struct {
-	Ctx           context.Context
-	Options       ToolUseOptions
-	Messages      []types.Message
-	ToolUseID     string
-	WorkingDir    string
-	ReadFileState map[string]FileState // keyed by absolute file path
-	OnProgress    func(ProgressUpdate) // optional — engine sets this for streaming progress
-	UncappedOutput bool                // bypass internal output capping (set for REPL sub-tool calls)
-	OnAskInput    func(prompt string, masked bool, deadline time.Time) chan types.AskResponse // optional — interactive PTY input
+	Ctx              context.Context
+	Options          ToolUseOptions
+	Messages         []types.Message
+	ToolUseID        string
+	WorkingDir       string
+	AssistantContent []types.ContentBlock // current assistant message's content blocks (mid-stream)
+	ReadFileState    map[string]FileState // keyed by absolute file path
+	OnProgress       func(ProgressUpdate) // optional — engine sets this for streaming progress
+	UncappedOutput   bool                 // bypass internal output capping (set for REPL sub-tool calls)
+	OnAskInput       func(prompt string, masked bool, deadline time.Time) chan types.AskResponse // optional — interactive PTY input
 }
 
 // MaxUncappedOutput is the safety limit for uncapped tool output reads (64MB).

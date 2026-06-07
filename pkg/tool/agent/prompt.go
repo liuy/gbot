@@ -134,7 +134,6 @@ Usage notes:
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, etc.), since it is not aware of the user's intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first.
-- If you specify "run_in_background": true, the agent will be launched as a background agent that runs independently. Background agents inherit your full conversation context and tools. Results are delivered as a notification when the agent completes. Use for long-running tasks like verification, testing, or extensive codebase analysis.
 - You can optionally specify a model for the agent: "sonnet" (default), "opus" (complex analysis), or "haiku" (quick lookups). If omitted, the agent inherits your current model.
 - If you specify "name": "foo", the agent can be addressed by that name while running.
 
@@ -156,6 +155,8 @@ Example usage:
 user: "What's left on this branch before we can ship?"
 assistant: <thinking>Forking this — it's a survey question. I want the punch list, not the git output in my context.</thinking>
 Agent({
+  fork: true,
+  run_in_background: true,
   name: "ship-audit",
   description: "Branch ship-readiness audit",
   prompt: "Audit what's left before this branch can ship. Check: uncommitted changes, commits ahead of main, whether tests exist, whether the GrowthBook gate is wired up, whether CI-relevant files changed. Report a punch list — done vs. missing. Under 200 words."

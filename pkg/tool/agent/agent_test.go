@@ -396,7 +396,7 @@ func TestCallFork_DetachedContext(t *testing.T) {
 		},
 	}
 
-	input := json.RawMessage(`{"description":"bg search","prompt":"find all test files","subagent_type":"Explore","run_in_background":true}`)
+	input := json.RawMessage(`{"description":"bg search","prompt":"find all test files","subagent_type":"Explore","fork":true,"run_in_background":true}`)
 	result, err := at.Call(parentCtx, input, tctx)
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -768,7 +768,7 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
 	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
 
-	input := json.RawMessage(`{"description":"bg task","prompt":"search code","run_in_background":true}`)
+	input := json.RawMessage(`{"description":"bg task","prompt":"search code","fork":true,"run_in_background":true}`)
 	result, err := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_fork_1"})
 	if err != nil {
 		t.Fatalf("Call returned error: %v", err)
@@ -824,7 +824,7 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
 
 	// subagent_type="Explore" should override default "fork"
-	input := json.RawMessage(`{"description":"explore","prompt":"search","run_in_background":true,"subagent_type":"Explore"}`)
+	input := json.RawMessage(`{"description":"explore","prompt":"search","fork":true,"run_in_background":true,"subagent_type":"Explore"}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_exp"})
 	sqr := result.Data.(*types.SubQueryResult)
 	at.forkReg.Wait(sqr.AgentID)
@@ -854,7 +854,7 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
 
 	// name does NOT override subagent_type — name is only for SendMessage addressing
-	input := json.RawMessage(`{"description":"audit","prompt":"check","run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
+	input := json.RawMessage(`{"description":"audit","prompt":"check","fork":true,"run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_audit"})
 	sqr := result.Data.(*types.SubQueryResult)
 	at.forkReg.Wait(sqr.AgentID)
@@ -878,7 +878,7 @@ func TestCallFork_RecursiveGuard(t *testing.T) {
 	)
 	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
 
-	input := json.RawMessage(`{"description":"nested","prompt":"do it","run_in_background":true}`)
+	input := json.RawMessage(`{"description":"nested","prompt":"do it","fork":true,"run_in_background":true}`)
 
 	// Simulate being inside a fork child (messages contain fork-boilerplate)
 	tctx := &tool.ToolUseContext{
@@ -922,7 +922,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 		func() json.RawMessage { return json.RawMessage(`"system prompt"`) },
 	)
 
-	input := json.RawMessage(`{"description":"bg search","prompt":"find TODOs","run_in_background":true}`)
+	input := json.RawMessage(`{"description":"bg search","prompt":"find TODOs","fork":true,"run_in_background":true}`)
 	result, _ := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_notif"})
 
 	// Wait for fork to complete via registry
@@ -965,18 +965,13 @@ func TestCallFork_NoForkWithoutSetNotifyFn(t *testing.T) {
 	)
 	// SetNotifyFn NOT called — fork not enabled
 
-	input := json.RawMessage(`{"description":"bg","prompt":"do it","run_in_background":true}`)
-	result, err := at.Call(context.Background(), input, nil)
-	if err != nil {
-		t.Fatalf("Call returned error: %v", err)
+	input := json.RawMessage(`{"description":"bg","prompt":"do it","fork":true,"run_in_background":true}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error when fork=true but SetNotifyFn not called")
 	}
-	sqr := result.Data.(*types.SubQueryResult)
-	// Without SetNotifyFn, run_in_background is ignored — runs synchronously
-	if sqr.AsyncLaunched {
-		t.Error("should not launch async without SetNotifyFn")
-	}
-	if sqr.Content != "sync done" {
-		t.Errorf("Content = %q, want sync result", sqr.Content)
+	if !strings.Contains(err.Error(), "fork mode is not available") {
+		t.Errorf("error = %q, want mention of fork mode not available", err.Error())
 	}
 }
 
@@ -1918,5 +1913,121 @@ func TestBuildEnvBlock_ContainsShellAndModel(t *testing.T) {
 	}
 	if !strings.Contains(env, "Shell:") {
 		t.Errorf("env block should contain Shell line, got: %q", env)
+	}
+}
+
+func TestForkSync_InheritsContext(t *testing.T) {
+	// fork=true + run_in_background=false → sync fork, inherits parent context
+	var capturedOpts AgentOpts
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{
+			AgentType: "fork",
+			Content:   "found 3 files",
+		}, nil
+	}
+
+	parentTools := makeTestTools("Bash", "Read", "Grep")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return json.RawMessage(`"parent system prompt"`) })
+
+	assistantMsg := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("I'll search"),
+			types.NewToolUseBlock("call_1", "Agent", json.RawMessage(`{}`)),
+		},
+	}
+	tctx := &tool.ToolUseContext{
+		ToolUseID: "call_1",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("search")}},
+			assistantMsg,
+		},
+	}
+
+	input := json.RawMessage(`{"description":"fork sync search","prompt":"find all test files","fork":true}`)
+	result, err := at.Call(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sqr, ok := result.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("result.Data should be *SubQueryResult, got %T", result.Data)
+	}
+	if sqr.AsyncLaunched {
+		t.Error("result should NOT have AsyncLaunched for sync fork")
+	}
+	if sqr.Content != "found 3 files" {
+		t.Errorf("Content = %q, want %q", sqr.Content, "found 3 files")
+	}
+
+	// Verify fork messages were built (not the fresh agent path)
+	if len(capturedOpts.ForkMessages) == 0 {
+		t.Error("factory should receive ForkMessages for fork path")
+	}
+	// Verify parent system prompt was inherited
+	if string(capturedOpts.SystemPrompt) != `"parent system prompt"` {
+		t.Errorf("SystemPrompt = %q, want parent system prompt", string(capturedOpts.SystemPrompt))
+	}
+	// Verify parent tools were passed (not filtered by agent def)
+	if len(capturedOpts.Tools) != 3 {
+		t.Errorf("factory received %d tools, want 3 (parent tools)", len(capturedOpts.Tools))
+	}
+}
+
+func TestForkFalse_BackgroundTrue_NoForkReg(t *testing.T) {
+	// fork=false + run_in_background=true without forkReg → falls through to normal sync path
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		return &types.SubQueryResult{
+			AgentType: "General",
+			Content:   "done",
+		}, nil
+	}
+
+	parentTools := makeTestTools("Bash", "Read")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	// No SetNotifyFn → forkReg is nil
+
+	input := json.RawMessage(`{"description":"bg without fork","prompt":"do something","run_in_background":true}`)
+	result, err := at.Call(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Call returned error: %v", err)
+	}
+
+	sqr, ok := result.Data.(*types.SubQueryResult)
+	if !ok {
+		t.Fatalf("result.Data should be *SubQueryResult, got %T", result.Data)
+	}
+	// Falls through to sync path (no fork, no registry for background)
+	if sqr.AsyncLaunched {
+		t.Error("should not be async — no forkReg to manage background agents")
+	}
+	if sqr.Content != "done" {
+		t.Errorf("Content = %q, want %q", sqr.Content, "done")
+	}
+}
+
+func TestForkTrue_NoForkReg_ReturnsError(t *testing.T) {
+	// fork=true but forkReg is nil → error
+	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
+		return nil, fmt.Errorf("should not be called")
+	}
+
+	parentTools := makeTestTools("Bash")
+	at := New()
+	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
+	// No SetNotifyFn → forkReg is nil
+
+	input := json.RawMessage(`{"description":"fork no reg","prompt":"test","fork":true}`)
+	_, err := at.Call(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error when fork=true but forkReg is nil")
+	}
+	if !strings.Contains(err.Error(), "fork mode is not available") {
+		t.Errorf("error = %q, want mention of fork mode not available", err.Error())
 	}
 }

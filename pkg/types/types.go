@@ -520,6 +520,7 @@ type AgentInput struct {
 	Name            string `json:"name,omitempty"`
 	Model           string `json:"model,omitempty"`
 	RunInBackground bool   `json:"run_in_background,omitempty"`
+	Fork            bool   `json:"fork,omitempty"`
 }
 
 // SubQueryResult is the result returned by a sub-agent after execution.

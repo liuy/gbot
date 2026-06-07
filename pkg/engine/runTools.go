@@ -122,6 +122,7 @@ type StreamingToolExecutor struct {
 	hasErrored  bool
 	errToolDesc string
 	discarded   bool
+	assistantContent []types.ContentBlock // current assistant message's content blocks (mid-stream)
 
 	// hooks is the lifecycle hooks system for PreToolUse/PostToolUse.
 	hooks     *hooks.Hooks
@@ -175,6 +176,13 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.messages = messages
+}
+
+// SetAssistantContent sets the current assistant message's content blocks.
+func (e *StreamingToolExecutor) SetAssistantContent(blocks []types.ContentBlock) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.assistantContent = blocks
 }
 
 // StartedToolIDs returns tool IDs that have been started (executing or completed).
@@ -1006,15 +1014,19 @@ func (e *StreamingToolExecutor) firePostToolUseHook(tt *TrackedTool, isError boo
 func (e *StreamingToolExecutor) buildToolCtx(toolUseID string) *tool.ToolUseContext {
 	e.mu.Lock()
 	msgs := e.messages
+	ac := e.assistantContent
 	e.mu.Unlock()
 
 	if e.tctx == nil {
-		return &tool.ToolUseContext{ToolUseID: toolUseID, Messages: msgs}
+		return &tool.ToolUseContext{ToolUseID: toolUseID, Messages: msgs, AssistantContent: ac}
 	}
 	cp := *e.tctx
 	cp.ToolUseID = toolUseID
 	if len(msgs) > 0 {
 		cp.Messages = msgs
+	}
+	if len(ac) > 0 {
+		cp.AssistantContent = ac
 	}
 	// Wire OnAskInput: creates channel, emits AskEvent{Kind: AskInput}, returns channel.
 	if cp.OnAskInput == nil {
