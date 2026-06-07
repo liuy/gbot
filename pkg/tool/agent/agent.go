@@ -452,6 +452,8 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	}
 
 	opts := AgentOpts{
+		// Prompt intentionally left empty — it's already embedded in
+		// forkMessages via buildForkDirective. See: forkSubagent.ts:163.
 		ForkMessages:       forkMessages,
 		SystemPrompt:       systemPrompt,
 		Tools:              parentTools,

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -477,5 +478,374 @@ func TestDumpAPIRequest_SnapshotsState(t *testing.T) {
 	// The first message should be a user message with <system-reminder>.
 	if dump.Messages[0].Role != types.RoleUser {
 		t.Errorf("first message role = %q, want user (context prepend)", dump.Messages[0].Role)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// upsertAttachment / upsertToolCall unit tests
+// ---------------------------------------------------------------------------
+
+func TestUpsertAttachment_NewEntry(t *testing.T) {
+	t.Parallel()
+	mb := &MessageBreakdown{}
+	mb.upsertAttachment("file", 100)
+	if len(mb.AttachmentsByType) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(mb.AttachmentsByType))
+	}
+	if mb.AttachmentsByType[0].Name != "file" {
+		t.Errorf("name = %q, want %q", mb.AttachmentsByType[0].Name, "file")
+	}
+	if mb.AttachmentsByType[0].Tokens != 100 {
+		t.Errorf("tokens = %d, want 100", mb.AttachmentsByType[0].Tokens)
+	}
+}
+
+func TestUpsertAttachment_Accumulate(t *testing.T) {
+	t.Parallel()
+	mb := &MessageBreakdown{}
+	mb.upsertAttachment("file", 100)
+	mb.upsertAttachment("file", 50)
+	if len(mb.AttachmentsByType) != 1 {
+		t.Fatalf("expected 1 attachment (accumulated), got %d", len(mb.AttachmentsByType))
+	}
+	if mb.AttachmentsByType[0].Tokens != 150 {
+		t.Errorf("tokens = %d, want 150 (accumulated)", mb.AttachmentsByType[0].Tokens)
+	}
+}
+
+func TestUpsertToolCall_UpdateExisting(t *testing.T) {
+	t.Parallel()
+	mb := &MessageBreakdown{}
+	mb.upsertToolCall("Bash", 100, 0)
+	mb.upsertToolCall("Bash", 50, 0)
+	if len(mb.ToolCallsByType) != 1 {
+		t.Fatalf("expected 1 tool call entry, got %d", len(mb.ToolCallsByType))
+	}
+	if mb.ToolCallsByType[0].CallTokens != 150 {
+		t.Errorf("CallTokens = %d, want 150", mb.ToolCallsByType[0].CallTokens)
+	}
+	if mb.ToolCallsByType[0].ResultTokens != 0 {
+		t.Errorf("ResultTokens = %d, want 0", mb.ToolCallsByType[0].ResultTokens)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// lastAPIUsage tests
+// ---------------------------------------------------------------------------
+
+func TestLastAPIUsage_EmptyMessages(t *testing.T) {
+	t.Parallel()
+	if got := lastAPIUsage(nil); got != nil {
+		t.Error("expected nil for nil messages")
+	}
+	if got := lastAPIUsage([]types.Message{}); got != nil {
+		t.Error("expected nil for empty messages")
+	}
+}
+
+func TestLastAPIUsage_ZeroUsageSkipped(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Usage: &types.Usage{}},
+	}
+	if got := lastAPIUsage(msgs); got != nil {
+		t.Error("expected nil when all usage fields are zero")
+	}
+}
+
+func TestLastAPIUsage_ReturnsLast(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 100, OutputTokens: 50}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("ok")}},
+		{Role: types.RoleAssistant, Usage: &types.Usage{InputTokens: 200, OutputTokens: 80, CacheCreationInputTokens: 10}},
+	}
+	got := lastAPIUsage(msgs)
+	if got == nil {
+		t.Fatal("expected non-nil")
+	}
+	if got.InputTokens != 200 {
+		t.Errorf("InputTokens = %d, want 200", got.InputTokens)
+	}
+	if got.OutputTokens != 80 {
+		t.Errorf("OutputTokens = %d, want 80", got.OutputTokens)
+	}
+	if got.CacheCreationInputTokens != 10 {
+		t.Errorf("CacheCreationInputTokens = %d, want 10", got.CacheCreationInputTokens)
+	}
+}
+
+func TestLastAPIUsage_NoAssistantMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+	if got := lastAPIUsage(msgs); got != nil {
+		t.Error("expected nil when no assistant messages")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tokenCountForBlock tests
+// ---------------------------------------------------------------------------
+
+func TestTokenCountForBlock_Thinking(t *testing.T) {
+	t.Parallel()
+	block := types.ContentBlock{Type: types.ContentTypeThinking, Thinking: "I need to think about this carefully"}
+	got := tokenCountForBlock(block)
+	if got <= 0 {
+		t.Errorf("expected positive token count for thinking block, got %d", got)
+	}
+}
+
+func TestTokenCountForBlock_UnknownType(t *testing.T) {
+	t.Parallel()
+	block := types.ContentBlock{Type: "image", Text: "an image block"}
+	got := tokenCountForBlock(block)
+	if got <= 0 {
+		t.Errorf("expected positive token count for unknown type via JSON marshal, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// safePct tests
+// ---------------------------------------------------------------------------
+
+func TestSafePct_ZeroWhole(t *testing.T) {
+	t.Parallel()
+	if got := safePct(50, 0); got != 0 {
+		t.Errorf("safePct(50, 0) = %f, want 0", got)
+	}
+	if got := safePct(50, -1); got != 0 {
+		t.Errorf("safePct(50, -1) = %f, want 0", got)
+	}
+}
+
+func TestSafePct_Normal(t *testing.T) {
+	t.Parallel()
+	if got := safePct(50, 100); got != 50.0 {
+		t.Errorf("safePct(50, 100) = %f, want 50.0", got)
+	}
+}
+
+func TestSafePct_Fraction(t *testing.T) {
+	t.Parallel()
+	got := safePct(1, 3)
+	if math.Abs(got-33.333333) > 0.01 {
+		t.Errorf("safePct(1, 3) = %f, want ~33.33", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// toolsClone tests
+// ---------------------------------------------------------------------------
+
+func TestToolsClone_Nil(t *testing.T) {
+	t.Parallel()
+	if got := toolsClone(nil); got != nil {
+		t.Error("expected nil for nil input")
+	}
+}
+
+func TestToolsClone_Copy(t *testing.T) {
+	t.Parallel()
+	original := map[string]tool.Tool{
+		"Bash": &stubTool{name: "Bash"},
+	}
+	cloned := toolsClone(original)
+	if len(cloned) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(cloned))
+	}
+	if _, ok := cloned["Bash"]; !ok {
+		t.Error("cloned map missing Bash")
+	}
+	// Mutating clone should not affect original
+	cloned["Read"] = &stubTool{name: "Read"}
+	if _, ok := original["Read"]; ok {
+		t.Error("original should not have Read after clone mutation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// estimateComponents — attachment path
+// ---------------------------------------------------------------------------
+
+func TestContextBreakdown_AttachmentInMessages(t *testing.T) {
+	t.Parallel()
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
+	e.messages = []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "user text"},
+			},
+			Attachment: &types.Attachment{
+				Type:   types.AttachmentTypeQueued,
+				Prompt: "this is an attached file content that has some tokens",
+			},
+		},
+	}
+	e.ContextTokens = 10_000
+
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	if bd.MessageBreakdown.AttachmentTokens == 0 {
+		t.Error("AttachmentTokens should be > 0 when message has Attachment")
+	}
+	if len(bd.MessageBreakdown.AttachmentsByType) == 0 {
+		t.Error("AttachmentsByType should have entries when message has Attachment")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// estimateSystemTools — deferred + toolSearch paths
+// Note: deferredStubTool is defined in toolsearch_test.go as a function returning tool.Tool.
+
+func TestEstimateSystemTools_DeferredDiscovered(t *testing.T) {
+	t.Parallel()
+	ts := newToolSearchState()
+	ts.DiscoverTools([]string{"ToolSearch"})
+	tools := map[string]tool.Tool{
+		"ToolSearch": deferredStubTool("ToolSearch"),
+		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
+	}
+	got := estimateSystemTools(tools, ts, nil)
+	// Both tools: ToolSearch is deferred but discovered → included.
+	bashTokens := estimateSingleTool(tools["Bash"])
+	toolSearchTokens := estimateSingleTool(tools["ToolSearch"])
+	wantTotal := bashTokens + toolSearchTokens
+	if got != wantTotal {
+		t.Errorf("expected Bash+ToolSearch tokens (%d), got %d", wantTotal, got)
+	}
+}
+
+func TestEstimateSystemTools_DeferredNotDiscovered(t *testing.T) {
+	t.Parallel()
+	ts := newToolSearchState()
+	tools := map[string]tool.Tool{
+		"ToolSearch": deferredStubTool("ToolSearch"),
+		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
+	}
+	got := estimateSystemTools(tools, ts, nil)
+	// ToolSearch is deferred+not discovered → skipped. Bash alone: ~1 token.
+	// Verify by name: only Bash should be in the count.
+	if got != estimateSingleTool(tools["Bash"]) {
+		t.Errorf("expected only Bash tokens (%d), got %d (ToolSearch not skipped?)",
+			estimateSingleTool(tools["Bash"]), got)
+	}
+}
+
+func TestEstimateSystemTools_NilToolSearch(t *testing.T) {
+	t.Parallel()
+	tools := map[string]tool.Tool{
+		"ToolSearch": deferredStubTool("ToolSearch"),
+		"Bash":       &stubTool{name: "Bash", prompt: "shell"},
+	}
+	got := estimateSystemTools(tools, nil, nil)
+	// With nil toolSearch, deferred ToolSearch is included.
+	bashTokens := estimateSingleTool(tools["Bash"])
+	toolSearchTokens := estimateSingleTool(tools["ToolSearch"])
+	wantTotal := bashTokens + toolSearchTokens
+	if got != wantTotal {
+		t.Errorf("expected Bash+ToolSearch tokens (%d), got %d", wantTotal, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDetails — attachment + top-5 truncation
+// ---------------------------------------------------------------------------
+
+func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
+	t.Parallel()
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
+	// Create 6 different attachment types to test truncation at top-5
+	e.messages = []types.Message{}
+	for i := range 6 {
+		e.messages = append(e.messages, types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "msg"},
+			},
+			Attachment: &types.Attachment{
+				Type:   types.AttachmentTypeQueued,
+				Prompt: fmt.Sprintf("attachment %d with some content", i),
+			},
+		})
+	}
+	e.ContextTokens = 20_000
+
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	if len(bd.MessageBreakdown.AttachmentsByType) > 5 {
+		t.Errorf("AttachmentsByType should be truncated to 5, got %d", len(bd.MessageBreakdown.AttachmentsByType))
+	}
+	if bd.MessageBreakdown.AttachmentTokens == 0 {
+		t.Error("AttachmentTokens should be > 0")
+	}
+}
+
+func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
+	t.Parallel()
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
+	e.SetSkillListing("- skill-a: do something\n- skill-b: do another thing\n")
+	e.SetAgentDefs([]*types.AgentDefinition{
+		{AgentType: "TestAgent", WhenToUse: "for testing"},
+		{AgentType: "CodeReview", WhenToUse: "for reviewing"},
+	})
+	e.messages = []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+	e.ContextTokens = 10_000
+
+	bd := e.ContextBreakdown()
+	if len(bd.Skills) == 0 {
+		t.Error("expected skill details")
+	}
+	if len(bd.Agents) == 0 {
+		t.Error("expected agent details")
+	}
+}
+
+func TestContextBreakdown_BuildDetails_MultipleToolCallsTruncation(t *testing.T) {
+	t.Parallel()
+	e := newTestEngineForBreakdown(t)
+	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	// Create messages with 7 different tool call types to test top-5 truncation
+	var msgs []types.Message
+	for i := range 7 {
+		msgs = append(msgs,
+			types.Message{
+				Role: types.RoleAssistant,
+				Content: []types.ContentBlock{
+					{Name: fmt.Sprintf("Tool%d", i), Type: types.ContentTypeToolUse, Input: json.RawMessage(`{}`)},
+				},
+			},
+			types.Message{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{
+					{Type: types.ContentTypeToolResult, Content: json.RawMessage(`"ok"`)},
+				},
+			},
+		)
+	}
+	e.messages = msgs
+	e.ContextTokens = 30_000
+
+	bd := e.ContextBreakdown()
+	if bd.MessageBreakdown == nil {
+		t.Fatal("MessageBreakdown is nil")
+	}
+	if len(bd.MessageBreakdown.ToolCallsByType) > 5 {
+		t.Errorf("ToolCallsByType should be truncated to 5, got %d", len(bd.MessageBreakdown.ToolCallsByType))
 	}
 }

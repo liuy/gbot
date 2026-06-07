@@ -950,6 +950,11 @@ func (e *Engine) buildDetails(
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
 			continue
 		}
+		if messages[i].Attachment != nil {
+			attTokens := types.EstimateTokens(messages[i].Attachment.Prompt)
+			ds.messageBreakdown.AttachmentTokens += attTokens
+			ds.messageBreakdown.upsertAttachment("file", attTokens)
+		}
 		for _, block := range messages[i].Content {
 			t := tokenCountForBlock(block)
 			classifyMessageBlock(messages[i], block, t, ds.messageBreakdown)

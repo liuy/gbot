@@ -99,9 +99,10 @@ func (ec *eventCollector) Reset() {
 // ---------------------------------------------------------------------------
 
 type mockProvider struct {
-	mu        sync.Mutex
-	responses []mockResponse
-	index     int
+	mu          sync.Mutex
+	responses   []mockResponse
+	index       int
+	lastRequest *llm.Request // captured from the most recent Stream call
 }
 
 type mockResponse struct {
@@ -115,7 +116,10 @@ func (m *mockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Respons
 	}, nil
 }
 
-func (m *mockProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+func (m *mockProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
+	m.mu.Lock()
+	m.lastRequest = req
+	m.mu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -149,6 +153,16 @@ func (m *mockProvider) callCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.index
+}
+
+// lastRequestMessages returns the messages from the most recent Stream call.
+func (m *mockProvider) lastRequestMessages() []types.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastRequest == nil {
+		return nil
+	}
+	return m.lastRequest.Messages
 }
 
 // waitForCallCount polls mp.callCount() until it reaches the target, using
