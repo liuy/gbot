@@ -295,10 +295,11 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	}
 
 	// Sync repl.messages from engine on resume.
-	// Without this, the TUI shows an empty conversation after restart.
+	// Leave committedCount at 0 so WindowSizeMsg can commit them to scrollback
+	// via tea.Println. View() returns "Loading..." while width==0, so there's
+	// no double-render between SetStore and WindowSizeMsg.
 	if len(a.engine.Messages()) > 0 {
 		a.repl.messages = engineMessagesToViews(a.engine.Messages())
-		a.committedCount = len(a.repl.messages)
 	}
 
 	// Cleanup old backup session directories (older than 30 days).
@@ -552,6 +553,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.input.SetWidth(a.width - 4 - renderedPromptWidth)
 		a.status.SetWidth(a.width)
 		a.contentDirty = true
+		// Commit resumed messages to terminal scrollback on first resize.
+		// SetStore leaves committedCount=0 with messages present; this is
+		// the first Update where width > 0, so we can render and commit.
+		if a.committedCount == 0 && len(a.repl.messages) > 0 {
+			rendered := renderMessagesFull(a.repl.messages, a.width, a.allToolsExpanded, "", false, false, 0)
+			a.committedCount = len(a.repl.messages)
+			a.contentCache = ""
+			a.contentDirty = false
+			return a, tea.Println(rendered)
+		}
 		return a, nil
 
 	case tea.KeyMsg:

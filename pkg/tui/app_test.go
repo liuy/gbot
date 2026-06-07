@@ -8270,3 +8270,131 @@ func TestAttachmentMsg_NestedAgent_RoutesToCorrectParent(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Resume rendering — WindowSizeMsg commits history to scrollback
+// ---------------------------------------------------------------------------
+
+func TestResume_WindowSizeMsg_CommitsToScrollback(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Simulate engine having resumed messages
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hello from last session"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hi there"},
+		}},
+	})
+
+	app.SetStore(store, "session-resume", "/project")
+
+	// SetStore should NOT commit (committedCount stays 0)
+	if app.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 after SetStore", app.committedCount)
+	}
+	if len(app.repl.messages) != 2 {
+		t.Fatalf("repl.messages = %d, want 2", len(app.repl.messages))
+	}
+
+	// View() returns "Loading..." while width == 0
+	view := app.View()
+	if view != "Loading..." {
+		t.Errorf("View() before WindowSizeMsg = %q, want Loading...", view)
+	}
+
+	// Send WindowSizeMsg — should commit history to scrollback
+	model, cmd := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a := model.(*App)
+	if a.committedCount != 2 {
+		t.Errorf("committedCount after WindowSizeMsg = %d, want 2", a.committedCount)
+	}
+	if cmd == nil {
+		t.Error("expected tea.Println cmd for resumed messages, got nil")
+	}
+}
+
+func TestResume_SecondResize_NoDoubleCommit(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hello"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "hi"},
+		}},
+	})
+	app.SetStore(store, "session-resume", "/project")
+
+	// First WindowSizeMsg — commit
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a := model.(*App)
+	if a.committedCount != 2 {
+		t.Fatalf("first resize: committedCount = %d, want 2", a.committedCount)
+	}
+
+	// Second WindowSizeMsg — should NOT re-commit
+	model2, cmd2 := a.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	a2 := model2.(*App)
+	if a2.committedCount != 2 {
+		t.Errorf("second resize: committedCount = %d, want 2 (unchanged)", a2.committedCount)
+	}
+	if cmd2 != nil {
+		t.Error("second resize should not produce tea.Println cmd")
+	}
+}
+
+func TestFreshSession_Resize_NoCommit(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Fresh session — no engine messages
+	app.SetStore(store, "session-fresh", "/project")
+
+	if len(app.repl.messages) != 0 {
+		t.Fatalf("repl.messages = %d, want 0", len(app.repl.messages))
+	}
+
+	// WindowSizeMsg should NOT produce tea.Println
+	model, cmd := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a := model.(*App)
+	if cmd != nil {
+		t.Error("fresh session resize should not produce tea.Println cmd")
+	}
+	if a.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0", a.committedCount)
+	}
+}
+
+func TestWidthZero_ViewReturnsLoading(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+
+	// width == 0, View() should return "Loading..."
+	view := app.View()
+	if view != "Loading..." {
+		t.Errorf("View() with width=0 = %q, want Loading...", view)
+	}
+
+	// After WindowSizeMsg, View() should no longer show "Loading..."
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	view2 := app.View()
+	if view2 == "Loading..." {
+		t.Error("View() after WindowSizeMsg should not show Loading...")
+	}
+}
