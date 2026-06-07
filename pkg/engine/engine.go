@@ -2033,6 +2033,27 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	return result, nil
 }
 
+// injectTimestamp prepends [HH:MM:SS] to the first text block of user messages
+// so the LLM knows when each query was sent. Skips FlagMeta (system-generated) messages.
+func injectTimestamp(blocks []types.ContentBlock, msg types.Message) []types.ContentBlock {
+	if msg.Role != types.RoleUser || msg.Flags&types.FlagMeta != 0 || msg.Timestamp.IsZero() {
+		return blocks
+	}
+	ts := "[" + msg.Timestamp.Format("2006-01-02 15:04:05 MST") + "]"
+	if len(blocks) > 0 && blocks[0].Type == types.ContentTypeText {
+		blocks[0] = types.ContentBlock{
+			Type: types.ContentTypeText,
+			Text: ts + " " + blocks[0].Text,
+		}
+	} else {
+		blocks = append([]types.ContentBlock{{
+			Type: types.ContentTypeText,
+			Text: ts,
+		}}, blocks...)
+	}
+	return blocks
+}
+
 func (e *Engine) marshalMessages() []types.Message {
 	var result []types.Message
 	for _, msg := range e.messages {
@@ -2056,6 +2077,8 @@ func (e *Engine) marshalMessages() []types.Message {
 
 		contentCopy := make([]types.ContentBlock, len(msg.Content))
 		copy(contentCopy, msg.Content)
+		contentCopy = injectTimestamp(contentCopy, msg)
+
 		result = append(result, types.Message{
 			Role:        msg.Role,
 			Content:     contentCopy,
@@ -2320,6 +2343,8 @@ func marshalMessagesFrom(messages []types.Message) []types.Message {
 		// Deep copy content blocks.
 		blocks := make([]types.ContentBlock, len(msg.Content))
 		copy(blocks, msg.Content)
+		blocks = injectTimestamp(blocks, msg)
+
 		out = append(out, types.Message{
 			Role:    msg.Role,
 			Content: blocks,

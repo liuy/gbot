@@ -771,3 +771,87 @@ func TestForkAgent_NoEventLeak_OnlyAttachment(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Timestamp injection integration tests
+// ---------------------------------------------------------------------------
+
+// TestTimestampInjection_NormalUserMessage verifies the full chain:
+// engine message with Timestamp → marshalMessages → injectTimestamp
+// prefixes [HH:MM:SS] to the user message's first text block.
+func TestTimestampInjection_NormalUserMessage(t *testing.T) {
+	ts := time.Date(2026, 6, 7, 14, 23, 5, 0, time.UTC)
+	eng := New(&Params{})
+	eng.appendMessage(types.Message{
+		Role:       types.RoleUser,
+		Content:    []types.ContentBlock{types.NewTextBlock("hello")},
+		Timestamp:  ts,
+	})
+	eng.appendMessage(types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{types.NewTextBlock("hi there")},
+	})
+
+	got := eng.marshalMessages()
+	if len(got) != 2 {
+		t.Fatalf("got %d messages, want 2", len(got))
+	}
+
+	// User message should have [14:23:05] prefix
+	if got[0].Role != types.RoleUser {
+		t.Errorf("msg[0] role = %q, want user", got[0].Role)
+	}
+	want := "[2026-06-07 14:23:05 UTC] hello"
+	if got[0].Content[0].Text != want {
+		t.Errorf("user text = %q, want %q", got[0].Content[0].Text, want)
+	}
+
+	// Assistant message should be unchanged
+	if got[1].Content[0].Text != "hi there" {
+		t.Errorf("assistant text = %q, want %q", got[1].Content[0].Text, "hi there")
+	}
+}
+
+// TestTimestampInjection_FlagMetaSkipped verifies that FlagMeta messages
+// (system-generated) do NOT get timestamp injection.
+func TestTimestampInjection_FlagMetaSkipped(t *testing.T) {
+	ts := time.Date(2026, 6, 7, 14, 23, 5, 0, time.UTC)
+	eng := New(&Params{})
+	eng.appendMessage(types.Message{
+		Role:      types.RoleUser,
+		Flags:     types.FlagMeta,
+		Content:   []types.ContentBlock{types.NewTextBlock("system injection")},
+		Timestamp: ts,
+	})
+
+	got := eng.marshalMessages()
+	if len(got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(got))
+	}
+	// FlagMeta message should NOT have timestamp prefix
+	if strings.HasPrefix(got[0].Content[0].Text, "[") {
+		t.Errorf("FlagMeta message should not have timestamp prefix, got %q", got[0].Content[0].Text)
+	}
+	if got[0].Content[0].Text != "system injection" {
+		t.Errorf("FlagMeta text = %q, want %q", got[0].Content[0].Text, "system injection")
+	}
+}
+
+// TestTimestampInjection_ZeroTimestampSkipped verifies that messages with
+// zero Timestamp (e.g. legacy messages before timestamp feature) are not modified.
+func TestTimestampInjection_ZeroTimestampSkipped(t *testing.T) {
+	eng := New(&Params{})
+	eng.appendMessage(types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("no timestamp")},
+		// Timestamp is zero value
+	})
+
+	got := eng.marshalMessages()
+	if len(got) != 1 {
+		t.Fatalf("got %d messages, want 1", len(got))
+	}
+	if got[0].Content[0].Text != "no timestamp" {
+		t.Errorf("zero-timestamp text = %q, want %q", got[0].Content[0].Text, "no timestamp")
+	}
+}

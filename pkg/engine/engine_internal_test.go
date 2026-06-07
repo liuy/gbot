@@ -1103,9 +1103,9 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 		t.Error("Usage should be nil")
 	}
 
-	// Content must be preserved
-	if got[0].Content[0].Text != "hello" {
-		t.Errorf("content not preserved: %q", got[0].Content[0].Text)
+	// Content must be preserved (with timestamp prefix for user messages)
+	if !strings.HasPrefix(got[0].Content[0].Text, "[2026-06-07 ") || !strings.Contains(got[0].Content[0].Text, "hello") {
+		t.Errorf("user content should have [YYYY-MM-DD HH:MM:SS TZ] prefix + original text, got: %q", got[0].Content[0].Text)
 	}
 	if got[1].Content[0].Text != "hi" {
 		t.Errorf("content not preserved: %q", got[1].Content[0].Text)

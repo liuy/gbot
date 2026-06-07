@@ -967,11 +967,12 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	}
 	id := uuid.NewString()
 	a.engine.EnqueueAttachment(types.QueuedItem{
-		Value:    text,
-		Mode:     types.ItemModePrompt,
-		UUID:     id,
-		Priority: types.PriorityNext,
-		Origin:   &types.MessageOrigin{Kind: types.OriginHuman},
+		Value:     text,
+		Mode:      types.ItemModePrompt,
+		UUID:      id,
+		Priority:  types.PriorityNext,
+		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+		Timestamp: time.Now(),
 	})
 	a.pendingQueue = append(a.pendingQueue, pendingQueueItem{ID: id, Text: text})
 	a.input.Reset()
