@@ -3200,6 +3200,7 @@ func (e *Engine) formatPendingTasks() string {
 		}
 		b.WriteByte('\n')
 	}
+	b.WriteString("When you finish a task, mark it as completed immediately using the Task tool. Do not wait for the user to remind you.")
 	return b.String()
 }
 
