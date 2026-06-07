@@ -357,6 +357,7 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 
 // engineMessagesToViews converts engine messages to TUI MessageViews for display.
 // Used on session resume to populate repl.messages from persisted state.
+// Only renders text blocks — tool_use and thinking are not useful in scrollback.
 func engineMessagesToViews(msgs []types.Message) []MessageView {
 	views := make([]MessageView, 0, len(msgs))
 	for _, msg := range msgs {
@@ -371,30 +372,12 @@ func engineMessagesToViews(msgs []types.Message) []MessageView {
 		}
 
 		for _, block := range msg.Content {
-			switch block.Type {
-			case types.ContentTypeText:
-				if strings.TrimSpace(block.Text) != "" {
-					mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
-				}
-			case types.ContentTypeToolUse:
-				mv.Blocks = append(mv.Blocks, ContentBlock{
-					Type: BlockTool,
-					ToolCall: ToolCallView{
-						ID:    block.ID,
-						Name:  block.Name,
-						Done:  true,
-						Input: string(block.Input),
-					},
-				})
-			case types.ContentTypeThinking:
-				mv.Blocks = append(mv.Blocks, ContentBlock{
-					Type:     BlockThinking,
-					Thinking: ThinkingView{Text: block.Thinking},
-				})
+			if block.Type == types.ContentTypeText && strings.TrimSpace(block.Text) != "" {
+				mv.Blocks = append(mv.Blocks, ContentBlock{Type: BlockText, Text: block.Text})
 			}
 		}
 
-		// Skip messages with no renderable blocks
+		// Skip messages with no text blocks
 		if len(mv.Blocks) > 0 {
 			views = append(views, mv)
 		}
