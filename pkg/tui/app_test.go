@@ -8382,6 +8382,41 @@ func TestFreshSession_Resize_NoCommit(t *testing.T) {
 	}
 }
 
+func TestResume_FlagMetaMessagesSkipped(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// Simulate engine messages: one normal user msg, one FlagMeta (system-generated)
+	app.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "real user message"},
+		}},
+		{Role: types.RoleUser, Flags: types.FlagMeta, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "system injection should be hidden"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "assistant reply"},
+		}},
+	})
+
+	app.SetStore(store, "session-resume", "/project")
+
+	// Only 2 messages should be rendered (FlagMeta skipped)
+	if len(app.repl.messages) != 2 {
+		t.Errorf("repl.messages = %d, want 2 (FlagMeta skipped)", len(app.repl.messages))
+	}
+	if app.repl.messages[0].Blocks[0].Text != "real user message" {
+		t.Errorf("first message = %q, want real user message", app.repl.messages[0].Blocks[0].Text)
+	}
+	if app.repl.messages[1].Blocks[0].Text != "assistant reply" {
+		t.Errorf("second message = %q, want assistant reply", app.repl.messages[1].Blocks[0].Text)
+	}
+}
+
 func TestWidthZero_ViewReturnsLoading(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 

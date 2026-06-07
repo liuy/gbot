@@ -361,6 +361,10 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 func engineMessagesToViews(msgs []types.Message) []MessageView {
 	views := make([]MessageView, 0, len(msgs))
 	for _, msg := range msgs {
+		// Skip system-generated messages (context prepend, skill injection, etc.)
+		if msg.Flags&types.FlagMeta != 0 {
+			continue
+		}
 		mv := MessageView{}
 		switch msg.Role {
 		case types.RoleUser:
