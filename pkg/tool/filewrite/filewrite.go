@@ -348,7 +348,8 @@ func renderWriteResult(data any) string {
 		if out.Content == "" {
 			return summary
 		}
-		rendered := tool.RenderContentWithLineNumbers(out.Content)
+		highlighted := tool.HighlightCode(out.Content, out.FilePath)
+		rendered := tool.RenderContentWithLineNumbers(highlighted)
 		return summary + "\n" + rendered
 	}
 

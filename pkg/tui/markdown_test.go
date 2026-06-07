@@ -8,6 +8,7 @@ import (
 
 	ast "github.com/gomarkdown/markdown/ast"
 	"github.com/gomarkdown/markdown/parser"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 // ansiStyleRe matches common ANSI SGR sequences (e.g., \x1b[1m = bold, \x1b[3m = italic, etc.)
@@ -84,7 +85,7 @@ func TestRender_CodeBlock(t *testing.T) {
 
 func TestRender_CodeBlock_WithHighlight(t *testing.T) {
 	t.Parallel()
-	result := highlightCode("fmt.Println(\"hello\")", "go")
+	result := tool.HighlightCode("fmt.Println(\"hello\")", "go")
 	if !strings.Contains(result, "fmt") || !strings.Contains(result, "Println") {
 		t.Errorf("expected highlighted code, got: %q", result)
 	}
@@ -278,22 +279,6 @@ func TestRender_NestedFormatting(t *testing.T) {
 	result := Render("**bold *italic* text**")
 	if !strings.Contains(result, "bold") {
 		t.Errorf("expected nested formatting, got: %q", result)
-	}
-}
-
-func TestHighlightCode_UnknownLang(t *testing.T) {
-	t.Parallel()
-	result := highlightCode("some code here", "unknownlang123")
-	if !strings.Contains(result, "some code here") {
-		t.Errorf("expected fallback plain text, got: %q", result)
-	}
-}
-
-func TestHighlightCode_EmptyCode(t *testing.T) {
-	t.Parallel()
-	result := highlightCode("", "go")
-	if result != "" {
-		t.Errorf("expected empty, got: %q", result)
 	}
 }
 
@@ -1297,62 +1282,5 @@ func TestNeedsBlockSeparator_NonBlockParent(t *testing.T) {
 	// (ListItem is not Document or BlockQuote)
 	if needsBlockSeparator(para) {
 		t.Error("child of ListItem should not need block separator")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// stripColorFromLeadingWhitespace
-// ---------------------------------------------------------------------------
-
-func TestStripColorFromLeadingWhitespace(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "multiline string indent not colored",
-			// Chroma output for multi-line string: line 1 ends with color, line 2
-			// starts with same color on leading spaces — the bug we're fixing.
-			in:   "fmt.Sprint(\x1b[38;5;186m\"hello \\\n\x1b[38;5;186m    world\"\x1b[0m)",
-			want: "fmt.Sprint(\x1b[38;5;186m\"hello \\\n    \x1b[38;5;186mworld\"\x1b[0m)",
-		},
-		{
-			name: "no leading whitespace unchanged",
-			in:   "fmt.Sprint(\x1b[38;5;186m\"hello\"\x1b[0m)",
-			want: "fmt.Sprint(\x1b[38;5;186m\"hello\"\x1b[0m)",
-		},
-		{
-			name: "plain text unchanged",
-			in:   "hello\nworld",
-			want: "hello\nworld",
-		},
-		{
-			name: "colored indent at start of first line",
-			in:   "\x1b[38;5;186m    indented string\"\x1b[0m",
-			want: "    \x1b[38;5;186mindented string\"\x1b[0m",
-		},
-		{
-			name: "tab indent not colored",
-			in:   "\x1b[38;5;186m\tindented\"\x1b[0m",
-			want: "\t\x1b[38;5;186mindented\"\x1b[0m",
-		},
-		{
-			name: "mixed spaces and tabs",
-			in:   "foo\n\x1b[38;5;186m  \t  text\x1b[0m",
-			want: "foo\n  \t  \x1b[38;5;186mtext\x1b[0m",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := stripColorFromLeadingWhitespace(tc.in)
-			if got != tc.want {
-				t.Errorf("got:  %q\nwant: %q", got, tc.want)
-			}
-		})
 	}
 }

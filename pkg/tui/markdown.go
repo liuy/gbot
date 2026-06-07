@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -10,10 +9,6 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
-	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/formatters"
-	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
 	ast "github.com/gomarkdown/markdown/ast"
 	"github.com/gomarkdown/markdown/parser"
 	"github.com/liuy/gbot/pkg/tool"
@@ -275,7 +270,7 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 
 	case *ast.CodeBlock:
 		if entering {
-			r.write(highlightCode(string(n.Literal), string(n.Info)))
+			r.write(tool.HighlightCode(string(n.Literal), string(n.Info)))
 			r.write("\n")
 			if needsBlockSeparator(node) {
 				r.write("\n")
@@ -548,74 +543,6 @@ func tableAlign(aligns []ast.CellAlignFlags, idx int) ast.CellAlignFlags {
 		return ast.CellAlignFlags(0)
 	}
 	return aligns[idx]
-}
-
-// highlightCode uses chroma to syntax-highlight code for terminal output.
-func highlightCode(code, language string) string {
-	lexer := lexers.Get(language)
-	if lexer == nil {
-		lexer = lexers.Fallback
-	}
-	lexer = chroma.Coalesce(lexer)
-
-	iterator, _ := lexer.Tokenise(nil, code)
-
-	formatter := formatters.Get("terminal256")
-	style := styles.Get("monokai")
-
-	var buf bytes.Buffer
-	_ = formatter.Format(&buf, style, iterator)
-	return stripColorFromLeadingWhitespace(buf.String())
-}
-
-// stripColorFromLeadingWhitespace moves ANSI color codes after leading whitespace
-// on each line. Chroma colors multi-line tokens (strings, comments) as a single
-// span, which paints indentation whitespace with the token's color. This post-
-// processor strips that: "\x1b[...m    text" → "    \x1b[...mtext".
-func stripColorFromLeadingWhitespace(in string) string {
-	lines := strings.Split(in, "\n")
-	var buf strings.Builder
-	buf.Grow(len(in))
-	for i, line := range lines {
-		if i > 0 {
-			buf.WriteByte('\n')
-		}
-		// Collect leading ANSI escapes
-		rest := line
-		escEnd := 0
-		for escEnd < len(rest) {
-			if rest[escEnd] != '\x1b' {
-				break
-			}
-			idx := strings.IndexByte(rest[escEnd:], 'm')
-			if idx < 0 {
-				break
-			}
-			escEnd += idx + 1
-		}
-		if escEnd == 0 {
-			buf.WriteString(line)
-			continue
-		}
-		escapes := rest[:escEnd]
-		rest = rest[escEnd:]
-
-		// Count leading whitespace
-		wsEnd := 0
-		for wsEnd < len(rest) && (rest[wsEnd] == ' ' || rest[wsEnd] == '\t') {
-			wsEnd++
-		}
-		if wsEnd == 0 {
-			buf.WriteString(line)
-			continue
-		}
-
-		// Whitespace first (uncolored), then escapes, then rest
-		buf.WriteString(rest[:wsEnd])
-		buf.WriteString(escapes)
-		buf.WriteString(rest[wsEnd:])
-	}
-	return buf.String()
 }
 
 // ---- Numbering helpers (from TS markdown.ts) ----
