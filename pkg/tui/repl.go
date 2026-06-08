@@ -359,11 +359,6 @@ func (s *ReplState) FinishStream(err error) {
 			Blocks: []ContentBlock{{Type: BlockText, Text: fmt.Sprintf("Error: %v", err)}},
 		})
 	}
-
-	if s.cancelFunc != nil {
-		s.cancelFunc()
-		s.cancelFunc = nil
-	}
 }
 
 // IsStreaming returns whether a query is in progress.
@@ -421,7 +416,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		// Set up streaming state if not already active (e.g. engine auto-processed
 		// an attachment while idle — TUI wasn't in streaming mode yet).
-		if !a.repl.IsStreaming() {
+		restartStreaming := !a.repl.IsStreaming()
+		if restartStreaming {
 			a.repl.StartQuery()
 			a.status.SetStreaming(true)
 			a.spinner.Start()
@@ -432,6 +428,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
+		if restartStreaming {
+			return true, tea.Batch(
+				a.readEvents(),
+				tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+					return spinnerTickMsg{}
+				}),
+			)
+		}
 		return true, a.readEvents()
 
 	case retryAttemptMsg:
@@ -926,11 +930,12 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	}
 	a.idleStop = make(chan struct{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	a.repl.cancelFunc = cancel
+	// Engine wraps ctx with its own cancel, registered as activeCancel.
+	// TUI's cancelFunc calls engine.Abort() which cancels any active operation.
+	a.repl.cancelFunc = a.engine.Abort
 
 	// events flow through Hub → TUIHandler → appCh
-	a.engine.Query(ctx, text, a.systemPrompt)
+	a.engine.Query(context.Background(), text, a.systemPrompt)
 	a.repl.StartQuery()
 	a.status.SetStreaming(true)
 	a.spinner.Start()

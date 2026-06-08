@@ -117,6 +117,12 @@ type Engine struct {
 	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
 	queryActive   int32          // atomic: 1 = query/turn loop running, 0 = idle
 
+	// activeCancel is the cancel function for the currently running query
+	// or attachment processing. Protected by activeCancelMu.
+	// Exposed via Abort() so TUI can cancel any active engine operation.
+	activeCancelMu sync.Mutex
+	activeCancel   context.CancelFunc
+
 	// isSubagent is true for sub-agent engines created by AgentTool.
 	// Sub-agents bypass token budget exhaustion checks, matching TS behavior
 	// where agentId presence disables budget tracking.
@@ -396,10 +402,31 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 	e.startProcessAttachmentsIfIdle()
 }
 
+// Abort cancels the currently active query or attachment processing.
+// Safe to call from any goroutine; no-op if nothing is active.
+func (e *Engine) Abort() {
+	e.activeCancelMu.Lock()
+	defer e.activeCancelMu.Unlock()
+	if e.activeCancel != nil {
+		e.activeCancel()
+		e.activeCancel = nil
+	}
+}
+
 // Query executes the agentic loop for a user message.
 // Source: query.ts:queryLoop() — the while(true) agentic loop.
 func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt string) {
+	ctx, cancel := context.WithCancel(ctx)
+	e.activeCancelMu.Lock()
+	e.activeCancel = cancel
+	e.activeCancelMu.Unlock()
 	go func() {
+		defer func() {
+			e.activeCancelMu.Lock()
+			e.activeCancel = nil
+			e.activeCancelMu.Unlock()
+		}()
+		defer cancel()
 		atomic.StoreInt32(&e.queryActive, 1)
 		defer func() {
 			atomic.StoreInt32(&e.queryActive, 0)
@@ -423,9 +450,10 @@ func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
 }
 
 // startProcessAttachmentsIfIdle checks whether the attachment queue has items
-// and the engine is idle, then spawns a processAttachments goroutine with a
-// timeout-bounded context. All three spawn sites (EnqueueAttachment, Query
-// defer, processAttachments defer) go through this helper.
+// and the engine is idle, then spawns a processAttachments goroutine.
+// The context is registered as activeCancel so Abort() can cancel it.
+// No timeout — processAttachments runs the same agentic loop as Query,
+// which may take arbitrarily long (complex tool use, sub-agents).
 func (e *Engine) startProcessAttachmentsIfIdle() {
 	if e.systemPrompt == "" || atomic.LoadInt32(&e.queryActive) != 0 {
 		return
@@ -433,8 +461,16 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 	if e.attachments.Len() == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.activeCancelMu.Lock()
+	e.activeCancel = cancel
+	e.activeCancelMu.Unlock()
 	go func() {
+		defer func() {
+			e.activeCancelMu.Lock()
+			e.activeCancel = nil
+			e.activeCancelMu.Unlock()
+		}()
 		defer cancel()
 		e.processAttachments(ctx, e.systemPrompt)
 	}()

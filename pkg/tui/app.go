@@ -1162,7 +1162,6 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			slog.Info("tui:escape_cancel", "hasCancelFunc", a.repl.cancelFunc != nil)
 			if a.repl.cancelFunc != nil {
 				a.repl.cancelFunc()
-				a.repl.cancelFunc = nil
 			}
 			return a, nil
 		}
@@ -1325,7 +1324,6 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 		slog.Info("tui:ctrlc_cancel", "hasCancelFunc", a.repl.cancelFunc != nil)
 		if a.repl.cancelFunc != nil {
 			a.repl.cancelFunc()
-			a.repl.cancelFunc = nil
 		}
 		a.repl.FinishStream(nil)
 		// Commit uncommitted messages to scrollback

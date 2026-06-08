@@ -2141,22 +2141,20 @@ func TestApp_FinishStream_WithError(t *testing.T) {
 	}
 }
 
-func TestApp_FinishStream_CancelsContext(t *testing.T) {
+func TestApp_FinishStream_PreservesCancelFunc(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	ctx, cancel := context.WithCancel(context.Background())
-	app.repl.cancelFunc = cancel
+	app.repl.cancelFunc = app.engine.Abort
 	app.repl.streaming = true
 	app.spinner.Start()
 
 	app.repl.FinishStream(nil)
 
-	// cancelFunc should have been called and set to nil
-	if app.repl.cancelFunc != nil {
-		t.Error("cancelFunc should be nil after finishStream")
+	// FinishStream no longer touches cancelFunc — engine.Abort is always available
+	if app.repl.cancelFunc == nil {
+		t.Error("cancelFunc should still be engine.Abort after FinishStream")
 	}
-	// Verify context was cancelled
-	if ctx.Err() == nil {
-		t.Error("context should be cancelled")
+	if app.repl.streaming {
+		t.Error("streaming should be false after FinishStream")
 	}
 }
 
@@ -2550,8 +2548,8 @@ func TestApp_HandleKey_CtrlC_CancelWithFunc(t *testing.T) {
 		t.Error("Ctrl+C during streaming should not produce command")
 	}
 	a := model.(*App)
-	if a.repl.cancelFunc != nil {
-		t.Error("cancelFunc should be nil after cancel")
+	if a.repl.cancelFunc == nil {
+		t.Error("cancelFunc should still be non-nil after cancel")
 	}
 	if ctx.Err() == nil {
 		t.Error("context should be cancelled")
@@ -5429,8 +5427,8 @@ func TestApp_HandleEscape_DuringStreaming(t *testing.T) {
 	if !cancelled {
 		t.Error("expected cancelFunc to be called")
 	}
-	if a.repl.cancelFunc != nil {
-		t.Error("cancelFunc should be nil after Escape")
+	if a.repl.cancelFunc == nil {
+		t.Error("cancelFunc should still be non-nil after Escape")
 	}
 	// Escape does NOT call FinishStream — streaming stays true
 	if !a.repl.streaming {
@@ -5513,8 +5511,8 @@ func TestApp_HandleEscape_SinglePress_NoKillAll(t *testing.T) {
 	if killAllCalled {
 		t.Error("single Escape should NOT call killAllFn")
 	}
-	if a.repl.cancelFunc != nil {
-		t.Error("cancelFunc should be nil after Escape")
+	if a.repl.cancelFunc == nil {
+		t.Error("cancelFunc should still be non-nil after Escape")
 	}
 }
 

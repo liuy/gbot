@@ -79,6 +79,66 @@ func TestAttachmentMsgAfterStreamingCreatesUserMessage(t *testing.T) {
 	}
 }
 
+// Regression: ESC + FinishStream left streaming=false, so turnStartMsg from
+// processAttachments had to bootstrap the full streaming setup + spinner tick.
+func TestProcessAttachmentsAfterEsc_RestartsStreaming(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+
+	// Simulate normal query start
+	app.repl.StartQuery()
+	app.status.SetStreaming(true)
+	app.repl.cancelFunc = app.engine.Abort
+
+	// ESC: calls engine.Abort(), then queryEndMsg calls FinishStream
+	app.repl.cancelFunc()
+	app.repl.FinishStream(nil)
+
+	if app.repl.IsStreaming() {
+		t.Fatal("streaming should be false after ESC + FinishStream")
+	}
+
+	// processAttachments sends attachmentMsg, then turnStartMsg
+	_, _ = app.updateRepl(attachmentMsg{
+		UserText:   "auto-processed attachment",
+		SourceUUID: "uuid-att-1",
+	})
+	_, _ = app.updateRepl(turnStartMsg{})
+
+	if !app.repl.IsStreaming() {
+		t.Fatal("streaming should be true after processAttachments turnStart — timer freezes")
+	}
+}
+
+// Regression: ESC used to nil-out cancelFunc, breaking subsequent processAttachments cancellation.
+func TestProcessAttachmentsAfterEsc_HasCancelFunction(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+
+	// Simulate normal query start
+	app.repl.StartQuery()
+	app.status.SetStreaming(true)
+	app.repl.cancelFunc = app.engine.Abort
+
+	// ESC: calls engine.Abort(), then queryEndMsg calls FinishStream
+	app.repl.cancelFunc()
+	app.repl.FinishStream(nil)
+
+	// cancelFunc is engine.Abort — never nil'd, always callable
+	if app.repl.cancelFunc == nil {
+		t.Fatal("cancelFunc should be non-nil — engine.Abort is always available")
+	}
+
+	// processAttachments starts, cancelFunc still valid
+	_, _ = app.updateRepl(attachmentMsg{
+		UserText:   "auto-processed attachment",
+		SourceUUID: "uuid-att-2",
+	})
+
+	// Defensive: attachmentMsg handler must not clear cancelFunc
+	if app.repl.cancelFunc == nil {
+		t.Fatal("cancelFunc should survive attachmentMsg handling unchanged")
+	}
+}
+
 // TestMidTurnAttachmentThenLLMTextDoesNotCorrupt verifies the full bug chain:
 // mid-turn attachment → user message created → LLM text appended to wrong message.
 // Expected behavior: mid-turn attachment is ignored, LLM text goes to assistant message.
