@@ -597,6 +597,20 @@ func TestRenderResultNonSubQueryResult(t *testing.T) {
 	}
 }
 
+func TestRenderResult_JSONRawMessage(t *testing.T) {
+	at := New()
+	// Resume path: json.RawMessage containing a SubQueryResult.
+	raw := json.RawMessage(`{"content":"Found 3 files matching the pattern","usage":{"input_tokens":100,"output_tokens":50}}`)
+	got := at.RenderResult(raw)
+	if !strings.Contains(got, "Found 3 files") {
+		t.Errorf("RenderResult(json.RawMessage) should contain result content, got: %q", got)
+	}
+	// Must NOT show raw JSON keys like "usage"
+	if strings.Contains(got, `"usage"`) {
+		t.Errorf("RenderResult should not show raw JSON, got: %q", got)
+	}
+}
+
 func TestPrompt(t *testing.T) {
 	at := New()
 	prompt := at.Prompt()

@@ -361,15 +361,25 @@ func (t *AgentTool) Prompt() string { return agentPrompt() }
 
 // RenderResult renders the sub-query result for TUI display.
 func (t *AgentTool) RenderResult(data any) string {
-	result, ok := data.(*types.SubQueryResult)
-	if !ok {
+	switch v := data.(type) {
+	case *types.SubQueryResult:
+		if v.AsyncLaunched {
+			return fmt.Sprintf("Fork agent %s running in background...", v.AgentID)
+		}
+		return v.Content
+	case json.RawMessage:
+		var result types.SubQueryResult
+		if err := json.Unmarshal(v, &result); err != nil {
+			return string(v)
+		}
+		if result.AsyncLaunched {
+			return fmt.Sprintf("Fork agent %s running in background...", result.AgentID)
+		}
+		return result.Content
+	default:
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
-	if result.AsyncLaunched {
-		return fmt.Sprintf("Fork agent %s running in background...", result.AgentID)
-	}
-	return result.Content
 }
 
 func (t *AgentTool) NewResultType() any { return &types.SubQueryResult{} }
