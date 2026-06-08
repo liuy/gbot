@@ -4,19 +4,19 @@ package repl
 // LLM sees this when deciding whether to use REPL.
 // Detailed API reference and examples live in toolPrompt (system prompt contribution).
 const replDescription = `Run JavaScript code to orchestrate tool calls and data processing.
-Evaluates ES6+ with async/await support. Call any gbot tool via tool(name, args).
+Evaluates ES6+ with async/await support. Call any tool via tool(name, args).
 Supports console.log, setTimeout/clearTimeout. Use globalThis for cross-call data persistence. Timeout via // @timeout: ms pragma.`
 
 // toolPrompt is the system prompt contribution for the REPL tool.
 // Provides full API reference, examples, and session management details.
-const toolPrompt = `REPL — JavaScript execution environment for orchestrating gbot tools.
+const toolPrompt = `JavaScript execution environment for orchestrating the tools.
 
-Execute JavaScript (ES6+) code with access to gbot tools via the tool() API. Use this for complex multi-step operations, data transformation, and tool orchestration that would be awkward with individual tool calls.
+Execute JavaScript (ES6+) code with access to the tools via the tool() API. Use this for complex multi-step operations, data transformation, and tool orchestration that would be awkward with individual tool calls.
 
 ## API Reference
 
 ### tool(name, args) → string (synchronous)
-Call any gbot tool by name. Returns the tool's output as a string (NOT a Promise).
+Call any tool by name. Returns the tool's output as a string (NOT a Promise).
 - Throws on error: wrap in try/catch to handle failures.
 - args can be an object: tool("Read", {file_path: "/path/to/file"}) or a JSON string
 - SYNCHRONOUS — blocks until tool completes. Do NOT chain .then() or .catch().

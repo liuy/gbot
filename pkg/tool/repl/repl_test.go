@@ -1894,3 +1894,12 @@ func TestExecute_CircularRefPanic(t *testing.T) {
 		t.Errorf("expected fatal error or empty output, got: %q", output)
 	}
 }
+
+func TestREPLTool_RenderResult_JSONRawMessage(t *testing.T) {
+	r := New()
+	raw := json.RawMessage(`"console output from REPL"`)
+	got := r.RenderResult(raw)
+	if got != "console output from REPL" {
+		t.Errorf("RenderResult(json.RawMessage) = %q, want unquoted string", got)
+	}
+}

@@ -207,12 +207,19 @@ func (t *REPLTool) RenderResult(data any) string {
 	if data == nil {
 		return ""
 	}
-	s, ok := data.(string)
-	if !ok {
+	switch v := data.(type) {
+	case string:
+		return v
+	case json.RawMessage:
+		var s string
+		if json.Unmarshal(v, &s) == nil {
+			return s
+		}
+		return string(v)
+	default:
 		b, _ := json.Marshal(data)
 		return string(b)
 	}
-	return s
 }
 
 func (t *REPLTool) NewResultType() any { return nil } // REPL returns string data
