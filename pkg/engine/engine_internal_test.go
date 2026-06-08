@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -1109,8 +1110,9 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 	}
 
 	// Content must be preserved (with timestamp prefix for user messages)
-	if !strings.HasPrefix(got[0].Content[0].Text, "[2026-06-07 ") || !strings.Contains(got[0].Content[0].Text, "hello") {
-		t.Errorf("user content should have [YYYY-MM-DD HH:MM:SS TZ] prefix + original text, got: %q", got[0].Content[0].Text)
+	userText := got[0].Content[0].Text
+	if !regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z]+\]`).MatchString(userText) || !strings.Contains(userText, "hello") {
+		t.Errorf("user content should have [YYYY-MM-DD HH:MM:SS TZ] prefix + original text, got: %q", userText)
 	}
 	if got[1].Content[0].Text != "hi" {
 		t.Errorf("content not preserved: %q", got[1].Content[0].Text)

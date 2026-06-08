@@ -589,11 +589,11 @@ func extractPersistedPreview(s string) string {
 	if !ok {
 		return "<output saved to file>"
 	}
-	newlineIdx := strings.Index(after, "):\n")
-	if newlineIdx < 0 {
+	_, after0, ok0 := strings.Cut(after, "):\n")
+	if !ok0 {
 		return "<output saved to file>"
 	}
-	preview := after[newlineIdx+3:]
+	preview := after0
 	lines := strings.SplitN(preview, "\n", 6)
 	if len(lines) > 5 {
 		lines = lines[:5]
@@ -640,13 +640,6 @@ func computeToolSummary(name string, input json.RawMessage, tools map[string]too
 		return ""
 	}
 	return desc
-}
-
-func truncateString(s string, maxLen int) string {
-	if len(s) > maxLen {
-		return s[:maxLen] + "..."
-	}
-	return s
 }
 
 // resetDisplayState zeros all App-level display fields for a clean session.
