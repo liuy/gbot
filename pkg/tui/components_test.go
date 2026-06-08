@@ -535,11 +535,10 @@ func TestMessageView_WithToolCalls_Error(t *testing.T) {
 	}
 }
 
-func TestMessageView_NoBlankLineBetweenBlocks(t *testing.T) {
+func TestMessageView_BlankLineBetweenBlocks(t *testing.T) {
 	t.Parallel()
 
-	// Completed tool followed by text block: no extra blank line at block level.
-	// Blank lines are now added uniformly at the message level in renderMessagesFull.
+	// Completed tool followed by text block: blank line between blocks.
 	m := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
@@ -548,24 +547,24 @@ func TestMessageView_NoBlankLineBetweenBlocks(t *testing.T) {
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if strings.Contains(v, "\n\n") {
-		t.Errorf("block-level should have no blank line, got: %q", v)
+	if !strings.Contains(v, "\n\n") {
+		t.Errorf("block-level should have blank line between tool and text, got: %q", v)
 	}
 
-	// Running tool (not done) → also no blank line
+	// Running tool (not done) → also blank line
 	m2 := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockTool, ToolCall: ToolCallView{Name: "Bash", Done: false}},
-			{Type: BlockText, Text: "should be no blank line"},
+			{Type: BlockText, Text: "should have blank line"},
 		},
 	}
 	v2 := m2.View(80, false, "", false, false, 0)
-	if strings.Contains(v2, "\n\n") {
-		t.Errorf("running tool followed by text should NOT have blank line, got: %q", v2)
+	if !strings.Contains(v2, "\n\n") {
+		t.Errorf("running tool followed by text should have blank line, got: %q", v2)
 	}
 
-	// Tool at end (no following block) → no extra blank line
+	// Single block at end → no double blank line (just trailing \n\n from block terminator)
 	m3 := MessageView{
 		Role: "assistant",
 		Blocks: []ContentBlock{
@@ -573,8 +572,9 @@ func TestMessageView_NoBlankLineBetweenBlocks(t *testing.T) {
 		},
 	}
 	v3 := m3.View(80, false, "", false, false, 0)
-	if strings.Contains(v3, "\n\n") {
-		t.Errorf("tool at end should not have blank line, got: %q", v3)
+	// Single block should end with \n\n but no internal blank line
+	if strings.Count(v3, "\n\n") != 1 {
+		t.Errorf("single tool block should have exactly one \\n\\n (trailing), got: %q", v3)
 	}
 }
 

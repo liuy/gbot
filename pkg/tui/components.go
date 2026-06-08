@@ -765,7 +765,7 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 				}
 
 				writeGroupSummary(&sb, "", g, isActive, toolDot, noHint)
-				sb.WriteString("\n")
+				sb.WriteString("\n\n")
 				continue
 			}
 			if gl.consumed[i] && !expand {
@@ -781,20 +781,20 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 						wrapped = prefixUserLine(wrapped)
 					}
 					sb.WriteString(wrapped)
-					sb.WriteString("\n")
+					sb.WriteString("\n\n")
 				}
 			case BlockTool:
 				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0, isStreaming)
-				sb.WriteString("\n")
+				sb.WriteString("\n\n")
 			case BlockThinking:
 				blk.renderThinkingBlock(&sb, availWidth, expand, toolDot, noHint, 0)
-				sb.WriteString("\n")
+				sb.WriteString("\n\n")
 			case BlockStats:
 				sb.WriteString(blk.Text)
-				sb.WriteString("\n")
+				sb.WriteString("\n\n")
 			case BlockUser:
 				sb.WriteString(prefixUserLine(blk.Text))
-				sb.WriteString("\n")
+				sb.WriteString("\n\n")
 			}
 		}
 		return sb.String()
