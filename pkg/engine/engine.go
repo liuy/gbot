@@ -112,7 +112,7 @@ type Engine struct {
 	dispatcher    types.EventDispatcher
 	workingDir    string
 	attachments *attachmentQueue
-	systemPrompt  json.RawMessage // stored system prompt for fork agent access
+	systemPrompt  string // stored system prompt for fork agent access
 	skillListing  string          // formatted skill listing for /context breakdown
 	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
 	queryActive   int32          // atomic: 1 = query/turn loop running, 0 = idle
@@ -398,7 +398,7 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 
 // Query executes the agentic loop for a user message.
 // Source: query.ts:queryLoop() — the while(true) agentic loop.
-func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt json.RawMessage) {
+func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt string) {
 	go func() {
 		atomic.StoreInt32(&e.queryActive, 1)
 		defer func() {
@@ -418,7 +418,7 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt jso
 
 // ProcessAttachments drains pending attachments and runs the turn loop.
 // Public API for callers that need to explicitly trigger attachment processing.
-func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt json.RawMessage) {
+func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
 	go e.processAttachments(ctx, systemPrompt)
 }
 
@@ -427,7 +427,7 @@ func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt json.RawMe
 // timeout-bounded context. All three spawn sites (EnqueueAttachment, Query
 // defer, processAttachments defer) go through this helper.
 func (e *Engine) startProcessAttachmentsIfIdle() {
-	if e.systemPrompt == nil || atomic.LoadInt32(&e.queryActive) != 0 {
+	if e.systemPrompt == "" || atomic.LoadInt32(&e.queryActive) != 0 {
 		return
 	}
 	if e.attachments.Len() == 0 {
@@ -442,7 +442,7 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 
 // processAttachments is the internal implementation shared by EnqueueAttachment
 // auto-processing and the public ProcessAttachments API.
-func (e *Engine) processAttachments(ctx context.Context, systemPrompt json.RawMessage) {
+func (e *Engine) processAttachments(ctx context.Context, systemPrompt string) {
 	atomic.StoreInt32(&e.queryActive, 1)
 	defer func() {
 		atomic.StoreInt32(&e.queryActive, 0)
@@ -650,7 +650,7 @@ func (e *Engine) flushThinkBuf() {
 
 // queryLoop is the main agentic loop.
 // Source: query.ts — the while(true) loop with 28 stages.
-func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
+func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt string) QueryResult {
 	// Stage 0: Process user input
 	userMsg := types.Message{
 		ID:   uuid.New().String(),
@@ -669,7 +669,7 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 
 // runTurns executes the agentic turn loop. Shared by queryLoop (normal path)
 // and RunForkedQuery (fork agent path).
-func (e *Engine) runTurns(ctx context.Context, systemPrompt json.RawMessage) QueryResult {
+func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult {
 	var totalUsage types.Usage
 	// Log query summary on every exit path.
 	defer func() {
@@ -1294,7 +1294,7 @@ func retryErrorType(err error) types.RetryErrorType {
 // Sub-agents bypass retry to prevent deadlock.
 // AbortError is never retried because callLLM mutates e.messages on ctx cancellation.
 // Only stream-level errors are retried; API errors (429/5xx) are handled by the provider.
-func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
+func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*types.Message, *StreamingToolExecutor, error) {
 	cfg := e.retryConfig
 	if cfg == nil {
 		cfg = llm.DefaultRetryConfig()
@@ -1342,7 +1342,7 @@ func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt json.RawMess
 	return nil, nil, fmt.Errorf("callLLMWithRetry: unreachable")
 }
 
-func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*types.Message, *StreamingToolExecutor, error) {
+func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 
 	// ToolSearch: check if filtering is active.
@@ -1440,24 +1440,27 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 	var systemBlocks []llm.SystemBlockParam
 	var cacheControl *types.CacheControlConfig
 	var promptStateKey *llm.PromptStateKey
-	if len(systemPrompt) > 0 {
-		var promptText string
-		if err := json.Unmarshal(systemPrompt, &promptText); err == nil && promptText != "" {
-			systemBlocks = []llm.SystemBlockParam{
-				{Type: "text", Text: promptText},
+	if systemPrompt != "" {
+		// Hot-load SOUL.md on every API call via {{SOUL}} stub
+		soulText := ""
+		if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
+			soulText = "\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+		}
+		systemPrompt = strings.Replace(systemPrompt, "{{SOUL}}", soulText, 1)
+		systemBlocks = []llm.SystemBlockParam{
+			{Type: "text", Text: systemPrompt},
+		}
+		if e.isSubagent {
+			// Sub-agent: 5m TTL, agent-specific QuerySource
+			// Source: promptCategory.ts:16-28 — getQuerySourceForAgent
+			cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "5m"}
+			promptStateKey = &llm.PromptStateKey{
+				QuerySource: e.querySource(),
+				AgentID:     e.agentType,
 			}
-			if e.isSubagent {
-				// Sub-agent: 5m TTL, agent-specific QuerySource
-				// Source: promptCategory.ts:16-28 — getQuerySourceForAgent
-				cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "5m"}
-				promptStateKey = &llm.PromptStateKey{
-					QuerySource: e.querySource(),
-					AgentID:     e.agentType,
-				}
-			} else {
-				cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
-				promptStateKey = &llm.PromptStateKey{QuerySource: e.querySource()}
-			}
+		} else {
+			cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
+			promptStateKey = &llm.PromptStateKey{QuerySource: e.querySource()}
 		}
 	}
 
@@ -1465,7 +1468,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt json.RawMessage) (*ty
 		Model:          e.model,
 		MaxTokens:      e.maxTokens,
 		Messages:       apiMessages,
-		System:         systemPrompt,
+		System:         mustMarshalString(systemPrompt),
 		SystemBlocks:   systemBlocks,
 		Tools:          toolDefs,
 		Stream:         true,
@@ -2231,7 +2234,7 @@ type APIRequestDump struct {
 	ContextTokens int
 	IsSubagent    bool
 	WorkingDir    string
-	SystemPrompt  json.RawMessage
+	SystemPrompt  string
 	Messages      []types.Message
 	Tools         []llm.ToolDef
 }
@@ -2247,7 +2250,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	toolSearchSnap := e.toolSearch
 	toolOrderCopy := make([]string, len(e.toolOrder))
 	copy(toolOrderCopy, e.toolOrder)
-	systemPromptRaw := slicesCloneRawMessage(e.systemPrompt)
+	systemPromptRaw := e.systemPrompt
 	workingDir := e.workingDir
 	isSubagent := e.isSubagent
 	model := e.model
@@ -2320,6 +2323,13 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 			apiMessages = append([]types.Message{prefixMsg}, apiMessages...)
 		}
 	}
+
+	// Hot-load SOUL.md (same as callLLM).
+	soulText := ""
+	if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
+		soulText = "\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+	}
+	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SOUL}}", soulText, 1)
 
 	return &APIRequestDump{
 		Model:         model,
@@ -3158,7 +3168,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 			onCloseFn:            e.onCloseFn,
 		fileHistory:          e.fileHistory, // share same Tracker — sub-agent edits tracked too
 			workingDir:            e.workingDir,
-		systemPrompt:          json.RawMessage(opts.SystemPrompt),
+		systemPrompt:          opts.SystemPrompt,
 	}
 }
 
@@ -3230,7 +3240,7 @@ func (e *Engine) querySource() string {
 // QuerySync executes the agentic loop synchronously (no goroutine, no channels).
 // Used by sub-agents created via AgentTool. EventCh is nil — events are silently discarded.
 // Source: TS sync sub-agents execute runAgent() directly in the caller's context.
-func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt json.RawMessage) QueryResult {
+func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt string) QueryResult {
 	atomic.StoreInt32(&e.queryActive, 1)
 	defer func() {
 		atomic.StoreInt32(&e.queryActive, 0)
@@ -3242,7 +3252,7 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 // RunForkedQuery executes the agentic turn loop starting from
 // pre-constructed messages (no user message injection). Used by fork agents
 // that build their own conversation history.
-func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt json.RawMessage) QueryResult {
+func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, systemPrompt string) QueryResult {
 	atomic.StoreInt32(&e.queryActive, 1)
 	defer func() {
 		atomic.StoreInt32(&e.queryActive, 0)
@@ -3265,10 +3275,10 @@ func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, s
 func (e *Engine) Model() string { return e.model }
 
 // SystemPrompt returns the stored system prompt bytes.
-func (e *Engine) SystemPrompt() json.RawMessage { return e.systemPrompt }
+func (e *Engine) SystemPrompt() string { return e.systemPrompt }
 
 // SetSystemPrompt stores the system prompt for later access by fork agents.
-func (e *Engine) SetSystemPrompt(sp json.RawMessage) { e.systemPrompt = sp }
+func (e *Engine) SetSystemPrompt(sp string) { e.systemPrompt = sp }
 
 // SetSkillListing stores the formatted skill listing for /context breakdown.
 func (e *Engine) SetSkillListing(sl string) { e.skillListing = sl }
@@ -3294,4 +3304,9 @@ func (e *Engine) SetDispatcher(d types.EventDispatcher) {
 // Dispatcher returns the event dispatcher for virtual tool events (e.g. dream).
 func (e *Engine) Dispatcher() types.EventDispatcher {
 	return e.dispatcher
+}
+
+func mustMarshalString(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return json.RawMessage(b)
 }

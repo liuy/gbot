@@ -82,15 +82,10 @@ func renderContextDump(d *engine.APIRequestDump) string {
 	fmt.Fprintf(&sb, "WorkingDir:     %s\n", d.WorkingDir)
 	sb.WriteString("\n")
 
-	// System prompt (decode from JSON string if possible).
+	// System prompt.
 	sb.WriteString("=== System Prompt ===\n")
-	if len(d.SystemPrompt) > 0 {
-		var promptStr string
-		if err := json.Unmarshal(d.SystemPrompt, &promptStr); err == nil {
-			sb.WriteString(promptStr)
-		} else {
-			sb.WriteString(string(d.SystemPrompt))
-		}
+	if d.SystemPrompt != "" {
+		sb.WriteString(d.SystemPrompt)
 	} else {
 		sb.WriteString("(none)")
 	}

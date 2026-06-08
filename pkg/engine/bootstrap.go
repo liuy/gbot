@@ -64,7 +64,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	at.SetGitStatus(deps.GitStatus)
 	at.SetSkillRegistry(deps.SkillReg)
 	// Stub SetNotifyFn — must be called before JobAdapter() so forkReg is initialized.
-	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	reg.MustRegister(at)
 
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
@@ -102,7 +102,7 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 				Timestamp: time.Now(),
 			})
 		},
-		func() json.RawMessage { return eng.SystemPrompt() },
+		func() string { return eng.SystemPrompt() },
 	)
 
 	// Agent factory — creates fresh tool set per sub-engine (recursive).

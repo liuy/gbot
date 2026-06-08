@@ -52,7 +52,7 @@ func TestContextBreakdown_EmptyWhenNoAPICall(t *testing.T) {
 // proportional scaling, all categories sum to totalExact.
 func TestContextBreakdown_ProportionalSumsToTotal(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	e.SetSystemPrompt("You are a test assistant.")
 	e.SetSkillListing("test-skill: a test")
 	e.SetAgentDefs([]*types.AgentDefinition{
 		{AgentType: "TestAgent", WhenToUse: "test use"},
@@ -101,7 +101,7 @@ func TestContextBreakdown_ProportionalSumsToTotal(t *testing.T) {
 // TestContextBreakdown_GridDimensions verifies the grid has the right size.
 func TestContextBreakdown_GridDimensions(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"Test system prompt."`))
+	e.SetSystemPrompt("Test system prompt.")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "shell"}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -124,7 +124,7 @@ func TestContextBreakdown_GridDimensions(t *testing.T) {
 // TestContextBreakdown_ReservedAtEnd verifies autocompact squares are last.
 func TestContextBreakdown_ReservedAtEnd(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.ContextTokens = 200_000
 	bd := e.ContextBreakdown()
@@ -203,7 +203,7 @@ func TestScaleProportionally_RoundingReconciliation(t *testing.T) {
 // TestContextBreakdown_FreeSpaceNotNegative verifies the free space guard.
 func TestContextBreakdown_FreeSpaceNotNegative(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.ContextTokens = 50_000
 	bd := e.ContextBreakdown()
@@ -233,7 +233,7 @@ func TestContextBreakdown_MCPLoadedAndDeferred(t *testing.T) {
 		},
 	})
 	e.mcpRegistry = reg
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.ContextTokens = 10_000
 	bd := e.ContextBreakdown()
 	if len(bd.MCPToolsLoaded)+len(bd.MCPToolsDeferred) == 0 {
@@ -245,7 +245,7 @@ func TestContextBreakdown_MCPLoadedAndDeferred(t *testing.T) {
 // goroutines to surface races.
 func TestContextBreakdown_ThreadSafety(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -272,7 +272,7 @@ func TestContextBreakdown_ThreadSafety(t *testing.T) {
 // sum to 100% (within rounding).
 func TestContextBreakdown_PercentagesSumTo100(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -293,7 +293,7 @@ func TestContextBreakdown_PercentagesSumTo100(t *testing.T) {
 // TestContextBreakdown_MessageBreakdown verifies message breakdown fields.
 func TestContextBreakdown_MessageBreakdown(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -400,7 +400,7 @@ func TestBuildGrid_FreeSpaceHasSquares(t *testing.T) {
 // has tokens when context usage is well below the window.
 func TestContextBreakdown_FreeSpaceNotZeroWhenContextHalfFull(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.messages = []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -440,7 +440,7 @@ func TestIsMCPToolName(t *testing.T) {
 // dump with the correct engine state and messages.
 func TestDumpAPIRequest_SnapshotsState(t *testing.T) {
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	e.SetSystemPrompt("You are a test assistant.")
 	e.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
 			{Type: types.ContentTypeText, Text: "Hello"},
@@ -673,7 +673,7 @@ func TestToolsClone_Copy(t *testing.T) {
 func TestContextBreakdown_AttachmentInMessages(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.messages = []types.Message{
 		{
@@ -762,7 +762,7 @@ func TestEstimateSystemTools_NilToolSearch(t *testing.T) {
 func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	// Create 6 different attachment types to test truncation at top-5
 	e.messages = []types.Message{}
@@ -795,7 +795,7 @@ func TestContextBreakdown_BuildDetails_AttachmentBreakdown(t *testing.T) {
 func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	e.tools["Bash"] = &stubTool{name: "Bash", prompt: "x"}
 	e.SetSkillListing("- skill-a: do something\n- skill-b: do another thing\n")
 	e.SetAgentDefs([]*types.AgentDefinition{
@@ -819,7 +819,7 @@ func TestContextBreakdown_BuildDetails_SkillsAndAgents(t *testing.T) {
 func TestContextBreakdown_BuildDetails_MultipleToolCallsTruncation(t *testing.T) {
 	t.Parallel()
 	e := newTestEngineForBreakdown(t)
-	e.SetSystemPrompt(json.RawMessage(`"x"`))
+	e.SetSystemPrompt("x")
 	// Create messages with 7 different tool call types to test top-5 truncation
 	var msgs []types.Message
 	for i := range 7 {

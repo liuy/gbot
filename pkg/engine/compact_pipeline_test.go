@@ -196,7 +196,7 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		result := eng.QuerySync(ctx, "continue", nil)
+		result := eng.QuerySync(ctx, "continue", "")
 		if result.Error != nil {
 			t.Fatalf("unexpected error: %v", result.Error)
 		}
@@ -297,7 +297,7 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		result := eng.QuerySync(ctx, "test", nil)
+		result := eng.QuerySync(ctx, "test", "")
 		if result.Error != nil {
 			t.Fatalf("unexpected error: %v", result.Error)
 		}

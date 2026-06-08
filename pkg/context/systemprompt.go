@@ -26,7 +26,9 @@ Guidelines:
 - Read files before modifying them
 - Prefer editing existing files over creating new ones
 - Be concise in your responses
-- When executing commands, prefer dedicated tools (Read, Edit, Write, Glob, Grep) over Bash`, now)
+- When executing commands, prefer dedicated tools (Read, Edit, Write, Glob, Grep) over Bash
+
+{{SOUL}}`, now)
 }
 
 // PlatformInfo returns platform information for the system prompt.

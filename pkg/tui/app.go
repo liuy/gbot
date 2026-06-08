@@ -86,7 +86,7 @@ type App struct {
 
 	// Engine
 	engine       *engine.Engine
-	systemPrompt json.RawMessage
+	systemPrompt string
 
 	// Persistence (short-term memory store)
 	sessionID   string
@@ -188,7 +188,7 @@ type App struct {
 }
 
 // NewApp creates a new App model.
-func NewApp(eng *engine.Engine, systemPrompt json.RawMessage, h *hub.Hub) *App {
+func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 	// Resolve history file path: ~/.gbot/history.jsonl
 	var historyPath string
 	if configDir, err := config.ConfigDir(); err == nil {

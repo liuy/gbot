@@ -52,14 +52,14 @@ type SkillRegistry interface {
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
 	Prompt              string               // actual user prompt for the sub-agent
-	SystemPrompt        json.RawMessage      // sub-agent's system prompt
+	SystemPrompt        string      // sub-agent's system prompt
 	Tools               map[string]tool.Tool // filtered tool set
 	MaxTurns            int                  // 0 = no limit
 	Model               string               // "" = inherit from parent
 	AgentType           string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
-	ParentSystemPrompt  json.RawMessage      // fork: parent engine's rendered system prompt bytes
+	ParentSystemPrompt  string      // fork: parent engine's rendered system prompt
 	UserContextMessages []types.Message      // [currentDate, claudeMd?, skill?...] injected before userPrompt
 }
 
@@ -74,7 +74,7 @@ type AgentTool struct {
 	parentTools func() map[string]tool.Tool // lazy accessor for parent engine tools
 	forkReg     *ForkAgentRegistry          // nil = fork disabled
 	notifyFn    func(xml string)            // injects notification into parent conversation
-	sysPromptFn func() json.RawMessage      // returns parent engine's rendered system prompt
+	sysPromptFn func() string      // returns parent engine's rendered system prompt
 
 	// Sub-agent environment context — loaded once at startup, read-only during execution
 	workingDir    string
@@ -103,7 +103,7 @@ func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[stri
 
 // SetNotifyFn enables fork agent support. Injects the notification callback
 // and system prompt accessor for fork agent lifecycle management.
-func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() json.RawMessage) {
+func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() string) {
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
 	if t.forkReg == nil {
@@ -269,8 +269,7 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		}
 	}
 
-	encoded, _ := json.Marshal(systemPromptStr)
-	systemPrompt := json.RawMessage(encoded)
+	systemPrompt := systemPromptStr
 
 	// Step 6: Build user context messages
 	// Source: runAgent.ts:380-398 — getUserContext() + prependUserContext()
@@ -442,7 +441,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	forkMessages := BuildForkMessages(triggerAssistantMsg, contextHistory, input.Prompt)
 
 	// Get parent system prompt (rendered bytes, not recomputed)
-	var systemPrompt json.RawMessage
+	var systemPrompt string
 	if t.sysPromptFn != nil {
 		systemPrompt = t.sysPromptFn()
 	}

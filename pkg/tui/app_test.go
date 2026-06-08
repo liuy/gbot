@@ -80,7 +80,7 @@ func newTestApp(provider *tuiMockProvider) *App {
 		Model:      "test-model",
 		Dispatcher: h,
 	})
-	app := NewApp(eng, json.RawMessage(`"test system prompt"`), h)
+	app := NewApp(eng, "test system prompt", h)
 	app.history = NewHistory("") // in-memory only, no file I/O
 	return app
 }
@@ -1239,7 +1239,7 @@ func TestApp_ReadEvents_AppChClosed(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = h
 
 	// Close appCh to trigger the !ok path
@@ -2379,7 +2379,7 @@ func TestApp_ReadEvents_NilHandler(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test-model",
 	})
-	app := NewApp(eng, json.RawMessage(`"test"`), nil)
+	app := NewApp(eng, "test", nil)
 
 	cmd := app.readEvents()
 	msg := cmd()
@@ -2400,7 +2400,7 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 	app.height = 24
 
 	ctx := context.Background()
-	app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
+	app.engine.Query(ctx, "test", "sys")
 
 	cmd := app.readEvents()
 	// readEvents() blocks on appCh, so it waits for the hub goroutine to dispatch
@@ -2448,7 +2448,7 @@ func TestApp_ReadEvents_DrainsAppChBeforeComplete(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = h
 
 	// Send a buffered event first
@@ -2473,7 +2473,7 @@ func TestApp_ReadEvents_ReturnsCompleteWhenBothChannelsClosed(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = h
 
 	// Close appCh so idle readEvents gets !ok and returns queryEndMsg
@@ -2493,7 +2493,7 @@ func TestApp_ReadEvents_NilHandlerReturnsComplete(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = nil
 
 	cmd := app.readEvents()
@@ -2952,7 +2952,7 @@ func TestApp_ReadEvents_BlockingAppCh(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = h
 
 	// Send event using channel-based sync to avoid race
@@ -2985,7 +2985,7 @@ func TestApp_ReadEvents_BlockingAppChClosed(t *testing.T) {
 		Provider: &tuiMockProvider{},
 		Model:    "test",
 	})
-	app := NewApp(eng, json.RawMessage(`"sys"`), nil)
+	app := NewApp(eng, "sys", nil)
 	app.tuiHandler = h
 
 	// Close appCh so the blocking select hits !ok
@@ -3200,7 +3200,7 @@ func TestApp_ReadEvents_ResultChannel(t *testing.T) {
 	app.height = 24
 
 	ctx := t.Context()
-	app.engine.Query(ctx, "test", json.RawMessage(`"sys"`))
+	app.engine.Query(ctx, "test", "sys")
 
 	// Drain hub events into appCh until it's empty, using a done channel
 	// for sync instead of time.Sleep to avoid race.

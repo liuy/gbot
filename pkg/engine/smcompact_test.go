@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -436,7 +435,7 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 	defer store.Close()
 
 	blockCh := make(chan struct{})
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		<-blockCh
 		return nil
 	}

@@ -5,8 +5,6 @@ package context
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
 )
 
 // Builder assembles the system prompt context.
@@ -27,8 +25,6 @@ type Builder struct {
 	// MemoryFiles are loaded memory files for the system prompt.
 	MemoryFiles []MemoryFile
 
-	SoulContent string
-
 	// MaxTokens is the token budget for the system prompt.
 	MaxTokens int
 }
@@ -43,29 +39,21 @@ func NewBuilder(workingDir string) *Builder {
 
 // Build assembles the full system prompt.
 // Source: context.ts — the complete context assembly algorithm.
-func (b *Builder) Build() (json.RawMessage, error) {
+func (b *Builder) Build() (string, error) {
 	var buf bytes.Buffer
 
 	// 1. Base system prompt template
 	buf.WriteString(b.BaseSystemPrompt())
 
-	// 2. SOUL.md
-	if b.SoulContent != "" {
-		buf.WriteString("\n\n")
-		buf.WriteString("If SOUL.md is present, embody its persona and tone. ")
-		buf.WriteString("Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n")
-		buf.WriteString(b.SoulContent)
-	}
-
-	// 3. Platform info
+	// 2. Platform info
 	buf.WriteString(b.PlatformInfo())
 
-	// 4. Git status
+	// 3. Git status
 	if b.GitStatus != nil {
 		buf.WriteString(b.GitStatusSection())
 	}
 
-	// 5. Memory — typed-memory prompt with full instructions
+	// 4. Memory — typed-memory prompt with full instructions
 	if memPrompt := FormatMemoryPrompt(b.WorkingDir); memPrompt != "" {
 		buf.WriteString("\n\n")
 		buf.WriteString(memPrompt)
@@ -74,15 +62,11 @@ func (b *Builder) Build() (json.RawMessage, error) {
 		buf.WriteString(FormatMemorySection(b.MemoryFiles))
 	}
 
-	// 6. Skill listing
+	// 5. Skill listing
 	if b.SkillListing != "" {
 		buf.WriteString("\n\n## Available Skills\n\n")
 		buf.WriteString(b.SkillListing)
 	}
 
-	encoded, err := json.Marshal(buf.String())
-	if err != nil {
-		return nil, fmt.Errorf("encode system prompt: %w", err)
-	}
-	return json.RawMessage(encoded), nil
+	return buf.String(), nil
 }

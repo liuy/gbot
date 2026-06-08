@@ -677,13 +677,13 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	})
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
-	eng.SetSystemPrompt(json.RawMessage(`{"role":"system","content":"You are a helpful assistant."}`))
+	eng.SetSystemPrompt(`{"role":"system","content":"You are a helpful assistant."}`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// 1. Run a normal query to establish the conversation
-	result := eng.QuerySync(ctx, "Run a background task", nil)
+	result := eng.QuerySync(ctx, "Run a background task", "")
 	if result.Error != nil {
 		t.Fatalf("first query: %v", result.Error)
 	}
@@ -709,7 +709,7 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 	//    filtered during step 3's PersistNewMessages already.
 	//    This step verifies the attachment wasn't left in an uncommitted state.
 	mp.addResponse(textStreamEvents("test-model", "Got it, thanks for letting me know."), nil)
-	result2 := eng.QuerySync(ctx, "How did the background task go?", nil)
+	result2 := eng.QuerySync(ctx, "How did the background task go?", "")
 	if result2.Error != nil {
 		t.Fatalf("third query: %v", result2.Error)
 	}

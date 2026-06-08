@@ -1,7 +1,6 @@
 package context_test
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,15 +288,10 @@ func TestBuild_WithMemoryFiles(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
-
-	if !strings.Contains(promptStr, "## Memory") {
+	if !strings.Contains(result, "## Memory") {
 		t.Error("built prompt missing Memory section")
 	}
-	if !strings.Contains(promptStr, "Remember this") {
+	if !strings.Contains(result, "Remember this") {
 		t.Error("built prompt missing memory content")
 	}
 }
@@ -312,15 +306,10 @@ func TestBuild_WithTypedMemory(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
-
-	if !strings.Contains(promptStr, "Types of memory") {
+	if !strings.Contains(result, "Types of memory") {
 		t.Error("built prompt missing typed-memory section")
 	}
-	if !strings.Contains(promptStr, "What NOT to save") {
+	if !strings.Contains(result, "What NOT to save") {
 		t.Error("built prompt missing 'What NOT to save' section")
 	}
 }

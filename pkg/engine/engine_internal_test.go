@@ -497,7 +497,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		Dispatcher:  tc,
 	})
 
-	result := eng.QuerySync(context.Background(), "test", nil)
+	result := eng.QuerySync(context.Background(), "test", "")
 	// After 50 turns the for loop exits, hitting line 226-231
 	if result.Error != nil {
 		t.Fatalf("expected success after max turns, got: %v", result.Error)
@@ -545,7 +545,7 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context during streaming")
 	}
@@ -1039,7 +1039,7 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 
 	ctx := t.Context()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	// API error (429) is terminal at engine level — no retry (D2)
 	if result.Error == nil {
@@ -1526,7 +1526,7 @@ func TestQuerySync(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	result := eng.QuerySync(ctx, "test query", nil)
+	result := eng.QuerySync(ctx, "test query", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -1567,7 +1567,7 @@ func TestQuerySyncCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	result := eng.QuerySync(ctx, "test query", nil)
+	result := eng.QuerySync(ctx, "test query", "")
 	if result.Error == nil {
 		t.Fatal("expected non-nil error from cancelled context")
 	}
@@ -1624,7 +1624,7 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	result := sub.QuerySync(ctx, "test query", nil)
+	result := sub.QuerySync(ctx, "test query", "")
 
 	// Should complete normally despite heavy token usage (subagent bypasses budget check)
 	if result.Error != nil {
@@ -1934,13 +1934,13 @@ func TestEngineSystemPrompt_Accessors(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
 
-	// Initially nil
-	if sp := eng.SystemPrompt(); sp != nil {
-		t.Errorf("SystemPrompt() should be nil initially, got %q", string(sp))
+	// Initially empty
+	if sp := eng.SystemPrompt(); sp != "" {
+		t.Errorf("SystemPrompt() should be empty initially, got %q", sp)
 	}
 
 	// Set and read back
-	sp := json.RawMessage(`{"role":"system","content":"you are helpful"}`)
+	sp := `{"role":"system","content":"you are helpful"}`
 	eng.SetSystemPrompt(sp)
 	if got := eng.SystemPrompt(); string(got) != string(sp) {
 		t.Errorf("SystemPrompt() = %q, want %q", string(got), string(sp))
@@ -1965,7 +1965,7 @@ func TestRunForkedQuery(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("fork directive")}},
 	}
 
-	result := eng.RunForkedQuery(context.Background(), messages, nil)
+	result := eng.RunForkedQuery(context.Background(), messages, "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -2351,7 +2351,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 	if result.Error != nil {
 		t.Fatalf("sub-agent should complete despite blocking limit, got: %v", result.Error)
 	}
@@ -2493,7 +2493,7 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	if !compactCalled {
 		t.Fatal("pre-turn compact should have been called")
@@ -2570,7 +2570,7 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.QuerySync(ctx, "do something", nil)
+	eng.QuerySync(ctx, "do something", "")
 
 	for _, ev := range tc.FindEvents(types.EventToolEnd) {
 		if ev.ToolResult != nil && strings.Contains(ev.ToolResult.DisplayOutput, "compacted") {
@@ -2666,7 +2666,7 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	// Critical assertions:
 	if !compactCalled {
@@ -2736,7 +2736,7 @@ func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	if result.Error == nil {
 		t.Fatal("expected blocking limit error after compact failure")
@@ -2779,7 +2779,7 @@ func TestQuery_PreTurnCompact_ColdStart_NoCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "hello", nil)
+	result := eng.QuerySync(ctx, "hello", "")
 
 	if compactCalled {
 		t.Error("compact should not be called on cold start with small context")
@@ -2839,7 +2839,7 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	if !compactCalled {
 		t.Fatal("pre-turn compact should have been called")
@@ -2896,7 +2896,7 @@ func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	if result.Error == nil {
 		t.Fatal("expected blocking limit error when circuit breaker tripped")
@@ -2963,7 +2963,7 @@ func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 
 	// No-op compact should NOT skip the blocking limit.
 	if result.Error == nil {
@@ -3235,7 +3235,7 @@ func TestRunTurns_LoopTopAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -3281,7 +3281,7 @@ func TestRunTurns_PostStreamingAbort_NoToolUse(t *testing.T) {
 		close(ch2)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error from loop-top abort after text turn")
@@ -3339,7 +3339,7 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error")
@@ -3417,7 +3417,7 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error after tool execution abort")
@@ -3470,7 +3470,7 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error from post-loop abort")
@@ -3523,7 +3523,7 @@ func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error from post-loop abort")
@@ -3566,7 +3566,7 @@ func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error from post-loop abort")
@@ -3636,7 +3636,7 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error from abort")
@@ -3713,7 +3713,7 @@ func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	if result.Error == nil {
 		t.Fatal("expected error")
@@ -3792,7 +3792,7 @@ func TestInlineInterrupt_PostStreamingAbort_Text(t *testing.T) {
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected abort error")
 	}
@@ -3829,7 +3829,7 @@ func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected abort error")
 	}
@@ -3867,7 +3867,7 @@ func TestInlineInterrupt_PostToolAbort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected abort error after tool execution")
 	}
@@ -3897,7 +3897,7 @@ func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.
 		close(ch)
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected abort error during compact")
 	}
@@ -3915,7 +3915,7 @@ func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -5376,7 +5376,7 @@ func TestQuery_EmitsQueryStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.Query(ctx, "hello", nil)
+	eng.Query(ctx, "hello", "")
 
 	// Wait for EventQueryStart
 	select {
@@ -5401,7 +5401,7 @@ func TestProcessAttachments_EmptyDrain(t *testing.T) {
 	defer cancel()
 
 	// No attachments — ProcessAttachments goroutine returns immediately
-	eng.ProcessAttachments(ctx, nil)
+	eng.ProcessAttachments(ctx, "")
 	// Give goroutine time to run
 	runtime.Gosched()
 }
@@ -5433,7 +5433,7 @@ func TestProcessAttachments_WithPending(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.ProcessAttachments(ctx, nil)
+	eng.ProcessAttachments(ctx, "")
 
 		// Job-mode attachments no longer emit EventAttachment.
 		// Verify LLM turn runs (EventTurnStart + EventQueryEnd) without EventAttachment.
@@ -5665,7 +5665,7 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 
 	if result.Error != nil {
 		t.Fatalf("expected success (token prune should reduce context), got: %v", result.Error)
@@ -5732,7 +5732,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error == nil {
 		t.Fatal("expected blocking limit to fire (pruning clears nothing)")
 	}
@@ -5792,7 +5792,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		result := eng.QuerySync(ctx, "continue", nil)
+		result := eng.QuerySync(ctx, "continue", "")
 		if result.Error != nil {
 			t.Fatalf("expected success (context under threshold), got: %v", result.Error)
 		}
@@ -5853,7 +5853,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		result := eng.QuerySync(ctx, "continue", nil)
+		result := eng.QuerySync(ctx, "continue", "")
 		// Sub-agent is exempt from blocking limit too, so this should succeed.
 		if result.Error != nil {
 			t.Fatalf("sub-agent should be exempt from blocking, got: %v", result.Error)
@@ -5971,7 +5971,7 @@ func TestQuery_RetryStreamTimeout(t *testing.T) {
 		Dispatcher: tc,
 	})
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error != nil {
 		t.Fatalf("expected success after retry, got: %v", result.Error)
 	}
@@ -6020,7 +6020,7 @@ func TestQuery_RetryStreamEndedNoContent(t *testing.T) {
 		Dispatcher: tc,
 	})
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error != nil {
 		t.Fatalf("expected success after retry, got: %v", result.Error)
 	}
@@ -6057,7 +6057,7 @@ func TestQuery_RetryExhausted(t *testing.T) {
 		mp.addResponse(partialTextEvents("test", "partial"), nil)
 	}
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error == nil {
 		t.Fatal("expected error after all retries exhausted, got nil")
 	}
@@ -6097,7 +6097,7 @@ func TestQuery_NonRetryableTerminal(t *testing.T) {
 		Dispatcher: tc,
 	})
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error == nil {
 		t.Fatal("expected error for 400, got nil")
 	}
@@ -6153,7 +6153,7 @@ func TestQuery_RetryAbortErrorNoRetry(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "hello", nil)
+	result := eng.QuerySync(ctx, "hello", "")
 	if result.Error == nil {
 		t.Fatal("expected AbortError, got nil")
 	}
@@ -6200,7 +6200,7 @@ func TestQuery_RetryContextCancellation(t *testing.T) {
 	// Cancel context during backoff wait (5s backoff, cancel at 100ms)
 	time.AfterFunc(100*time.Millisecond, cancel)
 
-	result := eng.QuerySync(ctx, "hello", nil)
+	result := eng.QuerySync(ctx, "hello", "")
 	if result.Error == nil {
 		t.Fatal("expected error from ctx cancellation, got nil")
 	}
@@ -6249,7 +6249,7 @@ func TestQuery_SubagentRetriesStreamError(t *testing.T) {
 	tc := newEventCollector()
 	sub.dispatcher = tc
 
-	result := sub.QuerySync(context.Background(), "explore", nil)
+	result := sub.QuerySync(context.Background(), "explore", "")
 	if result.Error != nil {
 		t.Fatalf("expected success after retry, got: %v", result.Error)
 	}
@@ -6344,7 +6344,7 @@ func TestQuery_RetryBackoffSequence(t *testing.T) {
 	})
 	eng.retryConfig = cfg
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error == nil {
 		t.Fatal("expected error after all retries exhausted, got nil")
 	}
@@ -6418,7 +6418,7 @@ func TestQuery_MultiTurnRetryReset(t *testing.T) {
 		MaxBackoff:  20 * time.Millisecond,
 	}
 
-	result := eng.QuerySync(context.Background(), "hello", nil)
+	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error != nil {
 		t.Fatalf("expected success after multi-turn retry, got: %v", result.Error)
 	}
@@ -7175,7 +7175,7 @@ func TestStreamInterrupt_PartialToolInput_InLoopSelect(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -7215,7 +7215,7 @@ func TestStreamInterrupt_PartialToolInput_PostLoop(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -7258,7 +7258,7 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -7305,7 +7305,7 @@ func TestStreamInterrupt_ValidToolInput_NotModified(t *testing.T) {
 		cancel()
 	}()
 
-	eng.QuerySync(ctx, "test", nil)
+	eng.QuerySync(ctx, "test", "")
 
 	assertToolUseAfterNormalize(t, eng, "call_valid", `{"pattern":"TODO"}`)
 }
@@ -7340,7 +7340,7 @@ func TestStreamInterrupt_TextOnly_NoPanic(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("stream cancellation should produce an error")
 	}
@@ -7383,7 +7383,7 @@ func TestStreamInterrupt_EmptyContent_NoPanic(t *testing.T) {
 		cancel()
 	}()
 
-	eng.QuerySync(ctx, "test", nil)
+	eng.QuerySync(ctx, "test", "")
 	// Should not panic; messages may or may not be appended depending on timing.
 }
 
@@ -7431,7 +7431,7 @@ func TestRunForkedQuery_BlocksConcurrentProcessAttachments(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
-	eng.systemPrompt = json.RawMessage(`{"role":"system","content":"test"}`)
+	eng.systemPrompt = `{"role":"system","content":"test"}`
 
 	// Pre-fill the stream with a complete response so the turn loop finishes
 	// cleanly after we unblock. The goroutine will block on reading from streamCh
@@ -7509,7 +7509,7 @@ func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
-	eng.systemPrompt = json.RawMessage(`{"role":"system","content":"test"}`)
+	eng.systemPrompt = `{"role":"system","content":"test"}`
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

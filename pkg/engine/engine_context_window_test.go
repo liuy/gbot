@@ -73,7 +73,7 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "tell me a story", nil)
+	result := eng.QuerySync(ctx, "tell me a story", "")
 	if result.Error != nil {
 		t.Fatalf("expected success, got: %v", result.Error)
 	}
@@ -157,7 +157,7 @@ func TestContextWindowExceeded_RecoveryOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected no error, got: %v", result.Error)
 	}
@@ -217,7 +217,7 @@ func TestContextWindowExceeded_SubAgentGuard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := sub.QuerySync(ctx, "test", nil)
+	result := sub.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected no error, got: %v", result.Error)
 	}
@@ -272,7 +272,7 @@ func TestContextWindowExceeded_CompactFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected no error, got: %v", result.Error)
 	}
@@ -352,7 +352,7 @@ func TestContextWindowExceeded_WithToolUse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected success, got: %v", result.Error)
 	}
@@ -411,7 +411,7 @@ func TestMaxTokens_ContinueWithoutCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "tell me a joke", nil)
+	result := eng.QuerySync(ctx, "tell me a joke", "")
 	if result.Error != nil {
 		t.Fatalf("expected success, got: %v", result.Error)
 	}
@@ -478,7 +478,7 @@ func TestMaxTokens_RecoveryLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected no error, got: %v", result.Error)
 	}

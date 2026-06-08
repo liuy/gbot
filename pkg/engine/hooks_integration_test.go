@@ -114,7 +114,7 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Use the tool", nil)
+	result := eng.QuerySync(ctx, "Use the tool", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -182,7 +182,7 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Use the tool", nil)
+	result := eng.QuerySync(ctx, "Use the tool", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -241,7 +241,7 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Use the tool", nil)
+	result := eng.QuerySync(ctx, "Use the tool", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -303,7 +303,7 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Use the tool", nil)
+	result := eng.QuerySync(ctx, "Use the tool", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -360,7 +360,7 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Do something", nil)
+	result := eng.QuerySync(ctx, "Do something", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -404,7 +404,7 @@ func TestIntegration_NoHooks_EngineWorks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Say hello", nil)
+	result := eng.QuerySync(ctx, "Say hello", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)

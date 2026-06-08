@@ -124,7 +124,7 @@ func TestAutoCompact_PostTurn_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -199,7 +199,7 @@ func TestAutoCompact_Reactive_E2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test query", nil)
+	result := eng.QuerySync(ctx, "test query", "")
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
@@ -331,7 +331,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "turn 1", nil)
+	result := eng.QuerySync(ctx, "turn 1", "")
 	if result.Error != nil {
 		t.Fatalf("turn 1 failed: %v", result.Error)
 	}
@@ -341,7 +341,7 @@ func TestAutoCompact_MultiTurn_Compact(t *testing.T) {
 	eng.SetMessages(largeMsgs)
 	p.addStream(textStreamEvents("test-model", "Turn 2 response after compact."), nil)
 
-	result = eng.QuerySync(ctx, "turn 2", nil)
+	result = eng.QuerySync(ctx, "turn 2", "")
 	if result.Error != nil {
 		t.Fatalf("turn 2 failed: %v", result.Error)
 	}
@@ -430,7 +430,7 @@ func TestAutoCompact_Concurrent_Compact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_ = eng.QuerySync(ctx, "test", nil)
+	_ = eng.QuerySync(ctx, "test", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -556,7 +556,7 @@ func TestAutoCompact_SubEngine_ProactiveCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := subEng.QuerySync(ctx, "explore this", nil)
+	result := subEng.QuerySync(ctx, "explore this", "")
 
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
@@ -640,7 +640,7 @@ func TestAutoCompact_SubEngine_ReactiveCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result := subEng.QuerySync(ctx, "test query", nil)
+	result := subEng.QuerySync(ctx, "test query", "")
 
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)

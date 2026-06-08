@@ -214,11 +214,11 @@ func TestWireEngine_AgentNotifyFnWired(t *testing.T) {
 	WireEngine(eng, refs, deps)
 
 	// Set a system prompt so the sysPromptFn returns something
-	eng.SetSystemPrompt(json.RawMessage(`"test prompt"`))
+	eng.SetSystemPrompt("test prompt")
 
 	sp := eng.SystemPrompt()
-	if string(sp) != `"test prompt"` {
-		t.Errorf("SystemPrompt = %s, want %q", sp, `"test prompt"`)
+	if sp != "test prompt" {
+		t.Errorf("SystemPrompt = %s, want %q", sp, "test prompt")
 	}
 }
 
@@ -350,7 +350,7 @@ func TestWireEngine_AgentNotifyCallbackEnqueues(t *testing.T) {
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
-	eng.SetSystemPrompt(json.RawMessage(`"sys"`))
+	eng.SetSystemPrompt("sys")
 
 	// The agent notify callback is the first arg to SetNotifyFn.
 	// We can trigger it by simulating what AgentTool does: call the notify fn.

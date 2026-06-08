@@ -307,7 +307,7 @@ func main() {
 		// TS source: services/SessionMemory/sessionMemory.ts
 		if store != nil && sessionID != "" && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
-			extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt json.RawMessage) error {
+			extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
 				editTool := fileedit.New()
 				subEng := eng.NewSubEngine(engine.SubEngineOptions{
 					Tools:     map[string]tool.Tool{"Edit": editTool},
@@ -354,8 +354,7 @@ func main() {
 					MaxTurns:  30,
 				})
 				defer subEng.Close()
-				sysPrompt, _ := json.Marshal(prompt)
-				result := subEng.QuerySync(ctx, "", sysPrompt)
+				result := subEng.QuerySync(ctx, "", prompt)
 				return result.Error
 			}
 
@@ -381,7 +380,7 @@ func main() {
 
 		// Estimate initial context usage
 		// CJK-aware estimation. Corrected after first API response.
-		initialTokens := types.EstimateTokens(string(systemPrompt))
+		initialTokens := types.EstimateTokens(systemPrompt)
 		for _, t := range mainRefs.Reg.EnabledTools() {
 			if b, err := json.Marshal(t.InputSchema()); err == nil {
 				initialTokens += types.EstimateTokens(string(b))

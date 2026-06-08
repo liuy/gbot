@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"testing"
 
@@ -80,6 +79,7 @@ func cacheStreamEvents(cacheRead, cacheCreation int) []llm.StreamEvent {
 // CacheControl, SystemBlocks, and PromptStateKey on the API request
 // when a system prompt is provided.
 func TestCacheIntegration_RequestHasCacheControl(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cp := &captureProvider{
 		events: cacheStreamEvents(0, 5000),
 	}
@@ -89,8 +89,7 @@ func TestCacheIntegration_RequestHasCacheControl(t *testing.T) {
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful assistant.")
-	result := eng.QuerySync(context.Background(), "hi", sysPrompt)
+	result := eng.QuerySync(context.Background(), "hi", "You are a helpful assistant.")
 
 	if result.Error != nil {
 		t.Fatalf("QuerySync error: %v", result.Error)
@@ -144,7 +143,7 @@ func TestCacheIntegration_EmptySystemPrompt_NoCache(t *testing.T) {
 		Provider: cp,
 	})
 
-	_ = eng.QuerySync(context.Background(), "hi", nil)
+	_ = eng.QuerySync(context.Background(), "hi", "")
 
 	req := cp.lastReq
 	if req == nil {
@@ -174,7 +173,7 @@ func TestCacheIntegration_CacheTokensFlowToEvents(t *testing.T) {
 		Provider: cp,
 	})
 
-	result := eng.QuerySync(context.Background(), "hi", nil)
+	result := eng.QuerySync(context.Background(), "hi", "")
 	if result.Error != nil {
 		t.Fatalf("Query error: %v", result.Error)
 	}
@@ -192,7 +191,7 @@ func TestCacheIntegration_CacheCreationFlow(t *testing.T) {
 		Provider: cp,
 	})
 
-	result := eng.QuerySync(context.Background(), "hi", nil)
+	result := eng.QuerySync(context.Background(), "hi", "")
 	if result.Error != nil {
 		t.Fatalf("Query error: %v", result.Error)
 	}
@@ -230,8 +229,7 @@ func TestCacheIntegration_SubAgentBuiltIn(t *testing.T) {
 		Tools:     map[string]tool.Tool{},
 	})
 
-	sysPrompt, _ := json.Marshal("You are an explorer.")
-	result := sub.QuerySync(context.Background(), "hi", sysPrompt)
+	result := sub.QuerySync(context.Background(), "hi", "You are an explorer.")
 
 	if result.Error != nil {
 		t.Fatalf("QuerySync error: %v", result.Error)
@@ -279,8 +277,7 @@ func TestCacheIntegration_SubAgentCustom(t *testing.T) {
 		Tools:     map[string]tool.Tool{},
 	})
 
-	sysPrompt, _ := json.Marshal("You are a custom agent.")
-	result := sub.QuerySync(context.Background(), "hi", sysPrompt)
+	result := sub.QuerySync(context.Background(), "hi", "You are a custom agent.")
 
 	if result.Error != nil {
 		t.Fatalf("QuerySync error: %v", result.Error)

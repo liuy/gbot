@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -154,7 +153,7 @@ func TestExtract_CreatesFileAndCallsExtractFn(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
 	var called bool
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		called = true
 		// Verify the file was created by ensureFile
 		if _, err := os.Stat(notesPath); os.IsNotExist(err) {
@@ -193,7 +192,7 @@ func TestExtract_CreatesFileAndCallsExtractFn(t *testing.T) {
 func TestExtract_ExtractFnFailure(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		return os.ErrPermission
 	}
 
@@ -215,7 +214,7 @@ func TestExtract_ExtractFnFailure(t *testing.T) {
 func TestExtract_ContextCancellation(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		return context.Canceled
 	}
 
@@ -246,7 +245,7 @@ func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
 	callCount := 0
 	var mu sync.Mutex
 
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
@@ -302,7 +301,7 @@ func TestWaitForExtraction_WaitsForCompletion(t *testing.T) {
 	tmpDir := t.TempDir()
 	releaseCh := make(chan struct{})
 
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		<-releaseCh
 		return nil
 	}
@@ -372,7 +371,7 @@ func TestWaitForExtraction_Timeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	blockCh := make(chan struct{})
 
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		<-blockCh
 		return nil
 	}
@@ -647,7 +646,7 @@ func TestExtract_StaleRecovery(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
 	var called bool
-	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, notesPath string, _ []types.Message, _ string) error {
 		called = true
 		return nil
 	}

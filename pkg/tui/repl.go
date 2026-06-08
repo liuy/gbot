@@ -948,7 +948,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// Falls back to system prompt estimation on the first turn (cold start).
 	base := a.engine.GetContextTokens()
 	if base == 0 {
-		base = types.EstimateTokens(string(a.systemPrompt))
+		base = types.EstimateTokens(a.systemPrompt)
 	}
 	a.inputTokenTarget = base + types.EstimateTokens(text)
 

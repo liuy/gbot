@@ -195,7 +195,7 @@ func TestAutoCompact_Proactive_TriggersWhenOverThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -231,7 +231,7 @@ func TestAutoCompact_Proactive_DoesNotTriggerWhenUnderThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -269,7 +269,7 @@ func TestAutoCompact_Proactive_CompactedMessagesReplaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -320,7 +320,7 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("expected recovery after reactive compact, got error: %v", result.Error)
 	}
@@ -361,7 +361,7 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error when reactive compact retry also fails")
 	}
@@ -393,7 +393,7 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error when no compactor available")
 	}
@@ -436,7 +436,7 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -469,7 +469,7 @@ func TestAutoCompact_NoCompactor_NormalQuery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -731,7 +731,7 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "continue", nil)
+	result := eng.QuerySync(ctx, "continue", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result)
 	}

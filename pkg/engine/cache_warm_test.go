@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -49,7 +48,7 @@ func TestCacheWarmThenHit(t *testing.T) {
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful coding assistant with a long system prompt that spans many tokens.")
+	sysPrompt := "You are a helpful coding assistant with a long system prompt that spans many tokens."
 
 	// Turn 1: cache warm
 	result1 := eng.QuerySync(context.Background(), "你好", sysPrompt)
@@ -128,7 +127,7 @@ func TestCacheTokenNoDoubleCount(t *testing.T) {
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful assistant with a long system prompt.")
+	sysPrompt := "You are a helpful assistant with a long system prompt."
 	result := eng.QuerySync(context.Background(), "hello", sysPrompt)
 	if result.Error != nil {
 		t.Fatalf("error: %v", result.Error)
@@ -157,7 +156,7 @@ func TestCacheTokenNoDoubleCount_Read(t *testing.T) {
 		Provider: cp,
 	})
 
-	sysPrompt, _ := json.Marshal("You are a helpful assistant.")
+	sysPrompt := "You are a helpful assistant."
 	result := eng.QuerySync(context.Background(), "hello", sysPrompt)
 	if result.Error != nil {
 		t.Fatalf("error: %v", result.Error)

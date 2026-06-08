@@ -141,7 +141,7 @@ func BenchmarkCallLLM_Accumulate(b *testing.B) {
 		Model:    "test-model",
 	})
 
-	systemPrompt := json.RawMessage(`"You are a helpful assistant."`)
+	systemPrompt := "You are a helpful assistant."
 
 	b.ReportAllocs()
 	b.ResetTimer()

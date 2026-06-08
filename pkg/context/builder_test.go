@@ -1,7 +1,6 @@
 package context_test
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,10 +36,7 @@ func TestBuild_Basic(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("built prompt missing 'You are gbot'")
@@ -67,10 +63,7 @@ func TestBuild_WithGitStatus(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	if !strings.Contains(promptStr, "Git branch: test-branch") {
 		t.Error("built prompt missing git status")
@@ -87,10 +80,7 @@ func TestBuild_WithToolPrompts_NoLongerInSystemPrompt(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	if strings.Contains(promptStr, "Tool 1: Use wisely") {
 		t.Error("tool prompts must not appear in system prompt")
@@ -118,10 +108,7 @@ func TestBuild_AllSections(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	expectedParts := []string{
 		"You are gbot",
@@ -148,10 +135,7 @@ func TestBuild_EmptyToolPrompts_NotInSystemPrompt(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	if strings.Contains(promptStr, "valid prompt") {
 		t.Error("tool prompts must not appear in system prompt")
@@ -165,10 +149,8 @@ func TestBuild_EscapesJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not valid JSON: %v, raw: %s", err, string(result))
+	if result == "" {
+		t.Error("Build() returned empty string")
 	}
 }
 
@@ -364,10 +346,7 @@ func TestBuild_NoFiles(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("Build() result is not a valid JSON string: %v", err)
-	}
+	promptStr := result
 
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("prompt should contain 'You are gbot' even without files")
@@ -390,14 +369,10 @@ func TestBuild_WithSkillListing(t *testing.T) {
 		t.Fatalf("Build() error: %v", err)
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
-	if !strings.Contains(promptStr, "## Available Skills") {
+	if !strings.Contains(result, "## Available Skills") {
 		t.Error("built prompt missing '## Available Skills' section")
 	}
-	if !strings.Contains(promptStr, "/commit") {
+	if !strings.Contains(result, "/commit") {
 		t.Error("built prompt missing skill listing content")
 	}
 }
@@ -411,14 +386,12 @@ func TestBuild_ToolPromptsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
-	if result == nil {
-		t.Fatal("Build() returned nil result")
+	if result == "" {
+		t.Fatal("Build() returned empty result")
 	}
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result not valid JSON: %v", err)
-	}
+	promptStr := result
+
 	// Tool prompts go into tool defs, not system prompt.
 	if strings.Contains(promptStr, "p1") {
 		t.Error("tool prompt p1 must not be in system prompt")

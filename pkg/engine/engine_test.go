@@ -337,7 +337,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Say hello", nil)
+	result := eng.QuerySync(ctx, "Say hello", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -390,7 +390,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "Read the file", nil)
+	result := eng.QuerySync(ctx, "Read the file", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -449,7 +449,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "List Go files", nil)
+	result := eng.QuerySync(ctx, "List Go files", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -542,7 +542,7 @@ func TestQuery_EventQueryEndCarriesErrorOnCancel(t *testing.T) {
 		cancel()
 	}()
 
-	eng.QuerySync(ctx, "run the tool", nil)
+	eng.QuerySync(ctx, "run the tool", "")
 
 	endEvents := ec.FindEvents(types.EventQueryEnd)
 	if len(endEvents) == 0 {
@@ -571,7 +571,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	// Cancel BEFORE calling Query to deterministically trigger context cancellation
 	cancel()
 
-	result := eng.QuerySync(ctx, "test query", nil)
+	result := eng.QuerySync(ctx, "test query", "")
 	// The context is already cancelled, so the select in queryLoop should catch it
 	// before calling callLLM, resulting in a cancellation error.
 	// Verify the error is set and mentions context cancellation
@@ -630,7 +630,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do something", nil)
+	result := eng.QuerySync(ctx, "do something", "")
 	if result.Error == nil {
 		t.Fatal("expected prompt too long error")
 	}
@@ -667,7 +667,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		result := eng.QuerySync(ctx, "hello", nil)
+		result := eng.QuerySync(ctx, "hello", "")
 		if result.Error != nil {
 			t.Fatalf("negative blockingLimit should be skipped, got: %v", result.Error)
 		}
@@ -691,7 +691,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "use unknown tool", nil)
+	result := eng.QuerySync(ctx, "use unknown tool", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -731,7 +731,7 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "call failing tool", nil)
+	result := eng.QuerySync(ctx, "call failing tool", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected final error: %v", result.Error)
 	}
@@ -773,7 +773,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -805,7 +805,7 @@ func TestQuery_StreamError_APIErrorTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected terminal error for API-level 429, got nil")
 	}
@@ -843,7 +843,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1157,7 +1157,7 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "call both tools", nil)
+	result := eng.QuerySync(ctx, "call both tools", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1192,7 +1192,7 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1238,7 +1238,7 @@ func TestQuery_StreamingTextDeltas(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "greet me", nil)
+	result := eng.QuerySync(ctx, "greet me", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1269,7 +1269,7 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1305,7 +1305,7 @@ func TestQuery_PingEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "ping", nil)
+	result := eng.QuerySync(ctx, "ping", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1351,7 +1351,7 @@ func TestQuery_NilUsage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1384,7 +1384,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "do 3 rounds", nil)
+	result := eng.QuerySync(ctx, "do 3 rounds", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1416,7 +1416,7 @@ func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1451,7 +1451,7 @@ func TestQuery_DescriptionError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1489,7 +1489,7 @@ func TestQuery_ErrorInStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error from stream event error")
 	}
@@ -1521,7 +1521,7 @@ func TestQuery_RetryableStreamError_APIErrorTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected terminal error for mid-stream 529, got nil")
 	}
@@ -1549,7 +1549,7 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -1577,7 +1577,7 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error == nil {
 		t.Fatal("expected error")
 	}
@@ -1607,7 +1607,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	// Don't discard result - assert on it
 	// The response completes normally (end_turn) before cancellation, so no error expected.
 	// This test validates the ctx.Done() path exists; actual cancellation
@@ -1649,7 +1649,7 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1688,7 +1688,7 @@ func TestQuery_HasContentNoBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1731,7 +1731,7 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1787,7 +1787,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test hub events", nil)
+	result := eng.QuerySync(ctx, "test hub events", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1868,7 +1868,7 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test ordering", nil)
+	result := eng.QuerySync(ctx, "test ordering", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1910,7 +1910,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test interface", nil)
+	result := eng.QuerySync(ctx, "test interface", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1959,7 +1959,7 @@ func TestQuery_HubNilWorks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test nil hub", nil)
+	result := eng.QuerySync(ctx, "test nil hub", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -1980,7 +1980,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 
 	// Turn 1
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
-	result1 := eng.QuerySync(ctx1, "My name is Xiaoming", nil)
+	result1 := eng.QuerySync(ctx1, "My name is Xiaoming", "")
 	cancel1()
 	if result1.Error != nil {
 		t.Fatalf("turn 1 error: %v", result1.Error)
@@ -1993,7 +1993,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 
 	// Turn 2
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	result2 := eng.QuerySync(ctx2, "What is my name?", nil)
+	result2 := eng.QuerySync(ctx2, "What is my name?", "")
 	cancel2()
 	if result2.Error != nil {
 		t.Fatalf("turn 2 error: %v", result2.Error)
@@ -2087,7 +2087,7 @@ func TestQuery_AttachmentDrainedAfterToolResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -2171,7 +2171,7 @@ func TestEngine_EnqueueAttachment_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	// Now set systemPrompt and trigger processing deterministically.
-	eng.systemPrompt = json.RawMessage("{}")
+	eng.systemPrompt = "{}"
 	eng.ProcessAttachments(context.Background(), eng.systemPrompt)
 
 	// Wait for auto-processing to complete.
@@ -2218,7 +2218,7 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
-	eng.systemPrompt = json.RawMessage("you are helpful")
+	eng.systemPrompt = "you are helpful"
 
 	// Enqueue while idle - auto-process goroutine fires immediately
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2286,10 +2286,10 @@ func TestEnqueueAttachment_AutoProcess_NoFireDuringQuery(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
-	eng.systemPrompt = json.RawMessage("{}")
+	eng.systemPrompt = "{}"
 
 	// Must use Query() (goroutine), not QuerySync — only Query() sets queryActive=1.
-	eng.Query(context.Background(), "test", nil)
+	eng.Query(context.Background(), "test", "")
 
 	// Wait for the query to start (first LLM call)
 	waitForCallCount(t, mp, 1, 5*time.Second)
@@ -2343,11 +2343,11 @@ func TestEnqueueAttachment_DeferCatchAfterQuery(t *testing.T) {
 	})
 
 	// Set systemPrompt so the defer will spawn processAttachments
-	eng.systemPrompt = json.RawMessage("{}")
+	eng.systemPrompt = "{}"
 
 	// Run a text-only query (no tool use -> no turn boundary DrainByPriority).
 	// Attachment stays in queue during the entire query.
-	eng.Query(context.Background(), "test", nil)
+	eng.Query(context.Background(), "test", "")
 
 	// Wait for both the query and the defer-triggered processAttachments to complete.
 	// Query = 1 call, processAttachments = 1 call = 2 total.
@@ -2387,7 +2387,7 @@ func TestEnqueueAttachment_DuringProcessAttachments(t *testing.T) {
 	})
 
 	// Set systemPrompt before any enqueue so auto-process can trigger
-	eng.systemPrompt = json.RawMessage("{}")
+	eng.systemPrompt = "{}"
 
 	// Enqueue first attachment - triggers auto-process
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2452,7 +2452,7 @@ func TestEnqueueAttachment_AutoProcess_PanicRecovery(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
-	eng.systemPrompt = json.RawMessage("{}")
+	eng.systemPrompt = "{}"
 
 	// First enqueue - triggers auto-process
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2539,7 +2539,7 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.QuerySync(ctx, "test", nil)
+	eng.QuerySync(ctx, "test", "")
 
 	var usageEvents []types.UsageEvent
 	for _, evt := range ec.FindEvents(types.EventUsage) {
@@ -2614,7 +2614,7 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	var usageEvents []types.UsageEvent
 	for _, evt := range ec.FindEvents(types.EventUsage) {
@@ -2689,7 +2689,7 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 
 	var usageEvents []types.UsageEvent
 	for _, evt := range ec.FindEvents(types.EventUsage) {
@@ -2747,7 +2747,7 @@ func TestProcessAttachments_EmptyQueue(t *testing.T) {
 	defer cancel()
 
 	// processAttachments returns immediately when queue is empty
-	eng.ProcessAttachments(ctx, nil)
+	eng.ProcessAttachments(ctx, "")
 	runtime.Gosched()
 	// No panic = success
 }
@@ -2774,7 +2774,7 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eng.ProcessAttachments(ctx, nil)
+	eng.ProcessAttachments(ctx, "")
 	select {
 	case <-ec.done:
 	case <-time.After(5 * time.Second):
@@ -2825,7 +2825,7 @@ func TestProcessAttachments_ContextCancelled(t *testing.T) {
 		cancel()
 	}()
 
-	eng.ProcessAttachments(ctx, nil)
+	eng.ProcessAttachments(ctx, "")
 	select {
 	case <-ec.done:
 	case <-time.After(5 * time.Second):
@@ -2855,7 +2855,7 @@ func TestQuery_EventTextStartEmitted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -2902,7 +2902,7 @@ func TestQuery_EventTextEndEmitted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -2951,7 +2951,7 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3036,7 +3036,7 @@ func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3101,7 +3101,7 @@ func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3170,7 +3170,7 @@ func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "read and ls", nil)
+	result := eng.QuerySync(ctx, "read and ls", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3270,7 +3270,7 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "parallel ops", nil)
+	result := eng.QuerySync(ctx, "parallel ops", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3370,7 +3370,7 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "/roast", nil)
+	result := eng.QuerySync(ctx, "/roast", "")
 	if result.Error != nil {
 		t.Fatalf("unexpected error: %v", result.Error)
 	}
@@ -3876,7 +3876,7 @@ func TestChain_BashBackupViaQuery(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	eng.Query(ctx, "modify data.txt", nil)
+	eng.Query(ctx, "modify data.txt", "")
 
 	// Drain events until query ends
 	for {
@@ -3963,7 +3963,7 @@ func TestChain_SubEngineBashBackup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	subEng.Query(ctx, "modify subdata.txt", nil)
+	subEng.Query(ctx, "modify subdata.txt", "")
 
 	for {
 		select {
@@ -4066,7 +4066,7 @@ func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
 			Content: []types.ContentBlock{types.NewTextBlock("edit editme.txt")},
 		},
 	}
-	go subEng.RunForkedQuery(ctx, messages, nil)
+	go subEng.RunForkedQuery(ctx, messages, "")
 
 	for {
 		select {
@@ -4238,13 +4238,13 @@ func TestE2E_WriteTool_RewindAll_RestoresFile(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Write",
 		`{"file_path":"`+testFile+`","content":"v1"}`), nil)
 	mp.addResponse(textStreamEvents("test", "done"), nil)
-	eng.QuerySync(ctx, "write v1", nil)
+	eng.QuerySync(ctx, "write v1", "")
 
 	// Turn 2: write v2
 	mp.addResponse(toolUseStreamEvents("test", "tool_2", "Write",
 		`{"file_path":"`+testFile+`","content":"v2"}`), nil)
 	mp.addResponse(textStreamEvents("test", "done"), nil)
-	eng.QuerySync(ctx, "write v2", nil)
+	eng.QuerySync(ctx, "write v2", "")
 
 	// Verify file is v2 before rewind
 	data, err := os.ReadFile(testFile)
@@ -4329,19 +4329,19 @@ func TestE2E_WriteTool_RewindIntermediate(t *testing.T) {
 	mp.addResponse(toolUseStreamEvents("test", "tool_1", "Write",
 		`{"file_path":"`+testFile+`","content":"v1"}`), nil)
 	mp.addResponse(textStreamEvents("test", "done"), nil)
-	eng.QuerySync(ctx, "write v1", nil)
+	eng.QuerySync(ctx, "write v1", "")
 
 	// Turn 2: write v2
 	mp.addResponse(toolUseStreamEvents("test", "tool_2", "Write",
 		`{"file_path":"`+testFile+`","content":"v2"}`), nil)
 	mp.addResponse(textStreamEvents("test", "done"), nil)
-	eng.QuerySync(ctx, "write v2", nil)
+	eng.QuerySync(ctx, "write v2", "")
 
 	// Turn 3: write v3
 	mp.addResponse(toolUseStreamEvents("test", "tool_3", "Write",
 		`{"file_path":"`+testFile+`","content":"v3"}`), nil)
 	mp.addResponse(textStreamEvents("test", "done"), nil)
-	eng.QuerySync(ctx, "write v3", nil)
+	eng.QuerySync(ctx, "write v3", "")
 
 	// Verify file is at v3
 	data, err := os.ReadFile(testFile)
@@ -4467,7 +4467,7 @@ func TestE2E_SingleQueryMultiTool_Rewind(t *testing.T) {
 	mp.addResponse(textStreamEvents("test", "done"), nil)
 
 	// Single user message → one query with 3 internal turns
-	eng.QuerySync(ctx, "edit the file twice", nil)
+	eng.QuerySync(ctx, "edit the file twice", "")
 
 	// File should be at v2 after both writes
 	data, err := os.ReadFile(testFile)
@@ -4648,7 +4648,7 @@ func TestE2E_Interrupt_DuringToolExecution_MessagePairing(t *testing.T) {
 		cancel()
 	}()
 
-	result := eng.QuerySync(ctx, "run slow command", nil)
+	result := eng.QuerySync(ctx, "run slow command", "")
 	if result.Error == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -4680,7 +4680,7 @@ func TestE2E_Interrupt_DuringToolExecution_MessagePairing(t *testing.T) {
 	mp2.addResponse(textStreamEvents("test-model", "ok"), nil)
 	eng.SetProvider(mp2)
 
-	result2 := eng.QuerySync(context.Background(), "next query", nil)
+	result2 := eng.QuerySync(context.Background(), "next query", "")
 	if result2.Error != nil {
 		t.Fatalf("next query failed: %v — message sequence invalid after interrupt", result2.Error)
 	}

@@ -1,7 +1,6 @@
 package context_test
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,15 +12,10 @@ func TestBuildSystemPrompt_Basic(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	result := context.BuildSystemPrompt(tmpDir, nil, "")
-	if result == nil {
-		t.Fatal("BuildSystemPrompt returned nil")
+	if result == "" {
+		t.Fatal("BuildSystemPrompt returned empty string")
 	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	if !strings.Contains(promptStr, "You are gbot") {
+	if !strings.Contains(result, "You are gbot") {
 		t.Error("prompt missing 'You are gbot'")
 	}
 }
@@ -33,14 +27,10 @@ func TestBuildSystemPrompt_ToolPromptsNotInSystemPrompt(t *testing.T) {
 	toolPrompts := []string{"Bash: execute shell commands", "Grep: search file contents"}
 	result := context.BuildSystemPrompt(tmpDir, toolPrompts, "")
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	if strings.Contains(promptStr, "Bash: execute shell commands") {
+	if strings.Contains(result, "Bash: execute shell commands") {
 		t.Error("tool prompts must not appear in system prompt")
 	}
-	if strings.Contains(promptStr, "Grep: search file contents") {
+	if strings.Contains(result, "Grep: search file contents") {
 		t.Error("tool prompts must not appear in system prompt")
 	}
 }
@@ -52,14 +42,10 @@ func TestBuildSystemPrompt_WithSkillListing(t *testing.T) {
 	skillListing := "/commit - create a commit\n/review - review code"
 	result := context.BuildSystemPrompt(tmpDir, nil, skillListing)
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	if !strings.Contains(promptStr, "## Available Skills") {
+	if !strings.Contains(result, "## Available Skills") {
 		t.Error("prompt missing '## Available Skills' section")
 	}
-	if !strings.Contains(promptStr, "/commit") {
+	if !strings.Contains(result, "/commit") {
 		t.Error("prompt missing skill listing content")
 	}
 }
@@ -70,13 +56,8 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 
 	skillListing := "/test - run tests"
 	result := context.BuildSystemPrompt(tmpDir, nil, skillListing)
-	if result == nil {
-		t.Fatal("BuildSystemPrompt returned nil")
-	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	if result == "" {
+		t.Fatal("BuildSystemPrompt returned empty string")
 	}
 
 	expectedParts := []string{
@@ -87,7 +68,7 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 		"Platform:",
 	}
 	for _, part := range expectedParts {
-		if !strings.Contains(promptStr, part) {
+		if !strings.Contains(result, part) {
 			t.Errorf("prompt missing expected part: %q", part)
 		}
 	}
@@ -96,15 +77,10 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 func TestBuildSystemPrompt_NonexistentDir(t *testing.T) {
 	t.Parallel()
 	result := context.BuildSystemPrompt("/nonexistent/path/that/does/not/exist", nil, "")
-	if result == nil {
-		t.Fatal("BuildSystemPrompt returned nil for nonexistent dir")
+	if result == "" {
+		t.Fatal("BuildSystemPrompt returned empty string for nonexistent dir")
 	}
-
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	if !strings.Contains(promptStr, "You are gbot") {
+	if !strings.Contains(result, "You are gbot") {
 		t.Error("prompt should contain base system prompt even for nonexistent dir")
 	}
 }
@@ -116,11 +92,7 @@ func TestBuildSystemPrompt_EmptyToolPrompts(t *testing.T) {
 	toolPrompts := []string{"", "valid prompt", ""}
 	result := context.BuildSystemPrompt(tmpDir, toolPrompts, "")
 
-	var promptStr string
-	if err := json.Unmarshal(result, &promptStr); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	if strings.Contains(promptStr, "valid prompt") {
+	if strings.Contains(result, "valid prompt") {
 		t.Error("tool prompts must not appear in system prompt")
 	}
 }

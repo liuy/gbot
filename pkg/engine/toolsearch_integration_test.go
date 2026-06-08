@@ -150,7 +150,7 @@ func TestToolSearchIntegration_ColdStart_NoDeferred(t *testing.T) {
 		),
 	})
 
-	_ = eng.QuerySync(context.Background(), "hi", nil)
+	_ = eng.QuerySync(context.Background(), "hi", "")
 
 	req := cp.lastReq
 	if req == nil {
@@ -192,7 +192,7 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 		),
 	})
 
-	_ = eng.QuerySync(context.Background(), "hi", nil)
+	_ = eng.QuerySync(context.Background(), "hi", "")
 
 	req := cp.lastReq
 	if req == nil {
@@ -278,7 +278,7 @@ func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 		MaxTurns: 5,
 	})
 
-	_ = eng.QuerySync(context.Background(), "find tasks tool", nil)
+	_ = eng.QuerySync(context.Background(), "find tasks tool", "")
 
 	if len(sp.requests) < 2 {
 		t.Fatalf("expected >= 2 API calls (tool_use + text), got %d", len(sp.requests))
@@ -339,7 +339,7 @@ func TestToolSearchIntegration_MultiToolDiscovery(t *testing.T) {
 		MaxTurns: 5,
 	})
 
-	_ = eng.QuerySync(context.Background(), "find tasks tools", nil)
+	_ = eng.QuerySync(context.Background(), "find tasks tools", "")
 
 	if len(sp.requests) < 2 {
 		t.Fatalf("expected >= 2 API calls, got %d", len(sp.requests))
@@ -385,7 +385,7 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 		),
 		MaxTurns: 5,
 	})
-	result := eng1.QuerySync(context.Background(), "find tasks", nil)
+	result := eng1.QuerySync(context.Background(), "find tasks", "")
 	if result.Error != nil {
 		t.Fatalf("phase 1 error: %v", result.Error)
 	}
@@ -421,7 +421,7 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 	RestoreToolSearchState(compactMessages, eng2.toolSearch)
 	eng2.setMessages(compactMessages)
 
-	_ = eng2.QuerySync(context.Background(), "use tasks", nil)
+	_ = eng2.QuerySync(context.Background(), "use tasks", "")
 
 	req2 := cp2.lastReq
 	if req2 == nil {
@@ -488,7 +488,7 @@ func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 	RestoreToolSearchState(transcript, eng.toolSearch)
 	eng.setMessages(transcript)
 
-	_ = eng.QuerySync(context.Background(), "use tasks", nil)
+	_ = eng.QuerySync(context.Background(), "use tasks", "")
 
 	req := cp.lastReq
 	if req == nil {

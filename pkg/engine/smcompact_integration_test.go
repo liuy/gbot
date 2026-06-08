@@ -10,7 +10,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -56,7 +55,7 @@ func TestSMCompact_Integration_ExtractThenCompact(t *testing.T) {
 
 	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
 	// Create a mock extraction function that writes real content to the file
-	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ string) error {
 		content := `# Session Notes
 
 ## Session Title
@@ -133,7 +132,7 @@ smcompact_integration_test.go — chain tests
 	// Step 2: Set large messages and query → engine should auto-compact using SM-compact
 	// 20 messages × 50 tokens = 1000 tokens > 90% of ContextWindow(500)
 	eng.SetMessages(makeLargeMessages(20, 400))
-	result := eng.QuerySync(ctx, "turn 1", nil)
+	result := eng.QuerySync(ctx, "turn 1", "")
 	if result.Error != nil {
 		t.Fatalf("query failed: %v", result.Error)
 	}
@@ -175,7 +174,7 @@ func TestSessionMemory_Integration_ColdStart(t *testing.T) {
 	// Intentionally do NOT create the memory directory or file
 
 	extractionCount := 0
-	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ string) error {
 		extractionCount++
 		// First extraction: file is created from template by ensureFile()
 		// We write real content to simulate what the sub-agent would do
@@ -264,7 +263,7 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 
 	blockCh := make(chan struct{})
 	firstCall := true
-	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ string) error {
 		if firstCall {
 			firstCall = false
 			<-blockCh // block forever (simulates crash)
@@ -468,7 +467,7 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result := eng.QuerySync(ctx, "test", nil)
+	result := eng.QuerySync(ctx, "test", "")
 	if result.Error != nil {
 		t.Fatalf("query failed: %v", result.Error)
 	}
@@ -509,10 +508,10 @@ func TestExtraction_ReceivesConversationContext(t *testing.T) {
 	var captured struct {
 		mu              sync.Mutex
 		gotMessages     []types.Message
-		gotSystemPrompt json.RawMessage
+		gotSystemPrompt string
 	}
 
-	extractFn := func(ctx context.Context, prompt string, targetPath string, messages []types.Message, systemPrompt json.RawMessage) error {
+	extractFn := func(ctx context.Context, prompt string, targetPath string, messages []types.Message, systemPrompt string) error {
 		captured.mu.Lock()
 		captured.gotMessages = messages
 		captured.gotSystemPrompt = systemPrompt

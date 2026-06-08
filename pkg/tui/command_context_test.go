@@ -425,7 +425,7 @@ func newAppWithEngineState(t *testing.T) *App {
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
 		Tools:       []tool.Tool{},
 	})
-	eng.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	eng.SetSystemPrompt("You are a test assistant.")
 	eng.SetSkillListing("commit: create a commit")
 	eng.SetAgentDefs([]*types.AgentDefinition{
 		{AgentType: "General", WhenToUse: "general tasks"},
@@ -433,7 +433,7 @@ func newAppWithEngineState(t *testing.T) *App {
 	})
 
 	h := hub.NewHub()
-	app := NewApp(eng, json.RawMessage(`"test"`), h)
+	app := NewApp(eng, "test", h)
 	app.history = NewHistory("")
 	app.width = 80
 	return app
@@ -556,7 +556,7 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
 		Tools:       []tool.Tool{},
 	})
-	eng1.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	eng1.SetSystemPrompt("You are a test assistant.")
 	eng1.SetStore(store, tmpDir)
 	sid, err := eng1.ResumeOrInitSession(tmpDir, "claude-test")
 	if err != nil {
@@ -586,7 +586,7 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
 		Tools:       []tool.Tool{},
 	})
-	eng2.SetSystemPrompt(json.RawMessage(`"You are a test assistant."`))
+	eng2.SetSystemPrompt("You are a test assistant.")
 	eng2.SetContextTokens(60_000)
 	eng2.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -599,7 +599,7 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 
 	// Phase 3: /context on restored engine should show data.
 	h := hub.NewHub()
-	app := NewApp(eng2, json.RawMessage(`"test"`), h)
+	app := NewApp(eng2, "test", h)
 	app.history = NewHistory("")
 	app.width = 80
 

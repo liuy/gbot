@@ -201,7 +201,7 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	workingDir := e.workingDir
 	skillListing := e.skillListing
 	agentDefs := agentDefsClone(e.agentDefs)
-	systemPromptRaw := slicesCloneRawMessage(e.systemPrompt)
+	systemPromptRaw := e.systemPrompt
 	mcpReg := e.mcpRegistry
 	model := e.model
 	e.mu.RUnlock()
@@ -348,17 +348,13 @@ func (e *Engine) estimateComponents(
 // estimateSystemPromptSections returns per-section token estimates.
 // Source: analyzeContext.ts:289-298 — countSystemPromptSections
 func estimateSystemPromptSections(
-	systemPromptRaw json.RawMessage,
+	systemPromptRaw string,
 	workingDir string,
 	skillListing string,
 	toolsSnapshot map[string]tool.Tool,
 ) sysPromptSections {
-	if len(systemPromptRaw) == 0 {
+	if systemPromptRaw == "" {
 		return sysPromptSections{}
-	}
-	var systemPromptStr string
-	if err := json.Unmarshal(systemPromptRaw, &systemPromptStr); err != nil {
-		systemPromptStr = string(systemPromptRaw)
 	}
 
 	// Reconstruct each section by calling the Builder's section methods
@@ -1038,15 +1034,6 @@ func slicesCloneMessages(m []types.Message) []types.Message {
 	out := make([]types.Message, len(m))
 	copy(out, m)
 	return out
-}
-
-func slicesCloneRawMessage(r json.RawMessage) json.RawMessage {
-	if r == nil {
-		return nil
-	}
-	out := make([]byte, len(r))
-	copy(out, r)
-	return json.RawMessage(out)
 }
 
 func toolsClone(m map[string]tool.Tool) map[string]tool.Tool {

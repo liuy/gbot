@@ -1,7 +1,6 @@
 package context_test
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -169,7 +168,6 @@ func BenchmarkBuild_Unmarshal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var s string
-		_ = json.Unmarshal(result, &s)
+		_ = result
 	}
 }

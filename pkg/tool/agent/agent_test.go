@@ -379,7 +379,7 @@ func TestCallFork_DetachedContext(t *testing.T) {
 	parentTools := makeTestTools("Bash", "Read", "Grep")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(string) {}, func() string { return "" })
 
 	// Messages needed for fork agent (trigger assistant + context history)
 	assistantMsg := types.Message{
@@ -570,7 +570,7 @@ func TestJobAdapter_NilForkReg(t *testing.T) {
 
 func TestJobAdapter_NonNilForkReg(t *testing.T) {
 	at := New()
-	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	if got := at.JobAdapter(); got == nil {
 		t.Error("JobAdapter() should return non-nil when forkReg is set")
 	}
@@ -781,7 +781,7 @@ func TestCallFork_LaunchesInBackground(t *testing.T) {
 	parentTools := makeTestTools("Bash", "Read")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"bg task","prompt":"search code","fork":true,"run_in_background":true}`)
 	result, err := at.Call(context.Background(), input, &tool.ToolUseContext{ToolUseID: "call_fork_1"})
@@ -836,7 +836,7 @@ func TestCallFork_AgentTypeSubagentType(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	// subagent_type="Explore" should override default "fork"
 	input := json.RawMessage(`{"description":"explore","prompt":"search","fork":true,"run_in_background":true,"subagent_type":"Explore"}`)
@@ -866,7 +866,7 @@ func TestCallFork_AgentTypeName(t *testing.T) {
 	parentTools := makeTestTools("Bash")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	// name does NOT override subagent_type — name is only for SendMessage addressing
 	input := json.RawMessage(`{"description":"audit","prompt":"check","fork":true,"run_in_background":true,"subagent_type":"Explore","name":"ship-audit"}`)
@@ -891,7 +891,7 @@ func TestCallFork_RecursiveGuard(t *testing.T) {
 		},
 		func() map[string]tool.Tool { return makeTestTools("Bash") },
 	)
-	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 
 	input := json.RawMessage(`{"description":"nested","prompt":"do it","fork":true,"run_in_background":true}`)
 
@@ -934,7 +934,7 @@ func TestCallFork_NotificationDelivered(t *testing.T) {
 			defer mu.Unlock()
 			notifications = append(notifications, xml)
 		},
-		func() json.RawMessage { return json.RawMessage(`"system prompt"`) },
+		func() string { return "system prompt" },
 	)
 
 	input := json.RawMessage(`{"description":"bg search","prompt":"find TODOs","fork":true,"run_in_background":true}`)
@@ -963,7 +963,7 @@ func TestSetNotifyFn_EnablesFork(t *testing.T) {
 	if at.forkReg != nil {
 		t.Error("forkReg should be nil before SetNotifyFn")
 	}
-	at.SetNotifyFn(func(xml string) {}, func() json.RawMessage { return nil })
+	at.SetNotifyFn(func(xml string) {}, func() string { return "" })
 	if at.forkReg == nil {
 		t.Error("forkReg should be non-nil after SetNotifyFn")
 	}
@@ -1460,12 +1460,7 @@ func TestCall_EnhancedSystemPrompt_ContainsEnvBlock(t *testing.T) {
 		t.Fatalf("Call returned error: %v", err)
 	}
 
-	// Unmarshal system prompt from json.RawMessage to get actual string content.
-	// json.Marshal escapes < and > to \u003c/\u003e for HTML safety.
-	var sp string
-	if err := json.Unmarshal(capturedOpts.SystemPrompt, &sp); err != nil {
-		t.Fatalf("failed to unmarshal system prompt: %v", err)
-	}
+	sp := capturedOpts.SystemPrompt
 	if !strings.Contains(sp, "<env>") {
 		t.Error("system prompt should contain <env> block")
 	}
@@ -1945,7 +1940,7 @@ func TestForkSync_InheritsContext(t *testing.T) {
 	parentTools := makeTestTools("Bash", "Read", "Grep")
 	at := New()
 	at.SetFactory(factory, func() map[string]tool.Tool { return parentTools })
-	at.SetNotifyFn(func(string) {}, func() json.RawMessage { return json.RawMessage(`"parent system prompt"`) })
+	at.SetNotifyFn(func(string) {}, func() string { return "parent system prompt" })
 
 	assistantMsg := types.Message{
 		Role: types.RoleAssistant,
@@ -1984,8 +1979,8 @@ func TestForkSync_InheritsContext(t *testing.T) {
 		t.Error("factory should receive ForkMessages for fork path")
 	}
 	// Verify parent system prompt was inherited
-	if string(capturedOpts.SystemPrompt) != `"parent system prompt"` {
-		t.Errorf("SystemPrompt = %q, want parent system prompt", string(capturedOpts.SystemPrompt))
+	if capturedOpts.SystemPrompt != "parent system prompt" {
+		t.Errorf("SystemPrompt = %q, want parent system prompt", capturedOpts.SystemPrompt)
 	}
 	// Verify parent tools were passed (not filtered by agent def)
 	if len(capturedOpts.Tools) != 3 {

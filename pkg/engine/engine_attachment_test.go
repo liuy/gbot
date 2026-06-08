@@ -689,7 +689,7 @@ func TestForkAgent_EventsForwarded(t *testing.T) {
 		Model:      "test",
 		Dispatcher: collector,
 	})
-	parent.SetSystemPrompt(json.RawMessage(`{"role":"system","content":"parent"}`))
+	parent.SetSystemPrompt(`{"role":"system","content":"parent"}`)
 
 	// Create a fork sub-engine.
 	sub := parent.NewSubEngine(SubEngineOptions{
@@ -707,7 +707,7 @@ func TestForkAgent_EventsForwarded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := sub.QuerySync(ctx, "do work", json.RawMessage(`{"role":"system","content":"fork-agent"}`))
+	result := sub.QuerySync(ctx, "do work", `{"role":"system","content":"fork-agent"}`)
 	if result.Error != nil {
 		t.Fatalf("fork query failed: %v", result.Error)
 	}
@@ -870,7 +870,7 @@ func TestToolUseContext_ReceivesConversationHistory(t *testing.T) {
 	queryDone := make(chan struct{})
 	go func() {
 		defer close(queryDone)
-		eng.Query(ctx, "test", nil)
+		eng.Query(ctx, "test", "")
 	}()
 
 	// Wait for the tool to be called (goroutine ran during blocked stream)
