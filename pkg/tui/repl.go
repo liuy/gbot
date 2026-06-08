@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"time"
 
@@ -347,6 +348,9 @@ func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
 // FinishStream finalizes the streaming session.
 // Blocks in s.messages are already built incrementally during streaming.
 func (s *ReplState) FinishStream(err error) {
+	if pc, _, _, ok := runtime.Caller(1); ok {
+		slog.Info("tui:finish_stream", "caller", runtime.FuncForPC(pc).Name(), "err", err)
+	}
 	s.streaming = false
 
 	if err != nil {
@@ -579,7 +583,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				}
 			}
 		}
-		slog.Info("tui:queryEnd", "err", displayErr)
+		slog.Info("tui:queryEnd", "err", displayErr, "agent", m.Agent != nil)
 		a.repl.FinishStream(displayErr)
 
 		// Sync status bar with engine's final ContextTokens (post-compact).
