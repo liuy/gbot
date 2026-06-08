@@ -57,7 +57,7 @@ func (b *Builder) RuntimeInfo() string {
 	}
 	parts = append(parts, "model={{MODEL}}")
 
-	return "\n\nRuntime: " + strings.Join(parts, " | ")
+	return "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")
 }
 
 func detectOS() string {
