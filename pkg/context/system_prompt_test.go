@@ -64,8 +64,8 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 		"You are gbot",
 		"## Available Skills",
 		"/test - run tests",
-		tmpDir,
-		"Platform:",
+		"Runtime:",
+		"model={{MODEL}}",
 	}
 	for _, part := range expectedParts {
 		if !strings.Contains(result, part) {

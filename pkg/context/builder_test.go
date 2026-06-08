@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -44,8 +43,8 @@ func TestBuild_Basic(t *testing.T) {
 	if !strings.Contains(promptStr, "Current date:") {
 		t.Error("built prompt missing 'Current date:'")
 	}
-	if !strings.Contains(promptStr, "/work") {
-		t.Error("built prompt missing working directory '/work'")
+	if !strings.Contains(promptStr, "Runtime:") {
+		t.Error("built prompt missing runtime info")
 	}
 }
 
@@ -154,22 +153,25 @@ func TestBuild_EscapesJSON(t *testing.T) {
 	}
 }
 
-func TestPlatformInfo(t *testing.T) {
+func TestRuntimeInfo(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/test/dir")
-	info := b.PlatformInfo()
+	info := b.RuntimeInfo()
 
-	if !strings.Contains(info, runtime.GOOS) {
-		t.Error("platform info missing OS")
+	if !strings.Contains(info, "host=") {
+		t.Error("runtime info missing host=")
 	}
-	if !strings.Contains(info, runtime.GOARCH) {
-		t.Error("platform info missing ARCH")
+	if !strings.Contains(info, "os=") {
+		t.Error("runtime info missing os=")
 	}
-	if !strings.Contains(info, "/test/dir") {
-		t.Error("platform info missing working directory")
+	if !strings.Contains(info, "go=") {
+		t.Error("runtime info missing go=")
 	}
-	if !strings.Contains(info, "Shell:") {
-		t.Error("platform info missing shell")
+	if !strings.Contains(info, "shell=") {
+		t.Error("runtime info missing shell=")
+	}
+	if !strings.Contains(info, "model={{MODEL}}") {
+		t.Error("runtime info missing model={{MODEL}}")
 	}
 }
 
@@ -320,7 +322,7 @@ func TestPlatformInfo_EmptyShell(t *testing.T) {
 	defer func() { _ = os.Setenv("SHELL", origShell) }()
 
 	b := context.NewBuilder("/test")
-	info := b.PlatformInfo()
+	info := b.RuntimeInfo()
 	if !strings.Contains(info, "/bin/bash") {
 		t.Errorf("expected /bin/bash fallback, got %q", info)
 	}
@@ -351,11 +353,8 @@ func TestBuild_NoFiles(t *testing.T) {
 	if !strings.Contains(promptStr, "You are gbot") {
 		t.Error("prompt should contain 'You are gbot' even without files")
 	}
-	if !strings.Contains(promptStr, "/work") {
-		t.Error("prompt should contain working directory even without files")
-	}
-	if !strings.Contains(promptStr, "Platform:") {
-		t.Error("prompt should contain platform info even without files")
+	if !strings.Contains(promptStr, "Runtime:") {
+		t.Error("prompt should contain runtime info even without files")
 	}
 }
 

@@ -368,7 +368,7 @@ func estimateSystemPromptSections(
 	baseStr := builder.BaseSystemPrompt()
 	base := types.EstimateTokens(baseStr)
 
-	platformStr := builder.PlatformInfo()
+	platformStr := builder.RuntimeInfo()
 	platform := types.EstimateTokens(platformStr)
 
 	gitStr := ""

@@ -3,12 +3,13 @@ package context
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
-// BaseSystemPrompt returns the base system prompt template.
-// Source: utils/systemPrompt.ts — the main system prompt.
 func (b *Builder) BaseSystemPrompt() string {
 	now := time.Now().Format("2006-01-02")
 	return fmt.Sprintf(`You are gbot, an interactive AI coding assistant. You help users with software engineering tasks.
@@ -31,19 +32,69 @@ Guidelines:
 {{SOUL}}`, now)
 }
 
-// PlatformInfo returns platform information for the system prompt.
-// Source: context.ts — platform injection.
-func (b *Builder) PlatformInfo() string {
-	var result string
-	result = fmt.Sprintf("\n\nPlatform: %s/%s", runtime.GOOS, runtime.GOARCH)
-	result += fmt.Sprintf("\nWorking directory: %s", b.WorkingDir)
-
-	// Detect shell
-	if shell := os.Getenv("SHELL"); shell != "" {
-		result += fmt.Sprintf("\nShell: %s", shell)
-	} else {
-		result += "\nShell: /bin/bash"
+func (b *Builder) RuntimeInfo() string {
+	host, _ := os.Hostname()
+	osName := detectOS()
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
 	}
+	goVer := runtime.Version()
+	repo := detectRepoRoot(b.WorkingDir)
+	workspace := detectWorkspace()
 
-	return result
+	parts := []string{
+		fmt.Sprintf("host=%s", host),
+		fmt.Sprintf("os=%s", osName),
+		fmt.Sprintf("go=%s", goVer),
+		fmt.Sprintf("shell=%s", shell),
+	}
+	if repo != "" {
+		parts = append(parts, fmt.Sprintf("repo=%s", repo))
+	}
+	if workspace != "" {
+		parts = append(parts, fmt.Sprintf("workspace=%s", workspace))
+	}
+	parts = append(parts, "model={{MODEL}}")
+
+	return "\n\nRuntime: " + strings.Join(parts, " | ")
+}
+
+func detectOS() string {
+	arch := runtime.GOARCH
+	// Try /etc/os-release (standard Linux)
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if after, ok := strings.CutPrefix(line, "PRETTY_NAME="); ok {
+				name := strings.Trim(after, `"`)
+				return fmt.Sprintf("%s (%s)", name, arch)
+			}
+		}
+	}
+	// Try sw_vers on macOS
+	if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+		return fmt.Sprintf("macOS %s (%s)", strings.TrimSpace(string(out)), arch)
+	}
+	// Fallback
+	return fmt.Sprintf("%s (%s)", runtime.GOOS, arch)
+}
+
+func detectRepoRoot(workingDir string) string {
+	out, err := exec.Command("git", "-C", workingDir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func detectWorkspace() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(home, ".gbot")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
 }

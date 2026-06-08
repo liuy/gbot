@@ -46,7 +46,7 @@ func (b *Builder) Build() (string, error) {
 	buf.WriteString(b.BaseSystemPrompt())
 
 	// 2. Platform info
-	buf.WriteString(b.PlatformInfo())
+	buf.WriteString(b.RuntimeInfo())
 
 	// 3. Git status
 	if b.GitStatus != nil {
