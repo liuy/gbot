@@ -5555,7 +5555,103 @@ func TestAbort_CancelsProcessAttachmentsAfterQueryEnds(t *testing.T) {
 	}
 }
 
-func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
+// Regression: ESC aborts query mid-tool, attachment queued during tool execution.
+// Turn loop drained the attachment (DrainByPriority) before ShouldAbort check,
+// so processAttachments found empty queue and the attachment was lost.
+// Expected: attachment survives abort and gets processed by processAttachments.
+func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 30)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	toolStarted := make(chan struct{})
+	toolCancelled := make(chan struct{})
+
+	// Tool that blocks until context cancelled
+	bashTool := &testTool{
+		name: "Bash",
+		callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			close(toolCancelled)
+			return nil, ctx.Err()
+		},
+	}
+
+	// First response: LLM calls Bash tool
+	mp := &testProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 1}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "bash_1", Name: "Bash"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"command":"sleep 60"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}, Usage: &types.Usage{OutputTokens: 1}},
+		{Type: "message_stop"},
+	}, nil)
+
+	// Second response: for processAttachments turn (LLM responds to the attachment)
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "processed attachment"}},
+		{Type: "message_stop"},
+	}, nil)
+
+	eng := New(&Params{
+		Provider:   mp,
+		Tools:      []tool.Tool{bashTool},
+		Model:      "test",
+		Dispatcher: dispatcher,
+	})
+	defer eng.Close()
+	eng.systemPrompt = "test"
+
+	ctx := context.Background()
+	eng.Query(ctx, "run bash", "test")
+
+	// Wait for tool to start executing
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool to start")
+	}
+
+	// While tool is running, queue an attachment (simulates user typing during tool execution)
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:    "user input during bash",
+		Mode:     types.ItemModePrompt,
+		Priority: types.PriorityNext,
+	})
+
+	// Abort the query (ESC)
+	eng.Abort()
+
+	// Wait for tool to be cancelled
+	select {
+	case <-toolCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for tool cancellation")
+	}
+
+	// Now: query ended, processAttachments should process the attachment.
+	// We expect to see a second turnStart (from processAttachments).
+	var gotFirstTurnEnd, gotSecondTurnStart bool
+	timeout := time.After(5 * time.Second)
+	for !gotSecondTurnStart {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventTurnEnd && !gotFirstTurnEnd {
+				gotFirstTurnEnd = true
+			}
+			if evt.Type == types.EventTurnStart && gotFirstTurnEnd {
+				gotSecondTurnStart = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out: attachment not processed after abort. "+
+				"firstTurnEnd=%v secondTurnStart=%v", gotFirstTurnEnd, gotSecondTurnStart)
+		}
+	}
+}
+
+	func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 	t.Parallel()
 
 	eng := New(&Params{

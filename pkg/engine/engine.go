@@ -1146,6 +1146,26 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			})
 		}
 
+		// Post-tool abort check — must come before attachment drain.
+		// If context is cancelled, skip draining so processAttachments can
+		// pick up any attachments queued during tool execution.
+		if err := ShouldAbort(ctx, "tools"); err != nil {
+			e.appendInlineInterruptMessage()
+			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
+				InputTokens:              totalUsage.InputTokens,
+				OutputTokens:             totalUsage.OutputTokens,
+				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
+				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
+			}})
+			return QueryResult{
+				Messages:   e.messages,
+				TurnCount:  e.turnCount,
+				TotalUsage: totalUsage,
+				Error:      err,
+			}
+		}
+
 		// Drain queued attachments at turn boundary.
 		// Drains PriorityNow + PriorityNext items (e.g. prompt input, job notifications).
 		// PriorityLater items wait for DrainAll() at query end.
@@ -1164,25 +1184,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					}
 				}
 			}
-
-		// Stage 23: Post-tool-execution abort check.
-		// Source: query.ts:1485-1516 — tool execution complete, check abort.
-		if err := ShouldAbort(ctx, "tools"); err != nil {
-			e.appendInlineInterruptMessage()
-			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
-			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: err, Usage: &types.UsageEvent{
-				InputTokens:              totalUsage.InputTokens,
-				OutputTokens:             totalUsage.OutputTokens,
-				CacheReadInputTokens:     totalUsage.CacheReadInputTokens,
-				CacheCreationInputTokens: totalUsage.CacheCreationInputTokens,
-			}})
-			return QueryResult{
-				Messages:   e.messages,
-				TurnCount:  e.turnCount,
-				TotalUsage: totalUsage,
-				Error:      err,
-			}
-		}
 
 		// Append NewMessages AFTER tool_result.
 		// Tool-provided messages (e.g., skill content) follow the tool_result.
