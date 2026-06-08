@@ -14,6 +14,10 @@ func BuildSystemPrompt(workingDir string, toolPrompts []string, skillListing str
 	builder.SkillListing = skillListing
 	builder.ToolPrompts = toolPrompts
 
+	if soul, _ := LoadSoulFile(); soul != "" {
+		builder.SoulContent = soul
+	}
+
 	prompt, err := builder.Build()
 	if err != nil {
 		fallback := json.RawMessage(`"You are gbot, an interactive AI coding assistant. Use tools to accomplish tasks."`)

@@ -27,6 +27,8 @@ type Builder struct {
 	// MemoryFiles are loaded memory files for the system prompt.
 	MemoryFiles []MemoryFile
 
+	SoulContent string
+
 	// MaxTokens is the token budget for the system prompt.
 	MaxTokens int
 }
@@ -47,10 +49,18 @@ func (b *Builder) Build() (json.RawMessage, error) {
 	// 1. Base system prompt template
 	buf.WriteString(b.BaseSystemPrompt())
 
-	// 2. Platform info
+	// 2. SOUL.md
+	if b.SoulContent != "" {
+		buf.WriteString("\n\n")
+		buf.WriteString("If SOUL.md is present, embody its persona and tone. ")
+		buf.WriteString("Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.\n\n")
+		buf.WriteString(b.SoulContent)
+	}
+
+	// 3. Platform info
 	buf.WriteString(b.PlatformInfo())
 
-	// 3. Git status
+	// 4. Git status
 	if b.GitStatus != nil {
 		buf.WriteString(b.GitStatusSection())
 	}

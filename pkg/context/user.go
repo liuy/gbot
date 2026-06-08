@@ -14,6 +14,19 @@ const (
 	KeyCurrentDate     = "currentDate"
 )
 
+func LoadSoulFile() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil
+	}
+	data, err := os.ReadFile(filepath.Join(homeDir, ".gbot", "SOUL.md"))
+	if err != nil {
+		return "", nil
+	}
+	content := strings.TrimSpace(string(data))
+	return content, nil
+}
+
 // LoadContextFiles reads AGENTS.md and CLAUDE.md from user-global (~/.gbot/)
 // and project paths (CWD to root walk).
 // Returns a map matching TS getUserContext() structure.
