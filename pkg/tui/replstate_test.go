@@ -323,8 +323,40 @@ func TestPendingToolOutput_UpdatesOutputAndDone(t *testing.T) {
 	if blk.ToolCall.Output != "line1\nline2" {
 		t.Errorf("expected output, got %q", blk.ToolCall.Output)
 	}
+	// Streaming output should NOT mark tool as done — only tool_end does that
+	if blk.ToolCall.Done {
+		t.Error("tool should NOT be done during streaming output, only after tool_end")
+	}
+}
+
+func TestPendingToolOutput_StreamingThenToolEnd(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	s.PendingToolStarted("t1", "Bash", "make check", "{}", tool.SearchReadKind{})
+
+	// Streaming output arrives — tool is still running
+	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config", 2*time.Second)
+	msgs := s.Messages()
+	blk := msgs[0].Blocks[0]
+	if blk.ToolCall.Done {
+		t.Error("tool should still be running after streaming output")
+	}
+	if blk.ToolCall.Output != "make[1]: Entering directory\nok  pkg/config" {
+		t.Errorf("expected streaming output, got %q", blk.ToolCall.Output)
+	}
+
+	// More streaming output
+	s.PendingToolOutput("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", 5*time.Second)
+	blk = msgs[0].Blocks[0]
+	if blk.ToolCall.Done {
+		t.Error("tool should still be running after second streaming update")
+	}
+
+	// tool_end — now it's done
+	s.PendingToolDone("t1", "make[1]: Entering directory\nok  pkg/config\nok  pkg/engine", false, 30*time.Second, tool.SearchReadKind{})
+	blk = msgs[0].Blocks[0]
 	if !blk.ToolCall.Done {
-		t.Error("should be done after output")
+		t.Error("tool should be done after tool_end")
 	}
 }
 

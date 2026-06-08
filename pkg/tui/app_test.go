@@ -3359,8 +3359,8 @@ func TestApp_Update_StreamToolOutput(t *testing.T) {
 	if tcv == nil {
 		t.Fatal("pendingTool should have t1")
 	}
-	if !tcv.Done {
-		t.Error("Done should be true after toolOutputDeltaMsg")
+	if tcv.Done {
+		t.Error("Done should be false during streaming output — only tool_end marks Done")
 	}
 	if tcv.Output != "stdout line\n" {
 		t.Errorf("Output = %q, want %q", tcv.Output, "stdout line\n")

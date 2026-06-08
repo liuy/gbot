@@ -954,6 +954,12 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		} else if len(tc.AgentLogs) > 0 {
 			sb.WriteString(renderAgentLogs(&tc, availWidth))
 		}
+		// Show streaming output while tool is still running
+		if tc.Output != "" {
+			toolExpand := expand || tc.Name == "Write" || tc.Name == "Edit"
+			output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
+			sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
+		}
 		return
 	}
 

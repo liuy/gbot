@@ -287,9 +287,6 @@ func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 	// Accumulate output lines (each event carries all current lines)
 	tcv.Output = output
 
-	// Mark tool as done so output is rendered (no "running..." anymore)
-	tcv.Done = true
-
 	// Update the tool block in lastMsg
 	s.updateToolBlock(id, tcv)
 }
