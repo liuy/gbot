@@ -1157,3 +1157,17 @@ func TestJob_RenderResultListFallsBackToID(t *testing.T) {
 		t.Errorf("RenderResult = %q, want containing 'bg-6 [running] bg-6'", result)
 	}
 }
+
+func TestJob_RenderResult_JSONRawMessage(t *testing.T) {
+	t.Parallel()
+	reg := newMockRegistry()
+	tl := NewJob(reg)
+	raw := json.RawMessage(`{"poll":{"task":{"job_id":"bg-1","status":"completed","exit_code":0},"retrieval_status":"success","output":"hello world"}}`)
+	got := tl.RenderResult(raw)
+	if strings.Contains(got, "[123") || strings.Contains(got, "34 117") {
+		t.Errorf("RenderResult should not show raw bytes, got: %q", got)
+	}
+	if !strings.Contains(got, "bg-1") {
+		t.Errorf("RenderResult should contain job ID, got: %q", got)
+	}
+}

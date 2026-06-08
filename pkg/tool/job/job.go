@@ -325,11 +325,21 @@ var (
 
 // jobRenderResult renders the unified JobOutput for TUI display.
 func jobRenderResult(data any) string {
-	out, ok := data.(*JobOutput)
-	if !ok {
+	switch v := data.(type) {
+	case *JobOutput:
+		return renderJobOutput(v)
+	case json.RawMessage:
+		var out JobOutput
+		if err := json.Unmarshal(v, &out); err != nil {
+			return string(v)
+		}
+		return renderJobOutput(&out)
+	default:
 		return fmt.Sprintf("%v", data)
 	}
+}
 
+func renderJobOutput(out *JobOutput) string {
 	var sections []string
 
 	if out.List != nil {
