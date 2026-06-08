@@ -275,7 +275,7 @@ func TestPendingToolDelta_UpdatesSummary(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("t1", "Read", "", "{}", tool.SearchReadKind{})
-	s.PendingToolDelta("t1", `{"file_path":"/tmp/test"}`, "/tmp/test")
+	s.PendingToolDelta("t1", `{"file_path":"/tmp/test"}`, "/tmp/test", tool.SearchReadKind{})
 
 	msgs := s.Messages()
 	blk := msgs[0].Blocks[0]
@@ -288,7 +288,24 @@ func TestPendingToolDelta_MissingID_Noop(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	// No PendingToolStarted — delta should not panic
-	s.PendingToolDelta("nonexistent", `{"x":1}`, "summary")
+	s.PendingToolDelta("nonexistent", `{"x":1}`, "summary", tool.SearchReadKind{})
+}
+
+func TestPendingToolDelta_UpdatesSearchReadFromDelta(t *testing.T) {
+	t.Parallel()
+	s := freshState()
+	// tool_start: Bash with empty input → isSearch=false (Anthropic sends input={} at content_block_start)
+	s.PendingToolStarted("t1", "Bash", "", "{}", tool.SearchReadKind{})
+
+	// input_json_delta arrives with partial input → engine recomputes isSearch=true
+	s.PendingToolDelta("t1", `{"command":"grep -r func main"}`, "grep -r func main",
+		tool.SearchReadKind{IsSearch: true})
+
+	msgs := s.Messages()
+	blk := msgs[0].Blocks[0]
+	if !blk.ToolCall.SearchRead.IsSearch {
+		t.Errorf("expected SearchRead.IsSearch=true after delta, got false")
+	}
 }
 
 // ---------------------------------------------------------------------------

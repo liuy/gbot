@@ -1182,7 +1182,7 @@ func TestReplState_PendingToolDelta(t *testing.T) {
 	s := NewReplState()
 	s.StartQuery()
 	s.PendingToolStarted("t1", "Read", "", `{}`, tool.SearchReadKind{})
-	s.PendingToolDelta("t1", `{"file":"a.go"}`, "a.go")
+	s.PendingToolDelta("t1", `{"file":"a.go"}`, "a.go", tool.SearchReadKind{})
 	tcv := s.pendingTool["t1"]
 	if tcv.Summary != "a.go" {
 		t.Errorf("summary = %q, want %q", tcv.Summary, "a.go")
@@ -1204,14 +1204,14 @@ func TestReplState_PendingToolDelta_UnknownID(t *testing.T) {
 	s := NewReplState()
 	s.StartQuery()
 	// Delta for unknown tool ID — should not panic
-	s.PendingToolDelta("unknown", `{"x":1}`, "")
+	s.PendingToolDelta("unknown", `{"x":1}`, "", tool.SearchReadKind{})
 }
 
 func TestReplState_PendingToolDelta_NilLastMsg(t *testing.T) {
 	s := NewReplState()
 	// No messages at all
 	s.pendingTool["t1"] = &ToolCallView{Name: "Read"}
-	s.PendingToolDelta("t1", `{"x":1}`, "")
+	s.PendingToolDelta("t1", `{"x":1}`, "", tool.SearchReadKind{})
 	// Should not panic
 }
 

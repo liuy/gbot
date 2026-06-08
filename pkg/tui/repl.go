@@ -244,7 +244,7 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 }
 
 // PendingToolDelta updates a pending tool's input and summary from engine.
-func (s *ReplState) PendingToolDelta(id, delta, summary string) {
+func (s *ReplState) PendingToolDelta(id, delta, summary string, srk tool.SearchReadKind) {
 	s.pendingInput[id] += delta
 
 	tcv, ok := s.pendingTool[id]
@@ -258,6 +258,13 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string) {
 	}
 	inputStr := s.pendingInput[id]
 	tcv.Input = prettyJSON(json.RawMessage(inputStr))
+
+	// Update SearchRead from engine recomputation (at content_block_start
+	// the input is empty, so isSearch is false; input_json_delta carries
+	// the correct classification once partial input arrives).
+	if srk.IsCollapsible() {
+		tcv.SearchRead = srk
+	}
 
 	// Update the tool block in lastMsg
 	s.updateToolBlock(id, tcv)
@@ -479,7 +486,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.SetAgentContextWindow(m.ID, a.engine.ContextWindow())
 			}
 		}
-		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary, "agent", m.Agent != nil)
+		slog.Info("tui:tool_start", "id", m.ID, "name", m.Name, "summary", m.Summary, "isSearch", m.IsSearch, "isRead", m.IsRead, "isList", m.IsList)
 		return true, a.readEvents()
 
 	case toolParamDeltaMsg:
@@ -496,7 +503,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary)
+			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
+			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
 		a.responseCharCount += len(m.Delta)
 		return true, a.readEvents()
