@@ -689,6 +689,33 @@ func TestRenderResult_EmptyOutput(t *testing.T) {
 	}
 }
 
+// RenderResult with json.RawMessage — this is the type TUI's renderToolOutput
+// passes when reading persisted output from disk. The persisted file contains
+// the serialized Output struct: {"output":"...","exitCode":0}
+func TestRenderResult_JsonRawMessage(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New(nil)
+	// This is what the persisted file actually contains
+	raw := json.RawMessage(`{"output":"make[1]: Entering directory\nok  test result\n","exitCode":0}`)
+	result := tt.RenderResult(raw)
+	want := "make[1]: Entering directory\nok  test result\n"
+	if result != want {
+		t.Errorf("RenderResult(json.RawMessage) = %q, want %q", result, want)
+	}
+}
+
+func TestRenderResult_JsonRawMessage_InvalidJson(t *testing.T) {
+	t.Parallel()
+
+	tt := bash.New(nil)
+	raw := json.RawMessage(`not valid json`)
+	result := tt.RenderResult(raw)
+	if result != "not valid json" {
+		t.Errorf("RenderResult(invalid json) = %q, want raw string", result)
+	}
+}
+
 func TestRenderResult_StderrAndTimedOut(t *testing.T) {
 	t.Parallel()
 

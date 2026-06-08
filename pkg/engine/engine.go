@@ -421,16 +421,13 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt str
 	e.activeCancel = cancel
 	e.activeCancelMu.Unlock()
 	go func() {
+		atomic.StoreInt32(&e.queryActive, 1)
 		defer func() {
+			cancel()
+			atomic.StoreInt32(&e.queryActive, 0)
 			e.activeCancelMu.Lock()
 			e.activeCancel = nil
 			e.activeCancelMu.Unlock()
-		}()
-		defer cancel()
-		atomic.StoreInt32(&e.queryActive, 1)
-		defer func() {
-			atomic.StoreInt32(&e.queryActive, 0)
-			// Catch attachments enqueued between last DrainAll and here.
 			e.startProcessAttachmentsIfIdle()
 		}()
 		defer func() {
@@ -466,11 +463,6 @@ func (e *Engine) startProcessAttachmentsIfIdle() {
 	e.activeCancel = cancel
 	e.activeCancelMu.Unlock()
 	go func() {
-		defer func() {
-			e.activeCancelMu.Lock()
-			e.activeCancel = nil
-			e.activeCancelMu.Unlock()
-		}()
 		defer cancel()
 		e.processAttachments(ctx, e.systemPrompt)
 	}()
@@ -482,7 +474,9 @@ func (e *Engine) processAttachments(ctx context.Context, systemPrompt string) {
 	atomic.StoreInt32(&e.queryActive, 1)
 	defer func() {
 		atomic.StoreInt32(&e.queryActive, 0)
-		// Catch attachments enqueued between last DrainAll and here.
+		e.activeCancelMu.Lock()
+		e.activeCancel = nil
+		e.activeCancelMu.Unlock()
 		e.startProcessAttachmentsIfIdle()
 	}()
 	defer func() {

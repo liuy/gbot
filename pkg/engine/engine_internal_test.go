@@ -5495,6 +5495,66 @@ func (t *renderResultTool) RenderResult(data any) string {
 	return strings.Join(files, "\n")
 }
 
+// Regression: Query goroutine's LIFO defer order caused clearActiveCancel to
+// wipe out the activeCancel set by startProcessAttachmentsIfIdle. After Query
+// finished and processAttachments started, Abort() was a no-op (activeCancel=nil).
+// Defer consolidation ensures clearActiveCancel runs before startProcessAttachmentsIfIdle.
+func TestAbort_CancelsProcessAttachmentsAfterQueryEnds(t *testing.T) {
+	eventCh := make(chan types.QueryEvent, 20)
+	dispatcher := &chanDispatcher{ch: eventCh}
+
+	// First response: for the initial Query (returns immediately)
+	mp := &mockProvider{}
+	mp.addResponse([]llm.StreamEvent{
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "done"}},
+		{Type: "message_stop"},
+	}, nil)
+
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Dispatcher: dispatcher,
+	})
+	defer eng.Close()
+
+	// Queue an attachment so processAttachments starts after Query finishes
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value: "post-query work",
+		Mode:  types.ItemModeJob,
+	})
+	eng.systemPrompt = "test"
+
+	// Start a query — will complete, then startProcessAttachmentsIfIdle fires
+	ctx := context.Background()
+	eng.Query(ctx, "hello", "test")
+
+	// Wait for Query to finish and processAttachments to start
+	var gotQueryEnd, gotTurnStart bool
+	timeout := time.After(5 * time.Second)
+	for !gotQueryEnd || !gotTurnStart {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventQueryEnd && evt.Agent == nil {
+				gotQueryEnd = true
+			}
+			if evt.Type == types.EventTurnStart && evt.Agent == nil {
+				gotTurnStart = true
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for events: queryEnd=%v turnStart=%v", gotQueryEnd, gotTurnStart)
+		}
+	}
+
+	// processAttachments is running. activeCancel must be non-nil so Abort() works.
+	eng.activeCancelMu.Lock()
+	ac := eng.activeCancel
+	eng.activeCancelMu.Unlock()
+	if ac == nil {
+		t.Fatal("activeCancel is nil during processAttachments — defer ordering wipes it out, Abort() is a no-op")
+	}
+}
+
 func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 	t.Parallel()
 
