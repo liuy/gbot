@@ -1,22 +1,36 @@
 package config
 
-// DefaultCapabilities returns fallback context_window and max_tokens for known models.
-// Provider config values take precedence; this is the fallback when config fields are 0.
-// 32k maxTokens is a universal default for modern LLMs (100k-200k context windows).
-// Users can override via provider config if their model needs a different limit.
+// DefaultCapabilities returns fallback context_window and max_tokens for models
+// that don't specify these values in their ModelConfig.
 func DefaultCapabilities(model string) (contextWindow, maxTokens int) {
 	return 200 * 1024, 32 * 1024
 }
 
-// ResolveCapabilities returns the effective context_window and max_tokens,
-// using config values if set, otherwise falling back to DefaultCapabilities.
-func (p *Provider) ResolveCapabilities(model string) (contextWindow, maxTokens int) {
-	contextWindow, maxTokens = DefaultCapabilities(model)
-	if p.ContextWindow > 0 {
-		contextWindow = p.ContextWindow
+// ResolveContext returns the effective context window for a model.
+// Uses ModelConfig.Context if set, otherwise falls back to DefaultCapabilities.
+func (p *Provider) ResolveContext(model string) int {
+	if mc := p.GetModelConfig(model); mc != nil && mc.Context.IsSet() {
+		return mc.Context.Int()
 	}
-	if p.MaxTokens > 0 {
-		maxTokens = p.MaxTokens
+	cw, _ := DefaultCapabilities(model)
+	return cw
+}
+
+// ResolveMaxTokens returns the effective max output tokens for a model.
+// Uses ModelConfig.MaxTokens if set, otherwise falls back to DefaultCapabilities.
+func (p *Provider) ResolveMaxTokens(model string) int {
+	if mc := p.GetModelConfig(model); mc != nil && mc.MaxTokens.IsSet() {
+		return mc.MaxTokens.Int()
 	}
-	return
+	_, mt := DefaultCapabilities(model)
+	return mt
+}
+
+// ResolveInput returns the input modalities for a model.
+// Uses ModelConfig.Input if set, otherwise defaults to ["text"].
+func (p *Provider) ResolveInput(model string) []string {
+	if mc := p.GetModelConfig(model); mc != nil && len(mc.Input) > 0 {
+		return mc.Input
+	}
+	return []string{"text"}
 }

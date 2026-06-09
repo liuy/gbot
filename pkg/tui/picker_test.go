@@ -52,9 +52,9 @@ func TestModelItem_Label(t *testing.T) {
 		item ModelItem
 		want string
 	}{
-		{ModelItem{Provider: "openai", Tier: "pro", Model: "glm-5", Current: false}, "openai / pro  glm-5"},
-		{ModelItem{Provider: "openai", Tier: "pro", Model: "glm-5", Current: true}, "openai / pro  glm-5 *"},
-		{ModelItem{Provider: "anthropic", Tier: "lite", Model: "claude-haiku", Current: false}, "anthropic / lite claude-haiku"},
+		{ModelItem{Provider: "openai", Model: "glm-5", Current: false}, "openai / glm-5"},
+		{ModelItem{Provider: "openai", Model: "glm-5", Current: true}, "openai / glm-5 *"},
+		{ModelItem{Provider: "anthropic", Model: "claude-haiku", Current: false}, "anthropic / claude-haiku"},
 	}
 
 	for _, tc := range tests {

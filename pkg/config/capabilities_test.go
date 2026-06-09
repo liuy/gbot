@@ -30,44 +30,50 @@ func TestDefaultCapabilities(t *testing.T) {
 	}
 }
 
-func TestResolveCapabilities_ConfigOverrides(t *testing.T) {
+func TestResolveContext_ModelConfigOverride(t *testing.T) {
 	t.Parallel()
 
 	p := &Provider{
-		ContextWindow: 256000,
-		MaxTokens:     8192,
+		Models: map[string]ModelConfig{
+			"glm-5": {Context: IntOrHuman(256000)},
+		},
 	}
-	cw, mt := p.ResolveCapabilities("glm-5")
+	cw := p.ResolveContext("glm-5")
 	if cw != 256000 {
-		t.Errorf("config override contextWindow = %d, want 256000", cw)
-	}
-	if mt != 8192 {
-		t.Errorf("config override maxTokens = %d, want 8192", mt)
+		t.Errorf("ResolveContext = %d, want 256000", cw)
 	}
 }
 
-func TestResolveCapabilities_FallbackToDefault(t *testing.T) {
+func TestResolveContext_FallbackToDefault(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{}
-	cw, mt := p.ResolveCapabilities("glm-5")
+	p := &Provider{Models: map[string]ModelConfig{}}
+	cw := p.ResolveContext("glm-5")
 	if cw != 200*1024 {
-		t.Errorf("fallback contextWindow = %d, want %d", cw, 200*1024)
-	}
-	if mt != 32*1024 {
-		t.Errorf("fallback maxTokens = %d, want %d", mt, 32*1024)
+		t.Errorf("fallback ResolveContext = %d, want %d", cw, 200*1024)
 	}
 }
 
-func TestResolveCapabilities_PartialOverride(t *testing.T) {
+func TestResolveMaxTokens_ModelConfigOverride(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{ContextWindow: 64000}
-	cw, mt := p.ResolveCapabilities("glm-5")
-	if cw != 64000 {
-		t.Errorf("partial override contextWindow = %d, want 64000", cw)
+	p := &Provider{
+		Models: map[string]ModelConfig{
+			"glm-5": {MaxTokens: IntOrHuman(8192)},
+		},
 	}
+	mt := p.ResolveMaxTokens("glm-5")
+	if mt != 8192 {
+		t.Errorf("ResolveMaxTokens = %d, want 8192", mt)
+	}
+}
+
+func TestResolveMaxTokens_FallbackToDefault(t *testing.T) {
+	t.Parallel()
+
+	p := &Provider{Models: map[string]ModelConfig{}}
+	mt := p.ResolveMaxTokens("glm-5")
 	if mt != 32*1024 {
-		t.Errorf("fallback maxTokens = %d, want %d", mt, 32*1024)
+		t.Errorf("fallback ResolveMaxTokens = %d, want %d", mt, 32*1024)
 	}
 }

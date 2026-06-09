@@ -80,32 +80,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Primary provider is the first configured one
-	defaultProvider, defaultTier, err := cfg.ParseModel()
+	// Primary provider resolved from Config.Model
+	provider, model, primaryProviderCfg, err := resolvePrimaryProvider(cfg, providerMap)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	var provider llm.Provider
-	var model string
-	var primaryProviderCfg *config.Provider
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
-		if prov, ok := providerMap[p.Name]; ok {
-			if defaultProvider != "" && p.Name != defaultProvider {
-				continue
-			}
-			provider = prov
-			model = p.Models[defaultTier]
-			if model == "" {
-				model = p.Models[config.TierPro]
-			}
-			primaryProviderCfg = p
-			break
-		}
-	}
-	if provider == nil || model == "" {
-		fmt.Fprintln(os.Stderr, "Error: could not resolve primary provider/model")
 		os.Exit(1)
 	}
 
@@ -147,7 +125,8 @@ func main() {
 		slog.Warn("main: MCP initialization failed", "error", err)
 	}
 
-	contextWindow, maxTokens := primaryProviderCfg.ResolveCapabilities(model)
+	contextWindow := primaryProviderCfg.ResolveContext(model)
+	maxTokens := primaryProviderCfg.ResolveMaxTokens(model)
 
 	// Hooks system
 	var hooksConfig hooks.HooksConfig
@@ -463,5 +442,23 @@ func main() {
 // loadConfig reads configuration from gbot's own settings files and env vars.
 func loadConfig() (*config.Config, error) {
 	return config.Load()
+}
+
+// resolvePrimaryProvider resolves Config.Model into a concrete provider, model name,
+// and Provider config using the new model resolution logic.
+func resolvePrimaryProvider(cfg *config.Config, providerMap config.ProviderMap) (llm.Provider, string, *config.Provider, error) {
+	p, modelName, err := cfg.ResolveModel()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if p == nil {
+		return nil, "", nil, fmt.Errorf("no providers configured")
+	}
+
+	prov, ok := providerMap[p.Name]
+	if !ok {
+		return nil, "", nil, fmt.Errorf("provider %q has no API key configured", p.Name)
+	}
+	return prov, modelName, p, nil
 }
 

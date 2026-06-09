@@ -43,24 +43,24 @@ func newTestAppWithProviders(t *testing.T) *App {
 	}
 
 	cfg := &config.Config{
-		Model: "pro",
+		Model: "openai/glm-5",
 		Providers: []config.Provider{
 			{
 				Name: "openai",
 				URL:  "https://api.example.com",
 				Keys: []string{"test-key"},
-				Models: map[config.Tier]string{
-					config.TierLite: "glm-lite",
-					config.TierPro:  "glm-5",
-					config.TierMax:  "glm-max",
+				Models: map[string]config.ModelConfig{
+					"glm-lite": {},
+					"glm-5":    {},
+					"glm-max":  {},
 				},
 			},
 			{
 				Name: "anthropic",
 				URL:  "https://api.anthropic.com",
 				Keys: []string{"test-key-2"},
-				Models: map[config.Tier]string{
-					config.TierPro: "claude-sonnet",
+				Models: map[string]config.ModelConfig{
+					"claude-sonnet": {},
 				},
 			},
 		},
@@ -76,9 +76,8 @@ func newTestAppWithProviders(t *testing.T) *App {
 }
 
 // helperSetupModelPicker creates a ListPicker for model items and sets up the onPickerDone closure.
-// Returns the captured modelItems for assertion after picker interaction.
 func helperSetupModelPicker(a *App) []ModelItem {
-	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
 	items := make([]PickerItem, len(modelItems))
 	for i := range modelItems {
 		items[i] = &modelItems[i]
@@ -101,7 +100,7 @@ func TestHandleModel_StreamingGuard(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	a.repl.streaming = true
 
-	cmd := a.handleModel("openai/pro", nil)
+	cmd := a.handleModel("openai/glm-5", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -128,7 +127,7 @@ func TestHandleModel_NoProviders(t *testing.T) {
 		providers: map[string]llm.Provider{},
 	}
 
-	cmd := a.handleModel("pro", nil)
+	cmd := a.handleModel("glm-5", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -147,7 +146,6 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
 	cmd := a.handleModel("", nil)
-	// openModelPicker returns commitCmd (nil in this case)
 	if cmd != nil {
 		t.Error("expected nil cmd for empty args (commitCmd was nil)")
 	}
@@ -160,19 +158,19 @@ func TestHandleModel_OpenPicker(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// switchProviderTier — success
+// switchProviderModel — success
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_ProviderTier_Success(t *testing.T) {
+func TestHandleModel_ProviderModel_Success(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	_ = a.handleModel("anthropic/pro", nil)
+	_ = a.handleModel("anthropic/claude-sonnet", nil)
 
 	if a.currentProvider != "anthropic" {
 		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
 	}
-	if a.currentTier != config.TierPro {
-		t.Errorf("currentTier = %q, want %q", a.currentTier, config.TierPro)
+	if a.currentModel != "claude-sonnet" {
+		t.Errorf("currentModel = %q, want %q", a.currentModel, "claude-sonnet")
 	}
 	if a.engine.Model() != "claude-sonnet" {
 		t.Errorf("engine model = %q, want %q", a.engine.Model(), "claude-sonnet")
@@ -180,13 +178,13 @@ func TestHandleModel_ProviderTier_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// switchProviderTier — unknown provider
+// switchProviderModel — unknown provider
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_ProviderTier_UnknownProvider(t *testing.T) {
+func TestHandleModel_ProviderModel_UnknownProvider(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("foo/pro", nil)
+	cmd := a.handleModel("foo/some-model", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -201,65 +199,63 @@ func TestHandleModel_ProviderTier_UnknownProvider(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// switchProviderTier — missing tier on provider
+// switchProviderModel — model not found in provider
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_ProviderTier_MissingTier(t *testing.T) {
+func TestHandleModel_ProviderModel_ModelNotFound(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("anthropic/lite", nil)
+	cmd := a.handleModel("anthropic/nonexistent", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
 		t.Fatalf("expected infoMsg, got %T", msg)
 	}
-	if !strings.Contains(string(info), "provider anthropic has no model for tier lite") {
-		t.Errorf("expected missing tier message, got %q", info)
+	if !strings.Contains(string(info), "not found in provider") {
+		t.Errorf("expected 'not found' message, got %q", info)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// switchTier — success
+// switchModel — success (fuzzy match within current provider)
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_SwitchTier_Success(t *testing.T) {
+func TestHandleModel_SwitchModel_Success(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	_ = a.handleModel("lite", nil)
+	_ = a.handleModel("glm-max", nil)
 
-	if a.currentTier != config.TierLite {
-		t.Errorf("currentTier = %q, want %q", a.currentTier, config.TierLite)
+	if a.currentModel != "glm-max" {
+		t.Errorf("currentModel = %q, want %q", a.currentModel, "glm-max")
 	}
 	if a.currentProvider != "openai" {
 		t.Errorf("currentProvider should not change, got %q", a.currentProvider)
 	}
-	if a.engine.Model() != "glm-lite" {
-		t.Errorf("engine model = %q, want %q", a.engine.Model(), "glm-lite")
+	if a.engine.Model() != "glm-max" {
+		t.Errorf("engine model = %q, want %q", a.engine.Model(), "glm-max")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// switchTier — missing tier
+// switchModel — model not found
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_SwitchTier_MissingTier(t *testing.T) {
+func TestHandleModel_SwitchModel_NotFound(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	// Switch to anthropic which has no max tier
-	a.currentProvider = "anthropic"
 
-	cmd := a.handleModel("max", nil)
+	cmd := a.handleModel("nonexistent", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
 		t.Fatalf("expected infoMsg, got %T", msg)
 	}
-	if !strings.Contains(string(info), "provider anthropic has no model for tier max") {
-		t.Errorf("expected missing tier message, got %q", info)
+	if !strings.Contains(string(info), "not found in provider") {
+		t.Errorf("expected 'not found' message, got %q", info)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// switchProvider — success
+// switchProvider — success (uses FirstModelName)
 // ---------------------------------------------------------------------------
 
 func TestHandleModel_SwitchProvider_Success(t *testing.T) {
@@ -270,12 +266,8 @@ func TestHandleModel_SwitchProvider_Success(t *testing.T) {
 	if a.currentProvider != "anthropic" {
 		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
 	}
-	// Tier should stay at pro (default)
-	if a.currentTier != config.TierPro {
-		t.Errorf("currentTier = %q, want %q (unchanged)", a.currentTier, config.TierPro)
-	}
-	if a.engine.Model() != "claude-sonnet" {
-		t.Errorf("engine model = %q, want %q", a.engine.Model(), "claude-sonnet")
+	if a.currentModel != "claude-sonnet" {
+		t.Errorf("currentModel = %q, want %q", a.currentModel, "claude-sonnet")
 	}
 }
 
@@ -292,53 +284,9 @@ func TestHandleModel_SwitchProvider_Unknown(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected infoMsg, got %T", msg)
 	}
-	if !strings.Contains(string(info), "unknown provider: unknown") {
-		t.Errorf("expected unknown provider message, got %q", info)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// switchProvider — missing tier on target
-// ---------------------------------------------------------------------------
-
-func TestHandleModel_SwitchProvider_MissingTierOnTarget(t *testing.T) {
-	a := newTestAppWithProviders(t)
-	// Current tier is max (openai has it, anthropic does not)
-	a.currentTier = config.TierMax
-
-	cmd := a.handleModel("anthropic", nil)
-	msg := cmd()
-	info, ok := msg.(infoMsg)
-	if !ok {
-		t.Fatalf("expected infoMsg, got %T", msg)
-	}
-	if !strings.Contains(string(info), "provider anthropic has no model for tier max") {
-		t.Errorf("expected missing tier message, got %q", info)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// isValidTier
-// ---------------------------------------------------------------------------
-
-func TestIsValidTier(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"lite", true},
-		{"pro", true},
-		{"max", true},
-		{"unknown", false},
-		{"", false},
-		{"PRO", false}, // case-sensitive
-	}
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			if got := isValidTier(tc.input); got != tc.want {
-				t.Errorf("isValidTier(%q) = %v, want %v", tc.input, got, tc.want)
-			}
-		})
+	// "unknown" is not a provider name → routed as model name → fuzzy match fails
+	if !strings.Contains(string(info), "not found") {
+		t.Errorf("expected model-not-found message, got %q", info)
 	}
 }
 
@@ -353,7 +301,6 @@ func TestHandleModelPickerDone_Cancel(t *testing.T) {
 		t.Fatal("expected at least one model item from helperSetupModelPicker")
 	}
 
-	// Simulate abort
 	p := a.activeDialog
 	p.aborted = true
 
@@ -374,20 +321,19 @@ func TestHandleModelPickerDone_Select(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	captured := helperSetupModelPicker(a)
 
-	// Select second item (index 1)
 	wantProvider := captured[1].Provider
-	wantTier := captured[1].Tier
+	wantModel := captured[1].Model
 
 	p := a.activeDialog
 	p.done = true
-		p.cursor = 1
+	p.cursor = 1
 
 	_, cmd := a.handleModelPickerDone(p, captured)
 
-	if a.currentProvider != wantProvider || a.currentTier != wantTier {
-		t.Errorf("provider=%q tier=%q, want provider=%q tier=%q",
-			a.currentProvider, a.currentTier,
-			wantProvider, wantTier)
+	if a.currentProvider != wantProvider || a.currentModel != wantModel {
+		t.Errorf("provider=%q model=%q, want provider=%q model=%q",
+			a.currentProvider, a.currentModel,
+			wantProvider, wantModel)
 	}
 	if cmd == nil {
 		t.Error("expected non-nil cmd on selection")
@@ -402,11 +348,10 @@ func TestHandleModelPickerDone_UnknownProvider(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	helperSetupModelPicker(a)
 
-	// Create a picker with ghost provider item not in a.providers
 	p := a.activeDialog
-	ghostItems := []ModelItem{{Provider: "ghost", Tier: config.TierPro, Model: "ghost-model"}}
+	ghostItems := []ModelItem{{Provider: "ghost", Model: "ghost-model"}}
 	p.done = true
-		p.cursor = 0
+	p.cursor = 0
 
 	_, cmd := a.handleModelPickerDone(p, ghostItems)
 	if cmd == nil {
@@ -422,24 +367,22 @@ func TestHandleModelPickerDone_NilSelected(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	helperSetupModelPicker(a)
 
-	// Neither aborted nor selected
 	p := a.activeDialog
-	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier))
+	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel))
 	if cmd != nil {
 		t.Error("expected nil cmd when no selection")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// switchProviderTier — nil providerConfig
+// switchProviderModel — nil providerConfig
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_ProviderTier_NilConfig(t *testing.T) {
+func TestHandleModel_ProviderModel_NilConfig(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	// Add a provider in providers map but not in providerConfigs
 	a.providers["ghost"] = &mockLLMProvider{}
 
-	cmd := a.handleModel("ghost/pro", nil)
+	cmd := a.handleModel("ghost/some-model", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -451,10 +394,10 @@ func TestHandleModel_ProviderTier_NilConfig(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// switchTier — nil providerConfig
+// switchModel — nil providerConfig
 // ---------------------------------------------------------------------------
 
-func TestHandleModel_SwitchTier_NilConfig(t *testing.T) {
+func TestHandleModel_SwitchModel_NilConfig(t *testing.T) {
 	eng := engine.New(&engine.Params{
 		Provider: &mockLLMProvider{},
 		Model:    "test",
@@ -464,11 +407,10 @@ func TestHandleModel_SwitchTier_NilConfig(t *testing.T) {
 		engine:    eng,
 		repl:      NewReplState(),
 		providers: map[string]llm.Provider{"openai": &mockLLMProvider{}},
-		// providerConfigs is nil → no config for current provider
 	}
 	a.currentProvider = "openai"
 
-	cmd := a.handleModel("pro", nil)
+	cmd := a.handleModel("glm-5", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)
 	if !ok {
@@ -485,7 +427,6 @@ func TestHandleModel_SwitchTier_NilConfig(t *testing.T) {
 
 func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	// Add a provider in providers map but not in providerConfigs
 	a.providers["ghost"] = &mockLLMProvider{}
 
 	cmd := a.handleModel("ghost", nil)
@@ -505,9 +446,9 @@ func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 
 func TestBuildModelItems_Items(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
 
-	// openai: 3 tiers + anthropic: 1 tier = 4 items
+	// anthropic: 1 model + openai: 3 models = 4 items
 	if len(items) != 4 {
 		t.Fatalf("expected 4 items, got %d", len(items))
 	}
@@ -523,23 +464,23 @@ func TestBuildModelItems_Items(t *testing.T) {
 
 func TestBuildModelItems_CurrentMarked(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
 
 	found := false
 	for _, item := range items {
-		if item.Provider == "openai" && item.Tier == config.TierPro {
+		if item.Provider == "openai" && item.Model == "glm-5" {
 			if !item.Current {
-				t.Error("openai/pro should be Current=true")
+				t.Error("openai/glm-5 should be Current=true")
 			}
 			found = true
 		} else {
 			if item.Current {
-				t.Errorf("%s/%s should not be Current", item.Provider, item.Tier)
+				t.Errorf("%s/%s should not be Current", item.Provider, item.Model)
 			}
 		}
 	}
 	if !found {
-		t.Error("openai/pro item not found")
+		t.Error("openai/glm-5 item not found")
 	}
 }
 
@@ -550,18 +491,18 @@ func TestBuildModelItems_SkipsProviderWithoutImpl(t *testing.T) {
 	providerConfigs := map[string]*config.Provider{
 		"openai": {
 			Name: "openai",
-			Models: map[config.Tier]string{
-				config.TierPro: "glm-5",
+			Models: map[string]config.ModelConfig{
+				"glm-5": {},
 			},
 		},
 		"anthropic": {
 			Name: "anthropic",
-			Models: map[config.Tier]string{
-				config.TierPro: "claude-sonnet",
+			Models: map[string]config.ModelConfig{
+				"claude-sonnet": {},
 			},
 		},
 	}
-	items := buildModelItems(providers, providerConfigs, "openai", config.TierPro)
+	items := buildModelItems(providers, providerConfigs, "openai", "glm-5")
 
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item (anthropic skipped), got %d", len(items))
@@ -576,7 +517,7 @@ func TestBuildModelItems_Empty(t *testing.T) {
 		map[string]llm.Provider{},
 		map[string]*config.Provider{},
 		"openai",
-		config.TierPro,
+		"glm-5",
 	)
 	if len(items) != 0 {
 		t.Errorf("expected 0 items, got %d", len(items))
@@ -589,9 +530,9 @@ func TestBuildModelItems_Empty(t *testing.T) {
 
 func TestFindCurrentIndex_Found(t *testing.T) {
 	items := []ModelItem{
-		{Provider: "openai", Tier: config.TierLite, Model: "glm-lite", Current: false},
-		{Provider: "openai", Tier: config.TierPro, Model: "glm-5", Current: true},
-		{Provider: "openai", Tier: config.TierMax, Model: "glm-max", Current: false},
+		{Provider: "openai", Model: "glm-lite", Current: false},
+		{Provider: "openai", Model: "glm-5", Current: true},
+		{Provider: "openai", Model: "glm-max", Current: false},
 	}
 	idx := findCurrentIndex(items)
 	if idx != 1 {
@@ -601,7 +542,7 @@ func TestFindCurrentIndex_Found(t *testing.T) {
 
 func TestFindCurrentIndex_NotFound(t *testing.T) {
 	items := []ModelItem{
-		{Provider: "openai", Tier: config.TierPro, Model: "glm-5", Current: false},
+		{Provider: "openai", Model: "glm-5", Current: false},
 	}
 	idx := findCurrentIndex(items)
 	if idx != -1 {
@@ -622,12 +563,11 @@ func TestFindCurrentIndex_Empty(t *testing.T) {
 
 func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	// Open a model picker first
 	a.handleModel("", nil)
 	if a.activeDialog == nil {
 		t.Fatal("expected listPicker to be set")
 	}
-	// Try opening again — should show info, not replace picker
+
 	cmd := a.handleModel("", nil)
 	msg := cmd()
 	info, ok := msg.(infoMsg)

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/llm"
@@ -15,9 +14,9 @@ func TestCreateAllProviders_AnthropicAndOpenAI(t *testing.T) {
 				Name: "claude",
 				URL:  "https://api.anthropic.com",
 				Keys: []string{"sk-test-key-1"},
-				Models: map[Tier]string{
-					TierPro: "claude-3-5-sonnet",
-					TierMax: "claude-3-opus",
+				Models: map[string]ModelConfig{
+					"claude-3-5-sonnet": {},
+					"claude-3-opus":     {},
 				},
 				Type: ProviderTypeAnthropic,
 			},
@@ -25,8 +24,8 @@ func TestCreateAllProviders_AnthropicAndOpenAI(t *testing.T) {
 				Name: "deepseek",
 				URL:  "https://api.deepseek.com",
 				Keys: []string{"sk-test-key-2"},
-				Models: map[Tier]string{
-					TierPro: "deepseek-chat",
+				Models: map[string]ModelConfig{
+					"deepseek-chat": {},
 				},
 				Type: ProviderTypeOpenAI,
 			},
@@ -65,55 +64,8 @@ func TestCreateAllProviders_NoAPIKey(t *testing.T) {
 			{
 				Name: "nokey",
 				Keys: []string{},
-				Models: map[Tier]string{
-					TierPro: "some-model",
-				},
-			},
-		},
-	}
-
-	m, err := CreateAllProviders(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(m) != 0 {
-		t.Fatalf("expected 0 providers, got %d", len(m))
-	}
-}
-
-func TestCreateAllProviders_NoTierProModel(t *testing.T) {
-	t.Parallel()
-	cfg := &Config{
-		Providers: []Provider{
-			{
-				Name: "incomplete",
-				Keys: []string{"sk-key"},
-				Models: map[Tier]string{
-					TierLite: "some-lite-model",
-				},
-			},
-		},
-	}
-
-	m, err := CreateAllProviders(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(m) != 0 {
-		t.Fatalf("expected 0 providers (no TierPro model), got %d", len(m))
-	}
-}
-
-func TestCreateAllProviders_ParseModelError(t *testing.T) {
-	t.Parallel()
-	cfg := &Config{
-		Model: "invalid-tier",
-		Providers: []Provider{
-			{
-				Name: "any",
-				Keys: []string{"sk-key"},
-				Models: map[Tier]string{
-					TierPro: "model",
+				Models: map[string]ModelConfig{
+					"some-model": {},
 				},
 			},
 		},
@@ -121,43 +73,7 @@ func TestCreateAllProviders_ParseModelError(t *testing.T) {
 
 	_, err := CreateAllProviders(cfg)
 	if err == nil {
-		t.Fatal("expected error for invalid tier, got nil")
-	}
-	if !strings.Contains(err.Error(), "invalid tier") {
-		t.Fatalf("unexpected error message: %v", err)
-	}
-}
-
-func TestCreateAllProviders_TierFallback(t *testing.T) {
-	t.Parallel()
-	// Request "max" tier but provider only has "pro".
-	cfg := &Config{
-		Model: "provider/max",
-		Providers: []Provider{
-			{
-				Name: "provider",
-				Keys: []string{"sk-key"},
-				Models: map[Tier]string{
-					TierPro: "pro-model",
-				},
-				Type: ProviderTypeOpenAI,
-			},
-		},
-	}
-
-	m, err := CreateAllProviders(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(m) != 1 {
-		t.Fatalf("expected 1 provider, got %d", len(m))
-	}
-	p, ok := m["provider"]
-	if !ok {
-		t.Fatal("missing provider \"provider\"")
-	}
-	if _, ok := p.(*llm.OpenAIProvider); !ok {
-		t.Fatalf("expected *llm.OpenAIProvider, got %T", p)
+		t.Fatal("CreateAllProviders should return error: no providers have API keys")
 	}
 }
 
@@ -169,8 +85,8 @@ func TestCreateAllProviders_DefaultAnthropicURL(t *testing.T) {
 			{
 				Name: "claude-default-url",
 				Keys: []string{"sk-key"},
-				Models: map[Tier]string{
-					TierPro: "claude-3-5-sonnet",
+				Models: map[string]ModelConfig{
+					"claude-3-5-sonnet": {},
 				},
 				Type: ProviderTypeAnthropic,
 				// URL intentionally empty
@@ -199,27 +115,24 @@ func TestCreateAllProviders_EmptyConfig(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{}
 
-	m, err := CreateAllProviders(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(m) != 0 {
-		t.Fatalf("expected 0 providers, got %d", len(m))
+	_, err := CreateAllProviders(cfg)
+	if err == nil {
+		t.Fatal("expected CreateAllProviders to fail on empty config (ResolveModel requires providers)")
 	}
 }
 
-func TestCreateAllProviders_SpecificTier(t *testing.T) {
+func TestCreateAllProviders_SpecificModel(t *testing.T) {
 	t.Parallel()
-	// Request "lite" tier — provider has it, so it should use the lite model.
+	// Request a specific model by name.
 	cfg := &Config{
-		Model: "myprovider/lite",
+		Model: "myprovider/lite-model",
 		Providers: []Provider{
 			{
 				Name: "myprovider",
 				Keys: []string{"sk-key"},
-				Models: map[Tier]string{
-					TierPro:  "pro-model",
-					TierLite: "lite-model",
+				Models: map[string]ModelConfig{
+					"pro-model":  {},
+					"lite-model": {},
 				},
 				Type: ProviderTypeOpenAI,
 			},

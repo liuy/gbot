@@ -8,10 +8,9 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 )
 
-// ModelItem represents a single provider/tier/model entry in the picker.
+// ModelItem represents a single provider/model entry in the picker.
 type ModelItem struct {
 	Provider string
-	Tier     config.Tier
 	Model    string
 	Current  bool
 }
@@ -22,12 +21,11 @@ func (m *ModelItem) Label() string {
 	if m.Current {
 		current = " *"
 	}
-	return fmt.Sprintf("%s / %-4s %s%s", m.Provider, m.Tier, m.Model, current)
+	return fmt.Sprintf("%s / %s%s", m.Provider, m.Model, current)
 }
 
 // buildModelItems constructs an ordered list of model items from provider configs.
-// Providers without an implementation in the providers map are skipped.
-func buildModelItems(providers map[string]llm.Provider, providerConfigs map[string]*config.Provider, currentProvider string, currentTier config.Tier) []ModelItem {
+func buildModelItems(providers map[string]llm.Provider, providerConfigs map[string]*config.Provider, currentProvider string, currentModel string) []ModelItem {
 	var items []ModelItem
 
 	names := make([]string, 0, len(providerConfigs))
@@ -41,15 +39,12 @@ func buildModelItems(providers map[string]llm.Provider, providerConfigs map[stri
 		if _, ok := providers[name]; !ok {
 			continue
 		}
-		for _, tier := range []config.Tier{config.TierLite, config.TierPro, config.TierMax} {
-			if model := cfg.Models[tier]; model != "" {
-				items = append(items, ModelItem{
-					Provider: name,
-					Tier:     tier,
-					Model:    model,
-					Current:  name == currentProvider && tier == currentTier,
-				})
-			}
+		for modelName := range cfg.Models {
+			items = append(items, ModelItem{
+				Provider: name,
+				Model:    modelName,
+				Current:  name == currentProvider && modelName == currentModel,
+			})
 		}
 	}
 

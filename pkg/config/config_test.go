@@ -291,8 +291,8 @@ func TestLoadFromFile_FileNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Should return defaults since no config files exist
-	if cfg.Model != "pro" {
-		t.Errorf("expected Model pro, got %s", cfg.Model)
+	if cfg.Model != "" {
+		t.Errorf("expected Model empty, got %s", cfg.Model)
 	}
 }
 
@@ -320,10 +320,10 @@ func TestLoad_MissingHomeDir(t *testing.T) {
 
 	cfg, err := config.Load()
 	if err != nil {
-		// HOME unset may cause UserHomeDir to fail â acceptable
+		// HOME unset may cause UserHomeDir to fail — acceptable
 		t.Logf("Load without HOME returned error: %v", err)
-	} else if cfg.Model == "" {
-		t.Error("expected non-empty model from defaults")
+	} else {
+		t.Logf("Load succeeded: Model=%q", cfg.Model)
 	}
 
 	// Restore HOME
@@ -399,9 +399,6 @@ func TestLoad_NoEnvVarsSet(t *testing.T) {
 	}
 
 	defaults := config.DefaultConfig()
-	if cfg.Model != "pro" {
-		t.Errorf("expected Model pro, got %s", cfg.Model)
-	}
 	if cfg.APITimeoutMS != defaults.APITimeoutMS {
 		t.Errorf("expected default APITimeoutMS, got %d", cfg.APITimeoutMS)
 	}
@@ -452,31 +449,8 @@ func TestLoad_ZeroTimeoutEnv(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier / Provider / Models tests
+// Provider resolve-key tests
 // ---------------------------------------------------------------------------
-
-func TestTierConstants(t *testing.T) {
-	t.Parallel()
-
-	if config.TierLite != "lite" {
-		t.Errorf("TierLite = %q, want %q", config.TierLite, "lite")
-	}
-	if config.TierPro != "pro" {
-		t.Errorf("TierPro = %q, want %q", config.TierPro, "pro")
-	}
-	if config.TierMax != "max" {
-		t.Errorf("TierMax = %q, want %q", config.TierMax, "max")
-	}
-}
-
-func TestDefaultConfig_DefaultTier(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.DefaultConfig()
-	if cfg.Model != "" {
-		t.Errorf("Model = %q, want empty", cfg.Model)
-	}
-}
 
 func TestProvider_ResolveKey_EnvVar(t *testing.T) {
 	t.Parallel()
@@ -542,44 +516,9 @@ func TestProvider_ResolveKey_EmptyKeys(t *testing.T) {
 	}
 }
 
-func TestProvider_ModelFor_SpecificTier(t *testing.T) {
-	t.Parallel()
-
-	p := config.Provider{
-		Name: "test",
-		Models: map[config.Tier]string{
-			config.TierLite: "model-lite",
-			config.TierPro:  "model-pro",
-			config.TierMax:  "model-max",
-		},
-	}
-
-	if m := p.ModelFor(config.TierLite); m != "model-lite" {
-		t.Errorf("ModelFor(lite) = %q, want %q", m, "model-lite")
-	}
-	if m := p.ModelFor(config.TierPro); m != "model-pro" {
-		t.Errorf("ModelFor(pro) = %q, want %q", m, "model-pro")
-	}
-	if m := p.ModelFor(config.TierMax); m != "model-max" {
-		t.Errorf("ModelFor(max) = %q, want %q", m, "model-max")
-	}
-}
-
-func TestProvider_ModelFor_FallbackToPro(t *testing.T) {
-	t.Parallel()
-
-	p := config.Provider{
-		Name: "test",
-		Models: map[config.Tier]string{
-			config.TierPro: "model-pro",
-		},
-	}
-
-	// Requesting lite but only pro defined → fallback to pro
-	if m := p.ModelFor(config.TierLite); m != "model-pro" {
-		t.Errorf("ModelFor(lite) = %q, want fallback %q", m, "model-pro")
-	}
-}
+// ---------------------------------------------------------------------------
+// Provider type detection
+// ---------------------------------------------------------------------------
 
 func TestProvider_ProviderType(t *testing.T) {
 	tests := []struct {
@@ -604,6 +543,145 @@ func TestProvider_ProviderType(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Provider model access tests
+// ---------------------------------------------------------------------------
+
+func TestProvider_ModelNames(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[string]config.ModelConfig{
+			"glm-5":     {},
+			"glm-5.1":   {Context: config.IntOrHuman(200 * 1024)},
+			"minimax-3": {Context: config.IntOrHuman(1024 * 1024), Input: []string{"text", "image"}},
+		},
+	}
+
+	names := p.ModelNames()
+	if len(names) != 3 {
+		t.Fatalf("ModelNames() = %d, want 3", len(names))
+	}
+
+	// Check HasModel
+	if !p.HasModel("glm-5") {
+		t.Error("HasModel(glm-5) = false, want true")
+	}
+	if p.HasModel("nonexistent") {
+		t.Error("HasModel(nonexistent) = true, want false")
+	}
+}
+
+func TestProvider_FirstModelName(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{Name: "test", Models: map[string]config.ModelConfig{"glm-5": {}}}
+	if p.FirstModelName() != "glm-5" {
+		t.Errorf("FirstModelName() = %q, want %q", p.FirstModelName(), "glm-5")
+	}
+
+	empty := config.Provider{Name: "test", Models: map[string]config.ModelConfig{}}
+	if empty.FirstModelName() != "" {
+		t.Errorf("empty FirstModelName() = %q, want empty", empty.FirstModelName())
+	}
+}
+
+func TestProvider_ResolveContext_Default(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[string]config.ModelConfig{
+			"model-a": {},
+		},
+	}
+
+	// Empty ModelConfig → default 200k
+	ctx := p.ResolveContext("model-a")
+	if ctx != 200*1024 {
+		t.Errorf("ResolveContext(model-a) = %d, want %d", ctx, 200*1024)
+	}
+
+	// Unknown model → default 200k
+	ctx = p.ResolveContext("unknown")
+	if ctx != 200*1024 {
+		t.Errorf("ResolveContext(unknown) = %d, want %d", ctx, 200*1024)
+	}
+}
+
+func TestProvider_ResolveContext_Custom(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[string]config.ModelConfig{
+			"big-model":   {Context: config.IntOrHuman(1024 * 1024)},
+			"small-model": {Context: config.IntOrHuman(50 * 1024)},
+		},
+	}
+
+	if ctx := p.ResolveContext("big-model"); ctx != 1024*1024 {
+		t.Errorf("ResolveContext(big-model) = %d, want %d", ctx, 1024*1024)
+	}
+	if ctx := p.ResolveContext("small-model"); ctx != 50*1024 {
+		t.Errorf("ResolveContext(small-model) = %d, want %d", ctx, 50*1024)
+	}
+}
+
+func TestProvider_ResolveMaxTokens_Default(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[string]config.ModelConfig{
+			"model-a": {},
+		},
+	}
+
+	// Empty ModelConfig → default 32k
+	mt := p.ResolveMaxTokens("model-a")
+	if mt != 32*1024 {
+		t.Errorf("ResolveMaxTokens(model-a) = %d, want %d", mt, 32*1024)
+	}
+}
+
+func TestProvider_ResolveMaxTokens_Custom(t *testing.T) {
+	t.Parallel()
+
+	p := config.Provider{
+		Name: "test",
+		Models: map[string]config.ModelConfig{
+			"model-a": {MaxTokens: config.IntOrHuman(16 * 1024)},
+		},
+	}
+
+	mt := p.ResolveMaxTokens("model-a")
+	if mt != 16*1024 {
+		t.Errorf("ResolveMaxTokens(model-a) = %d, want %d", mt, 16*1024)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ModelConfig tests
+// ---------------------------------------------------------------------------
+
+func TestModelConfig_Empty(t *testing.T) {
+	t.Parallel()
+
+	mc := config.ModelConfig{}
+	if mc.Context.IsSet() {
+		t.Error("empty ModelConfig Context should not be set")
+	}
+	if mc.MaxTokens.IsSet() {
+		t.Error("empty ModelConfig MaxTokens should not be set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Load + Provider config integration test
+// ---------------------------------------------------------------------------
 
 func TestLoad_ProviderConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -630,16 +708,16 @@ func TestLoad_ProviderConfig(t *testing.T) {
 	}
 
 	settings := map[string]any{
-		"model": "pro",
+		"model": "openai/gpt-4o",
 		"providers": []map[string]any{
 			{
 				"name": "openai",
 				"url":  "https://api.openai.com/v1",
 				"keys": []string{"$TEST_GBOT_PROVIDER_KEY"},
-				"models": map[string]string{
-					"lite": "gpt-4o-mini",
-					"pro":  "gpt-4o",
-					"max":  "gpt-4.1",
+				"models": map[string]any{
+					"gpt-4o":      map[string]any{},
+					"gpt-4o-mini": map[string]any{},
+					"gpt-4.1":     map[string]any{},
 				},
 			},
 		},
@@ -661,8 +739,8 @@ func TestLoad_ProviderConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Model != "pro" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "pro")
+	if cfg.Model != "openai/gpt-4o" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "openai/gpt-4o")
 	}
 	if len(cfg.Providers) != 1 {
 		t.Fatalf("len(Providers) = %d, want 1", len(cfg.Providers))
@@ -677,35 +755,14 @@ func TestLoad_ProviderConfig(t *testing.T) {
 	if key := p.ResolveKey(); key != "test-api-key-789" {
 		t.Errorf("ResolveKey() = %q, want %q", key, "test-api-key-789")
 	}
-	if m := p.ModelFor(config.TierPro); m != "gpt-4o" {
-		t.Errorf("ModelFor(pro) = %q, want %q", m, "gpt-4o")
+	if !p.HasModel("gpt-4o") {
+		t.Error("HasModel(gpt-4o) = false, want true")
 	}
-}
-
-func TestLoad_DefaultTierDefaultsToPro(t *testing.T) {
-	dir := t.TempDir()
-
-	_ = os.Setenv("HOME", dir)
-	defer func() { _ = os.Unsetenv("HOME") }()
-
-	for _, k := range []string{
-		"API_TIMEOUT_MS",
-	} {
-		_ = os.Unsetenv(k)
-		defer func(key string) { _ = os.Unsetenv(key) }(k)
+	if !p.HasModel("gpt-4o-mini") {
+		t.Error("HasModel(gpt-4o-mini) = false, want true")
 	}
-
-	originalDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(originalDir) }()
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("Load() error: %v", err)
-	}
-
-	if cfg.Model != "pro" {
-		t.Errorf("Model = %q, want %q when not set", cfg.Model, "pro")
+	if !p.HasModel("gpt-4.1") {
+		t.Error("HasModel(gpt-4.1) = false, want true")
 	}
 }
 
@@ -713,100 +770,140 @@ func TestLoad_DefaultTierDefaultsToPro(t *testing.T) {
 // ParseModel tests
 // ---------------------------------------------------------------------------
 
-func TestParseModel_ProviderTier(t *testing.T) {
+func TestParseModel_ProviderSlashModel(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: "zhipu/pro"}
-	provider, tier, err := cfg.ParseModel()
+	cfg := &config.Config{Model: "zhipu/glm-5"}
+	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if provider != "zhipu" {
 		t.Errorf("provider = %q, want %q", provider, "zhipu")
 	}
-	if tier != config.TierPro {
-		t.Errorf("tier = %q, want %q", tier, config.TierPro)
+	if model != "glm-5" {
+		t.Errorf("model = %q, want %q", model, "glm-5")
 	}
 }
 
-func TestParseModel_TierOnly(t *testing.T) {
+func TestParseModel_ModelOnly(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: "lite"}
-	provider, tier, err := cfg.ParseModel()
+	cfg := &config.Config{Model: "glm-5"}
+	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if provider != "" {
 		t.Errorf("provider = %q, want empty", provider)
 	}
-	if tier != config.TierLite {
-		t.Errorf("tier = %q, want %q", tier, config.TierLite)
+	if model != "glm-5" {
+		t.Errorf("model = %q, want %q", model, "glm-5")
 	}
 }
 
 func TestParseModel_Empty(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Model: ""}
-	provider, tier, err := cfg.ParseModel()
+	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if provider != "" {
 		t.Errorf("provider = %q, want empty", provider)
 	}
-	if tier != config.TierPro {
-		t.Errorf("tier = %q, want %q", tier, config.TierPro)
+	if model != "" {
+		t.Errorf("model = %q, want empty", model)
 	}
 }
 
-func TestParseModel_AllTiers(t *testing.T) {
+// ---------------------------------------------------------------------------
+// ResolveModel tests
+// ---------------------------------------------------------------------------
+
+func TestResolveModel_ExactMatch(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		input     string
-		wantTier  config.Tier
-		wantProvd string
-	}{
-		{"zhipu/lite", config.TierLite, "zhipu"},
-		{"zhipu/pro", config.TierPro, "zhipu"},
-		{"zhipu/max", config.TierMax, "zhipu"},
-		{"lite", config.TierLite, ""},
-		{"pro", config.TierPro, ""},
-		{"max", config.TierMax, ""},
-	} {
-		t.Run(tc.input, func(t *testing.T) {
-			cfg := &config.Config{Model: tc.input}
-			provider, tier, err := cfg.ParseModel()
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if provider != tc.wantProvd {
-				t.Errorf("provider = %q, want %q", provider, tc.wantProvd)
-			}
-			if tier != tc.wantTier {
-				t.Errorf("tier = %q, want %q", tier, tc.wantTier)
-			}
-		})
+	cfg := &config.Config{
+		Model: "zhipu/glm-5",
+		Providers: []config.Provider{
+			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+		},
+	}
+	p, model, err := cfg.ResolveModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Name != "zhipu" {
+		t.Errorf("provider = %q, want %q", p.Name, "zhipu")
+	}
+	if model != "glm-5" {
+		t.Errorf("model = %q, want %q", model, "glm-5")
 	}
 }
 
-func TestParseModel_InvalidTier(t *testing.T) {
+func TestResolveModel_FuzzyMatch(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		model string
-	}{
-		{"invalid tier in provider/tier", "zhipu/fast"},
-		{"invalid tier alone", "ultra"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{Model: tc.model}
-			_, _, err := cfg.ParseModel()
-			if err == nil {
-				t.Fatal("expected error for invalid tier")
-			}
-			if !strings.Contains(err.Error(), "invalid tier") {
-				t.Errorf("error should mention 'invalid tier', got: %v", err)
-			}
-		})
+	cfg := &config.Config{
+		Model: "glm-5",
+		Providers: []config.Provider{
+			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}, "glm-5.1": {}}},
+		},
+	}
+	p, model, err := cfg.ResolveModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Name != "zhipu" {
+		t.Errorf("provider = %q, want %q", p.Name, "zhipu")
+	}
+	if model != "glm-5" {
+		t.Errorf("model = %q, want %q", model, "glm-5")
+	}
+}
+
+func TestResolveModel_Empty(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+		},
+	}
+	p, model, err := cfg.ResolveModel()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Name != "zhipu" {
+		t.Errorf("provider = %q, want %q", p.Name, "zhipu")
+	}
+	if model != "glm-5" {
+		t.Errorf("model = %q, want first model", model)
+	}
+}
+
+func TestResolveModel_NotFound(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		Model: "nonexistent",
+		Providers: []config.Provider{
+			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+		},
+	}
+	_, _, err := cfg.ResolveModel()
+	if err == nil {
+		t.Fatal("expected error for nonexistent model")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}
+
+func TestResolveModel_NoProviders(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Model: "glm-5"}
+	_, _, err := cfg.ResolveModel()
+	if err == nil {
+		t.Fatal("expected error with no providers")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf(`error should mention "not found", got: %v`, err)
 	}
 }
 

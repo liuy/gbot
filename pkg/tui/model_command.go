@@ -15,17 +15,14 @@ import (
 
 // handleModel implements the /model command.
 //
-//	/model          → show model picker
-//	/model provider/tier → switch to specific provider and tier
-//	/model provider → switch provider, keep current tier
-//	/model tier     → switch tier on current provider
+//	/model              → show model picker
+//	/model provider/model → switch to specific provider and model
+//	/model provider     → switch provider, keep current model
+//	/model model        → switch model on current provider (fuzzy match)
 func (a *App) handleModel(args string, commitCmd tea.Cmd) tea.Cmd {
-	// Guard: no switching while streaming
 	if a.repl.IsStreaming() {
 		return a.showInfo("Cannot switch model while streaming")
 	}
-
-	// Guard: no providers
 	if len(a.providers) == 0 {
 		return a.showInfo("No providers configured")
 	}
@@ -34,18 +31,17 @@ func (a *App) handleModel(args string, commitCmd tea.Cmd) tea.Cmd {
 		return a.openModelPicker(commitCmd)
 	}
 
-	// "/" splits provider/tier
 	if before, after, ok := strings.Cut(args, "/"); ok {
-		return a.switchProviderTier(before, after, commitCmd)
+		return a.switchProviderModel(before, after, commitCmd)
 	}
 
-	// Check if arg is a valid tier
-	if isValidTier(args) {
-		return a.switchTier(args, commitCmd)
+	// Try as provider name first
+	if _, ok := a.providers[args]; ok {
+		return a.switchProvider(args, commitCmd)
 	}
 
-	// Otherwise treat as provider name
-	return a.switchProvider(args, commitCmd)
+	// Otherwise treat as model name (fuzzy match within current provider)
+	return a.switchModel(args, commitCmd)
 }
 
 // openModelPicker opens the interactive model picker.
@@ -54,7 +50,7 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 		return a.showInfo("A picker is already open")
 	}
 
-	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentTier)
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
 	items := make([]PickerItem, len(modelItems))
 	for i := range modelItems {
 		items[i] = &modelItems[i]
@@ -73,7 +69,6 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 
 // handleModelPickerDone processes the model picker selection or cancellation.
 func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, tea.Cmd) {
-
 	if d.Aborted() {
 		return a, nil
 	}
@@ -84,7 +79,6 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 	}
 
 	selected := items[idx]
-
 	provider, ok := a.providers[selected.Provider]
 	if !ok {
 		return a, a.showInfo(fmt.Sprintf("unknown provider: %s", selected.Provider))
@@ -93,68 +87,68 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(selected.Model)
 	a.currentProvider = selected.Provider
-	a.currentTier = selected.Tier
+	a.currentModel = selected.Model
 	a.updateEngineCapabilities(selected.Provider, selected.Model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
 
-	slog.Info("model: switched", "provider", selected.Provider, "tier", selected.Tier, "model", selected.Model)
-
-	return a, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", selected.Provider, selected.Tier, selected.Model))
+	slog.Info("model: switched", "provider", selected.Provider, "model", selected.Model)
+	return a, a.showInfo(fmt.Sprintf("Switched to %s/%s", selected.Provider, selected.Model))
 }
 
-// switchProviderTier switches both provider and tier.
-func (a *App) switchProviderTier(providerName, tierName string, commitCmd tea.Cmd) tea.Cmd {
+// switchProviderModel switches both provider and model.
+func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.Cmd) tea.Cmd {
 	provider, ok := a.providers[providerName]
 	if !ok {
 		return a.showInfo(fmt.Sprintf("unknown provider: %s, available: %s",
 			providerName, strings.Join(slices.Collect(maps.Keys(a.providers)), ", ")))
 	}
-	tier := config.Tier(tierName)
 	cfgProvider := a.providerConfigs[providerName]
 	if cfgProvider == nil {
 		return a.showInfo(fmt.Sprintf("no config for provider %s", providerName))
 	}
-	model := cfgProvider.Models[tier]
-	if model == "" {
-		return a.showInfo(fmt.Sprintf("provider %s has no model for tier %s", providerName, tier))
+
+	// Fuzzy match model name within provider
+	matched := config.FindModelByLongestPrefix(modelName, cfgProvider.ModelNames())
+	if matched == "" {
+		return a.showInfo(fmt.Sprintf("model %q not found in provider %s", modelName, providerName))
 	}
 
 	a.engine.SetProvider(provider)
-	a.engine.SetModel(model)
+	a.engine.SetModel(matched)
 	a.currentProvider = providerName
-	a.currentTier = tier
-	a.updateEngineCapabilities(providerName, model)
+	a.currentModel = matched
+	a.updateEngineCapabilities(providerName, matched)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
 
-	slog.Info("model: switched", "provider", providerName, "tier", tier, "model", model)
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", providerName, tier, model)))
+	slog.Info("model: switched", "provider", providerName, "model", matched)
+	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", providerName, matched)))
 }
 
-// switchTier switches tier on current provider.
-func (a *App) switchTier(tierName string, commitCmd tea.Cmd) tea.Cmd {
-	tier := config.Tier(tierName)
+// switchModel switches model on current provider using fuzzy match.
+func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 	cfgProvider := a.providerConfigs[a.currentProvider]
 	if cfgProvider == nil {
 		return a.showInfo(fmt.Sprintf("no config for provider %s", a.currentProvider))
 	}
-	model := cfgProvider.Models[tier]
-	if model == "" {
-		return a.showInfo(fmt.Sprintf("provider %s has no model for tier %s", a.currentProvider, tier))
+
+	matched := config.FindModelByLongestPrefix(modelName, cfgProvider.ModelNames())
+	if matched == "" {
+		return a.showInfo(fmt.Sprintf("model %q not found in provider %s", modelName, a.currentProvider))
 	}
 
-	a.engine.SetModel(model)
-	a.currentTier = tier
-	a.updateEngineCapabilities(a.currentProvider, model)
+	a.engine.SetModel(matched)
+	a.currentModel = matched
+	a.updateEngineCapabilities(a.currentProvider, matched)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
 
-	slog.Info("model: switched tier", "provider", a.currentProvider, "tier", tier, "model", model)
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", a.currentProvider, tier, model)))
+	slog.Info("model: switched model", "provider", a.currentProvider, "model", matched)
+	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", a.currentProvider, matched)))
 }
 
-// switchProvider switches provider, keeping current tier.
+// switchProvider switches provider, using first model of new provider.
 func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	provider, ok := a.providers[providerName]
 	if !ok {
@@ -165,41 +159,32 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	if cfgProvider == nil {
 		return a.showInfo(fmt.Sprintf("no config for provider %s", providerName))
 	}
-	model := cfgProvider.Models[a.currentTier]
+
+	model := cfgProvider.FirstModelName()
 	if model == "" {
-		return a.showInfo(fmt.Sprintf("provider %s has no model for tier %s", providerName, a.currentTier))
+		return a.showInfo(fmt.Sprintf("provider %s has no models", providerName))
 	}
 
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(model)
 	a.currentProvider = providerName
+	a.currentModel = model
 	a.updateEngineCapabilities(providerName, model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
 
-	slog.Info("model: switched provider", "provider", providerName, "tier", a.currentTier, "model", model)
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s (%s)", providerName, a.currentTier, model)))
+	slog.Info("model: switched provider", "provider", providerName, "model", model)
+	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", providerName, model)))
 }
 
-var validTiers = map[string]config.Tier{
-	string(config.TierLite): config.TierLite,
-	string(config.TierPro):  config.TierPro,
-	string(config.TierMax):  config.TierMax,
-}
-
-func isValidTier(s string) bool {
-	_, ok := validTiers[s]
-	return ok
-}
-
-// updateEngineCapabilities updates the engine's context window and max tokens
-// based on the provider config and model name. Called after every model switch.
+// updateEngineCapabilities updates the engine's context window and max tokens.
 func (a *App) updateEngineCapabilities(providerName, model string) {
 	cfgProvider := a.providerConfigs[providerName]
 	if cfgProvider == nil {
 		return
 	}
-	cw, mt := cfgProvider.ResolveCapabilities(model)
+	cw := cfgProvider.ResolveContext(model)
+	mt := cfgProvider.ResolveMaxTokens(model)
 	a.engine.SetMaxTokens(mt)
 	a.engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
 		ContextWindow:          cw,
