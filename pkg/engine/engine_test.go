@@ -4728,3 +4728,48 @@ func TestComputeSearchReadKind(t *testing.T) {
 		t.Errorf("NonExistent: expected zero SearchReadKind, got %+v", srk)
 	}
 }
+
+func TestSetContextTokens(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+
+	if eng.GetContextTokens() != 0 {
+		t.Errorf("initial ContextTokens = %d, want 0", eng.GetContextTokens())
+	}
+
+	eng.SetContextTokens(5000)
+	if eng.GetContextTokens() != 5000 {
+		t.Errorf("after SetContextTokens(5000) = %d, want 5000", eng.GetContextTokens())
+	}
+}
+
+func TestPersistContextTokens(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{
+		Provider: &mockProvider{},
+		Model:    "test",
+	})
+
+	// Without store/sessionID, PersistContextTokens is a no-op
+	eng.SetContextTokens(12345)
+	eng.PersistContextTokens()
+
+	// Verify GetContextTokens still works
+	if eng.GetContextTokens() != 12345 {
+		t.Errorf("GetContextTokens = %d, want 12345", eng.GetContextTokens())
+	}
+}
+
+func TestSetMaxTokens(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+
+	if eng.MaxTokens() != 16000 {
+		t.Errorf("initial MaxTokens = %d, want 16000", eng.MaxTokens())
+	}
+
+	eng.SetMaxTokens(4096)
+	if eng.MaxTokens() != 4096 {
+		t.Errorf("after SetMaxTokens(4096) = %d, want 4096", eng.MaxTokens())
+	}
+}

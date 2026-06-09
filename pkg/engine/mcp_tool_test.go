@@ -686,3 +686,16 @@ func TestMCPTool_IsSearchOrRead(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPTool_NewResultType(t *testing.T) {
+	t.Parallel()
+	info := mcp.DiscoveredTool{
+		Name:         "mcp__server__test",
+		OriginalName: "test",
+		ServerName:   "server",
+	}
+	tl := NewMCPTool(info, nil)
+	if result := tl.NewResultType(); result != nil {
+		t.Errorf("NewResultType() = %v, want nil (MCP tools return string data)", result)
+	}
+}

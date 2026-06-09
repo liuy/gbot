@@ -7811,3 +7811,38 @@ func TestContextTokens_RestoredOnResume(t *testing.T) {
 	}
 }
 
+func TestEffectiveWindow(t *testing.T) {
+	t.Parallel()
+
+	// Default: returns coalesceWindow constant
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	if w := eng.effectiveWindow(); w != coalesceWindow {
+		t.Errorf("default effectiveWindow = %v, want %v", w, coalesceWindow)
+	}
+
+	// Custom window
+	eng.window = 50 * time.Millisecond
+	if w := eng.effectiveWindow(); w != 50*time.Millisecond {
+		t.Errorf("custom effectiveWindow = %v, want 50ms", w)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input string
+		n     int
+		want  string
+	}{
+		{"short", 10, "short"},
+		{"exactly10!", 10, "exactly10!"},
+		{"this is a long string", 10, "this is a ..."},
+		{"", 5, ""},
+	}
+	for _, tt := range tests {
+		got := truncate(tt.input, tt.n)
+		if got != tt.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.n, got, tt.want)
+		}
+	}
+}
+

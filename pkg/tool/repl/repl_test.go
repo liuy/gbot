@@ -1903,3 +1903,21 @@ func TestREPLTool_RenderResult_JSONRawMessage(t *testing.T) {
 		t.Errorf("RenderResult(json.RawMessage) = %q, want unquoted string", got)
 	}
 }
+
+func TestREPLTool_NewResultType(t *testing.T) {
+	r := New()
+	result := r.NewResultType()
+	if result != nil {
+		t.Errorf("NewResultType() = %v, want nil (REPL returns string data)", result)
+	}
+}
+
+func TestREPLTool_RenderResult_NonJSONRawMessage(t *testing.T) {
+	r := New()
+	// RawMessage that is not valid JSON string — should return raw string
+	raw := json.RawMessage(`not a json string`)
+	got := r.RenderResult(raw)
+	if got != "not a json string" {
+		t.Errorf("RenderResult(non-JSON raw) = %q, want %q", got, "not a json string")
+	}
+}

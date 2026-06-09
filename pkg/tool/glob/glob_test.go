@@ -442,3 +442,39 @@ func TestRenderResult_MapData(t *testing.T) {
 		t.Errorf("RenderResult(map) = %q, should contain JSON with count:42", result)
 	}
 }
+
+func TestRenderResult_JsonRawMessage(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Valid JSON RawMessage with output fields
+	raw := json.RawMessage(`{"filenames":["a.go","b.go"],"numFiles":2,"durationMs":5,"truncated":false}`)
+	result := tt.RenderResult(raw)
+	if result != "a.go\nb.go" {
+		t.Errorf("RenderResult(json.RawMessage) = %q, want %q", result, "a.go\nb.go")
+	}
+}
+
+func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Empty files list
+	raw := json.RawMessage(`{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`)
+	result := tt.RenderResult(raw)
+	if result != "" {
+		t.Errorf("RenderResult(json.RawMessage empty) = %q, want empty", result)
+	}
+}
+
+func TestRenderResult_JsonRawMessage_Invalid(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Invalid JSON within RawMessage — should return raw string
+	raw := json.RawMessage(`not valid json`)
+	result := tt.RenderResult(raw)
+	if result != "not valid json" {
+		t.Errorf("RenderResult(invalid json.RawMessage) = %q, want %q", result, "not valid json")
+	}
+}
