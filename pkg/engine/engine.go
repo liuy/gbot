@@ -1423,23 +1423,26 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 
 	// Prepend user context (AGENTS.md/CLAUDE.md/currentDate).
 	// Source: query.ts:660 — prependUserContext(messages, userContext).
+	// TS injects for all agents (main + subagent); runAgent.ts:381 resolves
+	// userContext from getUserContext() which includes claudeMd for every
+	// agent type. Explore/Plan can opt out via omitClaudeMd (not yet ported).
 	// Placed before ToolSearch prepend so final order matches TS:
 	// [deferred-tools, claudeMd+currentDate, ...conversation]
-	if !e.isSubagent {
-		ctxMap := ctxbuild.LoadContextFiles(e.workingDir)
-		if len(ctxMap) > 0 {
-			ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
-			ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
-			if ctxText != "" {
-				ctxMsg := types.Message{
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
-					Flags:   types.FlagMeta,
-				}
-				apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
+	ctxMap := ctxbuild.LoadContextFiles(e.workingDir)
+	if len(ctxMap) > 0 {
+		ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
+		ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+		if ctxText != "" {
+			ctxMsg := types.Message{
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+				Flags:   types.FlagMeta,
 			}
+			apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
 		}
+	}
 
+	if !e.isSubagent {
 		// Inject pending tasks into context so LLM knows about them after restart/compact.
 		if pendingText := e.formatPendingTasks(); pendingText != "" {
 			taskMsg := types.Message{

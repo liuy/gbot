@@ -1334,6 +1334,7 @@ type testProvider struct {
 	mu        sync.Mutex
 	responses []testResponse
 	index     int
+	onStream  func(req *llm.Request) // if set, called before returning events
 }
 
 type testResponse struct {
@@ -1346,9 +1347,13 @@ func (p *testProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Respons
 	return nil, nil
 }
 
-func (p *testProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+func (p *testProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.onStream != nil {
+		p.onStream(req)
+	}
 
 	if p.index >= len(p.responses) {
 		return nil, nil
@@ -1992,6 +1997,54 @@ func TestRunForkedQuery(t *testing.T) {
 }
 
 // TestRunTurns_DrainsNotificationsAtStage20 verifies that when runTurns hits the
+
+// TestRunForkedQuery_IncludesClaudeMd verifies that fork agents receive the
+// CLAUDE.md context injection, matching TS behavior where runForkedAgent
+// passes userContext (containing claudeMd) to query() → prependUserContext().
+func TestRunForkedQuery_IncludesClaudeMd(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	claudeMdContent := "# Test Project\nFollow TDD for all changes."
+	if err := os.WriteFile(tmpDir+"/CLAUDE.md", []byte(claudeMdContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedMessages []types.Message
+	mp := &testProvider{
+		onStream: func(req *llm.Request) {
+			capturedMessages = req.Messages
+		},
+	}
+	mp.addResponse(subTextEvents("test", "fork response"), nil)
+
+	parentEng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		WorkingDir: tmpDir,
+	})
+
+	subEng := parentEng.NewSubEngine(SubEngineOptions{
+		AgentType: "fork",
+	})
+
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("do the task")}},
+	}
+
+	result := subEng.RunForkedQuery(context.Background(), messages, "")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if len(capturedMessages) == 0 {
+		t.Fatal("no messages captured from provider")
+	}
+
+	first := capturedMessages[0]
+	if !strings.Contains(first.Content[0].Text, "Test Project") {
+		t.Errorf("first message should contain CLAUDE.md content, got: %q", truncate(first.Content[0].Text, 200))
+	}
+}
 
 func TestIsBuiltInAgent(t *testing.T) {
 	tests := []struct {
