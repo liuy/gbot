@@ -6877,14 +6877,13 @@ func TestRetryView_VisibleAtAttempt4(t *testing.T) {
 	app.width = 80
 	app.height = 24
 	app.repl.streaming = true
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
 	app.retryActive = true
 	app.retryAttempt = 4
 	app.retryMax = 10
 	app.retryRemaining = 5 * time.Second
-	app.retryStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.retryStart = time.Now() // REAL-TIME: retry countdown
 	app.retryErrorType = string(types.RetryErrorStreamInterrupted)
-	app.retryStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	view := app.View()
 	if !strings.Contains(view, "Connection interrupted") {
@@ -6919,19 +6918,18 @@ func TestRetryView_AutoHideWhenStreaming(t *testing.T) {
 			app.width = 80
 			app.height = 24
 			app.repl.streaming = true
-			app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+			app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
 			app.retryActive = true
 			app.retryAttempt = 4
 			app.retryMax = 10
 			app.retryRemaining = 5 * time.Second
-			app.retryStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+			app.retryStart = time.Now() // REAL-TIME: retry countdown
 			app.retryErrorType = string(types.RetryErrorStreamInterrupted)
-			app.retryStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 			app.responseCharCount = tt.responseChars
 			app.thinkingActive = tt.thinkingActive
 
 			view := app.View()
-			hasRetry := strings.Contains(view, "Retrying in")
+			hasRetry := strings.Contains(view, "Retrying in") || strings.Contains(view, "Connecting")
 			if hasRetry != tt.shouldShowRetry {
 				t.Errorf("%s: hasRetry=%v, want %v", tt.name, hasRetry, tt.shouldShowRetry)
 			}
@@ -7039,6 +7037,63 @@ func TestRetryView_CountdownAccuracy(t *testing.T) {
 			}
 		}
 		t.Error("no countdown line found in view")
+	}
+}
+
+// Regression: retryActive was only reset at queryEnd, so after a successful retry
+// the LLM would be streaming text but the view still showed "Connection interrupted".
+// streamMessageMsg (text_delta) must reset retryActive so normal display resumes.
+func TestStreamMessageMsg_ResetsRetryActive(t *testing.T) {
+	app := newTestApp(nil)
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
+	app.retryActive = true
+	app.retryAttempt = 5
+	app.retryMax = 10
+	app.retryRemaining = 5 * time.Second
+	app.retryStart = time.Now() // REAL-TIME: retry countdown
+	app.retryErrorType = string(types.RetryErrorStreamInterrupted)
+
+	if !app.retryActive {
+		t.Fatal("setup: retryActive should be true")
+	}
+
+	// LLM starts streaming text after successful retry
+	_, _ = app.Update(streamMessageMsg{})
+
+	if app.retryActive {
+		t.Fatal("retryActive should be false after streamMessageMsg — " +
+			"retry succeeded but view still shows error overlay")
+	}
+}
+
+// Regression: countdown showed "Retrying in 0s…" for the entire API call duration
+// (could be 60+ seconds) because it only accounted for backoff, not API call time.
+// When countdown reaches 0, should show "Connecting…" instead of stuck "0s".
+func TestRetryView_ShowsConnectingWhenCountdownReachesZero(t *testing.T) {
+	app := newTestApp(nil)
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.progressStart = time.Now().Add(-60 * time.Second) // REAL-TIME: progress timer
+	app.retryActive = true
+	app.retryAttempt = 5
+	app.retryMax = 10
+	app.retryRemaining = 5 * time.Second
+	// retryStart was 10 seconds ago, but retryRemaining was only 5s — countdown has elapsed
+	app.retryStart = time.Now().Add(-10 * time.Second) // REAL-TIME: elapsed countdown
+	app.retryErrorType = string(types.RetryErrorStreamInterrupted)
+
+	view := app.View()
+
+	if strings.Contains(view, "Retrying in 0s") {
+		t.Fatal("view should NOT show 'Retrying in 0s' when countdown has elapsed — " +
+			"this means the display is stuck during API call phase")
+	}
+	if !strings.Contains(view, "Connecting") {
+		t.Errorf("view should show 'Connecting…' when countdown has elapsed, got:\n%s", view)
 	}
 }
 

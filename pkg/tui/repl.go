@@ -453,6 +453,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case streamMessageMsg:
+		a.retryActive = false
 		a.markViewportDirty()
 		return true, a.readEvents()
 

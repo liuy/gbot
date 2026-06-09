@@ -1021,8 +1021,14 @@ func (a *App) View() string {
 		if a.retryActive && a.retryAttempt >= 4 && !a.thinkingActive {
 			secs := max(int((a.retryRemaining-time.Since(a.retryStart)).Seconds())+1, 0)
 			errLine := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(formatRetryError(a.retryErrorType))
-			countdownLine := lipgloss.NewStyle().Faint(true).Render(
-				fmt.Sprintf("Retrying in %ds… (attempt %d/%d)", secs, a.retryAttempt, a.retryMax))
+			var countdownLine string
+			if secs > 0 {
+				countdownLine = lipgloss.NewStyle().Faint(true).Render(
+					fmt.Sprintf("Retrying in %ds… (attempt %d/%d)", secs, a.retryAttempt, a.retryMax))
+			} else {
+				countdownLine = lipgloss.NewStyle().Faint(true).Render(
+					fmt.Sprintf("Connecting… (attempt %d/%d)", a.retryAttempt, a.retryMax))
+			}
 			sb.WriteString(errLine + "\n" + countdownLine + "\n")
 		} else {
 			spinnerFrame := a.spinner.View()

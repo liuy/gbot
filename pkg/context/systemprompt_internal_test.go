@@ -21,7 +21,7 @@ func TestLoadSoulFile_FileExists(t *testing.T) {
 
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", homeDir)
-	defer func() { os.Setenv("HOME", origHome) }()
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	got, err := LoadSoulFile()
 	if err != nil {
@@ -36,7 +36,7 @@ func TestLoadSoulFile_NoFile(t *testing.T) {
 	homeDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", homeDir)
-	defer func() { os.Setenv("HOME", origHome) }()
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	got, err := LoadSoulFile()
 	if err != nil {
@@ -59,7 +59,7 @@ func TestLoadSoulFile_EmptyFile(t *testing.T) {
 
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", homeDir)
-	defer func() { os.Setenv("HOME", origHome) }()
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	got, err := LoadSoulFile()
 	if err != nil {
@@ -95,7 +95,7 @@ func TestDetectWorkspace_NoGbotDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer func() { os.Setenv("HOME", origHome) }()
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	result := detectWorkspace()
 	if result != "" {
@@ -112,7 +112,7 @@ func TestDetectWorkspace_HasGbotDir(t *testing.T) {
 
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", homeDir)
-	defer func() { os.Setenv("HOME", origHome) }()
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	result := detectWorkspace()
 	if result != gbotDir {
@@ -145,8 +145,8 @@ func TestRuntimeInfo_IncludesAllFields(t *testing.T) {
 
 func TestRuntimeInfo_SHELLNotSet(t *testing.T) {
 	origShell := os.Getenv("SHELL")
-	os.Unsetenv("SHELL")
-	defer func() { os.Setenv("SHELL", origShell) }()
+	_ = os.Unsetenv("SHELL")
+	defer func() { _ = os.Setenv("SHELL", origShell) }()
 
 	tmpDir := t.TempDir()
 	b := &Builder{WorkingDir: tmpDir}
