@@ -11,6 +11,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -84,7 +85,7 @@ func renderEditResult(data any) string {
 	}
 	added, removed := tool.CountPatchChanges(hunks)
 	summary := tool.FormatDiffSummary(added, removed)
-	diff := tool.RenderDiff(hunks)
+	diff := tool.RenderDiff(hunks, editDiffWidth())
 	if diff == "" {
 		return summary
 	}
@@ -92,6 +93,17 @@ func renderEditResult(data any) string {
 }
 
 // renderEditError converts Edit error messages to short summaries for TUI.
+// editDiffWidth returns the terminal width to pass to RenderDiff, falling
+// back to 0 (no wrap) when the terminal size cannot be determined. Mirrors
+// ink.tsx:226 process.stdout.columns.
+func editDiffWidth() int {
+	_, cols, err := bash.GetTerminalSize()
+	if err != nil || cols <= 0 {
+		return 0
+	}
+	return cols
+}
+
 // Source: FileEditTool/UI.tsx — renderToolUseErrorMessage.
 func renderEditError(msg string) string {
 	if strings.Contains(msg, "File has not been read yet") {

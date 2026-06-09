@@ -18,6 +18,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -365,11 +366,22 @@ func renderWriteResult(data any) string {
 	hunks := convertHunks(out.StructuredPatch)
 	added, removed := tool.CountPatchChanges(hunks)
 	summary := tool.FormatDiffSummary(added, removed)
-	diff := tool.RenderDiff(hunks)
+	diff := tool.RenderDiff(hunks, writeDiffWidth())
 	if diff == "" {
 		return summary
 	}
 	return summary + "\n" + diff
+}
+
+// writeDiffWidth returns the terminal width to pass to RenderDiff, falling
+// back to 0 (no wrap) when the terminal size cannot be determined. Mirrors
+// ink.tsx:226 process.stdout.columns.
+func writeDiffWidth() int {
+	_, cols, err := bash.GetTerminalSize()
+	if err != nil || cols <= 0 {
+		return 0
+	}
+	return cols
 }
 
 // convertHunks converts filewrite-specific hunks to tool.DiffHunk.
