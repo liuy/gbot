@@ -580,6 +580,30 @@ func TestUpdateEngineCapabilities_PreservesContextTokens(t *testing.T) {
 	}
 }
 
+// Cold-start path: no API response yet, so engine.ContextTokens == 0. The
+// status bar must still reflect the system prompt + tools estimate, not 0.
+// (Regression for: /model switch showed "0/200.0k" before any turn completed.)
+func TestUpdateEngineCapabilities_ColdStart_EstimatesFromPrompt(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Set a non-trivial system prompt so EstimateTokens yields a non-zero value.
+	a.systemPrompt = "You are a helpful assistant. " + strings.Repeat("context assembly. ", 200)
+
+	if a.engine.GetContextTokens() != 0 {
+		t.Fatalf("precondition: expected fresh engine to have 0 context tokens")
+	}
+
+	a.updateEngineCapabilities("openai", "glm-max")
+
+	if a.status.contextUsed == 0 {
+		t.Errorf("contextUsed = 0 on cold-start switch; want >0 from systemPrompt estimate")
+	}
+	if a.status.contextUsed < len(a.systemPrompt)/8 {
+		t.Errorf("contextUsed = %d; want at least ~len/4 of systemPrompt (%d chars)",
+			a.status.contextUsed, len(a.systemPrompt))
+	}
+}
+
 func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	a.handleModel("", nil)

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // handleModel implements the /model command.
@@ -190,5 +192,17 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 		ContextWindow:          cw,
 		MaxConsecutiveFailures: 3,
 	})
-	a.status.SetContext(a.engine.GetContextTokens(), cw)
+	// Prefer engine's runtime ContextTokens (last API usage). Falls back to
+	// re-estimating from system prompt + tools on cold start (no turn yet
+	// completed), matching the pattern in repl.go's send path.
+	used := a.engine.GetContextTokens()
+	if used == 0 {
+		used = types.EstimateTokens(a.systemPrompt)
+		for _, t := range a.engine.AllTools() {
+			if b, err := json.Marshal(t.InputSchema()); err == nil {
+				used += types.EstimateTokens(string(b))
+			}
+		}
+	}
+	a.status.SetContext(used, cw)
 }
