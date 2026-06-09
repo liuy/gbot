@@ -190,5 +190,5 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 		ContextWindow:          cw,
 		MaxConsecutiveFailures: 3,
 	})
-	a.status.SetContext(0, cw)
+	a.status.SetContext(a.engine.GetContextTokens(), cw)
 }

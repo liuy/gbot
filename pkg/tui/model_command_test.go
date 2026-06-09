@@ -561,6 +561,25 @@ func TestFindCurrentIndex_Empty(t *testing.T) {
 // picker-already-open guard
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// updateEngineCapabilities — preserves ContextTokens on model switch
+// ---------------------------------------------------------------------------
+
+func TestUpdateEngineCapabilities_PreservesContextTokens(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Simulate that the engine has accumulated context tokens from prior turns.
+	a.engine.SetContextTokens(42000)
+
+	// Switch model — the status bar should reflect the existing token count,
+	// not reset to zero.
+	a.updateEngineCapabilities("openai", "glm-max")
+
+	if a.status.contextUsed != 42000 {
+		t.Errorf("contextUsed = %d, want 42000 (preserved from engine)", a.status.contextUsed)
+	}
+}
+
 func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	a.handleModel("", nil)
