@@ -35,6 +35,7 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 
 	"github.com/google/uuid"
+	"github.com/liuy/gbot/pkg/engine/attachment"
 )
 
 // Compactor is the interface for auto-compact operations.
@@ -111,7 +112,7 @@ type Engine struct {
 	turnCount     int
 	dispatcher    types.EventDispatcher
 	workingDir    string
-	attachments *attachmentQueue
+	attachments *attachment.Queue
 	systemPrompt  string // stored system prompt for fork agent access
 	skillListing  string          // formatted skill listing for /context breakdown
 	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
@@ -265,71 +266,6 @@ type QueryResult struct {
 	Error      error
 }
 
-// attachmentQueue is a thread-safe FIFO of queued items to be injected
-// as attachments at turn boundaries.
-// Source: TS commandQueue with enqueuePendingNotification priority system.
-type attachmentQueue struct {
-	mu    sync.Mutex
-	items []types.QueuedItem
-}
-
-func (q *attachmentQueue) Enqueue(item types.QueuedItem) {
-	q.mu.Lock()
-	q.items = append(q.items, item)
-	q.mu.Unlock()
-}
-
-func (q *attachmentQueue) Len() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.items)
-}
-
-func priorityOrder(p types.QueuePriority) int {
-	switch p {
-	case types.PriorityNow:
-		return 0
-	case types.PriorityNext:
-		return 1
-	case types.PriorityLater:
-		return 2
-	default:
-		return 1
-	}
-}
-
-// DrainByPriority drains items with priority <= maxPriority.
-// TS source: messageQueueManager.ts:525 — getCommandsByMaxPriority
-func (q *attachmentQueue) DrainByPriority(maxPriority types.QueuePriority) []types.QueuedItem {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	threshold := priorityOrder(maxPriority)
-	var matched, remaining []types.QueuedItem
-	for _, item := range q.items {
-		itemPri := priorityOrder(item.Priority)
-		if item.Priority == "" {
-			itemPri = priorityOrder(types.PriorityNext)
-		}
-		if itemPri <= threshold {
-			matched = append(matched, item)
-		} else {
-			remaining = append(remaining, item)
-		}
-	}
-	q.items = remaining
-	return matched
-}
-
-// DrainAll drains all items. Used for no-tool-use terminal path.
-func (q *attachmentQueue) DrainAll() []types.QueuedItem {
-	q.mu.Lock()
-	pending := q.items
-	q.items = nil
-	q.mu.Unlock()
-	return pending
-}
-
 // New creates a new Engine.
 func New(p *Params) *Engine {
 	if p.MaxTokens == 0 {
@@ -366,7 +302,7 @@ func New(p *Params) *Engine {
 		logger:                  p.Logger,
 		tokenBudget:             p.TokenBudget,
 		dispatcher:              p.Dispatcher,
-		attachments:             &attachmentQueue{},
+		attachments:             &attachment.Queue{},
 		maxTurns:                p.MaxTurns,
 		compactor:               p.Compactor,
 		autoCompactConfig:       p.AutoCompact,
@@ -3189,7 +3125,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		tokenBudget:             0, // sub-agents bypass budget checks via isSubagent
 		turnCount:               0,
 		dispatcher:              dispatcher,
-		attachments:             &attachmentQueue{},
+		attachments:             &attachment.Queue{},
 		isSubagent:              true,
 		agentType:               opts.AgentType,
 		maxTurns:                subMaxTurns(opts.MaxTurns),
