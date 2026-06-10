@@ -803,7 +803,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.committedCount = len(a.repl.messages)
 			a.contentCache = ""
 			a.contentDirty = false
-			return a, tea.Println(rendered)
+			return a, tea.Println(rendered+"\n")
 		}
 		return a, nil
 
