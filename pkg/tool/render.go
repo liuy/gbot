@@ -531,7 +531,6 @@ func RenderDiff(hunks []DiffHunk) string {
 				sb.WriteString(diffDelFg)
 				sb.WriteByte('-')
 				sb.WriteString(diffReset)
-				sb.WriteString(diffDim)
 				sb.WriteString(diffDelBg)
 				sb.WriteString(content)
 			default: // context
