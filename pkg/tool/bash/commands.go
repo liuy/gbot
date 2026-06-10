@@ -53,8 +53,12 @@ func isSearchOrReadBashCommand(command string) tool.SearchReadKind {
 		// Skip redirects and their targets
 		part = skipRedirects(part)
 
-		// Extract base command (first word)
+		// Extract base command (first word). For xargs, skip it and its
+		// flags to classify the command it runs (e.g. "xargs -0 grep" → "grep").
 		baseCmd := extractBaseCommand(part)
+		if baseCmd == "xargs" {
+			baseCmd = extractBaseCommandAfterXargs(part)
+		}
 		if baseCmd == "" {
 			continue
 		}
@@ -224,6 +228,31 @@ func extractBaseCommand(part string) string {
 		}
 	}
 	return part
+}
+
+// extractBaseCommandAfterXargs skips "xargs" and its flags (-0, -I{}, etc.)
+// to find the actual command being executed.
+func extractBaseCommandAfterXargs(part string) string {
+	fields := strings.Fields(part)
+	skipNext := false
+	for i, f := range fields {
+		if i == 0 {
+			continue // skip "xargs" itself
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			// -I without {} in the same arg takes the next arg as replacement
+			if strings.HasPrefix(f, "-I") && !strings.Contains(f[2:], "{}") {
+				skipNext = true
+			}
+			continue
+		}
+		return f
+	}
+	return ""
 }
 
 // isSedInplace returns true if the sed command uses -i or -i.suffix (inplace).

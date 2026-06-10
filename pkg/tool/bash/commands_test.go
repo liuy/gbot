@@ -40,6 +40,12 @@ func TestIsSearchOrReadBashCommand(t *testing.T) {
 		// Quoted strings preserved
 		{"grep quoted", `grep 'hello world' file.txt`, tool.SearchReadKind{IsSearch: true}},
 
+		// xargs as neutral passthrough
+		{"pipe find xargs grep", `find . -name "*.go" | xargs grep "pattern"`, tool.SearchReadKind{IsSearch: true}},
+		{"pipe grep xargs cat", `grep -rl "pattern" | xargs cat`, tool.SearchReadKind{IsSearch: true, IsRead: true}},
+		{"pipe find xargs -0 grep", `find . -print0 | xargs -0 grep "pattern"`, tool.SearchReadKind{IsSearch: true}},
+		{"pipe find xargs -I grep", `find . -type f | xargs -I % grep "pattern" %`, tool.SearchReadKind{IsSearch: true}},
+
 		// sed: search when no -i flag
 		{"sed print", `sed -n '10,20p' file.txt`, tool.SearchReadKind{IsSearch: true}},
 		{"sed substitute stdout", `sed 's/old/new/g' file.txt`, tool.SearchReadKind{IsSearch: true}},
