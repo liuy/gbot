@@ -383,6 +383,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 	case textDeltaMsg:
 		a.markViewportDirty()
+		// LLM is streaming text — retry (if any) succeeded. Clear retry state
+		// because callLLMWithRetry doesn't emit EventQueryStart on retry success,
+		// so streamMessageMsg never fires for retried requests.
+		a.retryActive = false
 		if m.Agent != nil {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			if parent != nil {
@@ -399,6 +403,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.responseCharCount += len(m.Text)
 		return true, a.readEvents()
 	case textStartMsg:
+		a.retryActive = false
 		return true, a.readEvents()
 
 	case textEndMsg:

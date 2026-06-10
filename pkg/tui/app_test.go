@@ -8788,3 +8788,48 @@ func TestResume_TaskSummary_UsesToolDescription(t *testing.T) {
 		t.Errorf("Task summary should contain 'Create', got: %q", tc.Summary)
 	}
 }
+
+// TestTextDelta_ClearsRetryActiveAfterRetry verifies that when a retry succeeds
+// and the LLM starts streaming text, retryActive is cleared. Regression:
+// callLLMWithRetry doesn't emit EventQueryStart on retry success, so
+// streamMessageMsg never fires — the TUI kept showing "Connection interrupted"
+// even after the LLM was already streaming content.
+func TestTextDelta_ClearsRetryActiveAfterRetry(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(nil)
+	app.width = 80
+	app.height = 24
+	app.repl.streaming = true
+	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.retryActive = true
+	app.retryAttempt = 5
+	app.retryMax = 10
+	app.retryRemaining = 5 * time.Second
+	app.retryStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.retryErrorType = string(types.RetryErrorStreamInterrupted)
+
+	if !app.retryActive {
+		t.Fatal("setup: retryActive should be true")
+	}
+
+	// Simulate retry success: LLM starts streaming text.
+	// textStartMsg arrives first.
+	_, _ = app.Update(textStartMsg{})
+	if app.retryActive {
+		t.Fatal("retryActive should be false after textStartMsg — LLM is streaming, retry succeeded")
+	}
+
+	// Set retryActive again to test textDeltaMsg path.
+	app.retryActive = true
+	_, _ = app.Update(textDeltaMsg{Text: "Hello"})
+	if app.retryActive {
+		t.Fatal("retryActive should be false after textDeltaMsg — LLM is streaming, retry succeeded")
+	}
+
+	// Verify "Connection interrupted" is NOT in the view.
+	view := app.View()
+	if strings.Contains(view, "Connection interrupted") {
+		t.Error("View should NOT show 'Connection interrupted' after retry succeeded and text is streaming")
+	}
+}
