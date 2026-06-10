@@ -1163,3 +1163,51 @@ func formatOpts(opts []DialogOption) string {
 	}
 	return fmt.Sprintf("%v", labels)
 }
+
+// TestExecuteRewind_MiddlePoint_RedisplaysMessages verifies that after rewinding
+// to a middle point, the TUI repl.messages contains the remaining engine messages
+// (not an empty state). Regression: rewind cleared repl.messages but didn't
+// rebuild from engine, causing a blank screen.
+func TestExecuteRewind_MiddlePoint_RedisplaysMessages(t *testing.T) {
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 0")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply 0")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 1")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply 1")}, Timestamp: testTime},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg 2")}, Timestamp: testTime},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("reply 2")}, Timestamp: testTime},
+	})
+
+	// Set up TUI state as if the conversation had been running.
+	a := &App{
+		engine:         eng,
+		input:          NewInput(),
+		repl:           NewReplState(),
+		committedCount: 6,
+	}
+	a.width = 80
+
+	// Rewind to index 2 (the second user message).
+	// After rewind, engine has 2 messages (msg 0 + reply 0).
+	a.executeRewind(2, engine.RewindMessagesOnly, eng.Messages())
+
+	// Engine messages should be truncated to 2.
+	engMsgs := eng.Messages()
+	if len(engMsgs) != 2 {
+		t.Fatalf("engine messages = %d, want 2", len(engMsgs))
+	}
+
+	// TUI repl.messages should contain the rewound messages.
+	if len(a.repl.messages) == 0 {
+		t.Fatal("TUI repl.messages is empty after rewind — screen would be blank")
+	}
+	// The rewound messages should match engine messages.
+	if len(a.repl.messages) != 2 {
+		t.Errorf("TUI repl.messages = %d, want 2 (matching engine)", len(a.repl.messages))
+	}
+	// committedCount should be 0 so all messages are rendered (not hidden).
+	if a.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (all messages should be rendered)", a.committedCount)
+	}
+}
