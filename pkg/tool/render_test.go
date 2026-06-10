@@ -144,11 +144,11 @@ func TestFormatDiffSummary_Zero(t *testing.T) {
 
 func TestRenderDiff_EmptyHunks(t *testing.T) {
 	t.Parallel()
-	got := RenderDiff(nil, 0)
+	got := RenderDiff(nil)
 	if got != "" {
 		t.Errorf("expected empty for nil hunks, got %q", got)
 	}
-	got = RenderDiff([]DiffHunk{}, 0)
+	got = RenderDiff([]DiffHunk{})
 	if got != "" {
 		t.Errorf("expected empty for empty hunks, got %q", got)
 	}
@@ -162,7 +162,7 @@ func TestRenderDiff_SingleAddition(t *testing.T) {
 			Lines: []string{" ctx", "+added"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	if !strings.Contains(plain, "1  ctx") {
 		t.Errorf("expected context line '1  ctx', got:\n%s", plain)
@@ -180,7 +180,7 @@ func TestRenderDiff_SingleDeletion(t *testing.T) {
 			Lines: []string{" ctx", "-deleted"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	if !strings.Contains(plain, "2 -deleted") {
 		t.Errorf("expected deleted line '2 -deleted', got:\n%s", plain)
@@ -195,7 +195,7 @@ func TestRenderDiff_MixedChanges(t *testing.T) {
 			Lines: []string{" ctx1", "-old", "+new", " ctx2"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	if !strings.Contains(plain, "-old") {
 		t.Errorf("expected '-old', got:\n%s", plain)
@@ -224,7 +224,7 @@ func TestRenderDiff_MultipleHunks(t *testing.T) {
 			Lines: []string{" c", "-d"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	// Should have "..." separator between hunks
 	if !strings.Contains(plain, "...") {
@@ -247,7 +247,7 @@ func TestRenderDiff_LineNumberAlignment(t *testing.T) {
 			Lines: []string{"+new"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	// newLine=100, maxDigits=3, so "100" is 3 chars
 	if !strings.Contains(plain, "100 +new") {
@@ -263,7 +263,7 @@ func TestRenderDiff_HunkWithEmptyLines(t *testing.T) {
 			Lines: []string{" ctx", "+"}, // empty addition
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	// Should not panic, should contain the addition marker
 	lines := strings.Split(plain, "\n")
@@ -280,7 +280,7 @@ func TestRenderDiff_SingleContextHunk(t *testing.T) {
 			Lines: []string{" a", " b", " c"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	plain := stripDiffANSI(got)
 	if !strings.Contains(plain, "1  a") {
 		t.Errorf("expected context line '1  a', got:\n%s", plain)
@@ -363,213 +363,6 @@ func TestTruncateStringLines_ZeroMax(t *testing.T) {
 	got := TruncateStringLines("line1\nline2", 0)
 	if got != "line1\nline2" {
 		t.Errorf("zero maxLines should return original, got: %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RenderDiff — wrap + pad to terminal width (TS StructuredDiff/Fallback.tsx)
-// ---------------------------------------------------------------------------
-//
-// Source: src/components/StructuredDiff/Fallback.tsx formatDiff() / wrapDiffLine()
-// — each diff line wraps to fit availableContentWidth = max(1, width - maxWidth - 1 - diffPrefixWidth).
-// — sub-lines after the first keep the gutter width but blank out the line number column.
-// — every sub-line is padded with the line's background color to fill width.
-//
-// width <= 0 disables wrapping (back-compat escape hatch for tests that
-// don't care about wrapping).
-
-// A long line that exceeds the requested terminal width wraps into multiple
-// sub-lines, each carrying the diffAddBg so the visual stripe is unbroken.
-func TestRenderDiff_LongAddedLine_WrapsWithAddBg(t *testing.T) {
-	t.Parallel()
-	// 100-char content line, width=40 → must wrap (maxDigits=1, so available=36)
-	long := "+" + strings.Repeat("a", 100)
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 0, NewStart: 1, NewLines: 1,
-		Lines: []string{long},
-	}}
-	got := RenderDiff(hunks, 40)
-	plain := stripDiffANSI(got)
-	lines := strings.Split(plain, "\n")
-	wantSubLines := 3 // 100 chars / 36 cols per sub-line = 3
-	if len(lines) != wantSubLines {
-		t.Fatalf("expected exactly %d sub-lines after wrap, got %d:\n%s",
-			wantSubLines, len(lines), plain)
-	}
-	// diffAddBg must appear in both the gutter and the content of every
-	// sub-line (gutter + content are written as two separate styled spans).
-	// We assert at-least-N-per-line by counting \x1b[48;5;22m per sub-line
-	// when we split the raw output on \x1b[0m boundaries.
-	rawLines := strings.Split(got, "\x1b[0m")
-	bgCount := 0
-	for _, raw := range rawLines {
-		bgCount += strings.Count(raw, "\x1b[48;5;22m")
-	}
-	if bgCount < wantSubLines {
-		t.Errorf("expected diffAddBg >= %d (one per sub-line's content area), got %d in:\n%s",
-			wantSubLines, bgCount, got)
-	}
-	// Sanity: no diffDelBg should leak into an added-only hunk.
-	if c := strings.Count(got, "\x1b[48;5;52m"); c != 0 {
-		t.Errorf("expected zero diffDelBg on an added-only hunk, got %d", c)
-	}
-	// All 100 'a' chars must be preserved across sub-lines (wrap must not
-	// truncate or duplicate content).
-	if n := strings.Count(plain, "a"); n != 100 {
-		t.Errorf("expected 100 'a' chars preserved across wrap, got %d in:\n%s", n, plain)
-	}
-	// First sub-line must be exactly width columns (gutter + content + pad).
-	if w := len([]rune(lines[0])); w != 40 {
-		t.Errorf("first sub-line width = %d, want 40 (full row fill)", w)
-	}
-}
-
-// Long removed line wraps and every sub-line carries diffDelBg.
-func TestRenderDiff_LongRemovedLine_WrapsWithDelBg(t *testing.T) {
-	t.Parallel()
-	long := "-" + strings.Repeat("b", 100)
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 0,
-		Lines: []string{long},
-	}}
-	got := RenderDiff(hunks, 40)
-	plain := stripDiffANSI(got)
-	lines := strings.Split(plain, "\n")
-	wantSubLines := 3
-	if len(lines) != wantSubLines {
-		t.Fatalf("expected exactly %d sub-lines after wrap, got %d:\n%s",
-			wantSubLines, len(lines), plain)
-	}
-	// diffDelBg must appear in every sub-line's content area (counting
-	// occurrences after \x1b[0m boundaries). The dim (red-fg) attribute is
-	// also expected on every sub-line, since removed-line markers use it.
-	rawLines := strings.Split(got, "\x1b[0m")
-	delBgCount, delFgCount := 0, 0
-	for _, raw := range rawLines {
-		delBgCount += strings.Count(raw, "\x1b[48;5;52m")
-		delFgCount += strings.Count(raw, "\x1b[38;5;9m")
-	}
-	if delBgCount < wantSubLines {
-		t.Errorf("expected diffDelBg >= %d (one per sub-line), got %d in:\n%s",
-			wantSubLines, delBgCount, got)
-	}
-	if delFgCount < wantSubLines {
-		t.Errorf("expected diffDelFg >= %d (one per sub-line marker), got %d", wantSubLines, delFgCount)
-	}
-	// Sanity: no diffAddBg on a removed-only hunk.
-	if c := strings.Count(got, "\x1b[48;5;22m"); c != 0 {
-		t.Errorf("expected zero diffAddBg on removed-only hunk, got %d", c)
-	}
-	// All 100 'b' chars must be preserved across sub-lines.
-	if n := strings.Count(plain, "b"); n != 100 {
-		t.Errorf("expected 100 'b' chars preserved across wrap, got %d in:\n%s", n, plain)
-	}
-	// First sub-line width must equal full terminal width.
-	if w := len([]rune(lines[0])); w != 40 {
-		t.Errorf("first sub-line width = %d, want 40 (full row fill)", w)
-	}
-}
-
-// Each sub-line is padded with trailing spaces under the same bg color so
-// the right edge of every visual row reaches exactly `width` columns.
-// Verifies by stripping ANSI and counting runes per line == width.
-func TestRenderDiff_Wrap_PadsEachSubLineToWidth(t *testing.T) {
-	t.Parallel()
-	const width = 40
-	long := "+" + strings.Repeat("x", 100)
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 0, NewStart: 1, NewLines: 1,
-		Lines: []string{long},
-	}}
-	got := RenderDiff(hunks, width)
-	plain := stripDiffANSI(got)
-	for i, line := range strings.Split(plain, "\n") {
-		// Use visible (rune) width, not byte length.
-		if w := len([]rune(line)); w != width {
-			t.Errorf("sub-line %d width = %d, want %d (line=%q)", i, w, width, line)
-		}
-	}
-}
-
-// Sub-lines after the first leave the gutter (line-number column) blank but
-// preserve column width so the diff marker still aligns vertically.
-func TestRenderDiff_Wrap_SubsequentSubLinesBlankGutter(t *testing.T) {
-	t.Parallel()
-	const width = 40
-	// Gutter layout: " " + paddedNum + " " = maxDigits+2 chars; continuation
-	// sub-lines replace paddedNum with spaces. For a single new line at line 1,
-	// maxDigits = 1, so the gutter is " 1 " (3 chars) on the first sub-line and
-	// "   " (3 spaces) on continuations.
-	long := "+" + strings.Repeat("z", 100)
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 0, NewStart: 1, NewLines: 1,
-		Lines: []string{long},
-	}}
-	got := RenderDiff(hunks, width)
-	plain := stripDiffANSI(got)
-	lines := strings.Split(plain, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected 2+ sub-lines, got %d: %q", len(lines), plain)
-	}
-	// First sub-line: line-number column is " 1 " (line 1, right-aligned in 1 digit).
-	if !strings.HasPrefix(lines[0], " 1 ") {
-		t.Errorf("first sub-line should start with ' 1 ', got %q", lines[0])
-	}
-	// Second sub-line: line-number column is all spaces (no digit), but the
-	// diff marker is still rendered after it for visual consistency.
-	// Layout: " " + "1" + " " + "+" + content on first sub-line,
-	//         " " + " " + " " + "+" + content on continuation.
-	if !strings.HasPrefix(lines[1], "   ") {
-		t.Errorf("continuation gutter should be 3 blank spaces, got %q (full line=%q)",
-			lines[1][:3], lines[1])
-	}
-	if !strings.HasPrefix(lines[1], "   +") {
-		t.Errorf("continuation should keep '+' marker after blank gutter, got %q", lines[1])
-	}
-}
-
-// Short lines (well under width) must render exactly one line each — no
-// extra blank lines or padding-induced duplicates.
-func TestRenderDiff_ShortLine_NoExtraBlankLines(t *testing.T) {
-	t.Parallel()
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 0, NewStart: 1, NewLines: 1,
-		Lines: []string{"+hi"},
-	}}
-	got := RenderDiff(hunks, 120)
-	plain := stripDiffANSI(got)
-	lines := strings.Split(plain, "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected exactly 1 line for short content, got %d: %q", len(lines), plain)
-	}
-	if !strings.Contains(lines[0], "+hi") {
-		t.Errorf("expected '+hi' in line, got %q", lines[0])
-	}
-}
-
-// width == 0 (or negative) disables wrapping entirely — back-compat escape
-// hatch used by tests that only check color/marker behavior.
-func TestRenderDiff_ZeroWidth_FallsBackToNoWrap(t *testing.T) {
-	t.Parallel()
-	long := "+" + strings.Repeat("k", 200)
-	hunks := []DiffHunk{{
-		OldStart: 1, OldLines: 0, NewStart: 1, NewLines: 1,
-		Lines: []string{long},
-	}}
-	got := RenderDiff(hunks, 0)
-	plain := stripDiffANSI(got)
-	lines := strings.Split(plain, "\n")
-	if len(lines) != 1 {
-		t.Fatalf("width=0 should not wrap, got %d lines: %q", len(lines), plain)
-	}
-	if !strings.Contains(plain, strings.Repeat("k", 200)) {
-		t.Errorf("expected full unwrapped content in output, got %q", plain)
-	}
-
-	// Same for negative width.
-	got = RenderDiff(hunks, -5)
-	if got == "" || strings.Count(got, "\n") != 0 {
-		t.Errorf("width<0 should not wrap, got %q", got)
 	}
 }
 
@@ -966,7 +759,7 @@ func TestRenderDiff_EmptyLine(t *testing.T) {
 			Lines: []string{" line1", "", " line3"},
 		},
 	}
-	got := RenderDiff(hunks, 0)
+	got := RenderDiff(hunks)
 	if got == "" {
 		t.Error("expected non-empty output")
 	}

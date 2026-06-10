@@ -449,15 +449,12 @@ func FormatDiffSummary(added, removed int) string {
 }
 
 // RenderDiff renders hunks as ANSI-colored unified diff.
-// Source: src/native-ts/color-diff/index.ts render() + src/components/StructuredDiff/Fallback.tsx
+// Source: src/native-ts/color-diff/index.ts render() + src/components/StructuredDiff.tsx
 //
 // Format per line: " NNN + content" (added) / " NNN - content" (deleted) / " NNN   content" (context)
 // Gutter width = maxLineNumber digits + 3 (space + paddedNum + space + marker).
 // Hunks separated by dim "...".
-//
-// width > 0: long lines wrap to sub-lines (TS StructuredDiff/Fallback.tsx formatDiff).
-// width <= 0: no wrap (back-compat for tests/non-interactive contexts).
-func RenderDiff(hunks []DiffHunk, width int) string {
+func RenderDiff(hunks []DiffHunk) string {
 	if len(hunks) == 0 {
 		return ""
 	}
@@ -516,116 +513,39 @@ func RenderDiff(hunks []DiffHunk, width int) string {
 
 			paddedNum := fmt.Sprintf("%*d", maxDigits, lineNum)
 
-			// Available content width (gutter + marker + content area).
-			// Mirrors StructuredDiff/Fallback.tsx:
-			//   availableContentWidth = max(1, width - maxWidth - 1 - diffPrefixWidth)
-			// where diffPrefixWidth is 1 here (gutter format " NNN M" is 1 + maxDigits + 2 = maxDigits+3 cols,
-			// and 1 of those is a space-after-marker — counted in content budget).
-			//
-			// When width <= 0 we skip wrap/pad entirely and emit one line of content as-is.
-			var contentWidth int
-			if width > 0 {
-				// gutter = " " + paddedNum + " " + marker = maxDigits+3 cols
-				contentWidth = max(width-(maxDigits+3), 1)
-			}
-
-			// Wrap content into sub-lines. width<=0 → one sub-line, no slicing.
-			var subLines []string
-			if width > 0 {
-				subLines = strings.Split(wrapRunes(content, contentWidth), "\n")
-			} else {
-				subLines = []string{content}
-			}
-
-			for subIdx, sub := range subLines {
+			sb.WriteString(diffReset)
+			switch marker {
+			case '+':
+				sb.WriteString(diffAddFg)
+				sb.WriteString(diffAddBg)
+				fmt.Fprintf(&sb, " %s ", paddedNum)
+				sb.WriteString(diffAddFg)
+				sb.WriteByte('+')
 				sb.WriteString(diffReset)
-				switch marker {
-				case '+':
-					sb.WriteString(diffAddFg)
-					sb.WriteString(diffAddBg)
-					if subIdx == 0 {
-						fmt.Fprintf(&sb, " %s ", paddedNum)
-					} else {
-						fmt.Fprintf(&sb, " %s ", strings.Repeat(" ", maxDigits))
-					}
-					sb.WriteString(diffAddFg)
-					sb.WriteByte('+')
-					sb.WriteString(diffReset)
-					sb.WriteString(diffAddBg)
-					sb.WriteString(sub)
-					if width > 0 {
-						pad := contentWidth - utf8RuneLen(sub)
-						if pad > 0 {
-							sb.WriteString(strings.Repeat(" ", pad))
-						}
-					}
-				case '-':
-					sb.WriteString(diffDelFg)
-					sb.WriteString(diffDelBg)
-					if subIdx == 0 {
-						fmt.Fprintf(&sb, " %s ", paddedNum)
-					} else {
-						fmt.Fprintf(&sb, " %s ", strings.Repeat(" ", maxDigits))
-					}
-					sb.WriteString(diffDelFg)
-					sb.WriteByte('-')
-					sb.WriteString(diffReset)
-					sb.WriteString(diffDim)
-					sb.WriteString(diffDelBg)
-					sb.WriteString(sub)
-					if width > 0 {
-						pad := contentWidth - utf8RuneLen(sub)
-						if pad > 0 {
-							sb.WriteString(strings.Repeat(" ", pad))
-						}
-					}
-				default: // context
-					sb.WriteString(diffDimFg)
-					if subIdx == 0 {
-						fmt.Fprintf(&sb, " %s  ", paddedNum)
-					} else {
-						fmt.Fprintf(&sb, " %s  ", strings.Repeat(" ", maxDigits))
-					}
-					sb.WriteString(diffReset)
-					sb.WriteString(sub)
-					if width > 0 {
-						pad := contentWidth - utf8RuneLen(sub)
-						if pad > 0 {
-							sb.WriteString(strings.Repeat(" ", pad))
-						}
-					}
-				}
+				sb.WriteString(diffAddBg)
+				sb.WriteString(content)
+			case '-':
+				sb.WriteString(diffDelFg)
+				sb.WriteString(diffDelBg)
+				fmt.Fprintf(&sb, " %s ", paddedNum)
+				sb.WriteString(diffDelFg)
+				sb.WriteByte('-')
 				sb.WriteString(diffReset)
-				sb.WriteByte('\n')
+				sb.WriteString(diffDim)
+				sb.WriteString(diffDelBg)
+				sb.WriteString(content)
+			default: // context
+				sb.WriteString(diffDimFg)
+				fmt.Fprintf(&sb, " %s  ", paddedNum)
+				sb.WriteString(diffReset)
+				sb.WriteString(content)
 			}
+			sb.WriteString(diffReset)
+			sb.WriteByte('\n')
 		}
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
-}
-
-// wrapRunes splits s into chunks of at most width runes each. Width must be >= 1.
-func wrapRunes(s string, width int) string {
-	if width <= 0 || s == "" {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= width {
-		return s
-	}
-	var sb strings.Builder
-	for i, r := range runes {
-		if i > 0 && i%width == 0 {
-			sb.WriteByte('\n')
-		}
-		sb.WriteRune(r)
-	}
-	return sb.String()
-}
-
-// utf8RuneLen returns the rune count of s — used for visible-width padding math.
-func utf8RuneLen(s string) int {
-	return len([]rune(s))
 }
 
 // MaxDiffLinesToRender is the maximum number of diff lines to show before truncating.
