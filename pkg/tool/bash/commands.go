@@ -46,6 +46,10 @@ func isSearchOrReadBashCommand(command string) tool.SearchReadKind {
 			continue
 		}
 
+		// Extract base command from original part (before skipRedirects
+		// mangles the content inside quotes).
+		origPart := part
+
 		// Skip redirects and their targets
 		part = skipRedirects(part)
 
@@ -60,6 +64,25 @@ func isSearchOrReadBashCommand(command string) tool.SearchReadKind {
 		}
 
 		hasNonNeutral = true
+
+		// sed: search unless -i (inplace edit) flag is present.
+		if baseCmd == "sed" {
+			if isSedInplace(origPart) {
+				return tool.SearchReadKind{}
+			}
+			hasSearch = true
+			continue
+		}
+
+		// awk: search unless output is redirected, system() is called,
+		// or -i inplace flag is present.
+		if baseCmd == "awk" {
+			if isAwkDestructive(origPart) {
+				return tool.SearchReadKind{}
+			}
+			hasSearch = true
+			continue
+		}
 
 		isSearch := bashSearchCommands[baseCmd]
 		isRead := bashReadCommands[baseCmd]
@@ -201,6 +224,51 @@ func extractBaseCommand(part string) string {
 		}
 	}
 	return part
+}
+
+// isSedInplace returns true if the sed command uses -i or -i.suffix (inplace).
+func isSedInplace(part string) bool {
+	fields := strings.FieldsSeq(part)
+	for f := range fields {
+		if f == "-i" {
+			return true
+		}
+		// -i.bak, -i'' (no backup), -i"sfx"
+		if len(f) > 2 && f[:2] == "-i" {
+			return true
+		}
+	}
+	return false
+}
+
+// isAwkDestructive returns true if the awk command writes output via
+// redirect, system(), or -i inplace.
+func isAwkDestructive(part string) bool {
+	// Check for -i inplace flag
+	fields := strings.Fields(part)
+	for i, f := range fields {
+		if f == "-i" && i+1 < len(fields) && fields[i+1] == "inplace" {
+			return true
+		}
+		if f == "-iinplace" {
+			return true
+		}
+	}
+	// Scan the raw string for > inside single-quoted awk program.
+	// Shell redirects are already stripped by skipRedirects, so any
+	// remaining > inside quotes is awk-level output.
+	inSingle := false
+	for i := 0; i < len(part); i++ {
+		ch := part[i]
+		if ch == '\'' {
+			inSingle = !inSingle
+			continue
+		}
+		if inSingle && ch == '>' {
+			return true
+		}
+	}
+	return strings.Contains(part, "system(")
 }
 
 // IsSearchOrRead implements tool.ToolWithSearchOrRead for the Bash tool.

@@ -39,6 +39,19 @@ func TestIsSearchOrReadBashCommand(t *testing.T) {
 		{"pipe ls head", "ls -la | head -5", tool.SearchReadKind{IsList: true, IsRead: true}},
 		// Quoted strings preserved
 		{"grep quoted", `grep 'hello world' file.txt`, tool.SearchReadKind{IsSearch: true}},
+
+		// sed: search when no -i flag
+		{"sed print", `sed -n '10,20p' file.txt`, tool.SearchReadKind{IsSearch: true}},
+		{"sed substitute stdout", `sed 's/old/new/g' file.txt`, tool.SearchReadKind{IsSearch: true}},
+		{"sed -i inplace", `sed -i 's/old/new/g' file.txt`, tool.SearchReadKind{}},
+		{"sed -i.bak", `sed -i.bak 's/old/new/g' file.txt`, tool.SearchReadKind{}},
+
+		// awk: search by default
+		{"awk print", `awk '{print $1}' file.txt`, tool.SearchReadKind{IsSearch: true}},
+		{"awk pattern", `awk '/pattern/' file.txt`, tool.SearchReadKind{IsSearch: true}},
+		{"awk redirect out", `awk '{print > "out.txt"}' file.txt`, tool.SearchReadKind{}},
+		{"awk system", `awk '{system("rm foo")}' file.txt`, tool.SearchReadKind{}},
+		{"awk -i inplace", `awk -i inplace '{print}' file.txt`, tool.SearchReadKind{}},
 	}
 
 	for _, tt := range tests {
