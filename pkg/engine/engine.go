@@ -112,7 +112,8 @@ type Engine struct {
 	turnCount     int
 	dispatcher    types.EventDispatcher
 	workingDir    string
-	attachments *attachment.Queue
+	attachments    *attachment.Queue
+	reminderEngine *attachment.ReminderEngine
 	systemPrompt  string // stored system prompt for fork agent access
 	skillListing  string          // formatted skill listing for /context breakdown
 	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
@@ -303,6 +304,7 @@ func New(p *Params) *Engine {
 		tokenBudget:             p.TokenBudget,
 		dispatcher:              p.Dispatcher,
 		attachments:             &attachment.Queue{},
+		reminderEngine:           attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
 		maxTurns:                p.MaxTurns,
 		compactor:               p.Compactor,
 		autoCompactConfig:       p.AutoCompact,
@@ -1126,6 +1128,21 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		if len(execResult.NewMessages) > 0 {
 			e.appendMessages(execResult.NewMessages)
 		}
+		// Collect and inject reminders at turn boundary.
+		// Reminders are appended to the message tail (not prepended to the
+		// prefix) so prompt cache is preserved.
+		// TS reference: query.ts:1596 — toolResults.push(attachment).
+		if e.reminderEngine != nil {
+			reminderCtx := attachment.ReminderContext{
+				Messages:   e.messages,
+				TurnCount:  e.turnCount,
+				IsSubagent: e.isSubagent,
+				TaskList:   &taskListReaderAdapter{list: e.taskList},
+			}
+			for _, msg := range e.reminderEngine.Collect(reminderCtx) {
+				e.appendMessage(msg)
+			}
+		}
 
 		// End of this streaming round
 		e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
@@ -1375,18 +1392,6 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 				Flags:   types.FlagMeta,
 			}
 			apiMessages = append([]types.Message{ctxMsg}, apiMessages...)
-		}
-	}
-
-	if !e.isSubagent {
-		// Inject pending tasks into context so LLM knows about them after restart/compact.
-		if pendingText := e.formatPendingTasks(); pendingText != "" {
-			taskMsg := types.Message{
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(pendingText)},
-				Flags:   types.FlagMeta,
-			}
-			apiMessages = append([]types.Message{taskMsg}, apiMessages...)
 		}
 	}
 
@@ -2272,15 +2277,6 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 			}
 		}
 
-		// Inject pending tasks into context so LLM knows about them after restart/compact.
-		if pendingText := e.formatPendingTasks(); pendingText != "" {
-			taskMsg := types.Message{
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(pendingText)},
-				Flags:   types.FlagMeta,
-			}
-			apiMessages = append([]types.Message{taskMsg}, apiMessages...)
-		}
 	}
 
 	// Prepend deferred tools announcement.
@@ -3126,6 +3122,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		turnCount:               0,
 		dispatcher:              dispatcher,
 		attachments:             &attachment.Queue{},
+		reminderEngine:           attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
 		isSubagent:              true,
 		agentType:               opts.AgentType,
 		maxTurns:                subMaxTurns(opts.MaxTurns),
@@ -3154,36 +3151,32 @@ func isBuiltInAgent(agentType string) bool {
 	return false
 }
 
-// formatPendingTasks returns a formatted summary of pending/in_progress tasks,
-// or empty string if none exist. Called during prepend to inject task context.
-func (e *Engine) formatPendingTasks() string {
-	if e.taskList == nil {
-		return ""
+// taskListReaderAdapter wraps engine's *task.List to satisfy
+// attachment.TaskListReader without leaking engine internals.
+type taskListReaderAdapter struct {
+	list *task.List
+}
+
+func (a *taskListReaderAdapter) ListPending() ([]attachment.TaskItem, error) {
+	if a.list == nil {
+		return nil, nil
 	}
-	tasks, err := e.taskList.ListTasks()
-	if err != nil || len(tasks) == 0 {
-		return ""
+	tasks, err := a.list.ListTasks()
+	if err != nil {
+		return nil, err
 	}
-	var pending []*task.Task
+	var items []attachment.TaskItem
 	for _, t := range tasks {
 		if t.Status == task.StatusPending || t.Status == task.StatusInProgress {
-			pending = append(pending, t)
+			items = append(items, attachment.TaskItem{
+				ID:          t.ID,
+				Subject:     t.Subject,
+				Status:      string(t.Status),
+				Description: t.Description,
+			})
 		}
 	}
-	if len(pending) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("You have the following pending tasks:\n")
-	for _, t := range pending {
-		fmt.Fprintf(&b, "- [#%s] %s (%s)", t.ID, t.Subject, t.Status)
-		if t.Description != "" {
-			fmt.Fprintf(&b, ": %s", t.Description)
-		}
-		b.WriteByte('\n')
-	}
-	b.WriteString("When you finish a task, mark it as completed immediately using the Task tool. Do not wait for the user to remind you.")
-	return b.String()
+	return items, nil
 }
 
 // querySource returns the query source identifier for prompt caching and microcompact.

@@ -18,17 +18,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/engine/attachment"
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/long"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
-	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -69,7 +70,7 @@ func (m *minimalTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (m *minimalTool) Prompt() string          { return "" }
 func (m *minimalTool) RenderResult(any) string { return "" }
-func (m *minimalTool) NewResultType() any { return nil }
+func (m *minimalTool) NewResultType() any      { return nil }
 
 func (m *minimalTool) MaxResultSize() int { return 50000 }
 
@@ -739,7 +740,7 @@ func (t *nonStreamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *nonStreamingSuccessTool) Prompt() string          { return "" }
 func (t *nonStreamingSuccessTool) RenderResult(any) string { return "rendered output" }
-func (t *nonStreamingSuccessTool) NewResultType() any { return nil }
+func (t *nonStreamingSuccessTool) NewResultType() any      { return nil }
 
 func (*nonStreamingSuccessTool) MaxResultSize() int { return 50000 }
 
@@ -831,11 +832,11 @@ func TestStreamingToolExecutor_DiscardPreventsQueuedStart(t *testing.T) {
 	// Discard() is synchronous — no goroutine should start after it returns.
 	// Brief poll to confirm the tool never starts.
 	// Discard() is synchronous — no goroutine should start after it returns.
-		// Yield scheduler to let any pending goroutines run, then assert.
-		runtime.Gosched()
-		if started.Load() {
-			t.Error("queued tool should not start after Discard()")
-		}
+	// Yield scheduler to let any pending goroutines run, then assert.
+	runtime.Gosched()
+	if started.Load() {
+		t.Error("queued tool should not start after Discard()")
+	}
 }
 
 // slowCancelTool blocks until context is cancelled, then reports it.
@@ -866,7 +867,7 @@ func (t *slowCancelTool) IsEnabled() bool                           { return tru
 func (t *slowCancelTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *slowCancelTool) Prompt() string                            { return "" }
 func (t *slowCancelTool) RenderResult(any) string                   { return "" }
-func (t *slowCancelTool) NewResultType() any { return nil }
+func (t *slowCancelTool) NewResultType() any                        { return nil }
 
 func (*slowCancelTool) MaxResultSize() int { return 50000 }
 
@@ -899,7 +900,7 @@ func (t *neverRunTool) IsEnabled() bool                           { return true 
 func (t *neverRunTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *neverRunTool) Prompt() string                            { return "" }
 func (t *neverRunTool) RenderResult(any) string                   { return "" }
-func (t *neverRunTool) NewResultType() any { return nil }
+func (t *neverRunTool) NewResultType() any                        { return nil }
 
 func (*neverRunTool) MaxResultSize() int { return 50000 }
 
@@ -945,7 +946,7 @@ func (t *discardSlowTool) IsEnabled() bool                           { return tr
 func (t *discardSlowTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *discardSlowTool) Prompt() string                            { return "" }
 func (t *discardSlowTool) RenderResult(any) string                   { return "" }
-func (t *discardSlowTool) NewResultType() any { return nil }
+func (t *discardSlowTool) NewResultType() any                        { return nil }
 
 func (*discardSlowTool) MaxResultSize() int { return 50000 }
 func (t *discardSlowTool) WasCancelled() bool {
@@ -1806,7 +1807,7 @@ func (t *captureMessagesTool) IsEnabled() bool                           { retur
 func (t *captureMessagesTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *captureMessagesTool) Prompt() string                            { return "" }
 func (t *captureMessagesTool) RenderResult(any) string                   { return "" }
-func (t *captureMessagesTool) NewResultType() any { return nil }
+func (t *captureMessagesTool) NewResultType() any                        { return nil }
 
 func (t *captureMessagesTool) MaxResultSize() int { return 50000 }
 
@@ -3168,7 +3169,7 @@ func (t *callbackTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *callbackTool) Prompt() string          { return "" }
 func (t *callbackTool) RenderResult(any) string { return "" }
-func (t *callbackTool) NewResultType() any { return nil }
+func (t *callbackTool) NewResultType() any      { return nil }
 func (t *callbackTool) MaxResultSize() int      { return 50000 }
 
 func TestAbortError_TypeDiscrimination(t *testing.T) {
@@ -4395,7 +4396,7 @@ func (t *streamingSuccessTool) InterruptBehavior() tool.InterruptBehavior {
 }
 func (t *streamingSuccessTool) Prompt() string          { return "" }
 func (t *streamingSuccessTool) RenderResult(any) string { return "streamed" }
-func (t *streamingSuccessTool) NewResultType() any { return nil }
+func (t *streamingSuccessTool) NewResultType() any      { return nil }
 func (*streamingSuccessTool) MaxResultSize() int        { return 50000 }
 
 type errorTool struct{ name string }
@@ -4417,7 +4418,7 @@ func (t *errorTool) IsEnabled() bool                           { return true }
 func (t *errorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *errorTool) Prompt() string                            { return "" }
 func (t *errorTool) RenderResult(any) string                   { return "" }
-func (t *errorTool) NewResultType() any { return nil }
+func (t *errorTool) NewResultType() any                        { return nil }
 func (*errorTool) MaxResultSize() int                          { return 50000 }
 
 type nilResultTool struct{ name string }
@@ -4439,7 +4440,7 @@ func (t *nilResultTool) IsEnabled() bool                           { return true
 func (t *nilResultTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *nilResultTool) Prompt() string                            { return "" }
 func (t *nilResultTool) RenderResult(any) string                   { return "" }
-func (t *nilResultTool) NewResultType() any { return nil }
+func (t *nilResultTool) NewResultType() any                        { return nil }
 func (*nilResultTool) MaxResultSize() int                          { return 50000 }
 
 type interruptBlockTool struct{ name string }
@@ -4461,9 +4462,9 @@ func (t *interruptBlockTool) IsEnabled() bool                           { return
 func (t *interruptBlockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
 func (t *interruptBlockTool) Prompt() string                            { return "" }
 
-func (t *interruptBlockTool) RenderResult(any) string                   { return "executed" }
-func (t *interruptBlockTool) NewResultType() any { return nil }
-func (*interruptBlockTool) MaxResultSize() int                          { return 50000 }
+func (t *interruptBlockTool) RenderResult(any) string { return "executed" }
+func (t *interruptBlockTool) NewResultType() any      { return nil }
+func (*interruptBlockTool) MaxResultSize() int        { return 50000 }
 
 // ---------------------------------------------------------------------------
 // askUser — all return paths
@@ -4831,9 +4832,9 @@ func (t *streamingErrorTool) IsEnabled() bool                           { return
 func (t *streamingErrorTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *streamingErrorTool) Prompt() string                            { return "" }
 
-func (t *streamingErrorTool) RenderResult(any) string                   { return "error" }
-func (t *streamingErrorTool) NewResultType() any { return nil }
-func (*streamingErrorTool) MaxResultSize() int                          { return 50000 }
+func (t *streamingErrorTool) RenderResult(any) string { return "error" }
+func (t *streamingErrorTool) NewResultType() any      { return nil }
+func (*streamingErrorTool) MaxResultSize() int        { return 50000 }
 
 // ---------------------------------------------------------------------------
 // executeTool — PostToolUseHook failure path
@@ -5076,11 +5077,11 @@ func (t *nilResultNonStreamingTool) IsEnabled() bool                            
 func (t *nilResultNonStreamingTool) InterruptBehavior() tool.InterruptBehavior {
 	return tool.InterruptCancel
 }
-func (t *nilResultNonStreamingTool) MaxResultSize() int      { return 50000 }
-func (t *nilResultNonStreamingTool) Prompt() string          { return "" }
+func (t *nilResultNonStreamingTool) MaxResultSize() int { return 50000 }
+func (t *nilResultNonStreamingTool) Prompt() string     { return "" }
 
 func (t *nilResultNonStreamingTool) RenderResult(any) string { return "" }
-func (t *nilResultNonStreamingTool) NewResultType() any { return nil }
+func (t *nilResultNonStreamingTool) NewResultType() any      { return nil }
 func (t *nilResultNonStreamingTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
@@ -5140,11 +5141,11 @@ func (t *backgroundNonStreamTool) IsEnabled() bool                             {
 func (t *backgroundNonStreamTool) InterruptBehavior() tool.InterruptBehavior {
 	return tool.InterruptCancel
 }
-func (t *backgroundNonStreamTool) MaxResultSize() int      { return 50000 }
-func (t *backgroundNonStreamTool) Prompt() string          { return "" }
+func (t *backgroundNonStreamTool) MaxResultSize() int { return 50000 }
+func (t *backgroundNonStreamTool) Prompt() string     { return "" }
 
 func (t *backgroundNonStreamTool) RenderResult(any) string { return "background done" }
-func (t *backgroundNonStreamTool) NewResultType() any { return nil }
+func (t *backgroundNonStreamTool) NewResultType() any      { return nil }
 func (t *backgroundNonStreamTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: &types.SubQueryResult{AsyncLaunched: true}}, nil
 }
@@ -5488,25 +5489,25 @@ func TestProcessAttachments_WithPending(t *testing.T) {
 
 	eng.ProcessAttachments(ctx, "")
 
-		// Job-mode attachments no longer emit EventAttachment.
-		// Verify LLM turn runs (EventTurnStart + EventQueryEnd) without EventAttachment.
-		var gotTurn, gotEnd bool
-		for !gotTurn || !gotEnd {
-			select {
-			case evt := <-eventCh:
-				if evt.Type == types.EventAttachment {
-					t.Error("job-mode attachment should NOT emit EventAttachment")
-				}
-				if evt.Type == types.EventTurnStart {
-					gotTurn = true
-				}
-				if evt.Type == types.EventQueryEnd {
-					gotEnd = true
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for LLM turn after job attachment")
+	// Job-mode attachments no longer emit EventAttachment.
+	// Verify LLM turn runs (EventTurnStart + EventQueryEnd) without EventAttachment.
+	var gotTurn, gotEnd bool
+	for !gotTurn || !gotEnd {
+		select {
+		case evt := <-eventCh:
+			if evt.Type == types.EventAttachment {
+				t.Error("job-mode attachment should NOT emit EventAttachment")
 			}
+			if evt.Type == types.EventTurnStart {
+				gotTurn = true
+			}
+			if evt.Type == types.EventQueryEnd {
+				gotEnd = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for LLM turn after job attachment")
 		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -5519,10 +5520,10 @@ type renderResultTool struct {
 	name string
 }
 
-func (t *renderResultTool) Name() string                                    { return t.name }
-func (t *renderResultTool) Aliases() []string                               { return nil }
-func (t *renderResultTool) Description(json.RawMessage) (string, error)     { return "test", nil }
-func (t *renderResultTool) InputSchema() json.RawMessage                    { return nil }
+func (t *renderResultTool) Name() string                                { return t.name }
+func (t *renderResultTool) Aliases() []string                           { return nil }
+func (t *renderResultTool) Description(json.RawMessage) (string, error) { return "test", nil }
+func (t *renderResultTool) InputSchema() json.RawMessage                { return nil }
 func (t *renderResultTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: map[string]any{"files": []string{"a.go", "b.go"}, "count": 2}}, nil
 }
@@ -5536,8 +5537,8 @@ func (t *renderResultTool) IsEnabled() bool                        { return true
 func (t *renderResultTool) InterruptBehavior() tool.InterruptBehavior {
 	return tool.InterruptCancel
 }
-func (t *renderResultTool) MaxResultSize() int          { return 50000 }
-func (t *renderResultTool) Prompt() string              { return "" }
+func (t *renderResultTool) MaxResultSize() int { return 50000 }
+func (t *renderResultTool) Prompt() string     { return "" }
 func (t *renderResultTool) RenderResult(data any) string {
 	// Simulate a tool that formats structured data as plain text
 	m, ok := data.(map[string]any)
@@ -5704,7 +5705,7 @@ func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) 
 	}
 }
 
-	func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
+func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 	t.Parallel()
 
 	eng := New(&Params{
@@ -5950,127 +5951,127 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	}
 }
 
-	// TestQuery_TokenPrune_UnderThreshold verifies that when context is below
-	// the blocking limit, token pruning does not fire and the API call succeeds normally.
-	func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
-		t.Parallel()
+// TestQuery_TokenPrune_UnderThreshold verifies that when context is below
+// the blocking limit, token pruning does not fire and the API call succeeds normally.
+func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
+	t.Parallel()
 
-		tmp := &testProvider{}
-		tmp.addResponse(textStreamEvents("test-model", "normal response"), nil)
+	tmp := &testProvider{}
+	tmp.addResponse(textStreamEvents("test-model", "normal response"), nil)
 
-		compactor := &funcCompactor{
-			fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
-				return nil, errors.New("nothing to compact")
-			},
-		}
-
-		tc := newEventCollector()
-		eng := New(&Params{
-			Provider:   tmp,
-			Model:      "test-model",
-			MaxTokens:  16000,
-			Dispatcher: tc,
-		})
-		eng.SetCompactor(compactor, AutoCompactConfig{
-			ContextWindow:          50000,
-			MaxConsecutiveFailures: 3,
-		})
-
-		// 3 Read results — context well below blocking limit (31000).
-		now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
-		for i := range 3 {
-			eng.SetMessages(append(eng.Messages(), types.Message{
-				Role: types.RoleAssistant,
-				Content: []types.ContentBlock{
-					types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
-				},
-				Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
-			}))
-			eng.SetMessages(append(eng.Messages(), types.Message{
-				Role: types.RoleUser,
-				Content: []types.ContentBlock{
-					types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 1000)+`"`), false),
-				},
-				Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
-			}))
-		}
-		eng.mu.Lock()
-		eng.ContextTokens = 10000
-		eng.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		result := eng.QuerySync(ctx, "continue", "")
-		if result.Error != nil {
-			t.Fatalf("expected success (context under threshold), got: %v", result.Error)
-		}
-		if len(result.Messages) == 0 {
-			t.Error("expected messages in result")
-		}
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
+			return nil, errors.New("nothing to compact")
+		},
 	}
 
-	// TestQuery_TokenPrune_SubAgentExempt verifies that sub-agents do not trigger
-	// token-based pruning (same as they are exempt from blocking limit).
-	func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
-		t.Parallel()
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
 
-		tmp := &testProvider{}
-		tmp.addResponse(textStreamEvents("test-model", "sub-agent response"), nil)
-
-		compactor := &funcCompactor{
-			fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
-				return nil, errors.New("nothing to compact")
+	// 3 Read results — context well below blocking limit (31000).
+	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	for i := range 3 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
 			},
-		}
-
-		tc := newEventCollector()
-		eng := New(&Params{
-			Provider:   tmp,
-			Model:      "test-model",
-			MaxTokens:  16000,
-			Dispatcher: tc,
-		})
-		eng.isSubagent = true
-		eng.SetCompactor(compactor, AutoCompactConfig{
-			ContextWindow:          50000,
-			MaxConsecutiveFailures: 3,
-		})
-
-		// 8 Read results with high context — would trigger prune on main thread.
-		now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
-		for i := range 8 {
-			eng.SetMessages(append(eng.Messages(), types.Message{
-				Role: types.RoleAssistant,
-				Content: []types.ContentBlock{
-					types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
-				},
-				Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
-			}))
-			eng.SetMessages(append(eng.Messages(), types.Message{
-				Role: types.RoleUser,
-				Content: []types.ContentBlock{
-					types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 10000)+`"`), false),
-				},
-				Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
-			}))
-		}
-		eng.mu.Lock()
-		eng.ContextTokens = 35000
-		eng.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		result := eng.QuerySync(ctx, "continue", "")
-		// Sub-agent is exempt from blocking limit too, so this should succeed.
-		if result.Error != nil {
-			t.Fatalf("sub-agent should be exempt from blocking, got: %v", result.Error)
-		}
-		if len(result.Messages) == 0 {
-			t.Error("expected messages in result")
-		}
+			Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
+		}))
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 1000)+`"`), false),
+			},
+			Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
+		}))
 	}
+	eng.mu.Lock()
+	eng.ContextTokens = 10000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "continue", "")
+	if result.Error != nil {
+		t.Fatalf("expected success (context under threshold), got: %v", result.Error)
+	}
+	if len(result.Messages) == 0 {
+		t.Error("expected messages in result")
+	}
+}
+
+// TestQuery_TokenPrune_SubAgentExempt verifies that sub-agents do not trigger
+// token-based pruning (same as they are exempt from blocking limit).
+func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
+	t.Parallel()
+
+	tmp := &testProvider{}
+	tmp.addResponse(textStreamEvents("test-model", "sub-agent response"), nil)
+
+	compactor := &funcCompactor{
+		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
+			return nil, errors.New("nothing to compact")
+		},
+	}
+
+	tc := newEventCollector()
+	eng := New(&Params{
+		Provider:   tmp,
+		Model:      "test-model",
+		MaxTokens:  16000,
+		Dispatcher: tc,
+	})
+	eng.isSubagent = true
+	eng.SetCompactor(compactor, AutoCompactConfig{
+		ContextWindow:          50000,
+		MaxConsecutiveFailures: 3,
+	})
+
+	// 8 Read results with high context — would trigger prune on main thread.
+	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
+	for i := range 8 {
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				types.NewToolUseBlock(fmt.Sprintf("read_%d", i), "Read", json.RawMessage(`{"file_path":"/test.go"}`)),
+			},
+			Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+		}))
+		eng.SetMessages(append(eng.Messages(), types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewToolResultBlock(fmt.Sprintf("read_%d", i), json.RawMessage(`"`+strings.Repeat("x", 10000)+`"`), false),
+			},
+			Timestamp: now.Add(-time.Duration(8-i) * time.Minute),
+		}))
+	}
+	eng.mu.Lock()
+	eng.ContextTokens = 35000
+	eng.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "continue", "")
+	// Sub-agent is exempt from blocking limit too, so this should succeed.
+	if result.Error != nil {
+		t.Fatalf("sub-agent should be exempt from blocking, got: %v", result.Error)
+	}
+	if len(result.Messages) == 0 {
+		t.Error("expected messages in result")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Full chain integration test: engine → bash.Execute → Drain → AskEvent
@@ -6102,7 +6103,7 @@ func TestExecuteTool_Bash_InteractionDetection(t *testing.T) {
 
 	// Pass non-nil tctx like production does (engine.go:1179)
 	tctx := &tool.ToolUseContext{
-		Ctx:       context.Background(),
+		Ctx:        context.Background(),
 		WorkingDir: ".",
 	}
 	toolMap := map[string]tool.Tool{"Bash": bashTool}
@@ -6276,9 +6277,9 @@ func TestQuery_RetryExhausted(t *testing.T) {
 	if !errors.As(result.Error, &si) {
 		t.Errorf("expected *StreamInterruptedError, got %T: %v", result.Error, result.Error)
 	}
-		if si.ContentBlocks == 0 {
-			t.Errorf("expected ContentBlocks > 0 in StreamInterruptedError")
-		}
+	if si.ContentBlocks == 0 {
+		t.Errorf("expected ContentBlocks > 0 in StreamInterruptedError")
+	}
 
 	// Should have 3 retry events (4 attempts = 1 initial + 3 retries)
 	retryEvents := tc.FindEvents(types.EventRetryAttempt)
@@ -6310,9 +6311,9 @@ func TestQuery_NonRetryableTerminal(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error for 400, got nil")
 	}
-		if !strings.Contains(result.Error.Error(), "bad request") {
-			t.Errorf("error should mention 'bad request', got: %v", result.Error)
-		}
+	if !strings.Contains(result.Error.Error(), "bad request") {
+		t.Errorf("error should mention 'bad request', got: %v", result.Error)
+	}
 
 	// Should NOT have any retry events
 	retryEvents := tc.FindEvents(types.EventRetryAttempt)
@@ -6818,12 +6819,11 @@ func TestDumpAPIRequest_NoTasks_NoInjection(t *testing.T) {
 	}
 }
 
-func TestDumpAPIRequest_PendingTasks_Injected(t *testing.T) {
+func TestReminderEngine_CollectsPendingTasks(t *testing.T) {
 	dir := t.TempDir()
 	tl := task.NewList(dir)
 	eng := newTestEngineForBreakdown(t)
 	eng.taskList = tl
-
 	id, err := tl.CreateTask("Fix auth bug", "OAuth token refresh fails", "", nil)
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -6832,27 +6832,33 @@ func TestDumpAPIRequest_PendingTasks_Injected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
-
-	eng.addMessage(types.RoleUser, "fix the auth bug")
-	eng.addMessage(types.RoleAssistant, "on it")
-
-	dump := eng.DumpAPIRequest()
-	if dump == nil {
-		t.Fatal("DumpAPIRequest returned nil")
+	for i := range 12 {
+		eng.addMessage(types.RoleUser, fmt.Sprintf("msg %d", i))
+		eng.addMessage(types.RoleAssistant, fmt.Sprintf("reply %d", i))
 	}
-	if len(dump.Messages) == 0 {
-		t.Fatal("no messages")
+	ctx := attachment.ReminderContext{
+		Messages:   eng.messages,
+		TurnCount:  12,
+		IsSubagent: false,
+		TaskList:   &taskListReaderAdapter{list: eng.taskList},
 	}
-	first := dump.Messages[0].Content[0].Text
-	if !strings.Contains(first, "Fix auth bug") {
-		t.Errorf("first message should contain task subject, got:\n%s", first)
+	msgs := eng.reminderEngine.Collect(ctx)
+	if len(msgs) == 0 {
+		t.Fatal("ReminderEngine.Collect should return reminder messages")
 	}
-	if !strings.Contains(first, "in_progress") {
-		t.Errorf("first message should contain task status, got:\n%s", first)
+	text := msgs[0].Content[0].Text
+	if !strings.Contains(text, "Fix auth bug") {
+		t.Errorf("reminder should contain task subject, got:\n%s", text)
+	}
+	if !strings.Contains(text, "in_progress") {
+		t.Errorf("reminder should contain task status, got:\n%s", text)
+	}
+	if !strings.Contains(text, "<system-reminder>") {
+		t.Errorf("reminder should be wrapped in system-reminder, got:\n%s", text)
 	}
 }
 
-func TestDumpAPIRequest_TaskRecovery_AfterRestart(t *testing.T) {
+func TestReminderEngine_TaskRecovery_AfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	tl := task.NewList(dir)
 	_, err := tl.CreateTask("Migrate DB", "Add migration 0042", "", nil)
@@ -6863,23 +6869,30 @@ func TestDumpAPIRequest_TaskRecovery_AfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-
 	// Simulate restart: new engine, same task dir.
 	eng := newTestEngineForBreakdown(t)
 	eng.taskList = task.NewList(dir)
-	eng.addMessage(types.RoleUser, "continue")
-	eng.addMessage(types.RoleAssistant, "ok")
-
-	dump := eng.DumpAPIRequest()
-	if dump == nil {
-		t.Fatal("DumpAPIRequest returned nil")
+	// Build enough turns to trigger reminder.
+	for i := range 12 {
+		eng.addMessage(types.RoleUser, fmt.Sprintf("msg %d", i))
+		eng.addMessage(types.RoleAssistant, fmt.Sprintf("reply %d", i))
 	}
-	first := dump.Messages[0].Content[0].Text
-	if !strings.Contains(first, "Migrate DB") {
-		t.Errorf("recovered engine should inject task 'Migrate DB', got:\n%s", first)
+	ctx := attachment.ReminderContext{
+		Messages:   eng.messages,
+		TurnCount:  12,
+		IsSubagent: false,
+		TaskList:   &taskListReaderAdapter{list: eng.taskList},
 	}
-	if !strings.Contains(first, "Write tests") {
-		t.Errorf("recovered engine should inject task 'Write tests', got:\n%s", first)
+	msgs := eng.reminderEngine.Collect(ctx)
+	if len(msgs) == 0 {
+		t.Fatal("recovered engine should produce reminder for pending tasks")
+	}
+	text := msgs[0].Content[0].Text
+	if !strings.Contains(text, "Migrate DB") {
+		t.Errorf("reminder should contain 'Migrate DB', got:\n%s", text)
+	}
+	if !strings.Contains(text, "Write tests") {
+		t.Errorf("reminder should contain 'Write tests', got:\n%s", text)
 	}
 }
 
@@ -7060,7 +7073,7 @@ func TestEngineExecuteTool_ToolError(t *testing.T) {
 func TestEngineExecuteTool_AskPermission_UserAllows(t *testing.T) {
 	ch := make(chan types.QueryEvent, 1)
 	eng := &Engine{
-		logger:     slog.Default(),
+		logger: slog.Default(),
 		permissionChecker: permission.NewChecker([]permission.Rule{{
 			Value:  permission.RuleValue{ToolName: "AskTool"},
 			Action: permission.ActionAsk,
@@ -7106,7 +7119,7 @@ func TestEngineExecuteTool_AskPermission_UserAllows(t *testing.T) {
 func TestEngineExecuteTool_AskPermission_UserDenies(t *testing.T) {
 	ch := make(chan types.QueryEvent, 1)
 	eng := &Engine{
-		logger:     slog.Default(),
+		logger: slog.Default(),
 		permissionChecker: permission.NewChecker([]permission.Rule{{
 			Value:  permission.RuleValue{ToolName: "AskTool"},
 			Action: permission.ActionAsk,
@@ -7142,7 +7155,7 @@ func TestEngineExecuteTool_AskPermission_UserDenies(t *testing.T) {
 func TestEngineExecuteTool_AskPermission_AlwaysCache(t *testing.T) {
 	ch := make(chan types.QueryEvent, 1)
 	eng := &Engine{
-		logger:     slog.Default(),
+		logger: slog.Default(),
 		permissionChecker: permission.NewChecker([]permission.Rule{{
 			Value:  permission.RuleValue{ToolName: "AskTool"},
 			Action: permission.ActionAsk,
@@ -7189,7 +7202,7 @@ func TestEngineExecuteTool_AskPermission_AlwaysCache(t *testing.T) {
 
 func TestEngineExecuteTool_CachedAllow(t *testing.T) {
 	eng := &Engine{
-		logger:     slog.Default(),
+		logger: slog.Default(),
 		permissionChecker: permission.NewChecker([]permission.Rule{{
 			Value:  permission.RuleValue{ToolName: "AskTool"},
 			Action: permission.ActionAsk,
@@ -7211,7 +7224,7 @@ func TestEngineExecuteTool_CachedAllow(t *testing.T) {
 func TestEngineExecuteTool_CtxCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	eng := &Engine{
-		logger:     slog.Default(),
+		logger: slog.Default(),
 		permissionChecker: permission.NewChecker([]permission.Rule{{
 			Value:  permission.RuleValue{ToolName: "AskTool"},
 			Action: permission.ActionAsk,
@@ -7769,8 +7782,8 @@ func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
 // and returns events from a caller-controlled channel. Only the first Stream
 // call signals started and returns streamCh; subsequent calls return nil.
 type blockingProvider struct {
-	streamCh  chan llm.StreamEvent
-	started   chan struct{}
+	streamCh   chan llm.StreamEvent
+	started    chan struct{}
 	streamOnce sync.Once
 }
 
@@ -7898,4 +7911,3 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
-
