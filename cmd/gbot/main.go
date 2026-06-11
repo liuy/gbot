@@ -194,6 +194,7 @@ func main() {
 		TaskList:   taskList,
 		McpReg:     mcpRegistry,
 		Hooks:      hookSystem,
+		Cfg:        cfg,
 	}
 
 	// Create per-engine tool instances for the main engine

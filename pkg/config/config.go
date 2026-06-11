@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,6 +29,8 @@ type Config struct {
 	Verbose bool `json:"verbose,omitempty"`
 
 	APITimeoutMS int `json:"api_timeout_ms,omitempty"` // milliseconds
+
+	Proxy string `json:"proxy,omitempty"` // HTTP/SOCKS proxy, e.g. "http://localhost:10809"
 
 	Hooks json.RawMessage `json:"hooks,omitempty"`
 }
@@ -119,6 +122,23 @@ func DefaultConfig() *Config {
 	return &Config{
 		PermissionMode: types.PermissionModeDefault,
 		APITimeoutMS:   300000,
+	}
+}
+
+// ProxyHTTPClient returns an *http.Client configured with the proxy from settings.
+// Returns http.DefaultClient if no proxy is set.
+func (c *Config) ProxyHTTPClient() *http.Client {
+	if c.Proxy == "" {
+		return http.DefaultClient
+	}
+	proxyURL, err := url.Parse(c.Proxy)
+	if err != nil {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
 	}
 }
 

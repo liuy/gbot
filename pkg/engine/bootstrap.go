@@ -3,11 +3,13 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -20,6 +22,8 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
+	webtool "github.com/liuy/gbot/pkg/tool/web"
+	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -35,6 +39,7 @@ type SharedDeps struct {
 	TaskList   *task.List
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
+	Cfg        *config.Config
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -76,6 +81,15 @@ func CreateTools(deps SharedDeps) ToolRefs {
 
 	replTool := repl.New()
 	reg.MustRegister(replTool)
+
+	// Web tool with provider chain: DDG always available, Z.AI when key present.
+	var searchProviders []webtool.SearchProvider
+	var proxyClient *http.Client
+	if deps.Cfg != nil {
+		proxyClient = deps.Cfg.ProxyHTTPClient()
+	}
+	searchProviders = append(searchProviders, &providers.DuckDuckGoProvider{Client: proxyClient})
+	reg.MustRegister(webtool.New(webtool.Config{Providers: searchProviders}))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }
