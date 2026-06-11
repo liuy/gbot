@@ -82,11 +82,21 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	replTool := repl.New()
 	reg.MustRegister(replTool)
 
-	// Web tool with provider chain: DDG always available, Z.AI when key present.
+	// Web tool with provider chain: Zhipu (when key present) → DDG (always).
 	var searchProviders []webtool.SearchProvider
 	var proxyClient *http.Client
+	var zhipuKey string
 	if deps.Cfg != nil {
 		proxyClient = deps.Cfg.ProxyHTTPClient()
+		for _, p := range deps.Cfg.Providers {
+			if p.Name == "zhipu" {
+				zhipuKey = p.ResolveKey()
+				break
+			}
+		}
+	}
+	if zhipuKey != "" {
+		searchProviders = append(searchProviders, &providers.ZhipuProvider{Client: proxyClient, APIKey: zhipuKey})
 	}
 	searchProviders = append(searchProviders, &providers.DuckDuckGoProvider{Client: proxyClient})
 	reg.MustRegister(webtool.New(webtool.Config{Providers: searchProviders}))
