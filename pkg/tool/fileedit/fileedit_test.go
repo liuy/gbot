@@ -1211,3 +1211,75 @@ func TestExecute_OldStringLongerThanFile(t *testing.T) {
 	}
 }
 
+// TestExecute_SequentialEdit_UpdatesReadFileState verifies that after a
+// successful Edit, ReadFileState is updated so a second Edit to the same
+// file in the same turn also succeeds. Regression: gbot did not update
+// ReadFileState after Edit (TS does: FileEditTool.ts:520-525), causing
+// "string to replace not found" on the second edit because it searched
+// the pre-edit content.
+func TestExecute_SequentialEdit_UpdatesReadFileState(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.go")
+
+	original := "line one\nline two\nline three\n"
+	if err := os.WriteFile(fp, []byte(original), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	ctx := context.Background()
+	state := map[string]tool.FileState{
+		fp: {Content: original, Timestamp: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()},
+	}
+	tctx := &tool.ToolUseContext{ReadFileState: state}
+
+	// First edit: change "line one" → "line 1"
+	input1, _ := json.Marshal(map[string]string{
+		"file_path":   fp,
+		"old_string":  "line one",
+		"new_string":  "line 1",
+	})
+	result1, err := fileedit.Execute(ctx, input1, tctx)
+	if err != nil {
+		t.Fatalf("first edit: %v", err)
+	}
+	if result1 == nil || result1.Data == nil {
+		t.Fatal("first edit: nil result")
+	}
+
+	// ReadFileState should now reflect the updated file.
+	st, ok := state[fp]
+	if !ok {
+		t.Fatal("ReadFileState missing after edit")
+	}
+	if !strings.Contains(st.Content, "line 1") {
+		t.Errorf("ReadFileState content after first edit still has old content: %q", st.Content)
+	}
+
+	// Second edit: change "line two" → "line 2"
+	// This would fail before the fix because ReadFileState still had original content.
+	input2, _ := json.Marshal(map[string]string{
+		"file_path":   fp,
+		"old_string":  "line two",
+		"new_string":  "line 2",
+	})
+	result2, err := fileedit.Execute(ctx, input2, tctx)
+	if err != nil {
+		t.Fatalf("second edit (same turn): %v", err)
+	}
+	if result2 == nil || result2.Data == nil {
+		t.Fatal("second edit: nil result")
+	}
+
+	// Verify final file content has both edits.
+	data, _ := os.ReadFile(fp)
+	got := string(data)
+	if !strings.Contains(got, "line 1") || !strings.Contains(got, "line 2") {
+		t.Errorf("final file = %q, want both edits applied", got)
+	}
+	if strings.Contains(got, "line one") || strings.Contains(got, "line two") {
+		t.Errorf("final file = %q, old strings should be replaced", got)
+	}
+}
+

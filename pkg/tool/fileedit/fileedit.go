@@ -309,6 +309,20 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	patch := getStructuredPatch(fr.content, updatedContent)
 	originalFile := fr.content
 
+	// Update ReadFileState so subsequent edits in the same turn see the
+	// updated content. Source: TS FileEditTool.ts:520-525.
+	if tctx != nil && tctx.ReadFileState != nil {
+		info, statErr := os.Stat(fullFilePath)
+		ts := int64(0)
+		if statErr == nil {
+			ts = info.ModTime().UnixMilli()
+		}
+		tctx.ReadFileState[fullFilePath] = tool.FileState{
+			Content:   updatedContent,
+			Timestamp: ts,
+		}
+	}
+
 	return &tool.ToolResult{Data: &Output{
 		FilePath:        fullFilePath,
 		OldString:       actualOldString,
