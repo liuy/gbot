@@ -15,8 +15,8 @@ func TestBuildSystemPrompt_Basic(t *testing.T) {
 	if result == "" {
 		t.Fatal("BuildSystemPrompt returned empty string")
 	}
-	if !strings.Contains(result, "You are gbot") {
-		t.Error("prompt missing 'You are gbot'")
+	if !strings.Contains(result, "{{SYSTEM}}") {
+		t.Error("prompt missing {{SYSTEM}} stub")
 	}
 }
 
@@ -61,7 +61,7 @@ func TestBuildSystemPrompt_AllSections(t *testing.T) {
 	}
 
 	expectedParts := []string{
-		"You are gbot",
+		"{{SYSTEM}}",
 		"## Available Skills",
 		"/test - run tests",
 		"Runtime:",
@@ -80,8 +80,8 @@ func TestBuildSystemPrompt_NonexistentDir(t *testing.T) {
 	if result == "" {
 		t.Fatal("BuildSystemPrompt returned empty string for nonexistent dir")
 	}
-	if !strings.Contains(result, "You are gbot") {
-		t.Error("prompt should contain base system prompt even for nonexistent dir")
+	if !strings.Contains(result, "{{SYSTEM}}") {
+		t.Error("prompt should contain {{SYSTEM}} stub even for nonexistent dir")
 	}
 }
 

@@ -27,6 +27,21 @@ func LoadSoulFile() (string, error) {
 	return content, nil
 }
 
+// LoadSystemFile reads ~/.gbot/SYSTEM.md for the customizable base prompt.
+// Returns ("", nil) if file doesn't exist or is empty.
+func LoadSystemFile() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil
+	}
+	data, err := os.ReadFile(filepath.Join(homeDir, ".gbot", "SYSTEM.md"))
+	if err != nil {
+		return "", nil
+	}
+	content := strings.TrimSpace(string(data))
+	return content, nil
+}
+
 // LoadContextFiles reads AGENTS.md and CLAUDE.md from user-global (~/.gbot/)
 // and project paths (CWD to root walk).
 // Returns a map matching TS getUserContext() structure.

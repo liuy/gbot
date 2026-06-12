@@ -37,11 +37,8 @@ func TestBuild_Basic(t *testing.T) {
 
 	promptStr := result
 
-	if !strings.Contains(promptStr, "You are gbot") {
-		t.Error("built prompt missing 'You are gbot'")
-	}
-	if !strings.Contains(promptStr, "Current date:") {
-		t.Error("built prompt missing 'Current date:'")
+	if !strings.Contains(promptStr, "{{SYSTEM}}") {
+		t.Error("built prompt missing {{SYSTEM}} stub")
 	}
 	if !strings.Contains(promptStr, "Runtime:") {
 		t.Error("built prompt missing runtime info")
@@ -87,8 +84,8 @@ func TestBuild_WithToolPrompts_NoLongerInSystemPrompt(t *testing.T) {
 	if strings.Contains(promptStr, "Tool 2: Be carefully") {
 		t.Error("tool prompts must not appear in system prompt")
 	}
-	if !strings.Contains(promptStr, "You are gbot") {
-		t.Error("built prompt should still contain 'You are gbot'")
+	if !strings.Contains(promptStr, "{{SYSTEM}}") {
+		t.Error("built prompt should still contain {{SYSTEM}} stub")
 	}
 }
 
@@ -110,7 +107,7 @@ func TestBuild_AllSections(t *testing.T) {
 	promptStr := result
 
 	expectedParts := []string{
-		"You are gbot",
+		"{{SYSTEM}}",
 		"/project",
 		"Git branch: develop",
 		"Default branch: main",
@@ -332,11 +329,22 @@ func TestBaseSystemPrompt(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/work")
 	prompt := b.BaseSystemPrompt()
+	if !strings.Contains(prompt, "{{SYSTEM}}") {
+		t.Error("base prompt should contain {{SYSTEM}} stub")
+	}
+}
+
+func TestDefaultBasePrompt(t *testing.T) {
+	t.Parallel()
+	prompt := context.DefaultBasePrompt()
 	if !strings.Contains(prompt, "You are gbot") {
-		t.Error("base prompt missing greeting")
+		t.Error("default base prompt missing greeting")
 	}
 	if !strings.Contains(prompt, "Current date:") {
-		t.Error("base prompt missing date")
+		t.Error("default base prompt missing date")
+	}
+	if !strings.Contains(prompt, "{{SOUL}}") {
+		t.Error("default base prompt missing {{SOUL}} stub")
 	}
 }
 
@@ -350,8 +358,8 @@ func TestBuild_NoFiles(t *testing.T) {
 
 	promptStr := result
 
-	if !strings.Contains(promptStr, "You are gbot") {
-		t.Error("prompt should contain 'You are gbot' even without files")
+	if !strings.Contains(promptStr, "{{SYSTEM}}") {
+		t.Error("prompt should contain {{SYSTEM}} stub")
 	}
 	if !strings.Contains(promptStr, "Runtime:") {
 		t.Error("prompt should contain runtime info even without files")

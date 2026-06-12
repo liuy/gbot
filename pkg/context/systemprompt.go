@@ -11,6 +11,11 @@ import (
 )
 
 func (b *Builder) BaseSystemPrompt() string {
+	return "{{SYSTEM}}"
+}
+
+// DefaultBasePrompt returns the hardcoded fallback when SYSTEM.md doesn't exist.
+func DefaultBasePrompt() string {
 	now := time.Now().Format("2006-01-02")
 	return fmt.Sprintf(`You are gbot, an interactive AI coding assistant. You help users with software engineering tasks.
 

@@ -4859,3 +4859,132 @@ func TestSetMaxTokens(t *testing.T) {
 		t.Errorf("after SetMaxTokens(4096) = %d, want 4096", eng.MaxTokens())
 	}
 }
+
+func TestCallLLM_SystemPromptDynamicLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	gbotDir := filepath.Join(tmpDir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write custom SYSTEM.md
+	customSystem := "You are a custom test assistant. {{SOUL}} {{MODEL}}"
+	if err := os.WriteFile(filepath.Join(gbotDir, "SYSTEM.md"), []byte(customSystem), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write custom SOUL.md
+	customSoul := "# TestSoul\nBe quirky."
+	if err := os.WriteFile(filepath.Join(gbotDir, "SOUL.md"), []byte(customSoul), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "Hello!"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "my-model",
+		Logger:   slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.SetSystemPrompt("{{SYSTEM}}")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "Say hello", "{{SYSTEM}}")
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Verify the captured system prompt has dynamic content
+	mp.mu.Lock()
+	req := mp.lastRequest
+	mp.mu.Unlock()
+
+	if req == nil {
+		t.Fatal("no request captured")
+	}
+
+	var systemText string
+	if err := json.Unmarshal(req.System, &systemText); err != nil {
+		t.Fatalf("system prompt is not a string: %v", err)
+	}
+
+	// {{SYSTEM}} replaced with custom SYSTEM.md content
+	if !strings.Contains(systemText, "custom test assistant") {
+		t.Errorf("system prompt should contain custom SYSTEM.md content, got: %s", systemText)
+	}
+	// {{SOUL}} replaced with custom SOUL.md content
+	if !strings.Contains(systemText, "TestSoul") {
+		t.Errorf("system prompt should contain custom SOUL.md content, got: %s", systemText)
+	}
+	// {{MODEL}} replaced with engine model
+	if !strings.Contains(systemText, "my-model") {
+		t.Errorf("system prompt should contain model name, got: %s", systemText)
+	}
+	// Raw stubs should NOT remain
+	if strings.Contains(systemText, "{{SYSTEM}}") {
+		t.Error("{{SYSTEM}} stub should be replaced")
+	}
+	if strings.Contains(systemText, "{{SOUL}}") {
+		t.Error("{{SOUL}} stub should be replaced")
+	}
+	if strings.Contains(systemText, "{{MODEL}}") {
+		t.Error("{{MODEL}} stub should be replaced")
+	}
+}
+
+func TestDumpAPIRequest_SystemPromptDynamicLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	gbotDir := filepath.Join(tmpDir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	customSystem := "Custom dump assistant. {{SOUL}} {{MODEL}}"
+	if err := os.WriteFile(filepath.Join(gbotDir, "SYSTEM.md"), []byte(customSystem), 0644); err != nil {
+		t.Fatal(err)
+	}
+	customSoul := "# DumpSoul\nBe thorough."
+	if err := os.WriteFile(filepath.Join(gbotDir, "SOUL.md"), []byte(customSoul), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mp := &mockProvider{}
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "dump-model",
+		Logger:   slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.SetSystemPrompt("{{SYSTEM}}")
+
+	dump := eng.DumpAPIRequest()
+	if dump == nil {
+		t.Fatal("DumpAPIRequest returned nil")
+	}
+
+	if !strings.Contains(dump.SystemPrompt, "Custom dump assistant") {
+		t.Errorf("DumpAPIRequest system prompt should contain custom SYSTEM.md, got: %s", dump.SystemPrompt)
+	}
+	if !strings.Contains(dump.SystemPrompt, "DumpSoul") {
+		t.Errorf("DumpAPIRequest system prompt should contain custom SOUL.md, got: %s", dump.SystemPrompt)
+	}
+	if !strings.Contains(dump.SystemPrompt, "dump-model") {
+		t.Errorf("DumpAPIRequest system prompt should contain model name, got: %s", dump.SystemPrompt)
+	}
+	if strings.Contains(dump.SystemPrompt, "{{SYSTEM}}") {
+		t.Error("DumpAPIRequest {{SYSTEM}} stub should be replaced")
+	}
+}

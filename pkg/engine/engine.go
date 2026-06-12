@@ -1420,6 +1420,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	var cacheControl *types.CacheControlConfig
 	var promptStateKey *llm.PromptStateKey
 	if systemPrompt != "" {
+		// Hot-load SYSTEM.md on every API call via {{SYSTEM}} stub
+		systemText, _ := ctxbuild.LoadSystemFile()
+		if systemText == "" {
+			systemText = ctxbuild.DefaultBasePrompt()
+		}
+		systemPrompt = strings.Replace(systemPrompt, "{{SYSTEM}}", systemText, 1)
+
 		// Hot-load SOUL.md on every API call via {{SOUL}} stub
 		soulText := ""
 		if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
@@ -2322,7 +2329,13 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 		}
 	}
 
-	// Hot-load SOUL.md (same as callLLM).
+	// Hot-load SYSTEM.md and SOUL.md (same as callLLM).
+	systemText, _ := ctxbuild.LoadSystemFile()
+	if systemText == "" {
+		systemText = ctxbuild.DefaultBasePrompt()
+	}
+	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SYSTEM}}", systemText, 1)
+
 	soulText := ""
 	if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
 		soulText = "\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul

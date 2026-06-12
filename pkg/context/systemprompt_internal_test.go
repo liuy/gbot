@@ -32,6 +32,50 @@ func TestLoadSoulFile_FileExists(t *testing.T) {
 	}
 }
 
+func TestLoadSystemFile_NoFile(t *testing.T) {
+	t.Parallel()
+	got, err := LoadSystemFile()
+	if err != nil {
+		t.Fatalf("LoadSystemFile returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("LoadSystemFile should return empty when no SYSTEM.md, got %q", got)
+	}
+}
+
+func TestLoadSystemFile_FileExists(t *testing.T) {
+	t.Parallel()
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".gbot", "SYSTEM.md")
+	orig, _ := os.ReadFile(path)
+
+	systemContent := "# Test System Prompt\nYou are a test assistant."
+	os.WriteFile(path, []byte(systemContent), 0644)
+	defer func() {
+		if orig != nil {
+			os.WriteFile(path, orig, 0644)
+		} else {
+			os.Remove(path)
+		}
+	}()
+
+	got, err := LoadSystemFile()
+	if err != nil {
+		t.Fatalf("LoadSystemFile returned error: %v", err)
+	}
+	if got != systemContent {
+		t.Errorf("LoadSystemFile = %q, want %q", got, systemContent)
+	}
+}
+
+func TestDefaultBasePrompt_ContainsStubs(t *testing.T) {
+	t.Parallel()
+	prompt := DefaultBasePrompt()
+	if !strings.Contains(prompt, "{{SOUL}}") {
+		t.Error("DefaultBasePrompt should contain {{SOUL}} stub")
+	}
+}
+
 func TestLoadSoulFile_NoFile(t *testing.T) {
 	homeDir := t.TempDir()
 	origHome := os.Getenv("HOME")
