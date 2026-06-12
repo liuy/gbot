@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/liuy/gbot/pkg/tool/web"
 )
 
 var (
@@ -85,7 +84,7 @@ type zhipuSearchResult struct {
 	Content string `json:"content"`
 }
 
-func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*web.SearchResponse, error) {
+func (z *ZhipuProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
 	if params.Limit <= 0 {
 		params.Limit = zhipuDefaultLimit
 	}
@@ -124,7 +123,7 @@ func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*w
 
 	resp, err := z.client().Do(req)
 	if err != nil {
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  fmt.Sprintf("request failed: %v", err),
 			Status:   0,
@@ -134,7 +133,7 @@ func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*w
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody)),
 			Status:   resp.StatusCode,
@@ -150,7 +149,7 @@ func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*w
 //	id:1
 //	event:message
 //	data:{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"..."}]}}
-func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) {
+func parseZhipuResponse(body io.Reader, limit int) (*SearchResponse, error) {
 	var lastData string
 	scanner := bufio.NewScanner(io.LimitReader(body, zhipuMaxResponse))
 	for scanner.Scan() {
@@ -163,7 +162,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 		return nil, fmt.Errorf("zhipu: read response: %w", err)
 	}
 	if lastData == "" {
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  "empty SSE response",
 			Status:   500,
@@ -182,7 +181,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 			status = code
 			msg = m
 		}
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  msg,
 			Status:   toHTTPStatus(status),
@@ -190,7 +189,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 	}
 
 	if rpcResp.Result == nil {
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  "missing result in JSON-RPC response",
 			Status:   500,
@@ -200,20 +199,20 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 	if rpcResp.Result.IsError && len(rpcResp.Result.Content) > 0 {
 		errText := rpcResp.Result.Content[0].Text
 		if code, msg := extractMCPError(errText); code != 0 {
-			return nil, &web.SearchProviderError{
+			return nil, &SearchProviderError{
 				Provider: "zhipu",
 				Message:  msg,
 				Status:   toHTTPStatus(code),
 			}
 		}
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "zhipu",
 			Message:  errText,
 			Status:   500,
 		}
 	}
 
-	var allSources []web.SearchSource
+	var allSources []SearchSource
 	for _, c := range rpcResp.Result.Content {
 		if len(allSources) >= limit {
 			break
@@ -241,7 +240,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 			if title == "" {
 				title = r.Link
 			}
-			allSources = append(allSources, web.SearchSource{
+			allSources = append(allSources, SearchSource{
 				Title:   title,
 				URL:     r.Link,
 				Snippet: r.Content,
@@ -252,7 +251,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 		}
 	}
 
-	return &web.SearchResponse{
+	return &SearchResponse{
 		Provider: "zhipu",
 		Sources:  allSources,
 	}, nil

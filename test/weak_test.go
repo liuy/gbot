@@ -131,6 +131,10 @@ var checkPatterns = []checkPattern{
 			if strings.Contains(match, "WriteString") || strings.Contains(match, "WriteFile") {
 				return true
 			}
+			// Exempt: json.Unmarshal — best-effort parse, error means zero value
+			if strings.Contains(match, "json.Unmarshal") {
+				return true
+			}
 			// Exempt: goroutine cleanup (close in goroutine)
 			if isInGoroutine(lines, lineIdx) {
 				return true

@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"unicode/utf8"
 )
 
@@ -49,7 +51,7 @@ func TestIsURL(t *testing.T) {
 
 func TestFormatForLLM(t *testing.T) {
 	t.Run("empty response", func(t *testing.T) {
-		resp := &SearchResponse{Provider: "test"}
+		resp := &providers.SearchResponse{Provider: "test"}
 		got := formatForLLM(resp)
 		if got != "" {
 			t.Errorf("expected empty output, got %q", got)
@@ -57,10 +59,10 @@ func TestFormatForLLM(t *testing.T) {
 	})
 
 	t.Run("with answer", func(t *testing.T) {
-		resp := &SearchResponse{
+		resp := &providers.SearchResponse{
 			Provider: "test",
 			Answer:   "Go generics were introduced in Go 1.18.",
-			Sources: []SearchSource{
+			Sources: []providers.SearchSource{
 				{Title: "Go 1.18 Release Notes", URL: "https://go.dev/doc/go1.18"},
 			},
 		}
@@ -80,9 +82,9 @@ func TestFormatForLLM(t *testing.T) {
 	})
 
 	t.Run("with age", func(t *testing.T) {
-		resp := &SearchResponse{
+		resp := &providers.SearchResponse{
 			Provider: "test",
-			Sources: []SearchSource{
+			Sources: []providers.SearchSource{
 				{Title: "Test", URL: "https://example.com", AgeSeconds: 86400 * 2},
 			},
 		}
@@ -97,9 +99,9 @@ func TestFormatForLLM(t *testing.T) {
 		for range 300 {
 			longSnippet.WriteString("x")
 		}
-		resp := &SearchResponse{
+		resp := &providers.SearchResponse{
 			Provider: "test",
-			Sources: []SearchSource{
+			Sources: []providers.SearchSource{
 				{Title: "Test", URL: "https://example.com", Snippet: longSnippet.String()},
 			},
 		}
@@ -115,9 +117,9 @@ func TestFormatForLLM(t *testing.T) {
 		for range 100 {
 			cjkSnippet.WriteString("你")
 		}
-		resp := &SearchResponse{
+		resp := &providers.SearchResponse{
 			Provider: "test",
-			Sources: []SearchSource{
+			Sources: []providers.SearchSource{
 				{Title: "测试", URL: "https://example.com", Snippet: cjkSnippet.String()},
 			},
 		}

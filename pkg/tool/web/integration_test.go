@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -12,14 +14,14 @@ import (
 )
 
 func TestExecute_SearchQuery(t *testing.T) {
-	chain := &SearchChain{
-		Providers: []SearchProvider{
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
 			&mockProvider{
 				id:        "test",
 				available: true,
-				resp: &SearchResponse{
+				resp: &providers.SearchResponse{
 					Provider: "test",
-					Sources: []SearchSource{
+					Sources: []providers.SearchSource{
 						{Title: "Go 1.18 Generics", URL: "https://go.dev/doc/go1.18", Snippet: "Generics are here"},
 					},
 				},
@@ -28,7 +30,7 @@ func TestExecute_SearchQuery(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "go generics"}`)
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -52,14 +54,14 @@ func TestExecute_SearchQuery(t *testing.T) {
 }
 
 func TestExecute_SearchWithLimit(t *testing.T) {
-	chain := &SearchChain{
-		Providers: []SearchProvider{
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
 			&mockProvider{
 				id:        "test",
 				available: true,
-				resp: &SearchResponse{
+				resp: &providers.SearchResponse{
 					Provider: "test",
-					Sources: []SearchSource{
+					Sources: []providers.SearchSource{
 						{Title: "A", URL: "https://a.com"},
 						{Title: "B", URL: "https://b.com"},
 					},
@@ -69,7 +71,7 @@ func TestExecute_SearchWithLimit(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test", "limit": 1}`)
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -81,9 +83,9 @@ func TestExecute_SearchWithLimit(t *testing.T) {
 }
 
 func TestExecute_EmptyQuery(t *testing.T) {
-	chain := &SearchChain{Providers: []SearchProvider{}}
+	chain := &providers.SearchChain{Providers: []providers.SearchProvider{}}
 	input := json.RawMessage(`{"query": ""}`)
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty query")
 	}
@@ -93,18 +95,18 @@ func TestExecute_EmptyQuery(t *testing.T) {
 }
 
 func TestExecute_SearchAllProvidersFail(t *testing.T) {
-	chain := &SearchChain{
-		Providers: []SearchProvider{
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
 			&mockProvider{
 				id:        "fail1",
 				available: true,
-				err:       &SearchProviderError{Provider: "fail1", Message: "timeout", Status: 500},
+				err:       &providers.SearchProviderError{Provider: "fail1", Message: "timeout", Status: 500},
 			},
 		},
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("expected error when all providers fail")
 	}
@@ -120,9 +122,9 @@ func TestExecute_URLFetch_HTML(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -143,9 +145,9 @@ func TestExecute_URLFetch_PlainText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -162,9 +164,9 @@ func TestExecute_URLFetch_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() should not error on HTTP 500, got: %v", err)
 	}
@@ -180,10 +182,10 @@ func TestExecute_URLFetch_ServerError(t *testing.T) {
 }
 
 func TestExecute_URLFetch_ConnectionRefused(t *testing.T) {
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	// Use a port that's definitely not listening
 	input := json.RawMessage(`{"query": "http://127.0.0.1:1"}`)
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("connection refused should return error, got nil")
 	}
@@ -193,23 +195,16 @@ func TestExecute_URLFetch_ConnectionRefused(t *testing.T) {
 }
 
 func TestExecute_InvalidJSON(t *testing.T) {
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(`{invalid json`)
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("invalid JSON should return parse error, got nil")
 	}
 }
 
 func TestWebPrompt(t *testing.T) {
-	chain := &SearchChain{
-		Providers: []SearchProvider{
-			&mockProvider{id: "zhipu", available: true},
-			&mockProvider{id: "duckduckgo", available: true},
-		},
-	}
-
-	prompt := webPrompt(chain)
+	prompt := webPrompt()
 	if !strings.Contains(prompt, "Search mode") {
 		t.Errorf("prompt missing search mode section: %q", prompt)
 	}
@@ -219,19 +214,14 @@ func TestWebPrompt(t *testing.T) {
 }
 
 func TestWebPrompt_NoProviders(t *testing.T) {
-	chain := &SearchChain{}
-	prompt := webPrompt(chain)
+	prompt := webPrompt()
 	if !strings.Contains(prompt, "Fetch mode") {
 		t.Errorf("prompt missing fetch mode section: %q", prompt)
 	}
 }
 
 func TestNew_ToolProperties(t *testing.T) {
-	tool := New(Config{
-		Providers: []SearchProvider{
-			&mockProvider{id: "test", available: true},
-		},
-	})
+	tool := New(nil)
 
 	if tool.Name() != "Web" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "Web")
@@ -314,14 +304,14 @@ func TestBuildResult_DefaultContentType(t *testing.T) {
 // --- Cold start: no providers available ---
 
 func TestExecute_SearchNoProvidersAvailable(t *testing.T) {
-	chain := &SearchChain{
-		Providers: []SearchProvider{
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
 			&mockProvider{id: "dead", available: false},
 		},
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("should error when no providers are available")
 	}
@@ -344,9 +334,9 @@ func TestExecute_URLFetch_Redirect(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, redirector.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -374,9 +364,9 @@ func TestExecute_URLFetch_Truncation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -396,15 +386,15 @@ func TestExecute_SearchContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	chain := &SearchChain{
-		Providers: []SearchProvider{
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
 			&mockProvider{id: "test", available: true},
 		},
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(ctx, input, chain, nil)
-	// SearchChain.Search checks ctx.Err() first
+	_, err := execute(ctx, input, chain, nil, nil)
+	// providers.SearchChain.Search checks ctx.Err() first
 	if err == nil {
 		t.Fatal("should error with canceled context")
 	}
@@ -436,9 +426,9 @@ func TestExecute_Fetch_BotBlockNoChrome(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	_, err := execute(context.Background(), input, chain, nil)
+	_, err := execute(context.Background(), input, chain, nil, nil)
 	if err == nil {
 		t.Fatal("bot block without Chrome should return error")
 	}
@@ -467,9 +457,9 @@ func TestExecute_FetchJSFallback_BotBlock(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() with JS fallback should succeed, got: %v", err)
 	}
@@ -499,9 +489,9 @@ func TestExecute_FetchJSFallback_ShortSPA(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() with JS fallback should succeed, got: %v", err)
 	}
@@ -520,9 +510,9 @@ func TestExecute_FetchJSFallback_NormalPageNoFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, nil)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -546,9 +536,9 @@ func TestExecute_FetchUsesClient(t *testing.T) {
 		Transport: &customTransport{ua: "test-proxy-client/1.0"},
 	}
 
-	chain := &SearchChain{}
+	chain := &providers.SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain, customClient)
+	result, err := execute(context.Background(), input, chain, customClient, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}

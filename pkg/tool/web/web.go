@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/web/providers"
+	"github.com/liuy/gbot/pkg/tool/web/scrapers"
 )
 
 const defaultLimit = 10
@@ -24,16 +27,17 @@ type Input struct {
 type Output struct {
 	Mode    string
 	Content string
-	Raw     *SearchResponse
+	Raw     *providers.SearchResponse
 }
 
-type Config struct {
-	Providers []SearchProvider
-	Client    *http.Client
-}
-
-func New(cfg Config) tool.Tool {
-	chain := &SearchChain{Providers: cfg.Providers}
+// New constructs the web tool with default search providers and scrapers.
+// Pass nil to use http.DefaultClient.
+func New(client *http.Client) tool.Tool {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	chain := searchChain(client)
+	reg := scraperRegistry()
 
 	avail := chain.AvailableProviders()
 	providerDesc := `Search provider. \"auto\" uses the first available provider.`
@@ -76,7 +80,7 @@ func New(cfg Config) tool.Tool {
 			return in.Query, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return execute(ctx, input, chain, cfg.Client)
+			return execute(ctx, input, chain, client, reg)
 		},
 		IsReadOnly_: func(json.RawMessage) bool {
 			return true
@@ -86,7 +90,7 @@ func New(cfg Config) tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 50000,
-		Prompt_:            webPrompt(chain),
+		Prompt_:            webPrompt(),
 		RenderResult_: func(data any) string {
 			switch v := data.(type) {
 			case *Output:
@@ -104,7 +108,7 @@ func New(cfg Config) tool.Tool {
 	})
 }
 
-func execute(ctx context.Context, input json.RawMessage, chain *SearchChain, client *http.Client) (*tool.ToolResult, error) {
+func execute(ctx context.Context, input json.RawMessage, chain *providers.SearchChain, client *http.Client, reg *scrapers.Registry) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -115,19 +119,19 @@ func execute(ctx context.Context, input json.RawMessage, chain *SearchChain, cli
 	}
 
 	if IsURL(in.Query) {
-		return executeFetch(ctx, in.Query, in.JS, client)
+		return executeFetch(ctx, in.Query, in.JS, client, reg)
 	}
 
 	return executeSearch(ctx, in, chain)
 }
 
-func executeSearch(ctx context.Context, in Input, chain *SearchChain) (*tool.ToolResult, error) {
+func executeSearch(ctx context.Context, in Input, chain *providers.SearchChain) (*tool.ToolResult, error) {
 	limit := in.Limit
 	if limit <= 0 {
 		limit = defaultLimit
 	}
 
-	params := SearchParams{
+	params := providers.SearchParams{
 		Query: in.Query,
 		Limit: limit,
 	}
@@ -167,10 +171,44 @@ func extractProxyURL(client *http.Client) string {
 	return p.String()
 }
 
-func executeFetch(ctx context.Context, url string, js bool, client *http.Client) (*tool.ToolResult, error) {
+func executeFetch(ctx context.Context, url string, js bool, client *http.Client, reg *scrapers.Registry) (*tool.ToolResult, error) {
+	// Explicit JS mode: skip scrapers, go straight to chromedp.
 	if js {
 		slog.Info("web:fetch JS mode", "url", url)
 		return fetchWithChrome(ctx, url, client)
+	}
+
+	// Try site-specific scrapers first.
+	jsFetcher := func(ctx context.Context, u string) (string, error) {
+		return chromedpFetch(ctx, u, 25*time.Second, extractProxyURL(client))
+	}
+	if reg != nil {
+		parsed, err := neturl.Parse(url)
+		if err == nil {
+			result, err := reg.Try(ctx, parsed, client, jsFetcher)
+			if err != nil {
+				return nil, err
+			}
+			if result != nil {
+				slog.Info("web:fetch scraper matched", "method", result.Method, "url", url)
+				notes := result.Notes
+				if notes == nil {
+					notes = []string{}
+				}
+				fetchResult := BuildResult(result.Content, FetchResultOptions{
+					URL:         url,
+					FinalURL:    url,
+					ContentType: result.ContentType,
+					Notes:       notes,
+				})
+				return &tool.ToolResult{
+					Data: &Output{
+						Mode:    "fetch",
+						Content: fetchResult.Content,
+					},
+				}, nil
+			}
+		}
 	}
 
 	result := LoadPage(ctx, url, LoadPageOptions{Client: client})

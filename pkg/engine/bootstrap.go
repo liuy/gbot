@@ -23,7 +23,6 @@ import (
 	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	webtool "github.com/liuy/gbot/pkg/tool/web"
-	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/job"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -82,24 +81,14 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	replTool := repl.New()
 	reg.MustRegister(replTool)
 
-	// Web tool with provider chain: Zhipu (when key present) → DDG (always).
-	var searchProviders []webtool.SearchProvider
+	// Web tool: zhipu API key and proxy come from config; the tool itself
+	// wires up its own search providers and scraper registry.
 	var proxyClient *http.Client
-	var zhipuKey string
 	if deps.Cfg != nil {
 		proxyClient = deps.Cfg.ProxyHTTPClient()
-		for _, p := range deps.Cfg.Providers {
-			if p.Name == "zhipu" {
-				zhipuKey = p.ResolveKey()
-				break
-			}
-		}
 	}
-	if zhipuKey != "" {
-		searchProviders = append(searchProviders, &providers.ZhipuProvider{Client: proxyClient, APIKey: zhipuKey})
-	}
-	searchProviders = append(searchProviders, &providers.DuckDuckGoProvider{Client: proxyClient})
-	reg.MustRegister(webtool.New(webtool.Config{Providers: searchProviders, Client: proxyClient}))
+	_ = proxyClient // zhipu key picked up via ZHIPU_API_KEY env inside web package
+	reg.MustRegister(webtool.New(proxyClient))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

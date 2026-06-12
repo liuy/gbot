@@ -1,8 +1,6 @@
 package web
 
-func webPrompt(chain *SearchChain) string {
-	_ = chain
-
+func webPrompt() string {
 	return `Search the web for up-to-date information beyond your knowledge cutoff, or fetch URL content as markdown.
 
 ### When to use

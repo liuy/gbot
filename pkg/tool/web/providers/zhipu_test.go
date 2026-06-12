@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/tool/web"
 )
 
 func zhipuSSEResponse(t *testing.T, payload any) string {
@@ -88,7 +87,7 @@ func TestZhipuSearchSuccess(t *testing.T) {
 	defer func() { zhipuMCPURL = origURL }()
 
 	z := &ZhipuProvider{Client: server.Client(), APIKey: "test.key"}
-	resp, err := z.Search(context.Background(), web.SearchParams{Query: "golang generics", Limit: 10})
+	resp, err := z.Search(context.Background(), SearchParams{Query: "golang generics", Limit: 10})
 	if err != nil {
 		t.Fatalf("parseZhipuResponse error: %v", err)
 	}
@@ -130,7 +129,7 @@ func TestZhipuSearchMCPError401(t *testing.T) {
 		t.Fatalf("expected error for 401 MCP error, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -162,7 +161,7 @@ func TestZhipuSearchMCPError429(t *testing.T) {
 		t.Fatalf("expected error for 429 MCP error, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -192,7 +191,7 @@ func TestZhipuSearchJSONRPCError(t *testing.T) {
 		t.Fatalf("expected error for JSON-RPC error, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -208,7 +207,7 @@ func TestZhipuSearchEmptySSE(t *testing.T) {
 		t.Fatalf("expected error for empty SSE, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -228,7 +227,7 @@ func TestZhipuSearchMissingResult(t *testing.T) {
 		t.Fatalf("expected error for missing result, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -279,12 +278,12 @@ func TestZhipuSearchHTTPError(t *testing.T) {
 	defer func() { zhipuMCPURL = origURL }()
 
 	z := &ZhipuProvider{Client: server.Client(), APIKey: "test.key"}
-	_, err := z.Search(context.Background(), web.SearchParams{Query: "test", Limit: 3})
+	_, err := z.Search(context.Background(), SearchParams{Query: "test", Limit: 3})
 	if err == nil {
 		t.Fatalf("expected error for HTTP 502, got nil")
 	}
 
-	var spe *web.SearchProviderError
+	var spe *SearchProviderError
 	if !errors.As(err, &spe) {
 		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
 	}
@@ -298,7 +297,7 @@ func TestZhipuSearchContextCancel(t *testing.T) {
 	cancel()
 
 	z := &ZhipuProvider{Client: http.DefaultClient, APIKey: "test.key"}
-	_, err := z.Search(ctx, web.SearchParams{Query: "test", Limit: 3})
+	_, err := z.Search(ctx, SearchParams{Query: "test", Limit: 3})
 	if err == nil {
 		t.Fatalf("expected error for cancelled context, got nil")
 	}

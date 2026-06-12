@@ -11,7 +11,6 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/liuy/gbot/pkg/tool/web"
 )
 
 const (
@@ -34,7 +33,7 @@ func (d *DuckDuckGoProvider) client() *http.Client {
 	return http.DefaultClient
 }
 
-func (d *DuckDuckGoProvider) Search(ctx context.Context, params web.SearchParams) (*web.SearchResponse, error) {
+func (d *DuckDuckGoProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
 	if params.Limit <= 0 {
 		params.Limit = ddgDefaultLimit
 	}
@@ -53,7 +52,7 @@ func (d *DuckDuckGoProvider) Search(ctx context.Context, params web.SearchParams
 
 	resp, err := d.client().Do(req)
 	if err != nil {
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "duckduckgo",
 			Message:  fmt.Sprintf("request failed: %v", err),
 			Status:   0,
@@ -62,7 +61,7 @@ func (d *DuckDuckGoProvider) Search(ctx context.Context, params web.SearchParams
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return nil, &web.SearchProviderError{
+		return nil, &SearchProviderError{
 			Provider: "duckduckgo",
 			Message:  fmt.Sprintf("HTTP %d", resp.StatusCode),
 			Status:   resp.StatusCode,
@@ -74,19 +73,19 @@ func (d *DuckDuckGoProvider) Search(ctx context.Context, params web.SearchParams
 		return nil, fmt.Errorf("ddg: parse: %w", err)
 	}
 
-	return &web.SearchResponse{
+	return &SearchResponse{
 		Provider: "duckduckgo",
 		Sources:  sources,
 	}, nil
 }
 
-func parseDDGHTML(body io.Reader, limit int) ([]web.SearchSource, error) {
+func parseDDGHTML(body io.Reader, limit int) ([]SearchSource, error) {
 	doc, err := goquery.NewDocumentFromReader(body)
 	if err != nil {
 		return nil, fmt.Errorf("parse HTML: %w", err)
 	}
 
-	var sources []web.SearchSource
+	var sources []SearchSource
 	doc.Find(".result").Each(func(i int, s *goquery.Selection) {
 		if len(sources) >= limit {
 			return
@@ -108,7 +107,7 @@ func parseDDGHTML(body io.Reader, limit int) ([]web.SearchSource, error) {
 			title = actualURL
 		}
 
-		sources = append(sources, web.SearchSource{
+		sources = append(sources, SearchSource{
 			Title:   title,
 			URL:     actualURL,
 			Snippet: snippet,

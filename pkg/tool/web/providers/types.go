@@ -1,4 +1,4 @@
-package web
+package providers
 
 import (
 	"context"
@@ -6,6 +6,44 @@ import (
 	"fmt"
 	"strings"
 )
+
+type SearchParams struct {
+	Query string
+	Limit int
+}
+
+type SearchResponse struct {
+	Provider string
+	Answer   string
+	Sources  []SearchSource
+}
+
+type SearchSource struct {
+	Title         string
+	URL           string
+	Snippet       string
+	PublishedDate string
+	AgeSeconds    int64
+	Author        string
+}
+
+type SearchProviderError struct {
+	Provider string
+	Message  string
+	Status   int
+}
+
+func (e *SearchProviderError) Error() string {
+	return fmt.Sprintf("%s: %s (status %d)", e.Provider, e.Message, e.Status)
+}
+
+func (e *SearchProviderError) IsAuthError() bool {
+	return e.Status == 401 || e.Status == 403
+}
+
+func (e *SearchProviderError) IsRateLimit() bool {
+	return e.Status == 429
+}
 
 type SearchProvider interface {
 	ID() string
@@ -79,3 +117,4 @@ func (sc *SearchChain) SearchWithProvider(ctx context.Context, params SearchPara
 	}
 	return nil, fmt.Errorf("unknown provider %q (available: %s)", provider, strings.Join(sc.AvailableProviders(), ", "))
 }
+

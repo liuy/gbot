@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/tool/web"
 )
 
 const ddgHTMLResponse = `
@@ -76,7 +75,7 @@ func TestDuckDuckGo_Search_ContextCancel(t *testing.T) {
 	cancel()
 
 	d := &DuckDuckGoProvider{}
-	_, err := d.Search(ctx, web.SearchParams{Query: "test"})
+	_, err := d.Search(ctx, SearchParams{Query: "test"})
 	if err == nil {
 		t.Fatal("search should fail with cancelled context")
 	}

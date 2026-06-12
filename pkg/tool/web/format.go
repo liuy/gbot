@@ -3,9 +3,11 @@ package web
 import (
 	"fmt"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/tool/web/providers"
 )
 
-func formatForLLM(resp *SearchResponse) string {
+func formatForLLM(resp *providers.SearchResponse) string {
 	var parts []string
 
 	if resp.Answer != "" {
