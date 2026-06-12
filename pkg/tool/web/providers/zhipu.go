@@ -20,10 +20,9 @@ var (
 )
 
 const (
-	zhipuToolName      = "web_search_prime"
-	zhipuDefaultLimit  = 10
-	zhipuTimeout       = 30 * time.Second
-	zhipuMaxResponse   = 10 * 1024 * 1024 // 10MB
+	zhipuToolName    = "web_search_prime"
+	zhipuTimeout     = 30 * time.Second
+	zhipuMaxResponse = 10 * 1024 * 1024 // 10MB
 )
 
 // ZhipuProvider uses the same API key as the zhipu PaaS LLM endpoint.
@@ -85,10 +84,6 @@ type zhipuSearchResult struct {
 }
 
 func (z *ZhipuProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
-	if params.Limit <= 0 {
-		params.Limit = zhipuDefaultLimit
-	}
-
 	sessionID := uuid.New().String()
 	reqPayload := jsonRPCRequest{
 		JSONRPC: "2.0",

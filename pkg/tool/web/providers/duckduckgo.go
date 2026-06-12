@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	ddgDefaultLimit = 10
-	ddgUserAgent    = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	ddgTimeout      = 20 * time.Second
+	ddgUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	ddgTimeout   = 20 * time.Second
 )
 
 type DuckDuckGoProvider struct {
@@ -34,10 +33,6 @@ func (d *DuckDuckGoProvider) client() *http.Client {
 }
 
 func (d *DuckDuckGoProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
-	if params.Limit <= 0 {
-		params.Limit = ddgDefaultLimit
-	}
-
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(params.Query))
 
 	reqCtx, cancel := context.WithTimeout(ctx, ddgTimeout)
