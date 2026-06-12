@@ -1369,6 +1369,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
 	apiMessages = NormalizeMessagesForAPI(apiMessages)
 
+		// Repair tool_use/tool_result pairing mismatches before sending to API.
+		// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
+		apiMessages = EnsureToolResultPairing(apiMessages)
+
 	// Apply per-message tool result budget (TS: applyToolResultBudget).
 	// Replaces large tool results with previews when aggregate per-message
 	// size exceeds 200K. Budget decisions are cached for prompt cache stability.
@@ -1519,8 +1523,31 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 
 		if event.Error != nil {
 			e.logger.Error("stream event error", "error", event.Error)
+			// Match ctx.Done() path: generate synthetic tool_results for
+			// any tool_use blocks already accumulated, then append the
+			// partial assistant message so orphaned tool_use blocks
+			// don't cause API 400 errors on the next turn.
+			var orphanedBlocks []types.ContentBlock
 			if streamingExecutor != nil {
+				orphanedBlocks = SyntheticToolResultsForBlocks(
+					contentBlocks, nil, AbortReasonStreamingFallback)
 				streamingExecutor.Discard()
+			}
+			if len(contentBlocks) > 0 {
+				e.appendMessage(types.Message{
+					Role:       types.RoleAssistant,
+					Content:    contentBlocks,
+					Model:      model,
+					StopReason: stopReason,
+					Usage:      nil,
+					Timestamp:  time.Now(),
+				})
+				if len(orphanedBlocks) > 0 {
+					e.appendMessage(types.Message{
+						Role:    types.RoleUser,
+						Content: orphanedBlocks,
+					})
+				}
 			}
 			return nil, nil, event.Error
 		}
@@ -2259,6 +2286,10 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	// essential steps here on our snapshot.
 	apiMessages := marshalMessagesFrom(messages)
 	apiMessages = NormalizeMessagesForAPI(apiMessages)
+
+		// Repair tool_use/tool_result pairing mismatches before sending to API.
+		// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
+		apiMessages = EnsureToolResultPairing(apiMessages)
 	// Intentionally skip applyBudget — it has a write side effect.
 
 	// Prepend user context (CLAUDE.md/AGENTS.md/currentDate).

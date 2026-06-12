@@ -7911,3 +7911,77 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamErrorGeneratesSyntheticToolResults(t *testing.T) {
+	t.Parallel()
+
+	// Mid-stream API error after a tool_use block was received.
+	// The engine should generate synthetic tool_results for orphaned tool_uses.
+	events := []llm.StreamEvent{
+		{Type: "message_start", Message: &llm.MessageStart{Model: "test", Usage: types.Usage{InputTokens: 5}}},
+		{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeToolUse, ID: "tu_err", Name: "Read"}},
+		{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "input_json_delta", PartialJSON: `{"file": "test.go"}`}},
+		{Type: "content_block_stop", Index: 0},
+		{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "tool_use"}},
+		{Error: &llm.APIError{Message: "service overloaded", Status: 529}},
+	}
+
+	mp := &testProvider{}
+	mp.addResponse(events, nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		Logger:   slog.Default(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := eng.QuerySync(ctx, "read a file", "")
+	if result.Error == nil {
+		t.Fatal("expected error from stream error event, got nil")
+	}
+	if !strings.Contains(result.Error.Error(), "service overloaded") {
+		t.Errorf("error should contain 'service overloaded', got: %v", result.Error)
+	}
+
+	// Verify the engine appended the partial assistant message.
+	var assistantMsg *types.Message
+	var userMsg *types.Message
+	for i := range eng.messages {
+		if eng.messages[i].Role == types.RoleAssistant {
+			assistantMsg = &eng.messages[i]
+		}
+		if eng.messages[i].Role == types.RoleUser {
+			userMsg = &eng.messages[i]
+		}
+	}
+
+	if assistantMsg == nil {
+		t.Fatal("expected assistant message in engine messages")
+	}
+	hasToolUse := false
+	for _, b := range assistantMsg.Content {
+		if b.Type == types.ContentTypeToolUse && b.ID == "tu_err" {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Error("expected tool_use tu_err in assistant message")
+	}
+
+	// Verify synthetic tool_result was generated.
+	if userMsg == nil {
+		t.Fatal("expected user message (with synthetic tool_results) in engine messages")
+	}
+	hasSynthResult := false
+	for _, b := range userMsg.Content {
+		if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_err" && b.IsError {
+			hasSynthResult = true
+		}
+	}
+	if !hasSynthResult {
+		t.Error("expected synthetic tool_result for tu_err with IsError=true")
+	}
+}

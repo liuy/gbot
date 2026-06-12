@@ -190,3 +190,163 @@ func TestExtractToolUseBlocks(t *testing.T) {
 		t.Errorf("unexpected names: %v", blocks)
 	}
 }
+
+func TestEnsureToolResultPairing(t *testing.T) {
+	t.Parallel()
+
+	userText := func(text string) types.Message {
+		return types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(text)},
+		}
+	}
+	asst := func(blocks ...types.ContentBlock) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: blocks}
+	}
+	textBlock := func(text string) types.ContentBlock {
+		return types.NewTextBlock(text)
+	}
+	toolUse := func(id, name string) types.ContentBlock {
+		return types.ContentBlock{Type: types.ContentTypeToolUse, ID: id, Name: name, Input: json.RawMessage(`{}`)}
+	}
+	toolResult := func(toolUseID, content string, isError bool) types.ContentBlock {
+		return types.NewToolResultBlock(toolUseID, json.RawMessage(`"`+content+`"`), isError)
+	}
+	userWithBlocks := func(blocks ...types.ContentBlock) types.Message {
+		return types.Message{Role: types.RoleUser, Content: blocks}
+	}
+
+	t.Run("balanced pairs pass through", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			asst(textBlock("hi"), toolUse("tu_1", "Read")),
+			userWithBlocks(toolResult("tu_1", "file content", false)),
+			asst(textBlock("done")),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) != 4 {
+			t.Fatalf("expected 4 messages, got %d", len(result))
+		}
+	})
+
+	t.Run("injects synthetic tool_result for orphan tool_use", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			asst(textBlock("hi"), toolUse("tu_1", "Read")),
+			userText("next message without tool result"),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(result))
+		}
+		userMsg := result[2]
+		if userMsg.Role != types.RoleUser {
+			t.Fatal("expected user message after assistant")
+		}
+		hasSynth := false
+		for _, b := range userMsg.Content {
+			if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_1" && b.IsError {
+				hasSynth = true
+			}
+		}
+		if !hasSynth {
+			t.Error("expected synthetic tool_result for tu_1")
+		}
+	})
+
+	t.Run("strips orphaned tool_result without matching tool_use", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			asst(textBlock("hi"), toolUse("tu_1", "Read")),
+			userWithBlocks(toolResult("tu_1", "ok", false), toolResult("tu_orphan", "orphan result", false)),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 messages, got %d", len(result))
+		}
+		for _, b := range result[2].Content {
+			if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_orphan" {
+				t.Error("orphaned tool_result should have been stripped")
+			}
+		}
+		found := false
+		for _, b := range result[2].Content {
+			if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_1" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("valid tool_result tu_1 should remain")
+		}
+	})
+
+	t.Run("inserts synthetic user message when assistant with orphan tool_use has no next message", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			asst(textBlock("hi"), toolUse("tu_1", "Read")),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 messages (synthetic user inserted), got %d", len(result))
+		}
+		last := result[2]
+		if last.Role != types.RoleUser {
+			t.Fatal("expected user message inserted after assistant")
+		}
+		hasSynth := false
+		for _, b := range last.Content {
+			if b.Type == types.ContentTypeToolResult && b.ToolUseID == "tu_1" && b.IsError {
+				hasSynth = true
+			}
+		}
+		if !hasSynth {
+			t.Error("expected synthetic tool_result for tu_1 in inserted user message")
+		}
+	})
+
+	t.Run("duplicate tool_use IDs across assistants are stripped", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userText("hello"),
+			asst(toolUse("tu_1", "Read")),
+			userWithBlocks(toolResult("tu_1", "result 1", false)),
+			userText("continue"),
+			asst(toolUse("tu_1", "Read")),
+			userWithBlocks(toolResult("tu_1", "result 2", false)),
+		}
+		result := EnsureToolResultPairing(msgs)
+		toolUseCount := 0
+		for _, m := range result {
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeToolUse && b.ID == "tu_1" {
+					toolUseCount++
+				}
+			}
+		}
+		if toolUseCount != 1 {
+			t.Errorf("expected exactly 1 tool_use block for tu_1 after dedup, got %d", toolUseCount)
+		}
+	})
+
+	t.Run("all tool_results stripped replaces with placeholder when first message", func(t *testing.T) {
+		t.Parallel()
+		msgs := []types.Message{
+			userWithBlocks(toolResult("tu_orphan", "orphan data", false)),
+			asst(textBlock("response")),
+		}
+		result := EnsureToolResultPairing(msgs)
+		if len(result) < 2 {
+			t.Fatalf("expected at least 2 messages, got %d", len(result))
+		}
+		first := result[0]
+		for _, b := range first.Content {
+			if b.Type == types.ContentTypeToolResult {
+				t.Error("orphaned tool_result in first message should have been stripped")
+			}
+		}
+	})
+}
