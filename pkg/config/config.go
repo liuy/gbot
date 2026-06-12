@@ -32,6 +32,10 @@ type Config struct {
 
 	Proxy string `json:"proxy,omitempty"` // HTTP/SOCKS proxy, e.g. "http://localhost:10809"
 
+	// Web search provider API keys. Key = provider name, value = API key.
+	// Empty value = anonymous mode. Omitted provider = not registered.
+	Web map[string]string `json:"web,omitempty"`
+
 	Hooks json.RawMessage `json:"hooks,omitempty"`
 }
 

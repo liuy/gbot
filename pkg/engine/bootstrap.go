@@ -84,11 +84,16 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	// Web tool: zhipu API key and proxy come from config; the tool itself
 	// wires up its own search providers and scraper registry.
 	var proxyClient *http.Client
+	var webKeys map[string]string
 	if deps.Cfg != nil {
 		proxyClient = deps.Cfg.ProxyHTTPClient()
+		webKeys = deps.Cfg.Web
 	}
-	_ = proxyClient // zhipu key picked up via ZHIPU_API_KEY env inside web package
-	reg.MustRegister(webtool.New(proxyClient))
+	var webOpts []webtool.Option
+	if len(webKeys) > 0 {
+		webOpts = append(webOpts, webtool.WithAPIKeys(webKeys))
+	}
+	reg.MustRegister(webtool.New(proxyClient, webOpts...))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

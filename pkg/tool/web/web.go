@@ -13,10 +13,22 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/web/scrapers"
-	"os"
 )
 
 const defaultLimit = 10
+
+// Option configures the web tool.
+type Option func(*webConfig)
+
+type webConfig struct {
+	apiKeys map[string]string // provider name → API key
+}
+
+// WithAPIKeys sets API keys for search providers.
+// Empty value = anonymous mode. Omitted provider = not registered.
+func WithAPIKeys(keys map[string]string) Option {
+	return func(c *webConfig) { c.apiKeys = keys }
+}
 
 type Input struct {
 	Query    string `json:"query"`
@@ -33,11 +45,15 @@ type Output struct {
 
 // New constructs the web tool with default search providers and scrapers.
 // Pass nil to use http.DefaultClient.
-func New(client *http.Client) tool.Tool {
+func New(client *http.Client, opts ...Option) tool.Tool {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	chain := searchChain(client)
+	var cfg webConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	chain := searchChain(client, cfg.apiKeys)
 	reg := scraperRegistry()
 
 	avail := chain.AvailableProviders()
@@ -283,14 +299,17 @@ func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*too
 	}, nil
 }
 
-// searchChain returns a search chain pre-populated with built-in
-// providers (zhipu if ZHIPU_API_KEY is set, then anysearch, then duckduckgo).
-func searchChain(client *http.Client) *providers.SearchChain {
+// searchChain builds a search chain from config keys.
+// Providers with keys configured (or supporting anonymous mode) are registered.
+func searchChain(client *http.Client, keys map[string]string) *providers.SearchChain {
 	var ps []providers.SearchProvider
-	if key := os.Getenv("ZHIPU_API_KEY"); key != "" {
+	if _, ok := keys["anysearch"]; ok {
+		ps = append(ps, &providers.AnySearchProvider{Client: client, APIKey: keys["anysearch"]})
+	}
+	if key, ok := keys["zhipu"]; ok && key != "" {
 		ps = append(ps, &providers.ZhipuProvider{Client: client, APIKey: key})
 	}
-	ps = append(ps, &providers.AnySearchProvider{Client: client})
+	// DuckDuckGo always available (no key needed).
 	ps = append(ps, &providers.DuckDuckGoProvider{Client: client})
 	return &providers.SearchChain{Providers: ps}
 }
