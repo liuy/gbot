@@ -68,7 +68,7 @@ func TestAnySearch_Search_Anonymous(t *testing.T) {
 
 		resp := `{"code":0,"message":"success","data":{"results":[{"title":"Test Result","url":"https://example.com","snippet":"test snippet","content":"full content here"}],"metadata":{"request_id":"req_123","total_results":1,"search_time_ms":100}}}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp))
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer server.Close()
 
@@ -105,7 +105,7 @@ func TestAnySearch_Search_WithAPIKey(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		resp := `{"code":0,"message":"success","data":{"results":[],"metadata":{"request_id":"req_456","total_results":0,"search_time_ms":50}}}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp))
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer server.Close()
 
@@ -126,7 +126,7 @@ func TestAnySearch_Search_WithAPIKey(t *testing.T) {
 func TestAnySearch_Search_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`rate limit exceeded`))
+		_, _ = w.Write([]byte(`rate limit exceeded`))
 	}))
 	defer server.Close()
 
@@ -154,7 +154,7 @@ func TestAnySearch_Search_APIError(t *testing.T) {
 func TestAnySearch_Search_NonZeroCode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"code":40202,"message":"quota exhausted","data":{}}`))
+		_, _ = w.Write([]byte(`{"code":40202,"message":"quota exhausted","data":{}}`))
 	}))
 	defer server.Close()
 
@@ -180,7 +180,7 @@ func TestAnySearch_Search_EmptyResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := `{"code":0,"message":"success","data":{"results":[],"metadata":{"request_id":"req_789","total_results":0,"search_time_ms":50}}}`
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(resp))
+		_, _ = w.Write([]byte(resp))
 	}))
 	defer server.Close()
 

@@ -4864,7 +4864,7 @@ func TestCallLLM_SystemPromptDynamicLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	gbotDir := filepath.Join(tmpDir, ".gbot")
 	if err := os.MkdirAll(gbotDir, 0755); err != nil {
@@ -4944,7 +4944,7 @@ func TestDumpAPIRequest_SystemPromptDynamicLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	gbotDir := filepath.Join(tmpDir, ".gbot")
 	if err := os.MkdirAll(gbotDir, 0755); err != nil {
