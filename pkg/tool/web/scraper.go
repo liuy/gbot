@@ -32,7 +32,6 @@ func scraperRegistry() *scrapers.Registry {
 	r.Register(scrapers.HandleCratesIo)
 	r.Register(scrapers.HandleGoPkg)
 	r.Register(scrapers.HandleWeixin)
-	r.Register(scrapers.HandleReddit)
 	r.Register(scrapers.HandleHuggingFace)
 	return r
 }
