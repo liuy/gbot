@@ -1,15 +1,18 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	neturl "net/url"
 	"strings"
 	"time"
 
+	"github.com/liuy/gbot/pkg/markitdown"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"github.com/liuy/gbot/pkg/tool/web/scrapers"
@@ -228,6 +231,22 @@ func executeFetch(ctx context.Context, url string, js bool, client *http.Client,
 		}
 	}
 
+	// Binary document conversion (PDF, DOCX, PPTX, etc.).
+	if md, err := fetchAndConvertDocument(ctx, url, client); err == nil && md != "" {
+		slog.Info("web:fetch document converted", "url", url, "content_len", len(md))
+		fetchResult := BuildResult(md, FetchResultOptions{
+			URL:      url,
+			FinalURL: url,
+			Notes:    []string{"converted from binary document"},
+		})
+		return &tool.ToolResult{
+			Data: &Output{
+				Mode:    "fetch",
+				Content: fetchResult.Content,
+			},
+		}, nil
+	}
+
 	result := LoadPage(ctx, url, LoadPageOptions{Client: client})
 
 	if result.Error != "" {
@@ -297,6 +316,171 @@ func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*too
 			Content: fetchResult.Content,
 		},
 	}, nil
+}
+
+// IsConvertibleDocument returns true if the MIME type or file extension indicates
+// a binary document that markitdown can convert to markdown.
+func IsConvertibleDocument(mimeType, ext string) bool {
+	if documentContentTypes[mimeType] {
+		return true
+	}
+	// Explicit non-document MIME types (text/html, application/json, etc.) are never convertible.
+	if mimeType != "" && mimeType != "application/octet-stream" && !documentTextMimes[mimeType] {
+		return false
+	}
+	return documentExtensions[ext]
+}
+
+// MIME types that are technically text but should still go through markitdown
+// because they need conversion (e.g. ipynb JSON → markdown).
+var documentTextMimes = map[string]bool{
+	"text/plain":       true,
+	"application/json": true,
+	"text/csv":         true,
+}
+
+var documentExtensions = map[string]bool{
+	".pdf": true, ".docx": true, ".doc": true,
+	".pptx": true, ".ppt": true,
+	".xlsx": true, ".xls": true,
+	".epub": true, ".ipynb": true,
+	".csv": true,
+}
+
+var documentContentTypes = map[string]bool{
+	"application/pdf": true,
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": true,
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
+	"application/vnd.ms-excel": true,
+	"application/epub+zip": true,
+}
+
+// fetchAndConvertDocument detects binary document URLs and converts them to markdown.
+// Returns ("", nil) if the URL is not a document type — caller should fall through to HTTP fetch.
+func fetchAndConvertDocument(ctx context.Context, url string, client *http.Client) (string, error) {
+	parsed, err := neturl.Parse(url)
+	if err != nil {
+		return "", nil
+	}
+
+	ext := strings.ToLower(getExt(parsed.Path))
+
+	// Quick check: skip URLs that clearly aren't documents by extension.
+	// URLs with matching extensions proceed directly; others need a HEAD check.
+	extMatch := IsConvertibleDocument("", ext)
+	if !extMatch {
+		// Extension doesn't match — do a HEAD request to check Content-Type.
+		if client == nil {
+			client = http.DefaultClient
+		}
+		headReq, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+		if err != nil {
+			return "", nil
+		}
+		headReq.Header.Set("User-Agent", "curl/8.0")
+		headResp, err := client.Do(headReq)
+		if err != nil {
+			return "", nil
+		}
+		headResp.Body.Close()
+
+		if headResp.StatusCode < 200 || headResp.StatusCode >= 300 {
+			return "", nil
+		}
+
+		ct := strings.ToLower(strings.SplitN(headResp.Header.Get("Content-Type"), ";", 2)[0])
+		ct = strings.TrimSpace(ct)
+		if !IsConvertibleDocument(ct, "") {
+			return "", nil
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", nil
+	}
+	req.Header.Set("User-Agent", "curl/8.0")
+
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil
+	}
+
+	ct := strings.ToLower(strings.SplitN(resp.Header.Get("Content-Type"), ";", 2)[0])
+	ct = strings.TrimSpace(ct)
+
+	// For extension-matched URLs, verify Content-Type isn't explicitly non-document.
+	if extMatch && ct != "" && ct != "application/octet-stream" && !IsConvertibleDocument(ct, "") && !documentTextMimes[ct] {
+		return "", nil
+	}
+
+	// Derive extension from redirect URL if original had no match.
+	finalExt := ext
+	if !extMatch {
+		finalParsed := resp.Request.URL
+		if finalExt = strings.ToLower(getExt(finalParsed.Path)); !IsConvertibleDocument("", finalExt) {
+			finalExt = extByMime(ct)
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+	if err != nil {
+		return "", nil
+	}
+
+	m := markitdown.New()
+	result, err := m.ConvertReader(bytes.NewReader(data), markitdown.StreamInfo{
+		Extension: finalExt,
+		MIMEType:  ct,
+		URL:       url,
+	})
+	if err != nil {
+		return "", nil
+	}
+
+	return result.Markdown, nil
+}
+
+// extByMime returns a file extension for common document MIME types.
+func extByMime(mime string) string {
+	switch mime {
+	case "application/pdf":
+		return ".pdf"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return ".docx"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return ".pptx"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return ".xlsx"
+	case "application/vnd.ms-excel":
+		return ".xls"
+	case "application/epub+zip":
+		return ".epub"
+	default:
+		return ""
+	}
+}
+
+// getExt returns the file extension from a URL path.
+func getExt(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '.' {
+			return path[i:]
+		}
+		if path[i] == '/' {
+			break
+		}
+	}
+	return ""
 }
 
 // searchChain builds a search chain from config keys.

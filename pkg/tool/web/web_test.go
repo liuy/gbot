@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -203,4 +205,124 @@ func TestExtractProxyURL(t *testing.T) {
 		_ = server.Client()
 		// This is a pathological case; just verify no panic
 	})
+}
+
+func TestIsConvertibleDocument(t *testing.T) {
+	tests := []struct {
+		mime string
+		ext  string
+		want bool
+	}{
+		{"application/pdf", ".pdf", true},
+		{"application/pdf", "", true},
+		{"", ".pdf", true},
+		{"application/octet-stream", ".docx", true},
+		{"text/html", ".pdf", false},
+		{"application/json", ".json", false},
+		{"", ".html", false},
+		{"", "", false},
+		{"application/vnd.ms-excel", ".xls", true},
+		{"text/plain", ".ipynb", true},
+		{"text/plain", ".csv", true},
+		{"text/plain", ".html", false},
+	}
+	for _, tt := range tests {
+		got := IsConvertibleDocument(tt.mime, tt.ext)
+		if got != tt.want {
+			t.Errorf("IsConvertibleDocument(%q, %q) = %v, want %v", tt.mime, tt.ext, got, tt.want)
+		}
+	}
+}
+
+func TestGetExt(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/paper.pdf", ".pdf"},
+		{"https://example.com/doc.docx", ".docx"},
+		{"/path/to/file.xlsx", ".xlsx"},
+		{"/no/ext", ""},
+		{"/dir.with.dots/file", ""},
+		{"/archive.tar.gz", ".gz"},
+	}
+	for _, tt := range tests {
+		got := getExt(tt.path)
+		if got != tt.want {
+			t.Errorf("getExt(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestFetchAndConvertDocument_NonDocURL(t *testing.T) {
+	ctx := context.Background()
+	md, err := fetchAndConvertDocument(ctx, "https://example.com/page.html", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md != "" {
+		t.Errorf("expected empty markdown for non-doc URL, got %d chars", len(md))
+	}
+}
+
+func TestFetchAndConvertDocument_PDFViaHTTP(t *testing.T) {
+	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+	if err != nil {
+		t.Skip("test.pdf not found")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write(pdfData)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	md, err := fetchAndConvertDocument(ctx, server.URL+"/paper.pdf", server.Client())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md == "" {
+		t.Fatal("expected non-empty markdown from PDF conversion")
+	}
+	if !strings.Contains(md, "contemporaneous") {
+		preview := md
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		t.Errorf("expected PDF content to contain 'contemporaneous', got: %s", preview)
+	}
+}
+
+func TestFetchAndConvertDocument_WrongContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html>not a pdf</html>"))
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	md, err := fetchAndConvertDocument(ctx, server.URL+"/paper.pdf", server.Client())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md != "" {
+		t.Errorf("expected empty markdown when Content-Type mismatches, got %d chars", len(md))
+	}
+}
+
+func TestFetchAndConvertDocument_404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	md, err := fetchAndConvertDocument(ctx, server.URL+"/missing.pdf", server.Client())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md != "" {
+		t.Errorf("expected empty markdown for 404, got %d chars", len(md))
+	}
 }
