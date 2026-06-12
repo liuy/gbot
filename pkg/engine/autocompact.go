@@ -215,6 +215,15 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 
 	resp, err := c.provider.Complete(ctx, req)
 	if err != nil {
+		c.logger.Error("compact:summarize_failed",
+			"headMessages", len(messages),
+			"apiMessages", len(apiMsgs),
+			"estimatedTokens", estimatedTokens,
+			"maxTokens", maxTokens,
+			"contextWindow", c.contextWindow,
+			"model", model,
+			"error", err,
+		)
 		return "", fmt.Errorf("summarize LLM call: %w", err)
 	}
 
