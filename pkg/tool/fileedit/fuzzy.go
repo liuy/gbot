@@ -2,6 +2,7 @@ package fileedit
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -60,14 +61,8 @@ func findNearbyHint(fileContent, oldString string) string {
 
 	// Return ±contextLines around the best match with line numbers.
 	const contextLines = 5
-	start := bestIdx - contextLines
-	if start < 0 {
-		start = 0
-	}
-	end := bestIdx + contextLines + 1
-	if end > len(fileLines) {
-		end = len(fileLines)
-	}
+	start := max(bestIdx-contextLines, 0)
+	end := min(bestIdx+contextLines+1, len(fileLines))
 
 	var buf strings.Builder
 	for i := start; i < end; i++ {
@@ -88,11 +83,8 @@ func isGeneric(s string) bool {
 func tokenOverlapScore(a, b []string) int {
 	score := 0
 	for _, bt := range b {
-		for _, at := range a {
-			if at == bt {
-				score++
-				break
-			}
+		if slices.Contains(a, bt) {
+			score++
 		}
 	}
 	return score
