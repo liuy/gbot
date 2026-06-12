@@ -10,6 +10,8 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
+	github.com/chromedp/chromedp v0.15.1
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14
 	github.com/go-ego/gse v1.0.2
@@ -19,6 +21,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.23
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/sergi/go-diff v1.4.0
+	go.uber.org/goleak v1.3.0
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.52.0
 	golang.org/x/sys v0.43.0
@@ -36,8 +39,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
-	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
-	github.com/chromedp/chromedp v0.15.1 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
