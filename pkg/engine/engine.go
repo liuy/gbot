@@ -1427,10 +1427,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{{SYSTEM}}", systemText, 1)
 
-		// Hot-load SOUL.md on every API call via {{SOUL}} stub
+		// Hot-load SOUL.md via {{SOUL}} stub at end of system prompt
 		soulText := ""
 		if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
-			soulText = "\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+			soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
 		}
 		systemPrompt = strings.Replace(systemPrompt, "{{SOUL}}", soulText, 1)
 		systemPrompt = strings.Replace(systemPrompt, "{{MODEL}}", e.model, 1)
@@ -2338,7 +2338,7 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 
 	soulText := ""
 	if soul, _ := ctxbuild.LoadSoulFile(); soul != "" {
-		soulText = "\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
+		soulText = "\n\n---\n\nEmbody the persona and tone defined below. Follow its guidance unless higher-priority instructions override it.\n\n" + soul
 	}
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{SOUL}}", soulText, 1)
 	systemPromptRaw = strings.Replace(systemPromptRaw, "{{MODEL}}", model, 1)

@@ -71,8 +71,14 @@ func TestLoadSystemFile_FileExists(t *testing.T) {
 func TestDefaultBasePrompt_ContainsStubs(t *testing.T) {
 	t.Parallel()
 	prompt := DefaultBasePrompt()
-	if !strings.Contains(prompt, "{{SOUL}}") {
-		t.Error("DefaultBasePrompt should contain {{SOUL}} stub")
+	if !strings.Contains(prompt, "# What you are") {
+		t.Error("DefaultBasePrompt should contain # What you are")
+	}
+	if !strings.Contains(prompt, "# How you work") {
+		t.Error("DefaultBasePrompt should contain # How you work")
+	}
+	if strings.Contains(prompt, "{{SOUL}}") {
+		t.Error("DefaultBasePrompt should NOT contain {{SOUL}} — it's added by builder")
 	}
 }
 

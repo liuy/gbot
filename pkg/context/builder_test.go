@@ -40,6 +40,9 @@ func TestBuild_Basic(t *testing.T) {
 	if !strings.Contains(promptStr, "{{SYSTEM}}") {
 		t.Error("built prompt missing {{SYSTEM}} stub")
 	}
+	if !strings.Contains(promptStr, "{{SOUL}}") {
+		t.Error("built prompt missing {{SOUL}} stub")
+	}
 	if !strings.Contains(promptStr, "Runtime:") {
 		t.Error("built prompt missing runtime info")
 	}
@@ -337,14 +340,14 @@ func TestBaseSystemPrompt(t *testing.T) {
 func TestDefaultBasePrompt(t *testing.T) {
 	t.Parallel()
 	prompt := context.DefaultBasePrompt()
-	if !strings.Contains(prompt, "You are gbot") {
-		t.Error("default base prompt missing greeting")
+	if !strings.Contains(prompt, "You are creature") {
+		t.Error("default base prompt missing identity")
 	}
-	if !strings.Contains(prompt, "Current date:") {
-		t.Error("default base prompt missing date")
+	if strings.Contains(prompt, "{{SOUL}}") {
+		t.Error("DefaultBasePrompt should NOT contain {{SOUL}} — it's added by builder")
 	}
-	if !strings.Contains(prompt, "{{SOUL}}") {
-		t.Error("default base prompt missing {{SOUL}} stub")
+	if !strings.Contains(prompt, "# Code style") {
+		t.Error("default base prompt missing Code style section")
 	}
 }
 
@@ -360,6 +363,9 @@ func TestBuild_NoFiles(t *testing.T) {
 
 	if !strings.Contains(promptStr, "{{SYSTEM}}") {
 		t.Error("prompt should contain {{SYSTEM}} stub")
+	}
+	if !strings.Contains(promptStr, "{{SOUL}}") {
+		t.Error("prompt should contain {{SOUL}} stub")
 	}
 	if !strings.Contains(promptStr, "Runtime:") {
 		t.Error("prompt should contain runtime info even without files")
