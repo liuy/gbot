@@ -270,6 +270,10 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 		}
 	}
 	if !found {
+		hint := findNearbyHint(fr.content, in.OldString)
+		if hint != "" {
+			return nil, fmt.Errorf("string to replace not found in file.\nString: %s\n\nNearby lines in file:\n%s", in.OldString, hint)
+		}
 		return nil, fmt.Errorf("string to replace not found in file.\nString: %s", in.OldString)
 	}
 
