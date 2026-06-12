@@ -156,8 +156,9 @@ func chromedpFetch(parentCtx context.Context, url string, timeout time.Duration,
 		}),
 		chromedp.Navigate(url),
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Extra wait for JS to render content
-		chromedp.Sleep(2*time.Second),
+		// Poll until JS rendering settles: body has children and stops
+		// changing, checked every 200ms, max 5s total.
+		waitForJSRender(200*time.Millisecond, 5*time.Second),
 		chromedp.OuterHTML("html", &html, chromedp.ByQuery),
 	)
 
@@ -174,4 +175,35 @@ func chromedpFetch(parentCtx context.Context, url string, timeout time.Duration,
 	}
 
 	return html, nil
+}
+
+// waitForJSRender polls until the page's body has children and the
+// child count stabilises (same count on two consecutive checks).
+// Falls back to returning after maxWait if the content never settles.
+func waitForJSRender(interval, maxWait time.Duration) chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		deadline := time.Now().Add(maxWait)
+		var prevCount int
+		for {
+			if time.Now().After(deadline) {
+				return nil
+			}
+			var count int64
+			err := chromedp.Evaluate(`
+				document.body && document.body.children ? document.body.children.length : 0
+			`, &count).Do(ctx)
+			if err != nil {
+				return err
+			}
+			if count > 0 && int(count) == prevCount {
+				return nil
+			}
+			prevCount = int(count)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(interval):
+			}
+		}
+	})
 }
