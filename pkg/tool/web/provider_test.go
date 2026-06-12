@@ -167,3 +167,102 @@ func TestSearchChain_SkipsUnavailable(t *testing.T) {
 		t.Errorf("expected p2 (p1 unavailable), got %s", resp.Provider)
 	}
 }
+
+func TestSearchChain_AvailableProviders(t *testing.T) {
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "zhipu", available: true},
+			&mockProvider{id: "duckduckgo", available: false},
+		},
+	}
+	avail := chain.AvailableProviders()
+	if len(avail) != 1 || avail[0] != "zhipu" {
+		t.Errorf("expected [zhipu], got %v", avail)
+	}
+}
+
+func TestSearchWithProvider_Auto(t *testing.T) {
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "p1", available: true, resp: &SearchResponse{Provider: "p1"}},
+		},
+	}
+	for _, provider := range []string{"", "auto"} {
+		resp, err := chain.SearchWithProvider(context.Background(), SearchParams{Query: "test"}, provider)
+		if err != nil {
+			t.Fatalf("provider=%q: %v", provider, err)
+		}
+		if resp.Provider != "p1" {
+			t.Errorf("provider=%q: expected p1, got %s", provider, resp.Provider)
+		}
+	}
+}
+
+func TestSearchWithProvider_Specific(t *testing.T) {
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "p1", available: true, resp: &SearchResponse{Provider: "p1"}},
+			&mockProvider{id: "p2", available: true, resp: &SearchResponse{Provider: "p2"}},
+		},
+	}
+	resp, err := chain.SearchWithProvider(context.Background(), SearchParams{Query: "test"}, "p2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Provider != "p2" {
+		t.Errorf("expected p2, got %s", resp.Provider)
+	}
+}
+
+func TestSearchWithProvider_Unknown(t *testing.T) {
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "p1", available: true},
+		},
+	}
+	_, err := chain.SearchWithProvider(context.Background(), SearchParams{Query: "test"}, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "unknown provider") || !strings.Contains(err.Error(), "available:") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSearchWithProvider_Unavailable(t *testing.T) {
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "p1", available: false},
+		},
+	}
+	_, err := chain.SearchWithProvider(context.Background(), SearchParams{Query: "test"}, "p1")
+	if err == nil {
+		t.Fatal("expected error for unavailable provider")
+	}
+	if !strings.Contains(err.Error(), "not available") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSearchChain_AvailableProviders_ZhipuNoKey(t *testing.T) {
+	// Zhipu without key is unavailable, DDG always available
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "zhipu", available: false},
+			&mockProvider{id: "duckduckgo", available: true, resp: &SearchResponse{Provider: "duckduckgo"}},
+		},
+	}
+	avail := chain.AvailableProviders()
+	if len(avail) != 1 || avail[0] != "duckduckgo" {
+		t.Fatalf("expected only [duckduckgo], got %v", avail)
+	}
+
+	// auto should skip zhipu and use duckduckgo
+	resp, err := chain.SearchWithProvider(context.Background(), SearchParams{Query: "test"}, "")
+	if err != nil {
+		t.Fatalf("auto search: %v", err)
+	}
+	if resp.Provider != "duckduckgo" {
+		t.Errorf("auto should fallback to duckduckgo, got %s", resp.Provider)
+	}
+}

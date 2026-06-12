@@ -59,3 +59,32 @@ func (sc *SearchChain) Search(ctx context.Context, params SearchParams) (*Search
 	}
 	return nil, fmt.Errorf("all search providers failed: %s", strings.Join(failures, "; "))
 }
+
+// AvailableProviders returns IDs of currently available providers.
+func (sc *SearchChain) AvailableProviders() []string {
+	var ids []string
+	for _, p := range sc.Providers {
+		if p.IsAvailable() {
+			ids = append(ids, p.ID())
+		}
+	}
+	return ids
+}
+
+// SearchWithProvider uses a specific provider by ID, or falls back to
+// Search (auto chain) when provider is "" or "auto".
+func (sc *SearchChain) SearchWithProvider(ctx context.Context, params SearchParams, provider string) (*SearchResponse, error) {
+	if provider == "" || provider == "auto" {
+		return sc.Search(ctx, params)
+	}
+
+	for _, p := range sc.Providers {
+		if p.ID() == provider {
+			if !p.IsAvailable() {
+				return nil, fmt.Errorf("provider %q is not available", provider)
+			}
+			return p.Search(ctx, params)
+		}
+	}
+	return nil, fmt.Errorf("unknown provider %q (available: %s)", provider, strings.Join(sc.AvailableProviders(), ", "))
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -12,10 +13,11 @@ const defaultLimit = 10
 
 // Input is the web tool input schema.
 type Input struct {
-	Query string `json:"query"`           // required — search terms or URL
-	Since string `json:"since,omitempty"` // optional — e.g. 3d, 1w, 2m, 1y
-	Limit int    `json:"limit,omitempty"` // optional — max results, default 10
-	Fetch bool   `json:"fetch,omitempty"` // optional — auto-fetch top results' content
+	Query    string `json:"query"`                      // required — search terms or URL
+	Provider string `json:"provider,omitempty"`          // optional — "auto", "zhipu", "duckduckgo"
+	Since    string `json:"since,omitempty"`             // optional — e.g. 3d, 1w, 2m, 1y
+	Limit    int    `json:"limit,omitempty"`             // optional — max results, default 10
+	Fetch    bool   `json:"fetch,omitempty"`             // optional — auto-fetch top results' content
 }
 
 // Output is the web tool result data.
@@ -39,6 +41,10 @@ func New(cfg Config) tool.Tool {
 			"query": {
 				"type": "string",
 				"description": "Search query or URL to fetch. Auto-detects: URLs are fetched, other text triggers search."
+			},
+			"provider": {
+				"type": "string",
+				"description": "Search provider. \"auto\" uses the first available provider. Available providers depend on configuration."
 			},
 			"since": {
 				"type": "string",
@@ -79,7 +85,7 @@ func New(cfg Config) tool.Tool {
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 50000,
-		Prompt_:            webPrompt(),
+		Prompt_:            webPrompt(chain),
 		RenderResult_: func(data any) string {
 			switch v := data.(type) {
 			case *Output:
@@ -133,7 +139,7 @@ func executeSearch(ctx context.Context, in Input, chain *SearchChain) (*tool.Too
 		Since: since,
 	}
 
-	resp, err := chain.Search(ctx, params)
+	resp, err := chain.SearchWithProvider(ctx, params, in.Provider)
 	if err != nil {
 		return nil, fmt.Errorf("web search failed: %w", err)
 	}
@@ -164,7 +170,13 @@ func executeFetch(ctx context.Context, url string) (*tool.ToolResult, error) {
 	}, nil
 }
 
-func webPrompt() string {
+func webPrompt(chain *SearchChain) string {
+	avail := chain.AvailableProviders()
+	providerList := "auto"
+	if len(avail) > 0 {
+		providerList = "auto, " + strings.Join(avail, ", ")
+	}
+
 	return `## Web Tool
 
 Search the web or fetch URL content. Usage:
@@ -174,6 +186,7 @@ Search the web or fetch URL content. Usage:
 
 Parameters:
 - query (required): search terms or URL
+- provider (optional): search provider — ` + providerList + `. Default: auto.
 - since (optional): time filter — 3d, 1w, 2m, 1y
 - limit (optional): max results, default 10
 - fetch (optional): auto-fetch top results' content, default false`
