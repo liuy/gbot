@@ -66,6 +66,7 @@ func TestContextWindowExceeded_CompactAndContinue(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&recoveryCompactor{}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -150,6 +151,7 @@ func TestContextWindowExceeded_RecoveryOnce(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&recoveryCompactor{}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -205,6 +207,7 @@ func TestContextWindowExceeded_SubAgentGuard(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { parent.Close() })
 	parent.SetCompactor(&recoveryCompactor{}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -265,6 +268,7 @@ func TestContextWindowExceeded_CompactFails(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&failingRecoveryCompactor{err: "disk full"}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -345,6 +349,7 @@ func TestContextWindowExceeded_WithToolUse(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&recoveryCompactor{}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -407,6 +412,7 @@ func TestMaxTokens_ContinueWithoutCompact(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -474,6 +480,7 @@ func TestMaxTokens_RecoveryLimit(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

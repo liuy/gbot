@@ -414,6 +414,7 @@ func TestBackgroundJobRegistry_Kill_RealPID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Kill() error: %v", err)
 	}
+	_, _ = cmd.Process.Wait()
 
 	if job.Status != JobKilled {
 		t.Errorf("Status = %q, want %q", job.Status, JobKilled)
@@ -1289,13 +1290,20 @@ func TestJobInfoAdapter_GetWithOutput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAutoBackground_StderrNotDropped(t *testing.T) {
+	// Use a fresh registry to avoid polluting global state.
+	orig := defaultRegistry
+	freshReg := NewBackgroundJobRegistry()
+	defaultRegistry = freshReg
+	defer func() { defaultRegistry = orig }()
+
 	// When a non-PTY command auto-backgrounds, stderr must be captured in the
-	// job's StreamingOutput, not silently lost.
+	// StreamingOutput, not silently lost.
 	s := NewStreamingOutput(nil)
-	cmd := "echo stderr_capture_test >&2; sleep 10"
+	// Use a short sleep so the backgrounded job finishes quickly on its own.
+	cmd := "echo stderr_capture_test >&2; sleep 0.2"
 	timeout := 100 * time.Millisecond
 
-	result, err := executeNonPTYAutoBg(context.Background(), Input{Command: cmd}, "", timeout, s, DefaultRegistry(), MaxOutputSize)
+	result, err := executeNonPTYAutoBg(context.Background(), Input{Command: cmd}, "", timeout, s, freshReg, MaxOutputSize)
 	if err != nil {
 		t.Fatalf("executeNonPTYAutoBg() error: %v", err)
 	}
@@ -1305,16 +1313,14 @@ func TestAutoBackground_StderrNotDropped(t *testing.T) {
 		t.Fatal("expected BackgroundJobID (command should have auto-backgrounded)")
 	}
 
-	// Wait for the job to complete via the global registry
-	reg := DefaultRegistry()
-	waitCode, waitErr := reg.Wait(output.BackgroundJobID)
+	// Wait for the backgrounded job to finish on its own.
+	_, waitErr := freshReg.Wait(output.BackgroundJobID)
 	if waitErr != nil {
 		t.Fatalf("Wait() error: %v", waitErr)
 	}
-	t.Logf("background job exited with code %d", waitCode)
 
-	// Check that stderr content appears in the job output
-	job, ok := reg.Get(output.BackgroundJobID)
+	// Check that stderr content appears in the job output.
+	job, ok := freshReg.Get(output.BackgroundJobID)
 	if !ok {
 		t.Fatal("job not found in registry")
 	}

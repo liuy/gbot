@@ -912,6 +912,7 @@ func TestGetLastChainUUID_DBError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	defer func() { _ = tx.Rollback() }()
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -1168,6 +1169,7 @@ func TestGetLastChainUUID_NonErrNoRowsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	defer func() { _ = tx.Rollback() }()
 	// Close the underlying DB to make queries fail within the transaction
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -1533,6 +1535,7 @@ func TestGetLastChainUUID_NonErrNoRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	defer func() { _ = tx.Rollback() }()
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/tool"
@@ -472,13 +473,38 @@ func setupInMemoryEchoServer(t *testing.T) *mcp.ConnectedServer {
 		}, nil, nil
 	})
 
-	go func() { _, _ = server.Connect(context.Background(), t1, nil) }()
+	type serverResult struct {
+		session *mcpsdk.ServerSession
+		err     error
+	}
+	ch := make(chan serverResult, 1)
+	go func() {
+		s, err := server.Connect(context.Background(), t1, nil)
+		ch <- serverResult{s, err}
+	}()
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-client", Version: "1.0"}, nil)
 	session, err := client.Connect(context.Background(), t2, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
+
+	// Wait for server to finish connecting so we can clean it up.
+	var serverSession *mcpsdk.ServerSession
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("server connect: %v", r.err)
+		}
+		serverSession = r.session
+	case <-time.After(5 * time.Second):
+		t.Fatal("server connect timed out")
+	}
+
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = serverSession.Close()
+	})
 
 	return &mcp.ConnectedServer{
 		Name:       "test-srv",

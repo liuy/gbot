@@ -166,6 +166,7 @@ func TestNormalizeAttachmentForAPI_InfersJobOrigin(t *testing.T) {
 
 func TestEnqueueAttachment_PriorityDefaults(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.EnqueueAttachment(types.QueuedItem{Value: "prompt", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
 	items := eng.attachments.DrainAll()
@@ -192,6 +193,7 @@ func TestEnqueueAttachment_PriorityDefaults(t *testing.T) {
 
 func TestMarshalMessages_AttachmentMerge(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
 		Role:    types.RoleUser,
 		Content: []types.ContentBlock{types.NewTextBlock("hello")},
@@ -233,6 +235,7 @@ func TestMarshalMessages_AttachmentMerge(t *testing.T) {
 // skips it and the LLM never sees the notification.
 func TestJobAttachment_FullChain_TurnBoundaryDrain(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 
 	// 1. background job completes — external goroutine calls EnqueueAttachment
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -293,6 +296,7 @@ func TestJobAttachment_FullChain_TurnBoundaryDrain(t *testing.T) {
 
 func TestMarshalMessages_AttachmentStandalone(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
 		Role:        types.RoleUser,
 		MessageType: types.MessageTypeAttachment,
@@ -322,6 +326,7 @@ func TestMarshalMessages_AttachmentStandalone(t *testing.T) {
 // turn with multiple content blocks.
 func TestPromptAttachment_MultiMergeChain(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 
 	// 1. Simulate two user prompts queued during streaming
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -429,6 +434,7 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 		Model:       "test",
 		Dispatcher:  collector,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	// 2. Create sub-engine with SystemPrompt and ParentToolUseID (triggers taggedDispatcher)
 	sub := parent.NewSubEngine(SubEngineOptions{
@@ -510,6 +516,7 @@ func TestSubEngine_AttachmentRunsTurns(t *testing.T) {
 		Model:      "test",
 		Dispatcher: collector,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		SystemPrompt:    `{"role":"system","content":"sub-agent"}`,
@@ -607,6 +614,7 @@ func TestForkAgent_EventsForwarded(t *testing.T) {
 		Model:      "test",
 		Dispatcher: collector,
 	})
+	t.Cleanup(func() { parent.Close() })
 	parent.SetSystemPrompt(`{"role":"system","content":"parent"}`)
 
 	// Create a fork sub-engine.
@@ -654,6 +662,7 @@ func TestForkAgent_EventsForwarded(t *testing.T) {
 func TestTimestampInjection_NormalUserMessage(t *testing.T) {
 	ts := time.Date(2026, 6, 7, 14, 23, 5, 0, time.UTC)
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
 		Role:       types.RoleUser,
 		Content:    []types.ContentBlock{types.NewTextBlock("hello")},
@@ -689,6 +698,7 @@ func TestTimestampInjection_NormalUserMessage(t *testing.T) {
 func TestTimestampInjection_FlagMetaSkipped(t *testing.T) {
 	ts := time.Date(2026, 6, 7, 14, 23, 5, 0, time.UTC)
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
 		Role:      types.RoleUser,
 		Flags:     types.FlagMeta,
@@ -713,6 +723,7 @@ func TestTimestampInjection_FlagMetaSkipped(t *testing.T) {
 // zero Timestamp (e.g. legacy messages before timestamp feature) are not modified.
 func TestTimestampInjection_ZeroTimestampSkipped(t *testing.T) {
 	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
 		Role:    types.RoleUser,
 		Content: []types.ContentBlock{types.NewTextBlock("no timestamp")},
@@ -771,6 +782,7 @@ func TestToolUseContext_ReceivesConversationHistory(t *testing.T) {
 		Model:    "test",
 		Tools:    []tool.Tool{probe},
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.appendMessage(types.Message{
 		Role:    types.RoleUser,

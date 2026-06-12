@@ -26,11 +26,13 @@ func newTestStore(t *testing.T) *short.Store {
 
 func TestPersistNewMessages_NilStore(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.PersistNewMessages() // should not panic
 }
 
 func TestPersistNewMessages_EmptySessionID(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(newTestStore(t), "")
 	eng.PersistNewMessages() // should not panic
 }
@@ -43,6 +45,7 @@ func TestPersistNewMessages_NoUncommittedMessages(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 
@@ -65,6 +68,7 @@ func TestPersistNewMessages_SuccessfulPersist(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{
@@ -113,6 +117,7 @@ func TestPersistNewMessages_Incremental(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{
@@ -164,6 +169,7 @@ func TestPersistNewMessages_AutoTitle(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{
@@ -197,6 +203,7 @@ func TestPersistNewMessages_AutoTitle_DoesNotOverwrite(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{
@@ -226,6 +233,7 @@ func TestPersistNewMessages_AutoTitle_SkipsSecondPersist(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{
@@ -306,6 +314,7 @@ func TestExtractUserTitle_Engine(t *testing.T) {
 func TestSetStore_ComputesLastPersistedIdx(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("world")}},
@@ -324,6 +333,7 @@ func TestSetStore_ComputesLastPersistedIdx(t *testing.T) {
 func TestReset_ClearsPersistState(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "/tmp/project")
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -350,6 +360,7 @@ func TestReset_ClearsPersistState(t *testing.T) {
 
 func TestMarkAllPersisted_AfterCompact(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages(makeLargeMessages(20, 100))
 	eng.mu.Lock()
 	eng.lastPersistedIdx = 20
@@ -375,6 +386,7 @@ func TestLoadMessages(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	// Empty session — should return nil, nil
@@ -426,6 +438,7 @@ func TestLoadMessages(t *testing.T) {
 func TestNewSession(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	err := eng.NewSession("/tmp/project", "My Title")
@@ -462,6 +475,7 @@ func TestNewSession(t *testing.T) {
 
 func TestNewSession_NoStore(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	err := eng.NewSession("/tmp/project", "title")
 	if err == nil {
 		t.Fatal("expected error with no store")
@@ -474,6 +488,7 @@ func TestNewSession_NoStore(t *testing.T) {
 func TestListSessions(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "/tmp/project")
 
 	_, err := store.CreateSession("/tmp/project", "model1")
@@ -505,6 +520,7 @@ func TestListSessions(t *testing.T) {
 
 func TestListSessions_NoStore(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	_, err := eng.ListSessions(10)
 	if err == nil {
 		t.Fatal("expected error with no store")
@@ -517,6 +533,7 @@ func TestListSessions_NoStore(t *testing.T) {
 func TestSwitchSession(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	// Create and populate session 1
@@ -585,6 +602,7 @@ func TestSwitchSession(t *testing.T) {
 func TestForkSession(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	session, err := store.CreateSession("/tmp/project", "model1")
@@ -635,6 +653,7 @@ func TestForkSession(t *testing.T) {
 func TestForkSession_NoTitle(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	session, err := store.CreateSession("/tmp/project", "model1")
@@ -675,6 +694,7 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 	eng.SetSessionID(session.SessionID)
 	eng.SetSystemPrompt(`{"role":"system","content":"You are a helpful assistant."}`)
@@ -745,6 +765,7 @@ func TestPersistNewMessages_AttachmentNotStored(t *testing.T) {
 
 func TestResumeOrInitSession_NoStore(t *testing.T) {
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	sid, err := eng.ResumeOrInitSession("/tmp/project", "model1")
 	if err != nil {
 		t.Fatalf("ResumeOrInitSession no store: %v", err)
@@ -757,6 +778,7 @@ func TestResumeOrInitSession_NoStore(t *testing.T) {
 func TestResumeOrInitSession_NewSession(t *testing.T) {
 	store := newTestStore(t)
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, "")
 
 	dir := t.TempDir()
@@ -787,6 +809,7 @@ func TestResumeOrInitSession_ResumesExisting(t *testing.T) {
 	}
 
 	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, dir)
 	eng.SetSessionID(session.SessionID)
 	eng.SetMessages([]types.Message{

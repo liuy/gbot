@@ -47,6 +47,7 @@ func TestCacheWarmThenHit(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	sysPrompt := "You are a helpful coding assistant with a long system prompt that spans many tokens."
 
@@ -126,6 +127,7 @@ func TestCacheTokenNoDoubleCount(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	sysPrompt := "You are a helpful assistant with a long system prompt."
 	result := eng.QuerySync(context.Background(), "hello", sysPrompt)
@@ -155,6 +157,7 @@ func TestCacheTokenNoDoubleCount_Read(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	sysPrompt := "You are a helpful assistant."
 	result := eng.QuerySync(context.Background(), "hello", sysPrompt)

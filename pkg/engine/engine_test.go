@@ -268,6 +268,7 @@ func TestNew_Defaults(t *testing.T) {
 		Provider: mp,
 		Model:    "test-model",
 	})
+	t.Cleanup(func() { eng.Close() })
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
@@ -290,6 +291,7 @@ func TestNew_DefaultMaxTokens(t *testing.T) {
 		TokenBudget: 0,
 		Logger:      nil,
 	})
+	t.Cleanup(func() { eng.Close() })
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
@@ -312,6 +314,7 @@ func TestNew_WithTools(t *testing.T) {
 		Tools:    []tool.Tool{mt},
 		Model:    "test-model",
 	})
+	t.Cleanup(func() { eng.Close() })
 	if eng == nil {
 		t.Fatal("expected non-nil engine")
 	}
@@ -333,6 +336,7 @@ func TestQuery_SimpleTextResponse(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -386,6 +390,7 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -445,6 +450,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -534,6 +540,7 @@ func TestQuery_EventQueryEndCarriesErrorOnCancel(t *testing.T) {
 		Dispatcher: ec,
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -565,6 +572,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -609,6 +617,7 @@ func TestQuery_BlockingLimit(t *testing.T) {
 		MaxTokens: 16000,
 		Logger:    slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 	// Set auto-compact config without compactor so auto-compact won't fire.
 	// Only the blocking limit should guard against oversized context.
 	eng.UpdateAutoCompactConfig(AutoCompactConfig{
@@ -687,6 +696,7 @@ func TestQuery_UnknownTool(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -727,6 +737,7 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -769,6 +780,7 @@ func TestQuery_StreamError_NonRetryable(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -801,6 +813,7 @@ func TestQuery_StreamError_APIErrorTerminal(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -839,6 +852,7 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -861,6 +875,7 @@ func TestAddSystemMessage(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.AddSystemMessage("system instruction")
 	msgs := eng.Messages()
@@ -883,6 +898,7 @@ func TestReset(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.AddSystemMessage("msg1")
 	eng.AddSystemMessage("msg2")
@@ -904,6 +920,7 @@ func TestReset_ClearsToolSearchState(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Pre-populate toolSearch state (simulating discovered tools from a prior session).
 	eng.toolSearch.DiscoverTools([]string{"Task"})
@@ -926,6 +943,7 @@ func TestMessages(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	msgs := eng.Messages()
 	if msgs != nil {
@@ -947,6 +965,7 @@ func TestMessages_ReturnsCopy(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.AddSystemMessage("hello")
 	msgs := eng.Messages()
@@ -970,6 +989,7 @@ func TestMessages_ConcurrentAccess(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	var wg sync.WaitGroup
 	for range 100 {
@@ -999,6 +1019,7 @@ func TestSetSessionID(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	if eng.SessionID() != "" {
 		t.Fatalf("expected empty session ID initially, got %q", eng.SessionID())
@@ -1018,6 +1039,7 @@ func TestSetModel(t *testing.T) {
 		Model:    "initial-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	if eng.Model() != "initial-model" {
 		t.Fatalf("expected initial model %q, got %q", "initial-model", eng.Model())
@@ -1038,6 +1060,7 @@ func TestSetProvider(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Verify initial provider is functional (no panic)
 	if eng.Model() != "test-model" {
@@ -1062,6 +1085,7 @@ func TestSetMessages(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -1101,6 +1125,7 @@ func TestSetMessages_RestoresToolSearchState(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Simulate a transcript with a compact boundary carrying preCompactDiscoveredTools.
 	msgs := []types.Message{
@@ -1153,6 +1178,7 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1188,6 +1214,7 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1234,6 +1261,7 @@ func TestQuery_StreamingTextDeltas(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1265,6 +1293,7 @@ func TestQuery_StreamStartAndCompleteEvents(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1301,6 +1330,7 @@ func TestQuery_PingEvent(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1347,6 +1377,7 @@ func TestQuery_NilUsage(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1380,6 +1411,7 @@ func TestQuery_MaxTurns(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1412,6 +1444,7 @@ func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1447,6 +1480,7 @@ func TestQuery_DescriptionError(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1485,6 +1519,7 @@ func TestQuery_ErrorInStream(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1517,6 +1552,7 @@ func TestQuery_RetryableStreamError_APIErrorTerminal(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1545,6 +1581,7 @@ func TestQuery_ContextOverflowStreamError(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1573,6 +1610,7 @@ func TestQuery_RateLimitStreamError(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1599,6 +1637,7 @@ func TestQuery_ContextCancelledDuringStreaming(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel after the first turn completes — queryLoop catches it at top of next iteration
@@ -1645,6 +1684,7 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1684,6 +1724,7 @@ func TestQuery_HasContentNoBlocks(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1727,6 +1768,7 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1783,6 +1825,7 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: h,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1864,6 +1907,7 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: h,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1906,6 +1950,7 @@ func TestQuery_EventDispatcherInterface(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: d,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1955,6 +2000,7 @@ func TestQuery_HubNilWorks(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: nil,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1977,6 +2023,7 @@ func TestQuery_MultiTurn_MemoryAccumulates(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Turn 1
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2040,6 +2087,7 @@ func TestEngine_EnqueueAttachment(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Enqueue a notification from another goroutine (simulates background job callback)
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2075,6 +2123,7 @@ func TestQuery_AttachmentDrainedAfterToolResult(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Enqueue attachment BEFORE starting query — it should be drained
 	// after the first tool result is appended.
@@ -2148,6 +2197,7 @@ func TestEngine_EnqueueAttachment_Concurrent(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: h,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Subscribe to hub to detect when auto-process completes.
 	queryDone := &queryEndCapture{done: make(chan struct{}, 1)}
@@ -2218,6 +2268,7 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.systemPrompt = "you are helpful"
 
 	// Enqueue while idle - auto-process goroutine fires immediately
@@ -2286,6 +2337,7 @@ func TestEnqueueAttachment_AutoProcess_NoFireDuringQuery(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.systemPrompt = "{}"
 
 	// Must use Query() (goroutine), not QuerySync — only Query() sets queryActive=1.
@@ -2334,6 +2386,7 @@ func TestEnqueueAttachment_DeferCatchAfterQuery(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Enqueue while no systemPrompt - auto-process won't trigger
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2385,6 +2438,7 @@ func TestEnqueueAttachment_DuringProcessAttachments(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Set systemPrompt before any enqueue so auto-process can trigger
 	eng.systemPrompt = "{}"
@@ -2452,6 +2506,7 @@ func TestEnqueueAttachment_AutoProcess_PanicRecovery(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.systemPrompt = "{}"
 
 	// First enqueue - triggers auto-process
@@ -2535,6 +2590,7 @@ func TestQuery_UsageNoDoubleCount(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2610,6 +2666,7 @@ func TestQuery_CacheTokensFromMessageDelta(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2685,6 +2742,7 @@ func TestQuery_CacheCreationInMessageStart(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2726,6 +2784,7 @@ func TestEnqueueAttachment_NoDispatcher_NoPanic(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Should not panic when dispatcher is nil
 	eng.EnqueueAttachment(types.QueuedItem{
@@ -2742,6 +2801,7 @@ func TestProcessAttachments_EmptyQueue(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -2765,6 +2825,7 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.EnqueueAttachment(types.QueuedItem{
 		Value: "<notification>bg-1 completed</notification>",
@@ -2813,6 +2874,7 @@ func TestProcessAttachments_ContextCancelled(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: ec,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.EnqueueAttachment(types.QueuedItem{
 		Value: "notification",
@@ -2851,6 +2913,7 @@ func TestQuery_EventTextStartEmitted(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2898,6 +2961,7 @@ func TestQuery_EventTextEndEmitted(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2947,6 +3011,7 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3032,6 +3097,7 @@ func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3097,6 +3163,7 @@ func TestQuery_EventTextStartEnd_EmptyBlock(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3166,6 +3233,7 @@ func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
 		Model:      "test-model",
 		Logger:     slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3266,6 +3334,7 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3298,6 +3367,7 @@ func TestSetCompactor(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Set compactor and verify it doesn't panic
 	eng.SetCompactor(
@@ -3366,6 +3436,7 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3487,6 +3558,7 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 		ToolsProvider: reg.ToolMapFn(),
 		Model:         "test-model",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	got := len(eng.AllTools())
 	if got != 9 {
@@ -3499,6 +3571,7 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 
 func TestRewindTo_BasicTruncate(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
@@ -3525,6 +3598,7 @@ func TestRewindTo_BasicTruncate(t *testing.T) {
 
 func TestRewindTo_WithFileRestore(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	backupDir := t.TempDir()
 	tracker := filehistory.NewTracker(backupDir)
@@ -3576,6 +3650,7 @@ func TestRewindTo_WithFileRestore(t *testing.T) {
 
 func TestRewindTo_InvalidIndex(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
 	})
@@ -3599,6 +3674,7 @@ func TestRewindTo_InvalidIndex(t *testing.T) {
 
 func TestRewindTo_NoFileHistory(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	// No fileHistory set — should not panic
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
@@ -3629,6 +3705,7 @@ func TestRewindToScoped_MessagesOnly(t *testing.T) {
 
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetFileHistory(tracker)
 
 	// TrackEdit reads "original" from disk → v1 backup = "original".
@@ -3692,6 +3769,7 @@ func TestRewindToScoped_FilesOnly(t *testing.T) {
 
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetFileHistory(tracker)
 
 	// TrackEdit reads "original" from disk → v1 backup = "original".
@@ -3754,6 +3832,7 @@ func TestRewindToScoped_All(t *testing.T) {
 
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetFileHistory(tracker)
 
 	// TrackEdit reads "original" from disk → v1 backup = "original".
@@ -3796,6 +3875,7 @@ func TestRewindToScoped_All(t *testing.T) {
 // TestRewindToScoped_InvalidIndex returns error for out-of-range index.
 func TestRewindToScoped_InvalidIndex(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
 	})
@@ -3811,6 +3891,7 @@ func TestRewindToScoped_InvalidIndex(t *testing.T) {
 // TestRewindToScoped_NoFileHistory does not panic without fileHistory.
 func TestRewindToScoped_NoFileHistory(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("resp1")}},
@@ -4545,6 +4626,7 @@ func TestE2E_SingleQueryMultiTool_Rewind(t *testing.T) {
 // gbot stores ContextTokens, so it must recalculate after truncation.
 func TestRewindTo_RecalculatesContextTokens(t *testing.T) {
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg1")}},
@@ -4709,6 +4791,7 @@ func TestComputeSearchReadKind(t *testing.T) {
 			}
 		},
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Tool with ToolWithSearchOrRead
 	srk := eng.computeSearchReadKind("Grep", json.RawMessage(`{"pattern":"TODO"}`))
@@ -4732,6 +4815,7 @@ func TestComputeSearchReadKind(t *testing.T) {
 func TestSetContextTokens(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	if eng.GetContextTokens() != 0 {
 		t.Errorf("initial ContextTokens = %d, want 0", eng.GetContextTokens())
@@ -4749,6 +4833,7 @@ func TestPersistContextTokens(t *testing.T) {
 		Provider: &mockProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Without store/sessionID, PersistContextTokens is a no-op
 	eng.SetContextTokens(12345)
@@ -4763,6 +4848,7 @@ func TestPersistContextTokens(t *testing.T) {
 func TestSetMaxTokens(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	if eng.MaxTokens() != 16000 {
 		t.Errorf("initial MaxTokens = %d, want 16000", eng.MaxTokens())

@@ -33,11 +33,14 @@ func setupResourceServer(t *testing.T) (*mcpsdk.Server, *mcp.Registry) {
 		Version: "1.0.0",
 	}, nil)
 
+	type serverResult struct {
+		session *mcpsdk.ServerSession
+		err     error
+	}
+	ch := make(chan serverResult, 1)
 	go func() {
-		_, err := server.Connect(context.Background(), t1, nil)
-		if err != nil {
-			t.Logf("server connect error: %v", err)
-		}
+		s, err := server.Connect(context.Background(), t1, nil)
+		ch <- serverResult{s, err}
 	}()
 
 	server.AddResource(&mcpsdk.Resource{
@@ -69,7 +72,23 @@ func setupResourceServer(t *testing.T) (*mcpsdk.Server, *mcp.Registry) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { _ = session.Close() })
+
+	// Wait for server to finish connecting so we can clean it up.
+	var serverSession *mcpsdk.ServerSession
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("server connect: %v", r.err)
+		}
+		serverSession = r.session
+	default:
+		t.Fatal("server connect did not complete")
+	}
+
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = serverSession.Close()
+	})
 
 	reg := mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{})
 	reg.SetConnectionForTest("resource-server", &mcp.ConnectedServer{
@@ -109,6 +128,7 @@ func TestResourceTools_ColdStart_NoRegistry(t *testing.T) {
 		},
 		MCPRegistry: nil, // no registry
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.refreshTools()
 
@@ -255,8 +275,15 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 	// Phase 2: Add a server with resource support
 	t1, t2 := mcpsdk.NewInMemoryTransports()
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "new-server", Version: "1.0"}, nil)
+
+	type srvResult struct {
+		s *mcpsdk.ServerSession
+		e error
+	}
+	srvCh := make(chan srvResult, 1)
 	go func() {
-		_, _ = server.Connect(context.Background(), t1, nil)
+		s, err := server.Connect(context.Background(), t1, nil)
+		srvCh <- srvResult{s, err}
 	}()
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test-client", Version: "1.0"}, nil)
@@ -264,7 +291,20 @@ func TestResourceTools_Recovery_RefreshRebuilds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
-	t.Cleanup(func() { _ = session.Close() })
+
+	// Wait for server and clean up both sessions.
+	select {
+	case r := <-srvCh:
+		if r.e != nil {
+			t.Fatalf("server connect: %v", r.e)
+		}
+		t.Cleanup(func() {
+			_ = session.Close()
+			_ = r.s.Close()
+		})
+	default:
+		t.Fatal("server connect did not complete")
+	}
 
 	reg.SetConnectionForTest("new-server", &mcp.ConnectedServer{
 		Name:    "new-server",
@@ -310,6 +350,7 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 		},
 		MCPRegistry: reg,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.refreshTools()
 

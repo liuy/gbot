@@ -1368,12 +1368,14 @@ func TestRegistry_Close_TimedOutServer(t *testing.T) {
 
 	r.mu.Lock()
 	r.configs["srv"] = cfg
+	// Signal for the blocking Cleanup to return after Close() times out.
+	cleanupRelease := make(chan struct{})
 	r.connections["srv"] = &ConnectedServer{
 		Name:   "srv",
 		Config: cfg,
 		Cleanup: func() error {
-			// Blocks beyond the 5s grace period
-			select {}
+			<-cleanupRelease
+			return nil
 		},
 	}
 	r.mu.Unlock()
@@ -1393,6 +1395,10 @@ func TestRegistry_Close_TimedOutServer(t *testing.T) {
 	case <-time.After(8 * time.Second):
 		t.Fatal("Close() took too long — test timeout exceeded")
 	}
+	close(cleanupRelease)
+	// Give the orphaned closeInner goroutine time to observe cleanupRelease
+	// and exit before goleak checks for leaked goroutines. // REAL-TIME
+	time.Sleep(100 * time.Millisecond)
 }
 
 // TestRegistry_ScheduleReconnect_TimerFiresAndFails tests that when the

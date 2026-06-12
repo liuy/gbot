@@ -38,6 +38,9 @@ func initGse() {
 	})
 }
 
+// GseReady reports whether the gse dictionary has finished loading.
+func GseReady() bool { return globalGseReady.Load() }
+
 // Store manages short-term memory persistence via SQLite.
 // Concurrency is handled by SQLite WAL mode + transactions — no Go-level mutex needed.
 type Store struct {

@@ -81,6 +81,7 @@ func TestReminder_FullChain_TurnLoopInjection(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -143,6 +144,7 @@ func TestReminder_NotPrepended_PreservesCache(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -203,6 +205,7 @@ func TestReminder_Subagent_NeverFires(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { parent.Close() })
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "General",
 		Tools:     map[string]tool.Tool{"dummy_tool": mt},
@@ -262,6 +265,7 @@ func TestReminder_RecoveryAfterRestart(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tlB,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -330,6 +334,7 @@ func TestReminder_TaskToolUse_ResetsCounter(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -382,6 +387,7 @@ func TestReminder_FiresAgain_AfterSufficientTurns(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -428,6 +434,7 @@ func TestReminder_NoReminder_WhenNoTasks(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -477,6 +484,7 @@ func TestReminder_NoReminder_WhenAllTasksCompleted(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -513,6 +521,7 @@ func TestReminder_NilTaskList_NoReminder(t *testing.T) {
 		Logger:   slog.Default(),
 		// TaskList is nil (default)
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -561,6 +570,7 @@ func TestReminder_MessageHasFlagMeta(t *testing.T) {
 		Logger:   slog.Default(),
 		TaskList: tl,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

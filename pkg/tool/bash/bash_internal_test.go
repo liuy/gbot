@@ -588,7 +588,7 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 	}()
 
 	// Step 1: Run a background job via Execute
-	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 10","run_in_background":true,"description":"test bg job"}`), nil)
+	result, err := Execute(context.Background(), json.RawMessage(`{"command":"sleep 1","run_in_background":true,"description":"test bg job"}`), nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
 	}
@@ -616,7 +616,7 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 		}
 		t.Fatalf("registry.Get(%q) not found. Registry contains: %v (ID mismatch bug!)", outputID, ids)
 	}
-	if job.Command != "sleep 10" {
+	if job.Command != "sleep 1" {
 		t.Errorf("job.Command = %q, want sleep 10", job.Command)
 	}
 
@@ -634,6 +634,12 @@ func TestExecute_RunInBackground_JobIDMatchesRegistry(t *testing.T) {
 	if err := taskReg.Kill(outputID); err != nil {
 		t.Fatalf("JobInfoAdapter.Kill(%q) error: %v — TaskStop would fail", outputID, err)
 	}
+
+	// Wait for the spawnBackground goroutine to fully exit (cmd.Wait + cleanup).
+	if _, err := registry.Wait(outputID); err != nil {
+		t.Fatalf("Wait after kill: %v", err)
+	}
+	runtime.Gosched()
 
 	// Step 6: Verify job is now in terminal state
 	select {
@@ -980,6 +986,10 @@ func TestSpawnBackground_NonPTYCmdStartError(t *testing.T) {
 	if !strings.Contains(out.Stdout, "Background job started") {
 		t.Errorf("Stdout = %q, want background message", out.Stdout)
 	}
+	// Wait for the background job goroutine to finish (cmd.Wait returns)
+	if out.BackgroundJobID != "" {
+		_, _ = DefaultRegistry().Wait(out.BackgroundJobID)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1090,7 @@ func TestSpawnBackground_TaskStaysRunning(t *testing.T) {
 	if !IsTerminalJobStatus(status) {
 		_ = freshRegistry.Kill(job.ID)
 	}
+	_, _ = freshRegistry.Wait(job.ID)
 
 	if status != JobRunning {
 		t.Errorf("job status = %q (exit code %d), want JobRunning — "+
@@ -1135,6 +1146,7 @@ func TestSpawnBackground_TaskOutlivesParentContext(t *testing.T) {
 	if !IsTerminalJobStatus(status) {
 		_ = freshRegistry.Kill(job.ID)
 	}
+	_, _ = freshRegistry.Wait(job.ID)
 
 	if status != JobRunning {
 		t.Errorf("job status = %q (exit code %d) after parent context cancelled, want JobRunning — "+

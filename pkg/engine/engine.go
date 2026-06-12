@@ -2459,6 +2459,14 @@ func (e *Engine) pendingMCPServerNames() []string {
 
 // Close shuts down the engine and its MCP registry.
 func (e *Engine) Close() {
+	// Cancel any in-flight attachment processing goroutine.
+	e.activeCancelMu.Lock()
+	if e.activeCancel != nil {
+		e.activeCancel()
+		e.activeCancel = nil
+	}
+	e.activeCancelMu.Unlock()
+
 	if e.onCloseFn != nil {
 		e.onCloseFn(e.sessionID)
 	}

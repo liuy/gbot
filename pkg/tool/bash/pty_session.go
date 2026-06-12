@@ -206,6 +206,10 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 	deadlineCtx, deadlineCancel := context.WithDeadline(ctx, deadline)
 	defer deadlineCancel()
 
+	// Ensure the ctx-cancel goroutine below always exits when Run returns.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
 	// Watch for SIGWINCH and forward to PTY (Linux only)
 	var stopSigwinch chan struct{}
 	if checkIsLinux() {
@@ -237,8 +241,8 @@ func (s *PTYSession) Run(ctx context.Context, cmd string, dir string, env []stri
 
 	// Context cancellation goroutine (user interrupt / Ctrl+C)
 	go func() {
-		<-ctx.Done()
-		if ctx.Err() == context.Canceled && s.Cmd.Process != nil {
+		<-runCtx.Done()
+		if runCtx.Err() == context.Canceled && s.Cmd.Process != nil {
 			_ = killProcessTree(s.Cmd.Process.Pid)
 		}
 	}()

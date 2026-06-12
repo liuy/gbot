@@ -55,12 +55,33 @@ func setupInMemoryServer(t *testing.T) (*mcp.Server, mcp.Transport) {
 		Version: "1.0.0",
 	}, nil)
 
+	// ServerSession.Close() closes the underlying ioConn which unblocks
+	// the jsonrpc2 read goroutine.
+	type sessionResult struct {
+		session *mcp.ServerSession
+		err     error
+	}
+	ch := make(chan sessionResult, 1)
 	go func() {
-		_, err := server.Connect(context.Background(), t1, nil)
-		if err != nil {
-			t.Logf("test server connect: %v", err)
-		}
+		s, err := server.Connect(context.Background(), t1, nil)
+		ch <- sessionResult{s, err}
 	}()
+
+	// Wait for the server to finish connecting so session is available for cleanup.
+	var session *mcp.ServerSession
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("test server connect: %v", r.err)
+		}
+		session = r.session
+	case <-time.After(5 * time.Second):
+		t.Fatal("test server connect timed out")
+	}
+
+	t.Cleanup(func() {
+		_ = session.Close()
+	})
 
 	return server, t2
 }

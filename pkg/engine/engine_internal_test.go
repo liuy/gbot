@@ -345,6 +345,7 @@ func TestTools_ReturnsToolMap(t *testing.T) {
 		Provider: &testProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	tools := eng.Tools()
 	if tools == nil {
 		t.Fatal("Tools() returned nil")
@@ -362,6 +363,7 @@ func TestTools_ReturnsPopulatedMap(t *testing.T) {
 		Tools:    []tool.Tool{mt},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	tools := eng.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("Tools() = %d entries, want 1", len(tools))
@@ -390,6 +392,7 @@ func TestToolsProvider_SeesLateRegisteredTool(t *testing.T) {
 		ToolsProvider: func() map[string]tool.Tool { return toolMap },
 		Model:         "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Before late-register: engine sees only Bash
 	tools := eng.Tools()
@@ -423,6 +426,7 @@ func TestToolsProvider_NilProviderGivesEmpty(t *testing.T) {
 		Provider: &testProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	tools := eng.Tools()
 	if len(tools) != 0 {
 		t.Errorf("nil provider: expected 0 tools, got %d", len(tools))
@@ -444,6 +448,7 @@ func TestToolsProvider_PreferOverToolsSlice(t *testing.T) {
 		},
 		Model: "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	tools := eng.Tools()
 	if len(tools) != 1 {
@@ -497,6 +502,7 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 		MaxTurns:    50,
 		Dispatcher:  tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "test", "")
 	// After 50 turns the for loop exits, hitting line 226-231
@@ -525,6 +531,7 @@ func TestCallLLM_ContextCancelledDuringStreaming(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -567,6 +574,7 @@ func TestRefreshTools_NilProvider(t *testing.T) {
 		Model:    "test",
 		// No ToolsProvider set → refreshTools should early-return
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Manually call refreshTools — nil provider path
 	eng.refreshTools()
@@ -596,6 +604,7 @@ func TestRefreshTools_WithProvider(t *testing.T) {
 			}
 		},
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Initial sort order set in New()
 	if len(eng.Tools()) != 3 {
@@ -1037,6 +1046,7 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx := t.Context()
 
@@ -1075,6 +1085,7 @@ func TestMarshalMessages_StripsResponseOnlyFields(t *testing.T) {
 		Provider: &testProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.messages = []types.Message{
 		{
 			Role:       types.RoleUser,
@@ -1127,6 +1138,7 @@ func TestMarshalMessages_ThinkingBlockJSONField(t *testing.T) {
 		Provider: &testProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.messages = []types.Message{
 		{
 			Role: types.RoleAssistant,
@@ -1169,6 +1181,7 @@ func TestMarshalMessages_PreservesToolUseAndResult(t *testing.T) {
 		Provider: &testProvider{},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.messages = []types.Message{
 		{
 			Role: types.RoleUser,
@@ -1420,6 +1433,7 @@ func TestNewSubEngineFieldIndependence(t *testing.T) {
 		Model:       "parent-model",
 		TokenBudget: 100000,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	// Add state to parent
 	parent.AddSystemMessage("parent only message")
@@ -1474,6 +1488,7 @@ func TestNewSubEngineSharesProvider(t *testing.T) {
 
 	mp := &testProvider{}
 	parent := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { parent.Close() })
 	sub := parent.NewSubEngine(SubEngineOptions{})
 
 	// Both should point to the exact same provider instance (pointer equality)
@@ -1487,6 +1502,7 @@ func TestNewSubEngineModelOverride(t *testing.T) {
 
 	mp := &testProvider{}
 	parent := New(&Params{Provider: mp, Model: "parent-model"})
+	t.Cleanup(func() { parent.Close() })
 
 	// Case 1: no model override → inherits parent
 	sub1 := parent.NewSubEngine(SubEngineOptions{})
@@ -1506,6 +1522,7 @@ func TestNewSubEngineMaxTurns(t *testing.T) {
 
 	mp := &testProvider{}
 	parent := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { parent.Close() })
 
 	// Case 1: MaxTurns=0 → no limit
 	sub1 := parent.NewSubEngine(SubEngineOptions{MaxTurns: 0})
@@ -1530,6 +1547,7 @@ func TestQuerySync(t *testing.T) {
 		Provider: mp,
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx := context.Background()
 	result := eng.QuerySync(ctx, "test query", "")
@@ -1569,6 +1587,7 @@ func TestQuerySyncCancellation(t *testing.T) {
 		Provider: mp,
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -1586,6 +1605,7 @@ func TestEmitEventNilSafe(t *testing.T) {
 	// Sub-engine has dispatcher=nil. emitEvent should silently discard.
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	if eng.dispatcher != nil {
 		t.Fatal("expected nil dispatcher for default engine")
@@ -1619,6 +1639,7 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 		Model:       "test",
 		TokenBudget: 100,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	// Create sub-engine via NewSubEngine (isSubagent=true, tokenBudget=0)
 	subTools := map[string]tool.Tool{"test_tool": mt}
@@ -1726,6 +1747,7 @@ func TestNewSubEngine_TaggedDispatcher(t *testing.T) {
 		Dispatcher: md,
 		Model:      "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	subEng := eng.NewSubEngine(SubEngineOptions{
 		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
@@ -1762,6 +1784,7 @@ func TestNewSubEngine_NoDispatcher_NoTagged(t *testing.T) {
 		Model:    "test",
 		// No Dispatcher
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	subEng := eng.NewSubEngine(SubEngineOptions{
 		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
@@ -1931,6 +1954,7 @@ func TestStreamingToolExecutor_NoSetMessages_NilTctx(t *testing.T) {
 func TestEngineModel_Accessor(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &testProvider{}, Model: "test-model"})
+	t.Cleanup(func() { eng.Close() })
 	if got := eng.Model(); got != "test-model" {
 		t.Errorf("Model() = %q, want %q", got, "test-model")
 	}
@@ -1939,6 +1963,7 @@ func TestEngineModel_Accessor(t *testing.T) {
 func TestEngineSystemPrompt_Accessors(t *testing.T) {
 	t.Parallel()
 	eng := New(&Params{Provider: &testProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	// Initially empty
 	if sp := eng.SystemPrompt(); sp != "" {
@@ -1963,6 +1988,7 @@ func TestRunForkedQuery(t *testing.T) {
 		Provider: mp,
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Pre-construct messages — simulating what fork agent builds
 	messages := []types.Message{
@@ -2024,6 +2050,7 @@ func TestRunForkedQuery_IncludesClaudeMd(t *testing.T) {
 		Model:      "test",
 		WorkingDir: tmpDir,
 	})
+	t.Cleanup(func() { parentEng.Close() })
 
 	subEng := parentEng.NewSubEngine(SubEngineOptions{
 		AgentType: "fork",
@@ -2068,6 +2095,7 @@ func TestIsBuiltInAgent(t *testing.T) {
 
 func TestNewSubEngine_SetsAgentType(t *testing.T) {
 	parent := New(&Params{})
+	t.Cleanup(func() { parent.Close() })
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
@@ -2211,6 +2239,7 @@ func TestShouldAutoCompact(t *testing.T) {
 
 	// No compactor → false
 	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	if eng.shouldAutoCompact() {
 		t.Error("should be false without compactor")
 	}
@@ -2270,6 +2299,7 @@ func TestShouldAutoCompact_SubAgentCanCompact(t *testing.T) {
 	t.Parallel()
 
 	parent := New(&Params{Model: "test"})
+	t.Cleanup(func() { parent.Close() })
 	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
 		ContextWindow: 100,
 	})
@@ -2300,6 +2330,7 @@ func TestNewSubEngine_SharesCompactor(t *testing.T) {
 	t.Parallel()
 
 	parent := New(&Params{Model: "test"})
+	t.Cleanup(func() { parent.Close() })
 	parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
 		ContextWindow: 200000,
 	})
@@ -2338,6 +2369,7 @@ func TestShouldAutoCompact_QuerySourceGuard(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			parent := New(&Params{Model: "test"})
+			t.Cleanup(func() { parent.Close() })
 			parent.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
 				ContextWindow: 100,
 			})
@@ -2387,6 +2419,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.isSubagent = true
 	eng.SetCompactor(&internalMockCompactor{}, AutoCompactConfig{
 		ContextWindow:          50000,
@@ -2527,6 +2560,7 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2605,6 +2639,7 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2696,6 +2731,7 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2771,6 +2807,7 @@ func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2824,6 +2861,7 @@ func TestQuery_PreTurnCompact_ColdStart_NoCompact(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2875,6 +2913,7 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2929,6 +2968,7 @@ func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -2999,6 +3039,7 @@ func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -3285,6 +3326,7 @@ func TestStartedToolIDs(t *testing.T) {
 func TestRunTurns_LoopTopAbort(t *testing.T) {
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -3319,6 +3361,7 @@ func TestRunTurns_PostStreamingAbort_NoToolUse(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -3374,6 +3417,7 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -3467,6 +3511,7 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
@@ -3510,6 +3555,7 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -3568,6 +3614,7 @@ func TestCallLLM_PostLoopAbort_NoContent(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -3608,6 +3655,7 @@ func TestCallLLM_PostLoopAbort_TextOnly(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -3677,6 +3725,7 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -3755,6 +3804,7 @@ func TestRunTurns_ReactiveCompactAbort(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{
 		ContextWindow: 100000,
 	})
@@ -3834,6 +3884,7 @@ func TestInlineInterrupt_PostStreamingAbort_Text(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -3866,6 +3917,7 @@ func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
 	mt := &testTool{name: "test_tool"}
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Tools: []tool.Tool{mt}, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -3918,6 +3970,7 @@ func TestInlineInterrupt_PostToolAbort(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Tools: []tool.Tool{ct}, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
 
@@ -3941,6 +3994,7 @@ func TestInlineInterrupt_ReactiveCompactAbort_InterruptOnUserMessage(t *testing.
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(&blockingCompactor{}, AutoCompactConfig{ContextWindow: 100000})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3965,6 +4019,7 @@ func TestInlineInterrupt_LoopTopAbort_InterruptOnUserMessage(t *testing.T) {
 	// Loop-top abort — interrupt message appended to user query message.
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -4210,6 +4265,7 @@ func TestRunStopHook_NilHooks(t *testing.T) {
 func TestFireCompactHooks_NilHooks(t *testing.T) {
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	eng.fireCompactHooks(context.Background(), "test", "pre")
 	eng.fireCompactHooks(context.Background(), "test", "post")
 }
@@ -5713,6 +5769,7 @@ func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 		Tools:    []tool.Tool{&renderResultTool{name: "list_files"}},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	sessionAllowed := make(map[string]bool)
 	var mu sync.Mutex
@@ -5748,6 +5805,7 @@ func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
 		Tools:    []tool.Tool{bash.New(nil)},
 		Model:    "test",
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	sessionAllowed := make(map[string]bool)
 	sessionAllowed["Bash"] = true // skip permission prompt
@@ -5836,6 +5894,7 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -5907,6 +5966,7 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -5972,6 +6032,7 @@ func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
 		MaxConsecutiveFailures: 3,
@@ -6032,6 +6093,7 @@ func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
 		MaxTokens:  16000,
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.isSubagent = true
 	eng.SetCompactor(compactor, AutoCompactConfig{
 		ContextWindow:          50000,
@@ -6180,6 +6242,7 @@ func TestQuery_RetryStreamTimeout(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error != nil {
@@ -6229,6 +6292,7 @@ func TestQuery_RetryStreamEndedNoContent(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error != nil {
@@ -6255,6 +6319,7 @@ func TestQuery_RetryExhausted(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	// Use fast retry config for testing (10ms backoff, 3 retries)
 	eng.retryConfig = &llm.RetryConfig{
 		MaxRetries:  3,
@@ -6306,6 +6371,7 @@ func TestQuery_NonRetryableTerminal(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hello", "")
 	if result.Error == nil {
@@ -6342,6 +6408,7 @@ func TestQuery_RetryAbortErrorNoRetry(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -6398,6 +6465,7 @@ func TestQuery_RetryContextCancellation(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	// Use retry config with long backoff so cancel fires during wait
 	eng.retryConfig = &llm.RetryConfig{
 		MaxRetries:  10,
@@ -6450,6 +6518,7 @@ func TestQuery_SubagentRetriesStreamError(t *testing.T) {
 		Model:      "test",
 		Dispatcher: newEventCollector(),
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
@@ -6552,6 +6621,7 @@ func TestQuery_RetryBackoffSequence(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.retryConfig = cfg
 
 	result := eng.QuerySync(context.Background(), "hello", "")
@@ -6622,6 +6692,7 @@ func TestQuery_MultiTurnRetryReset(t *testing.T) {
 		Model:      "test",
 		Dispatcher: tc,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.retryConfig = &llm.RetryConfig{
 		MaxRetries:  3,
 		BaseBackoff: 5 * time.Millisecond,
@@ -7378,6 +7449,7 @@ func TestStreamInterrupt_PartialToolInput_InLoopSelect(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -7417,6 +7489,7 @@ func TestStreamInterrupt_PartialToolInput_PostLoop(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -7456,6 +7529,7 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -7485,6 +7559,10 @@ func TestStreamInterrupt_MixedToolUseBlocks(t *testing.T) {
 		t.Fatal("stream cancellation should produce an error")
 	}
 
+	// Yield so the <-started/cancel goroutine and the <-ctx.Done() goroutine
+	// have a chance to fully exit before goleak checks.
+	runtime.Gosched()
+
 	// Complete tool_use should be preserved as-is
 	assertToolUseAfterNormalize(t, eng, "call_complete", `{"path":"/tmp/file.txt"}`)
 	// Partial tool_use should be sanitized to {}
@@ -7502,6 +7580,7 @@ func TestStreamInterrupt_ValidToolInput_NotModified(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -7543,6 +7622,7 @@ func TestStreamInterrupt_TextOnly_NoPanic(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
@@ -7592,6 +7672,7 @@ func TestStreamInterrupt_EmptyContent_NoPanic(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{Provider: mp, Model: "test", Dispatcher: tc})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -7653,6 +7734,7 @@ func TestRunForkedQuery_BlocksConcurrentProcessAttachments(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.systemPrompt = `{"role":"system","content":"test"}`
 
 	// Pre-fill the stream with a complete response so the turn loop finishes
@@ -7731,6 +7813,7 @@ func TestQuerySync_BlocksConcurrentProcessAttachments(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.systemPrompt = `{"role":"system","content":"test"}`
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -7816,6 +7899,7 @@ func TestContextTokens_PersistedAfterAPICall(t *testing.T) {
 		Model:      "test",
 		Dispatcher: newEventCollector(),
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, dir)
 
 	// Simulate: engine creates a new session.
@@ -7854,6 +7938,7 @@ func TestContextTokens_RestoredOnResume(t *testing.T) {
 		Model:      "test",
 		Dispatcher: newEventCollector(),
 	})
+	t.Cleanup(func() { eng.Close() })
 	eng.SetStore(store, dir)
 
 	sid, err := eng.ResumeOrInitSession(dir, "test")
@@ -7882,6 +7967,7 @@ func TestEffectiveWindow(t *testing.T) {
 
 	// Default: returns coalesceWindow constant
 	eng := New(&Params{Provider: &mockProvider{}, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	if w := eng.effectiveWindow(); w != coalesceWindow {
 		t.Errorf("default effectiveWindow = %v, want %v", w, coalesceWindow)
 	}
@@ -7934,6 +8020,7 @@ func TestStreamErrorGeneratesSyntheticToolResults(t *testing.T) {
 		Model:    "test",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

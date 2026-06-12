@@ -88,6 +88,7 @@ func TestCacheIntegration_RequestHasCacheControl(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hi", "You are a helpful assistant.")
 
@@ -142,6 +143,7 @@ func TestCacheIntegration_EmptySystemPrompt_NoCache(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	_ = eng.QuerySync(context.Background(), "hi", "")
 
@@ -172,6 +174,7 @@ func TestCacheIntegration_CacheTokensFlowToEvents(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hi", "")
 	if result.Error != nil {
@@ -190,6 +193,7 @@ func TestCacheIntegration_CacheCreationFlow(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	result := eng.QuerySync(context.Background(), "hi", "")
 	if result.Error != nil {
@@ -223,6 +227,7 @@ func TestCacheIntegration_SubAgentBuiltIn(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "Explore",
@@ -271,6 +276,7 @@ func TestCacheIntegration_SubAgentCustom(t *testing.T) {
 		Logger:   slog.Default(),
 		Provider: cp,
 	})
+	t.Cleanup(func() { parent.Close() })
 
 	sub := parent.NewSubEngine(SubEngineOptions{
 		AgentType: "my-custom-agent",

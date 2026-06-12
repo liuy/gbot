@@ -1302,14 +1302,16 @@ func TestBatchDiscovery_WithRealServers(t *testing.T) {
 			t.Fatalf("client connect %d: %v", i, err)
 		}
 
-		connections = append(connections, &ConnectedServer{
+		cs := &ConnectedServer{
 			Name:    fmt.Sprintf("server-%d", i),
 			Session: session,
 			Config:  ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser},
 			Capabilities: &mcp.ServerCapabilities{
 				Tools: &mcp.ToolCapabilities{},
 			},
-		})
+		}
+		t.Cleanup(func() { _ = session.Close() })
+		connections = append(connections, cs)
 	}
 
 	toolCache := NewLRUCache[string, []DiscoveredTool](10)

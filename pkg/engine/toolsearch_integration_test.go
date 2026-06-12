@@ -149,6 +149,7 @@ func TestToolSearchIntegration_ColdStart_NoDeferred(t *testing.T) {
 			tsStubTool("Edit"),
 		),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	_ = eng.QuerySync(context.Background(), "hi", "")
 
@@ -191,6 +192,7 @@ func TestToolSearchIntegration_Activation_AtThreshold(t *testing.T) {
 			deferredStubTool("DeferredC"),
 		),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	_ = eng.QuerySync(context.Background(), "hi", "")
 
@@ -277,6 +279,7 @@ func TestToolSearchIntegration_DiscoveryFlow(t *testing.T) {
 		),
 		MaxTurns: 5,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	_ = eng.QuerySync(context.Background(), "find tasks tool", "")
 
@@ -338,6 +341,7 @@ func TestToolSearchIntegration_MultiToolDiscovery(t *testing.T) {
 		),
 		MaxTurns: 5,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	_ = eng.QuerySync(context.Background(), "find tasks tools", "")
 
@@ -385,6 +389,7 @@ func TestToolSearchIntegration_CompactRecovery(t *testing.T) {
 		),
 		MaxTurns: 5,
 	})
+	t.Cleanup(func() { eng1.Close() })
 	result := eng1.QuerySync(context.Background(), "find tasks", "")
 	if result.Error != nil {
 		t.Fatalf("phase 1 error: %v", result.Error)
@@ -484,6 +489,7 @@ func TestToolSearchIntegration_ToolResultRecovery(t *testing.T) {
 			deferredStubTool("DeferredC"),
 		),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	RestoreToolSearchState(transcript, eng.toolSearch)
 	eng.setMessages(transcript)

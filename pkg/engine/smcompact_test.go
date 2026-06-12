@@ -314,6 +314,7 @@ func TestSetSessionMemory_RegistersHook(t *testing.T) {
 	setTempHome(t)
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	hookCount := 0
 	// Verify hooks are registered by checking postTurnHooks length
@@ -337,6 +338,7 @@ func TestSetSessionMemory_RegistersHook(t *testing.T) {
 func TestSetSessionMemory_NilDoesNotRegisterHook(t *testing.T) {
 	mp := &testProvider{}
 	eng := New(&Params{Provider: mp, Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.SetSessionMemory(nil)
 
@@ -353,6 +355,7 @@ func TestSetSessionMemory_NilDoesNotRegisterHook(t *testing.T) {
 
 func TestQuerySource_SessionMemoryAgent(t *testing.T) {
 	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	subEng := eng.NewSubEngine(SubEngineOptions{
 		AgentType: "session_memory",
 		Tools:     map[string]tool.Tool{},
@@ -366,6 +369,7 @@ func TestQuerySource_SessionMemoryAgent(t *testing.T) {
 
 func TestQuerySource_CompactAgent(t *testing.T) {
 	eng := New(&Params{Model: "test"})
+	t.Cleanup(func() { eng.Close() })
 	subEng := eng.NewSubEngine(SubEngineOptions{
 		AgentType: "compact",
 		Tools:     map[string]tool.Tool{},

@@ -110,6 +110,7 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 		Logger:   slog.Default(),
 		Hooks:    hookSystem,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -178,6 +179,7 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 		Logger:   slog.Default(),
 		Hooks:    hookSystem,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -237,6 +239,7 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 		Logger:   slog.Default(),
 		Hooks:    hookSystem,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -299,6 +302,7 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 		Logger:   slog.Default(),
 		Hooks:    hookSystem,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -356,6 +360,7 @@ func TestIntegration_Stop_BlockingGivesAnotherTurn(t *testing.T) {
 		Logger:   slog.Default(),
 		Hooks:    hookSystem,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -400,6 +405,7 @@ func TestIntegration_NoHooks_EngineWorks(t *testing.T) {
 		Logger:   slog.Default(),
 		// No Hooks
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

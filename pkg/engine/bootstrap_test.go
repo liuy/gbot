@@ -183,6 +183,7 @@ func newTestDepsAndRefs(t *testing.T) (SharedDeps, ToolRefs, *Engine) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	t.Cleanup(func() { eng.Close() })
 	return deps, refs, eng
 }
 

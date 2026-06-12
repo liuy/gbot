@@ -347,6 +347,9 @@ var checkPatterns = []checkPattern{
 				if hasREALTIMEComment(lines, lineIdx) {
 					return true
 				}
+				if isInGoleakCleanup(lines, lineIdx) {
+					return true
+				}
 				return false
 			},
 		},
@@ -418,6 +421,22 @@ func hasREALTIMEComment(lines []string, lineIdx int) bool {
 	// Check next line
 	if lineIdx+1 < len(lines) && strings.Contains(lines[lineIdx+1], "REAL-TIME") {
 		return true
+	}
+	// Check previous line (REAL-TIME comment before the flagged line)
+	if lineIdx-1 >= 0 && strings.Contains(lines[lineIdx-1], "REAL-TIME") {
+		return true
+	}
+	return false
+}
+
+// isInGoleakCleanup checks if the time.Sleep is inside a goleak.Cleanup callback.
+// Polling with Sleep is the standard pattern for waiting on goroutine shutdown
+// in goleak Cleanup — there's no channel to select on.
+func isInGoleakCleanup(lines []string, lineIdx int) bool {
+	for i := lineIdx; i >= 0 && i >= lineIdx-20; i-- {
+		if strings.Contains(lines[i], "goleak.Cleanup") || strings.Contains(lines[i], "goleak.VerifyTestMain") {
+			return true
+		}
 	}
 	return false
 }

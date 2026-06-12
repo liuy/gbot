@@ -189,6 +189,7 @@ func TestAutoCompact_Proactive_TriggersWhenOverThreshold(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.SetMessages(makeLargeMessages(10, 100))
 
@@ -222,6 +223,7 @@ func TestAutoCompact_Proactive_DoesNotTriggerWhenUnderThreshold(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -263,6 +265,7 @@ func TestAutoCompact_Proactive_CompactedMessagesReplaced(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.SetMessages(makeLargeMessages(10, 50))
 
@@ -316,6 +319,7 @@ func TestAutoCompact_Reactive_TriggersOnContextOverflow(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -357,6 +361,7 @@ func TestAutoCompact_Reactive_NoSecondRetry(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -389,6 +394,7 @@ func TestAutoCompact_Reactive_NoCompactor_ReturnsError(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -430,6 +436,7 @@ func TestAutoCompact_CircuitBreaker_StopsAfterFailures(t *testing.T) {
 		},
 		Logger: slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.SetMessages(makeLargeMessages(10, 50))
 
@@ -465,6 +472,7 @@ func TestAutoCompact_NoCompactor_NormalQuery(t *testing.T) {
 		Model:    "test-model",
 		Logger:   slog.Default(),
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

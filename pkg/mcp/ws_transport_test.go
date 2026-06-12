@@ -209,15 +209,17 @@ func TestWSConn_Read_ContextCancelled(t *testing.T) {
 	}
 
 	// Server that never sends anything
+	serverDone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer conn.Close()
-		select {} // block forever
+		<-serverDone
 	}))
 	defer server.Close()
+	defer close(serverDone)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
 	transport := &wsTransport{url: wsURL, headers: http.Header{}}

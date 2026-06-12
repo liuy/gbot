@@ -19,6 +19,7 @@ func TestEmitEvent_CoalescesTextDeltas(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Send 3 text deltas — should be buffered, not dispatched
 	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "AA"})
@@ -56,6 +57,7 @@ func TestEmitEvent_CoalescesThinkingDeltas(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "think1 "}})
 	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: "think2"}})
@@ -89,6 +91,7 @@ func TestEmitEvent_FlushOnWindowExpiry(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "early"})
 
@@ -122,6 +125,7 @@ func TestEmitEvent_PerEngineIsolation(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: mdA,
 	})
+	t.Cleanup(func() { engA.Close() })
 	engB := New(&Params{
 		Provider:   &mockProvider{},
 		Model:      "test",
@@ -174,6 +178,7 @@ func TestEmitEvent_FlushesOnQueryEnd(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "final"})
 	eng.emitEvent(types.QueryEvent{Type: types.EventQueryEnd})
@@ -198,6 +203,7 @@ func TestEmitEvent_NilDispatcherDiscards(t *testing.T) {
 		Logger:   slog.Default(),
 		// No Dispatcher
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	// Should not panic
 	eng.emitEvent(types.QueryEvent{Type: types.EventTextDelta, Text: "discarded"})
@@ -214,6 +220,7 @@ func TestEmitEvent_ThinkingDeltaEmptySkipped(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: md,
 	})
+	t.Cleanup(func() { eng.Close() })
 
 	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: &types.ThinkingEvent{Text: ""}})
 	eng.emitEvent(types.QueryEvent{Type: types.EventThinkingDelta, Thinking: nil})

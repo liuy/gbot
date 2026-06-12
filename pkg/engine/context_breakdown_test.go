@@ -21,7 +21,7 @@ func newTestEngineForBreakdown(t *testing.T) *Engine {
 	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("# test\n"), 0o644); err != nil {
 		t.Fatalf("create CLAUDE.md: %v", err)
 	}
-	return New(&Params{
+	eng := New(&Params{
 		Model:       "claude-test",
 		MaxTokens:   16000,
 		TokenBudget: 200000,
@@ -31,6 +31,8 @@ func newTestEngineForBreakdown(t *testing.T) *Engine {
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
 		Tools:       []tool.Tool{},
 	})
+	t.Cleanup(func() { eng.Close() })
+	return eng
 }
 
 // TestContextBreakdown_EmptyWhenNoAPICall verifies the no-data guard.
