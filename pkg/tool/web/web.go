@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -14,6 +18,7 @@ type Input struct {
 	Query    string `json:"query"`
 	Provider string `json:"provider,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
+	JS       bool   `json:"js,omitempty"`
 }
 
 type Output struct {
@@ -24,10 +29,19 @@ type Output struct {
 
 type Config struct {
 	Providers []SearchProvider
+	Client    *http.Client
 }
 
 func New(cfg Config) tool.Tool {
-	schema := json.RawMessage(`{
+	chain := &SearchChain{Providers: cfg.Providers}
+
+	avail := chain.AvailableProviders()
+	providerDesc := `Search provider. \"auto\" uses the first available provider.`
+	if len(avail) > 0 {
+		providerDesc = fmt.Sprintf(`Search provider. Available: auto, %s. Default: auto.`, strings.Join(avail, ", "))
+	}
+
+	schema := json.RawMessage(fmt.Sprintf(`{
 		"type": "object",
 		"required": ["query"],
 		"properties": {
@@ -37,16 +51,18 @@ func New(cfg Config) tool.Tool {
 			},
 			"provider": {
 				"type": "string",
-				"description": "Search provider. \"auto\" uses the first available provider. Available providers depend on configuration."
+				"description": "%s"
 			},
 			"limit": {
 				"type": "integer",
 				"description": "Maximum number of search results. Default: 10."
+			},
+			"js": {
+				"type": "boolean",
+				"description": "Fetch URL with headless Chrome (JS rendering + stealth). Use when the page requires JavaScript or returns empty/blocked content."
 			}
 		}
-	}`)
-
-	chain := &SearchChain{Providers: cfg.Providers}
+	}`, providerDesc))
 
 	return tool.BuildTool(tool.ToolDef{
 		Name_:   "Web",
@@ -60,7 +76,7 @@ func New(cfg Config) tool.Tool {
 			return in.Query, nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-			return execute(ctx, input, chain)
+			return execute(ctx, input, chain, cfg.Client)
 		},
 		IsReadOnly_: func(json.RawMessage) bool {
 			return true
@@ -88,7 +104,7 @@ func New(cfg Config) tool.Tool {
 	})
 }
 
-func execute(ctx context.Context, input json.RawMessage, chain *SearchChain) (*tool.ToolResult, error) {
+func execute(ctx context.Context, input json.RawMessage, chain *SearchChain, client *http.Client) (*tool.ToolResult, error) {
 	var in Input
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -99,7 +115,7 @@ func execute(ctx context.Context, input json.RawMessage, chain *SearchChain) (*t
 	}
 
 	if IsURL(in.Query) {
-		return executeFetch(ctx, in.Query)
+		return executeFetch(ctx, in.Query, in.JS, client)
 	}
 
 	return executeSearch(ctx, in, chain)
@@ -132,12 +148,39 @@ func executeSearch(ctx context.Context, in Input, chain *SearchChain) (*tool.Too
 	}, nil
 }
 
-func executeFetch(ctx context.Context, url string) (*tool.ToolResult, error) {
-	result := LoadPage(ctx, url, LoadPageOptions{})
+func extractProxyURL(client *http.Client) string {
+	if client == nil || client.Transport == nil {
+		return ""
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		return ""
+	}
+	req, err := http.NewRequest("GET", "https://example.com", nil)
+	if err != nil {
+		return ""
+	}
+	p, err := tr.Proxy(req)
+	if err != nil || p == nil {
+		return ""
+	}
+	return p.String()
+}
+
+func executeFetch(ctx context.Context, url string, js bool, client *http.Client) (*tool.ToolResult, error) {
+	if js {
+		slog.Info("web:fetch JS mode", "url", url)
+		return fetchWithChrome(ctx, url, client)
+	}
+
+	result := LoadPage(ctx, url, LoadPageOptions{Client: client})
 
 	if result.Error != "" {
+		slog.Info("web:fetch failed", "url", url, "status", result.Status, "error", result.Error)
 		return nil, fmt.Errorf("fetch failed: %s", result.Error)
 	}
+
+	slog.Info("web:fetch completed via HTTP", "url", url, "status", result.Status, "content_len", len(result.Content))
 
 	content := result.Content
 	if LooksLikeHTML(content) {
@@ -147,33 +190,52 @@ func executeFetch(ctx context.Context, url string) (*tool.ToolResult, error) {
 		}
 	}
 
-	content, truncated := FinalizeOutput(content)
-	if result.Truncated {
-		truncated = true
-	}
-
 	var notes []string
 	if result.FinalURL != url {
 		notes = append(notes, fmt.Sprintf("redirected to %s", result.FinalURL))
 	}
-	if truncated {
+	if result.Truncated {
 		notes = append(notes, "output truncated")
 	}
 
-	fetchResult := BuildResult(content, struct {
-		URL         string
-		FinalURL    string
-		Method      string
-		FetchedAt   string
-		Notes       []string
-		ContentType string
-	}{
+	fetchResult := BuildResult(content, FetchResultOptions{
 		URL:         url,
 		FinalURL:    result.FinalURL,
 		ContentType: result.ContentType,
 		Notes:       notes,
 	})
 
+	return &tool.ToolResult{
+		Data: &Output{
+			Mode:    "fetch",
+			Content: fetchResult.Content,
+		},
+	}, nil
+}
+
+func fetchWithChrome(ctx context.Context, url string, client *http.Client) (*tool.ToolResult, error) {
+	html, err := chromedpFetch(ctx, url, 20*time.Second, extractProxyURL(client))
+	if err != nil {
+		return nil, fmt.Errorf("JS fetch failed: %w", err)
+	}
+
+	content := html
+	if LooksLikeHTML(content) {
+		md, mdErr := HTMLToMarkdown(content)
+		if mdErr == nil {
+			content = md
+		}
+	}
+
+	// BuildResult already calls FinalizeOutput internally.
+	fetchResult := BuildResult(content, FetchResultOptions{
+		URL:         url,
+		FinalURL:    url,
+		ContentType: "text/html",
+		Notes:       []string{"fetched with JS rendering"},
+	})
+
+	slog.Info("web:fetch JS mode succeeded", "url", url, "content_len", len(fetchResult.Content))
 	return &tool.ToolResult{
 		Data: &Output{
 			Mode:    "fetch",

@@ -99,7 +99,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 		searchProviders = append(searchProviders, &providers.ZhipuProvider{Client: proxyClient, APIKey: zhipuKey})
 	}
 	searchProviders = append(searchProviders, &providers.DuckDuckGoProvider{Client: proxyClient})
-	reg.MustRegister(webtool.New(webtool.Config{Providers: searchProviders}))
+	reg.MustRegister(webtool.New(webtool.Config{Providers: searchProviders, Client: proxyClient}))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

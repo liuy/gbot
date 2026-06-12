@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -150,17 +151,16 @@ func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*w
 //	event:message
 //	data:{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"..."}]}}
 func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) {
-	raw, err := io.ReadAll(io.LimitReader(body, zhipuMaxResponse))
-	if err != nil {
-		return nil, fmt.Errorf("zhipu: read response: %w", err)
-	}
-
 	var lastData string
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(io.LimitReader(body, zhipuMaxResponse))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if after, ok := strings.CutPrefix(line, "data:"); ok {
 			lastData = after
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("zhipu: read response: %w", err)
 	}
 	if lastData == "" {
 		return nil, &web.SearchProviderError{

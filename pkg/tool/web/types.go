@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -44,12 +45,14 @@ func (e *SearchProviderError) IsRateLimit() bool {
 }
 
 func IsURL(query string) bool {
-	lq := strings.ToLower(query)
-	if len(lq) > 8 && lq[:8] == "https://" {
-		return true
+	if u, err := url.Parse(query); err == nil {
+		if u.Scheme == "http" || u.Scheme == "https" {
+			return u.Host != ""
+		}
 	}
-	if len(lq) > 7 && lq[:7] == "http://" {
-		return true
+	// Bare domain heuristic: no spaces, has dot, TLD >= 2 chars
+	if strings.Contains(query, " ") {
+		return false
 	}
 	for i := 0; i < len(query); i++ {
 		if query[i] == '.' {
@@ -59,7 +62,7 @@ func IsURL(query string) bool {
 			}
 			tldLen := 0
 			for j := tldStart; j < len(query); j++ {
-				if query[j] == '/' {
+				if query[j] == '/' || query[j] == ':' {
 					break
 				}
 				if !isASCIILetter(query[j]) {
@@ -67,15 +70,7 @@ func IsURL(query string) bool {
 				}
 				tldLen++
 			}
-			if tldLen >= 2 {
-				for k := 0; k < i; k++ {
-					if query[k] == ' ' {
-						return false
-					}
-				}
-				return true
-			}
-			return false
+			return tldLen >= 2
 		}
 	}
 	return false

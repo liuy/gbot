@@ -1,17 +1,9 @@
 package web
 
-import "strings"
-
 func webPrompt(chain *SearchChain) string {
-	avail := chain.AvailableProviders()
-	providerList := "auto"
-	if len(avail) > 0 {
-		providerList = "auto, " + strings.Join(avail, ", ")
-	}
+	_ = chain
 
-	return `## Web Tool
-
-Search the web for up-to-date information beyond your knowledge cutoff, or fetch URL content as markdown.
+	return `Search the web for up-to-date information beyond your knowledge cutoff, or fetch URL content as markdown.
 
 ### When to use
 - Information that may have changed since your training data
@@ -35,9 +27,5 @@ Fetches the URL, converts HTML to markdown, and returns the content.
 - Large pages are truncated
 - Redirects are followed automatically
 - Some sites block automated requests; if fetch fails, try a search instead
-
-### Parameters
-- query (required): search terms or URL to fetch
-- provider (optional): ` + providerList + `. Default: auto.
-- limit (optional): max search results. Default: 10.`
+- If the page requires JavaScript or returns empty/blocked content, use js: true to fetch with headless Chrome (includes stealth anti-detection)`
 }

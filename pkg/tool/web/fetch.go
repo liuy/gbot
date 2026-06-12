@@ -163,7 +163,7 @@ func LoadPage(ctx context.Context, url string, opts LoadPageOptions) LoadPageRes
 		ua := userAgents[attempt]
 		reqCtx, cancel := context.WithTimeout(ctx, timeout)
 
-		result, retry429 := loadPageAttempt(ctx, reqCtx, cancel, url, ua, method, opts, maxBytes, bodyBuf, &lastError, &retried429, attempt)
+		result, retry429 := loadPageAttempt(ctx, reqCtx, cancel, url, ua, method, opts, maxBytes, bodyBuf, &retryState{lastError: &lastError, retried429: &retried429, attempt: attempt})
 		if retry429 {
 			attempt--
 			continue
@@ -176,6 +176,12 @@ func LoadPage(ctx context.Context, url string, opts LoadPageOptions) LoadPageRes
 	return LoadPageResult{Content: "", FinalURL: url, Error: lastError}
 }
 
+type retryState struct {
+	lastError  *string
+	retried429 *bool
+	attempt    int
+}
+
 func loadPageAttempt(
 	ctx, reqCtx context.Context,
 	cancel context.CancelFunc,
@@ -183,9 +189,7 @@ func loadPageAttempt(
 	opts LoadPageOptions,
 	maxBytes int64,
 	bodyBuf *bytes.Reader,
-	lastError *string,
-	retried429 *bool,
-	attempt int,
+	rs *retryState,
 ) (*LoadPageResult, bool) {
 	defer cancel()
 
@@ -217,9 +221,9 @@ func loadPageAttempt(
 		if ctx.Err() != nil {
 			return &LoadPageResult{Content: "", FinalURL: url, Error: "context canceled"}, false
 		}
-		*lastError = err.Error()
-		if attempt == len(userAgents)-1 {
-			return &LoadPageResult{Content: "", FinalURL: url, Error: *lastError}, false
+		*rs.lastError = err.Error()
+		if rs.attempt == len(userAgents)-1 {
+			return &LoadPageResult{Content: "", FinalURL: url, Error: *rs.lastError}, false
 		}
 		return nil, false
 	}
@@ -229,8 +233,8 @@ func loadPageAttempt(
 	ct = strings.TrimSpace(strings.ToLower(ct))
 	finalURL := resp.Request.URL.String()
 
-	if resp.StatusCode == http.StatusTooManyRequests && !*retried429 {
-		*retried429 = true
+	if resp.StatusCode == http.StatusTooManyRequests && !*rs.retried429 {
+		*rs.retried429 = true
 		delay := parseRetryAfterMs(resp.Header.Get("Retry-After"))
 		_ = resp.Body.Close()
 
@@ -247,9 +251,9 @@ func loadPageAttempt(
 	_ = resp.Body.Close()
 
 	if readErr != nil && readErr != io.EOF {
-		*lastError = readErr.Error()
-		if attempt == len(userAgents)-1 {
-			return &LoadPageResult{Content: "", ContentType: ct, FinalURL: finalURL, Error: *lastError}, false
+		*rs.lastError = readErr.Error()
+		if rs.attempt == len(userAgents)-1 {
+			return &LoadPageResult{Content: "", ContentType: ct, FinalURL: finalURL, Error: *rs.lastError}, false
 		}
 		return nil, false
 	}
@@ -261,7 +265,7 @@ func loadPageAttempt(
 
 	content := decodeBody(data, rawCT)
 
-	if isBotBlocked(resp.StatusCode, content) && attempt < len(userAgents)-1 {
+	if isBotBlocked(resp.StatusCode, content) && rs.attempt < len(userAgents)-1 {
 		return nil, false
 	}
 
@@ -286,9 +290,20 @@ func FinalizeOutput(content string) (string, bool) {
 	cleaned = strings.TrimSpace(cleaned)
 	truncated := len(cleaned) > MaxOutputChars
 	if truncated {
-		cleaned = string([]rune(cleaned)[:MaxOutputChars])
+		cleaned = truncateStringToRunes(cleaned, MaxOutputChars)
 	}
 	return cleaned, truncated
+}
+
+func truncateStringToRunes(s string, maxRunes int) string {
+	count := 0
+	for i := range s {
+		count++
+		if count > maxRunes {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 func LooksLikeHTML(content string) bool {
@@ -408,14 +423,16 @@ func FormatMediaDuration(totalSeconds float64) string {
 	return fmt.Sprintf("%d:%02d", minutes, secs)
 }
 
-func BuildResult(mdContent string, opts struct {
+type FetchResultOptions struct {
 	URL         string
 	FinalURL    string
 	Method      string
 	FetchedAt   string
 	Notes       []string
 	ContentType string
-}) FetchResult {
+}
+
+func BuildResult(mdContent string, opts FetchResultOptions) FetchResult {
 	content, truncated := FinalizeOutput(mdContent)
 	finalURL := opts.FinalURL
 	if finalURL == "" {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestExecute_SearchQuery(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "go generics"}`)
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -68,7 +69,7 @@ func TestExecute_SearchWithLimit(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test", "limit": 1}`)
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -82,7 +83,7 @@ func TestExecute_SearchWithLimit(t *testing.T) {
 func TestExecute_EmptyQuery(t *testing.T) {
 	chain := &SearchChain{Providers: []SearchProvider{}}
 	input := json.RawMessage(`{"query": ""}`)
-	_, err := execute(context.Background(), input, chain)
+	_, err := execute(context.Background(), input, chain, nil)
 	if err == nil {
 		t.Fatal("expected error for empty query")
 	}
@@ -103,7 +104,7 @@ func TestExecute_SearchAllProvidersFail(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(context.Background(), input, chain)
+	_, err := execute(context.Background(), input, chain, nil)
 	if err == nil {
 		t.Fatal("expected error when all providers fail")
 	}
@@ -121,7 +122,7 @@ func TestExecute_URLFetch_HTML(t *testing.T) {
 
 	chain := &SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -144,7 +145,7 @@ func TestExecute_URLFetch_PlainText(t *testing.T) {
 
 	chain := &SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -163,7 +164,7 @@ func TestExecute_URLFetch_ServerError(t *testing.T) {
 
 	chain := &SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() should not error on HTTP 500, got: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestExecute_URLFetch_ConnectionRefused(t *testing.T) {
 	chain := &SearchChain{}
 	// Use a port that's definitely not listening
 	input := json.RawMessage(`{"query": "http://127.0.0.1:1"}`)
-	_, err := execute(context.Background(), input, chain)
+	_, err := execute(context.Background(), input, chain, nil)
 	if err == nil {
 		t.Fatal("connection refused should return error, got nil")
 	}
@@ -194,7 +195,7 @@ func TestExecute_URLFetch_ConnectionRefused(t *testing.T) {
 func TestExecute_InvalidJSON(t *testing.T) {
 	chain := &SearchChain{}
 	input := json.RawMessage(`{invalid json`)
-	_, err := execute(context.Background(), input, chain)
+	_, err := execute(context.Background(), input, chain, nil)
 	if err == nil {
 		t.Fatal("invalid JSON should return parse error, got nil")
 	}
@@ -209,19 +210,19 @@ func TestWebPrompt(t *testing.T) {
 	}
 
 	prompt := webPrompt(chain)
-	if !strings.Contains(prompt, "zhipu, duckduckgo") {
-		t.Errorf("prompt missing provider list: %q", prompt)
+	if !strings.Contains(prompt, "Search mode") {
+		t.Errorf("prompt missing search mode section: %q", prompt)
 	}
-	if !strings.Contains(prompt, "Web Tool") {
-		t.Errorf("prompt missing header: %q", prompt)
+	if !strings.Contains(prompt, "js: true") {
+		t.Errorf("prompt missing js guidance: %q", prompt)
 	}
 }
 
 func TestWebPrompt_NoProviders(t *testing.T) {
 	chain := &SearchChain{}
 	prompt := webPrompt(chain)
-	if !strings.Contains(prompt, "Default: auto.") {
-		t.Errorf("prompt missing auto fallback: %q", prompt)
+	if !strings.Contains(prompt, "Fetch mode") {
+		t.Errorf("prompt missing fetch mode section: %q", prompt)
 	}
 }
 
@@ -320,7 +321,7 @@ func TestExecute_SearchNoProvidersAvailable(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(context.Background(), input, chain)
+	_, err := execute(context.Background(), input, chain, nil)
 	if err == nil {
 		t.Fatal("should error when no providers are available")
 	}
@@ -345,7 +346,7 @@ func TestExecute_URLFetch_Redirect(t *testing.T) {
 
 	chain := &SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, redirector.URL))
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -375,7 +376,7 @@ func TestExecute_URLFetch_Truncation(t *testing.T) {
 
 	chain := &SearchChain{}
 	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
-	result, err := execute(context.Background(), input, chain)
+	result, err := execute(context.Background(), input, chain, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
@@ -402,7 +403,7 @@ func TestExecute_SearchContextCanceled(t *testing.T) {
 	}
 
 	input := json.RawMessage(`{"query": "test"}`)
-	_, err := execute(ctx, input, chain)
+	_, err := execute(ctx, input, chain, nil)
 	// SearchChain.Search checks ctx.Err() first
 	if err == nil {
 		t.Fatal("should error with canceled context")
@@ -420,4 +421,153 @@ func TestExecute_SearchContextCanceled(t *testing.T) {
 //
 // Q: Are we testing observable behavior or internal fields? A: Observable —
 //    we check Content strings and error messages, not struct fields.
+
+// --- JS Fallback ---
+
+func TestExecute_Fetch_BotBlockNoChrome(t *testing.T) {
+	if ok, _ := isChromedpAvailable(); ok {
+		t.Skip("Chrome available — use TestExecute_FetchJSFallback_BotBlock instead")
+	}
+
+	// Bot block page — no Chrome to fall back to, returns error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `<html><body>Cloudflare challenge required</body></html>`)
+	}))
+	defer server.Close()
+
+	chain := &SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	_, err := execute(context.Background(), input, chain, nil)
+	if err == nil {
+		t.Fatal("bot block without Chrome should return error")
+	}
+	if !strings.Contains(err.Error(), "fetch failed") {
+		t.Errorf("error = %v, want 'fetch failed'", err)
+	}
+}
+
+func TestExecute_FetchJSFallback_BotBlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	available, _ := isChromedpAvailable()
+	if !available {
+		t.Skip("Chrome/Chromium not installed, skipping JS fallback test")
+	}
+
+	// Reset Chrome pool for clean state
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+
+	// Server that returns bot block via HTTP
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `<html><body>Cloudflare challenge required</body></html>`)
+	}))
+	defer server.Close()
+
+	chain := &SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, nil)
+	if err != nil {
+		t.Fatalf("execute() with JS fallback should succeed, got: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+}
+
+func TestExecute_FetchJSFallback_ShortSPA(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	available, _ := isChromedpAvailable()
+	if !available {
+		t.Skip("Chrome/Chromium not installed, skipping JS fallback test")
+	}
+
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+
+	// Server that returns short SPA shell via HTTP
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `<html><body><div id="app"></div></body></html>`)
+	}))
+	defer server.Close()
+
+	chain := &SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, nil)
+	if err != nil {
+		t.Fatalf("execute() with JS fallback should succeed, got: %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+}
+
+func TestExecute_FetchJSFallback_NormalPageNoFallback(t *testing.T) {
+	// Normal page with content — should NOT trigger fallback
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><body><h1>Normal Page</h1><p>This is a normal page with enough content to not trigger any fallback mechanism. The content exceeds the empty body threshold.</p></body></html>`)
+	}))
+	defer server.Close()
+
+	chain := &SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Content, "Normal Page") {
+		t.Errorf("content should contain page heading: %q", output.Content)
+	}
+}
+
+func TestExecute_FetchUsesClient(t *testing.T) {
+	var gotUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<html><body><h1>OK</h1><p>This is a page with enough content to exceed the SPA detection threshold. The content needs to be long enough so the fetch path does not trigger the chromedp JS fallback and instead uses the HTTP client we provide through Config.Client for the request.</p></body></html>")
+	}))
+	defer server.Close()
+
+	customClient := &http.Client{
+		Transport: &customTransport{ua: "test-proxy-client/1.0"},
+	}
+
+	chain := &SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, customClient)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Content, "OK") {
+		t.Errorf("content should contain OK: %q", output.Content)
+	}
+	if gotUA != "test-proxy-client/1.0" {
+		t.Errorf("User-Agent = %q, want %q — fetch should use the provided client", gotUA, "test-proxy-client/1.0")
+	}
+}
+
+type customTransport struct {
+	ua string
+}
+
+func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("User-Agent", t.ua)
+	return http.DefaultTransport.RoundTrip(req)
+}
 

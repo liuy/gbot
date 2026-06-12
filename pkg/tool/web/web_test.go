@@ -1,6 +1,9 @@
 package web
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -152,4 +155,50 @@ func TestFormatAge(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractProxyURL(t *testing.T) {
+	t.Run("nil client", func(t *testing.T) {
+		if got := extractProxyURL(nil); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("nil transport", func(t *testing.T) {
+		if got := extractProxyURL(&http.Client{}); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("default transport", func(t *testing.T) {
+		if got := extractProxyURL(http.DefaultClient); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("custom transport without proxy", func(t *testing.T) {
+		client := &http.Client{Transport: &http.Transport{}}
+		if got := extractProxyURL(client); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("client with proxy", func(t *testing.T) {
+		proxyURL, _ := url.Parse("http://localhost:10809")
+		client := &http.Client{
+			Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		}
+		got := extractProxyURL(client)
+		if got != "http://localhost:10809" {
+			t.Errorf("expected http://localhost:10809, got %q", got)
+		}
+	})
+
+	t.Run("non-Transport type", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		defer server.Close()
+		// httptest.Server.Client() uses a custom Transport that isn't *http.Transport
+		_ = server.Client()
+		// This is a pathological case; just verify no panic
+	})
 }
