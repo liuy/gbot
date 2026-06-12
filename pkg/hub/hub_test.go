@@ -236,9 +236,7 @@ func TestHub_RaceStress(t *testing.T) {
 
 	// Start 5 handlers that subscribe/unsubscribe in a loop
 	for i := range 5 {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			m := &mockHandler{}
 			for {
 				select {
@@ -246,22 +244,20 @@ func TestHub_RaceStress(t *testing.T) {
 					return
 				default:
 					unsub := h.Subscribe(m)
-					h.Dispatch(Event{Type: types.EventTextDelta, Text: fmt.Sprintf("handler-%d", id)})
+					h.Dispatch(Event{Type: types.EventTextDelta, Text: fmt.Sprintf("handler-%d", i)})
 					unsub()
 				}
 			}
-		}(i)
+		})
 	}
 
 	// Start 10 dispatchers
 	for i := range 10 {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			for j := range 200 {
-				h.Dispatch(Event{Type: types.EventTextDelta, Text: fmt.Sprintf("disp-%d-%d", id, j)})
+				h.Dispatch(Event{Type: types.EventTextDelta, Text: fmt.Sprintf("disp-%d-%d", i, j)})
 			}
-		}(i)
+		})
 	}
 
 	// Let it run then stop

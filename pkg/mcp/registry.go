@@ -193,28 +193,26 @@ func (r *Registry) ConnectAll(ctx context.Context, configs map[string]ScopedMcpS
 		sem := make(chan struct{}, batchSize)
 		var wg sync.WaitGroup
 		for _, e := range entries {
-			wg.Add(1)
 			sem <- struct{}{} // acquire slot
-			go func(name string, cfg ScopedMcpServerConfig) {
-				defer wg.Done()
+			wg.Go(func() {
 				defer func() { <-sem }() // release slot
 
-				conn, err := r.manager.ConnectToServer(ctx, name, cfg)
+				conn, err := r.manager.ConnectToServer(ctx, e.name, e.cfg)
 
 				var result ServerConnection
 				if err != nil {
-					result = &FailedServer{Name: name, Config: cfg, Error: err.Error()}
+					result = &FailedServer{Name: e.name, Config: e.cfg, Error: err.Error()}
 				} else {
 					result = conn
 				}
 
 				resultsMu.Lock()
-				results[name] = result
+				results[e.name] = result
 				r.mu.Lock()
-				r.connections[name] = result
+				r.connections[e.name] = result
 				r.mu.Unlock()
 				resultsMu.Unlock()
-			}(e.name, e.cfg)
+			})
 		}
 		wg.Wait()
 	}
@@ -679,26 +677,22 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 		results := make([]connResult, len(inlineSpecs))
 		var wg sync.WaitGroup
 		for i, spec := range inlineSpecs {
-			wg.Add(1)
-			go func(idx int, s inlineSpec) {
-				defer wg.Done()
+			wg.Go(func() {
 				scopedCfg := ScopedMcpServerConfig{
-					Config: s.cfg,
+					Config: spec.cfg,
 					Scope:  ScopeDynamic,
 				}
 				connectCtx, cancel := context.WithTimeout(ctx, agentServerConnectTimeout)
-				conn, err := r.manager.ConnectToServer(connectCtx, s.name, scopedCfg)
+				conn, err := r.manager.ConnectToServer(connectCtx, spec.name, scopedCfg)
 				cancel()
 				if err != nil {
-					results[idx] = connResult{serverName: s.name, err: err}
+					results[i] = connResult{serverName: spec.name, err: err}
 					return
 				}
-				// ConnectToServer returns (*FailedServer, nil) on failure — check for it.
 				if _, failed := conn.(*FailedServer); failed {
-					results[idx] = connResult{serverName: s.name, err: fmt.Errorf("connection failed for %s", s.name)}
+					results[i] = connResult{serverName: spec.name, err: fmt.Errorf("connection failed for %s", spec.name)}
 					return
 				}
-				// Discover tools before releasing goroutine
 				var tools []DiscoveredTool
 				if cs, ok := conn.(*ConnectedServer); ok {
 					discoveries := BatchDiscovery(ctx, []*ConnectedServer{cs}, r.toolCache, r.resourceCache, r.commandCache)
@@ -706,13 +700,13 @@ func (r *Registry) ConnectAgentServers(ctx context.Context, agentID string, rawS
 						tools = append(tools, d.Tools...)
 					}
 				}
-				results[idx] = connResult{
-					serverName: s.name,
+				results[i] = connResult{
+					serverName: spec.name,
 					conn:       conn,
 					scopedCfg:  scopedCfg,
 					tools:      tools,
 				}
-			}(i, spec)
+			})
 		}
 		wg.Wait()
 

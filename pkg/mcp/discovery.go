@@ -335,21 +335,19 @@ func BatchDiscovery(ctx context.Context, connections []*ConnectedServer,
 	processGroup := func(indices []int, concurrency int) {
 		sem := make(chan struct{}, concurrency)
 		for _, idx := range indices {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
+			wg.Go(func() {
 				select {
 				case sem <- struct{}{}:
 					defer func() { <-sem }()
 				case <-ctx.Done():
-					results[i] = ServerDiscovery{
-						ServerName: connections[i].Name,
+					results[idx] = ServerDiscovery{
+						ServerName: connections[idx].Name,
 						Error:      ctx.Err(),
 					}
 					return
 				}
-				results[i] = discoverForServer(ctx, connections[i], toolCache, resourceCache, commandCache)
-			}(idx)
+				results[idx] = discoverForServer(ctx, connections[idx], toolCache, resourceCache, commandCache)
+			})
 		}
 	}
 

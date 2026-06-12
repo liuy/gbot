@@ -2208,15 +2208,13 @@ func TestEngine_EnqueueAttachment_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	attachmentCount := 100
 	for i := range attachmentCount {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
+		wg.Go(func() {
 			eng.EnqueueAttachment(types.QueuedItem{
-				Value:     fmt.Sprintf("notification-%d", n),
+				Value:     fmt.Sprintf("notification-%d", i),
 				Mode:      types.ItemModeJob,
-				Timestamp: time.Date(2024, 1, 1, 0, 0, n, 0, time.UTC),
+				Timestamp: time.Date(2024, 1, 1, 0, 0, i, 0, time.UTC),
 			})
-		}(i)
+		})
 	}
 	wg.Wait()
 

@@ -617,16 +617,14 @@ func TestConcurrentCreateTask(t *testing.T) {
 	ids := make(chan string, goroutines)
 
 	for i := range goroutines {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			id, err := l.CreateTask("Task "+strconv.Itoa(n), "", "", nil)
+		wg.Go(func() {
+			id, err := l.CreateTask("Task "+strconv.Itoa(i), "", "", nil)
 			if err != nil {
-				t.Errorf("goroutine %d: %v", n, err)
+				t.Errorf("goroutine %d: %v", i, err)
 				return
 			}
 			ids <- id
-		}(i)
+		})
 	}
 
 	wg.Wait()

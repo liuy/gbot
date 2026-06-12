@@ -1257,14 +1257,12 @@ func TestFileAuthCache_ConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range 20 {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			name := fmt.Sprintf("server-%d", id)
+		wg.Go(func() {
+			name := fmt.Sprintf("server-%d", i)
 			store.set(name)
 			_ = store.isCached(name)
 			store.clear(name)
-		}(i)
+		})
 	}
 	wg.Wait()
 	// No race detector failures = success

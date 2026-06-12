@@ -879,9 +879,7 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range 50 {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			name := fmt.Sprintf("server-%d", i)
 			cfg := ScopedMcpServerConfig{
 				Config: &StdioConfig{Command: "echo"},
@@ -895,7 +893,7 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 			r.GetResources()
 			r.GetConnection(name)
 			r.GetConfigs()
-		}(i)
+		})
 	}
 	wg.Wait()
 }

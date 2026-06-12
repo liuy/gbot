@@ -189,20 +189,16 @@ func TestLRUCache_Concurrent(t *testing.T) {
 
 	// Concurrent writers
 	for i := range 100 {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			c.Put(n, n*10)
-		}(i)
+		wg.Go(func() {
+			c.Put(i, i*10)
+		})
 	}
 
 	// Concurrent readers
 	for i := range 100 {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			c.Get(n)
-		}(i)
+		wg.Go(func() {
+			c.Get(i)
+		})
 	}
 
 	wg.Wait()

@@ -114,12 +114,11 @@ func ExecuteShellBlocks(content string, executor ShellExecutor, toolCtx *tool.To
 
 	for i, m := range matches {
 		sem <- struct{}{}
-		wg.Add(1)
-		go func(idx int, mi matchInfo) {
-			defer func() { <-sem; wg.Done() }()
-			output, err := executor.Execute(toolCtx, mi.command)
-			results[idx] = execResult{pattern: mi.pattern, output: output, err: err}
-		}(i, m)
+		wg.Go(func() {
+			defer func() { <-sem }()
+			output, err := executor.Execute(toolCtx, m.command)
+			results[i] = execResult{pattern: m.pattern, output: output, err: err}
+		})
 	}
 	wg.Wait()
 
