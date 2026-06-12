@@ -82,7 +82,7 @@ func (p *ChromePool) getWithProxy(parentCtx context.Context, proxyURL string) (c
 		opts = append(opts, chromedp.Flag("proxy-server", proxyURL))
 	}
 
-	allocCtx, allocCancel := chromedp.NewExecAllocator(parentCtx, opts...)
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 
 	testCtx, testCancel := chromedp.NewContext(allocCtx)
 	defer testCancel()

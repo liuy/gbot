@@ -52,14 +52,27 @@ func TestChromePool_ResetAllowsNewInstance(t *testing.T) {
 }
 
 func TestChromePool_GetWithCanceledContext(t *testing.T) {
+	// The allocator uses context.Background(), so a canceled parentCtx
+	// should NOT prevent Chrome from starting. This test now verifies
+	// that getWithProxy works even with a canceled context.
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	available, _ := isChromedpAvailable()
+	if !available {
+		t.Skip("Chrome/Chromium not installed, skipping integration test")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	pool := &ChromePool{}
 	_, _, err := pool.getWithProxy(ctx, "")
-	if err == nil {
-		t.Fatal("should error with canceled context")
+	if err != nil {
+		t.Fatalf("getWithProxy should work with canceled context since allocator uses Background: %v", err)
 	}
+	// Clean up
+	pool.reset()
 }
 
 // ---------------------------------------------------------------------------
@@ -204,5 +217,43 @@ func TestChromedpFetch_CrashRecovery(t *testing.T) {
 	_, err = chromedpFetch(context.Background(), server.URL, 20*time.Second, "")
 	if err != nil {
 		t.Fatalf("fetch after crash recovery failed: %v", err)
+	}
+}
+
+// TestChromedpFetch_PoolSurvivesParentCancel verifies that the Chrome pool's
+// allocator is not tied to any individual request's context. After the first
+// request's context is cancelled, the pool should still work for subsequent requests.
+func TestChromedpFetch_PoolSurvivesParentCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	available, _ := isChromedpAvailable()
+	if !available {
+		t.Skip("Chrome/Chromium not installed, skipping integration test")
+	}
+
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<html><body>ok</body></html>")
+	}))
+	defer server.Close()
+
+	// First request with a cancellable context
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	_, err := chromedpFetch(ctx1, server.URL, 20*time.Second, "")
+	if err != nil {
+		t.Fatalf("first fetch failed: %v", err)
+	}
+	// Cancel the first request's context
+	cancel1()
+
+	// Second request with a fresh context should still work because
+	// the allocator is independent of any request context.
+	_, err = chromedpFetch(context.Background(), server.URL, 20*time.Second, "")
+	if err != nil {
+		t.Fatalf("second fetch after cancel should succeed, got: %v", err)
 	}
 }
