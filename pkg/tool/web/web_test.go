@@ -3,7 +3,6 @@ package web
 import (
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -31,6 +30,8 @@ func TestIsURL(t *testing.T) {
 		{"example.com", true},      // domain-only URL
 		{"see foo.bar for details", false}, // has space before dot
 		{"visit http://example.com for info", false},
+		{"HTTPS://EXAMPLE.COM", true},   // uppercase scheme
+		{"Http://Example.com/path", true}, // mixed case scheme
 	}
 
 	for _, tt := range tests {
@@ -38,43 +39,6 @@ func TestIsURL(t *testing.T) {
 			got := IsURL(tt.query)
 			if got != tt.want {
 				t.Errorf("IsURL(%q) = %v, want %v", tt.query, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseSince(t *testing.T) {
-	tests := []struct {
-		input   string
-		wantRec Recency
-		wantDur time.Duration
-		wantErr bool
-	}{
-		{"", RecencyUnlimited, 0, false},
-		{"3d", RecencyDay, 3 * 24 * time.Hour, false},
-		{"1w", RecencyWeek, 7 * 24 * time.Hour, false},
-		{"2m", RecencyMonth, 60 * 24 * time.Hour, false},
-		{"1y", RecencyYear, 365 * 24 * time.Hour, false},
-		{"0d", RecencyUnlimited, 0, true},  // zero count invalid
-		{"x", RecencyUnlimited, 0, true},   // too short
-		{"5x", RecencyUnlimited, 0, true},  // invalid unit
-		{"-1d", RecencyUnlimited, 0, true}, // negative
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			rec, dur, err := ParseSince(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseSince(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if rec != tt.wantRec {
-					t.Errorf("ParseSince(%q) recency = %v, want %v", tt.input, rec, tt.wantRec)
-				}
-				if dur != tt.wantDur {
-					t.Errorf("ParseSince(%q) duration = %v, want %v", tt.input, dur, tt.wantDur)
-				}
 			}
 		})
 	}

@@ -20,10 +20,8 @@ const (
 	ddgTimeout      = 20 * time.Second
 )
 
-// DuckDuckGoProvider implements SearchProvider using DDG HTML parsing.
-// This is gbot's own addition — omp does not have a DDG provider.
 type DuckDuckGoProvider struct {
-	Client *http.Client // nil → http.DefaultClient
+	Client *http.Client
 }
 
 func (d *DuckDuckGoProvider) ID() string        { return "duckduckgo" }
@@ -82,7 +80,6 @@ func (d *DuckDuckGoProvider) Search(ctx context.Context, params web.SearchParams
 	}, nil
 }
 
-// parseDDGHTML extracts search results from DDG's HTML response.
 func parseDDGHTML(body io.Reader, limit int) ([]web.SearchSource, error) {
 	doc, err := goquery.NewDocumentFromReader(body)
 	if err != nil {
@@ -121,7 +118,6 @@ func parseDDGHTML(body io.Reader, limit int) ([]web.SearchSource, error) {
 	return sources, nil
 }
 
-// extractDDGURL resolves DDG redirect URLs to the actual target URL.
 func extractDDGURL(href string) string {
 	if href == "" {
 		return ""

@@ -4,35 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
 
 const defaultLimit = 10
 
-// Input is the web tool input schema.
 type Input struct {
-	Query    string `json:"query"`                      // required — search terms or URL
-	Provider string `json:"provider,omitempty"`          // optional — "auto", "zhipu", "duckduckgo"
-	Since    string `json:"since,omitempty"`             // optional — e.g. 3d, 1w, 2m, 1y
-	Limit    int    `json:"limit,omitempty"`             // optional — max results, default 10
-	Fetch    bool   `json:"fetch,omitempty"`             // optional — auto-fetch top results' content
+	Query    string `json:"query"`
+	Provider string `json:"provider,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
 }
 
-// Output is the web tool result data.
 type Output struct {
-	Mode    string          // "search" or "fetch"
-	Content string          // formatted output for LLM
-	Raw     *SearchResponse // structured response
+	Mode    string
+	Content string
+	Raw     *SearchResponse
 }
 
-// Config holds provider instances for the web tool.
 type Config struct {
 	Providers []SearchProvider
 }
 
-// New creates the Web tool with the given provider chain.
 func New(cfg Config) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
@@ -46,17 +39,9 @@ func New(cfg Config) tool.Tool {
 				"type": "string",
 				"description": "Search provider. \"auto\" uses the first available provider. Available providers depend on configuration."
 			},
-			"since": {
-				"type": "string",
-				"description": "Time filter for search results. Examples: 3d (3 days), 1w (1 week), 2m (2 months), 1y (1 year). Search only."
-			},
 			"limit": {
 				"type": "integer",
 				"description": "Maximum number of search results. Default: 10."
-			},
-			"fetch": {
-				"type": "boolean",
-				"description": "When true, automatically fetches full content of top search results. Default: false."
 			}
 		}
 	}`)
@@ -113,12 +98,10 @@ func execute(ctx context.Context, input json.RawMessage, chain *SearchChain) (*t
 		return nil, fmt.Errorf("query is required")
 	}
 
-	// URL detection: fetch mode
 	if IsURL(in.Query) {
 		return executeFetch(ctx, in.Query)
 	}
 
-	// Search mode
 	return executeSearch(ctx, in, chain)
 }
 
@@ -128,15 +111,9 @@ func executeSearch(ctx context.Context, in Input, chain *SearchChain) (*tool.Too
 		limit = defaultLimit
 	}
 
-	since, _, err := ParseSince(in.Since)
-	if err != nil {
-		return nil, err
-	}
-
 	params := SearchParams{
 		Query: in.Query,
 		Limit: limit,
-		Since: since,
 	}
 
 	resp, err := chain.SearchWithProvider(ctx, params, in.Provider)
@@ -156,38 +133,51 @@ func executeSearch(ctx context.Context, in Input, chain *SearchChain) (*tool.Too
 }
 
 func executeFetch(ctx context.Context, url string) (*tool.ToolResult, error) {
-	// Phase 2 will implement full fetch with scrapers.
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
+	result := LoadPage(ctx, url, LoadPageOptions{})
+
+	if result.Error != "" {
+		return nil, fmt.Errorf("fetch failed: %s", result.Error)
 	}
+
+	content := result.Content
+	if LooksLikeHTML(content) {
+		md, err := HTMLToMarkdown(content)
+		if err == nil {
+			content = md
+		}
+	}
+
+	content, truncated := FinalizeOutput(content)
+	if result.Truncated {
+		truncated = true
+	}
+
+	var notes []string
+	if result.FinalURL != url {
+		notes = append(notes, fmt.Sprintf("redirected to %s", result.FinalURL))
+	}
+	if truncated {
+		notes = append(notes, "output truncated")
+	}
+
+	fetchResult := BuildResult(content, struct {
+		URL         string
+		FinalURL    string
+		Method      string
+		FetchedAt   string
+		Notes       []string
+		ContentType string
+	}{
+		URL:         url,
+		FinalURL:    result.FinalURL,
+		ContentType: result.ContentType,
+		Notes:       notes,
+	})
+
 	return &tool.ToolResult{
 		Data: &Output{
 			Mode:    "fetch",
-			Content: fmt.Sprintf("URL detected: %s\nFetch not yet implemented (Phase 2).", url),
+			Content: fetchResult.Content,
 		},
 	}, nil
-}
-
-func webPrompt(chain *SearchChain) string {
-	avail := chain.AvailableProviders()
-	providerList := "auto"
-	if len(avail) > 0 {
-		providerList = "auto, " + strings.Join(avail, ", ")
-	}
-
-	return `## Web Tool
-
-Search the web or fetch URL content. Usage:
-- web("golang generics") — search, returns sources list
-- web("https://github.com/owner/repo") — fetch URL content (Phase 2+)
-- web("golang generics", fetch=true) — search + fetch top results' content
-
-Parameters:
-- query (required): search terms or URL
-- provider (optional): search provider — ` + providerList + `. Default: auto.
-- since (optional): time filter — 3d, 1w, 2m, 1y
-- limit (optional): max results, default 10
-- fetch (optional): auto-fetch top results' content, default false`
 }

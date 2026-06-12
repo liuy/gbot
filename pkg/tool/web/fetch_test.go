@@ -1,0 +1,416 @@
+package web
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoadPage_Success(t *testing.T) {
+	want := "<html><body><h1>Hello</h1></body></html>"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") != "curl/8.0" {
+			t.Errorf("first attempt should use curl/8.0, got %q", r.Header.Get("User-Agent"))
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, want)
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
+	if !result.OK {
+		t.Fatalf("expected OK, got error: %s", result.Error)
+	}
+	if result.Content != want {
+		t.Errorf("Content = %q, want %q", result.Content, want)
+	}
+	if result.ContentType != "text/html" {
+		t.Errorf("ContentType = %q, want text/html", result.ContentType)
+	}
+	if result.Truncated {
+		t.Error("should not be truncated")
+	}
+}
+
+func TestLoadPage_UARotation(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, `<html><body>Access denied by Cloudflare</body></html>`)
+			return
+		}
+		_, _ = fmt.Fprint(w, "success")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
+	if !result.OK {
+		t.Fatalf("expected OK after UA rotation, got error: %s", result.Error)
+	}
+	if attempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestLoadPage_429Retry(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = fmt.Fprint(w, "retried ok")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
+	if !result.OK {
+		t.Fatalf("expected OK after 429 retry, got error: %s", result.Error)
+	}
+	if requests != 2 {
+		t.Errorf("expected 2 requests, got %d", requests)
+	}
+}
+
+func TestLoadPage_MaxBytesTruncation(t *testing.T) {
+	big := strings.Repeat("x", 2000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, big)
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{MaxBytes: 1000})
+	if !result.Truncated {
+		t.Error("expected truncated=true")
+	}
+	if len(result.Content) > 1000 {
+		t.Errorf("content length %d should be <= 1000", len(result.Content))
+	}
+}
+
+func TestLoadPage_ContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := LoadPage(ctx, "http://example.com", LoadPageOptions{})
+	if !strings.Contains(result.Error, "cancel") {
+		t.Fatalf("error should mention cancel, got: %s", result.Error)
+	}
+}
+
+func TestLoadPage_AllAttemptsFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, "server error")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
+	if result.OK {
+		t.Error("expected not OK when all attempts fail with 500")
+	}
+	if result.Status != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want 500", result.Status)
+	}
+}
+
+func TestLoadPage_BadURL(t *testing.T) {
+	result := LoadPage(context.Background(), "http://[::1]:namedport", LoadPageOptions{})
+	if result.OK {
+		t.Fatal("expected not OK for invalid URL")
+	}
+	if len(result.Error) < 5 {
+		t.Fatalf("expected meaningful error, got: %q", result.Error)
+	}
+}
+
+func TestLoadPage_ConnectionRefused(t *testing.T) {
+	result := LoadPage(context.Background(), "http://127.0.0.1:1", LoadPageOptions{Timeout: time.Second})
+	if result.OK {
+		t.Fatal("expected not OK for connection refused")
+	}
+	if !strings.Contains(result.Error, "connection") && !strings.Contains(result.Error, "refused") && !strings.Contains(result.Error, "error") {
+		t.Fatalf("expected connection error, got: %q", result.Error)
+	}
+}
+
+func TestLoadPage_FinalURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/new", http.StatusFound)
+			return
+		}
+		_, _ = fmt.Fprint(w, "redirected")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL+"/old", LoadPageOptions{})
+	if !result.OK {
+		t.Fatalf("expected OK, got error: %s", result.Error)
+	}
+	if !strings.HasSuffix(result.FinalURL, "/new") {
+		t.Errorf("FinalURL = %q, want ending with /new", result.FinalURL)
+	}
+}
+
+func TestLoadPage_CustomHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Custom") != "test" {
+			t.Errorf("X-Custom header not forwarded, got %q", r.Header.Get("X-Custom"))
+		}
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{
+		Headers: map[string]string{"X-Custom": "test"},
+	})
+	if !result.OK {
+		t.Fatalf("expected OK, got error: %s", result.Error)
+	}
+}
+
+func TestLoadPage_CustomClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "custom client")
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{Client: client})
+	if !result.OK {
+		t.Fatalf("expected OK, got error: %s", result.Error)
+	}
+	if result.Content != "custom client" {
+		t.Errorf("Content = %q, want %q", result.Content, "custom client")
+	}
+}
+
+// --- Helper function tests ---
+
+func TestIsBotBlocked(t *testing.T) {
+	tests := []struct {
+		status  int
+		content string
+		want    bool
+	}{
+		{403, "Cloudflare challenge", true},
+		{503, "captcha required", true},
+		{200, "cloudflare", false},
+		{404, "not found", false},
+		{403, "normal page", false},
+	}
+	for _, tt := range tests {
+		got := isBotBlocked(tt.status, tt.content)
+		if got != tt.want {
+			t.Errorf("isBotBlocked(%d, %q) = %v, want %v", tt.status, tt.content, got, tt.want)
+		}
+	}
+}
+
+func TestParseRetryAfterMs(t *testing.T) {
+	tests := []struct {
+		input string
+		want  time.Duration
+	}{
+		{"", time.Second},
+		{"5", 5 * time.Second},
+		{"0", time.Second}, // 0 → default 1s
+		{"-1", time.Second},
+		{"99999", 10 * time.Second}, // capped
+	}
+	for _, tt := range tests {
+		got := parseRetryAfterMs(tt.input)
+		if got != tt.want {
+			t.Errorf("parseRetryAfterMs(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCharsetFromContentType(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"text/html; charset=utf-8", "utf-8"},
+		{"text/html; charset=GBK", "GBK"},
+		{"text/html", ""},
+		{"text/html; charset=\"shift_jis\"", "shift_jis"},
+	}
+	for _, tt := range tests {
+		got := charsetFromContentType(tt.input)
+		if got != tt.want {
+			t.Errorf("charsetFromContentType(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDecodeBody_UTF8Passthrough(t *testing.T) {
+	input := []byte("Hello 世界")
+	got := decodeBody(input, "text/html; charset=utf-8")
+	if got != string(input) {
+		t.Errorf("UTF-8 should pass through, got %q", got)
+	}
+}
+
+func TestDecodeBody_MetaCharset(t *testing.T) {
+	// Latin1 bytes for "café" → <meta charset=iso-8859-1>
+	html := "<html><head><meta charset=\"iso-8859-1\"></head><body>caf\xe9</body></html>"
+	got := decodeBody([]byte(html), "text/html")
+	if !strings.Contains(got, "caf") {
+		t.Errorf("meta charset decode failed, got: %q", got)
+	}
+}
+
+func TestFinalizeOutput(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		want      string
+		truncated bool
+	}{
+		{"collapse newlines", "a\n\n\n\nb", "a\n\nb", false},
+		{"trim spaces", "  hello  ", "hello", false},
+		{"truncation", strings.Repeat("x", MaxOutputChars+100), strings.Repeat("x", MaxOutputChars), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, trunc := FinalizeOutput(tt.input)
+			if trunc != tt.truncated {
+				t.Errorf("truncated = %v, want %v", trunc, tt.truncated)
+			}
+			if got != tt.want {
+				if len(got) > 50 || len(tt.want) > 50 {
+					t.Errorf("len(got)=%d, len(want)=%d", len(got), len(tt.want))
+				} else {
+					t.Errorf("got %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestLooksLikeHTML(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"<!DOCTYPE html>", true},
+		{"<html>", true},
+		{"<head>", true},
+		{"<body>", true},
+		{"  <HTML>", true},
+		{"plain text", false},
+		{"<div>", false},
+	}
+	for _, tt := range tests {
+		got := LooksLikeHTML(tt.input)
+		if got != tt.want {
+			t.Errorf("LooksLikeHTML(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDecodeHTMLEntities(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"&lt;tag&gt;", "<tag>"},
+		{"a&amp;b", "a&b"},
+		{"&quot;hello&quot;", `"hello"`},
+		{"&nbsp;space", " space"},
+		{"&#39;single&#39;", "'single'"},
+		{"&#x27;x&#x27;", "'x'"},
+	}
+	for _, tt := range tests {
+		got := DecodeHTMLEntities(tt.input)
+		if got != tt.want {
+			t.Errorf("DecodeHTMLEntities(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestHTMLToMarkdown(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"heading", "<h1>Title</h1>", "# Title"},
+		{"paragraph", "<p>Hello</p>", "Hello"},
+		{"strips script", "<script>alert(1)</script><p>ok</p>", "ok"},
+		{"strips style", "<style>.x{}</style><p>ok</p>", "ok"},
+		{"strikethrough", "<del>removed</del>", "~~removed~~"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := HTMLToMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("HTMLToMarkdown(%q) = %q, want containing %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatISODate(t *testing.T) {
+	tests := []struct {
+		input any
+		want  string
+	}{
+		{"2024-01-15", "2024-01-15"},
+		{"2024-01-15T10:30:00Z", "2024-01-15"},
+		{nil, ""},
+		{float64(1705276800), "2024-01-15"},
+		{"invalid", ""},
+	}
+	for _, tt := range tests {
+		got := FormatISODate(tt.input)
+		if got != tt.want {
+			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFormatMediaDuration(t *testing.T) {
+	tests := []struct {
+		input float64
+		want  string
+	}{
+		{65, "1:05"},
+		{3661, "1:01:01"},
+		{0, "0:00"},
+		{59, "0:59"},
+	}
+	for _, tt := range tests {
+		got := FormatMediaDuration(tt.input)
+		if got != tt.want {
+			t.Errorf("FormatMediaDuration(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExtractTextFromHTML(t *testing.T) {
+	input := "<html><body><h1>Title</h1><p>Content</p><script>skip</script></body></html>"
+	got := ExtractTextFromHTML(input)
+	if !strings.Contains(got, "Title") {
+		t.Errorf("should contain Title, got: %q", got)
+	}
+	if !strings.Contains(got, "Content") {
+		t.Errorf("should contain Content, got: %q", got)
+	}
+	if strings.Contains(got, "skip") {
+		t.Error("should not contain script content")
+	}
+}

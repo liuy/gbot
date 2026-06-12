@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// formatForLLM converts a SearchResponse into text for the LLM.
-// Source: omp search/index.ts — formatForLLM.
 func formatForLLM(resp *SearchResponse) string {
 	var parts []string
 
@@ -65,7 +63,6 @@ func pluralWord(n int, word string) string {
 	return word + "s"
 }
 
-// truncateRunes truncates s to at most maxBytes while respecting rune boundaries.
 func truncateRunes(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s

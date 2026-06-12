@@ -20,15 +20,15 @@ var (
 )
 
 const (
-	zhipuToolName   = "web_search_prime"
-	zhipuDefaultLimit = 10
-	zhipuTimeout    = 30 * time.Second
+	zhipuToolName      = "web_search_prime"
+	zhipuDefaultLimit  = 10
+	zhipuTimeout       = 30 * time.Second
+	zhipuMaxResponse   = 10 * 1024 * 1024 // 10MB
 )
 
-// ZhipuProvider implements SearchProvider using Zhipu BigModel MCP search.
-// Uses the same API key as the zhipu PaaS LLM endpoint — no separate key needed.
+// ZhipuProvider uses the same API key as the zhipu PaaS LLM endpoint.
 type ZhipuProvider struct {
-	Client *http.Client // nil → http.DefaultClient
+	Client *http.Client
 	APIKey string
 }
 
@@ -44,7 +44,6 @@ func (z *ZhipuProvider) client() *http.Client {
 	return http.DefaultClient
 }
 
-// jsonRPCRequest is the JSON-RPC 2.0 payload sent to Zhipu MCP.
 type jsonRPCRequest struct {
 	JSONRPC string        `json:"jsonrpc"`
 	ID      string        `json:"id"`
@@ -57,7 +56,6 @@ type jsonRPCParams struct {
 	Arguments any    `json:"arguments"`
 }
 
-// jsonRPCResponse is the top-level JSON-RPC response.
 type jsonRPCResponse struct {
 	JSONRPC string         `json:"jsonrpc"`
 	ID      string         `json:"id"`
@@ -80,7 +78,6 @@ type jsonRPCError struct {
 	Message string `json:"message"`
 }
 
-// zhipuSearchResult is a single result from Zhipu MCP search.
 type zhipuSearchResult struct {
 	Title   string `json:"title"`
 	Link    string `json:"link"`
@@ -146,19 +143,18 @@ func (z *ZhipuProvider) Search(ctx context.Context, params web.SearchParams) (*w
 	return parseZhipuResponse(resp.Body, params.Limit)
 }
 
-// parseZhipuResponse extracts search results from the SSE JSON-RPC stream.
-// The response body contains lines like:
+// parseZhipuResponse parses SSE JSON-RPC stream.
+// Response body lines look like:
 //
 //	id:1
 //	event:message
 //	data:{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"..."}]}}
 func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) {
-	raw, err := io.ReadAll(body)
+	raw, err := io.ReadAll(io.LimitReader(body, zhipuMaxResponse))
 	if err != nil {
 		return nil, fmt.Errorf("zhipu: read response: %w", err)
 	}
 
-	// Extract data: lines from SSE stream
 	var lastData string
 	for line := range strings.SplitSeq(string(raw), "\n") {
 		line = strings.TrimSpace(line)
@@ -174,17 +170,14 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 		}
 	}
 
-	// Parse JSON-RPC envelope
 	var rpcResp jsonRPCResponse
 	if err := json.Unmarshal([]byte(lastData), &rpcResp); err != nil {
 		return nil, fmt.Errorf("zhipu: parse JSON-RPC: %w", err)
 	}
 
-	// JSON-RPC level error
 	if rpcResp.Error != nil {
 		status := rpcResp.Error.Code
 		msg := rpcResp.Error.Message
-		// Check if message contains an MCP error with a real HTTP status
 		if code, m := extractMCPError(msg); code != 0 {
 			status = code
 			msg = m
@@ -204,7 +197,6 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 		}
 	}
 
-	// MCP-level error in result
 	if rpcResp.Result.IsError && len(rpcResp.Result.Content) > 0 {
 		errText := rpcResp.Result.Content[0].Text
 		if code, msg := extractMCPError(errText); code != 0 {
@@ -221,7 +213,6 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 		}
 	}
 
-	// Extract text from content blocks and parse search results
 	var allSources []web.SearchSource
 	for _, c := range rpcResp.Result.Content {
 		if len(allSources) >= limit {
@@ -231,7 +222,7 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 			continue
 		}
 
-		// The text field is a JSON-encoded string containing a JSON array
+		// Zhipu wraps the result array in double-encoded JSON: text → JSON string → JSON array
 		var innerStr string
 		if err := json.Unmarshal([]byte(c.Text), &innerStr); err != nil {
 			innerStr = c.Text
@@ -267,18 +258,14 @@ func parseZhipuResponse(body io.Reader, limit int) (*web.SearchResponse, error) 
 	}, nil
 }
 
-// extractMCPError parses "MCP error -NNN: message" format from Zhipu responses.
-// Returns (statusCode, message). Returns (0, "") if not an MCP error format.
+// extractMCPError parses "MCP error -NNN: message" format.
 func extractMCPError(text string) (int, string) {
-	// "MCP error -401: Api key not found"
-	// "MCP error -429: {...}"
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "MCP error ") {
 		return 0, ""
 	}
 	rest := strings.TrimPrefix(text, "MCP error ")
 
-	// Extract status code (may be negative like -401)
 	before, after, ok := strings.Cut(rest, ":")
 	if !ok {
 		return 0, text
