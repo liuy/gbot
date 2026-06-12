@@ -799,11 +799,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// SetStore leaves committedCount=0 with messages present; this is
 		// the first Update where width > 0, so we can render and commit.
 		if a.committedCount == 0 && len(a.repl.messages) > 0 {
-			rendered := renderMessagesFull(a.repl.messages, a.width, a.allToolsExpanded, "", false, false, 0)
+			const maxResumeMessages = 30
+			msgs := a.repl.messages
+			skipped := 0
+			if len(msgs) > maxResumeMessages {
+				skipped = len(msgs) - maxResumeMessages
+				msgs = msgs[len(msgs)-maxResumeMessages:]
+			}
+			var rendered string
+			if skipped > 0 {
+				skipNote := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render(
+					fmt.Sprintf("... (%d earlier messages skipped) ...", skipped))
+				rendered = skipNote + "\n" + renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+			} else {
+				rendered = renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+			}
 			a.committedCount = len(a.repl.messages)
 			a.contentCache = ""
 			a.contentDirty = false
-			return a, tea.Println(rendered+"\n")
+			return a, tea.Println(rendered + "\n")
 		}
 		return a, nil
 
