@@ -220,7 +220,7 @@ var checkPatterns = []checkPattern{
 			}
 			// Exempt: fields that hold complex/multi-line content
 			// (Command strings, multi-line output, rendered content)
-			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr"} {
+			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr", ".SystemPrompt"} {
 				if strings.Contains(match, field) {
 					return true
 				}

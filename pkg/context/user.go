@@ -34,12 +34,15 @@ func LoadSystemFile() (string, error) {
 	if err != nil {
 		return "", nil
 	}
+	return loadSystemFileFrom(homeDir)
+}
+
+func loadSystemFileFrom(homeDir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(homeDir, ".gbot", "SYSTEM.md"))
 	if err != nil {
 		return "", nil
 	}
-	content := strings.TrimSpace(string(data))
-	return content, nil
+	return strings.TrimSpace(string(data)), nil
 }
 
 // LoadContextFiles reads AGENTS.md and CLAUDE.md from user-global (~/.gbot/)

@@ -34,37 +34,34 @@ func TestLoadSoulFile_FileExists(t *testing.T) {
 
 func TestLoadSystemFile_NoFile(t *testing.T) {
 	t.Parallel()
-	got, err := LoadSystemFile()
+	dir := t.TempDir()
+	got, err := loadSystemFileFrom(dir)
 	if err != nil {
-		t.Fatalf("LoadSystemFile returned error: %v", err)
+		t.Fatalf("loadSystemFileFrom returned error: %v", err)
 	}
 	if got != "" {
-		t.Errorf("LoadSystemFile should return empty when no SYSTEM.md, got %q", got)
+		t.Errorf("loadSystemFileFrom should return empty when no SYSTEM.md, got %q", got)
 	}
 }
 
 func TestLoadSystemFile_FileExists(t *testing.T) {
 	t.Parallel()
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".gbot", "SYSTEM.md")
-	orig, _ := os.ReadFile(path)
-
+	dir := t.TempDir()
+	gbotDir := filepath.Join(dir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	systemContent := "# Test System Prompt\nYou are a test assistant."
-	os.WriteFile(path, []byte(systemContent), 0644)
-	defer func() {
-		if orig != nil {
-			os.WriteFile(path, orig, 0644)
-		} else {
-			os.Remove(path)
-		}
-	}()
+	if err := os.WriteFile(filepath.Join(gbotDir, "SYSTEM.md"), []byte(systemContent), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	got, err := LoadSystemFile()
+	got, err := loadSystemFileFrom(dir)
 	if err != nil {
-		t.Fatalf("LoadSystemFile returned error: %v", err)
+		t.Fatalf("loadSystemFileFrom returned error: %v", err)
 	}
 	if got != systemContent {
-		t.Errorf("LoadSystemFile = %q, want %q", got, systemContent)
+		t.Errorf("loadSystemFileFrom = %q, want %q", got, systemContent)
 	}
 }
 
