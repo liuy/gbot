@@ -563,7 +563,12 @@ func buildCommand(cmd string, snapshot *EnvSnapshot, cwdFile string) string {
 	// Single-quote wrapping preserves $VAR for eval and newlines for heredocs.
 	addStdinRedirect := shouldAddStdinRedirect(cmd)
 	quotedCmd := quoteShellCommand(cmd, addStdinRedirect)
-	parts = append(parts, "eval "+quotedCmd)
+	evalCmd := "eval " + quotedCmd
+
+	// 4.5 Disable git pager so git log/show/diff don't hang waiting for input.
+	// Always set GIT_PAGER=cat — harmless for non-git commands.
+	evalCmd = "GIT_PAGER=cat " + evalCmd
+	parts = append(parts, evalCmd)
 
 	// 5. Track cwd after command (bashProvider.ts:186)
 	parts = append(parts, fmt.Sprintf("pwd -P >| %s", cwdFile))
