@@ -210,3 +210,80 @@ func TestApplyDiffBackground_WrappedLine(t *testing.T) {
 		t.Errorf("wrapped line visibleWidth = %d, want 40", got)
 	}
 }
+
+// In production, wordWrap runs *before* applyDiffBackground and splits long
+// In production, wordWrap runs *before* applyDiffBackground and splits long
+// diff lines into width-sized chunks. The first chunk carries the diff
+// marker; subsequent chunks have no marker and must inherit the bg.
+// Reproduce that input shape here.
+func TestApplyDiffBackground_LongAddedLineWrapped(t *testing.T) {
+	t.Parallel()
+	input := " 1 +xxxxxxxxxxxxxxx\n" + strings.Repeat("x", 20) + "\n" + strings.Repeat("x", 20)
+	result := applyDiffBackground(input, 20)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 visual rows, got %d: %q", len(lines), result)
+	}
+	for i, ln := range lines {
+		if !strings.Contains(ln, "\x1b[48;5;22m") {
+			t.Errorf("visual row %d missing green bg: %q", i, ln)
+		}
+		if got := visibleWidth(ln); got != 20 {
+			t.Errorf("visual row %d visibleWidth = %d, want 20 (full-width bg)", i, got)
+		}
+	}
+}
+
+func TestApplyDiffBackground_LongRemovedLineWrapped(t *testing.T) {
+	t.Parallel()
+	input := " 1 -yyyyyyyyyyyyy\n" + strings.Repeat("y", 20) + "\n" + strings.Repeat("y", 20)
+	result := applyDiffBackground(input, 20)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 visual rows, got %d: %q", len(lines), result)
+	}
+	for i, ln := range lines {
+		if !strings.Contains(ln, "\x1b[48;5;52m") {
+			t.Errorf("visual row %d missing red bg: %q", i, ln)
+		}
+		if got := visibleWidth(ln); got != 20 {
+			t.Errorf("visual row %d visibleWidth = %d, want 20 (full-width bg)", i, got)
+		}
+	}
+}
+
+// Bg must persist across multiple wrapped rows until the next diff marker
+// arrives. The bug was that lastBg cleared after the first continuation.
+func TestApplyDiffBackground_BgPersistsAcrossMultipleContinuations(t *testing.T) {
+	t.Parallel()
+	input := " 1 +first\ncont2\ncont3\ncont4"
+	result := applyDiffBackground(input, 20)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 visual rows, got %d", len(lines))
+	}
+	for i, ln := range lines {
+		if !strings.Contains(ln, "\x1b[48;5;22m") {
+			t.Errorf("continuation %d missing green bg: %q", i, ln)
+		}
+	}
+}
+
+// Context lines (marker ' ') reset the inherited bg — continuations after a
+// context line should have no bg.
+func TestApplyDiffBackground_ContextResetsBg(t *testing.T) {
+	t.Parallel()
+	input := " 1 +added\nwrap_added\n 2  context\nwrap_ctx"
+	result := applyDiffBackground(input, 30)
+	lines := strings.Split(result, "\n")
+	for i := range 2 {
+		if !strings.Contains(lines[i], "\x1b[48;5;22m") {
+			t.Errorf("line %d should have green bg: %q", i, lines[i])
+		}
+	}
+	for i := 2; i < 4; i++ {
+		if strings.Contains(lines[i], "\x1b[48;") {
+			t.Errorf("line %d should have no bg: %q", i, lines[i])
+		}
+	}
+}

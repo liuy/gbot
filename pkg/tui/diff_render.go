@@ -99,43 +99,50 @@ func isDiffMarker(line string) (marker byte, ok bool) {
 // applyDiffBackground adds full-width background color to diff lines.
 // Added lines (+) get green bg, removed lines (-) get red bg.
 // Context lines and non-diff lines are left unchanged.
-// Wrapped continuations (lines without diff markers that follow a diff line)
-// inherit the background of the preceding diff line.
+//
+// The function runs *after* wordWrap has already split long diff lines into
+// width-sized visual rows. The first visual row carries the diff marker
+// (" NNN +content"); subsequent visual rows have no marker and must inherit
+// the bg of the preceding diff line. lastBg therefore persists across
+// continuation lines and is only switched when the next marker appears.
 func applyDiffBackground(output string, width int) string {
 	lines := strings.Split(output, "\n")
+	var rebuilt []string
 	changed := false
 	lastBg := ""
-	for i, line := range lines {
+	for _, line := range lines {
 		marker, ok := isDiffMarker(line)
 		if ok {
-			var bg string
 			switch marker {
 			case '+':
-				bg = diffAddBg
+				lastBg = diffAddBg
 			case '-':
-				bg = diffDelBg
+				lastBg = diffDelBg
 			default:
-				bg = ""
+				lastBg = ""
 			}
-			lastBg = bg
-			if bg == "" {
+			if lastBg == "" {
+				rebuilt = append(rebuilt, line)
 				continue
 			}
 			changed = true
 			vw := visibleWidth(line)
 			pad := max(width-vw, 0)
-			lines[i] = bg + line + diffReset + bg + strings.Repeat(" ", pad) + diffReset
+			rebuilt = append(rebuilt, lastBg+line+diffReset+lastBg+strings.Repeat(" ", pad)+diffReset)
 		} else if lastBg != "" {
-			// Wrapped continuation of a diff line
+			// Wrapped continuation of a diff line — keep inheriting lastBg
+			// until the next marker arrives.
 			changed = true
 			vw := visibleWidth(line)
 			pad := max(width-vw, 0)
-			lines[i] = lastBg + line + strings.Repeat(" ", pad) + diffReset
-			lastBg = ""
+			rebuilt = append(rebuilt, lastBg+line+strings.Repeat(" ", pad)+diffReset)
+		} else {
+			rebuilt = append(rebuilt, line)
 		}
 	}
 	if !changed {
 		return output
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(rebuilt, "\n")
 }
+
