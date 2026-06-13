@@ -840,17 +840,6 @@ func TestComputePatch_MinimalDiffMiddle(t *testing.T) {
 	}
 }
 
-func TestComputePatch_TooLarge(t *testing.T) {
-	t.Parallel()
-	// len(old)*len(new) > maxDiffEntries → should return nil
-	oldLines := strings.Repeat("a\n", 4000)
-	newLines := strings.Repeat("b\n", 4000)
-	result := ComputePatch(oldLines, newLines)
-	if result != nil {
-		t.Errorf("expected nil for too-large input, got %d hunks", len(result))
-	}
-}
-
 func TestComputePatch_TrulyEmptyStrings(t *testing.T) {
 	t.Parallel()
 	// Whitespace-only strings

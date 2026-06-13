@@ -11,7 +11,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 func init() {
@@ -446,131 +445,21 @@ func desanitizeMatchString(s string) (string, []struct{ From, To string }) {
 }
 
 // getStructuredPatch computes structured unified diff hunks between old and new content.
-// Each hunk includes up to ctxLines lines of leading/trailing context.
 // Source: diff npm package structuredPatch with context=3.
 func getStructuredPatch(oldContent, newContent string) []PatchHunk {
-	// Use line-level diff (equivalent to diff npm's diffLines + structuredPatch).
-	// Falls back to diffmatchpatch if content is too large.
 	hunks := tool.ComputePatch(oldContent, newContent)
-	if hunks != nil {
-		result := make([]PatchHunk, len(hunks))
-		for i, h := range hunks {
-			result[i] = PatchHunk{
-				OldStart: h.OldStart,
-				OldLines: h.OldLines,
-				NewStart: h.NewStart,
-				NewLines: h.NewLines,
-				Lines:    h.Lines,
-			}
-		}
-		return result
+	if hunks == nil {
+		return nil
 	}
-
-	// Fallback for very large files: use diffmatchpatch character-level diff.
-	// This is a degraded path that doesn't produce true line-level hunks.
-	const ctxLines = 3
-
-	dmp := diffmatchpatch.New()
-	diffs := dmp.DiffMain(oldContent, newContent, true)
-	diffs = dmp.DiffCleanupSemantic(diffs)
-
-	var patchHunks []PatchHunk
-	var hunkLines []string
-	var oldLineNum, newLineNum int
-
-	hasChanges := func() bool {
-		for _, l := range hunkLines {
-			if len(l) > 0 && (l[0] == '-' || l[0] == '+') {
-				return true
-			}
-		}
-		return false
-	}
-
-	trailingCtx := func() int {
-		n := 0
-		for i := len(hunkLines) - 1; i >= 0; i-- {
-			if len(hunkLines[i]) > 0 && hunkLines[i][0] == ' ' {
-				n++
-			} else {
-				break
-			}
-		}
-		return n
-	}
-
-	emit := func() {
-		if len(hunkLines) == 0 || !hasChanges() {
-			return
-		}
-		if tc := trailingCtx(); tc > ctxLines {
-			hunkLines = hunkLines[:len(hunkLines)-(tc-ctxLines)]
-		}
-		linesCopy := make([]string, len(hunkLines))
-		copy(linesCopy, hunkLines)
-		var oldCnt, newCnt int
-		for _, l := range linesCopy {
-			switch l[0] {
-			case '-':
-				oldCnt++
-			case '+':
-				newCnt++
-			default:
-				oldCnt++
-				newCnt++
-			}
-		}
-		patchHunks = append(patchHunks, PatchHunk{
-			OldStart: oldLineNum - oldCnt + 1,
-			OldLines: oldCnt,
-			NewStart: newLineNum - newCnt + 1,
-			NewLines: newCnt,
-			Lines:    linesCopy,
-		})
-		tc := min(trailingCtx(), ctxLines)
-		if tc > 0 {
-			saved := make([]string, tc)
-			copy(saved, hunkLines[len(hunkLines)-tc:])
-			hunkLines = saved
-		} else {
-			hunkLines = nil
+	result := make([]PatchHunk, len(hunks))
+	for i, h := range hunks {
+		result[i] = PatchHunk{
+			OldStart: h.OldStart,
+			OldLines: h.OldLines,
+			NewStart: h.NewStart,
+			NewLines: h.NewLines,
+			Lines:    h.Lines,
 		}
 	}
-
-	splitLines := func(text string) []string {
-		parts := strings.Split(text, "\n")
-		n := len(parts)
-		if n > 0 && parts[n-1] == "" {
-			n--
-		}
-		return parts[:n]
-	}
-
-	for _, d := range diffs {
-		for _, line := range splitLines(d.Text) {
-			switch d.Type {
-			case diffmatchpatch.DiffEqual:
-				hunkLines = append(hunkLines, " "+line)
-				if hasChanges() {
-					if trailingCtx() >= ctxLines {
-						emit()
-					}
-				} else {
-					if len(hunkLines) > ctxLines {
-						hunkLines = hunkLines[len(hunkLines)-ctxLines:]
-					}
-				}
-				oldLineNum++
-				newLineNum++
-			case diffmatchpatch.DiffDelete:
-				hunkLines = append(hunkLines, "-"+line)
-				oldLineNum++
-			case diffmatchpatch.DiffInsert:
-				hunkLines = append(hunkLines, "+"+line)
-				newLineNum++
-			}
-		}
-	}
-	emit()
-	return patchHunks
+	return result
 }

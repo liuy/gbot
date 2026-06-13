@@ -3,8 +3,10 @@ package fileedit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -224,6 +226,188 @@ func TestExecute_WriteErrorBOM(t *testing.T) {
 	}
 }
 
+func TestGetStructuredPatch_SingleCharInLine(t *testing.T) {
+	// When only a few characters change within a line, each hunk line should
+	// contain the FULL line content, not just the changed characters.
+	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n}"
+	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n}"
+
+	hunks := getStructuredPatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks, got none")
+	}
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			marker := l[0]
+			content := l[1:]
+			if marker == '+' || marker == '-' {
+				// Each changed line must be a complete line, not a fragment.
+				// "func TestHandle..." is 49+ chars; a fragment would be just "2" or "ID2".
+				if len(content) < 20 {
+					t.Errorf("hunk line [%c] too short (%d chars): %q — expected full line content",
+						marker, len(content), content)
+				}
+				if !strings.Contains(content, "func TestHandleStackOverflow") {
+					t.Errorf("hunk line [%c] missing function name: %q", marker, content)
+				}
+			}
+		}
+	}
+}
+
+func TestGetStructuredPatch_SingleCharInLine_LargeFile(t *testing.T) {
+	// O(ND) Myers diff handles 4000-line files easily (4000+4000=8000 < 200000).
+	// Verifies ComputePatch handles large files without fallback.
+	var oldBuf, newBuf strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&oldBuf, "\tline %d content here with enough padding\n", i)
+		fmt.Fprintf(&newBuf, "\tline %d content here with enough padding\n", i)
+	}
+	oldLines := strings.Split(oldBuf.String(), "\n")
+	newLines := strings.Split(newBuf.String(), "\n")
+	oldLines[50] = "\tfunc TestHandleStackOverflow_NonNumericID(t *testing.T) {"
+	newLines[50] = "\tfunc TestHandleStackOverflow_NonNumericID2(t *testing.T) {"
+	oldContent := strings.Join(oldLines, "\n")
+	newContent := strings.Join(newLines, "\n")
+
+	hunks := getStructuredPatch(oldContent, newContent)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks")
+	}
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if len(l) == 0 {
+				continue
+			}
+			marker := l[0]
+			content := l[1:]
+			if marker == '+' || marker == '-' {
+				if strings.Contains(content, "TestHandleStackOverflow") {
+					if len(content) < 20 {
+						t.Errorf("LARGE FILE: hunk line [%c] too short (%d chars): %q — expected full line",
+							marker, len(content), content)
+					}
+					if !strings.Contains(content, "func TestHandleStackOverflow") {
+						t.Errorf("LARGE FILE: hunk line [%c] missing func keyword: %q", marker, content)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGetStructuredPatch_RemoveWordFromLine(t *testing.T) {
+	// Removing "Feb " from a line should show full line removed and full line added.
+	old := "\tcontent before\n\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n\t\terror here\n\t}"
+	new_ := "\tcontent before\n\tif !strings.Contains(got.Content, \"28, 2024\") {\n\t\terror here\n\t}"
+
+	hunks := getStructuredPatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks, got none")
+	}
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if len(l) == 0 {
+				continue
+			}
+			marker := l[0]
+			content := l[1:]
+			if marker == '+' || marker == '-' {
+				if strings.Contains(content, "strings.Contains") {
+					if !strings.Contains(content, "got.Content") {
+						t.Errorf("REMOVED WORD: hunk line [%c] incomplete: %q — missing got.Content",
+							marker, content)
+					}
+					if !strings.Contains(content, "28, 2024") {
+						t.Errorf("REMOVED WORD: hunk line [%c] incomplete: %q — missing date",
+							marker, content)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Tests that verify large-file diff produces complete lines (no fragments).
+func TestGetStructuredPatch_LargeFile_NoFragments_SingleChar(t *testing.T) {
+	var buf strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&buf, "\tline %04d padding to fill width\n", i)
+	}
+	base := buf.String()
+
+	old := strings.Replace(base, "\tline 0050", "\tfunc TestHandleStackOverflow_NonNumericID(t *testing.T) {\n", 1)
+	new_ := strings.Replace(base, "\tline 0050", "\tfunc TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n", 1)
+
+	hunks := getStructuredPatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks")
+	}
+
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if len(l) == 0 {
+				continue
+			}
+			marker := l[0]
+			content := l[1:]
+			// No changed line should be just "2" or a fragment shorter than the function name
+			if marker == '+' || marker == '-' {
+				if content == "2" || content == "" {
+					t.Errorf("FRAGMENT: hunk line [%c] is just %q — expected full line",
+						marker, content)
+				}
+				// If this line mentions the function name, it must be complete
+				if strings.Contains(content, "NonNumericID") {
+					if !strings.Contains(content, "func ") {
+						t.Errorf("FRAGMENT: [%c] %q — missing 'func'", marker, content)
+					}
+					if !strings.Contains(content, "testing.T") {
+						t.Errorf("FRAGMENT: [%c] %q — missing 'testing.T'", marker, content)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGetStructuredPatch_LargeFile_NoFragments_RemoveWord(t *testing.T) {
+	var buf strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&buf, "\tline %04d padding to fill width\n", i)
+	}
+	base := buf.String()
+
+	old := strings.Replace(base, "\tline 0050", "\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n", 1)
+	new_ := strings.Replace(base, "\tline 0050", "\tif !strings.Contains(got.Content, \"28, 2024\") {\n", 1)
+
+	hunks := getStructuredPatch(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks")
+	}
+
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			if len(l) == 0 {
+				continue
+			}
+			marker := l[0]
+			content := l[1:]
+			if marker == '+' || marker == '-' {
+				if content == "Feb" || content == "Feb " {
+					t.Errorf("FRAGMENT: hunk line [%c] is just %q — expected full line with strings.Contains",
+						marker, content)
+				}
+				if strings.Contains(content, "strings.Contains") {
+					if !strings.Contains(content, "got.Content") {
+						t.Errorf("FRAGMENT: [%c] %q — missing got.Content", marker, content)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestExecute_WriteErrorNormal(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "normal.txt")
@@ -239,5 +423,126 @@ func TestExecute_WriteErrorNormal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission") && !strings.Contains(err.Error(), "denied") && !strings.Contains(err.Error(), "write") {
 		t.Errorf("Error = %q, want error mentioning permission/write issue", err.Error())
+	}
+}
+
+func TestRenderEditResult_SingleCharChange(t *testing.T) {
+	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n}"
+	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {\n\tu := mustParseURL(t, \"abc\")\n}"
+	patch := getStructuredPatch(old, new_)
+
+	result := renderEditResult(&Output{
+		FilePath:        "test.go",
+		OldString:       old,
+		NewString:       new_,
+		StructuredPatch: patch,
+	})
+
+	strip := stripANSI(result)
+	if !strings.Contains(strip, "func TestHandleStackOverflow_NonNumericID") {
+		t.Errorf("render result missing old function name: %s", strip)
+	}
+	if !strings.Contains(strip, "NonNumericID2") {
+		t.Errorf("render result missing new function name: %s", strip)
+	}
+	// The "2" should NOT appear on a line by itself
+	lines := strings.SplitSeq(strip, "\n")
+	for line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "2" || trimmed == "+2" || trimmed == "-2" {
+			t.Errorf("found isolated '2' on its own line: %q in output:\n%s", line, strip)
+		}
+	}
+}
+
+func TestRenderEditResult_RemoveWordFromLine(t *testing.T) {
+	old := "\tcontent before\n\tif !strings.Contains(got.Content, \"Feb 28, 2024\") {\n\t\terror here\n\t}"
+	new_ := "\tcontent before\n\tif !strings.Contains(got.Content, \"28, 2024\") {\n\t\terror here\n\t}"
+	patch := getStructuredPatch(old, new_)
+
+	result := renderEditResult(&Output{
+		FilePath:        "test.go",
+		OldString:       old,
+		NewString:       new_,
+		StructuredPatch: patch,
+	})
+
+	strip := stripANSI(result)
+	// "Feb" should NOT appear as a standalone removed fragment
+	lines := strings.SplitSeq(strip, "\n")
+	for line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// If "Feb" appears it must be in a longer line
+		if trimmed == "Feb" || trimmed == "-Feb" || trimmed == "+Feb" {
+			t.Errorf("found isolated 'Feb' on its own line: %q in output:\n%s", line, strip)
+		}
+	}
+	// Both old and new lines must contain "got.Content"
+	if !strings.Contains(strip, "got.Content") {
+		t.Errorf("render result missing 'got.Content': %s", strip)
+	}
+}
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
+
+func TestEditStringsToHunks_SingleCharChange(t *testing.T) {
+	// editStringsToHunks is the fallback when StructuredPatch is empty.
+	// It splits old/new strings into lines and marks all old as removed, all new as added.
+	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {"
+	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {"
+
+	hunks := editStringsToHunks(old, new_)
+	if len(hunks) == 0 {
+		t.Fatal("expected hunks")
+	}
+	for _, h := range hunks {
+		for _, l := range h.Lines {
+			marker := l[0]
+			content := l[1:]
+			if marker == '-' {
+				if !strings.Contains(content, "func TestHandleStackOverflow_NonNumericID(t") {
+					t.Errorf("REMOVED line incomplete: %q", content)
+				}
+			}
+			if marker == '+' {
+				if !strings.Contains(content, "func TestHandleStackOverflow_NonNumericID2(t") {
+					t.Errorf("ADDED line incomplete: %q", content)
+				}
+			}
+		}
+	}
+}
+
+func TestRenderEditResult_FallbackPath(t *testing.T) {
+	// Test renderEditResult when StructuredPatch is empty (uses editStringsToHunks)
+	old := "func TestHandleStackOverflow_NonNumericID(t *testing.T) {"
+	new_ := "func TestHandleStackOverflow_NonNumericID2(t *testing.T) {"
+
+	result := renderEditResult(&Output{
+		FilePath:  "test.go",
+		OldString: old,
+		NewString: new_,
+		// StructuredPatch is empty → triggers editStringsToHunks fallback
+	})
+
+	strip := stripANSI(result)
+	// Must contain full old line
+	if !strings.Contains(strip, "NonNumericID(t") {
+		t.Errorf("fallback render missing old function name in:\n%s", strip)
+	}
+	// Must contain full new line
+	if !strings.Contains(strip, "NonNumericID2(t") {
+		t.Errorf("fallback render missing new function name in:\n%s", strip)
+	}
+	// "2" must not appear alone on a line
+	for line := range strings.SplitSeq(strip, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "2" || trimmed == "+2" || trimmed == "-2" {
+			t.Errorf("found isolated '2' on own line: %q in:\n%s", line, strip)
+		}
 	}
 }

@@ -4,21 +4,15 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/tool/lcs"
 )
 
 // ---------------------------------------------------------------------------
 // Line-level diff — equivalent to diff npm's diffLines + structuredPatch.
 // Source: node_modules/diff/lib/structuredPatch.js + libcjs/diff/line.js + libcjs/diff/base.js
-// Uses O(ND) Myers diff on lines.
+// Uses O(ND) Myers diff on lines via golang.org/x/tools/internal/diff/lcs.
 // ---------------------------------------------------------------------------
-
-// maxDiffEntries caps the LCS DP table to prevent OOM.
-const maxDiffEntries = 10_000_000
-
-// lcsEntry is a position in the LCS result.
-type lcsEntry struct {
-	oldIdx, newIdx int
-}
 
 // diffComponent is a single component in the diff result.
 type diffComponent struct {
@@ -70,163 +64,51 @@ func appendDiffComponent(list []diffComponent, added, removed bool, count int) [
 	return append(list, diffComponent{added: added, removed: removed, count: count})
 }
 
-// lcsDP computes LCS of two string slices using standard O(mn) DP with
-// backtracking. Capped at maxDiffEntries (10M) to prevent OOM.
-func lcsDP(a, b []string) []lcsEntry {
-	m, n := len(a), len(b)
-	if m == 0 || n == 0 {
-		return nil
-	}
-
-	// Direction: 0=diag, 1=up, 2=left
-	dir := make([]byte, (m+1)*(n+1))
-	dp := make([]int, (m+1)*(n+1))
-	idx := func(i, j int) int { return i*(n+1) + j }
-
-	for i := 1; i <= m; i++ {
-		for j := 1; j <= n; j++ {
-			if a[i-1] == b[j-1] {
-				dp[idx(i, j)] = dp[idx(i-1, j-1)] + 1
-				dir[idx(i, j)] = 0 // diagonal — match
-			} else if dp[idx(i-1, j)] >= dp[idx(i, j-1)] {
-				dp[idx(i, j)] = dp[idx(i-1, j)]
-				dir[idx(i, j)] = 1 // up
-			} else {
-				dp[idx(i, j)] = dp[idx(i, j-1)]
-				dir[idx(i, j)] = 2 // left
-			}
-		}
-	}
-
-	// Backtrack following direction arrows
-	var rev []lcsEntry
-	i, j := m, n
-	for i > 0 && j > 0 {
-		if dir[idx(i, j)] == 0 {
-			// Diagonal — must be a match (guaranteed by forward pass)
-			rev = append(rev, lcsEntry{oldIdx: i - 1, newIdx: j - 1})
-			i--
-			j--
-		} else if dir[idx(i, j)] == 1 {
-			i--
-		} else {
-			j--
-		}
-	}
-
-	// Reverse to forward order
-	lcs := make([]lcsEntry, len(rev))
-	for k := 0; k < len(rev); k++ {
-		lcs[k] = rev[len(rev)-1-k]
-	}
-	return lcs
-}
-
-// lineDiff runs O(ND) diff on two string slices, returning components.
-func lineDiff(oldTokens, newTokens []string) []diffComponent {
-	oldLen := len(oldTokens)
-	newLen := len(newTokens)
-
-	if oldLen == 0 && newLen == 0 {
-		return nil
-	}
-	if oldLen == 0 {
-		return []diffComponent{{added: true, removed: false, count: newLen}}
-	}
-	if newLen == 0 {
-		return []diffComponent{{added: false, removed: true, count: oldLen}}
-	}
-
-	// Find common prefix
-	oldStart, newStart := 0, 0
-	for oldStart < oldLen && newStart < newLen && oldTokens[oldStart] == newTokens[newStart] {
-		oldStart++
-		newStart++
-	}
-
-	// Find common suffix
-	oldEnd, newEnd := oldLen, newLen
-	for oldEnd > oldStart && newEnd > newStart && oldTokens[oldEnd-1] == newTokens[newEnd-1] {
-		oldEnd--
-		newEnd--
-	}
-
-	oldMid := oldTokens[oldStart:oldEnd]
-	newMid := newTokens[newStart:newEnd]
-
-	// LCS DP for the middle portion
-	lcs := lcsDP(oldMid, newMid)
-
+// lcsDiffsToComponents converts []lcs.Diff into []diffComponent.
+// lcs.Diff represents edits as (delete A[Start:End], insert B[ReplStart:ReplEnd]).
+// Between edits are equal (common) lines.
+func lcsDiffsToComponents(diffs []lcs.Diff, oldLen, newLen int) []diffComponent {
 	var result []diffComponent
+	oldPos, newPos := 0, 0
 
-	// Prefix
-	if oldStart > 0 {
-		result = appendDiffComponent(result, false, false, oldStart)
-	}
-
-	// Build diff from LCS
-	oldPos, newPos, commonCount := 0, 0, 0
-	for _, entry := range lcs {
-		// Deletions before LCS match
-		for oldPos < entry.oldIdx {
-			if commonCount > 0 {
-				result = appendDiffComponent(result, false, false, commonCount)
-				commonCount = 0
-			}
-			result = appendDiffComponent(result, false, true, 1)
-			oldPos++
+	for _, d := range diffs {
+		// Common lines before this edit
+		commonOld := d.Start - oldPos
+		commonNew := d.ReplStart - newPos
+		common := min(commonOld, commonNew)
+		if common > 0 {
+			result = appendDiffComponent(result, false, false, common)
 		}
-		// Insertions before LCS match
-		for newPos < entry.newIdx {
-			if commonCount > 0 {
-				result = appendDiffComponent(result, false, false, commonCount)
-				commonCount = 0
-			}
-			result = appendDiffComponent(result, true, false, 1)
-			newPos++
+
+		// Deleted lines
+		deleted := d.End - d.Start
+		if deleted > 0 {
+			result = appendDiffComponent(result, false, true, deleted)
 		}
-		// LCS match
-		commonCount++
-		oldPos++
-		newPos++
+
+		// Inserted lines
+		inserted := d.ReplEnd - d.ReplStart
+		if inserted > 0 {
+			result = appendDiffComponent(result, true, false, inserted)
+		}
+
+		oldPos = d.End
+		newPos = d.ReplEnd
 	}
 
-	// Remaining deletions
-	for oldPos < len(oldMid) {
-		if commonCount > 0 {
-			result = appendDiffComponent(result, false, false, commonCount)
-			commonCount = 0
-		}
-		result = appendDiffComponent(result, false, true, 1)
-		oldPos++
-	}
-	// Remaining insertions
-	for newPos < len(newMid) {
-		if commonCount > 0 {
-			result = appendDiffComponent(result, false, false, commonCount)
-			commonCount = 0
-		}
-		result = appendDiffComponent(result, true, false, 1)
-		newPos++
-	}
-	if commonCount > 0 {
-		result = appendDiffComponent(result, false, false, commonCount)
-	}
-
-	// Note: the commonCount > 0 check below (line ~212) is provably unreachable.
-	// Suffix stripping guarantees oldMid[last] ≠ newMid[last], so LCS never ends
-	// at both ends, and the remaining deletion loop above always flushes commonCount.
-
-	// Suffix
-	if oldEnd < oldLen {
-		result = appendDiffComponent(result, false, false, oldLen-oldEnd)
+	// Trailing common lines
+	commonOld := oldLen - oldPos
+	commonNew := newLen - newPos
+	common := min(commonOld, commonNew)
+	if common > 0 {
+		result = appendDiffComponent(result, false, false, common)
 	}
 
 	return result
 }
 
 // ComputePatch computes a line-level structured patch between old and new content.
-// Returns nil if the content is too large so callers can fall back to character-level diff.
+// Uses O(ND) Myers two-sided diff via golang.org/x/tools/internal/diff/lcs.
 // Source: diff npm — tokenize + diffLines + structuredPatch, context=CONTEXT_LINES(3)
 func ComputePatch(oldContent, newContent string) []DiffHunk {
 	const ctxLines = 3
@@ -238,13 +120,8 @@ func ComputePatch(oldContent, newContent string) []DiffHunk {
 		return nil
 	}
 
-	if len(oldLines) > 0 && len(newLines) > 0 {
-		if len(oldLines)*len(newLines) > maxDiffEntries {
-			return nil // too large — caller should use diffmatchpatch fallback
-		}
-	}
-
-	components := lineDiff(oldLines, newLines)
+	diffs := lcs.DiffLines(oldLines, newLines)
+	components := lcsDiffsToComponents(diffs, len(oldLines), len(newLines))
 	return buildHunks(components, oldLines, newLines, ctxLines)
 }
 

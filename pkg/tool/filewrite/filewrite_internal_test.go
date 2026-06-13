@@ -842,34 +842,6 @@ func TestParseGitHubRemoteURL_Whitespace(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Coverage: splitLines
-// ---------------------------------------------------------------------------
-
-func TestSplitLines(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		input string
-		want  int
-	}{
-		{"trailing newline", "a\nb\n", 2},
-		{"no trailing newline", "a\nb", 2},
-		{"empty", "", 0},
-		{"single line", "hello", 1},
-		{"single newline", "\n", 1},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := splitLines(tc.input)
-			if len(got) != tc.want {
-				t.Errorf("splitLines(%q) = %d lines, want %d", tc.input, len(got), tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Coverage: parseGitHubRemoteURL — non-HTTP URL with port stripping
 // ---------------------------------------------------------------------------
 
@@ -1223,29 +1195,19 @@ func TestFetchGitDiffForFile_UntrackedReadError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getStructuredPatch fallback (diffmatchpatch) — requires oldLines*newLines > 10M
+// getStructuredPatch — large files (O(ND) Myers handles them directly)
 // ---------------------------------------------------------------------------
 
 func TestGetStructuredPatch_LargeFileFallback(t *testing.T) {
-	// Generate large content where len(oldLines)*len(newLines) > 10M
-	// 4000 lines each → 16M entries → ComputePatch returns nil → diffmatchpatch fallback.
 	lines := make([]string, 4000)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%05d unique large file content line\n", i)
 	}
 	oldContent := strings.Join(lines, "")
 
-	// Replace line 2000 uniquely
 	oldLine := lines[2000]
 	newLine := fmt.Sprintf("%05d modified large file content line\n", 2000)
 	newContent := strings.Replace(oldContent, oldLine, newLine, 1)
-
-	// Verify trigger condition
-	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
-	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
-	if oldLineCount*newLineCount <= 10_000_000 {
-		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, newLineCount)
-	}
 
 	result := getStructuredPatch(oldContent, newContent)
 	if len(result) == 0 {
@@ -1277,12 +1239,6 @@ func TestGetStructuredPatch_LargeFileInsert(t *testing.T) {
 	oldContent := strings.Join(lines, "")
 	newContent := oldContent + fmt.Sprintf("%05d appended large line\n", 5000)
 
-	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
-	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
-	if oldLineCount*newLineCount <= 10_000_000 {
-		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, newLineCount)
-	}
-
 	result := getStructuredPatch(oldContent, newContent)
 	if len(result) == 0 {
 		t.Fatal("getStructuredPatch returned empty")
@@ -1307,11 +1263,6 @@ func TestGetStructuredPatch_LargeFileDelete(t *testing.T) {
 	}
 	oldContent := strings.Join(lines, "")
 	newContent := strings.TrimSuffix(oldContent, lines[4999])
-
-	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
-	if oldLineCount*oldLineCount <= 10_000_000 {
-		t.Fatalf("test content too small: %d*%d <= 10M", oldLineCount, oldLineCount)
-	}
 
 	result := getStructuredPatch(oldContent, newContent)
 	if len(result) == 0 {

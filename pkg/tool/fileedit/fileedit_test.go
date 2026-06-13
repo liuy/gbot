@@ -1058,31 +1058,18 @@ func TestRenderResult_ErrorString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getStructuredPatch fallback (diffmatchpatch) — requires oldLines*newLines > 10M
+// getStructuredPatch — large files (O(ND) Myers handles them directly)
 // ---------------------------------------------------------------------------
 
 func TestExecute_LargeFileFallbackPath(t *testing.T) {
-	// Generate large content where len(oldLines)*len(newLines) > 10M
-	// 4000 lines each → 16M entries → triggers ComputePatch → nil → diffmatchpatch fallback.
-	// Each line ~50 bytes → total ~200KB, very fast in memory.
-	// Lines are globally unique (numbered) to avoid "non-unique old_string" error.
 	lines := make([]string, 4000)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%05d unique content line for large file test\n", i)
 	}
 	oldContent := strings.Join(lines, "")
 
-	// Replace line 2000 uniquely
 	oldLine := lines[2000]
 	newLine := fmt.Sprintf("%05d modified content line for large file test\n", 2000)
-	newContent := strings.Replace(oldContent, oldLine, newLine, 1)
-
-	// Verify trigger condition
-	oldLineCount := len(strings.Split(strings.TrimSuffix(oldContent, "\n"), "\n"))
-	newLineCount := len(strings.Split(strings.TrimSuffix(newContent, "\n"), "\n"))
-	if oldLineCount*newLineCount <= 10_000_000 {
-		t.Fatalf("test content too small to trigger fallback: %d*%d <= 10M", oldLineCount, newLineCount)
-	}
 
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "large.txt")
@@ -1090,7 +1077,7 @@ func TestExecute_LargeFileFallbackPath(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Edit one line — triggers fallback path in getStructuredPatch
+	// Edit one line in the large file
 	inp := fileedit.Input{FilePath: fp, OldString: strings.TrimSpace(oldLine), NewString: strings.TrimSpace(newLine)}
 	inputBytes, err := json.Marshal(inp)
 	if err != nil {

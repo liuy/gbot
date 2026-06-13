@@ -18,7 +18,6 @@ import (
 
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 func init() {
@@ -467,145 +466,24 @@ func normalizeLineEndings(content string) string {
 	return content
 }
 
-// splitLines splits text on newlines, returning non-empty lines only.
-// This mirrors strings.Split(strings.TrimSuffix(s, "\n"), "\n") while
-// discarding the trailing empty element that Split produces.
-func splitLines(text string) []string {
-	lines := strings.Split(text, "\n")
-	n := len(lines)
-	if n > 0 && lines[n-1] == "" {
-		n--
-	}
-	result := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		result = append(result, lines[i])
-	}
-	return result
-}
-
 // getStructuredPatch computes structured unified diff hunks between old and new content.
-// Each hunk includes up to ctxLines lines of leading/trailing context.
 // Source: diff npm package structuredPatch with context=3.
 func getStructuredPatch(oldContent, newContent string) []StructuredPatchHunk {
-	// Use line-level diff (equivalent to diff npm's diffLines + structuredPatch).
-	// Falls back to diffmatchpatch if content is too large.
 	hunks := tool.ComputePatch(oldContent, newContent)
-	if hunks != nil {
-		result := make([]StructuredPatchHunk, len(hunks))
-		for i, h := range hunks {
-			result[i] = StructuredPatchHunk{
-				OldStart: h.OldStart,
-				OldLines: h.OldLines,
-				NewStart: h.NewStart,
-				NewLines: h.NewLines,
-				Lines:    h.Lines,
-			}
-		}
-		return result
+	if hunks == nil {
+		return nil
 	}
-
-	// Fallback for very large files: use diffmatchpatch character-level diff.
-	const ctxLines = 3
-
-	dmp := diffmatchpatch.New()
-	diffs := dmp.DiffMain(oldContent, newContent, true)
-	diffs = dmp.DiffCleanupSemantic(diffs)
-
-	var patchHunks []StructuredPatchHunk
-	var hunkLines []string
-	var oldLineNum, newLineNum int
-
-	hasChanges := func() bool {
-		for _, l := range hunkLines {
-			if len(l) > 0 && (l[0] == '-' || l[0] == '+') {
-				return true
-			}
-		}
-		return false
-	}
-
-	trailingCtx := func() int {
-		n := 0
-		for i := len(hunkLines) - 1; i >= 0; i-- {
-			if len(hunkLines[i]) > 0 && hunkLines[i][0] == ' ' {
-				n++
-			} else {
-				break
-			}
-		}
-		return n
-	}
-
-	emit := func() {
-		if len(hunkLines) == 0 || !hasChanges() {
-			return
-		}
-		if tc := trailingCtx(); tc > ctxLines {
-			hunkLines = hunkLines[:len(hunkLines)-(tc-ctxLines)]
-		}
-		linesCopy := make([]string, len(hunkLines))
-		copy(linesCopy, hunkLines)
-		var oldCnt, newCnt int
-		for _, l := range linesCopy {
-			switch l[0] {
-			case '-':
-				oldCnt++
-			case '+':
-				newCnt++
-			default:
-				oldCnt++
-				newCnt++
-			}
-		}
-		patchHunks = append(patchHunks, StructuredPatchHunk{
-			OldStart: oldLineNum - oldCnt + 1,
-			OldLines: oldCnt,
-			NewStart: newLineNum - newCnt + 1,
-			NewLines: newCnt,
-			Lines:    linesCopy,
-		})
-		tc := min(trailingCtx(), ctxLines)
-		if tc > 0 {
-			saved := make([]string, tc)
-			copy(saved, hunkLines[len(hunkLines)-tc:])
-			hunkLines = saved
-		} else {
-			hunkLines = nil
+	result := make([]StructuredPatchHunk, len(hunks))
+	for i, h := range hunks {
+		result[i] = StructuredPatchHunk{
+			OldStart: h.OldStart,
+			OldLines: h.OldLines,
+			NewStart: h.NewStart,
+			NewLines: h.NewLines,
+			Lines:    h.Lines,
 		}
 	}
-
-	for _, d := range diffs {
-		lines := splitLines(d.Text)
-		switch d.Type {
-		case diffmatchpatch.DiffEqual:
-			for _, line := range lines {
-				hunkLines = append(hunkLines, " "+line)
-				if hasChanges() {
-					if trailingCtx() >= ctxLines {
-						emit()
-					}
-				} else {
-					if len(hunkLines) > ctxLines {
-						hunkLines = hunkLines[len(hunkLines)-ctxLines:]
-					}
-				}
-				oldLineNum++
-				newLineNum++
-			}
-		case diffmatchpatch.DiffDelete:
-			for _, line := range lines {
-				hunkLines = append(hunkLines, "-"+line)
-				oldLineNum++
-			}
-		case diffmatchpatch.DiffInsert:
-			for _, line := range lines {
-				hunkLines = append(hunkLines, "+"+line)
-				newLineNum++
-			}
-		}
-	}
-	emit()
-	return patchHunks
+	return result
 }
 
 // Execute writes content to a file.
