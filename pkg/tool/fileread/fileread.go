@@ -370,7 +370,7 @@ func New() tool.Tool {
 		"properties": {
 			"file_path": {
 				"type": "string",
-				"description": "The absolute path to the file to read."
+				"description": "The absolute path to the file to read. For SQLite databases (.sqlite/.sqlite3/.db/.db3), append selectors after the path: ':table' for schema+sample, ':table:id' for a row by primary key, '?limit=20&offset=0' for pagination, '?where=col=\\'val\\'' for filtering, or '?q=SELECT ...' for raw SQL."
 			},
 			"offset": {
 				"type": "integer",
@@ -523,6 +523,12 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	// SECURITY: Check for blocked device paths to prevent hanging
 	if isBlockedDevicePath(in.FilePath) {
 		return nil, fmt.Errorf("cannot read device file: %s", in.FilePath)
+	}
+
+	// SQLite: path may contain :table:key or ?q=SQL syntax. Check before
+	// os.Stat — "db.sqlite:users" is not a real filesystem path.
+	if result, handled := trySqlitePath(ctx, in); handled {
+		return result, nil
 	}
 
 	info, err := os.Stat(in.FilePath)
