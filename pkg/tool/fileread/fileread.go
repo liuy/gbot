@@ -527,8 +527,9 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 
 	// SQLite: path may contain :table:key or ?q=SQL syntax. Check before
 	// os.Stat — "db.sqlite:users" is not a real filesystem path.
-	if result, handled := trySqlitePath(ctx, in); handled {
-		return result, nil
+	sqliteResult, handled, sqliteErr := trySqlitePath(ctx, in)
+	if handled {
+		return sqliteResult, sqliteErr
 	}
 
 	info, err := os.Stat(in.FilePath)

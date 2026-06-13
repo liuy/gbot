@@ -166,10 +166,10 @@ func parseSqliteSelector(subPath, queryString string) (*sqliteSelector, error) {
 
 	if rawQuery != "" {
 		if normalizedSubPath != "" || len(params) > 1 {
-			return nil, fmt.Errorf("SQLite raw queries cannot be combined with table selectors or pagination")
+			return nil, fmt.Errorf("sqlite raw queries cannot be combined with table selectors or pagination")
 		}
 		if strings.TrimSpace(rawQuery) == "" {
-			return nil, fmt.Errorf("SQLite query parameter 'q' cannot be empty")
+			return nil, fmt.Errorf("sqlite query parameter 'q' cannot be empty")
 		}
 		return &sqliteSelector{kind: sqliteSelRaw, rawSQL: rawQuery}, nil
 	}
@@ -191,12 +191,12 @@ func parseSqliteSelector(subPath, queryString string) (*sqliteSelector, error) {
 		key = after
 	}
 	if table == "" {
-		return nil, fmt.Errorf("SQLite selectors must include a table name")
+		return nil, fmt.Errorf("sqlite selectors must include a table name")
 	}
 
 	if key != "" {
 		if len(params) > 0 {
-			return nil, fmt.Errorf("SQLite row lookups cannot be combined with query parameters")
+			return nil, fmt.Errorf("sqlite row lookups cannot be combined with query parameters")
 		}
 		return &sqliteSelector{kind: sqliteSelRow, table: table, key: key}, nil
 	}
@@ -265,7 +265,7 @@ func parseSqliteLimit(value string, fallback int) (int, error) {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 1 {
-		return 0, fmt.Errorf("SQLite limit must be a positive integer; got '%s'", value)
+		return 0, fmt.Errorf("sqlite limit must be a positive integer; got '%s'", value)
 	}
 	if parsed > sqliteMaxQueryLimit {
 		return sqliteMaxQueryLimit, nil
@@ -279,7 +279,7 @@ func parseSqliteOffset(value string) (int, error) {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 0 {
-		return 0, fmt.Errorf("SQLite offset must be a non-negative integer; got '%s'", value)
+		return 0, fmt.Errorf("sqlite offset must be a non-negative integer; got '%s'", value)
 	}
 	return parsed, nil
 }
@@ -364,18 +364,18 @@ func validateWhereClause(where string) error {
 			continue
 		}
 		if ch == ';' {
-			return fmt.Errorf("SQLite 'where' clause must not contain comments or statement terminators; use '?q=SELECT ...' for raw SQL")
+			return fmt.Errorf("sqlite 'where' clause must not contain comments or statement terminators; use '?q=SELECT ...' for raw SQL")
 		}
 		if (ch == '-' && i+1 < len(trimmed) && trimmed[i+1] == '-') ||
 			(ch == '/' && i+1 < len(trimmed) && trimmed[i+1] == '*') {
-			return fmt.Errorf("SQLite 'where' clause must not contain comments or statement terminators; use '?q=SELECT ...' for raw SQL")
+			return fmt.Errorf("sqlite 'where' clause must not contain comments or statement terminators; use '?q=SELECT ...' for raw SQL")
 		}
 	}
 
 	return nil
 }
 
-const forbiddenWhereKeywordError = "SQLite 'where' clause must not contain LIMIT/OFFSET/UNION/INTERSECT/EXCEPT/ATTACH/DETACH/PRAGMA; use '?q=SELECT ...' for raw SQL"
+const forbiddenWhereKeywordError = "sqlite 'where' clause must not contain LIMIT/OFFSET/UNION/INTERSECT/EXCEPT/ATTACH/DETACH/PRAGMA; use '?q=SELECT ...' for raw SQL"
 
 // quoteIdent quotes a SQLite identifier with double quotes.
 func quoteIdent(ident string) string {
@@ -384,36 +384,7 @@ func quoteIdent(ident string) string {
 
 // executeSqliteRead handles SQLite database reads with selector syntax.
 // omp: #readSqlite
-func executeSqliteRead(ctx context.Context, in Input) (*tool.ToolResult, error) {
-	candidates := parseSqlitePathCandidates(in.FilePath)
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("not a SQLite path: %s", in.FilePath)
-	}
-
-	var candidate sqlitePathCandidate
-	var absPath string
-	found := false
-	for _, c := range candidates {
-		ap, err := filepath.Abs(c.sqlitePath)
-		if err != nil {
-			continue
-		}
-		info, err := os.Stat(ap)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		if !isSqliteFile(ap) {
-			continue
-		}
-		candidate = c
-		absPath = ap
-		found = true
-		break
-	}
-	if !found {
-		return nil, fmt.Errorf("SQLite file not found or not a valid SQLite database: %s", in.FilePath)
-	}
-
+func executeSqliteRead(ctx context.Context, in Input, candidate sqlitePathCandidate, absPath string) (*tool.ToolResult, error) {
 	selector, err := parseSqliteSelector(candidate.subPath, candidate.queryString)
 	if err != nil {
 		return nil, err
@@ -565,7 +536,7 @@ func sqliteGetSchema(db *sql.DB, table string, sampleLimit int) (string, error) 
 	var createSQL string
 	err := db.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name = ?", table).Scan(&createSQL)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("SQLite table '%s' not found", table)
+		return "", fmt.Errorf("sqlite table '%s' not found", table)
 	}
 	if err != nil {
 		return "", err
@@ -582,31 +553,91 @@ func sqliteGetSchema(db *sql.DB, table string, sampleLimit int) (string, error) 
 }
 
 // sqliteGetRowByKey finds a single row by primary key or rowid.
+// For string PKs, if no exact match is found, falls back to prefix match:
+// returns the row if exactly one PK starts with the key, otherwise hints the user
+// to provide a longer prefix.
 func sqliteGetRowByKey(db *sql.DB, table, key string) (string, error) {
 	pkCol, pkType, err := getTablePrimaryKey(db, table)
 	if err != nil {
 		return "", err
 	}
 
-	var query string
-	var args []any
-	if pkCol != "" {
-		query = fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1", quoteIdent(table), quoteIdent(pkCol))
-		arg, err := coerceLookupValue(key, pkType)
+	if pkCol == "" {
+		// Fall back to rowid — integer only, no prefix
+		rowID, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("sqlite ROWID must be an integer; got '%s'", key)
+		}
+		query := fmt.Sprintf("SELECT * FROM %s WHERE rowid = ? LIMIT 1", quoteIdent(table))
+		rendered, err := scanSingleRow(db, query, []any{rowID})
 		if err != nil {
 			return "", err
 		}
-		args = []any{arg}
-	} else {
-		// Fall back to rowid
-		rowID, err := strconv.ParseInt(key, 10, 64)
-		if err != nil {
-			return "", fmt.Errorf("SQLite ROWID must be an integer; got '%s'", key)
+		if rendered == "" {
+			return fmt.Sprintf("No row found in table '%s' for rowid '%s'.", table, key), nil
 		}
-		query = fmt.Sprintf("SELECT * FROM %s WHERE rowid = ? LIMIT 1", quoteIdent(table))
-		args = []any{rowID}
+		return rendered, nil
 	}
 
+	// Exact match
+	arg, err := coerceLookupValue(key, pkType)
+	if err != nil {
+		return "", err
+	}
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1", quoteIdent(table), quoteIdent(pkCol))
+	rendered, err := scanSingleRow(db, query, []any{arg})
+	if err != nil {
+		return "", err
+	}
+	if rendered != "" {
+		return rendered, nil
+	}
+
+	// Prefix match fallback for string/text PKs only.
+	// Integer PKs are skipped because '12' could spuriously prefix-match 1234.
+	if isTextPK(pkType) {
+		prefixQuery := fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE ? ESCAPE '\\' LIMIT 2", quoteIdent(table), quoteIdent(pkCol))
+		prefix, err := escapeLikePattern(key)
+		if err != nil {
+			return "", err
+		}
+		rendered, matchedCount, err := scanRowsWithCount(db, prefixQuery, []any{prefix + "%"})
+		if err != nil {
+			return "", err
+		}
+		if matchedCount == 1 {
+			return rendered, nil
+		}
+		if matchedCount > 1 {
+			return fmt.Sprintf("Multiple rows in '%s' have PK starting with '%s'; provide a longer prefix.", table, key), nil
+		}
+	}
+
+	return fmt.Sprintf("No row found in table '%s' for key '%s'.", table, key), nil
+}
+
+// isTextPK returns true for string-like PK types where prefix matching is safe.
+func isTextPK(typ string) bool {
+	upper := strings.ToUpper(typ)
+	return strings.Contains(upper, "TEXT") || strings.Contains(upper, "CHAR") || strings.Contains(upper, "CLOB")
+}
+
+// escapeLikePattern escapes % _ \ in a LIKE pattern operand.
+func escapeLikePattern(s string) (string, error) {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '%', '_', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String(), nil
+}
+
+// scanSingleRow runs a query expected to return 0 or 1 row and renders it.
+// Returns empty string if no row matched.
+func scanSingleRow(db *sql.DB, query string, args []any) (string, error) {
 	qRows, err := db.Query(query, args...)
 	if err != nil {
 		return "", err
@@ -617,11 +648,9 @@ func sqliteGetRowByKey(db *sql.DB, table, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
 	if !qRows.Next() {
-		return fmt.Sprintf("No row found in table '%s' for key '%s'.", table, key), nil
+		return "", nil
 	}
-
 	vals := make([]any, len(colNames))
 	ptrs := make([]any, len(colNames))
 	for i := range vals {
@@ -630,12 +659,48 @@ func sqliteGetRowByKey(db *sql.DB, table, key string) (string, error) {
 	if err := qRows.Scan(ptrs...); err != nil {
 		return "", err
 	}
-
 	var lines []string
 	for i, col := range colNames {
 		lines = append(lines, fmt.Sprintf("%s: %s", col, stringifySqliteValue(vals[i])))
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+// scanRowsWithCount runs a LIMIT-bounded query, returns the first row rendered
+// (if any) and the total number of rows matched (up to LIMIT). Caller uses count
+// to disambiguate between single and multiple matches.
+func scanRowsWithCount(db *sql.DB, query string, args []any) (string, int, error) {
+	qRows, err := db.Query(query, args...)
+	if err != nil {
+		return "", 0, err
+	}
+	defer qRows.Close()
+
+	colNames, err := qRows.Columns()
+	if err != nil {
+		return "", 0, err
+	}
+	count := 0
+	var firstRendered string
+	for qRows.Next() {
+		count++
+		vals := make([]any, len(colNames))
+		ptrs := make([]any, len(colNames))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := qRows.Scan(ptrs...); err != nil {
+			return "", 0, err
+		}
+		if count == 1 {
+			var lines []string
+			for i, col := range colNames {
+				lines = append(lines, fmt.Sprintf("%s: %s", col, stringifySqliteValue(vals[i])))
+			}
+			firstRendered = strings.Join(lines, "\n")
+		}
+	}
+	return firstRendered, count, nil
 }
 
 // sqliteQueryRows paginated query with optional where/order.
@@ -725,7 +790,12 @@ func sqliteSelectRows(db *sql.DB, table string, limit, offset int, where, order 
 }
 
 // sqliteExecuteRawQuery runs a raw SQL query, capping rows.
+// Rejects bound parameters (?) — values must be inlined because the SQL comes
+// from a single query string with no separate bind arguments. omp: paramsCount > 0.
 func sqliteExecuteRawQuery(db *sql.DB, sqlText string) (string, error) {
+	if strings.Contains(sqlText, "?") {
+		return "", fmt.Errorf("sqlite raw queries do not support bound parameters (?) — inline values directly")
+	}
 	qRows, err := db.Query(sqlText)
 	if err != nil {
 		return "", fmt.Errorf("raw query: %w", err)
@@ -767,54 +837,60 @@ func sqliteExecuteRawQuery(db *sql.DB, sqlText string) (string, error) {
 }
 
 // getTableColumns returns column names for a table.
-func getTableColumns(db *sql.DB, table string) ([]string, error) {
+// sqliteColumnInfo holds column metadata from PRAGMA table_info.
+type sqliteColumnInfo struct {
+	name string
+	typ  string
+	pk   int
+}
+
+// getTableInfo queries PRAGMA table_info once and returns column metadata.
+// Replaces the previous getTableColumns + getTablePrimaryKey double-query pattern.
+func getTableInfo(db *sql.DB, table string) ([]sqliteColumnInfo, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteIdent(table)))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var cols []string
+	var cols []sqliteColumnInfo
 	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, err
-		}
-		cols = append(cols, name)
-	}
-	return cols, nil
-}
-
-// getTablePrimaryKey returns the single-column PK name+type, or ("", "") if none/composite.
-func getTablePrimaryKey(db *sql.DB, table string) (string, string, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteIdent(table)))
-	if err != nil {
-		return "", "", err
-	}
-	defer rows.Close()
-
-	type colInfo struct {
-		name string
-		typ  string
-		pk   int
-	}
-	var pkCols []colInfo
-	for rows.Next() {
-		var ci colInfo
+		var ci sqliteColumnInfo
 		var cid int
 		var notnull int
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &ci.name, &ci.typ, &notnull, &dflt, &ci.pk); err != nil {
-			return "", "", err
+			return nil, err
 		}
+		cols = append(cols, ci)
+	}
+	return cols, nil
+}
+
+func getTableColumns(db *sql.DB, table string) ([]string, error) {
+	infos, err := getTableInfo(db, table)
+	if err != nil {
+		return nil, err
+	}
+	cols := make([]string, len(infos))
+	for i, ci := range infos {
+		cols[i] = ci.name
+	}
+	return cols, nil
+}
+
+// getTablePrimaryKey returns the single-column PK name+type, or empty strings if none/composite.
+func getTablePrimaryKey(db *sql.DB, table string) (string, string, error) {
+	infos, err := getTableInfo(db, table)
+	if err != nil {
+		return "", "", err
+	}
+	var pkCols []sqliteColumnInfo
+	for _, ci := range infos {
 		if ci.pk > 0 {
 			pkCols = append(pkCols, ci)
 		}
 	}
-
 	if len(pkCols) != 1 {
 		return "", "", nil
 	}
@@ -854,10 +930,10 @@ func resolveOrderClause(order string, columns []string) (string, error) {
 
 	found := slices.Contains(columns, col)
 	if !found {
-		return "", fmt.Errorf("SQLite order column '%s' not found in table schema", col)
+		return "", fmt.Errorf("sqlite order column '%s' not found in table schema", col)
 	}
 	if direction != "ASC" && direction != "DESC" {
-		return "", fmt.Errorf("SQLite order direction must be 'asc' or 'desc'; got '%s'", direction)
+		return "", fmt.Errorf("sqlite order direction must be 'asc' or 'desc'; got '%s'", direction)
 	}
 	return fmt.Sprintf(" ORDER BY %s %s", quoteIdent(col), direction), nil
 }
@@ -1007,11 +1083,12 @@ func minInt(a, b int) int {
 }
 
 // trySqlitePath attempts to handle the input as a SQLite path.
-// Returns (result, true) if handled, (nil, false) if not a SQLite path.
-func trySqlitePath(ctx context.Context, in Input) (*tool.ToolResult, bool) {
+// Returns (result, true, nil) if handled, (nil, false, nil) if not a SQLite path,
+// (nil, true, err) if it is a SQLite path but an error occurred.
+func trySqlitePath(ctx context.Context, in Input) (*tool.ToolResult, bool, error) {
 	candidates := parseSqlitePathCandidates(in.FilePath)
 	if len(candidates) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	// Check if any candidate resolves to a real SQLite file
 	for _, c := range candidates {
@@ -1026,12 +1103,12 @@ func trySqlitePath(ctx context.Context, in Input) (*tool.ToolResult, bool) {
 		if !isSqliteFile(ap) {
 			continue
 		}
-		// It's a real SQLite file — handle it
-		result, err := executeSqliteRead(ctx, in)
+		// It's a real SQLite file — handle it. Pass c + ap to avoid re-scanning.
+		result, err := executeSqliteRead(ctx, in, c, ap)
 		if err != nil {
-			return nil, true // swallowed error; caller falls through
+			return nil, true, err
 		}
-		return result, true
+		return result, true, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
