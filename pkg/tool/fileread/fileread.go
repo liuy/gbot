@@ -370,7 +370,7 @@ func New() tool.Tool {
 		"properties": {
 			"file_path": {
 				"type": "string",
-				"description": "The absolute path to the file to read. For SQLite databases (.sqlite/.sqlite3/.db/.db3), append selectors after the path: ':table' for schema+sample, ':table:id' for a row by primary key, '?limit=20&offset=0' for pagination, '?where=col=\\'val\\'' for filtering, or '?q=SELECT ...' for raw SQL."
+				"description": "The absolute path to the file to read. For SQLite databases (.sqlite/.sqlite3/.db/.db3), append selectors after the path: ':table' for schema+sample, ':table:id' for a row by primary key, '?limit=20&offset=0' for pagination, '?where=col=\\'val\\'' for filtering, or '?q=SELECT ...' for raw SQL. For archives (.zip/.tar/.tar.gz/.7z/.rar/etc.), append ':path/inside' to read a member or list a directory."
 			},
 			"offset": {
 				"type": "integer",
@@ -530,6 +530,13 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	sqliteResult, handled, sqliteErr := trySqlitePath(ctx, in)
 	if handled {
 		return sqliteResult, sqliteErr
+	}
+
+	// Archive: path may contain :subpath syntax. Check before
+	// os.Stat — "archive.zip:dir/file.ts" is not a real filesystem path.
+	archiveResult, handled, archiveErr := tryArchivePath(ctx, in)
+	if handled {
+		return archiveResult, archiveErr
 	}
 
 	info, err := os.Stat(in.FilePath)

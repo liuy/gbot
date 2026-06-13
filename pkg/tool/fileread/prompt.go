@@ -39,5 +39,13 @@ For .sqlite, .sqlite3, .db, .db3 files, append a selector after the path:
 - file.db?q=SELECT ... — read-only raw SQL query
 
 Detection is by file extension AND magic bytes — a .sqlite file that is not a real SQLite database is rejected.
+
+# Archives
+Reads members inside archives without extraction. Supported formats: .zip, .tar, .tar.gz/.tgz, .tar.xz/.txz, .tar.bz2/.tbz2, .tar.zst, .tar.lz4, .gz, .bz2, .xz, .zst, .lz4, .7z, .rar.
+- archive.zip — list root directory
+- archive.zip:dir/ — list subdirectory
+- archive.zip:dir/file.ts — read a member (supports offset/limit)
+
+Binary members (non-UTF-8 or containing NUL bytes) are rejected with a placeholder message. Single-file compression formats (.gz, .bz2, .xz, .zst, .lz4) decompress and return the inner file's content directly.
 `
 }
