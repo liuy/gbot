@@ -1872,3 +1872,23 @@ func TestExecute_DocumentOutputBounded(t *testing.T) {
 			tokens, fileread.MaxFileReadTokens, len(output.Content))
 	}
 }
+
+func TestExecute_RssXmlConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_rss.xml")
+	input := json.RawMessage(`{"file_path":"` + fp + `","limit":10}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+	if strings.Contains(output.Content, "<?xml") {
+		t.Error("expected XML declaration to be stripped in conversion")
+	}
+}

@@ -155,6 +155,8 @@ var convertibleExtensions = map[string]bool{
 	".html":  true,
 	".htm":   true,
 	".zip":   true,
+	".xml":   true,
+	".rss":   true,
 }
 
 // Input is the file read tool input schema.
