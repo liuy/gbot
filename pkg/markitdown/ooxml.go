@@ -126,8 +126,8 @@ func RelsPathFor(filePath string) string {
 
 // ResolveTarget resolves a relative target path against a base path.
 func ResolveTarget(basePath, target string) string {
-	if strings.HasPrefix(target, "/") {
-		return strings.TrimPrefix(target, "/")
+	if after, ok := strings.CutPrefix(target, "/"); ok {
+		return after
 	}
 	dir := path.Dir(basePath)
 	return path.Join(dir, target)

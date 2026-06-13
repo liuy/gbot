@@ -80,7 +80,7 @@ func (c *XlsConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Document
 
 			var cells []string
 			lastCol := row.LastCol()
-			for colIdx := 0; colIdx < lastCol; colIdx++ {
+			for colIdx := range lastCol {
 				cells = append(cells, row.Col(colIdx))
 			}
 			rows = append(rows, cells)

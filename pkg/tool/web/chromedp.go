@@ -113,7 +113,10 @@ func (p *ChromePool) reset() {
 	p.ready = false
 }
 
-func chromedpFetch(parentCtx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
+// chromedpFetch can be replaced in tests to avoid launching Chrome.
+var chromedpFetch = realChromedpFetch
+
+func realChromedpFetch(parentCtx context.Context, url string, timeout time.Duration, proxyURL string) (string, error) {
 	ctx, cancel, err := defaultPool.getWithProxy(parentCtx, proxyURL)
 	if err != nil {
 		return "", fmt.Errorf("chrome not available: %w", err)

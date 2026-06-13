@@ -34,6 +34,10 @@ func (d *DuckDuckGoProvider) client() *http.Client {
 
 func (d *DuckDuckGoProvider) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(params.Query))
+	return d.searchWithClient(ctx, params, searchURL)
+}
+
+func (d *DuckDuckGoProvider) searchWithClient(ctx context.Context, params SearchParams, searchURL string) (*SearchResponse, error) {
 
 	reqCtx, cancel := context.WithTimeout(ctx, ddgTimeout)
 	defer cancel()

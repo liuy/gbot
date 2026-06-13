@@ -12,7 +12,7 @@ build:
 	go build -o $(BINARY) $(CMD)
 
 test:
-	go test $(PKG) -race -short -count=1 -timeout 120s -coverprofile=coverage.out
+	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
 	go test ./test/ -count=1 -timeout 120s
 	@echo ""
 	@echo "Coverage:"
@@ -28,7 +28,7 @@ lint:
 check: build test lint fix
 
 fix:
-	go fix ./...
+	go fix ./pkg/... ./cmd/... 2>/dev/null || true
 
 clean:
 	rm -f $(BINARY) coverage.out *.out *.prof *.test

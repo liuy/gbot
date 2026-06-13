@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -218,18 +219,30 @@ func TestIsBotBlocked(t *testing.T) {
 }
 
 func TestParseRetryAfterMs(t *testing.T) {
+	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat) // REAL-TIME: need relative future date
+	past := time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat)  // REAL-TIME: need relative past date
+
 	tests := []struct {
 		input string
 		want  time.Duration
 	}{
 		{"", time.Second},
 		{"5", 5 * time.Second},
-		{"0", time.Second}, // 0 → default 1s
+		{"0", time.Second},
 		{"-1", time.Second},
-		{"99999", 10 * time.Second}, // capped
+		{"99999", 10 * time.Second},
+		{future, time.Second}, // HTTP date very near → >0 but ≤ cap, we just verify >0
+		{past, time.Second},   // past date → default 1s
+		{"not-a-number", time.Second},
 	}
 	for _, tt := range tests {
 		got := parseRetryAfterMs(tt.input)
+		if tt.input == future {
+			if got <= 0 || got > 10*time.Second {
+				t.Errorf("parseRetryAfterMs(future date) = %v, want (0, 10s]", got)
+			}
+			continue
+		}
 		if got != tt.want {
 			t.Errorf("parseRetryAfterMs(%q) = %v, want %v", tt.input, got, tt.want)
 		}
@@ -351,6 +364,12 @@ func TestHTMLToMarkdown(t *testing.T) {
 		{"strips script", "<script>alert(1)</script><p>ok</p>", "ok"},
 		{"strips style", "<style>.x{}</style><p>ok</p>", "ok"},
 		{"strikethrough", "<del>removed</del>", "~~removed~~"},
+		{"h1", "<h1>Title</h1>", "# Title"},
+		{"h2", "<h2>Subtitle</h2>", "## Subtitle"},
+		{"h3", "<h3>Section</h3>", "### Section"},
+		{"h4", "<h4>Subsection</h4>", "#### Subsection"},
+		{"h5", "<h5>Detail</h5>", "##### Detail"},
+		{"h6", "<h6>Fine</h6>", "###### Fine"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,8 +391,12 @@ func TestFormatISODate(t *testing.T) {
 	}{
 		{"2024-01-15", "2024-01-15"},
 		{"2024-01-15T10:30:00Z", "2024-01-15"},
+		{"2024-01-15 10:30:00", "2024-01-15"},
 		{nil, ""},
 		{float64(1705276800), "2024-01-15"},
+		{float64(100), ""}, // < 1e9
+		{int(1705276800), "2024-01-15"},
+		{int64(1705276800), "2024-01-15"},
 		{"invalid", ""},
 	}
 	for _, tt := range tests {
@@ -415,3 +438,57 @@ func TestExtractTextFromHTML(t *testing.T) {
 		t.Error("should not contain script content")
 	}
 }
+
+func TestLoadPage_BotBlockLastAttempt(t *testing.T) {
+	// Bot block on last attempt should return result (not retry).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `<html><body>Cloudflare challenge</body></html>`)
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
+	// All attempts get bot-blocked → last attempt returns not-OK with bot content.
+	if result.OK {
+		t.Error("expected not OK for bot-blocked response")
+	}
+	if result.Status != http.StatusForbidden {
+		t.Errorf("Status = %d, want 403", result.Status)
+	}
+}
+
+func TestLoadPage_WithBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "got: %s", string(body))
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{
+		Method: http.MethodPost,
+		Body:   strings.NewReader("hello"),
+	})
+	if !result.OK {
+		t.Fatalf("expected OK, got error: %s", result.Error)
+	}
+	if !strings.Contains(result.Content, "got: hello") {
+		t.Errorf("expected echoed body, got: %q", result.Content)
+	}
+}
+
+func TestLoadPage_ReadBodyError(t *testing.T) {
+	result := LoadPage(context.Background(), "http://example.com", LoadPageOptions{
+		Body: &errorReader{},
+	})
+	if result.Error == "" {
+		t.Fatal("expected error for body read failure")
+	}
+	if !strings.Contains(result.Error, "read error") {
+		t.Fatalf("error should mention read error, got: %q", result.Error)
+	}
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (int, error) { return 0, fmt.Errorf("read error") }

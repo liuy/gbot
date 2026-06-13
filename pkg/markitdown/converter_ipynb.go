@@ -47,12 +47,12 @@ type kernelSpec struct {
 type notebookCell struct {
 	CellType string          `json:"cell_type"`
 	Source   json.RawMessage `json:"source"`
-	Outputs []cellOutput    `json:"outputs"`
+	Outputs  []cellOutput    `json:"outputs"`
 }
 
 type cellOutput struct {
-	OutputType string          `json:"output_type"`
-	Text       json.RawMessage `json:"text"`
+	OutputType string                     `json:"output_type"`
+	Text       json.RawMessage            `json:"text"`
 	Data       map[string]json.RawMessage `json:"data"`
 }
 
@@ -84,10 +84,10 @@ func (c *IpynbConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Docume
 			sections = append(sections, source)
 			// Extract title from first heading
 			if title == "" {
-				for _, line := range strings.Split(source, "\n") {
+				for line := range strings.SplitSeq(source, "\n") {
 					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "# ") {
-						title = strings.TrimPrefix(line, "# ")
+					if after, ok := strings.CutPrefix(line, "# "); ok {
+						title = after
 						break
 					}
 				}

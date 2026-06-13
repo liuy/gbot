@@ -88,7 +88,7 @@ func renderMarkdownTable(records [][]string) string {
 
 	// Header row
 	b.WriteString("| ")
-	for i := 0; i < numCols; i++ {
+	for i := range numCols {
 		if i < len(records[0]) {
 			b.WriteString(records[0][i])
 		}
@@ -98,7 +98,7 @@ func renderMarkdownTable(records [][]string) string {
 
 	// Separator row
 	b.WriteString("| ")
-	for i := 0; i < numCols; i++ {
+	for range numCols {
 		b.WriteString("---")
 		b.WriteString(" | ")
 	}
@@ -107,7 +107,7 @@ func renderMarkdownTable(records [][]string) string {
 	// Data rows
 	for _, row := range records[1:] {
 		b.WriteString("| ")
-		for i := 0; i < numCols; i++ {
+		for i := range numCols {
 			if i < len(row) {
 				b.WriteString(row[i])
 			}

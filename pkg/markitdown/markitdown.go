@@ -111,7 +111,7 @@ func (m *MarkItDown) ConvertReader(r io.ReadSeeker, info StreamInfo) (*DocumentC
 
 // ConvertURL fetches a URL and converts the response to markdown.
 func (m *MarkItDown) ConvertURL(url string) (*DocumentConverterResult, error) {
-	resp, err := http.Get(url) //nolint:gosec
+	resp, err := http.Get(url) //nolint:gosec // G107: URL is user-provided by design
 	if err != nil {
 		return nil, fmt.Errorf("fetch URL: %w", err)
 	}
@@ -136,8 +136,8 @@ func (m *MarkItDown) ConvertURL(url string) (*DocumentConverterResult, error) {
 		info.MIMEType = strings.TrimSpace(parts[0])
 		for _, p := range parts[1:] {
 			p = strings.TrimSpace(p)
-			if strings.HasPrefix(p, "charset=") {
-				info.Charset = strings.Trim(strings.TrimPrefix(p, "charset="), `"'`)
+			if after, ok := strings.CutPrefix(p, "charset="); ok {
+				info.Charset = strings.Trim(after, `"'`)
 			}
 		}
 	}

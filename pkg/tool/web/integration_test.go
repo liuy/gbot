@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	neturl "net/url"
+	"os"
 
 	"github.com/liuy/gbot/pkg/tool/web/providers"
-	"net/http/httptest"
+	"github.com/liuy/gbot/pkg/tool/web/scrapers"
 	"strings"
 	"sync"
 	"testing"
@@ -559,5 +562,181 @@ type customTransport struct {
 func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", t.ua)
 	return http.DefaultTransport.RoundTrip(req)
+}
+
+// --- Document conversion call chain tests ---
+
+func TestExecute_URLFetch_PDFConversion(t *testing.T) {
+	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+	if err != nil {
+		t.Skip("test.pdf not found")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write(pdfData)
+	}))
+	defer server.Close()
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/paper.pdf"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+	if !strings.Contains(output.Content, "contemporaneous") {
+		t.Errorf("content should contain PDF text, got: %s", truncate(output.Content, 200))
+	}
+}
+
+func TestExecute_URLFetch_DOCXConversion(t *testing.T) {
+	docxData, err := os.ReadFile("../../markitdown/testdata/test.docx")
+	if err != nil {
+		t.Skip("test.docx not found")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write(docxData)
+	}))
+	defer server.Close()
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/doc.docx"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+	if !strings.Contains(output.Content, "AutoGen") {
+		t.Errorf("content should contain DOCX text, got: %s", truncate(output.Content, 200))
+	}
+}
+
+func TestExecute_URLFetch_XLSXConversion(t *testing.T) {
+	xlsxData, err := os.ReadFile("../../markitdown/testdata/test.xlsx")
+	if err != nil {
+		t.Skip("test.xlsx not found")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		_, _ = w.Write(xlsxData)
+	}))
+	defer server.Close()
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/data.xlsx"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Content, "|") {
+		t.Errorf("content should contain markdown table from XLSX, got: %s", truncate(output.Content, 200))
+	}
+}
+
+func TestExecute_URLFetch_NonDocURLFallsThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<html><body><h1>HTML Page</h1></body></html>")
+	}))
+	defer server.Close()
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/page.html"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if !strings.Contains(output.Content, "HTML Page") {
+		t.Errorf("HTML fetch should fall through to normal path, got: %q", output.Content)
+	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+func TestExecuteFetch_ScraperMatch(t *testing.T) {
+	reg := scrapers.New()
+	reg.Register(func(ctx context.Context, u *neturl.URL, client *http.Client, js scrapers.JSFetcher) (*scrapers.Result, error) {
+		return &scrapers.Result{
+			Content:     "scraper content",
+			Method:      "custom",
+			ContentType: "text/plain",
+		}, nil
+	})
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(`{"query": "https://example.com/page"}`)
+	result, err := execute(context.Background(), input, chain, http.DefaultClient, reg)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+	if !strings.Contains(output.Content, "scraper content") {
+		t.Errorf("content should contain scraper output, got: %q", output.Content)
+	}
+}
+
+func TestExecuteFetch_ScraperError(t *testing.T) {
+	reg := scrapers.New()
+	reg.Register(func(ctx context.Context, u *neturl.URL, client *http.Client, js scrapers.JSFetcher) (*scrapers.Result, error) {
+		return nil, fmt.Errorf("scraper blew up")
+	})
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(`{"query": "https://example.com/page"}`)
+	_, err := execute(context.Background(), input, chain, http.DefaultClient, reg)
+	if err == nil {
+		t.Fatal("expected error from scraper failure")
+	}
+	if !strings.Contains(err.Error(), "scraper blew up") {
+		t.Errorf("error = %q, want containing 'scraper blew up'", err.Error())
+	}
+}
+
+func TestExecuteFetch_NilRegistry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<html><body><p>no scraper</p></body></html>")
+	}))
+	defer server.Close()
+
+	chain := &providers.SearchChain{}
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL))
+	result, err := execute(context.Background(), input, chain, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
+	}
+	if !strings.Contains(output.Content, "no scraper") {
+		t.Errorf("content should fall through to HTTP fetch, got: %q", output.Content)
+	}
 }
 

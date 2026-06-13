@@ -383,7 +383,8 @@ func fetchAndConvertDocument(ctx context.Context, url string, client *http.Clien
 		if err != nil {
 			return "", nil
 		}
-		headResp.Body.Close()
+		_, _ = io.Copy(io.Discard, headResp.Body)
+		_ = headResp.Body.Close()
 
 		if headResp.StatusCode < 200 || headResp.StatusCode >= 300 {
 			return "", nil

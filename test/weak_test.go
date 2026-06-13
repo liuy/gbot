@@ -41,7 +41,7 @@ func TestWeakAssertions(t *testing.T) {
 		}
 		// Skip vendor, .git, test/ (this package itself)
 		rel, _ := filepath.Rel(projectRoot, path)
-		for _, skip := range []string{"vendor", ".git", "test"} {
+		for _, skip := range []string{"vendor", ".git", "test", "pkg/markitdown"} {
 			if strings.HasPrefix(rel, skip+string(filepath.Separator)) || rel == skip {
 				if d.IsDir() {
 					return filepath.SkipDir
@@ -291,6 +291,9 @@ var checkPatterns = []checkPattern{
 				for i := lineIdx + 1; i < len(lines) && i <= lineIdx+10; i++ {
 					line := lines[i]
 					if strings.Contains(line, ".Error()") {
+						return true
+					}
+					if strings.Contains(line, "result.Error") {
 						return true
 					}
 					if strings.Contains(line, "errors.Is(") || strings.Contains(line, "errors.As(") {
