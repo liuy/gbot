@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	neturl "net/url"
 	"os"
-
-	"github.com/liuy/gbot/pkg/tool/web/providers"
-	"github.com/liuy/gbot/pkg/tool/web/scrapers"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/liuy/gbot/pkg/tool/web/providers"
+	"github.com/liuy/gbot/pkg/tool/web/scrapers"
 )
 
 func TestExecute_SearchQuery(t *testing.T) {
@@ -566,20 +566,20 @@ func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // --- Document conversion call chain tests ---
 
-func TestExecute_URLFetch_PDFConversion(t *testing.T) {
-	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+func TestExecute_URLFetch_DOCXConversionViaExt(t *testing.T) {
+	docxData, err := os.ReadFile("../../markitdown/testdata/test.docx")
 	if err != nil {
-		t.Skip("test.pdf not found")
+		t.Skip("test.docx not found")
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write(pdfData)
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write(docxData)
 	}))
 	defer server.Close()
 
 	chain := &providers.SearchChain{}
-	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/paper.pdf"}`, server.URL))
+	input := json.RawMessage(fmt.Sprintf(`{"query": "%s/paper.docx"}`, server.URL))
 	result, err := execute(context.Background(), input, chain, server.Client(), nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
@@ -589,8 +589,8 @@ func TestExecute_URLFetch_PDFConversion(t *testing.T) {
 	if output.Mode != "fetch" {
 		t.Errorf("mode = %q, want %q", output.Mode, "fetch")
 	}
-	if !strings.Contains(output.Content, "contemporaneous") {
-		t.Errorf("content should contain PDF text, got: %s", truncate(output.Content, 200))
+	if !strings.Contains(output.Content, "AutoGen") {
+		t.Errorf("content should contain DOCX text, got: %s", truncate(output.Content, 200))
 	}
 }
 

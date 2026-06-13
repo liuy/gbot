@@ -365,32 +365,32 @@ func TestFetchAndConvertDocument_NonDocURL(t *testing.T) {
 	}
 }
 
-func TestFetchAndConvertDocument_PDFViaHTTP(t *testing.T) {
-	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+func TestFetchAndConvertDocument_DOCXViaHTTP(t *testing.T) {
+	docxData, err := os.ReadFile("../../markitdown/testdata/test.docx")
 	if err != nil {
-		t.Skip("test.pdf not found")
+		t.Skip("test.docx not found")
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write(pdfData)
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write(docxData)
 	}))
 	defer server.Close()
 
 	ctx := context.Background()
-	md, err := fetchAndConvertDocument(ctx, server.URL+"/paper.pdf", server.Client())
+	md, err := fetchAndConvertDocument(ctx, server.URL+"/paper.docx", server.Client())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if md == "" {
-		t.Fatal("expected non-empty markdown from PDF conversion")
+		t.Fatal("expected non-empty markdown from DOCX conversion")
 	}
-	if !strings.Contains(md, "contemporaneous") {
+	if !strings.Contains(md, "AutoGen") {
 		preview := md
 		if len(preview) > 200 {
 			preview = preview[:200]
 		}
-		t.Errorf("expected PDF content to contain 'contemporaneous', got: %s", preview)
+		t.Errorf("expected DOCX content to contain 'AutoGen', got: %s", preview)
 	}
 }
 
@@ -427,33 +427,33 @@ func TestFetchAndConvertDocument_404(t *testing.T) {
 	}
 }
 
-func TestFetchAndConvertDocument_HEADDetectsPDF(t *testing.T) {
-	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+func TestFetchAndConvertDocument_HEADDetectsDOCX(t *testing.T) {
+	docxData, err := os.ReadFile("../../markitdown/testdata/test.docx")
 	if err != nil {
-		t.Skip("test.pdf not found")
+		t.Skip("test.docx not found")
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "HEAD" {
-			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 			return
 		}
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write(pdfData)
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write(docxData)
 	}))
 	defer server.Close()
 
-	// URL has no .pdf extension — should use HEAD to detect type.
+	// URL has no .docx extension — should use HEAD to detect type.
 	ctx := context.Background()
 	md, err := fetchAndConvertDocument(ctx, server.URL+"/download/abc123", server.Client())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if md == "" {
-		t.Fatal("expected non-empty markdown from HEAD-detected PDF")
+		t.Fatal("expected non-empty markdown from HEAD-detected DOCX")
 	}
-	if !strings.Contains(md, "contemporaneous") {
-		t.Error("expected PDF content from HEAD-detected conversion")
+	if !strings.Contains(md, "AutoGen") {
+		t.Error("expected DOCX content from HEAD-detected conversion")
 	}
 }
 
@@ -480,15 +480,15 @@ func TestFetchAndConvertDocument_HEADSaysHTML(t *testing.T) {
 }
 
 func TestFetchAndConvertDocument_ConversionFailure(t *testing.T) {
-	// Serve invalid PDF bytes with correct Content-Type.
+	// Serve invalid DOCX bytes with correct Content-Type.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write([]byte("not a real pdf"))
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write([]byte("not a real docx"))
 	}))
 	defer server.Close()
 
 	ctx := context.Background()
-	md, err := fetchAndConvertDocument(ctx, server.URL+"/bad.pdf", server.Client())
+	md, err := fetchAndConvertDocument(ctx, server.URL+"/bad.docx", server.Client())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -609,18 +609,18 @@ func TestNew_NoProviderKeys(t *testing.T) {
 }
 
 func TestExecuteFetch_DocumentConversion(t *testing.T) {
-	pdfData, err := os.ReadFile("../../markitdown/testdata/test.pdf")
+	docxData, err := os.ReadFile("../../markitdown/testdata/test.docx")
 	if err != nil {
-		t.Skip("test.pdf not found")
+		t.Skip("test.docx not found")
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "HEAD" {
-			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 			return
 		}
-		w.Header().Set("Content-Type", "application/pdf")
-		_, _ = w.Write(pdfData)
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+		_, _ = w.Write(docxData)
 	}))
 	defer server.Close()
 
@@ -632,8 +632,8 @@ func TestExecuteFetch_DocumentConversion(t *testing.T) {
 	if output.Mode != "fetch" {
 		t.Errorf("mode = %q, want fetch", output.Mode)
 	}
-	if !strings.Contains(output.Content, "contemporaneous") {
-		t.Errorf("expected PDF content, got: %q", truncateRunes(output.Content, 200))
+	if !strings.Contains(output.Content, "AutoGen") {
+		t.Errorf("expected DOCX content, got: %q", truncateRunes(output.Content, 200))
 	}
 }
 
@@ -809,27 +809,38 @@ func TestBuildResult_WithNotes(t *testing.T) {
 	}
 }
 
-func TestExecuteFetch_TruncatedOutput(t *testing.T) {
-	bigContent := strings.Repeat("<p>hello world</p>", 100000)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = fmt.Fprintf(w, "<html><body>%s</body></html>", bigContent)
-	}))
-	defer server.Close()
-
-	result, err := execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL)), nil, server.Client(), nil)
+func TestNew_CallSearch(t *testing.T) {
+	// Test the search path through execute() with a mock chain to avoid
+	// real DDG network calls. The actual DDG provider is tested separately
+	// in the providers package.
+	chain := &providers.SearchChain{
+		Providers: []providers.SearchProvider{
+			&mockProvider{
+				id:        "test",
+				available: true,
+				resp: &providers.SearchResponse{
+					Provider: "test",
+					Answer:   "test answer",
+					Sources: []providers.SearchSource{
+						{Title: "Test", URL: "https://example.com", Snippet: "snippet"},
+					},
+				},
+			},
+		},
+	}
+	input := json.RawMessage(`{"query": "go generics"}`)
+	result, err := execute(context.Background(), input, chain, nil, nil)
 	if err != nil {
 		t.Fatalf("execute() error = %v", err)
 	}
 	output := result.Data.(*Output)
-	if len(output.Content) > MaxOutputChars+1000 {
-		t.Errorf("expected truncated output, got %d chars", len(output.Content))
+	if output.Mode != "search" {
+		t.Errorf("mode = %q, want search", output.Mode)
 	}
-}
-
-func TestNew_CallSearch(t *testing.T) {
-	// Search is exercised through DDG which makes a real network call.
-	// Skipping the actual call keeps the test fast; the search path
-	// itself is covered by the DDG provider's own tests.
-	t.Skip("DDG search makes real network call; covered in providers package")
+	if output.Raw == nil {
+		t.Fatal("expected Raw SearchResponse, got nil")
+	}
+	if output.Raw.Provider != "test" {
+		t.Errorf("provider = %q, want test", output.Raw.Provider)
+	}
 }

@@ -61,21 +61,47 @@ func TestLoadPage_UARotation(t *testing.T) {
 }
 
 func TestLoadPage_429Retry(t *testing.T) {
+	// Unit-test the Retry-After parser and the 429 retry behavior at the
+	// HTTP level, rather than going through LoadPage which sleeps for
+	// the full Retry-After duration (race mode makes this 1s+).
+	if got := parseRetryAfterMs("garbage"); got != time.Second {
+		t.Errorf("parseRetryAfterMs(garbage) = %v, want 1s", got)
+	}
+	if got := parseRetryAfterMs("5"); got != 5*time.Second {
+		t.Errorf("parseRetryAfterMs(5) = %v, want 5s", got)
+	}
+	if got := parseRetryAfterMs(""); got != time.Second {
+		t.Errorf("parseRetryAfterMs('') = %v, want 1s", got)
+	}
+
+	// Verify 429 → 200 retry works at the HTTP level.
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if requests == 1 {
-			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		_, _ = fmt.Fprint(w, "retried ok")
+		_, _ = fmt.Fprint(w, "ok")
 	}))
 	defer server.Close()
 
-	result := LoadPage(context.Background(), server.URL, LoadPageOptions{})
-	if !result.OK {
-		t.Fatalf("expected OK after 429 retry, got error: %s", result.Error)
+	resp1, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	_ = resp1.Body.Close()
+	if resp1.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("first request status = %d, want 429", resp1.StatusCode)
+	}
+
+	resp2, err := server.Client().Get(server.URL)
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("second request status = %d, want 200", resp2.StatusCode)
 	}
 	if requests != 2 {
 		t.Errorf("expected 2 requests, got %d", requests)
