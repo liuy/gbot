@@ -1182,7 +1182,7 @@ func formatToolContent(output string, isError bool, expand bool, availWidth int,
 // maxOutputLines=0 means unlimited.
 func formatToolOutput(output string, isError bool, expand bool, availWidth int, noHint bool, maxOutputLines int, contentStyle lipgloss.Style) string {
 	content := formatToolContent(output, isError, expand, availWidth, noHint, maxOutputLines, contentStyle)
-	return withResultPrefix(content)
+	return withResultPrefix(applyDiffBackground(content, availWidth))
 }
 
 // Pre-cached styles for thinking blocks.

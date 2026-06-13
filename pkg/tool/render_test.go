@@ -163,12 +163,11 @@ func TestRenderDiff_SingleAddition(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	if !strings.Contains(plain, "1  ctx") {
-		t.Errorf("expected context line '1  ctx', got:\n%s", plain)
+	if !strings.Contains(got, " 1  ctx") {
+		t.Errorf("expected context line ' 1  ctx', got:\n%s", got)
 	}
-	if !strings.Contains(plain, "2 +added") {
-		t.Errorf("expected added line '2 +added', got:\n%s", plain)
+	if !strings.Contains(got, " 2 +added") {
+		t.Errorf("expected added line ' 2 +added', got:\n%s", got)
 	}
 }
 
@@ -181,9 +180,8 @@ func TestRenderDiff_SingleDeletion(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	if !strings.Contains(plain, "2 -deleted") {
-		t.Errorf("expected deleted line '2 -deleted', got:\n%s", plain)
+	if !strings.Contains(got, " 2 -deleted") {
+		t.Errorf("expected deleted line ' 2 -deleted', got:\n%s", got)
 	}
 }
 
@@ -196,19 +194,11 @@ func TestRenderDiff_MixedChanges(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	if !strings.Contains(plain, "-old") {
-		t.Errorf("expected '-old', got:\n%s", plain)
+	if !strings.Contains(got, " 2 -old") {
+		t.Errorf("expected ' 2 -old', got:\n%s", got)
 	}
-	if !strings.Contains(plain, "+new") {
-		t.Errorf("expected '+new', got:\n%s", plain)
-	}
-	// Should have ANSI colors for added/deleted
-	if !strings.Contains(got, "\x1b[48;5;22m") {
-		t.Error("expected green bg (added) ANSI code")
-	}
-	if !strings.Contains(got, "\x1b[48;5;52m") {
-		t.Error("expected red bg (deleted) ANSI code")
+	if !strings.Contains(got, " 2 +new") {
+		t.Errorf("expected ' 2 +new', got:\n%s", got)
 	}
 }
 
@@ -225,22 +215,19 @@ func TestRenderDiff_MultipleHunks(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	// Should have "..." separator between hunks
-	if !strings.Contains(plain, "...") {
-		t.Errorf("expected '...' separator between hunks, got:\n%s", plain)
+	if !strings.Contains(got, "...") {
+		t.Errorf("expected '...' separator between hunks, got:\n%s", got)
 	}
-	if !strings.Contains(plain, "+b") {
-		t.Errorf("expected '+b' from first hunk, got:\n%s", plain)
+	if !strings.Contains(got, " 2 +b") {
+		t.Errorf("expected ' 2 +b' from first hunk, got:\n%s", got)
 	}
-	if !strings.Contains(plain, "-d") {
-		t.Errorf("expected '-d' from second hunk, got:\n%s", plain)
+	if !strings.Contains(got, " 11 -d") {
+		t.Errorf("expected ' 11 -d' from second hunk, got:\n%s", got)
 	}
 }
 
 func TestRenderDiff_LineNumberAlignment(t *testing.T) {
 	t.Parallel()
-	// Line numbers should be right-aligned
 	hunks := []DiffHunk{
 		{
 			OldStart: 1, OldLines: 1, NewStart: 100, NewLines: 1,
@@ -248,10 +235,9 @@ func TestRenderDiff_LineNumberAlignment(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	// newLine=100, maxDigits=3, so "100" is 3 chars
-	if !strings.Contains(plain, "100 +new") {
-		t.Errorf("expected '100 +new' with right-aligned line number, got:\n%s", plain)
+	// newLine=100, maxDigits=3, padded to 3 chars
+	if !strings.Contains(got, " 100 +new") {
+		t.Errorf("expected ' 100 +new' with right-aligned line number, got:\n%s", got)
 	}
 }
 
@@ -260,15 +246,13 @@ func TestRenderDiff_HunkWithEmptyLines(t *testing.T) {
 	hunks := []DiffHunk{
 		{
 			OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 3,
-			Lines: []string{" ctx", "+"}, // empty addition
+			Lines: []string{" ctx", "+"},
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	// Should not panic, should contain the addition marker
-	lines := strings.Split(plain, "\n")
+	lines := strings.Split(got, "\n")
 	if len(lines) < 2 {
-		t.Errorf("expected at least 2 lines, got %d: %q", len(lines), plain)
+		t.Errorf("expected at least 2 lines, got %d: %q", len(lines), got)
 	}
 }
 
@@ -281,9 +265,8 @@ func TestRenderDiff_SingleContextHunk(t *testing.T) {
 		},
 	}
 	got := RenderDiff(hunks)
-	plain := stripDiffANSI(got)
-	if !strings.Contains(plain, "1  a") {
-		t.Errorf("expected context line '1  a', got:\n%s", plain)
+	if !strings.Contains(got, " 1  a") {
+		t.Errorf("expected context line ' 1  a', got:\n%s", got)
 	}
 }
 

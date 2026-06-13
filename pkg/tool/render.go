@@ -266,11 +266,7 @@ const (
 	diffBoldOff = "\x1b[22m"
 	diffDim     = "\x1b[2m"
 	diffReset   = "\x1b[0m"
-	diffAddBg   = "\x1b[48;5;22m"  // dark green bg for added lines (ansiIdx(22))
-	diffAddFg   = "\x1b[38;5;10m"  // green decoration for added marker/line#
-	diffDelBg   = "\x1b[48;5;52m"  // dark red bg for deleted lines
-	diffDelFg   = "\x1b[38;5;9m"   // red decoration for deleted marker/line#
-	diffDimFg   = "\x1b[38;5;246m" // dim gray for context line numbers
+	diffDimFg   = "\x1b[38;5;246m"
 )
 
 // CountLines counts lines in content.
@@ -336,8 +332,6 @@ func RenderDiff(hunks []DiffHunk) string {
 		return ""
 	}
 
-	// Compute max line number across all hunks for gutter width.
-	// Source: StructuredDiff.tsx computeGutterWidth()
 	maxLineNum := 1
 	for _, hunk := range hunks {
 		oldEnd := hunk.OldStart + hunk.OldLines - 1
@@ -353,13 +347,8 @@ func RenderDiff(hunks []DiffHunk) string {
 
 	var sb strings.Builder
 	for hi, hunk := range hunks {
-		// Hunk separator
 		if hi > 0 {
-			sb.WriteString(diffReset)
-			sb.WriteString(diffDim)
-			sb.WriteString("...")
-			sb.WriteString(diffReset)
-			sb.WriteByte('\n')
+			sb.WriteString("...\n")
 		}
 
 		oldLine := hunk.OldStart
@@ -372,8 +361,6 @@ func RenderDiff(hunks []DiffHunk) string {
 			marker := line[0]
 			content := line[1:]
 
-			// Track line numbers.
-			// Source: color-diff/index.ts render() — lineNumber logic
 			var lineNum int
 			switch marker {
 			case '+':
@@ -382,41 +369,21 @@ func RenderDiff(hunks []DiffHunk) string {
 			case '-':
 				lineNum = oldLine
 				oldLine++
-			default: // context
+			default:
 				lineNum = newLine
 				oldLine++
 				newLine++
 			}
 
 			paddedNum := fmt.Sprintf("%*d", maxDigits, lineNum)
-
-			sb.WriteString(diffReset)
 			switch marker {
 			case '+':
-				sb.WriteString(diffAddFg)
-				sb.WriteString(diffAddBg)
-				fmt.Fprintf(&sb, " %s ", paddedNum)
-				sb.WriteString(diffAddFg)
-				sb.WriteByte('+')
-				sb.WriteString(diffReset)
-				sb.WriteString(diffAddBg)
-				sb.WriteString(content)
+				fmt.Fprintf(&sb, " %s +%s", paddedNum, content)
 			case '-':
-				sb.WriteString(diffDelFg)
-				sb.WriteString(diffDelBg)
-				fmt.Fprintf(&sb, " %s ", paddedNum)
-				sb.WriteString(diffDelFg)
-				sb.WriteByte('-')
-				sb.WriteString(diffReset)
-				sb.WriteString(diffDelBg)
-				sb.WriteString(content)
-			default: // context
-				sb.WriteString(diffDimFg)
-				fmt.Fprintf(&sb, " %s  ", paddedNum)
-				sb.WriteString(diffReset)
-				sb.WriteString(content)
+				fmt.Fprintf(&sb, " %s -%s", paddedNum, content)
+			default:
+				fmt.Fprintf(&sb, " %s  %s", paddedNum, content)
 			}
-			sb.WriteString(diffReset)
 			sb.WriteByte('\n')
 		}
 	}
