@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/liuy/gbot/pkg/markitdown"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
@@ -136,6 +137,24 @@ var binaryExtensions = map[string]bool{
 	".par":    true,
 	".pickle": true,
 	".whl":    true,
+}
+
+// Extensions that markitdown can convert to markdown.
+// omp: CONVERTIBLE_EXTENSIONS = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".epub"]
+// Plus ".ipynb" and ".csv" which markitdown also handles.
+var convertibleExtensions = map[string]bool{
+	".doc":   true,
+	".docx":  true,
+	".ppt":   true,
+	".pptx":  true,
+	".xls":   true,
+	".xlsx":  true,
+	".epub":  true,
+	".ipynb": true,
+	".csv":   true,
+	".html":  true,
+	".htm":   true,
+	".zip":   true,
 }
 
 // Input is the file read tool input schema.
@@ -518,20 +537,47 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 
 	ext := strings.ToLower(filepath.Ext(in.FilePath))
 
-	if imageExtensions[ext] {
-		return executeImage(in, info)
-	}
-
-	if ext == ".pdf" {
-		return executePDF(ctx, in, info)
-	}
-
-	if binaryExtensions[ext] {
+	var result *tool.ToolResult
+	var execErr error
+	switch {
+	case imageExtensions[ext]:
+		result, execErr = executeImage(in, info)
+	case ext == ".pdf":
+		result, execErr = executePDF(ctx, in, info)
+	case convertibleExtensions[ext]:
+		result, execErr = executeDocument(ctx, in, info)
+	case binaryExtensions[ext]:
 		return nil, fmt.Errorf("file has binary extension %s and cannot be read as text: %s", ext, in.FilePath)
+	default:
+		result, execErr = executeTextFile(ctx, in, info, tctx)
 	}
 
-	// Text file handling with deduplication
-	return executeTextFile(ctx, in, info, tctx)
+	if execErr != nil || result == nil {
+		return result, execErr
+	}
+
+	return boundTextOutput(result, tctx)
+}
+
+// boundTextOutput applies a universal token limit to all text-producing paths.
+// Regardless of whether the output came from executeTextFile, executeDocument,
+// or any future handler, if the result contains text exceeding MaxFileReadTokens,
+// it is rejected with an offset/limit hint.
+// Image and other non-text outputs pass through unchanged.
+func boundTextOutput(result *tool.ToolResult, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+	if tctx != nil && tctx.UncappedOutput {
+		return result, nil
+	}
+	textOut, ok := result.Data.(TextOutput)
+	if !ok {
+		return result, nil
+	}
+	tokens := types.EstimateTokens(textOut.Content)
+	if tokens > MaxFileReadTokens {
+		return nil, fmt.Errorf("file content (~%d tokens) exceeds maximum allowed tokens (%d). Use offset and limit parameters to read specific portions of the file",
+			tokens, MaxFileReadTokens)
+	}
+	return result, nil
 }
 
 // executeImage handles image file reading.
@@ -710,6 +756,53 @@ func executePDF(ctx context.Context, in Input, info os.FileInfo) (*tool.ToolResu
 	}
 
 	return &tool.ToolResult{Data: output}, nil
+}
+
+// executeDocument converts binary documents (docx, xlsx, pptx, epub, csv, ipynb)
+// to markdown via markitdown, then applies offset/limit on the converted text.
+// omp: convertFileWithMarkit → #buildInMemoryTextResult pipeline.
+func executeDocument(ctx context.Context, in Input, info os.FileInfo) (*tool.ToolResult, error) {
+	m := markitdown.New()
+	result, err := m.ConvertFile(in.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("convert %s: %w", strings.ToLower(filepath.Ext(in.FilePath)), err)
+	}
+
+	content := result.Markdown
+	if content == "" {
+		return nil, fmt.Errorf("conversion produced no output: %s", in.FilePath)
+	}
+
+	lines := strings.Split(content, "\n")
+	totalLines := len(lines)
+	if content != "" && strings.HasSuffix(content, "\n") {
+		totalLines--
+	}
+	if content == "" {
+		totalLines = 0
+	}
+
+	offset := max(in.Offset, 1)
+	start := max(offset-1, 0)
+	end := totalLines
+	if in.Limit > 0 && start+in.Limit < end {
+		end = start + in.Limit
+	}
+	if start > totalLines {
+		start = totalLines
+	}
+
+	selectedLines := lines[start:end]
+	selectedContent := strings.Join(selectedLines, "\n")
+
+	return &tool.ToolResult{Data: TextOutput{
+		Type:       "text",
+		FilePath:   in.FilePath,
+		Content:    selectedContent,
+		NumLines:   len(selectedLines),
+		StartLine:  offset,
+		TotalLines: totalLines,
+	}}, nil
 }
 
 // executeTextFile handles text file reading with deduplication.

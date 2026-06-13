@@ -1675,3 +1675,200 @@ func TestExecute_UncappedOutput_SkipsMaxTokens(t *testing.T) {
 		t.Error("Content is empty, expected full file content")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Document conversion via markitdown (docx, xlsx, pptx, epub, csv, ipynb)
+// ---------------------------------------------------------------------------
+
+func TestExecute_DocxConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.docx")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_XlsxConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.xlsx")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_PptxConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.pptx")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_CsvConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_mskanji.csv")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_NotebookConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_notebook.ipynb")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_EpubConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.epub")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+func TestExecute_DocxConversion_Offset(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.docx")
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":2,"limit":3}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	lines := strings.Split(output.Content, "\n")
+	if len(lines) > 3 {
+		t.Errorf("expected at most 3 lines with limit=3, got %d", len(lines))
+	}
+	if output.StartLine != 2 {
+		t.Errorf("StartLine = %d, want 2", output.StartLine)
+	}
+}
+
+func TestExecute_HtmlConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_blog.html")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+	if strings.Contains(output.Content, "<script") || strings.Contains(output.Content, "<nav") {
+		t.Error("expected HTML noise (script/nav tags) to be stripped")
+	}
+}
+
+func TestExecute_ZipConversion(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_files.zip")
+	// Use limit to stay within MaxFileReadTokens — full zip output is ~72k tokens.
+	input := json.RawMessage(`{"file_path":"` + fp + `", "limit": 50}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if len(output.Content) == 0 {
+		t.Error("Content is empty, expected converted markdown")
+	}
+}
+
+// TestExecute_DocumentOutputBounded verifies that executeDocument does not
+// return unbounded output. test_files.zip expands to ~290KB of markdown
+// (~72k tokens) via markitdown — far exceeding MaxFileReadTokens (25000).
+// Without a size check, this single tool result can blow up the context
+// window and cause "Prompt is too long" errors.
+func TestExecute_DocumentOutputBounded(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test_files.zip")
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+
+	// Acceptable: error telling user to use offset/limit.
+	if err != nil {
+		if !strings.Contains(err.Error(), "offset") && !strings.Contains(err.Error(), "limit") {
+			t.Fatalf("error should mention offset/limit, got: %v", err)
+		}
+		return
+	}
+
+	// Acceptable: success with bounded output.
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	tokens := types.EstimateTokens(output.Content)
+	if tokens > fileread.MaxFileReadTokens {
+		t.Errorf("converted document output ~%d tokens exceeds MaxFileReadTokens %d (%d chars) — "+
+			"executeDocument must bound its output like executeTextFile does",
+			tokens, fileread.MaxFileReadTokens, len(output.Content))
+	}
+}
