@@ -731,9 +731,9 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 
 	largeMsgs := makeLargeMessages(20, 5000)
 	eng.SetMessages(largeMsgs)
-	// Set ContextTokens to a small value so blocking limit doesn't refuse
-	// the API call. In production, post-turn compact ensures context stays
-	// below threshold; this simulates that state.
+	// Set ContextTokens to a small value so auto-compact doesn't trigger.
+	// In production, post-turn compact ensures context stays below threshold;
+	// this simulates that state.
 	eng.ContextTokens = 1000
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

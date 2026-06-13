@@ -57,7 +57,7 @@ type PostTurnHook func(ctx context.Context, messages []types.Message, currentTok
 // Source: services/compact/autoCompact.ts
 const (
 	maxOutputTokensForSummary = 20_000 // MAX_OUTPUT_TOKENS_FOR_SUMMARY: reserve for compact output
-	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: blocking limit buffer
+	manualCompactBufferTokens = 3_000  // MANUAL_COMPACT_BUFFER_TOKENS: token-prune buffer
 
 	// coalesceWindow is the time window for batching streaming deltas.
 	// Matches TS's Ink 16ms render throttle effective rate.
@@ -701,7 +701,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		}
 
 		// Pre-turn auto-compact: check before API call, like TS.
-		// TS align: query.ts auto-compact runs before blocking limit.
 		// Uses ContextTokens from previous turn (set after API response).
 		if e.shouldAutoCompact() {
 			compactID := "compact-auto-" + uuid.New().String()[:8]
@@ -738,8 +737,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			} else {
 				// Only count as success if compact actually reduced tokens.
 				// AutoCompactor can return a no-op result (BeforeTokens == AfterTokens)
-				// when head messages have no extractable text. In that case, don't
-				// skip the blocking limit — it serves as a safety net.
+				// when head messages have no extractable text.
 				if result.BeforeTokens > result.AfterTokens {
 					compactSucceeded = true
 				}
@@ -763,8 +761,8 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			}
 		}
 
-		// Token-based pruning: when auto-compact failed and context is at blocking
-		// limit, try clearing old compactable tool result content as last resort.
+		// Token-based pruning: when auto-compact failed and context is oversized,
+		// try clearing old compactable tool result content as last resort.
 		// gbot equivalent of TS Cached Microcompact (which uses Anthropic cache_editing).
 		if !e.isSubagent && !compactSucceeded && e.autoCompactConfig.ContextWindow > 0 {
 			if pruned := e.maybeTokenPrune(); pruned != nil {
@@ -777,31 +775,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					e.ContextTokens = 0
 				}
 				e.mu.Unlock()
-			}
-		}
-
-		// Blocking limit: refuse API call if context exceeds safe threshold.
-		// TS align: query.ts:628-636 — skip blocking limit when compact
-		// produced a result (!compactionResult). Only block when compact
-		// didn't succeed this turn.
-		// Sub-agents exempt to prevent deadlock (compact/session_memory need large context).
-		if !e.isSubagent && !compactSucceeded && e.autoCompactConfig.ContextWindow > 0 {
-			reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
-			effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
-			blockingLimit := effectiveWindow - manualCompactBufferTokens
-			if blockingLimit > 0 && e.currentInputTokens() >= blockingLimit {
-				tokens := e.currentInputTokens()
-				e.logger.Warn("blocking limit exceeded, refusing API call",
-					"tokens", tokens,
-					"limit", blockingLimit)
-				blockErr := fmt.Errorf("Prompt is too long: %s context tokens exceeds %s limit", types.FormatTokenCount(tokens), types.FormatTokenCount(blockingLimit))
-				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: blockErr})
-				return QueryResult{
-					Messages:   e.messages,
-					TurnCount:  e.turnCount,
-					TotalUsage: totalUsage,
-					Error:      blockErr,
-				}
 			}
 		}
 
@@ -1929,7 +1902,7 @@ func (e *Engine) currentInputTokens() int {
 }
 
 // maybeTokenPrune attempts token-based tool result pruning when the context
-// is approaching the blocking limit and auto-compact could not help.
+// is oversized and auto-compact could not help.
 // Returns nil if pruning is not needed or not possible.
 func (e *Engine) maybeTokenPrune() *TokenPruneResult {
 	config := getTokenPruneConfig()
@@ -1937,7 +1910,7 @@ func (e *Engine) maybeTokenPrune() *TokenPruneResult {
 		return nil
 	}
 
-	// Compute token budget (same as blocking limit threshold)
+	// Compute token budget for pruning threshold.
 	reservedTokens := min(e.maxTokens, maxOutputTokensForSummary)
 	effectiveWindow := e.autoCompactConfig.ContextWindow - reservedTokens
 	tokenBudget := effectiveWindow - manualCompactBufferTokens

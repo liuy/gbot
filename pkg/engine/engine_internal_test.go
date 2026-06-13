@@ -2397,9 +2397,9 @@ func TestShouldAutoCompact_QuerySourceGuard(t *testing.T) {
 	}
 }
 
-// TestQuery_BlockingLimit_SubAgentExempt verifies sub-agents bypass the blocking limit.
-// Without this exemption, compact/session_memory sub-agents would deadlock.
-func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
+// TestQuery_SubAgent_OversizedContext verifies sub-agents proceed normally
+// even with oversized context (no auto-compact, no token pruning).
+func TestQuery_SubAgent_OversizedContext(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
@@ -2426,7 +2426,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// Pre-load messages that would exceed blocking limit (~31000 tokens).
+	// Pre-load messages with oversized context (~32000 tokens).
 	bigText := strings.Repeat("x", 16000)
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
@@ -2440,7 +2440,7 @@ func TestQuery_BlockingLimit_SubAgentExempt(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "do something", "")
 	if result.Error != nil {
-		t.Fatalf("sub-agent should complete despite blocking limit, got: %v", result.Error)
+		t.Fatalf("sub-agent should complete with oversized context, got: %v", result.Error)
 	}
 }
 
@@ -2685,16 +2685,12 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Pre-turn auto-compact: compact runs BEFORE blocking limit (TS align)
-// These tests verify the reorder: shouldAutoCompact → blocking limit → callLLM
+// Pre-turn auto-compact: compact runs BEFORE the API call (TS align)
 // ---------------------------------------------------------------------------
 
-// TestQuery_PreTurnCompact_Succeeds verifies that when context exceeds both
-// the auto-compact threshold and the blocking limit, the engine runs compact
-// FIRST and then skips the blocking limit, allowing the API call to proceed.
-//
-// With current (broken) code: blocking limit fires first → query fails with
-// "Prompt is too long". compact runs first → blocking limit skipped → query succeeds.
+// TestQuery_PreTurnCompact_Succeeds verifies that when context exceeds the
+// auto-compact threshold, the engine runs compact first, reducing context
+// so the API call proceeds successfully.
 func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	t.Parallel()
 
@@ -2737,12 +2733,11 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// Pre-load messages + set ContextTokens ABOVE both thresholds.
+	// Pre-load messages + set ContextTokens ABOVE the auto-compact threshold.
 	// With ContextWindow=50000, MaxTokens=16000:
 	//   effectiveWindow = 50000 - 16000 = 34000
 	//   autoCompactThreshold = 34000 - max(34000*7/100, 3000) = 34000 - 3000 = 31000
-	//   blockingLimit = 34000 - 3000 = 31000
-	// Setting ContextTokens=35000 triggers both auto-compact AND blocking limit.
+	// Setting ContextTokens=35000 triggers auto-compact.
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
@@ -2760,10 +2755,10 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 
 	// Critical assertions:
 	if !compactCalled {
-		t.Fatal("pre-turn compact should have been called before blocking limit")
+		t.Fatal("pre-turn compact should have been called")
 	}
 	if result.Error != nil {
-		t.Fatalf("expected success (compact should reduce context before blocking limit), got: %v", result.Error)
+		t.Fatalf("expected success (compact should reduce context), got: %v", result.Error)
 	}
 
 	// Verify compact events were emitted
@@ -2784,15 +2779,15 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	}
 }
 
-// TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires verifies that when
-// compact fails, compactSucceeded stays false and the blocking limit fires as
-// a safety net. This is the recovery scenario from the test-design skill.
-func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
+// TestQuery_PreTurnCompact_CompactFails_APIProceeds verifies that when compact
+// fails, the API call still proceeds. Without a blocking limit, oversized
+// context is handled reactively — the API returns an overflow error which
+// triggers reactive compact, or succeeds if the provider accepts it.
+func TestQuery_PreTurnCompact_CompactFails_APIProceeds(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	// API response — shouldn't be reached because blocking limit should fire.
-	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+	mp.addResponse(textStreamEvents("test-model", "api response"), nil)
 
 	compactor := &funcCompactor{
 		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
@@ -2813,7 +2808,6 @@ func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// ContextTokens above both auto-compact threshold and blocking limit.
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
@@ -2829,11 +2823,9 @@ func TestQuery_PreTurnCompact_CompactFails_BlockingLimitFires(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "do something", "")
 
-	if result.Error == nil {
-		t.Fatal("expected blocking limit error after compact failure")
-	}
-	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
-		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	// Compact failed, but the API call should proceed anyway.
+	if result.Error != nil {
+		t.Fatalf("expected API call to proceed despite compact failure, got: %v", result.Error)
 	}
 }
 
@@ -2882,9 +2874,8 @@ func TestQuery_PreTurnCompact_ColdStart_NoCompact(t *testing.T) {
 }
 
 // TestQuery_PreTurnCompact_StillOverLimit verifies that when compact succeeds
-// but context remains above the blocking limit, the query still proceeds
-// (compactSucceeded=true → skip blocking limit). The API call may 413, which
-// reactive compact handles. This is the edge case from the test-design skill.
+// but context remains oversized, the query still proceeds (compactSucceeded=true).
+// The API call may 413, which reactive compact handles.
 func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 	t.Parallel()
 
@@ -2897,7 +2888,7 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 		fn: func(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
 			compactCalled = true
 			return &short.CompactResult{
-				// Compact barely reduces: 35000 → 33000 (still over blocking limit 31000).
+				// Compact barely reduces: 35000 → 33000 (still oversized).
 				BeforeTokens:   35000,
 				AfterTokens:    33000,
 				BeforeMessages: len(msgs),
@@ -2937,23 +2928,23 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 	if !compactCalled {
 		t.Fatal("pre-turn compact should have been called")
 	}
-	// compactSucceeded=true → blocking limit skipped → API call proceeds.
+	// compactSucceeded=true → API call proceeds.
 	// In real usage, the API might 413 and reactive compact handles it.
 	// Here the mock succeeds, so query should succeed.
 	if result.Error != nil {
-		t.Fatalf("expected success (compact succeeded, blocking limit skipped), got: %v", result.Error)
+		t.Fatalf("expected success (compact succeeded), got: %v", result.Error)
 	}
 }
 
-// TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit verifies that after
+// TestQuery_PreTurnCompact_CircuitBreaker_APIProceeds verifies that after
 // consecutiveCompactFailures reaches the limit, shouldAutoCompact() returns
-// false, compact doesn't run, and the blocking limit fires as safety net.
-func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
+// false, compact doesn't run, and the API call proceeds without a pre-turn
+// compact. Reactive compact (engine.go) handles overflow if the API rejects.
+func TestQuery_PreTurnCompact_CircuitBreaker_APIProceeds(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	// API response — shouldn't be reached.
-	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+	mp.addResponse(textStreamEvents("test-model", "api response"), nil)
 
 	compactor := &funcCompactor{
 		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
@@ -2992,33 +2983,22 @@ func TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "do something", "")
 
-	if result.Error == nil {
-		t.Fatal("expected blocking limit error when circuit breaker tripped")
-	}
-	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
-		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	// Circuit breaker tripped, compact skipped, but API call proceeds.
+	if result.Error != nil {
+		t.Fatalf("expected API call to proceed despite circuit breaker, got: %v", result.Error)
 	}
 }
 
-// TestQuery_BlockingLimit_WithCompactor_NoCompactTriggered is removed — it's
-// redundant with TestQuery_PreTurnCompact_CircuitBreaker_BlockingLimit.
-// Analysis: auto-compact threshold ≤ blocking limit for all window sizes,
-// so the only way compact doesn't trigger while over blocking limit is when
-// shouldAutoCompact returns false (circuit breaker, no compactor, sub-agent).
-// Those cases are already covered by other tests.
-
-// TestQuery_PreTurnCompact_NoOp_BlockingLimitFires verifies that when compact
+// TestQuery_PreTurnCompact_NoOp_APIProceeds verifies that when compact
 // "succeeds" but doesn't actually reduce tokens (BeforeTokens == AfterTokens),
-// the blocking limit still fires. This catches the real bug where the
-// AutoCompactor returns a no-op result (empty text in head messages → no LLM
-// call → zero delta) but compactSucceeded was set to true, causing the blocking
-// limit to be skipped while context keeps growing.
-func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
+// the API call still proceeds. Without a blocking limit, a no-op compact
+// doesn't prevent the API call — the provider or reactive compact handles
+// overflow.
+func TestQuery_PreTurnCompact_NoOp_APIProceeds(t *testing.T) {
 	t.Parallel()
 
 	mp := &testProvider{}
-	// API response — shouldn't be reached because blocking limit should fire.
-	mp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+	mp.addResponse(textStreamEvents("test-model", "api response"), nil)
 
 	compactor := &funcCompactor{
 		fn: func(_ context.Context, msgs []types.Message) (*short.CompactResult, error) {
@@ -3060,12 +3040,9 @@ func TestQuery_PreTurnCompact_NoOp_BlockingLimitFires(t *testing.T) {
 
 	result := eng.QuerySync(ctx, "do something", "")
 
-	// No-op compact should NOT skip the blocking limit.
-	if result.Error == nil {
-		t.Fatal("expected blocking limit error when compact was a no-op (BeforeTokens == AfterTokens)")
-	}
-	if !strings.Contains(result.Error.Error(), "Prompt is too long") {
-		t.Errorf("error should contain 'Prompt is too long', got: %v", result.Error)
+	// No-op compact doesn't prevent the API call.
+	if result.Error != nil {
+		t.Fatalf("expected API call to proceed despite no-op compact, got: %v", result.Error)
 	}
 
 	// Verify compact DID run (it was attempted, just didn't help).
@@ -5872,9 +5849,9 @@ func TestExecuteTool_LLMPathStillCapped(t *testing.T) {
 // Token-based pruning integration tests
 // ---------------------------------------------------------------------------
 
-// TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided verifies THE key
-// scenario: compact fails (all messages recent) -> token pruning clears old
-// tool results -> blocking limit skipped -> API call succeeds.
+// TestQuery_TokenPrune_AfterCompactFails verifies THE key scenario: compact
+// fails (all messages recent) -> token pruning clears old tool results ->
+// tokens drop -> API call succeeds.
 func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	t.Parallel()
 
@@ -5904,8 +5881,8 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	// 8 Read results x ~5K tokens each -> 40K tokens total.
 	// With ContextWindow=50000, MaxTokens=16000:
 	//   effectiveWindow = 50000 - 16000 = 34000
-	//   blockingLimit = 34000 - 3000 = 31000
-	// Setting ContextTokens=35000 triggers both auto-compact and blocking limit.
+	//   pruneThreshold = 34000 - 3000 = 31000
+	// Setting ContextTokens=35000 triggers auto-compact.
 	// Compact fails -> token prune should clear old Read results -> tokens drop.
 	//
 	// Use recent timestamps so time-based microcompact does NOT fire (gap < 60 min).
@@ -5945,13 +5922,15 @@ func TestQuery_TokenPrune_AfterCompactFails_BlockingAvoided(t *testing.T) {
 	}
 }
 
-// TestQuery_TokenPrune_StillOverLimit verifies that when pruning reduces
-// tokens but not enough, the blocking limit still fires correctly.
-func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
+// TestQuery_TokenPrune_NothingToPrune_APIProceeds verifies that when pruning
+// has nothing to clear (fewer Read results than KeepRecent), the API call
+// still proceeds. Without a blocking limit, oversized context is handled
+// reactively by the provider or reactive compact.
+func TestQuery_TokenPrune_NothingToPrune_APIProceeds(t *testing.T) {
 	t.Parallel()
 
 	tmp := &testProvider{}
-	tmp.addResponse(textStreamEvents("test-model", "should not reach"), nil)
+	tmp.addResponse(textStreamEvents("test-model", "api response"), nil)
 
 	compactor := &funcCompactor{
 		fn: func(_ context.Context, _ []types.Message) (*short.CompactResult, error) {
@@ -5973,12 +5952,10 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	})
 
 	// Only 2 Read results -> pruning keeps KeepRecent=5 -> nothing to clear.
-	// Blocking limit still fires. Add Usage to last assistant so
-	// TokenCountWithEstimation derives precise context from per-message data.
+	// API call should still proceed.
 	for i := range 2 {
 		usage := &types.Usage{InputTokens: 17500, OutputTokens: 50}
 		if i == 1 {
-			// Second API response saw full context: 17500*2 = 35000 total.
 			usage = &types.Usage{InputTokens: 35000, OutputTokens: 100}
 		}
 		eng.SetMessages(append(eng.Messages(), types.Message{
@@ -6003,16 +5980,14 @@ func TestQuery_TokenPrune_StillOverLimit(t *testing.T) {
 	defer cancel()
 
 	result := eng.QuerySync(ctx, "continue", "")
-	if result.Error == nil {
-		t.Fatal("expected blocking limit to fire (pruning clears nothing)")
-	}
-	if !strings.Contains(result.Error.Error(), "too long") {
-		t.Errorf("expected 'too long' error, got: %v", result.Error)
+	// Pruning cleared nothing, but the API call should proceed anyway.
+	if result.Error != nil {
+		t.Fatalf("expected API call to proceed despite nothing to prune, got: %v", result.Error)
 	}
 }
 
 // TestQuery_TokenPrune_UnderThreshold verifies that when context is below
-// the blocking limit, token pruning does not fire and the API call succeeds normally.
+// the prune threshold, token pruning does not fire and the API call succeeds normally.
 func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
 	t.Parallel()
 
@@ -6038,7 +6013,7 @@ func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
 		MaxConsecutiveFailures: 3,
 	})
 
-	// 3 Read results — context well below blocking limit (31000).
+	// 3 Read results — context well below prune threshold (31000).
 	now := time.Now() // REAL-TIME: timestamps for microcompact gap calc
 	for i := range 3 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
@@ -6073,7 +6048,7 @@ func TestQuery_TokenPrune_UnderThreshold(t *testing.T) {
 }
 
 // TestQuery_TokenPrune_SubAgentExempt verifies that sub-agents do not trigger
-// token-based pruning (same as they are exempt from blocking limit).
+// token-based pruning.
 func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
 	t.Parallel()
 
@@ -6126,9 +6101,9 @@ func TestQuery_TokenPrune_SubAgentExempt(t *testing.T) {
 	defer cancel()
 
 	result := eng.QuerySync(ctx, "continue", "")
-	// Sub-agent is exempt from blocking limit too, so this should succeed.
+	// Sub-agents skip token pruning, so the API call should proceed.
 	if result.Error != nil {
-		t.Fatalf("sub-agent should be exempt from blocking, got: %v", result.Error)
+		t.Fatalf("sub-agent query should succeed, got: %v", result.Error)
 	}
 	if len(result.Messages) == 0 {
 		t.Error("expected messages in result")
