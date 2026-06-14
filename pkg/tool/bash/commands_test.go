@@ -58,6 +58,14 @@ func TestIsSearchOrReadBashCommand(t *testing.T) {
 		{"awk redirect out", `awk '{print > "out.txt"}' file.txt`, tool.SearchReadKind{}},
 		{"awk system", `awk '{system("rm foo")}' file.txt`, tool.SearchReadKind{}},
 		{"awk -i inplace", `awk -i inplace '{print}' file.txt`, tool.SearchReadKind{}},
+
+		// cd is neutral — does not break search/read classification
+		{"cd && grep", `cd /repo && grep -n "foo" file.go`, tool.SearchReadKind{IsSearch: true}},
+		{"cd && rg", `cd /repo && rg "foo"`, tool.SearchReadKind{IsSearch: true}},
+		{"cd && cat", `cd /tmp && cat log.txt`, tool.SearchReadKind{IsRead: true}},
+		{"cd && ls", `cd /repo && ls -la`, tool.SearchReadKind{IsList: true}},
+		{"cd && git commit", `cd /repo && git commit -m "x"`, tool.SearchReadKind{}},
+		{"cd only", `cd /repo`, tool.SearchReadKind{}},
 	}
 
 	for _, tt := range tests {

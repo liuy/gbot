@@ -23,6 +23,7 @@ var (
 	}
 	bashNeutralCommands = map[string]bool{
 		"echo": true, "printf": true, "true": true, "false": true, ":": true,
+		"cd": true, "pushd": true, "popd": true,
 	}
 )
 
