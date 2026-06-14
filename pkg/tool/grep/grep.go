@@ -1,14 +1,22 @@
-// Package grep implements the Grep tool for searching file contents using ripgrep.
+// Package grep implements the Grep tool — unified content + filename search
+// built on ripgrep.
 //
-// Source reference: tools/GrepTool/GrepTool.ts
-// 1:1 port from the TypeScript source.
+// Merges the former Glob tool. The glob parameter switches modes:
+//   - pattern set, glob unset       → search file contents (rg PATTERN)
+//   - pattern unset, glob set       → list files by name (rg --files -g GLOB)
+//   - both set                      → search contents, filtered by filename
+//   - both unset                    → error
 package grep
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -34,12 +43,11 @@ var vcsDirsToExclude = []string{
 	".sl",
 }
 
-// Input is the grep tool input schema.
-// Source: GrepTool.ts — Zod schema for grep input.
+// Input is the Grep tool input schema.
 type Input struct {
-	Pattern         string `json:"pattern" validate:"required"`
+	Pattern         string `json:"pattern,omitempty"`       // regex to search file contents; required unless glob is set
+	Glob            string `json:"glob,omitempty"`          // file name glob (e.g. "*.go"); when set alone, lists matching files
 	Path            string `json:"path,omitempty"`
-	Glob            string `json:"glob,omitempty"`        // file glob filter (e.g. "*.go") — maps to rg --glob
 	OutputMode      string `json:"output_mode,omitempty"` // "content" | "files_with_matches" | "count"
 	ContextBefore   int    `json:"-B,omitempty"`          // lines before match (rg -B)
 	ContextAfter    int    `json:"-A,omitempty"`          // lines after match (rg -A)
@@ -80,24 +88,23 @@ type Match struct {
 func New() tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
-		"required": ["pattern"],
 		"properties": {
 			"pattern": {
 				"type": "string",
-				"description": "The regular expression pattern to search for in file contents."
+				"description": "Regex to search file contents. Required unless glob is set."
+			},
+			"glob": {
+				"type": "string",
+				"description": "Glob pattern for file names (e.g. '*.js', '**/*.ts', '*.{ts,tsx}'). Required unless pattern is set. When set without pattern, lists matching files."
 			},
 			"path": {
 				"type": "string",
 				"description": "File or directory to search in. Defaults to current working directory."
 			},
-			"glob": {
-				"type": "string",
-				"description": "Glob pattern to filter files (e.g. '*.js', '*.{ts,tsx}') - maps to rg --glob."
-			},
 			"output_mode": {
 				"type": "string",
 				"enum": ["content", "files_with_matches", "count"],
-				"description": "Output mode: 'content' shows matching lines with context, 'files_with_matches' shows file paths sorted by mtime, 'count' shows match counts. Defaults to 'files_with_matches'."
+				"description": "Output mode: 'content' shows matching lines with context, 'files_with_matches' shows file paths sorted by mtime, 'count' shows match counts. Defaults to 'files_with_matches'. Ignored when only glob is set."
 			},
 			"-B": {
 				"type": "integer",
@@ -149,9 +156,12 @@ func New() tool.Tool {
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {
-				return "Search file contents with regex", nil
+				return "Search file contents or file names", nil
 			}
-			return in.Pattern, nil
+			if in.Pattern != "" {
+				return in.Pattern, nil
+			}
+			return in.Glob, nil
 		},
 		Call_: Execute,
 		IsReadOnly_: func(json.RawMessage) bool {
@@ -206,8 +216,8 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 		return nil, fmt.Errorf("parse input: %w", err)
 	}
 
-	if in.Pattern == "" {
-		return nil, fmt.Errorf("pattern is required")
+	if in.Pattern == "" && in.Glob == "" {
+		return nil, fmt.Errorf("either pattern or glob must be set")
 	}
 
 	// Determine search path
@@ -218,6 +228,11 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 		} else {
 			searchPath, _ = os.Getwd()
 		}
+	}
+
+	// Glob-only mode: list files by name pattern.
+	if in.Pattern == "" {
+		return executeFileList(ctx, in, searchPath)
 	}
 
 	// Fall back to Go-based search if rg is not available
@@ -310,15 +325,17 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 
 	args = append(args, searchPath)
 
-	cmd := exec.CommandContext(ctx, "rg", args...)
-	output, err := cmd.Output()
+	lines, err := runRipgrep(ctx, args, "search")
 	if err != nil {
-		// rg returns exit code 1 when no matches — not an error
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return emptyResult(mode), nil
+		if rge, ok := err.(*rgError); ok {
+			var exitErr *exec.ExitError
+			if errors.As(rge.Unwrap(), &exitErr) && exitErr.ExitCode() == 1 {
+				return emptyResult(mode), nil
+			}
 		}
 		return nil, fmt.Errorf("ripgrep error: %w", err)
 	}
+	output := strings.Join(lines, "\n")
 
 	// Resolve head_limit: nil → DefaultHeadLimit (250), explicit 0 → unlimited
 	headLimit := DefaultHeadLimit
@@ -419,7 +436,7 @@ func buildResult(mode, rgOutput string, headLimit, offset int) (*tool.ToolResult
 		filtered := filterEmpty(lines)
 		sorted := sortByMtime(filtered)
 		limited, appliedLimit := applyHeadLimitStrings(sorted, headLimit, offset)
-		var relFiles []string
+		relFiles := []string{}
 		for _, f := range limited {
 			relFiles = append(relFiles, toRelativePath(f))
 		}
@@ -613,4 +630,158 @@ func grepFile(filePath, pattern string) ([]Match, error) {
 	}
 
 	return matches, scanner.Err()
+}
+
+const maxBufferSize = 20_000_000 // 20MB
+const defaultRgTimeout = 20 * time.Second
+
+// executeFileList lists files matching a glob pattern using ripgrep --files.
+func executeFileList(ctx context.Context, in Input, searchPath string) (*tool.ToolResult, error) {
+	info, err := os.Stat(searchPath)
+	if err != nil {
+		return nil, fmt.Errorf("path does not exist: %s", searchPath)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", searchPath)
+	}
+
+	args := []string{
+		"--files",
+		"--glob", in.Glob,
+		"--sort=modified",
+		"--no-ignore",
+		"--hidden",
+		searchPath,
+	}
+	for _, dir := range vcsDirsToExclude {
+		args = append([]string{"--glob", "!" + dir}, args...)
+	}
+
+	lines, err := runRipgrep(ctx, args, "grep:glob")
+	if err != nil {
+		return nil, fmt.Errorf("ripgrep error: %w", err)
+	}
+
+	for i, p := range lines {
+		if rel, relErr := filepath.Rel(searchPath, p); relErr == nil {
+			lines[i] = rel
+		}
+	}
+
+	headLimit := DefaultHeadLimit
+	if in.HeadLimit != nil {
+		headLimit = *in.HeadLimit
+	}
+	if len(lines) > headLimit {
+		lines = lines[:headLimit]
+	}
+
+	return &tool.ToolResult{Data: &Output{
+		Mode:      "files_with_matches",
+		Filenames: lines,
+		NumFiles:  len(lines),
+	}}, nil
+}
+
+// runRipgrep runs rg with timeout, buffer cap, and EAGAIN retry.
+// Mirrors TS ripgrep.ts:108-232, 394-409.
+func runRipgrep(ctx context.Context, args []string, logTag string) ([]string, error) {
+	lines, err := rgRaw(ctx, args)
+	if err == nil {
+		return lines, nil
+	}
+	if isRgEagainError(err) {
+		slog.Info(logTag + ":rg_eagain_retry")
+		return rgRaw(ctx, append([]string{"-j", "1"}, args...))
+	}
+	return lines, err
+}
+
+// rgRaw executes ripgrep with the given args. Returns parsed stdout lines.
+// Source: ripgrep.ts:108-232.
+func rgRaw(ctx context.Context, args []string) ([]string, error) {
+	rgCtx, cancel := context.WithTimeout(ctx, defaultRgTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(rgCtx, "rg", args...)
+
+	var stdout, stderr bytes.Buffer
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("ripgrep pipe: %w", err)
+	}
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, &rgError{stderr: stderr.String(), wrapped: fmt.Errorf("ripgrep: %w", err)}
+	}
+
+	limited := io.LimitReader(pipe, maxBufferSize+1)
+	if _, copyErr := io.Copy(&stdout, limited); copyErr != nil {
+		if rgCtx.Err() == nil {
+			return nil, fmt.Errorf("ripgrep read: %w", copyErr)
+		}
+	}
+
+	waitErr := cmd.Wait()
+	isTimeout := rgCtx.Err() != nil
+	lines := parseRgOutput(stdout.String())
+
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 1 && !isTimeout {
+			return []string{}, nil
+		}
+
+		if isTimeout && len(lines) > 0 {
+			lines = lines[:len(lines)-1]
+			if len(lines) > 0 {
+				slog.Warn("grep:rg_timeout_partial", "results", len(lines))
+				return lines, nil
+			}
+		}
+
+		if isTimeout {
+			return nil, &rgError{
+				stderr:  stderr.String(),
+				wrapped: fmt.Errorf("ripgrep timed out after %s", defaultRgTimeout),
+			}
+		}
+
+		return nil, &rgError{stderr: stderr.String(), wrapped: fmt.Errorf("ripgrep error: %w", waitErr)}
+	}
+
+	return lines, nil
+}
+
+type rgError struct {
+	stderr  string
+	wrapped error
+}
+
+func (e *rgError) Error() string { return e.wrapped.Error() }
+func (e *rgError) Unwrap() error { return e.wrapped }
+
+func isRgEagainError(err error) bool {
+	rge, ok := err.(*rgError)
+	if !ok {
+		return false
+	}
+	return strings.Contains(rge.stderr, "os error 11") ||
+		strings.Contains(rge.stderr, "Resource temporarily unavailable")
+}
+
+func parseRgOutput(out string) []string {
+	if strings.TrimSpace(out) == "" {
+		return []string{}
+	}
+	raw := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	filtered := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = strings.TrimRight(line, "\r")
+		if line != "" {
+			filtered = append(filtered, line)
+		}
+	}
+	return filtered
 }

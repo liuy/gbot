@@ -8097,7 +8097,7 @@ func TestApp_UpdateRepl_SubAgentToolSearchRead(t *testing.T) {
 	}{
 		{"Grep_gets_IsSearch", "Grep", true, false, false},
 		{"Read_gets_IsRead", "Read", false, true, false},
-		{"Glob_gets_IsSearch", "Glob", true, false, false},
+		{"Glob_gets_IsSearch", "Grep", true, false, false},
 	}
 
 	for _, tc := range tests {

@@ -876,7 +876,7 @@ func TestExecute_DeferredToolsCount(t *testing.T) {
 		deferredTool("FileRead", "Read file contents"),
 		deferredTool("FileEdit", "Edit file contents"),
 		regularTool("Grep", "Search in files"), // not deferred
-		regularTool("Glob", "Find files"),       // not deferred
+		regularTool("Grep", "Find files"),       // not deferred
 	)
 	tctx := makeTctx(tools)
 	input := json.RawMessage(`{"query": "read"}`)
@@ -1078,7 +1078,7 @@ func TestExecute_Integration_RealisticToolSet(t *testing.T) {
 		deferredTool("mcp__jupyter__run_cell", "Run a Jupyter notebook cell"),
 		deferredTool("NotebookEdit", "Edit notebook cells"),
 		regularTool("Grep", "Search file contents"),
-		regularTool("Glob", "Find files"),
+		regularTool("Grep", "Find files"),
 		regularTool("FileRead", "Read file contents"),
 	)
 

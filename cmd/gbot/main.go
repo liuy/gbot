@@ -39,7 +39,6 @@ import (
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
-	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
@@ -326,7 +325,6 @@ func main() {
 					"Edit":  fileedit.New(),
 					"Write": filewrite.New(),
 					"Grep":  grep.New(),
-					"Glob":  glob.New(),
 				}
 				subEng := eng.NewSubEngine(engine.SubEngineOptions{
 					Tools:     dreamTools,

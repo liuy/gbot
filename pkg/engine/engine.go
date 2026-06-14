@@ -1841,7 +1841,7 @@ func extractSummaryFromPartial(name, partial string) string {
 		return extractJSONStringField(partial, "command", "", 30)
 	case "Read", "Write", "Edit", "fileread", "filewrite", "fileedit":
 		return extractJSONStringField(partial, "file_path", "", 40)
-	case "Glob", "Grep", "fileglob", "searchcode":
+	case "Grep", "fileglob", "searchcode":
 		return extractJSONStringField(partial, "pattern", "", 40)
 	}
 	// MCP tools and unknown tools: try common param names

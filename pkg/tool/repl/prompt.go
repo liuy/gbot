@@ -69,7 +69,7 @@ for (const f of files) {
 
 // Parallel tool calls with Promise.all
 const [globResult, grepResult] = await Promise.all([
-  tool("Glob", {pattern: "**/*.go"}),
+  tool("Grep", {glob: "**/*.go"}),
   tool("Grep", {pattern: "TODO"})
 ]);
 

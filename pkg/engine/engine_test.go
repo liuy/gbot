@@ -420,7 +420,7 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 	t.Parallel()
 
 	toolID := "tool_glob_1"
-	toolName := "Glob"
+	toolName := "Grep"
 	toolInput := `{"pattern":"**/*.go"}`
 
 	mp := &mockProvider{}
@@ -3451,7 +3451,7 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 
 	// Correct registration order: ALL tools before New()
 	reg := tool.NewRegistry()
-	for _, name := range []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep"} {
+	for _, name := range []string{"Bash", "Read", "Edit", "Write", "Grep"} {
 		reg.MustRegister(&mockTool{name: name, enabled: true})
 	}
 	reg.MustRegister(&mockTool{name: "Skill", enabled: true})
@@ -3467,8 +3467,8 @@ func TestAllTools_AllToolsRegisteredBeforeEngine(t *testing.T) {
 	t.Cleanup(func() { eng.Close() })
 
 	got := len(eng.AllTools())
-	if got != 9 {
-		t.Errorf("AllTools() = %d tools, want 9. "+
+	if got != 8 {
+		t.Errorf("AllTools() = %d tools, want 8. "+
 			"All tools registered before New() but count is wrong.", got)
 	}
 }

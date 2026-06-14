@@ -199,7 +199,7 @@ func TestExtractSummaryFromPartial_FileEditTool(t *testing.T) {
 
 func TestExtractSummaryFromPartial_GlobTool(t *testing.T) {
 	t.Parallel()
-	got := extractSummaryFromPartial("Glob", `{"pattern":"**/*.go"}`)
+	got := extractSummaryFromPartial("Grep", `{"pattern":"**/*.go"}`)
 	if got != "**/*.go" {
 		t.Errorf("Glob: got %q, want %q", got, "**/*.go")
 	}

@@ -40,8 +40,7 @@ func TestCompactableTools(t *testing.T) {
 		"Read":   true,
 		"Bash":   true,
 		"Grep": true,
-		"Glob": true,
-		"Edit":   true,
+				"Edit":   true,
 		"Write":  true,
 	}
 	for name := range expected {

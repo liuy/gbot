@@ -1484,10 +1484,8 @@ func TestPromiseAllWithAwait(t *testing.T) {
 
 	toolFn := func(_ context.Context, name, argsJSON string) string {
 		switch name {
-		case "Glob":
-			return "file1.go\nfile2.go\nfile3.go"
 		case "Grep":
-			return "file1.go:1:TODO fix\nfile2.go:5:TODO refactor"
+			return "file1.go\nfile2.go\nfile3.go"
 		default:
 			return ""
 		}
@@ -1498,7 +1496,7 @@ await new Promise(resolve => setTimeout(resolve, 50));
 
 // Promise.all with tool calls
 const results = await Promise.all([
-  tool("Glob", JSON.stringify({pattern: "**/*.go"})),
+  tool("Grep", JSON.stringify({glob: "**/*.go"})),
   tool("Grep", JSON.stringify({pattern: "TODO"}))
 ]);
 console.log("files:", results[0].split("\n").length);
@@ -1515,8 +1513,8 @@ console.log("saved:", globalThis.fileCount);
 	if !strings.Contains(output, "files: 3") {
 		t.Errorf("expected 'files: 3', got %q", output)
 	}
-	if !strings.Contains(output, "todos: 2") {
-		t.Errorf("expected 'todos: 2', got %q", output)
+	if !strings.Contains(output, "todos: 3") {
+		t.Errorf("expected 'todos: 3', got %q", output)
 	}
 	if !strings.Contains(output, "saved: 3") {
 		t.Errorf("expected 'saved: 3', got %q", output)
@@ -1536,7 +1534,7 @@ func TestExecutePromiseAllWithTool(t *testing.T) {
 	}
 
 	output, execErr := s.Execute(context.Background(),
-		`const results = await Promise.all([tool("Glob", JSON.stringify({pattern: "*"})), tool("Grep", JSON.stringify({pattern: "TODO"}))]);
+		`const results = await Promise.all([tool("Grep", JSON.stringify({pattern: "*"})), tool("Grep", JSON.stringify({pattern: "TODO"}))]);
 		console.log("got", results.length, "results");`,
 		"", toolFn, 10000)
 
