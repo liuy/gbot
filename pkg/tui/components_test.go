@@ -3250,7 +3250,7 @@ func TestChain_ReadTool_CollapsedAndExpanded(t *testing.T) {
 	t.Parallel()
 
 	// Read tool returns file content; RenderResult_ returns it verbatim.
-	readTool := fileread.New()
+	readTool := fileread.New(nil)
 	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
 	rendered := readTool.RenderResult(&fileread.TextOutput{
 		Content:    content,
@@ -3314,7 +3314,7 @@ func TestChain_ReadTool_CollapsedAndExpanded(t *testing.T) {
 func TestChain_GrepTool_ContentMode(t *testing.T) {
 	t.Parallel()
 
-	grepTool := grep.New()
+	grepTool := grep.New(nil)
 	matches := "main.go:10:fmt.Println\nmain.go:20:log.Println\nutil.go:5:fmt.Sprintf"
 	rendered := grepTool.RenderResult(&grep.Output{
 		Mode:     "content",
@@ -3367,7 +3367,7 @@ func TestChain_GrepTool_ContentMode(t *testing.T) {
 func TestChain_GrepTool_FilesWithMatchesMode(t *testing.T) {
 	t.Parallel()
 
-	grepTool := grep.New()
+	grepTool := grep.New(nil)
 	files := "a.go\nb.go\nc.go"
 	rendered := grepTool.RenderResult(&grep.Output{
 		Mode:      "files_with_matches",
@@ -3389,7 +3389,7 @@ func TestChain_GrepTool_FilesWithMatchesMode(t *testing.T) {
 func TestChain_GlobTool(t *testing.T) {
 	t.Parallel()
 
-	grepTool := grep.New()
+	grepTool := grep.New(nil)
 	fileList := "src/main.go\nsrc/util.go\nsrc/handler.go"
 	rendered := grepTool.RenderResult(&grep.Output{
 		Mode:      "files_with_matches",
@@ -3585,7 +3585,7 @@ func TestChain_EmptyOutput(t *testing.T) {
 	t.Parallel()
 
 	// Grep with no results.
-	grepTool := grep.New()
+	grepTool := grep.New(nil)
 	rendered := grepTool.RenderResult(&grep.Output{
 		Mode:      "files_with_matches",
 		Filenames: []string{},

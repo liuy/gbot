@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -391,7 +392,7 @@ func convertHunks(hunks []StructuredPatchHunk) []tool.DiffHunk {
 
 // New creates the FileWrite tool.
 // Source: tools/FileWriteTool/FileWriteTool.ts
-func New() tool.Tool {
+func New(reg *lsp.Registry) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["file_path", "content"],
@@ -410,7 +411,7 @@ func New() tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        "Write",
 		Aliases_:     []string{"filewrite", "write"},
-		InputSchema_: func() json.RawMessage { return schema },
+		InputSchema_: func() json.RawMessage { return lsp.InjectLSPField(schema, reg) },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {

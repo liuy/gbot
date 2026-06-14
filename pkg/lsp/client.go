@@ -24,6 +24,30 @@ var ErrServerDead = errors.New("lsp server is not running")
 var execCommandContext = exec.CommandContext
 var execLookPath = exec.LookPath
 
+// InjectLSPField conditionally adds an `lsp` boolean parameter to a tool's JSON
+// Schema. When the registry is nil or has no discovered servers the input schema
+// is returned unchanged — the model never sees a knob that does nothing.
+func InjectLSPField(schema json.RawMessage, reg *Registry) json.RawMessage {
+	if reg == nil || reg.NumServers() == 0 {
+		return schema
+	}
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		return schema
+	}
+	props, _ := m["properties"].(map[string]any)
+	if props == nil {
+		props = make(map[string]any)
+	}
+	props["lsp"] = map[string]any{
+		"type":        "boolean",
+		"description": "Enable Language Server Protocol enhancements. When set, results are symbol-aware and missing imports are auto-applied. Requires an LSP server for the file type (see # Environment).",
+	}
+	m["properties"] = props
+	modified, _ := json.Marshal(m)
+	return json.RawMessage(modified)
+}
+
 // Client wraps a single LSP server subprocess speaking JSON-RPC 2.0 over stdio.
 type Client struct {
 	name   string

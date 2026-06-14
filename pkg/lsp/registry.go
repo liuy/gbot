@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,10 +45,11 @@ func NewRegistry(rootDir string) *Registry {
 	}
 }
 
-// Start probes specs via Discover and records the working ones.
-// Should be called once at startup; subsequent calls clear previous state.
-func (r *Registry) Start(ctx context.Context, specs []ServerSpec) {
-	alive := Discover(ctx, specs, r.rootDir)
+// Scan populates the registry from PATH-only checks (no spawn).
+// Returns immediately; used at startup so RuntimeInfo can list available
+// servers right away. Call Start afterwards (or in a goroutine) to spawn+validate.
+func (r *Registry) Scan(specs []ServerSpec) {
+	alive := ScanServers(specs)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -63,8 +65,45 @@ func (r *Registry) Start(ctx context.Context, specs []ServerSpec) {
 		for i, s := range alive {
 			names[i] = s.Name
 		}
-		slog.Info("lsp:registry_started", "servers", names)
+		slog.Info("lsp:registry_init", "servers", names)
 	}
+}
+
+// Start spawns+validates each server via initialize handshake.
+// Call after InitFromPATH; results replace the PATH-only spec list.
+func (r *Registry) Start(ctx context.Context, specs []ServerSpec) {
+	validated := Discover(ctx, specs, r.rootDir)
+
+	r.mu.Lock()
+	r.specs = validated
+	r.extToSpec = make(map[string]ServerSpec, len(validated))
+	for _, s := range validated {
+		for _, ext := range s.FileExts {
+			r.extToSpec[ext] = s
+		}
+	}
+	if len(validated) > 0 {
+		slog.Info("lsp:startup", "servers", r.lspStringLocked())
+	}
+	r.mu.Unlock()
+}
+
+// lspStringLocked builds LSPString without taking the lock (caller holds mu).
+func (r *Registry) lspStringLocked() string {
+	if len(r.specs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, s := range r.specs {
+		if i > 0 {
+			b.WriteString(" | ")
+		}
+		b.WriteString(s.Name)
+		b.WriteString(" (")
+		b.WriteString(s.Language)
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 func (r *Registry) Snapshot() []ServerSpec {
@@ -229,9 +268,37 @@ func (r *Registry) Shutdown(ctx context.Context) {
 	wg.Wait()
 }
 
+// NumServers returns the count of discovered LSP servers without allocation.
+func (r *Registry) NumServers() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.specs)
+}
+
 func (r *Registry) HasExtension(ext string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	_, ok := r.extToSpec[ext]
 	return ok
+}
+
+// LSPString returns a compact server listing for the # Environment section.
+// Includes language labels so the model can match lsp:true to the right file type.
+func (r *Registry) LSPString() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.specs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, s := range r.specs {
+		if i > 0 {
+			b.WriteString(" | ")
+		}
+		b.WriteString(s.Name)
+		b.WriteString(" (")
+		b.WriteString(s.Language)
+		b.WriteString(")")
+	}
+	return b.String()
 }

@@ -5,6 +5,8 @@ package context
 
 import (
 	"bytes"
+
+	"github.com/liuy/gbot/pkg/lsp"
 )
 
 // Builder assembles the system prompt context.
@@ -27,6 +29,9 @@ type Builder struct {
 
 	// MaxTokens is the token budget for the system prompt.
 	MaxTokens int
+
+	// LSPReg, when non-nil and non-empty, causes RuntimeInfo() to list available LSP servers.
+	LSPReg *lsp.Registry
 }
 
 // NewBuilder creates a new context builder.

@@ -17,7 +17,7 @@ import (
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 
 	if tt.Name() != "Edit" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "Edit")
@@ -48,7 +48,7 @@ func TestNew(t *testing.T) {
 func TestNewInputSchema(t *testing.T) {
 	t.Parallel()
 
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	schema := tt.InputSchema()
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -59,7 +59,7 @@ func TestNewInputSchema(t *testing.T) {
 func TestDescription(t *testing.T) {
 	t.Parallel()
 
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 
 	tests := []struct {
 		name  string
@@ -944,7 +944,7 @@ func TestExecute_TildePathWithNoHome(t *testing.T) {
 
 func TestRenderResult_WithPatch(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	original := "line1\nline2\nline3\n"
 	out := &fileedit.Output{
 		FilePath:     "/tmp/test.txt",
@@ -967,7 +967,7 @@ func TestRenderResult_WithPatch(t *testing.T) {
 
 func TestRenderResult_AdditionsOnly(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	original := "line1\n"
 	out := &fileedit.Output{
 		FilePath:     "/tmp/test.txt",
@@ -993,7 +993,7 @@ func TestRenderResult_AdditionsOnly(t *testing.T) {
 
 func TestRenderResult_RemovalsOnly(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	original := "line1\nline2\n"
 	out := &fileedit.Output{
 		FilePath:     "/tmp/test.txt",
@@ -1019,7 +1019,7 @@ func TestRenderResult_RemovalsOnly(t *testing.T) {
 
 func TestRenderResult_NoPatch(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	out := &fileedit.Output{
 		FilePath:        "/tmp/test.txt",
 		OldString:       "old",
@@ -1035,7 +1035,7 @@ func TestRenderResult_NoPatch(t *testing.T) {
 
 func TestRenderResult_NonOutputData(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	got := tt.RenderResult(42)
 	if !strings.Contains(got, "42") {
 		t.Errorf("expected fallback string representation, got: %q", got)
@@ -1044,7 +1044,7 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 
 func TestRenderResult_ErrorString(t *testing.T) {
 	t.Parallel()
-	tt := fileedit.New()
+	tt := fileedit.New(nil)
 	// Edit error messages include the full search string after newline.
 	// TS renderToolUseErrorMessage shows only a short summary.
 	errMsg := "String to replace not found in file.\nString: func main() {\n\tfmt.Println(\"hello\")\n}"

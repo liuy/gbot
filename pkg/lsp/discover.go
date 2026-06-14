@@ -31,9 +31,21 @@ var DefaultServers = []ServerSpec{
 	{Name: "clangd", Command: "clangd", FileExts: []string{".c", ".h", ".cc", ".cpp", ".hpp", ".cxx", ".hxx"}, Language: "C, C++"},
 }
 
-// Discover probes every spec in parallel and returns specs that produced a working server.
-// Each spec gets a 5s wall-clock budget; total wall-clock ≤ 5s regardless of spec count.
-// A spec "works" if: (1) LookPath finds the binary, and (2) initialize handshake completes.
+// ScanServers returns specs whose binaries are on PATH, without spawning anything.
+// Used by Registry.Scan for the instant startup check.
+func ScanServers(specs []ServerSpec) []ServerSpec {
+	var alive []ServerSpec
+	for _, s := range specs {
+		if _, err := execLookPath(s.Command); err == nil {
+			alive = append(alive, s)
+		}
+	}
+	return alive
+}
+
+// Discover probes every spec by spawning the server and doing an initialize handshake.
+// Each probe has a 5s wall-clock budget; total ≤5s regardless of spec count.
+// Use ScanServers for PATH-only checks; use Discover for functional validation.
 func Discover(ctx context.Context, specs []ServerSpec, rootDir string) []ServerSpec {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

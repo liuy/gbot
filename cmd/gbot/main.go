@@ -24,6 +24,7 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/dream"
 	"github.com/liuy/gbot/pkg/memory/long"
@@ -184,6 +185,17 @@ func main() {
 		permCheckerIface = permChecker
 	}
 
+	// Construct LSP registry — InitFromPATH is instant (LookPath only),
+	// then Start spawns+validates in background for warmup.
+	lspReg := lsp.NewRegistry(workingDir)
+	lspReg.Scan(lsp.DefaultServers)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		lspReg.Start(ctx, lsp.DefaultServers)
+		slog.Info("lsp:startup", "servers", lspReg.LSPString())
+	}()
+
 	// Construct shared dependencies (immutable across all engines)
 	gitStatus := ctxbuild.LoadGitStatus(workingDir)
 	deps := engine.SharedDeps{
@@ -194,6 +206,7 @@ func main() {
 		McpReg:     mcpRegistry,
 		Hooks:      hookSystem,
 		Cfg:        cfg,
+		LSPReg:     lspReg,
 	}
 
 	// Create per-engine tool instances for the main engine
@@ -228,7 +241,7 @@ func main() {
 			toolPrompts = append(toolPrompts, p)
 		}
 	}
-	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing)
+	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg)
 
 	// Store system prompt on engine for fork agent access
 	eng.SetSystemPrompt(systemPrompt)
@@ -287,7 +300,7 @@ func main() {
 	if store != nil && sessionID != "" && contextWindow > 0 {
 		smCfg := session.DefaultConfig()
 		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
-			editTool := fileedit.New()
+			editTool := fileedit.New(nil)
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
 				Tools:     map[string]tool.Tool{"Edit": editTool},
 				AgentType: "session_memory",
@@ -321,10 +334,10 @@ func main() {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			dreamTools := map[string]tool.Tool{
-				"Read":  fileread.New(),
-				"Edit":  fileedit.New(),
-				"Write": filewrite.New(),
-				"Grep":  grep.New(),
+				"Read":  fileread.New(nil),
+				"Edit":  fileedit.New(nil),
+				"Write": filewrite.New(nil),
+				"Grep":  grep.New(nil),
 			}
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
 				Tools:     dreamTools,

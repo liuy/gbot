@@ -121,6 +121,11 @@ func (b *Builder) RuntimeInfo() string {
 	if workspace != "" {
 		parts = append(parts, fmt.Sprintf("workspace=%s", workspace))
 	}
+	if b.LSPReg != nil {
+		if lspStr := b.LSPReg.LSPString(); lspStr != "" {
+			parts = append(parts, fmt.Sprintf("lsp=%s", lspStr))
+		}
+	}
 	parts = append(parts, "model={{MODEL}}")
 
 	return "\n\n# Environment\n\nRuntime: " + strings.Join(parts, " | ")

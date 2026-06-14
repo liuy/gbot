@@ -209,7 +209,7 @@ func TestGrepToolCall_NonexistentPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNew_ReturnsValidTool(t *testing.T) {
-	g := grep.New()
+	g := grep.New(nil)
 	if g == nil {
 		t.Fatal("New() returned nil")
 	}
@@ -239,7 +239,7 @@ func TestNew_ReturnsValidTool(t *testing.T) {
 }
 
 func TestNew_DescriptionWithPattern(t *testing.T) {
-	g := grep.New()
+	g := grep.New(nil)
 	desc, err := g.Description(json.RawMessage(`{"pattern":"TODO"}`))
 	if err != nil {
 		t.Fatalf("Description() error: %v", err)
@@ -250,7 +250,7 @@ func TestNew_DescriptionWithPattern(t *testing.T) {
 }
 
 func TestNew_DescriptionWithInvalidJSON(t *testing.T) {
-	g := grep.New()
+	g := grep.New(nil)
 	desc, err := g.Description(json.RawMessage(`{invalid}`))
 	if err != nil {
 		t.Fatalf("Description() should not error on bad JSON: %v", err)
@@ -801,7 +801,7 @@ func TestGrepToolCall_ContextCAlias(t *testing.T) {
 
 func TestRenderResult_ContentMode(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	output := &grep.Output{
 		Mode:     "content",
 		Content:  "file.go:10:match here\nfile.go:20:another match",
@@ -815,7 +815,7 @@ func TestRenderResult_ContentMode(t *testing.T) {
 
 func TestRenderResult_FilesWithMatches(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	output := &grep.Output{
 		Mode:      "files_with_matches",
 		NumFiles:  2,
@@ -829,7 +829,7 @@ func TestRenderResult_FilesWithMatches(t *testing.T) {
 
 func TestRenderResult_CountMode(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	output := &grep.Output{
 		Mode:       "count",
 		NumFiles:   3,
@@ -844,7 +844,7 @@ func TestRenderResult_CountMode(t *testing.T) {
 // RenderResult with non-*Output data covers lines 167-170 in grep.go
 func TestRenderResult_NonOutputData(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	result := tt.RenderResult("some plain string")
 	want := `"some plain string"`
 	if result != want {
@@ -855,7 +855,7 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 // RenderResult with nil data covers lines 167-170 in grep.go
 func TestRenderResult_NilData(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	result := tt.RenderResult(nil)
 	if result != "null" {
 		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
@@ -865,7 +865,7 @@ func TestRenderResult_NilData(t *testing.T) {
 // RenderResult files_with_matches with empty filenames covers line 175-177
 func TestRenderResult_FilesWithMatchesEmpty(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	output := &grep.Output{
 		Mode:      "files_with_matches",
 		NumFiles:  0,
@@ -880,7 +880,7 @@ func TestRenderResult_FilesWithMatchesEmpty(t *testing.T) {
 // RenderResult with unknown mode covers lines 181-183
 func TestRenderResult_UnknownMode(t *testing.T) {
 	t.Parallel()
-	tt := grep.New()
+	tt := grep.New(nil)
 	output := &grep.Output{
 		Mode: "unknown_mode",
 	}
@@ -891,7 +891,7 @@ func TestRenderResult_UnknownMode(t *testing.T) {
 }
 
 func TestGrepTool_IsSearchOrRead(t *testing.T) {
-	tt := grep.New()
+	tt := grep.New(nil)
 	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
 	if !srk.IsSearch || srk.IsRead || srk.IsList {
 		t.Errorf("GrepTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)

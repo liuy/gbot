@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
@@ -38,6 +39,7 @@ type SharedDeps struct {
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
 	Cfg        *config.Config
+	LSPReg     *lsp.Registry
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -56,10 +58,10 @@ func CreateTools(deps SharedDeps) ToolRefs {
 
 	reg := tool.NewRegistry()
 	reg.MustRegister(bash.New(bashReg))
-	reg.MustRegister(fileread.New())
-	reg.MustRegister(fileedit.New())
-	reg.MustRegister(filewrite.New())
-	reg.MustRegister(grep.New())
+	reg.MustRegister(fileread.New(deps.LSPReg))
+	reg.MustRegister(fileedit.New(deps.LSPReg))
+	reg.MustRegister(filewrite.New(deps.LSPReg))
+	reg.MustRegister(grep.New(deps.LSPReg))
 
 	at := agenttool.New()
 	at.SetWorkingDir(deps.WorkingDir)

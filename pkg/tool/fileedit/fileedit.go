@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/tool"
 )
@@ -138,7 +139,7 @@ func convertEditHunks(hunks []PatchHunk) []tool.DiffHunk {
 	return result
 }
 
-func New() tool.Tool {
+func New(reg *lsp.Registry) tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["file_path", "old_string", "new_string"],
@@ -165,7 +166,7 @@ func New() tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        "Edit",
 		Aliases_:     []string{"fileedit", "edit"},
-		InputSchema_: func() json.RawMessage { return schema },
+		InputSchema_: func() json.RawMessage { return lsp.InjectLSPField(schema, reg) },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {

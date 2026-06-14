@@ -21,7 +21,7 @@ import (
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	tt := New()
+	tt := New(nil)
 
 	if tt.Name() != "Grep" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "Grep")
@@ -46,7 +46,7 @@ func TestNew(t *testing.T) {
 func TestNewInputSchema(t *testing.T) {
 	t.Parallel()
 
-	tt := New()
+	tt := New(nil)
 	schema := tt.InputSchema()
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -57,7 +57,7 @@ func TestNewInputSchema(t *testing.T) {
 func TestDescription(t *testing.T) {
 	t.Parallel()
 
-	tt := New()
+	tt := New(nil)
 
 	tests := []struct {
 		name  string
@@ -354,7 +354,7 @@ func TestOutput_JSONFieldNames(t *testing.T) {
 
 func TestRenderResult_Files(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	output := &Output{
 		Mode:      "files_with_matches",
 		Filenames: []string{"src/a.go", "src/b.go", "src/c.go"},
@@ -368,7 +368,7 @@ func TestRenderResult_Files(t *testing.T) {
 
 func TestRenderResult_NoMatches(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	output := &Output{
 		Mode:      "files_with_matches",
 		Filenames: []string{},
@@ -383,7 +383,7 @@ func TestRenderResult_NoMatches(t *testing.T) {
 // RenderResult with non-*Output data covers lines 82-85 in glob.go
 func TestRenderResult_NonOutputData(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	// Pass a plain string instead of *Output to trigger the !ok branch
 	result := tt.RenderResult("some random string")
 	// Should be the JSON-marshaled version of the string
@@ -396,7 +396,7 @@ func TestRenderResult_NonOutputData(t *testing.T) {
 // RenderResult with nil data covers lines 82-85 in glob.go
 func TestRenderResult_NilData(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	result := tt.RenderResult(nil)
 	if result != "null" {
 		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
@@ -406,7 +406,7 @@ func TestRenderResult_NilData(t *testing.T) {
 // RenderResult with map data covers lines 82-85 in glob.go
 func TestGlobTool_IsSearchOrRead(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
 	if !srk.IsSearch || srk.IsRead || srk.IsList {
 		t.Errorf("GlobTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)
@@ -415,7 +415,7 @@ func TestGlobTool_IsSearchOrRead(t *testing.T) {
 
 func TestRenderResult_MapData(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 	result := tt.RenderResult(map[string]int{"count": 42})
 	if !strings.Contains(result, `"count"`) || !strings.Contains(result, "42") {
 		t.Errorf("RenderResult(map) = %q, should contain JSON with count:42", result)
@@ -424,7 +424,7 @@ func TestRenderResult_MapData(t *testing.T) {
 
 func TestRenderResult_JsonRawMessage(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 
 	// Valid JSON RawMessage with output fields
 	raw := json.RawMessage(`{"mode":"files_with_matches","filenames":["a.go","b.go"],"numFiles":2}`)
@@ -436,7 +436,7 @@ func TestRenderResult_JsonRawMessage(t *testing.T) {
 
 func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 
 	// Empty files list
 	raw := json.RawMessage(`{"mode":"files_with_matches","filenames":[],"numFiles":0}`)
@@ -448,7 +448,7 @@ func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
 
 func TestRenderResult_JsonRawMessage_Invalid(t *testing.T) {
 	t.Parallel()
-	tt := New()
+	tt := New(nil)
 
 	// Invalid JSON within RawMessage — should return raw string
 	raw := json.RawMessage(`not valid json`)
