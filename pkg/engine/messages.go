@@ -57,9 +57,9 @@ func CreateToolErrorBlock(toolUseID string, errMsg string) types.ContentBlock {
 // Abort reason constants for synthetic error blocks.
 // Source: StreamingToolExecutor.ts — abort reasons from abortController.abort(reason).
 const (
-	AbortReasonUserInterrupted  = "user_interrupted"
+	AbortReasonUserInterrupted   = "user_interrupted"
 	AbortReasonStreamingFallback = "streaming_fallback"
-	AbortReasonSiblingError     = "sibling_error"
+	AbortReasonSiblingError      = "sibling_error"
 )
 
 // CreateSyntheticErrorBlock creates a tool_result block for abort scenarios.

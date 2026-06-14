@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
 )
 
 func zhipuSSEResponse(t *testing.T, payload any) string {
@@ -336,9 +335,9 @@ func TestZhipuSearchSkipEmptyLink(t *testing.T) {
 
 func TestExtractMCPError(t *testing.T) {
 	tests := []struct {
-		input     string
-		wantCode  int
-		wantMsg   string
+		input    string
+		wantCode int
+		wantMsg  string
 	}{
 		{"MCP error -401: Api key not found", -401, "Api key not found"},
 		{"MCP error -429: limit exceeded", -429, "limit exceeded"},

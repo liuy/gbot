@@ -440,7 +440,7 @@ func TestDefaultRegistry(t *testing.T) {
 func TestJobNotification_FormatXML_Completion(t *testing.T) {
 	t.Parallel()
 	n := JobNotification{
-		JobID:     "bg-1",
+		JobID:      "bg-1",
 		ToolUseID:  "tu-123",
 		Status:     "completed",
 		Summary:    `Background command "test" completed`,
@@ -473,7 +473,7 @@ func TestJobNotification_FormatXML_Completion(t *testing.T) {
 func TestJobNotification_FormatXML_Stall(t *testing.T) {
 	t.Parallel()
 	n := JobNotification{
-		JobID:  "bg-2",
+		JobID:   "bg-2",
 		Status:  "",
 		Summary: `Background command "test" appears to be waiting for interactive input`,
 		IsStall: true,
@@ -498,7 +498,7 @@ func TestJobNotification_FormatXML_Stall(t *testing.T) {
 func TestJobNotification_FormatXML_NoToolUseID(t *testing.T) {
 	t.Parallel()
 	n := JobNotification{
-		JobID:  "bg-3",
+		JobID:   "bg-3",
 		Status:  "failed",
 		Summary: `Background command "x" failed`,
 	}
@@ -514,7 +514,7 @@ func TestJobNotification_FormatXML_NoToolUseID(t *testing.T) {
 func TestJobNotification_FormatXML_StallNoTail(t *testing.T) {
 	t.Parallel()
 	n := JobNotification{
-		JobID:  "bg-4",
+		JobID:   "bg-4",
 		IsStall: true,
 		Summary: "stalled",
 	}
@@ -1026,6 +1026,7 @@ func TestBackgroundJob_StartStallWatchdog_WithNotification(t *testing.T) {
 	}
 
 }
+
 // ---------------------------------------------------------------------------
 // IsTerminalJobStatus
 // ---------------------------------------------------------------------------
@@ -1378,7 +1379,7 @@ func TestCleanupCompleted_RemovesExpiredTasks(t *testing.T) {
 
 	// Manually set evictAfter to past
 	job.mu.Lock()
-	job.evictAfter = time.Now().Add(-1 * time.Second)  // REAL-TIME: eviction timing
+	job.evictAfter = time.Now().Add(-1 * time.Second) // REAL-TIME: eviction timing
 	job.mu.Unlock()
 
 	reg.CleanupCompleted()
@@ -1457,7 +1458,7 @@ func TestCleanupCompleted_MultipleTasks(t *testing.T) {
 	expired := reg.Spawn("echo 1", 0, nil)
 	expired.Complete(0, false)
 	expired.mu.Lock()
-	expired.evictAfter = time.Now().Add(-1 * time.Second)  // REAL-TIME: eviction timing
+	expired.evictAfter = time.Now().Add(-1 * time.Second) // REAL-TIME: eviction timing
 	expired.mu.Unlock()
 
 	fresh := reg.Spawn("echo 2", 0, nil)

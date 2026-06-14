@@ -430,9 +430,9 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 	// 1. Parent engine with event collector
 	collector := newEventCollector()
 	parent := New(&Params{
-		Provider:    &testProvider{},
-		Model:       "test",
-		Dispatcher:  collector,
+		Provider:   &testProvider{},
+		Model:      "test",
+		Dispatcher: collector,
 	})
 	t.Cleanup(func() { parent.Close() })
 
@@ -458,48 +458,48 @@ func TestSubEngine_AttachmentEmit_WithAgentMeta(t *testing.T) {
 		Timestamp: time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC),
 	})
 
-		// 4. Wait for processAttachments to complete
-		// Job-mode attachments no longer emit EventAttachment.
-		// processAttachments does not emit EventQueryEnd, so wait for
-		// EventTurnStart from runTurns as completion signal.
-		deadline := time.After(5 * time.Second)
-		for {
-			allEvents := collector.Events()
-			for _, e := range allEvents {
-				if e.Type == types.EventAttachment {
-					t.Fatal("job-mode attachment should NOT emit EventAttachment")
-				}
-			}
-			gotTurn := false
-			for _, e := range allEvents {
-				if e.Type == types.EventTurnStart {
-					gotTurn = true
-				}
-			}
-			if gotTurn {
-				break
-			}
-			select {
-			case <-deadline:
-				t.Fatalf("timed out waiting for EventTurnStart. Total events: %d", len(allEvents))
-			default:
-				runtime.Gosched()
+	// 4. Wait for processAttachments to complete
+	// Job-mode attachments no longer emit EventAttachment.
+	// processAttachments does not emit EventQueryEnd, so wait for
+	// EventTurnStart from runTurns as completion signal.
+	deadline := time.After(5 * time.Second)
+	for {
+		allEvents := collector.Events()
+		for _, e := range allEvents {
+			if e.Type == types.EventAttachment {
+				t.Fatal("job-mode attachment should NOT emit EventAttachment")
 			}
 		}
+		gotTurn := false
+		for _, e := range allEvents {
+			if e.Type == types.EventTurnStart {
+				gotTurn = true
+			}
+		}
+		if gotTurn {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for EventTurnStart. Total events: %d", len(allEvents))
+		default:
+			runtime.Gosched()
+		}
+	}
 
-		// 5. Verify the attachment message was added to sub-engine messages
-		msgs := sub.Messages()
-		found := false
-		for _, m := range msgs {
-			for _, b := range m.Content {
-				if strings.Contains(b.Text, "bg-1") {
-					found = true
-				}
+	// 5. Verify the attachment message was added to sub-engine messages
+	msgs := sub.Messages()
+	found := false
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, "bg-1") {
+				found = true
 			}
 		}
-		if !found {
-			t.Error("attachment content should appear in sub-engine messages")
-		}
+	}
+	if !found {
+		t.Error("attachment content should appear in sub-engine messages")
+	}
 }
 
 // TestSubEngine_AttachmentRunsTurns verifies that processAttachments on a
@@ -551,13 +551,13 @@ waitLoop:
 		}
 	}
 
-		// Job-mode attachments no longer emit EventAttachment.
-		// Verify no EventAttachment was emitted but LLM turn ran.
-		for _, e := range collector.Events() {
-			if e.Type == types.EventAttachment {
-				t.Fatal("job-mode attachment should NOT emit EventAttachment")
-			}
+	// Job-mode attachments no longer emit EventAttachment.
+	// Verify no EventAttachment was emitted but LLM turn ran.
+	for _, e := range collector.Events() {
+		if e.Type == types.EventAttachment {
+			t.Fatal("job-mode attachment should NOT emit EventAttachment")
 		}
+	}
 
 	// KEY CHECK: sub-engine should have called the LLM via runTurns
 	// to process its own attachment.
@@ -664,9 +664,9 @@ func TestTimestampInjection_NormalUserMessage(t *testing.T) {
 	eng := New(&Params{})
 	t.Cleanup(func() { eng.Close() })
 	eng.appendMessage(types.Message{
-		Role:       types.RoleUser,
-		Content:    []types.ContentBlock{types.NewTextBlock("hello")},
-		Timestamp:  ts,
+		Role:      types.RoleUser,
+		Content:   []types.ContentBlock{types.NewTextBlock("hello")},
+		Timestamp: ts,
 	})
 	eng.appendMessage(types.Message{
 		Role:    types.RoleAssistant,
@@ -865,4 +865,3 @@ func (p *gatedProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.St
 	}()
 	return ch, nil
 }
-

@@ -174,7 +174,7 @@ func (w *stallWatcher) check() (stop bool) {
 
 // streamStallWatcher tracks StreamingOutput growth to detect stalled commands.
 type streamStallWatcher struct {
-	job       *BackgroundJob
+	job        *BackgroundJob
 	lastSize   int64
 	lastGrowth time.Time
 	cancelled  atomic.Bool
@@ -188,7 +188,7 @@ type streamStallWatcher struct {
 // Source: LocalShellTask.tsx:46-104 — startStallWatchdog (same algorithm, streaming data source)
 func watchForStallStream(job *BackgroundJob, onStall func(summary, tail string)) func() {
 	w := &streamStallWatcher{
-		job:       job,
+		job:        job,
 		lastGrowth: time.Now(),
 		onStall:    onStall,
 	}

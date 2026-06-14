@@ -3,11 +3,11 @@ package grep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"errors"
 	"testing"
 	"time"
 

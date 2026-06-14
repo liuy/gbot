@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/filehistory"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
@@ -28,7 +29,6 @@ import (
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/tool/toolsearch"
-	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/types"
 
 	"github.com/liuy/gbot/pkg/memory/session"
@@ -64,8 +64,8 @@ const (
 	coalesceWindow = 100 * time.Millisecond
 
 	stopReasonContextWindowExceeded = "model_context_window_exceeded"
-	stopReasonMaxTokens            = "max_tokens"
-	maxTokensRecoveryLimit         = 3
+	stopReasonMaxTokens             = "max_tokens"
+	maxTokensRecoveryLimit          = 3
 
 	// continuationPrompt is appended as a meta user message when stop_reason
 	// signals truncated output. Source: TS query.ts:1226 — identical text.
@@ -98,26 +98,26 @@ var subEngineSeq atomic.Int64
 // Engine is the core agentic loop.
 // Source: QueryEngine.ts — outer orchestrator + query.ts inner loop.
 type Engine struct {
-	provider      llm.Provider
-	tools         map[string]tool.Tool
-	toolOrder     []string
-	toolsProvider func() map[string]tool.Tool
-	model         string
-	maxTokens     int
-	logger        *slog.Logger
-	mu            sync.RWMutex
-	messages      []types.Message
-	sessionID     string
-	tokenBudget   int
-	turnCount     int
-	dispatcher    types.EventDispatcher
-	workingDir    string
+	provider       llm.Provider
+	tools          map[string]tool.Tool
+	toolOrder      []string
+	toolsProvider  func() map[string]tool.Tool
+	model          string
+	maxTokens      int
+	logger         *slog.Logger
+	mu             sync.RWMutex
+	messages       []types.Message
+	sessionID      string
+	tokenBudget    int
+	turnCount      int
+	dispatcher     types.EventDispatcher
+	workingDir     string
 	attachments    *attachment.Queue
 	reminderEngine *attachment.ReminderEngine
-	systemPrompt  string // stored system prompt for fork agent access
-	skillListing  string          // formatted skill listing for /context breakdown
-	agentDefs     []*types.AgentDefinition // agent definitions for /context breakdown
-	queryActive   int32          // atomic: 1 = query/turn loop running, 0 = idle
+	systemPrompt   string                   // stored system prompt for fork agent access
+	skillListing   string                   // formatted skill listing for /context breakdown
+	agentDefs      []*types.AgentDefinition // agent definitions for /context breakdown
+	queryActive    int32                    // atomic: 1 = query/turn loop running, 0 = idle
 
 	// activeCancel is the cancel function for the currently running query
 	// or attachment processing. Protected by activeCancelMu.
@@ -304,7 +304,7 @@ func New(p *Params) *Engine {
 		tokenBudget:             p.TokenBudget,
 		dispatcher:              p.Dispatcher,
 		attachments:             &attachment.Queue{},
-		reminderEngine:           attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
+		reminderEngine:          attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
 		maxTurns:                p.MaxTurns,
 		compactor:               p.Compactor,
 		autoCompactConfig:       p.AutoCompact,
@@ -313,9 +313,9 @@ func New(p *Params) *Engine {
 		permissionChecker:       p.PermissionChecker,
 		workingDir:              p.WorkingDir,
 		contentReplacementState: toolresult.NewContentReplacementState(),
-		agentMetaDepth:         0,
-		toolSearch:             newToolSearchState(),
-		taskList:               p.TaskList,
+		agentMetaDepth:          0,
+		toolSearch:              newToolSearchState(),
+		taskList:                p.TaskList,
 	}
 }
 
@@ -444,7 +444,7 @@ func (e *Engine) processAttachments(ctx context.Context, systemPrompt string) {
 
 // createAttachmentMessages converts drained items to attachment messages.
 // TS source: attachments.ts:1046 — getQueuedCommandAttachments
-//           + attachments.ts:3201 — createAttachmentMessage
+//   - attachments.ts:3201 — createAttachmentMessage
 func (e *Engine) createAttachmentMessages(items []types.QueuedItem) []types.Message {
 	var msgs []types.Message
 	for _, item := range items {
@@ -986,21 +986,21 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 				continue
 			}
-				// Stop/SubagentStop hook — blocking result gives LLM another turn.
-				// Source: stopHooks.ts — handleStopHooks.
-				if blockResult := e.runStopHook(ctx); blockResult != nil {
-					e.logger.Info("stop hook blocked, continuing turn")
-					e.appendMessage(types.Message{
-						Role: types.RoleUser,
-						Content: []types.ContentBlock{
-							types.NewTextBlock("[hook] " + blockResult.Stderr),
-						},
-					})
-					e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
-					e.turnCount++
-					e.firePostTurnHooks(ctx)
-					continue
-				}
+			// Stop/SubagentStop hook — blocking result gives LLM another turn.
+			// Source: stopHooks.ts — handleStopHooks.
+			if blockResult := e.runStopHook(ctx); blockResult != nil {
+				e.logger.Info("stop hook blocked, continuing turn")
+				e.appendMessage(types.Message{
+					Role: types.RoleUser,
+					Content: []types.ContentBlock{
+						types.NewTextBlock("[hook] " + blockResult.Stderr),
+					},
+				})
+				e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
+				e.turnCount++
+				e.firePostTurnHooks(ctx)
+				continue
+			}
 
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
@@ -1081,20 +1081,20 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Drains PriorityNow + PriorityNext items (e.g. prompt input, job notifications).
 		// PriorityLater items wait for DrainAll() at query end.
 		// See types.QueuePriority for full drain timing documentation.
-			if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
-				attachmentMsgs := e.createAttachmentMessages(drainedItems)
-				for i := range attachmentMsgs {
-					e.appendMessage(attachmentMsgs[i])
-					if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
-						e.emitEvent(types.QueryEvent{
-							Type:    types.EventAttachment,
-							Message: &attachmentMsgs[i],
-						})
-					} else {
-						e.logger.Info("engine:attachment_drained_silently", "mode", "job")
-					}
+		if drainedItems := e.attachments.DrainByPriority(types.PriorityNext); len(drainedItems) > 0 {
+			attachmentMsgs := e.createAttachmentMessages(drainedItems)
+			for i := range attachmentMsgs {
+				e.appendMessage(attachmentMsgs[i])
+				if attachmentMsgs[i].Attachment != nil && attachmentMsgs[i].Attachment.Mode == types.ItemModePrompt {
+					e.emitEvent(types.QueryEvent{
+						Type:    types.EventAttachment,
+						Message: &attachmentMsgs[i],
+					})
+				} else {
+					e.logger.Info("engine:attachment_drained_silently", "mode", "job")
 				}
 			}
+		}
 
 		// Append NewMessages AFTER tool_result.
 		// Tool-provided messages (e.g., skill content) follow the tool_result.
@@ -1342,9 +1342,9 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
 	apiMessages = NormalizeMessagesForAPI(apiMessages)
 
-		// Repair tool_use/tool_result pairing mismatches before sending to API.
-		// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
-		apiMessages = EnsureToolResultPairing(apiMessages)
+	// Repair tool_use/tool_result pairing mismatches before sending to API.
+	// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
+	apiMessages = EnsureToolResultPairing(apiMessages)
 
 	// Apply per-message tool result budget (TS: applyToolResultBudget).
 	// Replaces large tool results with previews when aggregate per-message
@@ -1652,7 +1652,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							}
 						}
 						baseTctx := &tool.ToolUseContext{
-							Ctx: ctx,
+							Ctx:        ctx,
 							WorkingDir: e.workingDir,
 							Options: tool.ToolUseOptions{
 								Tools:             e.tools,
@@ -2267,9 +2267,9 @@ func (e *Engine) DumpAPIRequest() *APIRequestDump {
 	apiMessages := marshalMessagesFrom(messages)
 	apiMessages = NormalizeMessagesForAPI(apiMessages)
 
-		// Repair tool_use/tool_result pairing mismatches before sending to API.
-		// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
-		apiMessages = EnsureToolResultPairing(apiMessages)
+	// Repair tool_use/tool_result pairing mismatches before sending to API.
+	// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
+	apiMessages = EnsureToolResultPairing(apiMessages)
 	// Intentionally skip applyBudget — it has a write side effect.
 
 	// Prepend user context (CLAUDE.md/AGENTS.md/currentDate).
@@ -3147,7 +3147,7 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		turnCount:               0,
 		dispatcher:              dispatcher,
 		attachments:             &attachment.Queue{},
-		reminderEngine:           attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
+		reminderEngine:          attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
 		isSubagent:              true,
 		agentType:               opts.AgentType,
 		maxTurns:                subMaxTurns(opts.MaxTurns),
@@ -3157,12 +3157,12 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		hooks:                   e.hooks,
 		permissionChecker:       e.permissionChecker,
 		contentReplacementState: toolresult.CloneContentReplacementState(e.contentReplacementState),
-			toolSearch:             newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
-			sessionID:            e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
-			onCloseFn:            e.onCloseFn,
-		fileHistory:          e.fileHistory, // share same Tracker — sub-agent edits tracked too
-			workingDir:            e.workingDir,
-		systemPrompt:          opts.SystemPrompt,
+		toolSearch:              newToolSearchState(), // fresh state; parent tools inherited via opts.Tools
+		sessionID:               e.sessionID + "-sub-" + fmt.Sprintf("%d", subEngineSeq.Add(1)),
+		onCloseFn:               e.onCloseFn,
+		fileHistory:             e.fileHistory, // share same Tracker — sub-agent edits tracked too
+		workingDir:              e.workingDir,
+		systemPrompt:            opts.SystemPrompt,
 	}
 }
 

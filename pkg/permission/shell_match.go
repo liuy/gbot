@@ -9,12 +9,12 @@ import (
 // Module-level so the RegExp objects are compiled once.
 // Source: shellRuleMatching.ts:13-20
 const (
-	escapedStarPlaceholder     = "\x00ESCAPED_STAR\x00"
+	escapedStarPlaceholder      = "\x00ESCAPED_STAR\x00"
 	escapedBackslashPlaceholder = "\x00ESCAPED_BACKSLASH\x00"
 )
 
 var (
-	escapedStarRe     = regexp.MustCompile(regexp.QuoteMeta(escapedStarPlaceholder))
+	escapedStarRe      = regexp.MustCompile(regexp.QuoteMeta(escapedStarPlaceholder))
 	escapedBackslashRe = regexp.MustCompile(regexp.QuoteMeta(escapedBackslashPlaceholder))
 )
 

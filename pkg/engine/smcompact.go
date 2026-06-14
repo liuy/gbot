@@ -53,9 +53,9 @@ func (c *AutoCompactor) TrySMCompact(messages []types.Message, sm *session.Sessi
 
 	// Determine how many recent messages to keep (reuse existing logic)
 	shortMsgs, err := short.EngineMessagesToStore(messages)
-		if err != nil {
-			return nil, fmt.Errorf("convert messages: %w", err)
-		}
+	if err != nil {
+		return nil, fmt.Errorf("convert messages: %w", err)
+	}
 	keepFrom := c.findKeepFrom(shortMsgs)
 	if keepFrom >= len(shortMsgs) || keepFrom <= 1 {
 		return nil, nil
@@ -97,4 +97,3 @@ func formatSMSummary(sessionMemoryContent string) string {
 	sb.WriteString(sessionMemoryContent)
 	return sb.String()
 }
-

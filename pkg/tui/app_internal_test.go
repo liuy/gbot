@@ -511,10 +511,10 @@ func TestRenderAgentLogs_LongSummaryTruncated(t *testing.T) {
 // mockRenderTool is a minimal tool.Tool implementation for render tests.
 type mockRenderTool struct{}
 
-func (m *mockRenderTool) Name() string                                  { return "Grep" }
-func (m *mockRenderTool) Aliases() []string                             { return nil }
-func (m *mockRenderTool) Description(json.RawMessage) (string, error)   { return "", nil }
-func (m *mockRenderTool) InputSchema() json.RawMessage                  { return nil }
+func (m *mockRenderTool) Name() string                                { return "Grep" }
+func (m *mockRenderTool) Aliases() []string                           { return nil }
+func (m *mockRenderTool) Description(json.RawMessage) (string, error) { return "", nil }
+func (m *mockRenderTool) InputSchema() json.RawMessage                { return nil }
 func (m *mockRenderTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
@@ -537,11 +537,11 @@ func (m *mockRenderTool) RenderResult(data any) string {
 	}
 	return strings.Join(out.Files, "\n")
 }
-func (m *mockRenderTool) IsEnabled() bool                        { return true }
-func (m *mockRenderTool) IsReadOnly(json.RawMessage) bool        { return true }
-func (m *mockRenderTool) IsDestructive(json.RawMessage) bool     { return false }
-func (m *mockRenderTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (m *mockRenderTool) IsEnabled() bool                           { return true }
+func (m *mockRenderTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (m *mockRenderTool) IsDestructive(json.RawMessage) bool        { return false }
+func (m *mockRenderTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
 func (m *mockRenderTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
-func (m *mockRenderTool) MaxResultSize() int                      { return 0 }
-func (m *mockRenderTool) Prompt() string                          { return "" }
-func (m *mockRenderTool) NewResultType() any                      { return nil }
+func (m *mockRenderTool) MaxResultSize() int                        { return 0 }
+func (m *mockRenderTool) Prompt() string                            { return "" }
+func (m *mockRenderTool) NewResultType() any                        { return nil }

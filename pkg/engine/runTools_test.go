@@ -18,14 +18,14 @@ import (
 
 // testTool implements tool.Tool for toolloop tests.
 type testTool struct {
-	name    string
-	callFn  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
+	name   string
+	callFn func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
 }
 
-func (t *testTool) Name() string                                                { return t.name }
-func (t *testTool) Aliases() []string                                           { return nil }
-func (t *testTool) Description(json.RawMessage) (string, error)                 { return t.name + " desc", nil }
-func (t *testTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
+func (t *testTool) Name() string                                { return t.name }
+func (t *testTool) Aliases() []string                           { return nil }
+func (t *testTool) Description(json.RawMessage) (string, error) { return t.name + " desc", nil }
+func (t *testTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (t *testTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	if t.callFn != nil {
 		return t.callFn(ctx, input, tctx)
@@ -35,14 +35,14 @@ func (t *testTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.T
 func (t *testTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (t *testTool) IsReadOnly(json.RawMessage) bool            { return true }
-func (t *testTool) IsDestructive(json.RawMessage) bool         { return false }
-func (t *testTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (t *testTool) IsEnabled() bool                            { return true }
-func (t *testTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
-func (t *testTool) Prompt() string                             { return "" }
-func (t *testTool) RenderResult(any) string                      { return "" }
-func (t *testTool) NewResultType() any { return nil }
+func (t *testTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (t *testTool) IsDestructive(json.RawMessage) bool        { return false }
+func (t *testTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (t *testTool) IsEnabled() bool                           { return true }
+func (t *testTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (t *testTool) Prompt() string                            { return "" }
+func (t *testTool) RenderResult(any) string                   { return "" }
+func (t *testTool) NewResultType() any                        { return nil }
 
 func (t *testTool) MaxResultSize() int { return 50000 }
 
@@ -51,25 +51,25 @@ type blockTool struct {
 	name string
 }
 
-func (b *blockTool) Name() string                                                { return b.name }
-func (b *blockTool) Aliases() []string                                           { return nil }
-func (b *blockTool) Description(json.RawMessage) (string, error)                 { return b.name, nil }
-func (b *blockTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
+func (b *blockTool) Name() string                                { return b.name }
+func (b *blockTool) Aliases() []string                           { return nil }
+func (b *blockTool) Description(json.RawMessage) (string, error) { return b.name, nil }
+func (b *blockTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (b *blockTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "completed"}, nil
 }
 func (b *blockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (b *blockTool) IsReadOnly(json.RawMessage) bool            { return true }
-func (b *blockTool) IsDestructive(json.RawMessage) bool         { return false }
-func (b *blockTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (b *blockTool) IsEnabled() bool                            { return true }
-func (b *blockTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptBlock }
-func (b *blockTool) Prompt() string                             { return "" }
+func (b *blockTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (b *blockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (b *blockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (b *blockTool) IsEnabled() bool                           { return true }
+func (b *blockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
+func (b *blockTool) Prompt() string                            { return "" }
 
-func (b *blockTool) MaxResultSize() int { return 50000 }
-func (b *blockTool) RenderResult(any) string                      { return "" }
+func (b *blockTool) MaxResultSize() int      { return 50000 }
+func (b *blockTool) RenderResult(any) string { return "" }
 
 // ---------------------------------------------------------------------------
 // StreamingToolExecutor tests — source: StreamingToolExecutor.ts
@@ -82,8 +82,8 @@ type concurrentTool struct {
 	callFn func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error)
 }
 
-func (t *concurrentTool) Name() string                        { return t.name }
-func (t *concurrentTool) Aliases() []string                   { return nil }
+func (t *concurrentTool) Name() string      { return t.name }
+func (t *concurrentTool) Aliases() []string { return nil }
 func (t *concurrentTool) Description(json.RawMessage) (string, error) {
 	return t.name + " desc", nil
 }
@@ -1028,25 +1028,29 @@ func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
 	// When ToolSearch is active, calling a deferred tool that hasn't been
 	// discovered should produce an error hinting to use ToolSearch.
 	deferredTool := tool.BuildTool(tool.ToolDef{
-		Name_:         "mcp__fetch__get_markdown",
-		ShouldDefer_:  true,
-		InputSchema_:  func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-		Description_:  func(json.RawMessage) (string, error) { return "fetch markdown", nil },
-		Call_:         func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_:        "mcp__fetch__get_markdown",
+		ShouldDefer_: true,
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) { return "fetch markdown", nil },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 	})
 	toolSearchTool := tool.BuildTool(tool.ToolDef{
-		Name_:         "ToolSearch",
-		InputSchema_:  func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
-		Description_:  func(json.RawMessage) (string, error) { return "search tools", nil },
-		Call_:         func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_:        "ToolSearch",
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
+		Description_: func(json.RawMessage) (string, error) { return "search tools", nil },
+		Call_: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 	})
 
 	// Full tool map (has deferred tool + ToolSearch)
 	fullTools := map[string]tool.Tool{
-		"ToolSearch":                toolSearchTool,
-		"mcp__fetch__get_markdown":  deferredTool,
+		"ToolSearch":               toolSearchTool,
+		"mcp__fetch__get_markdown": deferredTool,
 	}
 	// Filtered tool map (ToolSearch active, deferred not discovered)
 	filteredTools := map[string]tool.Tool{

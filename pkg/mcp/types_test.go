@@ -566,13 +566,13 @@ func TestConfigScope_Values(t *testing.T) {
 
 func TestTransport_Values(t *testing.T) {
 	transports := map[Transport]bool{
-		TransportStdio:        true,
-		TransportSSE:          true,
-		TransportSSEIDE:       true,
-		TransportHTTP:         true,
-		TransportWS:           true,
-		TransportWSIDE:        true,
-		TransportSDK:          true,
+		TransportStdio:         true,
+		TransportSSE:           true,
+		TransportSSEIDE:        true,
+		TransportHTTP:          true,
+		TransportWS:            true,
+		TransportWSIDE:         true,
+		TransportSDK:           true,
 		TransportClaudeAIProxy: true,
 	}
 	if len(transports) != 8 {
@@ -721,7 +721,7 @@ func TestConfigScope_UnmarshalJSON(t *testing.T) {
 		// Note: ConfigScope is just a string type, so any string unmarshals successfully
 		// Validation happens at the application layer, not during unmarshaling
 		{`"anyvalue"`, "anyvalue", false},
-		{`123`, "", true},  // Only non-JSON values error
+		{`123`, "", true}, // Only non-JSON values error
 	}
 	for _, tt := range tests {
 		t.Run(tt.json, func(t *testing.T) {

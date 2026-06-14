@@ -243,9 +243,9 @@ func TestLoadConfigAllThreeScopes(t *testing.T) {
 
 	// Verify order and sources
 	want := []struct {
-		action  RuleAction
-		tool    string
-		source  string
+		action RuleAction
+		tool   string
+		source string
 	}{
 		{ActionDeny, "Bash", "user"},
 		{ActionAsk, "Bash", "project"},

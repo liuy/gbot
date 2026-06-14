@@ -1205,8 +1205,8 @@ func TestDiscoverForServer_ResourceErrorStopsCommands(t *testing.T) {
 	// Create a connection with nil session (will return nil from fetch)
 	// but with resource capabilities set
 	conn := &ConnectedServer{
-		Name:         "failing-server",
-		Session:      nil,
+		Name:    "failing-server",
+		Session: nil,
 		Capabilities: &mcp.ServerCapabilities{
 			Resources: &mcp.ResourceCapabilities{},
 		},

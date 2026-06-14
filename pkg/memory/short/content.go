@@ -294,15 +294,15 @@ func mergeUserMessages(a, b *TranscriptMessage) *TranscriptMessage {
 	mergedContent, _ := json.Marshal(mergedBlocks)
 
 	return &TranscriptMessage{
-		Seq:              a.Seq,
-		SessionID:        a.SessionID,
-		UUID:             a.UUID,
-		ParentUUID:       b.ParentUUID, // Use second message's parent for chain integrity
+		Seq:               a.Seq,
+		SessionID:         a.SessionID,
+		UUID:              a.UUID,
+		ParentUUID:        b.ParentUUID, // Use second message's parent for chain integrity
 		LogicalParentUUID: b.LogicalParentUUID,
-		IsSidechain:      a.IsSidechain,
-		Type:             "user",
-		Subtype:          a.Subtype,
-		Content:          string(mergedContent),
-		CreatedAt:        b.CreatedAt, // Use later timestamp
+		IsSidechain:       a.IsSidechain,
+		Type:              "user",
+		Subtype:           a.Subtype,
+		Content:           string(mergedContent),
+		CreatedAt:         b.CreatedAt, // Use later timestamp
 	}
 }

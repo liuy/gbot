@@ -135,7 +135,7 @@ func TestOpenAISSE_TextOnly(t *testing.T) {
 		"content_block_start",
 		"content_block_delta",
 		"content_block_delta",
-		"content_block_stop",    // text block closed on finish_reason "stop"
+		"content_block_stop", // text block closed on finish_reason "stop"
 		"message_delta",
 		"message_stop",
 	)
@@ -326,9 +326,9 @@ func TestOpenAISSE_ToolCallFragmented(t *testing.T) {
 
 	assertEventTypes(t, events,
 		"message_start",
-		"content_block_start",   // index 0 — when name arrives
-		"content_block_delta",   // first arg fragment
-		"content_block_delta",   // second arg fragment
+		"content_block_start", // index 0 — when name arrives
+		"content_block_delta", // first arg fragment
+		"content_block_delta", // second arg fragment
 		"message_delta",
 		"content_block_stop",
 		"message_stop",
@@ -432,13 +432,13 @@ func TestOpenAISSE_MultipleToolCalls(t *testing.T) {
 
 	assertEventTypes(t, events,
 		"message_start",
-		"content_block_start",   // index 0 — bash
-		"content_block_delta",   // bash args
-		"content_block_start",   // index 1 — read_file
-		"content_block_delta",   // read_file args
+		"content_block_start", // index 0 — bash
+		"content_block_delta", // bash args
+		"content_block_start", // index 1 — read_file
+		"content_block_delta", // read_file args
 		"message_delta",
-		"content_block_stop",    // bash close
-		"content_block_stop",    // read close
+		"content_block_stop", // bash close
+		"content_block_stop", // read close
 		"message_stop",
 	)
 
@@ -506,13 +506,13 @@ func TestOpenAISSE_MixedTextAndTools(t *testing.T) {
 
 	assertEventTypes(t, events,
 		"message_start",
-		"content_block_start",   // text block
-		"content_block_delta",   // "Let me check."
-		"content_block_stop",    // text block closed when tool starts
-		"content_block_start",   // tool_use block
-		"content_block_delta",   // tool args
+		"content_block_start", // text block
+		"content_block_delta", // "Let me check."
+		"content_block_stop",  // text block closed when tool starts
+		"content_block_start", // tool_use block
+		"content_block_delta", // tool args
 		"message_delta",
-		"content_block_stop",    // tool block closed on [DONE]
+		"content_block_stop", // tool block closed on [DONE]
 		"message_stop",
 	)
 
@@ -1221,13 +1221,13 @@ func TestOpenAISSE_ThinkingThenToolCall_ClosesThinking(t *testing.T) {
 	// then tool opens, tool deltas, tool closes.
 	assertEventTypes(t, events,
 		"message_start",
-		"content_block_start",  // thinking
-		"content_block_delta",  // thinking_delta
-		"content_block_stop",   // thinking closes before tool
-		"content_block_start",  // tool_use
-		"content_block_delta",  // input_json_delta
+		"content_block_start", // thinking
+		"content_block_delta", // thinking_delta
+		"content_block_stop",  // thinking closes before tool
+		"content_block_start", // tool_use
+		"content_block_delta", // input_json_delta
 		"message_delta",
-		"content_block_stop",   // tool closes
+		"content_block_stop", // tool closes
 		"message_stop",
 	)
 
@@ -1278,12 +1278,12 @@ func TestOpenAISSE_ThinkingThenTextStillWorks(t *testing.T) {
 
 	assertEventTypes(t, events,
 		"message_start",
-		"content_block_start",  // thinking
-		"content_block_delta",  // thinking_delta
-		"content_block_stop",   // thinking closes when text starts
-		"content_block_start",  // text
-		"content_block_delta",  // text_delta
-		"content_block_stop",   // text closes
+		"content_block_start", // thinking
+		"content_block_delta", // thinking_delta
+		"content_block_stop",  // thinking closes when text starts
+		"content_block_start", // text
+		"content_block_delta", // text_delta
+		"content_block_stop",  // text closes
 		"message_delta",
 		"message_stop",
 	)

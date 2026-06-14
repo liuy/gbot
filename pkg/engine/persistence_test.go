@@ -286,7 +286,7 @@ func TestExtractUserTitle_Engine(t *testing.T) {
 		}, "visible prompt"},
 		{"truncates long text", []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("a", 300))}},
-		}, strings.Repeat("a", 200)+"…"},
+		}, strings.Repeat("a", 200) + "…"},
 		{"skips empty text", []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("")}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("actual")}},

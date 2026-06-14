@@ -214,4 +214,3 @@ func splitPathSegments(p string) []string {
 	}
 	return strings.Split(p, "/")
 }
-

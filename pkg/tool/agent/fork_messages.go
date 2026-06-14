@@ -86,9 +86,9 @@ func BuildForkMessages(triggerAssistantMsg *types.Message, contextHistory []type
 				Text string `json:"text"`
 			}{{Type: "text", Text: forkPlaceholderResult}})
 			toolResultBlocks = append(toolResultBlocks, types.ContentBlock{
-				Type:     types.ContentTypeToolResult,
+				Type:      types.ContentTypeToolResult,
 				ToolUseID: block.ID,
-				Content:  json.RawMessage(placeholderContent),
+				Content:   json.RawMessage(placeholderContent),
 			})
 		}
 	}

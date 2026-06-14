@@ -250,9 +250,9 @@ func TestIsSelectableUserMessage_NonUserTags(t *testing.T) {
 	// Source: TS selectableUserMessagesFilter line 787-790
 	// Messages containing terminal/command output tags should be filtered.
 	cases := []struct {
-		name    string
-		text    string
-		want    bool
+		name string
+		text string
+		want bool
 	}{
 		{"local-command-stdout", "<local-command-stdout>output</local-command-stdout>", false},
 		{"local-command-stderr", "<local-command-stderr>error</local-command-stderr>", false},
@@ -363,12 +363,12 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 	eng.SetMessages(msgs)
 
 	a := &App{
-		engine:           eng,
-		input:            NewInput(),
-		history:          NewHistory(""),
-		committedCount:   0,
-		repl:             NewReplState(),
-		sessionID:        session.SessionID,
+		engine:         eng,
+		input:          NewInput(),
+		history:        NewHistory(""),
+		committedCount: 0,
+		repl:           NewReplState(),
+		sessionID:      session.SessionID,
 	}
 	a.history.Add("hello")
 
@@ -606,52 +606,52 @@ func TestTryAutoRewind_CommittedCountExceedsMessages(t *testing.T) {
 }
 
 func TestHandleRewind_NoUserMessages(t *testing.T) {
-		eng := newTestEngine()
-		eng.SetMessages([]types.Message{
-			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
-		})
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}, Timestamp: testTime},
+	})
 
-		a := &App{
-			engine: eng,
-			input:  NewInput(),
-			repl:   NewReplState(),
-		}
-		a.width = 80
-
-		_ = a.handleRewind(nil)
-
-		if a.activeDialog == nil {
-			t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
-		}
-		if a.activeDialog.title != "Nothing to rewind to yet." {
-			t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
-		}
+	a := &App{
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
+	}
+	if a.activeDialog.title != "Nothing to rewind to yet." {
+		t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
+	}
+}
 
 func TestHandleRewind_UserWithNoText(t *testing.T) {
-		eng := newTestEngine()
-		eng.SetMessages([]types.Message{
-			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("tu_1", nil, false),
-			}, Timestamp: testTime},
-		})
+	eng := newTestEngine()
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			types.NewToolResultBlock("tu_1", nil, false),
+		}, Timestamp: testTime},
+	})
 
-		a := &App{
-			engine: eng,
-			input:  NewInput(),
-			repl:   NewReplState(),
-		}
-		a.width = 80
-
-		_ = a.handleRewind(nil)
-
-		if a.activeDialog == nil {
-			t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
-		}
-		if a.activeDialog.title != "Nothing to rewind to yet." {
-			t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
-		}
+	a := &App{
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
+	a.width = 80
+
+	_ = a.handleRewind(nil)
+
+	if a.activeDialog == nil {
+		t.Fatal("expected dialog showing 'Nothing to rewind to yet.'")
+	}
+	if a.activeDialog.title != "Nothing to rewind to yet." {
+		t.Errorf("dialog title = %q, want %q", a.activeDialog.title, "Nothing to rewind to yet.")
+	}
+}
 
 func TestHandleRewind_SyntheticInterruptSkipped(t *testing.T) {
 	eng := newTestEngine()
@@ -816,11 +816,11 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	}
 
 	a := &App{
-		engine:           eng,
-		input:            NewInput(),
-		repl:             NewReplState(),
-		sessionID:        sessionID,
-		fileHistory:      tracker,
+		engine:      eng,
+		input:       NewInput(),
+		repl:        NewReplState(),
+		sessionID:   sessionID,
+		fileHistory: tracker,
 	}
 	a.width = 80
 
@@ -835,13 +835,13 @@ func TestHandleRewind_WithStoreTruncation(t *testing.T) {
 	model, _ := a.onDialogDone(a.activeDialog)
 	app := model.(*App)
 
-		// Scope dialog appears because fileHistory has backups
-		if app.activeDialog != nil {
-			app.activeDialog.done = true
-			app.activeDialog.cursor = 0 // "Restore code and conversation"
-			model, _ = app.onDialogDone(app.activeDialog)
-			app = model.(*App)
-		}
+	// Scope dialog appears because fileHistory has backups
+	if app.activeDialog != nil {
+		app.activeDialog.done = true
+		app.activeDialog.cursor = 0 // "Restore code and conversation"
+		model, _ = app.onDialogDone(app.activeDialog)
+		app = model.(*App)
+	}
 
 	// Store retains all messages (append-only)
 	remaining, _ := store.LoadMessages(sessionID)

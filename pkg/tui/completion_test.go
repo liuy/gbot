@@ -646,7 +646,7 @@ func TestCompletions_PartMatch_PluginSkill(t *testing.T) {
 		"clear": {Description: "Clear conversation", HasArgs: false},
 	}
 	skillDefs = map[string]CommandDef{
-		"oh-my-claudecode:ralph":    {Description: "Persistent agent loop", HasArgs: true},
+		"oh-my-claudecode:ralph":     {Description: "Persistent agent loop", HasArgs: true},
 		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
 		"oh-my-claudecode:cancel":    {Description: "Cancel active mode", HasArgs: false},
 	}
@@ -680,7 +680,7 @@ func TestCompletions_PartMatch_AutoPrefix(t *testing.T) {
 
 	commandDefs = map[string]CommandDef{}
 	skillDefs = map[string]CommandDef{
-		"oh-my-claudecode:ralph":    {Description: "Persistent agent loop", HasArgs: true},
+		"oh-my-claudecode:ralph":     {Description: "Persistent agent loop", HasArgs: true},
 		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
 	}
 	sortedCommands = AllCommands()

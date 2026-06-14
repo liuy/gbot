@@ -187,9 +187,10 @@ func TestIntegration_CompactBoundaryWithFork(t *testing.T) {
 // after multiple rewinds (each creating a new fork).
 //
 // Scenario:
-//   A → B → C          (original chain)
-//   A → B → D          (first rewind, fork from B)
-//   A → E              (second rewind, fork from A)
+//
+//	A → B → C          (original chain)
+//	A → B → D          (first rewind, fork from B)
+//	A → E              (second rewind, fork from A)
 //
 // Chain-walk should return: A → E (latest branch)
 func TestIntegration_MultipleForks(t *testing.T) {

@@ -221,7 +221,7 @@ func (t *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
 func (t *mockTool) IsEnabled() bool                           { return t.enabled }
 func (t *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (t *mockTool) Prompt() string                            { return "" }
-func (m *mockTool) NewResultType() any { return nil }
+func (m *mockTool) NewResultType() any                        { return nil }
 func (t *mockTool) RenderResult(data any) string {
 	if s, ok := data.(string); ok {
 		return s
@@ -1999,8 +1999,8 @@ func TestEngine_EnqueueAttachment(t *testing.T) {
 
 	// Enqueue a notification from another goroutine (simulates background job callback)
 	eng.EnqueueAttachment(types.QueuedItem{
-		Value: "<job-notification><job-id>bg-1</job-id></job-notification>",
-		Mode:  types.ItemModeJob,
+		Value:     "<job-notification><job-id>bg-1</job-id></job-notification>",
+		Mode:      types.ItemModeJob,
 		Timestamp: time.Now(), // REAL-TIME: needed for message timestamp in test
 	})
 
@@ -2191,8 +2191,8 @@ func TestEnqueueAttachment_AutoProcess_FullChain(t *testing.T) {
 		t.Fatal("auto-process did not complete within timeout")
 	}
 
-		// Job-mode attachments no longer emit EventAttachment (TUI notification suppressed)
-		// Only prompt-mode attachments emit events. Verify LLM turn still runs.
+	// Job-mode attachments no longer emit EventAttachment (TUI notification suppressed)
+	// Only prompt-mode attachments emit events. Verify LLM turn still runs.
 	if len(ec.FindEvents(types.EventTurnStart)) == 0 {
 		t.Error("expected EventTurnStart - LLM turn should begin")
 	}
@@ -2748,23 +2748,23 @@ func TestProcessAttachments_DrainsAndRunsTurns(t *testing.T) {
 		t.Fatal("timed out waiting for query end")
 	}
 
-		gotAttachment := len(ec.FindEvents(types.EventAttachment)) > 0
-		gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
-		gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
-		gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
-		// Job-mode attachments no longer emit EventAttachment
-		if gotAttachment {
-			t.Error("job-mode attachment should NOT emit EventAttachment")
-		}
-		if !gotTurnStart {
-			t.Error("expected EventTurnStart")
-		}
-		if !gotTextDelta {
-			t.Error("expected EventTextDelta (LLM response)")
-		}
-		if !gotQueryEnd {
-			t.Error("expected EventQueryEnd")
-		}
+	gotAttachment := len(ec.FindEvents(types.EventAttachment)) > 0
+	gotTurnStart := len(ec.FindEvents(types.EventTurnStart)) > 0
+	gotTextDelta := len(ec.FindEvents(types.EventTextDelta)) > 0
+	gotQueryEnd := len(ec.FindEvents(types.EventQueryEnd)) > 0
+	// Job-mode attachments no longer emit EventAttachment
+	if gotAttachment {
+		t.Error("job-mode attachment should NOT emit EventAttachment")
+	}
+	if !gotTurnStart {
+		t.Error("expected EventTurnStart")
+	}
+	if !gotTextDelta {
+		t.Error("expected EventTextDelta (LLM response)")
+	}
+	if !gotQueryEnd {
+		t.Error("expected EventQueryEnd")
+	}
 
 }
 func TestProcessAttachments_ContextCancelled(t *testing.T) {
@@ -3821,6 +3821,7 @@ func assertFileContentEngine(t *testing.T, path, want string) {
 		t.Errorf("%s content = %q, want %q", filepath.Base(path), string(data), want)
 	}
 }
+
 // TestChain_BashBackupViaQuery verifies the full call chain:
 // Engine.Params.WorkingDir → baseTctx → executor snapshot → Bash modifies file →
 // detect changes → record backup → RewindTo → file restored to original content.

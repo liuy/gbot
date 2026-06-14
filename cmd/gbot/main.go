@@ -13,35 +13,35 @@ import (
 	"github.com/google/uuid"
 	"os"
 	"path/filepath"
-	"time"
 	"slices"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hooks"
+	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/dream"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
-	"github.com/liuy/gbot/pkg/hub"
-	"github.com/liuy/gbot/pkg/hooks"
-	"github.com/liuy/gbot/pkg/llm"
-	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/plugins"
-	"github.com/liuy/gbot/pkg/memory/short"
+	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
-	skilltool "github.com/liuy/gbot/pkg/tool/skill"
-	skills "github.com/liuy/gbot/pkg/skills"
-	"github.com/liuy/gbot/pkg/types"
-	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
+	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/grep"
+	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tui"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func main() {
@@ -262,109 +262,109 @@ func main() {
 		}
 	}
 
-		// Initialize task list storage
-		if sessionID != "" {
-			if dir, err := task.TasksDir(sessionID); err == nil {
-				if err := taskList.SetDir(dir); err != nil {
-					slog.Warn("main: tasks init failed", "error", err)
-				}
-			} else {
-				slog.Warn("main: tasks dir resolve failed", "error", err)
+	// Initialize task list storage
+	if sessionID != "" {
+		if dir, err := task.TasksDir(sessionID); err == nil {
+			if err := taskList.SetDir(dir); err != nil {
+				slog.Warn("main: tasks init failed", "error", err)
 			}
+		} else {
+			slog.Warn("main: tasks dir resolve failed", "error", err)
 		}
+	}
 
-		// Wire auto-compact
-		if store != nil && sessionID != "" {
-			compactor := engine.NewAutoCompactor(store, sessionID, model, provider, contextWindow)
-			eng.SetCompactor(compactor, engine.AutoCompactConfig{
-				ContextWindow:          contextWindow,
-				MaxConsecutiveFailures: 3,
+	// Wire auto-compact
+	if store != nil && sessionID != "" {
+		compactor := engine.NewAutoCompactor(store, sessionID, model, provider, contextWindow)
+		eng.SetCompactor(compactor, engine.AutoCompactConfig{
+			ContextWindow:          contextWindow,
+			MaxConsecutiveFailures: 3,
+		})
+	}
+
+	// Wire session memory extraction
+	// TS source: services/SessionMemory/sessionMemory.ts
+	if store != nil && sessionID != "" && contextWindow > 0 {
+		smCfg := session.DefaultConfig()
+		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
+			editTool := fileedit.New()
+			subEng := eng.NewSubEngine(engine.SubEngineOptions{
+				Tools:     map[string]tool.Tool{"Edit": editTool},
+				AgentType: "session_memory",
 			})
+			defer subEng.Close()
+
+			// Build fork-style messages: parent conversation + extraction prompt as user message.
+			// TS: runForkedAgent passes forkContextMessages + promptMessages.
+			extractionUserMsg := types.Message{
+				ID:      uuid.New().String(),
+				Role:    types.RoleUser,
+				Content: []types.ContentBlock{types.NewTextBlock(prompt)},
+			}
+			forkMessages := append(slices.Clone(messages), extractionUserMsg)
+
+			// Use parent's system prompt for cache sharing (TS: cacheSafeParams).
+			result := subEng.RunForkedQuery(ctx, forkMessages, systemPrompt)
+			return result.Error
+		}
+		sm := session.New(smCfg, workingDir, extractFn, slog.Default())
+		sm.SetSystemPromptFn(eng.SystemPrompt)
+		eng.SetSessionMemory(sm)
+	}
+
+	// Wire dream mode (auto memory consolidation)
+	// TS source: services/autoDream/autoDream.ts
+	if dream.IsEnabled() && store != nil && sessionID != "" && contextWindow > 0 {
+		dreamCfg := dream.DefaultConfig()
+		dreamRunFn := func(ctx context.Context, prompt string) error {
+			// 5min timeout to prevent runaway dream sub-agents
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			dreamTools := map[string]tool.Tool{
+				"Read":  fileread.New(),
+				"Edit":  fileedit.New(),
+				"Write": filewrite.New(),
+				"Grep":  grep.New(),
+			}
+			subEng := eng.NewSubEngine(engine.SubEngineOptions{
+				Tools:     dreamTools,
+				AgentType: "auto_dream",
+				MaxTurns:  30,
+			})
+			defer subEng.Close()
+			result := subEng.QuerySync(ctx, "", prompt)
+			return result.Error
 		}
 
-		// Wire session memory extraction
-		// TS source: services/SessionMemory/sessionMemory.ts
-		if store != nil && sessionID != "" && contextWindow > 0 {
-			smCfg := session.DefaultConfig()
-			extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
-				editTool := fileedit.New()
-				subEng := eng.NewSubEngine(engine.SubEngineOptions{
-					Tools:     map[string]tool.Tool{"Edit": editTool},
-					AgentType: "session_memory",
-				})
-				defer subEng.Close()
+		memoryDir := long.GetMemoryPath(workingDir)
+		dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, sessionID,
+			store, dreamRunFn, eng.Dispatcher(), slog.Default())
+		eng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
+	}
 
-				// Build fork-style messages: parent conversation + extraction prompt as user message.
-				// TS: runForkedAgent passes forkContextMessages + promptMessages.
-				extractionUserMsg := types.Message{
-					ID:      uuid.New().String(),
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(prompt)},
-				}
-				forkMessages := append(slices.Clone(messages), extractionUserMsg)
+	// Fire SessionStart hook
+	if sessionID != "" {
+		hookSystem.SessionStart(context.Background(), &hooks.HookInput{
+			HookEventName: string(hooks.HookSessionStart),
+			SessionID:     sessionID,
+			Cwd:           workingDir,
+			Source:        "startup",
+		})
+	}
+	// 8. Create TUI App
+	app := tui.NewApp(eng, systemPrompt, h)
+	app.SetProviders(providerMap, cfg)
+	app.SetStore(store, sessionID, workingDir)
 
-				// Use parent's system prompt for cache sharing (TS: cacheSafeParams).
-				result := subEng.RunForkedQuery(ctx, forkMessages, systemPrompt)
-				return result.Error
-			}
-			sm := session.New(smCfg, workingDir, extractFn, slog.Default())
-			sm.SetSystemPromptFn(eng.SystemPrompt)
-			eng.SetSessionMemory(sm)
+	// Estimate initial context usage
+	// CJK-aware estimation. Corrected after first API response.
+	initialTokens := types.EstimateTokens(systemPrompt)
+	for _, t := range mainRefs.Reg.EnabledTools() {
+		if b, err := json.Marshal(t.InputSchema()); err == nil {
+			initialTokens += types.EstimateTokens(string(b))
 		}
-
-		// Wire dream mode (auto memory consolidation)
-		// TS source: services/autoDream/autoDream.ts
-		if dream.IsEnabled() && store != nil && sessionID != "" && contextWindow > 0 {
-			dreamCfg := dream.DefaultConfig()
-			dreamRunFn := func(ctx context.Context, prompt string) error {
-				// 5min timeout to prevent runaway dream sub-agents
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				dreamTools := map[string]tool.Tool{
-					"Read":  fileread.New(),
-					"Edit":  fileedit.New(),
-					"Write": filewrite.New(),
-					"Grep":  grep.New(),
-				}
-				subEng := eng.NewSubEngine(engine.SubEngineOptions{
-					Tools:     dreamTools,
-					AgentType: "auto_dream",
-					MaxTurns:  30,
-				})
-				defer subEng.Close()
-				result := subEng.QuerySync(ctx, "", prompt)
-				return result.Error
-			}
-
-			memoryDir := long.GetMemoryPath(workingDir)
-			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, sessionID,
-				store, dreamRunFn, eng.Dispatcher(), slog.Default())
-			eng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
-		}
-
-			// Fire SessionStart hook
-			if sessionID != "" {
-				hookSystem.SessionStart(context.Background(), &hooks.HookInput{
-					HookEventName: string(hooks.HookSessionStart),
-					SessionID:     sessionID,
-					Cwd:           workingDir,
-					Source:        "startup",
-				})
-			}
-		// 8. Create TUI App
-		app := tui.NewApp(eng, systemPrompt, h)
-		app.SetProviders(providerMap, cfg)
-		app.SetStore(store, sessionID, workingDir)
-
-		// Estimate initial context usage
-		// CJK-aware estimation. Corrected after first API response.
-		initialTokens := types.EstimateTokens(systemPrompt)
-		for _, t := range mainRefs.Reg.EnabledTools() {
-			if b, err := json.Marshal(t.InputSchema()); err == nil {
-				initialTokens += types.EstimateTokens(string(b))
-			}
-		}
-		app.SetInitialContext(initialTokens, contextWindow)
+	}
+	app.SetInitialContext(initialTokens, contextWindow)
 
 	// Wire task list panel reader
 	app.SetAutoCleanupFn(func() bool {
@@ -460,4 +460,3 @@ func resolvePrimaryProvider(cfg *config.Config, providerMap config.ProviderMap) 
 	}
 	return prov, modelName, p, nil
 }
-

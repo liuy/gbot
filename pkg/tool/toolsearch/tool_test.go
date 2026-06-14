@@ -24,25 +24,27 @@ type mockTool struct {
 	searchHint  string
 }
 
-func (m *mockTool) Name() string                                                { return m.name }
-func (m *mockTool) Aliases() []string                                           { return nil }
-func (m *mockTool) Description(json.RawMessage) (string, error)                { return m.description, nil }
-func (m *mockTool) RenderResult(data any) string                                { return "" }
-func (m *mockTool) InputSchema() json.RawMessage                                { return nil }
+func (m *mockTool) Name() string                                { return m.name }
+func (m *mockTool) Aliases() []string                           { return nil }
+func (m *mockTool) Description(json.RawMessage) (string, error) { return m.description, nil }
+func (m *mockTool) RenderResult(data any) string                { return "" }
+func (m *mockTool) InputSchema() json.RawMessage                { return nil }
 func (m *mockTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
-func (m *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} }
-func (m *mockTool) IsReadOnly(json.RawMessage) bool                             { return true }
-func (m *mockTool) IsDestructive(json.RawMessage) bool                          { return false }
-func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool                      { return true }
-func (m *mockTool) IsEnabled() bool                                             { return true }
-func (m *mockTool) InterruptBehavior() tool.InterruptBehavior                   { return tool.InterruptCancel }
-func (m *mockTool) MaxResultSize() int                                          { return 50000 }
-func (m *mockTool) Prompt() string                                              { return "" }
-func (m *mockTool) IsDeferred() bool                                            { return m.deferred }
-func (m *mockTool) SearchHint() string                                          { return m.searchHint }
-func (m *mockTool) NewResultType() any                                          { return nil }
+func (m *mockTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+	return types.PermissionAllowDecision{}
+}
+func (m *mockTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (m *mockTool) IsDestructive(json.RawMessage) bool        { return false }
+func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (m *mockTool) IsEnabled() bool                           { return true }
+func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (m *mockTool) MaxResultSize() int                        { return 50000 }
+func (m *mockTool) Prompt() string                            { return "" }
+func (m *mockTool) IsDeferred() bool                          { return m.deferred }
+func (m *mockTool) SearchHint() string                        { return m.searchHint }
+func (m *mockTool) NewResultType() any                        { return nil }
 
 // helper to create a deferred tool
 func deferredTool(name, desc string) *mockTool {
@@ -876,7 +878,7 @@ func TestExecute_DeferredToolsCount(t *testing.T) {
 		deferredTool("FileRead", "Read file contents"),
 		deferredTool("FileEdit", "Edit file contents"),
 		regularTool("Grep", "Search in files"), // not deferred
-		regularTool("Grep", "Find files"),       // not deferred
+		regularTool("Grep", "Find files"),      // not deferred
 	)
 	tctx := makeTctx(tools)
 	input := json.RawMessage(`{"query": "read"}`)
@@ -1050,7 +1052,7 @@ func TestScoring_PartExactBeatsContains(t *testing.T) {
 	// Part exact = 10, part contains = 5
 	// Use tool names that won't trigger the exact-match fast path.
 	deferred := toolMap(
-		deferredTool("FileRead", "Read things"),                  // part "read" exact match => score 10
+		deferredTool("FileRead", "Read things"),                      // part "read" exact match => score 10
 		deferredTool("FileReaderTool", "A tool for read operations"), // part "reader" contains "read" => score 5
 	)
 	all := deferred
@@ -1083,17 +1085,17 @@ func TestExecute_Integration_RealisticToolSet(t *testing.T) {
 	)
 
 	tests := []struct {
-		name          string
-		query         string
-		maxResults    int
-		wantMinMatch  int // at least this many matches
-		wantContains  string // first match must contain this substring (if set)
+		name           string
+		query          string
+		maxResults     int
+		wantMinMatch   int    // at least this many matches
+		wantContains   string // first match must contain this substring (if set)
 		wantExactFirst string // first match must be exactly this (if set)
 	}{
 		{
-			name:         "select single tool",
-			query:        "select:mcp__github__create_issue",
-			wantMinMatch: 1,
+			name:           "select single tool",
+			query:          "select:mcp__github__create_issue",
+			wantMinMatch:   1,
 			wantExactFirst: "mcp__github__create_issue",
 		},
 		{
@@ -1102,9 +1104,9 @@ func TestExecute_Integration_RealisticToolSet(t *testing.T) {
 			wantMinMatch: 2,
 		},
 		{
-			name:          "exact match fast path",
-			query:         "mcp__github__create_issue",
-			wantMinMatch:  1,
+			name:           "exact match fast path",
+			query:          "mcp__github__create_issue",
+			wantMinMatch:   1,
 			wantExactFirst: "mcp__github__create_issue",
 		},
 		{
@@ -1114,10 +1116,10 @@ func TestExecute_Integration_RealisticToolSet(t *testing.T) {
 			wantMinMatch: 3, // all 3 github tools
 		},
 		{
-			name:          "keyword: slack",
-			query:         "slack",
-			wantMinMatch:  2,
-			wantContains:  "slack", // both MCP slack tools match with equal score
+			name:         "keyword: slack",
+			query:        "slack",
+			wantMinMatch: 2,
+			wantContains: "slack", // both MCP slack tools match with equal score
 		},
 		{
 			name:         "keyword: notebook",

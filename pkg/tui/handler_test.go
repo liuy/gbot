@@ -452,8 +452,8 @@ func TestConvertEventToMsg_TurnEnd(t *testing.T) {
 func TestConvertEventToMsg_AgentToolStart(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolStart,
-		Agent: &types.AgentMeta{ParentToolUseID: "parent-1", AgentType: "Explore", Depth: 0},
+		Type:    types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "parent-1", AgentType: "Explore", Depth: 0},
 		ToolUse: &types.ToolUseEvent{ID: "child-1", Name: "Grep", Summary: "searching"},
 	})
 	ts, ok := msg.(toolStartMsg)
@@ -477,8 +477,8 @@ func TestConvertEventToMsg_AgentToolStart(t *testing.T) {
 func TestConvertEventToMsg_AgentToolStart_NilToolUse(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:   types.EventToolStart,
-		Agent:  &types.AgentMeta{ParentToolUseID: "p1"},
+		Type:    types.EventToolStart,
+		Agent:   &types.AgentMeta{ParentToolUseID: "p1"},
 		ToolUse: nil,
 	})
 	if msg != nil {
@@ -489,8 +489,8 @@ func TestConvertEventToMsg_AgentToolStart_NilToolUse(t *testing.T) {
 func TestConvertEventToMsg_AgentToolParamDelta(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolParamDelta,
-		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose", Depth: 1},
+		Type:         types.EventToolParamDelta,
+		Agent:        &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose", Depth: 1},
 		PartialInput: &types.PartialInputEvent{ID: "c1", Name: "Read", Delta: `{"path":"a.go"}`, Summary: "reading"},
 	})
 	pd, ok := msg.(toolParamDeltaMsg)
@@ -514,8 +514,8 @@ func TestConvertEventToMsg_AgentToolParamDelta(t *testing.T) {
 func TestConvertEventToMsg_AgentToolEnd(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventToolEnd,
-		Agent: &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
+		Type:       types.EventToolEnd,
+		Agent:      &types.AgentMeta{ParentToolUseID: "p1", AgentType: "Explore"},
 		ToolResult: &types.ToolResultEvent{ToolUseID: "c1", IsError: true},
 	})
 	te, ok := msg.(toolEndMsg)
@@ -536,8 +536,8 @@ func TestConvertEventToMsg_AgentToolEnd(t *testing.T) {
 func TestConvertEventToMsg_AgentToolRun(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:   types.EventToolRun,
-		Agent:  &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose"},
+		Type:    types.EventToolRun,
+		Agent:   &types.AgentMeta{ParentToolUseID: "p1", AgentType: "general-purpose"},
 		ToolUse: &types.ToolUseEvent{ID: "c1", Name: "Bash"},
 	})
 	tr, ok := msg.(toolRunMsg)
@@ -588,8 +588,8 @@ func TestConvertEventToMsg_AgentThinkingEnd(t *testing.T) {
 func TestConvertEventToMsg_AgentThinkingEnd_WithThinking(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:  types.EventThinkingEnd,
-		Agent: &types.AgentMeta{ParentToolUseID: "p1"},
+		Type:     types.EventThinkingEnd,
+		Agent:    &types.AgentMeta{ParentToolUseID: "p1"},
 		Thinking: &types.ThinkingEvent{Duration: 1 * time.Second},
 	})
 	te, ok := msg.(thinkingEndMsg)
@@ -741,8 +741,8 @@ func TestConvertEventToMsg_PermissionAsk(t *testing.T) {
 func TestConvertEventToMsg_PermissionAsk_NilPermissionAsk(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type:         types.EventAsk,
-		Ask: nil,
+		Type: types.EventAsk,
+		Ask:  nil,
 	})
 	if msg != nil {
 		t.Errorf("nil PermissionAsk should return nil, got %T", msg)
@@ -796,7 +796,7 @@ func TestTUIHandler_PermissionAsk_TimeoutAutoDeny(t *testing.T) {
 		h.Handle(types.QueryEvent{
 			Type: types.EventAsk,
 			Ask: &types.AskEvent{
-			Kind:       types.AskPermission,
+				Kind:       types.AskPermission,
 				ToolName:   "Bash",
 				Input:      json.RawMessage(`{"command":"ls"}`),
 				Message:    "test",
@@ -1107,7 +1107,7 @@ func TestConvertEventToMsg_Attachment_PromptMode(t *testing.T) {
 func TestConvertEventToMsg_Attachment_WithAgent(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventAttachment,
+		Type:  types.EventAttachment,
 		Agent: &types.AgentMeta{ParentToolUseID: "call_agent_1", AgentType: "General", Depth: 0},
 		Message: &types.Message{
 			Attachment: &types.Attachment{
@@ -1136,7 +1136,7 @@ func TestConvertEventToMsg_Attachment_WithAgent(t *testing.T) {
 func TestConvertEventToMsg_Attachment_WithAgent_PromptMode(t *testing.T) {
 	h := NewTUIHandler()
 	msg := h.convertEventToMsg(types.QueryEvent{
-		Type: types.EventAttachment,
+		Type:  types.EventAttachment,
 		Agent: &types.AgentMeta{ParentToolUseID: "call_agent_2", AgentType: "Explore", Depth: 0},
 		Message: &types.Message{
 			Attachment: &types.Attachment{

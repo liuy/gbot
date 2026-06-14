@@ -16,8 +16,8 @@ import (
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/tool/bash"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
+	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -389,8 +389,8 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 
 	// Trigger the factory via AgentTool.Run
 	agentInput, _ := json.Marshal(map[string]any{
-		"prompt":       "say hello",
-		"agent_type":   "General",
+		"prompt":        "say hello",
+		"agent_type":    "General",
 		"system_prompt": "You are a test agent.",
 	})
 	result, err := refs.Agent.Call(context.Background(), agentInput, &tool.ToolUseContext{
@@ -659,8 +659,8 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 	// injected (e.g., currentDate, claudeMd). We verify it via the fork path
 	// which includes UserContextMessages.
 	agentInput, _ := json.Marshal(map[string]any{
-		"prompt":       "with context",
-		"agent_type":   "General",
+		"prompt":        "with context",
+		"agent_type":    "General",
 		"system_prompt": "test",
 	})
 	// Run with context that has extra messages
@@ -761,6 +761,7 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 	// The command doesn't exist, so err is non-nil — exercising the error path.
 	_, _ = mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
 }
+
 // -----------------------------------------------------------------------
 // WireEngine MCP connect path coverage
 // -----------------------------------------------------------------------
@@ -884,4 +885,3 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 		t.Fatal("Agent.Call returned nil result")
 	}
 }
-

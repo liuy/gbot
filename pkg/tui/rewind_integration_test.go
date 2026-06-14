@@ -60,13 +60,13 @@ func setupRewindIntegration(t *testing.T) (*App, *short.Store, *filehistory.Trac
 	eng.SetStore(store, projectDir)
 
 	a := &App{
-		engine:           eng,
-		sessionID:        session.SessionID,
-		projectDir:       projectDir,
-		repl:             NewReplState(),
-		input:            NewInput(),
-		history:          NewHistory(""),
-		fileHistory:      tracker,
+		engine:      eng,
+		sessionID:   session.SessionID,
+		projectDir:  projectDir,
+		repl:        NewReplState(),
+		input:       NewInput(),
+		history:     NewHistory(""),
+		fileHistory: tracker,
 	}
 	a.width = 80
 
@@ -584,9 +584,9 @@ func TestIntegration_SetStore_WiresFileHistory(t *testing.T) {
 
 	// Create App and call SetStore — THIS is the production wiring path
 	a := &App{
-		engine: eng,
-		repl:   NewReplState(),
-		input:  NewInput(),
+		engine:  eng,
+		repl:    NewReplState(),
+		input:   NewInput(),
 		history: NewHistory(""),
 	}
 	a.width = 80
@@ -809,10 +809,10 @@ func TestIntegration_Rewind_PersistenceSurvivesRestart(t *testing.T) {
 	// Session 1: App with SetStore (wires fileHistoryWriter)
 	eng1 := engine.New(&engine.Params{Logger: slog.Default()})
 	app1 := &App{
-		engine:           eng1,
-		repl:             NewReplState(),
-		input:            NewInput(),
-		history:          NewHistory(""),
+		engine:  eng1,
+		repl:    NewReplState(),
+		input:   NewInput(),
+		history: NewHistory(""),
 	}
 	app1.width = 80
 	app1.SetStore(store, session.SessionID, projectDir)
@@ -842,10 +842,10 @@ func TestIntegration_Rewind_PersistenceSurvivesRestart(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	eng2 := engine.New(&engine.Params{Logger: slog.Default()})
 	app2 := &App{
-		engine:           eng2,
-		repl:             NewReplState(),
-		input:            NewInput(),
-		history:          NewHistory(""),
+		engine:  eng2,
+		repl:    NewReplState(),
+		input:   NewInput(),
+		history: NewHistory(""),
 	}
 	app2.width = 80
 	app2.SetStore(store, session.SessionID, projectDir)
@@ -991,7 +991,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 		t.Fatalf("ResumeSession: %v", err)
 	}
 
-		engineMsgs, err := short.StoreMessagesToEngine(resumedMsgs)
+	engineMsgs, err := short.StoreMessagesToEngine(resumedMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}
@@ -1029,13 +1029,13 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	eng2.SetFileHistory(tracker2)
 
 	app := &App{
-		engine:           eng2,
-		sessionID:        session.SessionID,
-		projectDir:       projectDir,
-		repl:             NewReplState(),
-		input:            NewInput(),
-		history:          NewHistory(""),
-		fileHistory:      tracker2,
+		engine:      eng2,
+		sessionID:   session.SessionID,
+		projectDir:  projectDir,
+		repl:        NewReplState(),
+		input:       NewInput(),
+		history:     NewHistory(""),
+		fileHistory: tracker2,
 	}
 	app.width = 80
 	app.repl.messages = engineMessagesToViews(engineMsgs, nil)
@@ -1475,12 +1475,12 @@ func setupE2E(t *testing.T) (*App, *short.Store, string) {
 	eng.SetStore(store, projectDir)
 
 	a := &App{
-		engine:           eng,
-		sessionID:        session.SessionID,
-		projectDir:       projectDir,
-		repl:             NewReplState(),
-		input:            NewInput(),
-		history:          NewHistory(""),
+		engine:     eng,
+		sessionID:  session.SessionID,
+		projectDir: projectDir,
+		repl:       NewReplState(),
+		input:      NewInput(),
+		history:    NewHistory(""),
 	}
 	a.width = 80
 
@@ -1743,7 +1743,7 @@ func TestIntegration_Rewind_FilterAttachmentAndSkillMessages(t *testing.T) {
 	}
 
 	// Convert back to engine messages
-		loadedMsgs, err := short.StoreMessagesToEngine(storeMsgs)
+	loadedMsgs, err := short.StoreMessagesToEngine(storeMsgs)
 	if err != nil {
 		t.Fatalf("StoreMessagesToEngine: %v", err)
 	}

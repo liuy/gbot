@@ -36,16 +36,16 @@ func TestToolEnd_MatchesByID_NotByPosition(t *testing.T) {
 	agentSubID := "call_agent_sub_002"
 
 	_, _ = app.updateRepl(toolStartMsg{
-		ID:       bashID,
-		Name:     "Bash",
-		Summary:  "sleep 10 && echo done",
-		Agent:    agent,
+		ID:      bashID,
+		Name:    "Bash",
+		Summary: "sleep 10 && echo done",
+		Agent:   agent,
 	})
 	_, _ = app.updateRepl(toolStartMsg{
-		ID:       agentSubID,
-		Name:     "Agent",
-		Summary:  "Count lines",
-		Agent:    agent,
+		ID:      agentSubID,
+		Name:    "Agent",
+		Summary: "Count lines",
+		Agent:   agent,
 	})
 
 	// toolEnd arrives in SAME order as toolStart: Bash finishes first (0.1s),

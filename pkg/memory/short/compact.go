@@ -14,18 +14,18 @@ import (
 // PreservedSegment describes a tail portion of conversation that was preserved
 // during partial compact. Used by resume to relink the segment.
 type PreservedSegment struct {
-	HeadUUID    string `json:"headUuid"`    // First kept message
-	AnchorUUID  string `json:"anchorUuid"`  // Boundary or last summary
-	TailUUID    string `json:"tailUuid"`    // Last kept message
+	HeadUUID   string `json:"headUuid"`   // First kept message
+	AnchorUUID string `json:"anchorUuid"` // Boundary or last summary
+	TailUUID   string `json:"tailUuid"`   // Last kept message
 }
 
 // CompactMetadata holds the metadata from a compact boundary's content JSON.
 type CompactMetadata struct {
-	Trigger           string           `json:"trigger"`
-	PreTokens         int              `json:"preTokens"`
-	MessagesSummarized int             `json:"messagesSummarized"`
-	UserContext       string           `json:"userContext"`
-	PreservedSegment  *PreservedSegment `json:"preservedSegment,omitempty"`
+	Trigger            string            `json:"trigger"`
+	PreTokens          int               `json:"preTokens"`
+	MessagesSummarized int               `json:"messagesSummarized"`
+	UserContext        string            `json:"userContext"`
+	PreservedSegment   *PreservedSegment `json:"preservedSegment,omitempty"`
 	// PreCompactDiscoveredTools snapshots the tool search discovered set at compact
 	// time so RestoreToolSearchState can rebuild it after session resume.
 	// Source: toolSearch.ts — compactMetadata.preCompactDiscoveredTools
@@ -39,20 +39,20 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 	msgUUID := uuid.New().String()
 
 	compactMetadata := CompactMetadata{
-		Trigger:           trigger,
-		PreTokens:         preTokens,
-		MessagesSummarized: 0, // Filled later by RecordCompact
-		UserContext:       "", // Filled later by RecordCompact
+		Trigger:            trigger,
+		PreTokens:          preTokens,
+		MessagesSummarized: 0,  // Filled later by RecordCompact
+		UserContext:        "", // Filled later by RecordCompact
 	}
 
 	contentMap := map[string]any{
-		"type":      "system",
-		"subtype":   "compact_boundary",
-		"content":   "Conversation compacted",
-		"isMeta":    false,
-		"timestamp": now.Format(time.RFC3339),
-		"uuid":      msgUUID,
-		"level":     "info",
+		"type":            "system",
+		"subtype":         "compact_boundary",
+		"content":         "Conversation compacted",
+		"isMeta":          false,
+		"timestamp":       now.Format(time.RFC3339),
+		"uuid":            msgUUID,
+		"level":           "info",
 		"compactMetadata": compactMetadata,
 	}
 
@@ -255,7 +255,7 @@ func (s *Store) PartialCompact(sessionID string, messages []*TranscriptMessage, 
 		tailUUID := messagesToKeep[len(messagesToKeep)-1].UUID
 		anchorUUID := boundary.UUID // Boundary is the anchor
 
-			_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, anchorUUID, tailUUID)
+		_ = annotateBoundaryWithPreservedSegment(boundary, headUUID, anchorUUID, tailUUID)
 	}
 
 	result := &CompactResult{
@@ -356,10 +356,10 @@ func CreatePostCompactFileAttachments(preCompactMessages []*TranscriptMessage) [
 	attachments := make([]*TranscriptMessage, 0)
 	for _, path := range filePaths {
 		content := map[string]any{
-			"type":       "attachment",
-			"subtype":    "file_reference",
-			"content":    fmt.Sprintf("File: %s", path),
-			"filepath":   path,
+			"type":     "attachment",
+			"subtype":  "file_reference",
+			"content":  fmt.Sprintf("File: %s", path),
+			"filepath": path,
 		}
 		contentBytes, _ := json.Marshal(content)
 		attachments = append(attachments, &TranscriptMessage{
@@ -864,6 +864,7 @@ func parseBoundaryContentMap(content string) (map[string]any, error) {
 	}
 	return contentMap, nil
 }
+
 // extractCompactMetadata extracts compact metadata from boundary content JSON.
 func extractCompactMetadata(boundary *TranscriptMessage) (*CompactMetadata, error) {
 	contentMap, err := parseBoundaryContentMap(boundary.Content)

@@ -257,7 +257,7 @@ func TestEngine_AllTools_MergesStaticAndMCP(t *testing.T) {
 // MCP tools from the registry in the engine's tool map.
 // This is the wireup that connects Registry → Engine → callLLM tool list.
 //
-//Currently refreshTools() only rebuilds from toolsProvider (built-in tools)
+// Currently refreshTools() only rebuilds from toolsProvider (built-in tools)
 // and ignores mcpRegistry. This test should FAIL until that is fixed.
 func TestEngine_RefreshTools_MergesMCPTools(t *testing.T) {
 	registry := mcp.NewRegistry(nil, mcp.ChangeCallbacks{})
@@ -320,7 +320,7 @@ func (s *stubTool) InterruptBehavior() tool.InterruptBehavior   { return tool.In
 func (s *stubTool) MaxResultSize() int                          { return 0 }
 func (s *stubTool) Prompt() string                              { return s.prompt }
 func (s *stubTool) RenderResult(any) string                     { return "" }
-func (s *stubTool) NewResultType() any { return nil }
+func (s *stubTool) NewResultType() any                          { return nil }
 func (s *stubTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }

@@ -25,93 +25,93 @@ import (
 
 func TestFileTokenStore_Lifecycle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	// Read nonexistent key returns nil, nil
-	tok, err := store.ReadTokens("nonexistent")
-	if err != nil {
-		t.Fatalf("ReadTokens nonexistent: %v", err)
-	}
-	if tok != nil {
-		t.Errorf("expected nil for nonexistent key, got %+v", tok)
-	}
+		// Read nonexistent key returns nil, nil
+		tok, err := store.ReadTokens("nonexistent")
+		if err != nil {
+			t.Fatalf("ReadTokens nonexistent: %v", err)
+		}
+		if tok != nil {
+			t.Errorf("expected nil for nonexistent key, got %+v", tok)
+		}
 
-	// Write + Read round-trip
-	original := &OAuthTokenData{
-		ServerName:   "test-server",
-		ServerURL:    "http://example.com",
-		AccessToken:  "access-123",
-		RefreshToken: "refresh-456",
-		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
-		Scope:        "read write",
-		ClientID:     "client-abc",
-		ClientSecret: "secret-xyz",
-		DiscoveryState: &OAuthDiscoveryState{
-			AuthorizationServerURL: "https://auth.example.com",
-			ResourceMetadataURL:    "https://res.example.com",
-		},
-		StepUpScope: "admin",
-	}
-	if err := store.WriteTokens("key1", original); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		// Write + Read round-trip
+		original := &OAuthTokenData{
+			ServerName:   "test-server",
+			ServerURL:    "http://example.com",
+			AccessToken:  "access-123",
+			RefreshToken: "refresh-456",
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+			Scope:        "read write",
+			ClientID:     "client-abc",
+			ClientSecret: "secret-xyz",
+			DiscoveryState: &OAuthDiscoveryState{
+				AuthorizationServerURL: "https://auth.example.com",
+				ResourceMetadataURL:    "https://res.example.com",
+			},
+			StepUpScope: "admin",
+		}
+		if err := store.WriteTokens("key1", original); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	got, err := store.ReadTokens("key1")
-	if err != nil {
-		t.Fatalf("ReadTokens: %v", err)
-	}
-	if got == nil {
-		t.Fatal("ReadTokens returned nil after write")
-	}
-	if got.AccessToken != original.AccessToken {
-		t.Errorf("AccessToken: got %q, want %q", got.AccessToken, original.AccessToken)
-	}
-	if got.RefreshToken != original.RefreshToken {
-		t.Errorf("RefreshToken: got %q, want %q", got.RefreshToken, original.RefreshToken)
-	}
-	if got.ServerName != original.ServerName {
-		t.Errorf("ServerName: got %q, want %q", got.ServerName, original.ServerName)
-	}
-	if got.Scope != original.Scope {
-		t.Errorf("Scope: got %q, want %q", got.Scope, original.Scope)
-	}
-	if got.ClientID != original.ClientID {
-		t.Errorf("ClientID: got %q, want %q", got.ClientID, original.ClientID)
-	}
-	if got.ClientSecret != original.ClientSecret {
-		t.Errorf("ClientSecret: got %q, want %q", got.ClientSecret, original.ClientSecret)
-	}
-	if got.StepUpScope != original.StepUpScope {
-		t.Errorf("StepUpScope: got %q, want %q", got.StepUpScope, original.StepUpScope)
-	}
-	if got.DiscoveryState == nil {
-		t.Fatal("DiscoveryState is nil")
-	}
-	if got.DiscoveryState.AuthorizationServerURL != original.DiscoveryState.AuthorizationServerURL {
-		t.Errorf("DiscoveryState.AuthorizationServerURL: got %q, want %q",
-			got.DiscoveryState.AuthorizationServerURL, original.DiscoveryState.AuthorizationServerURL)
-	}
+		got, err := store.ReadTokens("key1")
+		if err != nil {
+			t.Fatalf("ReadTokens: %v", err)
+		}
+		if got == nil {
+			t.Fatal("ReadTokens returned nil after write")
+		}
+		if got.AccessToken != original.AccessToken {
+			t.Errorf("AccessToken: got %q, want %q", got.AccessToken, original.AccessToken)
+		}
+		if got.RefreshToken != original.RefreshToken {
+			t.Errorf("RefreshToken: got %q, want %q", got.RefreshToken, original.RefreshToken)
+		}
+		if got.ServerName != original.ServerName {
+			t.Errorf("ServerName: got %q, want %q", got.ServerName, original.ServerName)
+		}
+		if got.Scope != original.Scope {
+			t.Errorf("Scope: got %q, want %q", got.Scope, original.Scope)
+		}
+		if got.ClientID != original.ClientID {
+			t.Errorf("ClientID: got %q, want %q", got.ClientID, original.ClientID)
+		}
+		if got.ClientSecret != original.ClientSecret {
+			t.Errorf("ClientSecret: got %q, want %q", got.ClientSecret, original.ClientSecret)
+		}
+		if got.StepUpScope != original.StepUpScope {
+			t.Errorf("StepUpScope: got %q, want %q", got.StepUpScope, original.StepUpScope)
+		}
+		if got.DiscoveryState == nil {
+			t.Fatal("DiscoveryState is nil")
+		}
+		if got.DiscoveryState.AuthorizationServerURL != original.DiscoveryState.AuthorizationServerURL {
+			t.Errorf("DiscoveryState.AuthorizationServerURL: got %q, want %q",
+				got.DiscoveryState.AuthorizationServerURL, original.DiscoveryState.AuthorizationServerURL)
+		}
 
-	// Delete
-	if err := store.DeleteTokens("key1"); err != nil {
-		t.Fatalf("DeleteTokens: %v", err)
-	}
-	tok, err = store.ReadTokens("key1")
-	if err != nil {
-		t.Fatalf("ReadTokens after delete: %v", err)
-	}
-	if tok != nil {
-		t.Errorf("expected nil after delete, got %+v", tok)
-	}
+		// Delete
+		if err := store.DeleteTokens("key1"); err != nil {
+			t.Fatalf("DeleteTokens: %v", err)
+		}
+		tok, err = store.ReadTokens("key1")
+		if err != nil {
+			t.Fatalf("ReadTokens after delete: %v", err)
+		}
+		if tok != nil {
+			t.Errorf("expected nil after delete, got %+v", tok)
+		}
 
-	// Delete nonexistent is not an error
-	if err := store.DeleteTokens("nonexistent"); err != nil {
-		t.Errorf("DeleteTokens nonexistent: %v", err)
-	}
+		// Delete nonexistent is not an error
+		if err := store.DeleteTokens("nonexistent"); err != nil {
+			t.Errorf("DeleteTokens nonexistent: %v", err)
+		}
 	})
 }
 
@@ -652,154 +652,154 @@ func TestRefreshAuthorization_NilRefreshFunc(t *testing.T) {
 
 func TestRefreshAuthorization_TokenStillValid(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	// Token expires in 1 hour — well above the 5-minute buffer
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "valid-token",
-		RefreshToken: "unused-refresh",
-		ExpiresAt:    time.Now().Add(1 * time.Hour).UnixMilli(),
-		Scope:        "read",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		// Token expires in 1 hour — well above the 5-minute buffer
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "valid-token",
+			RefreshToken: "unused-refresh",
+			ExpiresAt:    time.Now().Add(1 * time.Hour).UnixMilli(),
+			Scope:        "read",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	refreshCalled := false
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		refreshCalled = true
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens, got nil")
-	}
-	if tokens.AccessToken != "valid-token" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "valid-token")
-	}
-	if refreshCalled {
-		t.Error("refresh should not be called when token is still valid")
-	}
+		refreshCalled := false
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			refreshCalled = true
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens, got nil")
+		}
+		if tokens.AccessToken != "valid-token" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "valid-token")
+		}
+		if refreshCalled {
+			t.Error("refresh should not be called when token is still valid")
+		}
 	})
 }
 
 func TestRefreshAuthorization_RefreshSuccess(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	// Token expired 1 second ago
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old-token",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		if rt != "refresh-token" {
-			t.Errorf("refreshFunc called with %q, want %q", rt, "refresh-token")
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		return &OAuthTokens{
-			AccessToken:  "new-token",
-			RefreshToken: "new-refresh",
-			ExpiresIn:    3600,
-			Scope:        "read write",
-			TokenType:    "Bearer",
-		}, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens, got nil")
-	}
-	if tokens.AccessToken != "new-token" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
-	}
-	// Verify saved
-	saved, _ := store.ReadTokens("key")
-	if saved == nil {
-		t.Fatal("tokens not saved after refresh")
-	}
-	if saved.AccessToken != "new-token" {
-		t.Errorf("saved AccessToken = %q, want %q", saved.AccessToken, "new-token")
-	}
-	if saved.RefreshToken != "new-refresh" {
-		t.Errorf("saved RefreshToken = %q, want %q", saved.RefreshToken, "new-refresh")
-	}
+		// Token expired 1 second ago
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old-token",
+			RefreshToken: "refresh-token",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
+
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			if rt != "refresh-token" {
+				t.Errorf("refreshFunc called with %q, want %q", rt, "refresh-token")
+			}
+			return &OAuthTokens{
+				AccessToken:  "new-token",
+				RefreshToken: "new-refresh",
+				ExpiresIn:    3600,
+				Scope:        "read write",
+				TokenType:    "Bearer",
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens, got nil")
+		}
+		if tokens.AccessToken != "new-token" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
+		}
+		// Verify saved
+		saved, _ := store.ReadTokens("key")
+		if saved == nil {
+			t.Fatal("tokens not saved after refresh")
+		}
+		if saved.AccessToken != "new-token" {
+			t.Errorf("saved AccessToken = %q, want %q", saved.AccessToken, "new-token")
+		}
+		if saved.RefreshToken != "new-refresh" {
+			t.Errorf("saved RefreshToken = %q, want %q", saved.RefreshToken, "new-refresh")
+		}
 	})
 }
 
 func TestRefreshAuthorization_InvalidGrant(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old-token",
-		RefreshToken: "bad-refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old-token",
+			RefreshToken: "bad-refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		return nil, fmt.Errorf("invalid_grant: token expired")
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
-	}
-	// Tokens should be cleared
-	saved, _ := store.ReadTokens("key")
-	if saved == nil {
-		t.Fatal("token data should still exist but be cleared")
-	}
-	if saved.AccessToken != "" {
-		t.Errorf("AccessToken should be cleared, got %q", saved.AccessToken)
-	}
-	if saved.RefreshToken != "" {
-		t.Errorf("RefreshToken should be cleared, got %q", saved.RefreshToken)
-	}
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			return nil, fmt.Errorf("invalid_grant: token expired")
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
+		}
+		// Tokens should be cleared
+		saved, _ := store.ReadTokens("key")
+		if saved == nil {
+			t.Fatal("token data should still exist but be cleared")
+		}
+		if saved.AccessToken != "" {
+			t.Errorf("AccessToken should be cleared, got %q", saved.AccessToken)
+		}
+		if saved.RefreshToken != "" {
+			t.Errorf("RefreshToken should be cleared, got %q", saved.RefreshToken)
+		}
 	})
 }
 
 func TestRefreshAuthorization_NoRefreshToken(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken: "expired",
-		ExpiresAt:   time.Now().Add(-1 * time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken: "expired",
+			ExpiresAt:   time.Now().Add(-1 * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		t.Error("refreshFunc should not be called without refresh token")
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil without refresh token, got %+v", tokens)
-	}
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			t.Error("refreshFunc should not be called without refresh token")
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil without refresh token, got %+v", tokens)
+		}
 	})
 }
 
@@ -868,7 +868,7 @@ func TestInvalidateCredentials(t *testing.T) {
 		if err := store.WriteTokens("key", &OAuthTokenData{
 			AccessToken:  "access",
 			RefreshToken: "refresh",
-			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),	// REAL-TIME: t.Run subtests incompatible with synctest
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(), // REAL-TIME: t.Run subtests incompatible with synctest
 			ClientID:     "client",
 		}); err != nil {
 			t.Fatalf("WriteTokens: %v", err)
@@ -1122,21 +1122,21 @@ func TestMCPAuthHandler_TokensStepUp(t *testing.T) {
 
 func TestMCPAuthHandler_TokensExpiredNoRefresh(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	h, store := newTestHandler(t)
-	if err := store.WriteTokens(h.ServerKey(), &OAuthTokenData{
-		AccessToken: "expired",
-		ExpiresAt:   time.Now().Add(-1 * time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		h, store := newTestHandler(t)
+		if err := store.WriteTokens(h.ServerKey(), &OAuthTokenData{
+			AccessToken: "expired",
+			ExpiresAt:   time.Now().Add(-1 * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	got, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil for expired token without refresh, got %+v", got)
-	}
+		got, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil for expired token without refresh, got %+v", got)
+		}
 	})
 }
 
@@ -1767,175 +1767,175 @@ func TestPerformMCPOAuthFlow_ContextCancellation(t *testing.T) {
 
 func TestRevokeServerTokens_SuccessfulRevocation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	// Use https:// server to satisfy the HTTPS check in RevokeServerTokens
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			// Return OAuth metadata with revocation endpoint
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-			return
+		// Use https:// server to satisfy the HTTPS check in RevokeServerTokens
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metadata" {
+				// Return OAuth metadata with revocation endpoint
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
+				return
+			}
+			if r.URL.Path == "/revoke" {
+				// Accept revocation
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		if r.URL.Path == "/revoke" {
-			// Accept revocation
-			w.WriteHeader(http.StatusOK)
-			return
+
+		// Write tokens with metadata URL
+		serverKey := "test-server"
+		tokenData := &OAuthTokenData{
+			ServerName:     "test-server",
+			ServerURL:      "http://example.com",
+			AccessToken:    "access-token-123",
+			RefreshToken:   "refresh-token-456",
+			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
+			ClientID:       "client-id",
+			ClientSecret:   "client-secret",
+			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
 		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		ctx := context.Background()
+		metadataURL := server.URL + "/metadata"
+		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
+		if err != nil {
+			t.Errorf("RevokeServerTokens() = %v, want nil", err)
+		}
 
-	// Write tokens with metadata URL
-	serverKey := "test-server"
-	tokenData := &OAuthTokenData{
-		ServerName:     "test-server",
-		ServerURL:      "http://example.com",
-		AccessToken:    "access-token-123",
-		RefreshToken:   "refresh-token-456",
-		ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-		ClientID:       "client-id",
-		ClientSecret:   "client-secret",
-		DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	ctx := context.Background()
-	metadataURL := server.URL + "/metadata"
-	err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-	if err != nil {
-		t.Errorf("RevokeServerTokens() = %v, want nil", err)
-	}
-
-	// Verify tokens were deleted
-	readData, err := store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after revocation = %v, want nil", err)
-	}
-	if readData != nil {
-		t.Errorf("ReadTokens after revocation = %+v, want nil", readData)
-	}
+		// Verify tokens were deleted
+		readData, err := store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after revocation = %v, want nil", err)
+		}
+		if readData != nil {
+			t.Errorf("ReadTokens after revocation = %+v, want nil", readData)
+		}
 	})
 }
 
 func TestRevokeServerTokens_RevocationFailsButTokensCleaned(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-			return
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metadata" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
+				return
+			}
+			if r.URL.Path == "/revoke" {
+				// Revocation endpoint returns error
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		if r.URL.Path == "/revoke" {
-			// Revocation endpoint returns error
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+
+		serverKey := "test-server"
+		tokenData := &OAuthTokenData{
+			ServerName:     "test-server",
+			ServerURL:      "http://example.com",
+			AccessToken:    "access-token-123",
+			RefreshToken:   "refresh-token-456",
+			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
+			ClientID:       "client-id",
+			ClientSecret:   "client-secret",
+			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
 		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		ctx := context.Background()
+		metadataURL := server.URL + "/metadata"
+		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
+		// Should still succeed even if revocation fails
+		if err != nil {
+			t.Errorf("RevokeServerTokens() = %v, want nil (tokens should still be cleaned)", err)
+		}
 
-	serverKey := "test-server"
-	tokenData := &OAuthTokenData{
-		ServerName:     "test-server",
-		ServerURL:      "http://example.com",
-		AccessToken:    "access-token-123",
-		RefreshToken:   "refresh-token-456",
-		ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-		ClientID:       "client-id",
-		ClientSecret:   "client-secret",
-		DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	ctx := context.Background()
-	metadataURL := server.URL + "/metadata"
-	err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-	// Should still succeed even if revocation fails
-	if err != nil {
-		t.Errorf("RevokeServerTokens() = %v, want nil (tokens should still be cleaned)", err)
-	}
-
-	// Verify tokens were deleted despite revocation failure
-	readData, err := store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after failed revocation = %v, want nil", err)
-	}
-	if readData != nil {
-		t.Errorf("ReadTokens after failed revocation = %+v, want nil", readData)
-	}
+		// Verify tokens were deleted despite revocation failure
+		readData, err := store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after failed revocation = %v, want nil", err)
+		}
+		if readData != nil {
+			t.Errorf("ReadTokens after failed revocation = %+v, want nil", readData)
+		}
 	})
 }
 
 func TestRevokeServerTokens_WithClientCredentials(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metadata" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
-			return
-		}
-		if r.URL.Path == "/revoke" {
-			// Verify client credentials in request body
-			body, _ := io.ReadAll(r.Body)
-			bodyStr := string(body)
-			if !strings.Contains(bodyStr, "client_id=my-client-id") {
-				t.Errorf("revocation request missing client_id, got: %s", bodyStr)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/metadata" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"revocation_endpoint": "%s/revoke"}`, r.URL.Scheme+"://"+r.Host+"/revoke")
+				return
 			}
-			if !strings.Contains(bodyStr, "client_secret=my-secret") {
-				t.Errorf("revocation request missing client_secret, got: %s", bodyStr)
+			if r.URL.Path == "/revoke" {
+				// Verify client credentials in request body
+				body, _ := io.ReadAll(r.Body)
+				bodyStr := string(body)
+				if !strings.Contains(bodyStr, "client_id=my-client-id") {
+					t.Errorf("revocation request missing client_id, got: %s", bodyStr)
+				}
+				if !strings.Contains(bodyStr, "client_secret=my-secret") {
+					t.Errorf("revocation request missing client_secret, got: %s", bodyStr)
+				}
+				w.WriteHeader(http.StatusOK)
+				return
 			}
-			w.WriteHeader(http.StatusOK)
-			return
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		serverKey := "test-server"
+		tokenData := &OAuthTokenData{
+			ServerName:     "test-server",
+			ServerURL:      "http://example.com",
+			AccessToken:    "access-token-123",
+			RefreshToken:   "refresh-token-456",
+			ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
+			ClientID:       "my-client-id",
+			ClientSecret:   "my-secret",
+			DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
+		}
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	serverKey := "test-server"
-	tokenData := &OAuthTokenData{
-		ServerName:     "test-server",
-		ServerURL:      "http://example.com",
-		AccessToken:    "access-token-123",
-		RefreshToken:   "refresh-token-456",
-		ExpiresAt:      time.Now().Add(time.Hour).UnixMilli(),
-		ClientID:       "my-client-id",
-		ClientSecret:   "my-secret",
-		DiscoveryState: &OAuthDiscoveryState{AuthorizationServerURL: server.URL + "/metadata"},
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	ctx := context.Background()
-	metadataURL := server.URL + "/metadata"
-	err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
-	if err != nil {
-		t.Errorf("RevokeServerTokens() = %v, want nil", err)
-	}
+		ctx := context.Background()
+		metadataURL := server.URL + "/metadata"
+		err = RevokeServerTokens(ctx, store, serverKey, "http://example.com", metadataURL)
+		if err != nil {
+			t.Errorf("RevokeServerTokens() = %v, want nil", err)
+		}
 	})
 }
 
@@ -2197,64 +2197,64 @@ func TestRedirectPortRange_WindowsVsNonWindows(t *testing.T) {
 
 func TestRefreshAuthorization_Success(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-
-	serverKey := "test-server"
-	// Set expiry in the past to trigger refresh
-	tokenData := &OAuthTokenData{
-		ServerName:   "test-server",
-		ServerURL:    "http://example.com",
-		AccessToken:  "old-access",
-		RefreshToken: "old-refresh",
-		ExpiresAt:    time.Now().Add(-time.Hour).UnixMilli(), // Expired
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	ctx := context.Background()
-	refreshFunc := func(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
-		// Verify we got the right refresh token
-		if refreshToken != "old-refresh" {
-			t.Errorf("refreshFunc() got refreshToken = %s, want old-refresh", refreshToken)
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		// Simulate token exchange
-		return &OAuthTokens{
-			AccessToken:  "new-access",
-			RefreshToken: "new-refresh",
-			ExpiresIn:    3600,
-		}, nil
-	}
 
-	tokens, err := RefreshAuthorization(ctx, serverKey, store, refreshFunc)
-	if err != nil {
-		t.Errorf("RefreshAuthorization() = %v, want nil", err)
-	}
-	if tokens == nil {
-		t.Fatal("RefreshAuthorization() = nil, want tokens")
-	}
-	if tokens.AccessToken != "new-access" {
-		t.Errorf("AccessToken = %s, want new-access", tokens.AccessToken)
-	}
-	if tokens.RefreshToken != "new-refresh" {
-		t.Errorf("RefreshToken = %s, want new-refresh", tokens.RefreshToken)
-	}
+		serverKey := "test-server"
+		// Set expiry in the past to trigger refresh
+		tokenData := &OAuthTokenData{
+			ServerName:   "test-server",
+			ServerURL:    "http://example.com",
+			AccessToken:  "old-access",
+			RefreshToken: "old-refresh",
+			ExpiresAt:    time.Now().Add(-time.Hour).UnixMilli(), // Expired
+		}
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Verify tokens were updated in the store
-	updatedData, err := store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after refresh = %v, want nil", err)
-	}
-	if updatedData.AccessToken != "new-access" {
-		t.Errorf("AccessToken in store = %s, want new-access", updatedData.AccessToken)
-	}
-	if updatedData.RefreshToken != "new-refresh" {
-		t.Errorf("RefreshToken in store = %s, want new-refresh", updatedData.RefreshToken)
-	}
+		ctx := context.Background()
+		refreshFunc := func(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
+			// Verify we got the right refresh token
+			if refreshToken != "old-refresh" {
+				t.Errorf("refreshFunc() got refreshToken = %s, want old-refresh", refreshToken)
+			}
+			// Simulate token exchange
+			return &OAuthTokens{
+				AccessToken:  "new-access",
+				RefreshToken: "new-refresh",
+				ExpiresIn:    3600,
+			}, nil
+		}
+
+		tokens, err := RefreshAuthorization(ctx, serverKey, store, refreshFunc)
+		if err != nil {
+			t.Errorf("RefreshAuthorization() = %v, want nil", err)
+		}
+		if tokens == nil {
+			t.Fatal("RefreshAuthorization() = nil, want tokens")
+		}
+		if tokens.AccessToken != "new-access" {
+			t.Errorf("AccessToken = %s, want new-access", tokens.AccessToken)
+		}
+		if tokens.RefreshToken != "new-refresh" {
+			t.Errorf("RefreshToken = %s, want new-refresh", tokens.RefreshToken)
+		}
+
+		// Verify tokens were updated in the store
+		updatedData, err := store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after refresh = %v, want nil", err)
+		}
+		if updatedData.AccessToken != "new-access" {
+			t.Errorf("AccessToken in store = %s, want new-access", updatedData.AccessToken)
+		}
+		if updatedData.RefreshToken != "new-refresh" {
+			t.Errorf("RefreshToken in store = %s, want new-refresh", updatedData.RefreshToken)
+		}
 	})
 }
 
@@ -2264,95 +2264,95 @@ func TestRefreshAuthorization_Success(t *testing.T) {
 
 func TestInvalidateCredentials_WithTokenData(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := NewFileTokenStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		tmpDir := t.TempDir()
+		store, err := NewFileTokenStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	serverKey := "test-server"
-	tokenData := &OAuthTokenData{
-		ServerName:   "test-server",
-		ServerURL:    "http://example.com",
-		AccessToken:  "access-token",
-		RefreshToken: "refresh-token",
-		ClientID:     "client-id",
-		ClientSecret: "client-secret",
-		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
-		DiscoveryState: &OAuthDiscoveryState{
-			AuthorizationServerURL: "http://auth.example.com",
-		},
-		StepUpScope: "extra-scope",
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		serverKey := "test-server"
+		tokenData := &OAuthTokenData{
+			ServerName:   "test-server",
+			ServerURL:    "http://example.com",
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			ClientID:     "client-id",
+			ClientSecret: "client-secret",
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+			DiscoveryState: &OAuthDiscoveryState{
+				AuthorizationServerURL: "http://auth.example.com",
+			},
+			StepUpScope: "extra-scope",
+		}
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Test InvalidateAll
-	err = InvalidateCredentials(store, serverKey, InvalidateAll)
-	if err != nil {
-		t.Errorf("InvalidateCredentials(InvalidateAll) = %v, want nil", err)
-	}
-	readData, err := store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after InvalidateAll = %v, want nil", err)
-	}
-	if readData != nil {
-		t.Errorf("ReadTokens after InvalidateAll = %+v, want nil", readData)
-	}
+		// Test InvalidateAll
+		err = InvalidateCredentials(store, serverKey, InvalidateAll)
+		if err != nil {
+			t.Errorf("InvalidateCredentials(InvalidateAll) = %v, want nil", err)
+		}
+		readData, err := store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after InvalidateAll = %v, want nil", err)
+		}
+		if readData != nil {
+			t.Errorf("ReadTokens after InvalidateAll = %+v, want nil", readData)
+		}
 
-	// Recreate tokens for other tests
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		// Recreate tokens for other tests
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Test InvalidateClient
-	err = InvalidateCredentials(store, serverKey, InvalidateClient)
-	if err != nil {
-		t.Errorf("InvalidateCredentials(InvalidateClient) = %v, want nil", err)
-	}
-	readData, err = store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after InvalidateClient = %v, want nil", err)
-	}
-	if readData.ClientID != "" || readData.ClientSecret != "" {
-		t.Errorf("ClientID/Secret after InvalidateClient = %s/%s, want empty", readData.ClientID, readData.ClientSecret)
-	}
-	if readData.AccessToken != "access-token" {
-		t.Errorf("AccessToken after InvalidateClient = %s, want access-token", readData.AccessToken)
-	}
+		// Test InvalidateClient
+		err = InvalidateCredentials(store, serverKey, InvalidateClient)
+		if err != nil {
+			t.Errorf("InvalidateCredentials(InvalidateClient) = %v, want nil", err)
+		}
+		readData, err = store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after InvalidateClient = %v, want nil", err)
+		}
+		if readData.ClientID != "" || readData.ClientSecret != "" {
+			t.Errorf("ClientID/Secret after InvalidateClient = %s/%s, want empty", readData.ClientID, readData.ClientSecret)
+		}
+		if readData.AccessToken != "access-token" {
+			t.Errorf("AccessToken after InvalidateClient = %s, want access-token", readData.AccessToken)
+		}
 
-	// Test InvalidateTokens
-	err = InvalidateCredentials(store, serverKey, InvalidateTokens)
-	if err != nil {
-		t.Errorf("InvalidateCredentials(InvalidateTokens) = %v, want nil", err)
-	}
-	readData, err = store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after InvalidateTokens = %v, want nil", err)
-	}
-	if readData.AccessToken != "" || readData.RefreshToken != "" {
-		t.Errorf("AccessToken/RefreshToken after InvalidateTokens = %s/%s, want empty", readData.AccessToken, readData.RefreshToken)
-	}
-	if readData.ExpiresAt != 0 {
-		t.Errorf("ExpiresAt after InvalidateTokens = %d, want 0", readData.ExpiresAt)
-	}
+		// Test InvalidateTokens
+		err = InvalidateCredentials(store, serverKey, InvalidateTokens)
+		if err != nil {
+			t.Errorf("InvalidateCredentials(InvalidateTokens) = %v, want nil", err)
+		}
+		readData, err = store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after InvalidateTokens = %v, want nil", err)
+		}
+		if readData.AccessToken != "" || readData.RefreshToken != "" {
+			t.Errorf("AccessToken/RefreshToken after InvalidateTokens = %s/%s, want empty", readData.AccessToken, readData.RefreshToken)
+		}
+		if readData.ExpiresAt != 0 {
+			t.Errorf("ExpiresAt after InvalidateTokens = %d, want 0", readData.ExpiresAt)
+		}
 
-	// Test InvalidateDiscovery
-	err = InvalidateCredentials(store, serverKey, InvalidateDiscovery)
-	if err != nil {
-		t.Errorf("InvalidateCredentials(InvalidateDiscovery) = %v, want nil", err)
-	}
-	readData, err = store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after InvalidateDiscovery = %v, want nil", err)
-	}
-	if readData.DiscoveryState != nil {
-		t.Errorf("DiscoveryState after InvalidateDiscovery = %+v, want nil", readData.DiscoveryState)
-	}
-	if readData.StepUpScope != "" {
-		t.Errorf("StepUpScope after InvalidateDiscovery = %s, want empty", readData.StepUpScope)
-	}
+		// Test InvalidateDiscovery
+		err = InvalidateCredentials(store, serverKey, InvalidateDiscovery)
+		if err != nil {
+			t.Errorf("InvalidateCredentials(InvalidateDiscovery) = %v, want nil", err)
+		}
+		readData, err = store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after InvalidateDiscovery = %v, want nil", err)
+		}
+		if readData.DiscoveryState != nil {
+			t.Errorf("DiscoveryState after InvalidateDiscovery = %+v, want nil", readData.DiscoveryState)
+		}
+		if readData.StepUpScope != "" {
+			t.Errorf("StepUpScope after InvalidateDiscovery = %s, want empty", readData.StepUpScope)
+		}
 	})
 }
 
@@ -2568,49 +2568,49 @@ func TestMCPAuthHandler_CodeVerifierGetter(t *testing.T) {
 
 func TestMCPAuthHandler_TokensGetter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
 
-	// No tokens stored
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Errorf("Tokens() = %v, want nil", err)
-	}
-	if tokens != nil {
-		t.Errorf("Tokens() = %+v, want nil", tokens)
-	}
+		// No tokens stored
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Errorf("Tokens() = %v, want nil", err)
+		}
+		if tokens != nil {
+			t.Errorf("Tokens() = %+v, want nil", tokens)
+		}
 
-	// Store tokens
-	serverKey := h.ServerKey()
-	tokenData := &OAuthTokenData{
-		ServerName:  "srv",
-		ServerURL:   "http://example.com",
-		AccessToken: "test-access",
-		ExpiresAt:   time.Now().Add(time.Hour).UnixMilli(),
-	}
-	if err := store.WriteTokens(serverKey, tokenData); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		// Store tokens
+		serverKey := h.ServerKey()
+		tokenData := &OAuthTokenData{
+			ServerName:  "srv",
+			ServerURL:   "http://example.com",
+			AccessToken: "test-access",
+			ExpiresAt:   time.Now().Add(time.Hour).UnixMilli(),
+		}
+		if err := store.WriteTokens(serverKey, tokenData); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Now should return tokens
-	tokens, err = h.Tokens()
-	if err != nil {
-		t.Errorf("Tokens() = %v, want nil", err)
-	}
-	if tokens == nil {
-		t.Fatal("Tokens() = nil, want tokens")
-	}
-	if tokens.AccessToken != "test-access" {
-		t.Errorf("AccessToken = %s, want test-access", tokens.AccessToken)
-	}
-	if tokens.TokenType != "Bearer" {
-		t.Errorf("TokenType = %s, want Bearer", tokens.TokenType)
-	}
+		// Now should return tokens
+		tokens, err = h.Tokens()
+		if err != nil {
+			t.Errorf("Tokens() = %v, want nil", err)
+		}
+		if tokens == nil {
+			t.Fatal("Tokens() = nil, want tokens")
+		}
+		if tokens.AccessToken != "test-access" {
+			t.Errorf("AccessToken = %s, want test-access", tokens.AccessToken)
+		}
+		if tokens.TokenType != "Bearer" {
+			t.Errorf("TokenType = %s, want Bearer", tokens.TokenType)
+		}
 	})
 }
 
@@ -2620,43 +2620,43 @@ func TestMCPAuthHandler_TokensGetter(t *testing.T) {
 
 func TestMCPAuthHandler_SaveTokensEdgeCases(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
 
-	tokens := &OAuthTokens{
-		AccessToken:  "new-access",
-		RefreshToken: "new-refresh",
-		ExpiresIn:    7200,
-		Scope:        "read write",
-	}
+		tokens := &OAuthTokens{
+			AccessToken:  "new-access",
+			RefreshToken: "new-refresh",
+			ExpiresIn:    7200,
+			Scope:        "read write",
+		}
 
-	err = h.SaveTokens(tokens)
-	if err != nil {
-		t.Errorf("SaveTokens() = %v, want nil", err)
-	}
+		err = h.SaveTokens(tokens)
+		if err != nil {
+			t.Errorf("SaveTokens() = %v, want nil", err)
+		}
 
-	// Verify tokens were saved
-	serverKey := h.ServerKey()
-	tokenData, err := store.ReadTokens(serverKey)
-	if err != nil {
-		t.Errorf("ReadTokens after SaveTokens = %v, want nil", err)
-	}
-	if tokenData.AccessToken != "new-access" {
-		t.Errorf("AccessToken = %s, want new-access", tokenData.AccessToken)
-	}
-	if tokenData.RefreshToken != "new-refresh" {
-		t.Errorf("RefreshToken = %s, want new-refresh", tokenData.RefreshToken)
-	}
-	// ExpiresAt should be approximately now + ExpiresIn
-	expectedExpiry := time.Now().Add(7200 * time.Second).UnixMilli()
-	if tokenData.ExpiresAt < expectedExpiry-1000 || tokenData.ExpiresAt > expectedExpiry+1000 {
-		t.Errorf("ExpiresAt = %d, want approximately %d", tokenData.ExpiresAt, expectedExpiry)
-	}
+		// Verify tokens were saved
+		serverKey := h.ServerKey()
+		tokenData, err := store.ReadTokens(serverKey)
+		if err != nil {
+			t.Errorf("ReadTokens after SaveTokens = %v, want nil", err)
+		}
+		if tokenData.AccessToken != "new-access" {
+			t.Errorf("AccessToken = %s, want new-access", tokenData.AccessToken)
+		}
+		if tokenData.RefreshToken != "new-refresh" {
+			t.Errorf("RefreshToken = %s, want new-refresh", tokenData.RefreshToken)
+		}
+		// ExpiresAt should be approximately now + ExpiresIn
+		expectedExpiry := time.Now().Add(7200 * time.Second).UnixMilli()
+		if tokenData.ExpiresAt < expectedExpiry-1000 || tokenData.ExpiresAt > expectedExpiry+1000 {
+			t.Errorf("ExpiresAt = %d, want approximately %d", tokenData.ExpiresAt, expectedExpiry)
+		}
 	})
 }
 
@@ -3355,47 +3355,47 @@ func TestRefreshAuthorization_ReadTokensError(t *testing.T) {
 
 func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	origSleep := authBackoffSleep
-	authBackoffSleep = func(d time.Duration) {} // instant for testing
-	defer func() { authBackoffSleep = origSleep }()
+		origSleep := authBackoffSleep
+		authBackoffSleep = func(d time.Duration) {} // instant for testing
+		defer func() { authBackoffSleep = origSleep }()
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	callCount := 0
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		callCount++
-		if callCount == 1 {
-			return nil, fmt.Errorf("server returned 503 Service Unavailable")
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		return &OAuthTokens{
-			AccessToken:  "new-token",
-			RefreshToken: "new-refresh",
-			ExpiresIn:    3600,
-		}, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens after transient retry")
-	}
-	if tokens.AccessToken != "new-token" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
-	}
-	if callCount != 2 {
-		t.Errorf("callCount = %d, want 2 (1 transient + 1 success)", callCount)
-	}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
+
+		callCount := 0
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, fmt.Errorf("server returned 503 Service Unavailable")
+			}
+			return &OAuthTokens{
+				AccessToken:  "new-token",
+				RefreshToken: "new-refresh",
+				ExpiresIn:    3600,
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens after transient retry")
+		}
+		if tokens.AccessToken != "new-token" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
+		}
+		if callCount != 2 {
+			t.Errorf("callCount = %d, want 2 (1 transient + 1 success)", callCount)
+		}
 	})
 }
 
@@ -3403,35 +3403,35 @@ func TestRefreshAuthorization_TransientRetrySuccess(t *testing.T) {
 
 func TestRefreshAuthorization_TransientRetryExhausted(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	origSleep := authBackoffSleep
-	authBackoffSleep = func(d time.Duration) {} // instant for testing
-	defer func() { authBackoffSleep = origSleep }()
+		origSleep := authBackoffSleep
+		authBackoffSleep = func(d time.Duration) {} // instant for testing
+		defer func() { authBackoffSleep = origSleep }()
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		return nil, fmt.Errorf("HTTP 500 Internal Server Error")
-	})
-	if err == nil {
-		t.Fatal("want error after all retries exhausted")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error should contain '500', got: %v", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil tokens after exhausted retries, got %+v", tokens)
-	}
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			return nil, fmt.Errorf("HTTP 500 Internal Server Error")
+		})
+		if err == nil {
+			t.Fatal("want error after all retries exhausted")
+		}
+		if !strings.Contains(err.Error(), "500") {
+			t.Errorf("error should contain '500', got: %v", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil tokens after exhausted retries, got %+v", tokens)
+		}
 	})
 }
 
@@ -3439,28 +3439,28 @@ func TestRefreshAuthorization_TransientRetryExhausted(t *testing.T) {
 
 func TestRefreshAuthorization_RefreshReturnsNil(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil when refreshFunc returns nil, got %+v", tokens)
-	}
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil when refreshFunc returns nil, got %+v", tokens)
+		}
 	})
 }
 
@@ -3468,38 +3468,38 @@ func TestRefreshAuthorization_RefreshReturnsNil(t *testing.T) {
 
 func TestRefreshAuthorization_SaveError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows")
-	}
-	tmpDir := t.TempDir()
-	store, err := NewFileTokenStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-	// Make the token file read-only so WriteFile fails
-	// ReadTokens reads the file (works), refreshFunc runs, then WriteTokens fails
-	tokenPath := store.tokenPath("key")
-	if err := os.Chmod(tokenPath, 0444); err != nil {
-		t.Fatalf("chmod file: %v", err)
-	}
-	defer func() { _ = os.Chmod(tokenPath, 0600) }()
+		if runtime.GOOS == "windows" {
+			t.Skip("skipping on Windows")
+		}
+		tmpDir := t.TempDir()
+		store, err := NewFileTokenStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
+		// Make the token file read-only so WriteFile fails
+		// ReadTokens reads the file (works), refreshFunc runs, then WriteTokens fails
+		tokenPath := store.tokenPath("key")
+		if err := os.Chmod(tokenPath, 0444); err != nil {
+			t.Fatalf("chmod file: %v", err)
+		}
+		defer func() { _ = os.Chmod(tokenPath, 0600) }()
 
-	_, err = RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		return &OAuthTokens{AccessToken: "new", ExpiresIn: 3600}, nil
-	})
-	if err == nil {
-		t.Fatal("want error when saving refreshed tokens fails")
-	}
-	if !strings.Contains(err.Error(), "failed to save refreshed tokens") {
-		t.Errorf("error = %v, want 'failed to save refreshed tokens'", err)
-	}
+		_, err = RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			return &OAuthTokens{AccessToken: "new", ExpiresIn: 3600}, nil
+		})
+		if err == nil {
+			t.Fatal("want error when saving refreshed tokens fails")
+		}
+		if !strings.Contains(err.Error(), "failed to save refreshed tokens") {
+			t.Errorf("error = %v, want 'failed to save refreshed tokens'", err)
+		}
 	})
 }
 
@@ -3890,50 +3890,50 @@ func TestFindAvailablePort_FallbackOccupied(t *testing.T) {
 
 func TestMCPAuthHandler_Tokens_ProactiveRefresh(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	refreshCalled := false
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
-		WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
-			refreshCalled = true
-			return &OAuthTokens{
-				AccessToken:  "refreshed-access",
-				RefreshToken: "refreshed-refresh",
-				ExpiresIn:    3600,
-				TokenType:    "Bearer",
-			}, nil
-		}),
-	)
+		refreshCalled := false
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
+			WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
+				refreshCalled = true
+				return &OAuthTokens{
+					AccessToken:  "refreshed-access",
+					RefreshToken: "refreshed-refresh",
+					ExpiresIn:    3600,
+					TokenType:    "Bearer",
+				}, nil
+			}),
+		)
 
-	serverKey := h.ServerKey()
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		ServerURL:    "http://example.com",
-		AccessToken:  "expiring-access",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
-		Scope:        "read",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		serverKey := h.ServerKey()
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			ServerURL:    "http://example.com",
+			AccessToken:  "expiring-access",
+			RefreshToken: "refresh-token",
+			ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
+			Scope:        "read",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens, got nil")
-	}
-	if !refreshCalled {
-		t.Error("refreshFunc should have been called for expiring token")
-	}
-	if tokens.AccessToken != "refreshed-access" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "refreshed-access")
-	}
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens, got nil")
+		}
+		if !refreshCalled {
+			t.Error("refreshFunc should have been called for expiring token")
+		}
+		if tokens.AccessToken != "refreshed-access" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "refreshed-access")
+		}
 	})
 }
 
@@ -3941,42 +3941,42 @@ func TestMCPAuthHandler_Tokens_ProactiveRefresh(t *testing.T) {
 
 func TestMCPAuthHandler_Tokens_RefreshInProgress(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
-		WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
-			return &OAuthTokens{AccessToken: "refreshed", ExpiresIn: 3600}, nil
-		}),
-	)
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
+			WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
+				return &OAuthTokens{AccessToken: "refreshed", ExpiresIn: 3600}, nil
+			}),
+		)
 
-	serverKey := h.ServerKey()
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		AccessToken:  "expiring",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		serverKey := h.ServerKey()
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			AccessToken:  "expiring",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	h.mu.Lock()
-	h.refreshInProgress = true
-	h.mu.Unlock()
+		h.mu.Lock()
+		h.refreshInProgress = true
+		h.mu.Unlock()
 
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens even when refresh in progress")
-	}
-	if tokens.AccessToken != "expiring" {
-		t.Errorf("AccessToken = %q, want %q (current token when refresh in progress)", tokens.AccessToken, "expiring")
-	}
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens even when refresh in progress")
+		}
+		if tokens.AccessToken != "expiring" {
+			t.Errorf("AccessToken = %q, want %q (current token when refresh in progress)", tokens.AccessToken, "expiring")
+		}
 	})
 }
 
@@ -3984,39 +3984,39 @@ func TestMCPAuthHandler_Tokens_RefreshInProgress(t *testing.T) {
 
 func TestMCPAuthHandler_Tokens_RefreshReturnsNil(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
-		WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
-			return nil, nil
-		}),
-	)
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir,
+			WithRefreshFunc(func(ctx context.Context, rt string) (*OAuthTokens, error) {
+				return nil, nil
+			}),
+		)
 
-	serverKey := h.ServerKey()
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		AccessToken:  "expiring",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
-		Scope:        "read",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		serverKey := h.ServerKey()
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			AccessToken:  "expiring",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(2 * time.Minute).UnixMilli(),
+			Scope:        "read",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens (should fall through to return current tokens)")
-	}
-	if tokens.AccessToken != "expiring" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expiring")
-	}
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens (should fall through to return current tokens)")
+		}
+		if tokens.AccessToken != "expiring" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expiring")
+		}
 	})
 }
 
@@ -4024,40 +4024,40 @@ func TestMCPAuthHandler_Tokens_RefreshReturnsNil(t *testing.T) {
 
 func TestMCPAuthHandler_Tokens_StepUpAlreadyHasScopes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
-	serverKey := h.ServerKey()
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
+		serverKey := h.ServerKey()
 
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		AccessToken:  "access",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
-		Scope:        "read write admin",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			AccessToken:  "access",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+			Scope:        "read write admin",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	h.MarkStepUpPending("admin")
+		h.MarkStepUpPending("admin")
 
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens")
-	}
-	if tokens.RefreshToken != "refresh" {
-		t.Errorf("RefreshToken should be present when step-up scope already granted, got %q", tokens.RefreshToken)
-	}
-	if tokens.AccessToken != "access" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "access")
-	}
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens")
+		}
+		if tokens.RefreshToken != "refresh" {
+			t.Errorf("RefreshToken should be present when step-up scope already granted, got %q", tokens.RefreshToken)
+		}
+		if tokens.AccessToken != "access" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "access")
+		}
 	})
 }
 
@@ -4088,35 +4088,35 @@ func TestMCPAuthHandler_Tokens_ReadError(t *testing.T) {
 
 func TestMCPAuthHandler_Tokens_ExpiredWithRefresh_NoRefreshFunc(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
-	serverKey := h.ServerKey()
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
+		serverKey := h.ServerKey()
 
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		AccessToken:  "expired-access",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
-		Scope:        "read",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			AccessToken:  "expired-access",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
+			Scope:        "read",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := h.Tokens()
-	if err != nil {
-		t.Fatalf("Tokens: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens for expired+refresh+no refreshFunc")
-	}
-	if tokens.AccessToken != "expired-access" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expired-access")
-	}
+		tokens, err := h.Tokens()
+		if err != nil {
+			t.Fatalf("Tokens: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens for expired+refresh+no refreshFunc")
+		}
+		if tokens.AccessToken != "expired-access" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "expired-access")
+		}
 	})
 }
 
@@ -4281,45 +4281,45 @@ func TestMCPAuthHandler_DiscoveryState_NilDiscoveryStateInTokenData(t *testing.T
 
 func TestMCPAuthHandler_RefreshWithLock_TokenStillValid(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
 
-	refreshCalled := false
-	h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
+		refreshCalled := false
+		h := NewMCPAuthHandler("srv", &SSEConfig{URL: "http://example.com"}, store, dir)
 
-	serverKey := h.ServerKey()
-	if err := store.WriteTokens(serverKey, &OAuthTokenData{
-		ServerName:   "srv",
-		AccessToken:  "valid-access",
-		RefreshToken: "valid-refresh",
-		ExpiresAt:    time.Now().Add(1 * time.Hour).UnixMilli(),
-		Scope:        "read",
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		serverKey := h.ServerKey()
+		if err := store.WriteTokens(serverKey, &OAuthTokenData{
+			ServerName:   "srv",
+			AccessToken:  "valid-access",
+			RefreshToken: "valid-refresh",
+			ExpiresAt:    time.Now().Add(1 * time.Hour).UnixMilli(),
+			Scope:        "read",
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	tokens, err := h.RefreshWithLock(context.Background(), func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		refreshCalled = true
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("RefreshWithLock: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens, got nil")
-	}
-	if tokens.AccessToken != "valid-access" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "valid-access")
-	}
-	if tokens.TokenType != "Bearer" {
-		t.Errorf("TokenType = %q, want %q", tokens.TokenType, "Bearer")
-	}
-	if refreshCalled {
-		t.Error("refreshFunc should not be called when token is still valid")
-	}
+		tokens, err := h.RefreshWithLock(context.Background(), func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			refreshCalled = true
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("RefreshWithLock: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens, got nil")
+		}
+		if tokens.AccessToken != "valid-access" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "valid-access")
+		}
+		if tokens.TokenType != "Bearer" {
+			t.Errorf("TokenType = %q, want %q", tokens.TokenType, "Bearer")
+		}
+		if refreshCalled {
+			t.Error("refreshFunc should not be called when token is still valid")
+		}
 	})
 }
 
@@ -4615,38 +4615,38 @@ func TestRevokeServerTokens_BothTokensEmpty(t *testing.T) {
 
 func TestRefreshAuthorization_InvalidGrant_WriteTokensError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping on Windows")
-	}
-	tmpDir := t.TempDir()
-	store, err := NewFileTokenStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "bad-refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-	// Make the file read-only so WriteTokens inside invalid_grant handling fails
-	tokenPath := store.tokenPath("key")
-	if err := os.Chmod(tokenPath, 0444); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	defer func() { _ = os.Chmod(tokenPath, 0600) }()
+		if runtime.GOOS == "windows" {
+			t.Skip("skipping on Windows")
+		}
+		tmpDir := t.TempDir()
+		store, err := NewFileTokenStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "bad-refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
+		// Make the file read-only so WriteTokens inside invalid_grant handling fails
+		tokenPath := store.tokenPath("key")
+		if err := os.Chmod(tokenPath, 0444); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		defer func() { _ = os.Chmod(tokenPath, 0600) }()
 
-	// Should still return nil (best effort, just logs a warning)
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		return nil, fmt.Errorf("invalid_grant: token expired")
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
-	}
+		// Should still return nil (best effort, just logs a warning)
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			return nil, fmt.Errorf("invalid_grant: token expired")
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil tokens on invalid_grant, got %+v", tokens)
+		}
 	})
 }
 
@@ -4725,36 +4725,36 @@ func TestRevokeToken_401NoAccessToken_NoRetry(t *testing.T) {
 
 func TestRefreshAuthorization_NonTransientErrorNoRetry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
+		}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	callCount := 0
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		callCount++
-		return nil, fmt.Errorf("permission denied")
-	})
-	if err == nil {
-		t.Fatal("want error from non-transient failure")
-	}
-	if !strings.Contains(err.Error(), "permission denied") {
-		t.Errorf("error = %v, want 'permission denied'", err)
-	}
-	if tokens != nil {
-		t.Errorf("expected nil tokens, got %+v", tokens)
-	}
-	if callCount != 1 {
-		t.Errorf("callCount = %d, want 1 (no retry for non-transient)", callCount)
-	}
+		callCount := 0
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			callCount++
+			return nil, fmt.Errorf("permission denied")
+		})
+		if err == nil {
+			t.Fatal("want error from non-transient failure")
+		}
+		if !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("error = %v, want 'permission denied'", err)
+		}
+		if tokens != nil {
+			t.Errorf("expected nil tokens, got %+v", tokens)
+		}
+		if callCount != 1 {
+			t.Errorf("callCount = %d, want 1 (no retry for non-transient)", callCount)
+		}
 	})
 }
 
@@ -4762,63 +4762,63 @@ func TestRefreshAuthorization_NonTransientErrorNoRetry(t *testing.T) {
 
 func TestRefreshAuthorization_RefreshTokenSavedOnSuccess(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old-access",
-		RefreshToken: "old-refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		if rt != "old-refresh" {
-			t.Errorf("refreshFunc got rt = %q, want 'old-refresh'", rt)
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		return &OAuthTokens{
-			AccessToken:  "new-access",
-			RefreshToken: "new-refresh",
-			ExpiresIn:    7200,
-			Scope:        "read write admin",
-		}, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens")
-	}
-	if tokens.AccessToken != "new-access" {
-		t.Errorf("AccessToken = %q, want 'new-access'", tokens.AccessToken)
-	}
-	if tokens.RefreshToken != "new-refresh" {
-		t.Errorf("RefreshToken = %q, want 'new-refresh'", tokens.RefreshToken)
-	}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old-access",
+			RefreshToken: "old-refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Verify saved to store
-	saved, err := store.ReadTokens("key")
-	if err != nil {
-		t.Fatalf("ReadTokens: %v", err)
-	}
-	if saved == nil {
-		t.Fatal("saved tokens should exist")
-	}
-	if saved.AccessToken != "new-access" {
-		t.Errorf("saved AccessToken = %q, want 'new-access'", saved.AccessToken)
-	}
-	if saved.RefreshToken != "new-refresh" {
-		t.Errorf("saved RefreshToken = %q, want 'new-refresh'", saved.RefreshToken)
-	}
-	if saved.Scope != "read write admin" {
-		t.Errorf("saved Scope = %q, want 'read write admin'", saved.Scope)
-	}
-	if saved.ExpiresAt <= 0 {
-		t.Errorf("saved ExpiresAt = %d, want positive", saved.ExpiresAt)
-	}
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			if rt != "old-refresh" {
+				t.Errorf("refreshFunc got rt = %q, want 'old-refresh'", rt)
+			}
+			return &OAuthTokens{
+				AccessToken:  "new-access",
+				RefreshToken: "new-refresh",
+				ExpiresIn:    7200,
+				Scope:        "read write admin",
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens")
+		}
+		if tokens.AccessToken != "new-access" {
+			t.Errorf("AccessToken = %q, want 'new-access'", tokens.AccessToken)
+		}
+		if tokens.RefreshToken != "new-refresh" {
+			t.Errorf("RefreshToken = %q, want 'new-refresh'", tokens.RefreshToken)
+		}
+
+		// Verify saved to store
+		saved, err := store.ReadTokens("key")
+		if err != nil {
+			t.Fatalf("ReadTokens: %v", err)
+		}
+		if saved == nil {
+			t.Fatal("saved tokens should exist")
+		}
+		if saved.AccessToken != "new-access" {
+			t.Errorf("saved AccessToken = %q, want 'new-access'", saved.AccessToken)
+		}
+		if saved.RefreshToken != "new-refresh" {
+			t.Errorf("saved RefreshToken = %q, want 'new-refresh'", saved.RefreshToken)
+		}
+		if saved.Scope != "read write admin" {
+			t.Errorf("saved Scope = %q, want 'read write admin'", saved.Scope)
+		}
+		if saved.ExpiresAt <= 0 {
+			t.Errorf("saved ExpiresAt = %d, want positive", saved.ExpiresAt)
+		}
 	})
 }
 
@@ -5023,61 +5023,61 @@ func TestRedirectPortRange_AllPlatforms(t *testing.T) {
 
 func TestRefreshAuthorization_ExponentialBackoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	// Record sleep durations instead of actually sleeping
-	var delays []time.Duration
-	origSleep := authBackoffSleep
-	authBackoffSleep = func(d time.Duration) { delays = append(delays, d) }
-	defer func() { authBackoffSleep = origSleep }()
+		// Record sleep durations instead of actually sleeping
+		var delays []time.Duration
+		origSleep := authBackoffSleep
+		authBackoffSleep = func(d time.Duration) { delays = append(delays, d) }
+		defer func() { authBackoffSleep = origSleep }()
 
-	dir := t.TempDir()
-	store, err := NewFileTokenStore(dir)
-	if err != nil {
-		t.Fatalf("NewFileTokenStore: %v", err)
-	}
-	if err := store.WriteTokens("key", &OAuthTokenData{
-		AccessToken:  "old",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("WriteTokens: %v", err)
-	}
-
-	var callTimes []time.Time
-	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
-		callTimes = append(callTimes, time.Now())
-		if len(callTimes) < 3 {
-			return nil, fmt.Errorf("server returned 503 Service Unavailable")
+		dir := t.TempDir()
+		store, err := NewFileTokenStore(dir)
+		if err != nil {
+			t.Fatalf("NewFileTokenStore: %v", err)
 		}
-		return &OAuthTokens{
-			AccessToken:  "new-token",
-			RefreshToken: "new-refresh",
-			ExpiresIn:    3600,
-		}, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("expected tokens after retries")
-	}
-	if tokens.AccessToken != "new-token" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
-	}
-	if len(callTimes) != 3 {
-		t.Fatalf("expected 3 calls, got %d", len(callTimes))
-	}
+		if err := store.WriteTokens("key", &OAuthTokenData{
+			AccessToken:  "old",
+			RefreshToken: "refresh",
+			ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("WriteTokens: %v", err)
+		}
 
-	// Verify exponential backoff delays: 1s, 2s
-	// Source: auth.ts:2349 — delayMs = 1000 * Math.pow(2, attempt - 1)
-	if len(delays) != 2 {
-		t.Fatalf("expected 2 backoff sleeps, got %d", len(delays))
-	}
-	if delays[0] != 1000*time.Millisecond {
-		t.Errorf("delay[0] = %v, want 1s", delays[0])
-	}
-	if delays[1] != 2000*time.Millisecond {
-		t.Errorf("delay[1] = %v, want 2s", delays[1])
-	}
+		var callTimes []time.Time
+		tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
+			callTimes = append(callTimes, time.Now())
+			if len(callTimes) < 3 {
+				return nil, fmt.Errorf("server returned 503 Service Unavailable")
+			}
+			return &OAuthTokens{
+				AccessToken:  "new-token",
+				RefreshToken: "new-refresh",
+				ExpiresIn:    3600,
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tokens == nil {
+			t.Fatal("expected tokens after retries")
+		}
+		if tokens.AccessToken != "new-token" {
+			t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "new-token")
+		}
+		if len(callTimes) != 3 {
+			t.Fatalf("expected 3 calls, got %d", len(callTimes))
+		}
+
+		// Verify exponential backoff delays: 1s, 2s
+		// Source: auth.ts:2349 — delayMs = 1000 * Math.pow(2, attempt - 1)
+		if len(delays) != 2 {
+			t.Fatalf("expected 2 backoff sleeps, got %d", len(delays))
+		}
+		if delays[0] != 1000*time.Millisecond {
+			t.Errorf("delay[0] = %v, want 1s", delays[0])
+		}
+		if delays[1] != 2000*time.Millisecond {
+			t.Errorf("delay[1] = %v, want 2s", delays[1])
+		}
 	})
 }
 
@@ -5090,12 +5090,12 @@ func TestRefreshAuthorization_NoBackoffOnNonTransient(t *testing.T) {
 	if err := store.WriteTokens("key", &OAuthTokenData{
 		AccessToken:  "old",
 		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),	// REAL-TIME: needed for elapsed time measurement in NoBackoffOnNonTransient
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(), // REAL-TIME: needed for elapsed time measurement in NoBackoffOnNonTransient
 	}); err != nil {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	start := time.Now()	// REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
+	start := time.Now() // REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
 	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
 		return nil, fmt.Errorf("permission denied")
 	})
@@ -5125,12 +5125,12 @@ func TestRefreshAuthorization_NoBackoffOnSuccess(t *testing.T) {
 	if err := store.WriteTokens("key", &OAuthTokenData{
 		AccessToken:  "old",
 		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(),	// REAL-TIME: needed for elapsed time measurement in NoBackoffOnSuccess
+		ExpiresAt:    time.Now().Add(-1 * time.Second).UnixMilli(), // REAL-TIME: needed for elapsed time measurement in NoBackoffOnSuccess
 	}); err != nil {
 		t.Fatalf("WriteTokens: %v", err)
 	}
 
-	start := time.Now()	// REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
+	start := time.Now() // REAL-TIME: measuring actual elapsed wall-clock time for backoff verification
 	tokens, err := RefreshAuthorization(context.Background(), "key", store, func(ctx context.Context, rt string) (*OAuthTokens, error) {
 		return &OAuthTokens{
 			AccessToken:  "new-token",

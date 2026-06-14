@@ -769,7 +769,7 @@ func TestRenderResult_StdoutAndBackgroundJobID(t *testing.T) {
 
 	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
-		Stdout:           "partial output",
+		Stdout:          "partial output",
 		BackgroundJobID: "bg-99999",
 	})
 	want := "partial output\nCommand timed out and was moved to background (job ID: bg-99999)"
@@ -783,9 +783,9 @@ func TestRenderResult_AllFieldsWithBackground(t *testing.T) {
 
 	tt := bash.New(nil)
 	result := tt.RenderResult(&bash.Output{
-		Stdout:           "output",
-		Stderr:           "warning",
-		TimedOut:         true,
+		Stdout:          "output",
+		Stderr:          "warning",
+		TimedOut:        true,
 		BackgroundJobID: "bg-42",
 	})
 	if !strings.Contains(result, "output") {

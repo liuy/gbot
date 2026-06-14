@@ -589,4 +589,3 @@ func TestResumeSession_ProcessError(t *testing.T) {
 	// an internal error in ProcessResumedConversation which doesn't exist.
 	// Covered indirectly by existing tests.
 }
-

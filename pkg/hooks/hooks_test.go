@@ -1813,8 +1813,8 @@ func TestDispatch_AsyncHookWithPluginRoot(t *testing.T) {
 	config := HooksConfig{
 		"PreToolUse": []HookMatcher{
 			{
-				Matcher:     "Bash",
-				PluginRoot:  "/plugin/root",
+				Matcher:    "Bash",
+				PluginRoot: "/plugin/root",
 				Hooks: []HookConfig{
 					{Type: HookTypeCommand, Command: "echo ok", Async: true},
 				},

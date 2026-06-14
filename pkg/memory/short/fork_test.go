@@ -132,10 +132,10 @@ func TestForkSession_MetadataPreserved(t *testing.T) {
 	msgs := []*TranscriptMessage{
 		testMessage(0, "user", "uuid-1", "", `[{"type":"text","text":"hello"}]`),
 		{
-			Type:    "assistant",
-			UUID:    "uuid-2",
-			Content: `[{"type":"text","text":"hi"}]`,
-			Metadata: `{"usage":{"input_tokens":50000,"output_tokens":100,"cache_read_input_tokens":30000},"model":"glm-5.1","stop_reason":"end_turn"}`,
+			Type:      "assistant",
+			UUID:      "uuid-2",
+			Content:   `[{"type":"text","text":"hi"}]`,
+			Metadata:  `{"usage":{"input_tokens":50000,"output_tokens":100,"cache_read_input_tokens":30000},"model":"glm-5.1","stop_reason":"end_turn"}`,
 			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		},
 		testMessage(0, "user", "uuid-3", "", `[{"type":"text","text":"next?"}]`),
@@ -536,7 +536,7 @@ func TestGetForkChildren_QueryError(t *testing.T) {
 // copy inherited messages back to the parent. Only NEW messages created in the child
 // after forking should be merged.
 //
-//The current MergeForkBack query selects ALL non-sidechain child messages
+// The current MergeForkBack query selects ALL non-sidechain child messages
 // without filtering out inherited ones, causing duplicates in the parent.
 func TestMergeForkBack_NoDuplicateInheritedMessages(t *testing.T) {
 	store := openTestStore(t)
@@ -1631,4 +1631,3 @@ func TestCopyMessagesToFork_InsertTriggerError(t *testing.T) {
 		t.Errorf("error should mention 'copy messages to fork', got: %v", err)
 	}
 }
-

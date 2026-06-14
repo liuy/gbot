@@ -4,8 +4,8 @@
 package agent
 
 import (
-	"fmt"
 	"cmp"
+	"fmt"
 	"slices"
 	"strings"
 

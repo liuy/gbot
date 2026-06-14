@@ -106,7 +106,9 @@ func renderContextDump(d *engine.APIRequestDump) string {
 				fmt.Fprintf(&sb, "[tool_result for %s]\n", block.ToolUseID)
 				if len(block.Content) > 0 {
 					// Content is JSON-encoded array of content blocks.
-					var parts []struct{ Text string `json:"text"` }
+					var parts []struct {
+						Text string `json:"text"`
+					}
 					if err := json.Unmarshal(block.Content, &parts); err == nil {
 						for _, p := range parts {
 							sb.WriteString(p.Text)

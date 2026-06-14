@@ -4,14 +4,14 @@
 package agent
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"maps"
-	"cmp"
 	"slices"
 	"strconv"
 	"strings"
@@ -382,7 +382,7 @@ func getActiveAgentsFromList(allAgents []*types.AgentDefinition) []*types.AgentD
 	agentMap := make(map[string]*types.AgentDefinition)
 	for _, source := range agentSourcePriority {
 		for _, agent := range groups[source] {
-	if existing, ok := agentMap[agent.AgentType]; ok {
+			if existing, ok := agentMap[agent.AgentType]; ok {
 				slog.Info("agent: overridden by higher priority source", "type", agent.AgentType, "existing", existing.Source, "new", source)
 			}
 			agentMap[agent.AgentType] = agent
@@ -578,14 +578,14 @@ func applyOptionalFields(def *types.AgentDefinition, frontmatter map[string]any,
 		}
 	}
 
-		// Parse mcpServers — inline MCP server definitions
-		// Source: loadAgentsDir.ts:693-723
-		// Stored as raw JSON for later parsing by pkg/mcp (avoids import cycle).
-		// Each entry is either a JSON string (ref to existing server)
-		// or a JSON object (inline server config).
-		if mcpRaw, exists := frontmatter["mcpServers"]; exists {
-			def.McpServersRaw = parseMcpServersRaw(mcpRaw)
-		}
+	// Parse mcpServers — inline MCP server definitions
+	// Source: loadAgentsDir.ts:693-723
+	// Stored as raw JSON for later parsing by pkg/mcp (avoids import cycle).
+	// Each entry is either a JSON string (ref to existing server)
+	// or a JSON object (inline server config).
+	if mcpRaw, exists := frontmatter["mcpServers"]; exists {
+		def.McpServersRaw = parseMcpServersRaw(mcpRaw)
+	}
 
 	// criticalSystemReminder_EXPERIMENTAL
 	if csr, ok := frontmatter["criticalSystemReminder_EXPERIMENTAL"].(string); ok && csr != "" {

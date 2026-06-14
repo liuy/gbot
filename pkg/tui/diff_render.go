@@ -149,4 +149,3 @@ func applyDiffBackground(output string, width int) string {
 	}
 	return strings.Join(rebuilt, "\n")
 }
-

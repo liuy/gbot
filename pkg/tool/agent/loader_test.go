@@ -247,19 +247,19 @@ func TestIsValidMemoryScope(t *testing.T) {
 
 func TestParseAgentFromMarkdown_AllFields(t *testing.T) {
 	fm := map[string]any{
-		"name":         "my-agent",
-		"description":  "A test agent",
-		"model":        "sonnet",
-		"tools":        []any{"Read", "Grep"},
-		"maxTurns":     50,
-		"color":        "blue",
-		"effort":       "high",
-		"permissionMode": "auto",
-		"background":   true,
-		"memory":       "user",
-		"isolation":    "worktree",
-		"initialPrompt": "Start here",
-		"skills":       "commit, review",
+		"name":               "my-agent",
+		"description":        "A test agent",
+		"model":              "sonnet",
+		"tools":              []any{"Read", "Grep"},
+		"maxTurns":           50,
+		"color":              "blue",
+		"effort":             "high",
+		"permissionMode":     "auto",
+		"background":         true,
+		"memory":             "user",
+		"isolation":          "worktree",
+		"initialPrompt":      "Start here",
+		"skills":             "commit, review",
 		"requiredMcpServers": []any{"github"},
 	}
 

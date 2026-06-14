@@ -24,30 +24,30 @@ func TestParseContentBlocks(t *testing.T) {
 			wantType: []string{},
 		},
 		{
-			name: "single text block parses text field",
-			json: `[{"type":"text","text":"hello world"}]`,
+			name:     "single text block parses text field",
+			json:     `[{"type":"text","text":"hello world"}]`,
 			wantType: []string{"text"},
 			wantText: []string{"hello world"},
 		},
 		{
-			name: "tool_use block with name/input fields",
-			json: `[{"type":"tool_use","id":"tu1","name":"bash","input":{"command":"ls"}}]`,
+			name:     "tool_use block with name/input fields",
+			json:     `[{"type":"tool_use","id":"tu1","name":"bash","input":{"command":"ls"}}]`,
 			wantType: []string{"tool_use"},
 		},
 		{
-			name: "tool_result block with tool_use_id field",
-			json: `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`,
+			name:     "tool_result block with tool_use_id field",
+			json:     `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`,
 			wantType: []string{"tool_result"},
 		},
 		{
-			name: "multiple mixed blocks parse in order",
-			json: `[{"type":"text","text":"first"},{"type":"tool_use","id":"tu1"},{"type":"text","text":"second"}]`,
+			name:     "multiple mixed blocks parse in order",
+			json:     `[{"type":"text","text":"first"},{"type":"tool_use","id":"tu1"},{"type":"text","text":"second"}]`,
 			wantType: []string{"text", "tool_use", "text"},
 			wantText: []string{"first", "", "second"},
 		},
 		{
-			name: "thinking block",
-			json: `[{"type":"thinking","text":"thinking..."}]`,
+			name:     "thinking block",
+			json:     `[{"type":"thinking","text":"thinking..."}]`,
 			wantType: []string{"thinking"},
 		},
 		{
@@ -459,18 +459,18 @@ func TestMergeUserMessages(t *testing.T) {
 		{
 			name: "merges content blocks",
 			a: &TranscriptMessage{
-				Seq:    1,
-				UUID:   "u1",
-				Type:   "user",
+				Seq:        1,
+				UUID:       "u1",
+				Type:       "user",
 				ParentUUID: "p1",
-				CreatedAt: now,
+				CreatedAt:  now,
 			},
 			b: &TranscriptMessage{
-				Seq:    2,
-				UUID:   "u2",
-				Type:   "user",
+				Seq:        2,
+				UUID:       "u2",
+				Type:       "user",
 				ParentUUID: "p2",
-				CreatedAt: now.Add(1),
+				CreatedAt:  now.Add(1),
 			},
 			check: func(m *TranscriptMessage) {
 				if m.Type != "user" {
@@ -486,16 +486,16 @@ func TestMergeUserMessages(t *testing.T) {
 		{
 			name: "preserves b's ParentUUID",
 			a: &TranscriptMessage{
-				Seq:    1,
-				Type:   "user",
+				Seq:        1,
+				Type:       "user",
 				ParentUUID: "p1",
-				CreatedAt: now,
+				CreatedAt:  now,
 			},
 			b: &TranscriptMessage{
-				Seq:    2,
-				Type:   "user",
+				Seq:        2,
+				Type:       "user",
 				ParentUUID: "p2",
-				CreatedAt: now.Add(1),
+				CreatedAt:  now.Add(1),
 			},
 			check: func(m *TranscriptMessage) {
 				if m.ParentUUID != "p2" {
@@ -506,13 +506,13 @@ func TestMergeUserMessages(t *testing.T) {
 		{
 			name: "uses b's CreatedAt",
 			a: &TranscriptMessage{
-				Seq:    1,
-				Type:   "user",
+				Seq:       1,
+				Type:      "user",
 				CreatedAt: now,
 			},
 			b: &TranscriptMessage{
-				Seq:    2,
-				Type:   "user",
+				Seq:       2,
+				Type:      "user",
 				CreatedAt: now.Add(1),
 			},
 			check: func(m *TranscriptMessage) {

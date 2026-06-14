@@ -44,10 +44,10 @@ func newIntegrationApp(t *testing.T) (*App, *short.Store, string) {
 	eng.SetMessages(msgs)
 
 	a := &App{
-		engine:           eng,
-		sessionID:        session.SessionID,
-		projectDir:       projectDir,
-		repl:             NewReplState(),
+		engine:     eng,
+		sessionID:  session.SessionID,
+		projectDir: projectDir,
+		repl:       NewReplState(),
 	}
 	return a, store, projectDir
 }
@@ -61,7 +61,7 @@ func persistTestMessages(t *testing.T, a *App) {
 // TestIntegration_PickerShowsAllSessionsAfterFork verifies the core bug:
 // after /session title (fork), /session (picker) must show BOTH sessions.
 //
-//openPicker used ListSessions("") while sessions were created with
+// openPicker used ListSessions("") while sessions were created with
 // real projectDir, so the picker found zero sessions.
 func TestIntegration_PickerShowsAllSessionsAfterFork(t *testing.T) {
 	a, store, projectDir := newIntegrationApp(t)
@@ -596,7 +596,7 @@ func helperSelectSession(t *testing.T, a *App, sessionItems []SessionItem, selec
 	}
 	a.activeDialog = NewListPicker("Switch Session", pickerItems)
 	a.activeDialog.done = true
-		a.activeDialog.cursor = selectIdx
+	a.activeDialog.cursor = selectIdx
 	return sessionItems
 }
 

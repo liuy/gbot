@@ -281,10 +281,10 @@ func cacheStreamEventsDetailed(msgID string, inputTokens, cacheCreation int, tex
 
 // multiCallProvider calls handler() for each Stream call to get events.
 type multiCallProvider struct {
-	handler         func() []llm.StreamEvent
-	lastReq         *llm.Request
+	handler          func() []llm.StreamEvent
+	lastReq          *llm.Request
 	cacheReadOnDelta int // if > 0, inject CacheRead in message_delta
-	callIndex       int
+	callIndex        int
 }
 
 func (m *multiCallProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {

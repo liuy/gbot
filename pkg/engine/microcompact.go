@@ -68,12 +68,12 @@ const QuerySourceAutoDream = "auto_dream"
 // MAINTENANCE: When adding a new compactable tool, update this map and
 // add a test case in TestCompactableTools.
 var compactableTools = map[string]bool{
-	"Read":   true, // pkg/tool/fileread/fileread.go:361
-	"Bash":   true, // pkg/tool/bash/bash.go:93
+	"Read": true, // pkg/tool/fileread/fileread.go:361
+	"Bash": true, // pkg/tool/bash/bash.go:93
 	"Grep": true, // pkg/tool/grep/grep.go:147)
-	
-	"Edit":   true, // pkg/tool/fileedit/fileedit.go:114
-	"Write":  true, // pkg/tool/filewrite/filewrite.go:400
+
+	"Edit":  true, // pkg/tool/fileedit/fileedit.go:114
+	"Write": true, // pkg/tool/filewrite/filewrite.go:400
 	// WebSearch/WebFetch: gbot 未实现，不包含
 }
 
@@ -222,15 +222,15 @@ func calculateToolResultTokens(content json.RawMessage) int {
 			// Remove surrounding quotes from JSON string
 			blockType = strings.Trim(blockType, `"`)
 			switch blockType {
-				case "text":
-					var text string
-					if err := json.Unmarshal(block["text"], &text); err == nil {
-						total += EstimateTokens(text)
-					}
-				case "image", "document":
-					// Images/documents ≈ 2000 tokens regardless of format.
+			case "text":
+				var text string
+				if err := json.Unmarshal(block["text"], &text); err == nil {
+					total += EstimateTokens(text)
+				}
+			case "image", "document":
+				// Images/documents ≈ 2000 tokens regardless of format.
 				// Source: microCompact.ts:152
-					total += ImageMaxTokenSize
+				total += ImageMaxTokenSize
 			}
 		}
 		return total
@@ -446,7 +446,7 @@ func maybeTimeBasedMicrocompact(messages []types.Message, querySource string, lo
 			if block.Type == types.ContentTypeToolResult &&
 				clearSet[block.ToolUseID] &&
 				string(block.Content) != `"`+TimeBasedMCClearedMessage+`"` &&
-					string(block.Content) != `"`+TokenPrunedMessage+`"` {
+				string(block.Content) != `"`+TokenPrunedMessage+`"` {
 				tokensSaved += calculateToolResultTokens(block.Content)
 				newContent[j].Content = json.RawMessage(`"` + TimeBasedMCClearedMessage + `"`)
 				touched = true
@@ -623,4 +623,3 @@ func MicrocompactMessages(messages []types.Message, querySource string, logger *
 // NOT IMPLEMENTED: cachedMicrocompact.ts source does not exist (feature gate).
 // These align with TS behavior when feature('CACHED_MICROCOMPACT') === false.
 // ---------------------------------------------------------------------------
-

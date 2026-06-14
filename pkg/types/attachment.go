@@ -13,16 +13,16 @@ type ItemMode string
 
 const (
 	ItemModePrompt ItemMode = "prompt"
-	ItemModeJob     ItemMode = "job"
+	ItemModeJob    ItemMode = "job"
 )
 
 // QueuePriority controls when a queued item is drained and injected into the LLM conversation:
 //
 //   - now:   Engine interrupts current tool call immediately. Not used by attachments.
 //   - next:  Engine drains at turn boundary (after tool results, before next LLM call).
-//            Default for both prompt and job modes. Attachments injected mid-query.
+//     Default for both prompt and job modes. Attachments injected mid-query.
 //   - later: Engine drains only at query end (no-tool-use terminal path) or when idle.
-//            For items that should not interrupt the current query.
+//     For items that should not interrupt the current query.
 //
 // Drain call sites in engine.go:
 //   - Turn boundary (after tool results): DrainByPriority(PriorityNext) → drains now + next

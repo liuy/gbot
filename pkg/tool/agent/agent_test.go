@@ -38,7 +38,7 @@ func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
 func (m *mockTool) IsEnabled() bool                           { return true }
 func (m *mockTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptBlock }
 func (m *mockTool) Prompt() string                            { return "" }
-func (m *mockTool) NewResultType() any { return nil }
+func (m *mockTool) NewResultType() any                        { return nil }
 func (m *mockTool) RenderResult(any) string                   { return "" }
 
 func (m *mockTool) MaxResultSize() int { return 50000 }

@@ -530,4 +530,3 @@ func toolDescription(t tool.Tool) string {
 	}
 	return desc
 }
-

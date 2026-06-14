@@ -117,4 +117,3 @@ func (sc *SearchChain) SearchWithProvider(ctx context.Context, params SearchPara
 	}
 	return nil, fmt.Errorf("unknown provider %q (available: %s)", provider, strings.Join(sc.AvailableProviders(), ", "))
 }
-

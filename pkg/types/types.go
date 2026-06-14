@@ -26,13 +26,13 @@ const (
 // Message represents a single message in the conversation.
 // Source: Anthropic API Message type + internal message extensions.
 type Message struct {
-	ID         string         `json:"id,omitempty"`
-	Role       Role           `json:"role"`
-	Content    []ContentBlock `json:"content"`
-	Model      string         `json:"model,omitempty"`
-	StopReason string         `json:"stop_reason,omitempty"`
-	Usage      *Usage         `json:"usage,omitempty"`
-	Timestamp  time.Time      `json:"timestamp"`
+	ID          string         `json:"id,omitempty"`
+	Role        Role           `json:"role"`
+	Content     []ContentBlock `json:"content"`
+	Model       string         `json:"model,omitempty"`
+	StopReason  string         `json:"stop_reason,omitempty"`
+	Usage       *Usage         `json:"usage,omitempty"`
+	Timestamp   time.Time      `json:"timestamp"`
 	Flags       MessageFlag    `json:"flags,omitempty"`
 	MessageType MessageType    `json:"message_type,omitempty"`
 	Attachment  *Attachment    `json:"attachment,omitempty"`
@@ -84,12 +84,12 @@ func (m *Message) SetMetadataFromJSON(metadata string) {
 		return
 	}
 	var meta struct {
-		Usage       *Usage       `json:"usage,omitempty"`
-		Model       string       `json:"model,omitempty"`
-		StopReason  string       `json:"stop_reason,omitempty"`
-		Flags       MessageFlag  `json:"flags,omitempty"`
-		MessageType MessageType  `json:"message_type,omitempty"`
-		Attachment  *Attachment  `json:"attachment,omitempty"`
+		Usage       *Usage      `json:"usage,omitempty"`
+		Model       string      `json:"model,omitempty"`
+		StopReason  string      `json:"stop_reason,omitempty"`
+		Flags       MessageFlag `json:"flags,omitempty"`
+		MessageType MessageType `json:"message_type,omitempty"`
+		Attachment  *Attachment `json:"attachment,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(metadata), &meta); err == nil {
 		m.Usage = meta.Usage
@@ -108,12 +108,12 @@ func (m *Message) MetadataToJSON() string {
 		return ""
 	}
 	meta := struct {
-		Usage       *Usage       `json:"usage,omitempty"`
-		Model       string       `json:"model,omitempty"`
-		StopReason  string       `json:"stop_reason,omitempty"`
-		Flags       MessageFlag  `json:"flags,omitempty"`
-		MessageType MessageType  `json:"message_type,omitempty"`
-		Attachment  *Attachment  `json:"attachment,omitempty"`
+		Usage       *Usage      `json:"usage,omitempty"`
+		Model       string      `json:"model,omitempty"`
+		StopReason  string      `json:"stop_reason,omitempty"`
+		Flags       MessageFlag `json:"flags,omitempty"`
+		MessageType MessageType `json:"message_type,omitempty"`
+		Attachment  *Attachment `json:"attachment,omitempty"`
 	}{
 		Usage:       m.Usage,
 		Model:       m.Model,
@@ -284,19 +284,19 @@ const (
 // Kind discriminates between permission asks and interactive input requests.
 // The engine blocks on ResponseCh until the user responds.
 type AskEvent struct {
-	Kind       AskKind
+	Kind AskKind
 	// Permission-specific (AskPermission)
-	ToolName   string                 // tool being invoked (e.g. "Bash", "Write")
-	Input      json.RawMessage        // tool input JSON
-	Message    string                 // human-readable reason for the ask
-	RuleDetail string                 // matched rule description (e.g. "Bash(rm -rf *) from project")
+	ToolName   string          // tool being invoked (e.g. "Bash", "Write")
+	Input      json.RawMessage // tool input JSON
+	Message    string          // human-readable reason for the ask
+	RuleDetail string          // matched rule description (e.g. "Bash(rm -rf *) from project")
 	// Input-specific (AskInput)
-	Prompt     string                 // "[sudo] password for user:"
-	Masked     bool                   // password masking
-	Deadline   time.Time              `json:"-"` // countdown timer for InputDialog (zero = no countdown)
+	Prompt   string    // "[sudo] password for user:"
+	Masked   bool      // password masking
+	Deadline time.Time `json:"-"` // countdown timer for InputDialog (zero = no countdown)
 	// Shared
-	AgentType  string                 // non-empty for sub-agent asks (e.g. "Explore")
-	ResponseCh chan AskResponse       `json:"-"` // engine reads, TUI writes
+	AgentType  string           // non-empty for sub-agent asks (e.g. "Explore")
+	ResponseCh chan AskResponse `json:"-"` // engine reads, TUI writes
 }
 
 // AskResponse is the user's response to an AskEvent.
@@ -343,9 +343,9 @@ const (
 
 	// Tool execution: EventToolRun signals input fully accumulated, execution starting.
 	// Distinct from EventToolStart which signals the tool_use content block began streaming.
-	EventToolRun             QueryEventType = "tool_run"
-	EventUsage               QueryEventType = "usage"
-	EventError               QueryEventType = "error"
+	EventToolRun    QueryEventType = "tool_run"
+	EventUsage      QueryEventType = "usage"
+	EventError      QueryEventType = "error"
 	EventAttachment QueryEventType = "attachment"
 
 	// Ask: engine requests user confirmation or input.
@@ -376,7 +376,7 @@ type QueryEvent struct {
 	Usage        *UsageEvent        `json:"usage_event,omitempty"`
 	Agent        *AgentMeta         // non-nil = sub-agent event
 	Thinking     *ThinkingEvent     `json:"thinking,omitempty"`
-	Ask *AskEvent // non-nil when Type == EventAsk
+	Ask          *AskEvent          // non-nil when Type == EventAsk
 	RetryAttempt *RetryAttemptEvent `json:"retry_attempt,omitempty"`
 	Error        error              `json:"-"`
 }
@@ -426,13 +426,13 @@ type PartialInputEvent struct {
 
 // ToolUseEvent represents a tool invocation event.
 type ToolUseEvent struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Input     json.RawMessage `json:"input"`
-	Summary   string          `json:"summary,omitempty"`   // pre-computed summary from engine
-	IsSearch  bool            `json:"is_search,omitempty"` // tool is a search operation (Grep, Glob, find)
-	IsRead    bool            `json:"is_read,omitempty"`   // tool is a read operation (Read, cat)
-	IsList    bool            `json:"is_list,omitempty"`   // tool is a list operation (ls, tree)
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
+	Summary  string          `json:"summary,omitempty"`   // pre-computed summary from engine
+	IsSearch bool            `json:"is_search,omitempty"` // tool is a search operation (Grep, Glob, find)
+	IsRead   bool            `json:"is_read,omitempty"`   // tool is a read operation (Read, cat)
+	IsList   bool            `json:"is_list,omitempty"`   // tool is a list operation (ls, tree)
 }
 
 // ToolResultEvent represents a tool execution result event.
@@ -498,16 +498,16 @@ type AgentDefinition struct {
 	BaseDir  string      // directory the .md was loaded from; "built-in" for built-ins
 
 	// Future-ready fields (stored by Class 1, used by later classes)
-	Skills                 []string       // skills — comma-separated from frontmatter
-	Color                  string         // color — agent color name for TUI
-	Effort                 string         // effort — "low","medium","high","max", or int as string
-	PermissionModeField    PermissionMode // permissionMode — validated against existing constants
-	Background             bool           // background — always run as background job
-	InitialPrompt          string         // initialPrompt — prepended to first user turn
-	Memory                 string         // memory — "user","project","local"
-	Isolation              string         // isolation — "worktree" (future)
-	CriticalSystemReminder string         // criticalSystemReminder_EXPERIMENTAL
-	RequiredMcpServers     []string       // requiredMcpServers
+	Skills                 []string          // skills — comma-separated from frontmatter
+	Color                  string            // color — agent color name for TUI
+	Effort                 string            // effort — "low","medium","high","max", or int as string
+	PermissionModeField    PermissionMode    // permissionMode — validated against existing constants
+	Background             bool              // background — always run as background job
+	InitialPrompt          string            // initialPrompt — prepended to first user turn
+	Memory                 string            // memory — "user","project","local"
+	Isolation              string            // isolation — "worktree" (future)
+	CriticalSystemReminder string            // criticalSystemReminder_EXPERIMENTAL
+	RequiredMcpServers     []string          // requiredMcpServers
 	McpServersRaw          []json.RawMessage // mcpServers — raw JSON for pkg/mcp to parse (avoids types→mcp cycle)
 }
 
@@ -566,12 +566,12 @@ type EventDispatcher interface {
 type SkillSource string
 
 const (
-	SkillSourceBundled SkillSource = "bundled"  // compiled-in skills
-	SkillSourceUser    SkillSource = "user"     // ~/.gbot/skills/
-	SkillSourceProject SkillSource = "project"  // <gitroot>/.gbot/skills/
-	SkillSourceManaged SkillSource = "managed"  // /etc/gbot/skills/ (policy)
-	SkillSourceMCP     SkillSource = "mcp"      // MCP server-provided
-	SkillSourcePlugin  SkillSource = "plugin"   // plugin-provided
+	SkillSourceBundled SkillSource = "bundled" // compiled-in skills
+	SkillSourceUser    SkillSource = "user"    // ~/.gbot/skills/
+	SkillSourceProject SkillSource = "project" // <gitroot>/.gbot/skills/
+	SkillSourceManaged SkillSource = "managed" // /etc/gbot/skills/ (policy)
+	SkillSourceMCP     SkillSource = "mcp"     // MCP server-provided
+	SkillSourcePlugin  SkillSource = "plugin"  // plugin-provided
 )
 
 // SkillCommand represents a fully loaded and parsed skill.
@@ -679,10 +679,10 @@ type SkillArgument struct {
 // TS: state.ts InvokedSkillInfo
 type InvokedSkillInfo struct {
 	SkillName string
-	SkillPath string    // e.g., "project:commit"
-	Content   string    // full expanded content
+	SkillPath string // e.g., "project:commit"
+	Content   string // full expanded content
 	InvokedAt time.Time
-	AgentID   string    // scoping key for sub-agents
+	AgentID   string // scoping key for sub-agents
 }
 
 // CommandPermissionsAttachment represents tool/model permissions granted by a skill.

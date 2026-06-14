@@ -65,9 +65,9 @@ func formatPositional(format string, arg string) string {
 // OMMLElement represents a parsed OMML XML element.
 type OMMLElement struct {
 	XMLName  xml.Name
-	Attrs    []xml.Attr     `xml:",any,attr"`
-	Children []OMMLElement  `xml:",any"`
-	Content  string         `xml:",chardata"`
+	Attrs    []xml.Attr    `xml:",any,attr"`
+	Children []OMMLElement `xml:",any"`
+	Content  string        `xml:",chardata"`
 }
 
 // localName returns the local part of the element's name.

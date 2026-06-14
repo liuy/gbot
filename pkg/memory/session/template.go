@@ -183,8 +183,8 @@ func BuildUpdatePrompt(currentNotes, notesPath string, cfg Config) string {
 	reminders := generateSectionReminders(sizes, cfg.MaxSectionTokens, cfg.MaxTotalTokens)
 
 	vars := map[string]string{
-		"currentNotes":    currentNotes,
-		"notesPath":       notesPath,
+		"currentNotes":     currentNotes,
+		"notesPath":        notesPath,
 		"sectionReminders": reminders,
 	}
 

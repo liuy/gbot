@@ -36,8 +36,8 @@ func TakeSnapshot(root string) (map[string]*FileSnapshot, error) {
 			return nil // skip unreadable files
 		}
 		snapshot[path] = &FileSnapshot{
-			modTime:    info.ModTime(),
-			size:       info.Size(),
+			modTime: info.ModTime(),
+			size:    info.Size(),
 			content: content,
 		}
 		return nil

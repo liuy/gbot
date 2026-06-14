@@ -289,7 +289,7 @@ func TestPTYIntegration_InteractivePromptDetected(t *testing.T) {
 	<-done
 }
 
-// Test actual sudo prompt format: "[sudo] password for user:" 
+// Test actual sudo prompt format: "[sudo] password for user:"
 func TestPTYIntegration_SudoPromptDetected(t *testing.T) {
 	if !isPTYAvailable() {
 		t.Skip("PTY not available")

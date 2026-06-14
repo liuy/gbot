@@ -28,9 +28,9 @@ func (m *mockTaskList) ListPending() ([]TaskItem, error) {
 // ---------------------------------------------------------------------------
 
 type mockProvider struct {
-	key       string
+	key        string
 	shouldFire bool
-	rendered  []types.Message
+	rendered   []types.Message
 	fireCalled bool
 }
 

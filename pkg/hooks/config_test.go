@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"testing"
 	"strings"
+	"testing"
 )
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ func TestLoadHooks_ProjectScope(t *testing.T) {
 			},
 		},
 	}
-		if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeSettingsFile(t, filepath.Join(projectDir, ".gbot", "settings.json"), projectSettings)
@@ -109,7 +109,7 @@ func TestLoadHooks_LocalScope(t *testing.T) {
 			},
 		},
 	}
-		if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeSettingsFile(t, filepath.Join(projectDir, ".gbot", "settings.local.json"), localSettings)
@@ -141,7 +141,7 @@ func TestLoadHooks_MergeAcrossScopes(t *testing.T) {
 	writeSettingsFile(t, filepath.Join(tmpDir, "settings.json"), userSettings)
 
 	// Project scope: PreToolUse for Write|Edit
-		if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	projectSettings := map[string]any{
@@ -194,7 +194,7 @@ func TestLoadHooks_SameEventSameScopeMerged(t *testing.T) {
 	}
 	writeSettingsFile(t, filepath.Join(tmpDir, "settings.json"), userSettings)
 
-		if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	projectSettings := map[string]any{
@@ -275,7 +275,7 @@ func TestLoadHooks_PartialFiles(t *testing.T) {
 	writeSettingsFile(t, filepath.Join(tmpDir, "settings.json"), userSettings)
 
 	// Malformed project settings
-		if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, ".gbot"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, ".gbot", "settings.json"), []byte("{bad"), 0o644); err != nil {
@@ -381,9 +381,9 @@ func TestReadJSONFile_Nonexistent(t *testing.T) {
 	var target map[string]any
 	err := readJSONFile("/nonexistent/path/settings.json", &target)
 	if err == nil {
-	if !strings.Contains(err.Error(), "nonexistent") && !strings.Contains(err.Error(), "no such") {
-		t.Errorf("error should mention missing file, got: %v", err)
-	}
+		if !strings.Contains(err.Error(), "nonexistent") && !strings.Contains(err.Error(), "no such") {
+			t.Errorf("error should mention missing file, got: %v", err)
+		}
 	}
 }
 

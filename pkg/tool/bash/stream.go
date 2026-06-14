@@ -43,7 +43,7 @@ type StreamingUpdate struct {
 // Source: TaskOutput.ts — memory cap + disk spill, ShellCommand.ts — size watchdog
 type StreamingOutput struct {
 	mu          sync.Mutex
-	lines       []string // full output, memory mode only (nil after spill)
+	lines       []string     // full output, memory mode only (nil after spill)
 	rawBuf      bytes.Buffer // raw bytes copy for disk spill (cleared after spill)
 	totalBytes  int64
 	totalLines  int

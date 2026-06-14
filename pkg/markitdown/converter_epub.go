@@ -19,8 +19,6 @@ import (
 	"io"
 	"path"
 	"strings"
-
-	
 )
 
 // EpubConverter handles EPUB files.

@@ -621,9 +621,9 @@ func TestReloadConfig_WithPluginHooks_ActivatesNewHooks(t *testing.T) {
 
 func TestParseStringOrArrayField(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input any
-		want []string
+		want  []string
 	}{
 		{"string", "Read", []string{"Read"}},
 		{"empty string", "", nil},
@@ -655,10 +655,10 @@ func TestParseStringOrArrayField(t *testing.T) {
 
 func TestResolvePluginPath(t *testing.T) {
 	tests := []struct {
-		name     string
-		root     string
-		relPath  string
-		want     string
+		name    string
+		root    string
+		relPath string
+		want    string
 	}{
 		{"relative", "/plugins/test", "./skills/", "/plugins/test/skills/"},
 		{"absolute", "/plugins/test", "/absolute/path", "/absolute/path"},

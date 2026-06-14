@@ -33,13 +33,13 @@ func TestIsURL(t *testing.T) {
 		{"go to example.com/path", false},
 		{"https://", false},
 		{"http://", false},
-		{"a.b/c", false}, // 1-char TLD too short
-		{"x.y/z", false}, // 1-char TLD too short
-		{"golang.org", true},       // domain-only URL
-		{"example.com", true},      // domain-only URL
+		{"a.b/c", false},                   // 1-char TLD too short
+		{"x.y/z", false},                   // 1-char TLD too short
+		{"golang.org", true},               // domain-only URL
+		{"example.com", true},              // domain-only URL
 		{"see foo.bar for details", false}, // has space before dot
 		{"visit http://example.com for info", false},
-		{"HTTPS://EXAMPLE.COM", true},   // uppercase scheme
+		{"HTTPS://EXAMPLE.COM", true},     // uppercase scheme
 		{"Http://Example.com/path", true}, // mixed case scheme
 	}
 
@@ -552,8 +552,8 @@ func TestNew_CallEmptyQuery(t *testing.T) {
 
 func TestNew_WithClientAndKeys(t *testing.T) {
 	tl := New(http.DefaultClient, WithAPIKeys(map[string]string{
-		"anysearch": "test-key",
-		"zhipu":     "zhipu-key",
+		"anysearch":  "test-key",
+		"zhipu":      "zhipu-key",
 		"duckduckgo": "",
 	}))
 	if tl.Name() != "Web" {

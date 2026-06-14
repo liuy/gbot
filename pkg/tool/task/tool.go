@@ -37,11 +37,11 @@ type ListOutputTask struct {
 // TasksInput is the unified input schema for the Tasks tool.
 // All fields are optional — the LLM includes only what it needs.
 type TasksInput struct {
-	Creates []CreateItem  `json:"creates,omitempty"`
-	Updates []UpdateItem  `json:"updates,omitempty"`
-	Deletes []string      `json:"deletes,omitempty"`
-	List    *bool         `json:"list,omitempty"`
-	Get     *string       `json:"get,omitempty"`
+	Creates []CreateItem `json:"creates,omitempty"`
+	Updates []UpdateItem `json:"updates,omitempty"`
+	Deletes []string     `json:"deletes,omitempty"`
+	List    *bool        `json:"list,omitempty"`
+	Get     *string      `json:"get,omitempty"`
 }
 
 type CreateItem struct {

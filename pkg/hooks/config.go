@@ -16,7 +16,7 @@ import (
 // PolicySettings controls hook execution policy.
 // Source: TS settings — disableAllHooks, allowManagedHooksOnly.
 type PolicySettings struct {
-	DisableAllHooks      bool `json:"disableAllHooks,omitempty"`
+	DisableAllHooks       bool `json:"disableAllHooks,omitempty"`
 	AllowManagedHooksOnly bool `json:"allowManagedHooksOnly,omitempty"`
 }
 

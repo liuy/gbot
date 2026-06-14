@@ -96,8 +96,8 @@ func BuildSkillListing(skills []types.SkillCommand, contextWindowTokens int) str
 
 	// Build full entries
 	type entry struct {
-		cmd    types.SkillCommand
-		full   string
+		cmd       types.SkillCommand
+		full      string
 		isBundled bool
 	}
 

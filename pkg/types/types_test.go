@@ -1064,4 +1064,3 @@ func TestQueryEventAskField(t *testing.T) {
 		t.Errorf("RuleDetail = %q, want %q", evt.Ask.RuleDetail, "Write(*.go) from user settings")
 	}
 }
-

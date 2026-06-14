@@ -838,9 +838,9 @@ func TestRenderResult_Update_WithDiff(t *testing.T) {
 	tt := filewrite.New()
 	oldContent := "line1\nline2\nline3\n"
 	out := &filewrite.Output{
-		Type:            filewrite.WriteTypeUpdate,
-		FilePath:        "/tmp/test.go",
-		Content:         "line1\nreplaced\nline3\n",
+		Type:     filewrite.WriteTypeUpdate,
+		FilePath: "/tmp/test.go",
+		Content:  "line1\nreplaced\nline3\n",
 		StructuredPatch: []filewrite.StructuredPatchHunk{
 			{
 				OldStart: 1, OldLines: 3, NewStart: 1, NewLines: 3,

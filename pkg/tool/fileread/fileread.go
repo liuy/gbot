@@ -417,8 +417,8 @@ func New() tool.Tool {
 			}
 			return types.PermissionAllowDecision{}
 		},
-		Prompt_:            fileReadPrompt(),
-		RenderResult_:      renderResult,
+		Prompt_:       fileReadPrompt(),
+		RenderResult_: renderResult,
 		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
 			return tool.SearchReadKind{IsRead: true}
 		},

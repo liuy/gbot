@@ -528,98 +528,98 @@ func TestRecordSidechainTranscript(t *testing.T) {
 
 func TestFindLatestMessage_ConcurrentWithWriter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	store := openTestStore(t)
-	sessionID := "test-session"
-	createTestSession(t, store, sessionID)
+		store := openTestStore(t)
+		sessionID := "test-session"
+		createTestSession(t, store, sessionID)
 
-	// Insert messages
-	baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
-	for i := range 10 {
-		msg := &TranscriptMessage{
-			UUID:      fmt.Sprintf("uuid-%d", i),
-			Type:      "user",
-			Content:   fmt.Sprintf(`[{"type":"text","text":"msg-%d"}]`, i),
-			CreatedAt: baseTime.Add(time.Duration(i) * time.Second),
+		// Insert messages
+		baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
+		for i := range 10 {
+			msg := &TranscriptMessage{
+				UUID:      fmt.Sprintf("uuid-%d", i),
+				Type:      "user",
+				Content:   fmt.Sprintf(`[{"type":"text","text":"msg-%d"}]`, i),
+				CreatedAt: baseTime.Add(time.Duration(i) * time.Second),
+			}
+			if err := store.AppendMessage(sessionID, msg); err != nil {
+				t.Fatalf("AppendMessage %d: %v", i, err)
+			}
 		}
-		if err := store.AppendMessage(sessionID, msg); err != nil {
-			t.Fatalf("AppendMessage %d: %v", i, err)
-		}
-	}
 
-	// FindLatestMessage must not deadlock when a writer is active concurrently.
-	// The old implementation held RLock then called LoadMessages (which also RLocks),
-	// causing deadlock under writer contention.
-	done := make(chan error, 1)
-	go func() {
-		msg := &TranscriptMessage{
-			UUID:    "uuid-writer",
-			Type:    "assistant",
-			Content: `[{"type":"text","text":"concurrent write"}]`,
-		}
-		done <- store.AppendMessage(sessionID, msg)
-	}()
+		// FindLatestMessage must not deadlock when a writer is active concurrently.
+		// The old implementation held RLock then called LoadMessages (which also RLocks),
+		// causing deadlock under writer contention.
+		done := make(chan error, 1)
+		go func() {
+			msg := &TranscriptMessage{
+				UUID:    "uuid-writer",
+				Type:    "assistant",
+				Content: `[{"type":"text","text":"concurrent write"}]`,
+			}
+			done <- store.AppendMessage(sessionID, msg)
+		}()
 
-	latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
-		return m.Type == "user"
-	})
-	if err != nil {
-		t.Fatalf("FindLatestMessage: %v", err)
-	}
-	if latest == nil {
-		t.Fatal("got nil, want latest user message")
-	}
-	if latest.UUID != "uuid-9" {
-		t.Errorf("got UUID %q, want uuid-9", latest.UUID)
-	}
-
-	// Writer must complete (no deadlock)
-	select {
-	case err := <-done:
+		latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
+			return m.Type == "user"
+		})
 		if err != nil {
-			t.Fatalf("concurrent writer failed: %v", err)
+			t.Fatalf("FindLatestMessage: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("concurrent writer timed out — likely deadlock")
-	}
+		if latest == nil {
+			t.Fatal("got nil, want latest user message")
+		}
+		if latest.UUID != "uuid-9" {
+			t.Errorf("got UUID %q, want uuid-9", latest.UUID)
+		}
+
+		// Writer must complete (no deadlock)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("concurrent writer failed: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent writer timed out — likely deadlock")
+		}
 	})
 }
 
 func TestFindLatestMessage(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-	store := openTestStore(t)
-	sessionID := "test-session"
-	createTestSession(t, store, sessionID)
+		store := openTestStore(t)
+		sessionID := "test-session"
+		createTestSession(t, store, sessionID)
 
-	baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
-	msg1 := &TranscriptMessage{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: baseTime}
-	msg2 := &TranscriptMessage{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`, CreatedAt: baseTime.Add(1 * time.Second)}
-	msg3 := &TranscriptMessage{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`, CreatedAt: baseTime.Add(2 * time.Second)}
+		baseTime := time.Now() // REAL-TIME: seed inside synctest.Test (frozen by synctest)
+		msg1 := &TranscriptMessage{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`, CreatedAt: baseTime}
+		msg2 := &TranscriptMessage{UUID: "uuid-2", Type: "assistant", Content: `[{"type":"text","text":"second"}]`, CreatedAt: baseTime.Add(1 * time.Second)}
+		msg3 := &TranscriptMessage{UUID: "uuid-3", Type: "user", Content: `[{"type":"text","text":"third"}]`, CreatedAt: baseTime.Add(2 * time.Second)}
 
-	if err := store.AppendMessage(sessionID, msg1); err != nil {
-		t.Fatalf("AppendMessage 1: %v", err)
-	}
-	if err := store.AppendMessage(sessionID, msg2); err != nil {
-		t.Fatalf("AppendMessage 2: %v", err)
-	}
-	if err := store.AppendMessage(sessionID, msg3); err != nil {
-		t.Fatalf("AppendMessage 3: %v", err)
-	}
+		if err := store.AppendMessage(sessionID, msg1); err != nil {
+			t.Fatalf("AppendMessage 1: %v", err)
+		}
+		if err := store.AppendMessage(sessionID, msg2); err != nil {
+			t.Fatalf("AppendMessage 2: %v", err)
+		}
+		if err := store.AppendMessage(sessionID, msg3); err != nil {
+			t.Fatalf("AppendMessage 3: %v", err)
+		}
 
-	// Find latest user message
-	latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
-		return m.Type == "user"
-	})
-	if err != nil {
-		t.Fatalf("FindLatestMessage: %v", err)
-	}
+		// Find latest user message
+		latest, err := store.FindLatestMessage(sessionID, func(m *TranscriptMessage) bool {
+			return m.Type == "user"
+		})
+		if err != nil {
+			t.Fatalf("FindLatestMessage: %v", err)
+		}
 
-	if latest == nil {
-		t.Fatal("got nil message, want latest user message")
-	}
+		if latest == nil {
+			t.Fatal("got nil message, want latest user message")
+		}
 
-	if latest.UUID != "uuid-3" {
-		t.Errorf("got UUID %q, want uuid-3", latest.UUID)
-	}
+		if latest.UUID != "uuid-3" {
+			t.Errorf("got UUID %q, want uuid-3", latest.UUID)
+		}
 	})
 }
 

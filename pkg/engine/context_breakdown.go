@@ -218,25 +218,25 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	}
 
 	// Reserved is capped at totalExact (cannot exceed total usage).
-		reserved := min(computeReservedTokens(contextWindow, maxTokens), totalExact)
-		freeTokens := contextWindow - totalExact
+	reserved := min(computeReservedTokens(contextWindow, maxTokens), totalExact)
+	freeTokens := contextWindow - totalExact
 
-		// Compute expensive data once, shared by estimates and details.
-		sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot)
-		memFiles := context.LoadMemoryFiles(workingDir)
+	// Compute expensive data once, shared by estimates and details.
+	sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot)
+	memFiles := context.LoadMemoryFiles(workingDir)
 
-		estimates := e.estimateComponents(
-			sections, memFiles, toolsSnapshot, toolSearchSnap,
-			agentDefs, messages, mcpReg, reserved,
-		)
+	estimates := e.estimateComponents(
+		sections, memFiles, toolsSnapshot, toolSearchSnap,
+		agentDefs, messages, mcpReg, reserved,
+	)
 
-		contentTarget := max(totalExact-reserved, 0)
-		scaled := scaleProportionally(estimates, contentTarget)
+	contentTarget := max(totalExact-reserved, 0)
+	scaled := scaleProportionally(estimates, contentTarget)
 
-		detailSlices := e.buildDetails(
-			sections, memFiles, toolsSnapshot, toolSearchSnap,
-			skillListing, agentDefs, messages, mcpReg,
-		)
+	detailSlices := e.buildDetails(
+		sections, memFiles, toolsSnapshot, toolSearchSnap,
+		skillListing, agentDefs, messages, mcpReg,
+	)
 
 	if freeTokens < 0 {
 		freeTokens = 0
@@ -267,11 +267,11 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 
 // sysPromptSections holds pre-computed system prompt section token estimates.
 type sysPromptSections struct {
-	base       int
-	platform   int
-	git        int
+	base        int
+	platform    int
+	git         int
 	toolPrompts int
-	skill      int
+	skill       int
 }
 
 type componentEstimates struct {
@@ -390,10 +390,10 @@ func estimateSystemPromptSections(
 	}
 	toolPrompts := toolPromptsTotal
 
-		skill := 0
-		if skillListing != "" {
-			skill = types.EstimateTokens(skillListing)
-		}
+	skill := 0
+	if skillListing != "" {
+		skill = types.EstimateTokens(skillListing)
+	}
 
 	return sysPromptSections{base: base, platform: platform, git: git, toolPrompts: toolPrompts, skill: skill}
 }

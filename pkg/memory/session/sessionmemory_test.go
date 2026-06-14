@@ -274,7 +274,7 @@ func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
 		t.Fatalf("second Extract should return nil (skip), got: %v", err)
 	}
 
-	close(blockCh) // release first call
+	close(blockCh)                    // release first call
 	time.Sleep(50 * time.Millisecond) // REAL-TIME: wait for cleanup
 
 	mu.Lock()
@@ -322,7 +322,7 @@ func TestWaitForExtraction_WaitsForCompletion(t *testing.T) {
 
 	// Wait for extraction to actually start before calling WaitForExtraction
 	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: polling deadline
-	for time.Now().Before(deadline) { // REAL-TIME: polling loop
+	for time.Now().Before(deadline) {           // REAL-TIME: polling loop
 		sm.mu.Lock()
 		if sm.extracting {
 			sm.mu.Unlock()
@@ -392,7 +392,7 @@ func TestWaitForExtraction_Timeout(t *testing.T) {
 
 	// Wait for extraction to actually start (sm.extracting = true)
 	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: polling deadline
-	for time.Now().Before(deadline) { // REAL-TIME: polling loop
+	for time.Now().Before(deadline) {           // REAL-TIME: polling loop
 		sm.mu.Lock()
 		extracting := sm.extracting
 		sm.mu.Unlock()

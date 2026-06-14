@@ -37,13 +37,13 @@ func setupRegistry(t *testing.T) *skills.Registry {
 	})
 
 	reg.RegisterBundledSkill(types.SkillCommand{
-		Name:                 "internal",
-		Description:          "Internal agent skill",
-		Type:                 "prompt",
-		Source:               types.SkillSourceUser,
-		LoadedFrom:           "skills",
+		Name:                   "internal",
+		Description:            "Internal agent skill",
+		Type:                   "prompt",
+		Source:                 types.SkillSourceUser,
+		LoadedFrom:             "skills",
 		DisableModelInvocation: true,
-		Content:              "Internal processing.",
+		Content:                "Internal processing.",
 	})
 
 	return reg

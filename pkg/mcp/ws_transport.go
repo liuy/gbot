@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---------------------------------------------------------------------------

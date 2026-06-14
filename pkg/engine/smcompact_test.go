@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/long"
+	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -384,8 +384,8 @@ func TestQuerySource_CompactAgent(t *testing.T) {
 func TestShouldAutoCompact_SessionMemoryAgent(t *testing.T) {
 	mp := &testProvider{}
 	eng := New(&Params{
-		Provider:   mp,
-		Model:      "test",
+		Provider:    mp,
+		Model:       "test",
 		AutoCompact: AutoCompactConfig{ContextWindow: 128000},
 	})
 	defer eng.Close()
@@ -501,4 +501,3 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 		t.Error("should return nil with empty messages")
 	}
 }
-

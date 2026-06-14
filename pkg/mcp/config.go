@@ -69,9 +69,9 @@ func (*McpUrlEntry) policyEntryMarker()     {}
 // to the correct concrete type. Source: same pattern as UnmarshalServerConfig.
 func UnmarshalMcpPolicyEntry(raw json.RawMessage) (McpPolicyEntry, error) {
 	var probe struct {
-		ServerName   *string  `json:"serverName"`
+		ServerName    *string  `json:"serverName"`
 		ServerCommand []string `json:"serverCommand"`
-		ServerUrl    *string  `json:"serverUrl"`
+		ServerUrl     *string  `json:"serverUrl"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("invalid policy entry: %w", err)
@@ -1094,32 +1094,32 @@ func toggleMembership(list []string, name string, shouldContain bool) []string {
 	return result
 }
 
-	// SetMcpServerEnabled enables or disables an MCP server.
-	// Source: config.ts:1553-1578 setMcpServerEnabled
-	func SetMcpServerEnabled(name string, enabled bool, provider McpConfigProvider) error {
-		prev := provider.ProjectDisabledServers()
-		next := toggleMembership(prev, name, !enabled)
-		// Source: config.ts:1565 — TS uses \`next === prev\` (reference equality).
-		// toggleMembership returns the same slice when no change is needed,
-		// but Go cannot use reference equality. Compare contents instead.
-		if stringSlicesEqual(next, prev) {
-			return nil
-		}
-		return provider.SaveProjectDisabledServers(next)
+// SetMcpServerEnabled enables or disables an MCP server.
+// Source: config.ts:1553-1578 setMcpServerEnabled
+func SetMcpServerEnabled(name string, enabled bool, provider McpConfigProvider) error {
+	prev := provider.ProjectDisabledServers()
+	next := toggleMembership(prev, name, !enabled)
+	// Source: config.ts:1565 — TS uses \`next === prev\` (reference equality).
+	// toggleMembership returns the same slice when no change is needed,
+	// but Go cannot use reference equality. Compare contents instead.
+	if stringSlicesEqual(next, prev) {
+		return nil
 	}
+	return provider.SaveProjectDisabledServers(next)
+}
 
-	// stringSlicesEqual compares two string slices by value.
-	func stringSlicesEqual(a, b []string) bool {
-		if len(a) != len(b) {
+// stringSlicesEqual compares two string slices by value.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
 			return false
 		}
-		for i := range a {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-		return true
 	}
+	return true
+}
 
 // ---------------------------------------------------------------------------
 // Primary orchestration — Source: config.ts:1071-1290
@@ -1275,4 +1275,3 @@ func mergeMaps(ms ...map[string]ScopedMcpServerConfig) map[string]ScopedMcpServe
 	}
 	return result
 }
-

@@ -68,7 +68,9 @@ func NewListMcpResources(reg *gbotmcp.Registry) tool.Tool {
 			}
 			return &tool.ToolResult{Data: resources}, nil
 		},
-		CheckPermissions_:  func(json.RawMessage, *tool.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} },
+		CheckPermissions_: func(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+			return types.PermissionAllowDecision{}
+		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsDestructive_:     func(json.RawMessage) bool { return false },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
@@ -153,7 +155,9 @@ func NewReadMcpResource(reg *gbotmcp.Registry) tool.Tool {
 			}
 			return &tool.ToolResult{Data: contents}, nil
 		},
-		CheckPermissions_:  func(json.RawMessage, *tool.ToolUseContext) types.PermissionResult { return types.PermissionAllowDecision{} },
+		CheckPermissions_: func(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
+			return types.PermissionAllowDecision{}
+		},
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		IsDestructive_:     func(json.RawMessage) bool { return false },
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },

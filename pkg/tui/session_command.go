@@ -34,7 +34,7 @@ func (a *App) handleSession(args string, commitCmd tea.Cmd) tea.Cmd {
 	if args == "" {
 		// /session with no args → open session picker
 		return a.openPicker(commitCmd)
-		}
+	}
 	if args == "-n" {
 		return a.createNewSession("", "Switched to", commitCmd)
 	}
@@ -119,9 +119,9 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	a.sessionID = a.engine.SessionID()
 
 	// Reset REPL state
-		*a.repl = *NewReplState()
-		a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
-		a.committedCount = len(a.repl.messages)
+	*a.repl = *NewReplState()
+	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
+	a.committedCount = len(a.repl.messages)
 
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {

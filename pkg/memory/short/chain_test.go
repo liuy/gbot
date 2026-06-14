@@ -234,17 +234,17 @@ func TestRecoverOrphanedParallelToolResults_MultipleAssistantWithSameID(t *testi
 	allMessages := []*TranscriptMessage{
 		// Main chain assistant
 		{
-			UUID:       "asst-1",
-			Type:       "assistant",
-			Content:    `[{"type":"tool_use","id":"tu1","name":"bash"}]`,
-			CreatedAt:  time.Now().Add(-2 * time.Second), // REAL-TIME: deterministic timestamp for test data
+			UUID:      "asst-1",
+			Type:      "assistant",
+			Content:   `[{"type":"tool_use","id":"tu1","name":"bash"}]`,
+			CreatedAt: time.Now().Add(-2 * time.Second), // REAL-TIME: deterministic timestamp for test data
 		},
 		// Orphaned sibling with same tool_use id
 		{
-			UUID:       "asst-2",
-			Type:       "assistant",
-			Content:    `[{"type":"tool_use","id":"tu1","name":"read"}]`, // Same id!
-			CreatedAt:  time.Now().Add(-1 * time.Second), // REAL-TIME: deterministic timestamp for test data
+			UUID:      "asst-2",
+			Type:      "assistant",
+			Content:   `[{"type":"tool_use","id":"tu1","name":"read"}]`, // Same id!
+			CreatedAt: time.Now().Add(-1 * time.Second),                 // REAL-TIME: deterministic timestamp for test data
 		},
 		// Tool result for first assistant
 		{
@@ -513,7 +513,7 @@ func TestRecoverOrphanedParallelToolResults_NonAssistantWithToolUseID(t *testing
 	// User message with a tool_use-like block (edge case: non-assistant but tool_use block)
 	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"reply"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"reply"}]`, CreatedAt: time.Now()},                    // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	result := recoverOrphanedParallelToolResults(allMessages, chain)
@@ -527,7 +527,7 @@ func TestRecoverOrphanedParallelToolResults_NoSiblingsGroup(t *testing.T) {
 	// Assistant in chain with tool_use ID, but no siblings at all
 	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"tu1","name":"bash"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
-		{UUID: "user-1", Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"tool_result","tool_use_id":"tu1"}]`, CreatedAt: time.Now()},        // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 	// The anchor is asst-1 with tool_use id tu1. No other assistant has same id.
@@ -604,7 +604,7 @@ func TestChain_GetMessageID_NonAssistant(t *testing.T) {
 	// Direct test of the non-assistant path in recoverOrphanedParallelToolResults
 	// by having a chain with only user messages (no assistants with tool_use)
 	allMessages := []*TranscriptMessage{
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"hello"}]`, CreatedAt: time.Now()},                  // REAL-TIME: deterministic timestamp for test data
 		{UUID: "user-2", Type: "user", Content: `[{"type":"text","text":"world"}]`, CreatedAt: time.Now().Add(time.Second)}, // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
@@ -619,7 +619,7 @@ func TestChain_NilGroup_Fallback(t *testing.T) {
 	// that no other message shares. This should trigger the nil group fallback.
 	allMessages := []*TranscriptMessage{
 		{UUID: "asst-1", Type: "assistant", Content: `[{"type":"tool_use","id":"unique-id-1","name":"bash","input":{}}]`, CreatedAt: time.Now()}, // REAL-TIME: deterministic timestamp for test data
-		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"result"}]`, CreatedAt: time.Now().Add(time.Second)}, // REAL-TIME: deterministic timestamp for test data
+		{UUID: "user-1", Type: "user", Content: `[{"type":"text","text":"result"}]`, CreatedAt: time.Now().Add(time.Second)},                     // REAL-TIME: deterministic timestamp for test data
 	}
 	chain := []*TranscriptMessage{allMessages[0], allMessages[1]}
 
@@ -902,4 +902,3 @@ func TestAppendMessagesWithForkPoint_Dedup(t *testing.T) {
 		t.Fatalf("got %d messages, want 2 (dedup skipped uuid-1)", len(chain))
 	}
 }
-

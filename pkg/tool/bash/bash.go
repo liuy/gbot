@@ -44,12 +44,12 @@ type Input struct {
 // Output is the bash tool output.
 // Source: BashTool.ts — tool result data.
 type Output struct {
-	Stdout           string `json:"output"`
-	Stderr           string `json:"stderr,omitempty"`
-	ExitCode         int    `json:"exitCode"`
-	TimedOut         bool   `json:"timed_out,omitempty"`
+	Stdout          string `json:"output"`
+	Stderr          string `json:"stderr,omitempty"`
+	ExitCode        int    `json:"exitCode"`
+	TimedOut        bool   `json:"timed_out,omitempty"`
 	BackgroundJobID string `json:"backgroundTaskId,omitempty"`
-	CWD              string `json:"cwd,omitempty"`
+	CWD             string `json:"cwd,omitempty"`
 }
 
 // DefaultTimeout is the default command timeout (2 minutes).
@@ -138,7 +138,7 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			}
 			return isReadOnlyCommand(in.Command)
 		},
-		IsSearchOrRead_: IsSearchOrRead,
+		IsSearchOrRead_:    IsSearchOrRead,
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 30000,
 		Prompt_:            bashPrompt(),
@@ -367,8 +367,8 @@ func executePTYAutoBg(ctx context.Context, in Input, cwd string, timeout time.Du
 		s.FinalUpdate()
 		newCwd := trackCwd(cwdFile, cwd)
 		_ = os.Remove(cwdFile)
-			stdout := s.ReadContent(outputCap)
-			s.Cleanup()
+		stdout := s.ReadContent(outputCap)
+		s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
 				Stdout:   stdout,
@@ -495,8 +495,8 @@ func executeNonPTYAutoBg(ctx context.Context, in Input, cwd string, timeout time
 				exitCode = exitErr.ExitCode()
 			}
 		}
-			stdout := s.ReadContent(outputCap)
-			s.Cleanup()
+		stdout := s.ReadContent(outputCap)
+		s.Cleanup()
 		return &tool.ToolResult{
 			Data: &Output{
 				Stdout:   stdout,
@@ -737,29 +737,29 @@ func spawnBackground(ctx context.Context, in Input, cwd string, timeout time.Dur
 			// Use a channel to synchronize: must wait for ptyCommand to finish
 			// before calling job.Complete.
 			screen := tool.NewScreen(func(ev tool.ScreenEvent) {
-			switch ev.Kind {
-			case tool.ScreenAppend:
-				_, _ = s.Write([]byte(ev.Content + "\n"))
-			case tool.ScreenReplace:
-				s.ReplaceLastLine(ev.Content)
-			}
-		})
+				switch ev.Kind {
+				case tool.ScreenAppend:
+					_, _ = s.Write([]byte(ev.Content + "\n"))
+				case tool.ScreenReplace:
+					s.ReplaceLastLine(ev.Content)
+				}
+			})
 
-		ptyDone := make(chan struct{})
-		var ptyExitCode int
-		go func() {
-			defer close(ptyDone)
-			ptyExitCode, _, _ = runPTYCommand(taskCtx, wrappedCmd, cwd, baseEnv,
-				screen,
-				timeout,
-				emitAskInput,
-				func(pid int) {
-					job.mu.Lock()
-					job.PID = pid
-					job.mu.Unlock()
-				},
-			)
-		}()
+			ptyDone := make(chan struct{})
+			var ptyExitCode int
+			go func() {
+				defer close(ptyDone)
+				ptyExitCode, _, _ = runPTYCommand(taskCtx, wrappedCmd, cwd, baseEnv,
+					screen,
+					timeout,
+					emitAskInput,
+					func(pid int) {
+						job.mu.Lock()
+						job.PID = pid
+						job.mu.Unlock()
+					},
+				)
+			}()
 
 			// Wait for ptyCommand to finish before completing the job
 			<-ptyDone
@@ -838,8 +838,7 @@ func transitionToBackground(registry *BackgroundJobRegistry, command string, pid
 	return &tool.ToolResult{
 		Data: &Output{
 			BackgroundJobID: job.ID,
-			CWD:              cwd,
+			CWD:             cwd,
 		},
 	}, nil
 }
-

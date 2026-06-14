@@ -233,9 +233,9 @@ func (s *Store) MergeForkBack(childSessionID string) error {
 		var createdAt time.Time
 		var isSidechain int
 		if err := rows.Scan(&msgUUID, &msgType, &subtype, &content, &createdAt, &isSidechain); err != nil {
-		slog.Warn("fork: scan message row", "error", err)
-		continue
-	}
+			slog.Warn("fork: scan message row", "error", err)
+			continue
+		}
 
 		// Skip progress
 		if msgType == "progress" {

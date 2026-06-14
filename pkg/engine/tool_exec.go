@@ -118,7 +118,7 @@ func (e *Engine) askAndCheckPermission(
 		}
 		if resp.Decision == types.DecisionAllowAlways {
 			if sessionAllowed == nil {
-					return nil
+				return nil
 			}
 			sessionAllowed[cacheKey] = true
 		}

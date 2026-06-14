@@ -64,7 +64,7 @@ func TestLRUCache_EvictionOrder_AccessRefreshes(t *testing.T) {
 
 	c.Put("a", 1)
 	c.Put("b", 2)
-	c.Get("a") // access "a" → moves to front, "b" is now LRU
+	c.Get("a")    // access "a" → moves to front, "b" is now LRU
 	c.Put("c", 3) // evicts "b"
 
 	_, ok := c.Get("b")

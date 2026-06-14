@@ -22,13 +22,13 @@ import (
 type Transport string
 
 const (
-	TransportStdio        Transport = "stdio"
-	TransportSSE          Transport = "sse"
-	TransportSSEIDE       Transport = "sse-ide"
-	TransportHTTP         Transport = "http"
-	TransportWS           Transport = "ws"
-	TransportWSIDE        Transport = "ws-ide"
-	TransportSDK          Transport = "sdk"
+	TransportStdio         Transport = "stdio"
+	TransportSSE           Transport = "sse"
+	TransportSSEIDE        Transport = "sse-ide"
+	TransportHTTP          Transport = "http"
+	TransportWS            Transport = "ws"
+	TransportWSIDE         Transport = "ws-ide"
+	TransportSDK           Transport = "sdk"
 	TransportClaudeAIProxy Transport = "claudeai-proxy" // Source: types.ts:116-122
 )
 
@@ -84,9 +84,9 @@ func (c *SSEConfig) GetTransport() Transport { return TransportSSE }
 // SSEIDEConfig — Source: types.ts:69-76 McpSSEIDEServerConfigSchema
 // Internal-only server type for IDE extensions.
 type SSEIDEConfig struct {
-	URL              string `json:"url"`
-	IDEName          string `json:"ideName"`
-	IDERunningInWindows bool  `json:"ideRunningInWindows,omitempty"`
+	URL                 string `json:"url"`
+	IDEName             string `json:"ideName"`
+	IDERunningInWindows bool   `json:"ideRunningInWindows,omitempty"`
 }
 
 func (c *SSEIDEConfig) GetTransport() Transport { return TransportSSEIDE }
@@ -94,10 +94,10 @@ func (c *SSEIDEConfig) GetTransport() Transport { return TransportSSEIDE }
 // WSIDEConfig — Source: types.ts:79-87 McpWebSocketIDEServerConfigSchema
 // Internal-only server type for IDE extensions.
 type WSIDEConfig struct {
-	URL              string `json:"url"`
-	IDEName          string `json:"ideName"`
-	AuthToken        string `json:"authToken,omitempty"`
-	IDERunningInWindows bool  `json:"ideRunningInWindows,omitempty"`
+	URL                 string `json:"url"`
+	IDEName             string `json:"ideName"`
+	AuthToken           string `json:"authToken,omitempty"`
+	IDERunningInWindows bool   `json:"ideRunningInWindows,omitempty"`
 }
 
 func (c *WSIDEConfig) GetTransport() Transport { return TransportWSIDE }
@@ -145,10 +145,10 @@ func (c *ClaudeAIProxyConfig) GetTransport() Transport { return TransportClaudeA
 // OAuthConfig represents per-server OAuth configuration.
 // Source: types.ts:43-56
 type OAuthConfig struct {
-	ClientID             string `json:"clientId,omitempty"`
-	CallbackPort         int    `json:"callbackPort,omitempty"`
+	ClientID              string `json:"clientId,omitempty"`
+	CallbackPort          int    `json:"callbackPort,omitempty"`
 	AuthServerMetadataURL string `json:"authServerMetadataUrl,omitempty"`
-	XAA                  bool   `json:"xaa,omitempty"` // Source: types.ts:41 — Cross-App Access flag
+	XAA                   bool   `json:"xaa,omitempty"` // Source: types.ts:41 — Cross-App Access flag
 }
 
 // ---------------------------------------------------------------------------
@@ -258,9 +258,9 @@ func (s *NeedsAuthServer) ConnType() string { return "needs-auth" }
 // PendingServer represents a server pending approval/reconnection.
 // Source: types.ts:207-213 PendingMCPServer
 type PendingServer struct {
-	Name                string
-	Config              ScopedMcpServerConfig
-	ReconnectAttempt    int // Source: types.ts:211 — optional
+	Name                 string
+	Config               ScopedMcpServerConfig
+	ReconnectAttempt     int // Source: types.ts:211 — optional
 	MaxReconnectAttempts int // Source: types.ts:212 — optional
 }
 
@@ -367,18 +367,18 @@ type SerializedTool struct {
 // Source: types.ts:246-250 SerializedClient
 type SerializedClient struct {
 	Name         string `json:"name"`
-	Type         string `json:"type"` // "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+	Type         string `json:"type"`                   // "connected" | "failed" | "needs-auth" | "pending" | "disabled"
 	Capabilities any    `json:"capabilities,omitempty"` // ServerCapabilities — typed in Step 9
 }
 
 // MCPCliState represents the full MCP state for CLI serialization.
 // Source: types.ts:252-258 MCPCliState
 type MCPCliState struct {
-	Clients        []SerializedClient              `json:"clients"`
-	Configs        map[string]ScopedMcpServerConfig `json:"configs"`
-	Tools          []SerializedTool                `json:"tools"`
-	Resources      map[string][]ServerResource     `json:"resources"`
-	NormalizedNames map[string]string              `json:"normalizedNames,omitempty"`
+	Clients         []SerializedClient               `json:"clients"`
+	Configs         map[string]ScopedMcpServerConfig `json:"configs"`
+	Tools           []SerializedTool                 `json:"tools"`
+	Resources       map[string][]ServerResource      `json:"resources"`
+	NormalizedNames map[string]string                `json:"normalizedNames,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

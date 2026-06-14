@@ -239,6 +239,7 @@ func TestExecuteFetch_ScraperJSFetcher_Mock(t *testing.T) {
 	if !strings.Contains(output.Content, "JS content") {
 		t.Errorf("expected JS content from scraper, got: %q", output.Content)
 	}
-	if !jsCalled {		t.Error("expected JSFetcher to be called")
+	if !jsCalled {
+		t.Error("expected JSFetcher to be called")
 	}
 }

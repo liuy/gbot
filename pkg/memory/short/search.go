@@ -3,8 +3,8 @@ package short
 import (
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -152,7 +152,7 @@ func (s *Store) SearchMessages(query string, opts *SearchOptions) ([]*SearchResu
 
 		results = append(results, &SearchResult{
 			TranscriptMessage: &msg,
-			Score:   score,
+			Score:             score,
 		})
 	}
 

@@ -9,7 +9,7 @@ const killRingMaxSize = 10
 // KillRing is a circular buffer of killed text, supporting Emacs-style kill/yank.
 // Source: utils/Cursor.ts lines 16-111
 type KillRing struct {
-	entries       []string
+	entries        []string
 	lastActionKill bool
 }
 
@@ -66,4 +66,3 @@ func (k *KillRing) Top() string {
 func (k *KillRing) ResetAccumulation() {
 	k.lastActionKill = false
 }
-

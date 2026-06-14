@@ -15,10 +15,10 @@ import (
 
 // mockExecutor is a test ShellExecutor that returns canned output.
 type mockExecutor struct {
-	calls    atomic.Int32
-	outputs  map[string]string // command → output
-	failCmd  string            // command that should fail
-	errMsg   string
+	calls   atomic.Int32
+	outputs map[string]string // command → output
+	failCmd string            // command that should fail
+	errMsg  string
 }
 
 func (m *mockExecutor) Execute(_ *tool.ToolUseContext, command string) (string, error) {

@@ -47,13 +47,13 @@ func (t *MCPTool) IsSearchOrRead(_ json.RawMessage) tool.SearchReadKind {
 	return tool.SearchReadKind{}
 }
 
-func (t *MCPTool) Name() string                 { return t.info.Name }
-func (t *MCPTool) Aliases() []string            { return nil }
-func (t *MCPTool) InputSchema() json.RawMessage { return t.info.InputSchema }
-func (t *MCPTool) IsEnabled() bool              { return true }
+func (t *MCPTool) Name() string                              { return t.info.Name }
+func (t *MCPTool) Aliases() []string                         { return nil }
+func (t *MCPTool) InputSchema() json.RawMessage              { return t.info.InputSchema }
+func (t *MCPTool) IsEnabled() bool                           { return true }
 func (t *MCPTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
-func (t *MCPTool) MaxResultSize() int           { return 50000 }
-func (t *MCPTool) Prompt() string               { return "" }
+func (t *MCPTool) MaxResultSize() int                        { return 50000 }
+func (t *MCPTool) Prompt() string                            { return "" }
 
 func (t *MCPTool) Description(_ json.RawMessage) (string, error) {
 	if t.info.SearchHint != "" {

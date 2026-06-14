@@ -344,4 +344,3 @@ var safeEnvVars = map[string]bool{
 	// Display
 	"TIME_STYLE": true, "BLOCK_SIZE": true, "BLOCKSIZE": true,
 }
-

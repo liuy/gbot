@@ -12,15 +12,15 @@ import (
 // HuggingFace API types.
 
 type hfModel struct {
-	ModelID      string   `json:"modelId"`
-	PipelineTag  string   `json:"pipeline_tag"`
-	LibraryName  string   `json:"library_name"`
-	Tags         []string `json:"tags"`
-	Downloads    int      `json:"downloads"`
-	Likes        int      `json:"likes"`
-	Private      bool     `json:"private"`
-	Gated        any      `json:"gated"`
-	CardData     *struct {
+	ModelID     string   `json:"modelId"`
+	PipelineTag string   `json:"pipeline_tag"`
+	LibraryName string   `json:"library_name"`
+	Tags        []string `json:"tags"`
+	Downloads   int      `json:"downloads"`
+	Likes       int      `json:"likes"`
+	Private     bool     `json:"private"`
+	Gated       any      `json:"gated"`
+	CardData    *struct {
 		License  string   `json:"license"`
 		Language any      `json:"language"`
 		Datasets []string `json:"datasets"`
@@ -37,21 +37,21 @@ type hfDataset struct {
 	Gated       any      `json:"gated"`
 	Description string   `json:"description"`
 	CardData    *struct {
-		License         string   `json:"license"`
-		Language        any      `json:"language"`
-		TaskCategories  []string `json:"task_categories"`
-		SizeCategories  []string `json:"size_categories"`
+		License        string   `json:"license"`
+		Language       any      `json:"language"`
+		TaskCategories []string `json:"task_categories"`
+		SizeCategories []string `json:"size_categories"`
 	} `json:"cardData"`
 }
 
 type hfSpace struct {
-	ID     string   `json:"id"`
-	Author string   `json:"author"`
-	Title  string   `json:"title"`
-	SDK    string   `json:"sdk"`
-	Tags   []string `json:"tags"`
-	Likes  int      `json:"likes"`
-	Private bool    `json:"private"`
+	ID       string   `json:"id"`
+	Author   string   `json:"author"`
+	Title    string   `json:"title"`
+	SDK      string   `json:"sdk"`
+	Tags     []string `json:"tags"`
+	Likes    int      `json:"likes"`
+	Private  bool     `json:"private"`
 	CardData *struct {
 		License string `json:"license"`
 		SDK     string `json:"sdk"`

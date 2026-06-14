@@ -63,13 +63,13 @@ type skillInput struct {
 
 // skillOutput is the tool result data.
 type skillOutput struct {
-	Success     bool     `json:"success"`
-	CommandName string   `json:"commandName"`
-	Status      string   `json:"status,omitempty"` // "inline" or "forked"
+	Success      bool     `json:"success"`
+	CommandName  string   `json:"commandName"`
+	Status       string   `json:"status,omitempty"` // "inline" or "forked"
 	AllowedTools []string `json:"allowedTools,omitempty"`
-	Model       string   `json:"model,omitempty"`
-	AgentID     string   `json:"agentId,omitempty"`
-	Result      string   `json:"result,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	AgentID      string   `json:"agentId,omitempty"`
+	Result       string   `json:"result,omitempty"`
 }
 
 // skillPrompt returns the static prompt for this tool.
@@ -93,10 +93,10 @@ var skillInputSchema = json.RawMessage(`{
 // Uses BuildTool factory, matching pkg/tool/bash/ etc.
 func New(registry *skills.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
-		Name_:        skillToolName,
-		Prompt_:      skillDescription,
+		Name_:              skillToolName,
+		Prompt_:            skillDescription,
 		MaxResultSizeChars: 100000,
-		InputSchema_: func() json.RawMessage { return skillInputSchema },
+		InputSchema_:       func() json.RawMessage { return skillInputSchema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in skillInput
 			if err := json.Unmarshal(input, &in); err != nil {
@@ -105,8 +105,8 @@ func New(registry *skills.Registry) tool.Tool {
 			// Show just the skill name (TS: UI.tsx:47-61 — renderToolUseMessage)
 			return in.Skill, nil
 		},
-		Call_: makeSkillCallFn(registry),
-		CheckPermissions_: makeSkillPermissionsFn(registry),
+		Call_:              makeSkillCallFn(registry),
+		CheckPermissions_:  makeSkillPermissionsFn(registry),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
 		// Wire format: what the LLM sees as tool_result content.

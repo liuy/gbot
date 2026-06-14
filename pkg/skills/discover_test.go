@@ -239,9 +239,9 @@ func TestActivateConditionalSkillsForPaths_Matches(t *testing.T) {
 	// Set up a conditional skill with paths
 	reg.mu.Lock()
 	reg.conditional["go-skill"] = types.SkillCommand{
-		Name:    "go-skill",
-		Paths:   []string{"*.go"},
-		Source:  types.SkillSourceProject,
+		Name:   "go-skill",
+		Paths:  []string{"*.go"},
+		Source: types.SkillSourceProject,
 	}
 	reg.mu.Unlock()
 
@@ -274,8 +274,8 @@ func TestActivateConditionalSkillsForPaths_OutsideCwd(t *testing.T) {
 
 	reg.mu.Lock()
 	reg.conditional["ext-skill"] = types.SkillCommand{
-		Name:    "ext-skill",
-		Paths:   []string{"*.go"},
+		Name:  "ext-skill",
+		Paths: []string{"*.go"},
 	}
 	reg.mu.Unlock()
 
@@ -295,8 +295,8 @@ func TestActivateConditionalSkillsForPaths_NoMatch(t *testing.T) {
 
 	reg.mu.Lock()
 	reg.conditional["go-skill"] = types.SkillCommand{
-		Name:    "go-skill",
-		Paths:   []string{"*.go"},
+		Name:  "go-skill",
+		Paths: []string{"*.go"},
 	}
 	reg.mu.Unlock()
 

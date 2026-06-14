@@ -739,4 +739,3 @@ func TestExecuteFetch_NilRegistry(t *testing.T) {
 		t.Errorf("content should fall through to HTTP fetch, got: %q", output.Content)
 	}
 }
-

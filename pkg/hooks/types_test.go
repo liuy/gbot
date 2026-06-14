@@ -130,7 +130,7 @@ func TestHookConfigPromptJSON(t *testing.T) {
 	if got.Command != "" {
 		t.Errorf("Command = %q, want empty for prompt hook", got.Command)
 	}
-	}
+}
 
 func TestHookConfigAgentJSON(t *testing.T) {
 	// Source: schemas/hooks.ts:128-163 — AgentHookSchema

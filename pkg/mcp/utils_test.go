@@ -835,8 +835,8 @@ func TestGetProjectMcpServerStatus(t *testing.T) {
 
 func TestTypeGuards(t *testing.T) {
 	tests := []struct {
-		name  string
-		config McpServerConfig
+		name    string
+		config  McpServerConfig
 		isStdio bool
 		isSSE   bool
 		isHTTP  bool

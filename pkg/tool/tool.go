@@ -40,10 +40,10 @@ type ToolUseContext struct {
 	Messages         []types.Message
 	ToolUseID        string
 	WorkingDir       string
-	AssistantContent []types.ContentBlock // current assistant message's content blocks (mid-stream)
-	ReadFileState    map[string]FileState // keyed by absolute file path
-	OnProgress       func(ProgressUpdate) // optional — engine sets this for streaming progress
-	UncappedOutput   bool                 // bypass internal output capping (set for REPL sub-tool calls)
+	AssistantContent []types.ContentBlock                                                        // current assistant message's content blocks (mid-stream)
+	ReadFileState    map[string]FileState                                                        // keyed by absolute file path
+	OnProgress       func(ProgressUpdate)                                                        // optional — engine sets this for streaming progress
+	UncappedOutput   bool                                                                        // bypass internal output capping (set for REPL sub-tool calls)
 	OnAskInput       func(prompt string, masked bool, deadline time.Time) chan types.AskResponse // optional — interactive PTY input
 }
 
@@ -71,7 +71,7 @@ type InterruptBehavior int
 
 const (
 	InterruptCancel InterruptBehavior = iota // 'cancel' — stop tool, discard result
-	InterruptBlock                            // 'block' — keep running, new message waits
+	InterruptBlock                           // 'block' — keep running, new message waits
 )
 
 // ---------------------------------------------------------------------------
@@ -114,10 +114,10 @@ type Tool interface {
 
 	// ── Description ───────────────────────────────────────
 	Description(input json.RawMessage) (string, error)
-		// ── Result Rendering ──────────────────────────────────
-		// Source: Tool.ts:566 — renderToolResultMessage
-		// Renders tool result data as a human-readable string for TUI display.
-		RenderResult(data any) string
+	// ── Result Rendering ──────────────────────────────────
+	// Source: Tool.ts:566 — renderToolResultMessage
+	// Renders tool result data as a human-readable string for TUI display.
+	RenderResult(data any) string
 
 	// ── Schema ────────────────────────────────────────────
 	InputSchema() json.RawMessage
@@ -140,9 +140,9 @@ type Tool interface {
 	// Interrupt behavior: source values are 'cancel' | 'block' (Tool.ts:416)
 	InterruptBehavior() InterruptBehavior
 
-		// Max result size in characters before truncation.
-		// Source: Tool.ts:707 — maxResultSizeChars
-		MaxResultSize() int
+	// Max result size in characters before truncation.
+	// Source: Tool.ts:707 — maxResultSizeChars
+	MaxResultSize() int
 
 	// ── Prompt (system prompt text contributed by this tool) ──
 	Prompt() string
@@ -272,8 +272,8 @@ func SearchHint(t Tool) string {
 // Source: Tool.ts:707-726
 type ToolDef struct {
 	// Required fields (no defaults)
-	Name_       string
-	Call_       func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error)
+	Name_        string
+	Call_        func(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error)
 	InputSchema_ func() json.RawMessage
 	Description_ func(input json.RawMessage) (string, error)
 
@@ -282,10 +282,10 @@ type ToolDef struct {
 	IsReadOnly_        func(input json.RawMessage) bool // default: false
 	IsDestructive_     func(input json.RawMessage) bool // default: false
 	IsConcurrencySafe_ func(input json.RawMessage) bool // default: false
-	IsEnabled_         func() bool                       // default: true
-	InterruptBehavior_ InterruptBehavior                 // default: InterruptBlock
-	Prompt_            string                            // default: ""
-	MaxResultSizeChars int                               // default: 50000
+	IsEnabled_         func() bool                      // default: true
+	InterruptBehavior_ InterruptBehavior                // default: InterruptBlock
+	Prompt_            string                           // default: ""
+	MaxResultSizeChars int                              // default: 50000
 
 	// Permission checking
 	CheckPermissions_ func(input json.RawMessage, tctx *ToolUseContext) types.PermissionResult
@@ -302,10 +302,10 @@ type ToolDef struct {
 	// If set, the built tool implements ToolWithSearchOrRead.
 	IsSearchOrRead_ func(input json.RawMessage) SearchReadKind
 
-		// Deferred loading
-		ShouldDefer_ bool   // mark tool as deferred for ToolSearch
-		SearchHint_  string // short description for search scoring
-	}
+	// Deferred loading
+	ShouldDefer_ bool   // mark tool as deferred for ToolSearch
+	SearchHint_  string // short description for search scoring
+}
 
 // builtTool wraps a ToolDef with defaults applied.
 type builtTool struct {
@@ -385,24 +385,28 @@ func BuildTool(def ToolDef) Tool {
 	return &builtTool{def: def}
 }
 
-func (t *builtTool) Name() string                                          { return t.def.Name_ }
-func (t *builtTool) Aliases() []string                                     { return t.def.Aliases_ }
-func (t *builtTool) Description(input json.RawMessage) (string, error)     { return t.def.Description_(input) }
-func (t *builtTool) InputSchema() json.RawMessage                          { return t.def.InputSchema_() }
+func (t *builtTool) Name() string      { return t.def.Name_ }
+func (t *builtTool) Aliases() []string { return t.def.Aliases_ }
+func (t *builtTool) Description(input json.RawMessage) (string, error) {
+	return t.def.Description_(input)
+}
+func (t *builtTool) InputSchema() json.RawMessage { return t.def.InputSchema_() }
 func (t *builtTool) Call(ctx context.Context, input json.RawMessage, tctx *ToolUseContext) (*ToolResult, error) {
 	return t.def.Call_(ctx, input, tctx)
 }
 func (t *builtTool) CheckPermissions(input json.RawMessage, tctx *ToolUseContext) types.PermissionResult {
 	return t.def.CheckPermissions_(input, tctx)
 }
-func (t *builtTool) IsReadOnly(input json.RawMessage) bool      { return t.def.IsReadOnly_(input) }
-func (t *builtTool) IsDestructive(input json.RawMessage) bool   { return t.def.IsDestructive_(input) }
-func (t *builtTool) IsConcurrencySafe(input json.RawMessage) bool { return t.def.IsConcurrencySafe_(input) }
-func (t *builtTool) IsEnabled() bool                            { return t.def.IsEnabled_() }
-func (t *builtTool) InterruptBehavior() InterruptBehavior       { return t.def.InterruptBehavior_ }
-func (t *builtTool) MaxResultSize() int                              { return t.def.MaxResultSizeChars }
+func (t *builtTool) IsReadOnly(input json.RawMessage) bool    { return t.def.IsReadOnly_(input) }
+func (t *builtTool) IsDestructive(input json.RawMessage) bool { return t.def.IsDestructive_(input) }
+func (t *builtTool) IsConcurrencySafe(input json.RawMessage) bool {
+	return t.def.IsConcurrencySafe_(input)
+}
+func (t *builtTool) IsEnabled() bool                      { return t.def.IsEnabled_() }
+func (t *builtTool) InterruptBehavior() InterruptBehavior { return t.def.InterruptBehavior_ }
+func (t *builtTool) MaxResultSize() int                   { return t.def.MaxResultSizeChars }
 
-func (t *builtTool) Prompt() string                             { return t.def.Prompt_ }
-func (t *builtTool) RenderResult(data any) string               { return t.def.RenderResult_(data) }
-func (t *builtTool) IsDeferred() bool                           { return t.def.ShouldDefer_ }
-func (t *builtTool) SearchHint() string                         { return t.def.SearchHint_ }
+func (t *builtTool) Prompt() string               { return t.def.Prompt_ }
+func (t *builtTool) RenderResult(data any) string { return t.def.RenderResult_(data) }
+func (t *builtTool) IsDeferred() bool             { return t.def.ShouldDefer_ }
+func (t *builtTool) SearchHint() string           { return t.def.SearchHint_ }

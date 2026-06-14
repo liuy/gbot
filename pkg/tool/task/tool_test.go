@@ -1424,4 +1424,3 @@ func TestTasks_CheckAutoReset_AllCompleted(t *testing.T) {
 		t.Log("ShouldCleanupCompleted returned false (timer path)")
 	}
 }
-

@@ -506,7 +506,7 @@ func TestIsMcpServerAllowedByPolicy_UrlAllow(t *testing.T) {
 
 func TestFilterMcpServersByPolicy_SDKExempt(t *testing.T) {
 	configs := map[string]ScopedMcpServerConfig{
-		"sdk1": {Config: &SDKConfig{}, Scope: ScopeLocal},
+		"sdk1":  {Config: &SDKConfig{}, Scope: ScopeLocal},
 		"deny1": {Config: &SSEConfig{URL: "http://evil.com"}, Scope: ScopeUser},
 	}
 	denied := []McpPolicyEntry{&McpNameEntry{ServerName: "deny1"}}
@@ -1076,12 +1076,12 @@ func (m *mockConfigProvider) LocalMcpServers() map[string]McpServerConfig {
 	}
 	return m.localServers
 }
-func (m *mockConfigProvider) ProjectDisabledServers() []string     { return m.disabledServers }
-func (m *mockConfigProvider) ProjectEnabledServers() []string      { return m.enabledServers }
+func (m *mockConfigProvider) ProjectDisabledServers() []string       { return m.disabledServers }
+func (m *mockConfigProvider) ProjectEnabledServers() []string        { return m.enabledServers }
 func (m *mockConfigProvider) PolicyDeniedServers() []McpPolicyEntry  { return m.deniedEntries }
 func (m *mockConfigProvider) PolicyAllowedServers() []McpPolicyEntry { return m.allowedEntries }
-func (m *mockConfigProvider) IsManagedOnly() bool                  { return m.managedOnly }
-func (m *mockConfigProvider) IsPluginOnly() bool                   { return m.pluginOnly }
+func (m *mockConfigProvider) IsManagedOnly() bool                    { return m.managedOnly }
+func (m *mockConfigProvider) IsPluginOnly() bool                     { return m.pluginOnly }
 func (m *mockConfigProvider) ManagedMcpFilePath() string {
 	if m.managedPath != "" {
 		return m.managedPath

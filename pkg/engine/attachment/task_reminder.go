@@ -14,7 +14,7 @@ import (
 // TaskReminderConfig controls when task reminders fire.
 // TS reference: utils/attachments.ts:254 — TODO_REMINDER_CONFIG.
 type TaskReminderConfig struct {
-	TurnsSinceTaskAction  int // min assistant turns since last TaskCreate/TaskUpdate
+	TurnsSinceTaskAction   int // min assistant turns since last TaskCreate/TaskUpdate
 	TurnsSinceLastReminder int // min assistant turns since last task_reminder injection
 }
 

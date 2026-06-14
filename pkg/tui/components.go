@@ -694,14 +694,14 @@ type ToolCallView struct {
 	IsError       bool
 	Done          bool
 	Elapsed       time.Duration
-	AgentLogs     []AgentLogEntry // sub-agent tool call progress (nil for non-Agent tools)
-	ToolCount     int             // total sub-agent tool calls (for summary line when done)
-	TokensIn      int             // sub-agent input tokens (for summary line when done)
-	TokensOut     int             // sub-agent output tokens (for summary line when done)
-	ContextSize   int             // sub-agent latest context size (InputTokens + CacheRead + CacheCreation + OutputTokens)
-	ContextWindow int             // sub-agent context window size (set once at tool start)
-	Blocks        []ContentBlock  // nested blocks for agent's sub-events (text/tool/thinking)
-	AgentType     string          // agent type name (e.g., "Explore", "Plan")
+	AgentLogs     []AgentLogEntry     // sub-agent tool call progress (nil for non-Agent tools)
+	ToolCount     int                 // total sub-agent tool calls (for summary line when done)
+	TokensIn      int                 // sub-agent input tokens (for summary line when done)
+	TokensOut     int                 // sub-agent output tokens (for summary line when done)
+	ContextSize   int                 // sub-agent latest context size (InputTokens + CacheRead + CacheCreation + OutputTokens)
+	ContextWindow int                 // sub-agent context window size (set once at tool start)
+	Blocks        []ContentBlock      // nested blocks for agent's sub-events (text/tool/thinking)
+	AgentType     string              // agent type name (e.g., "Explore", "Plan")
 	SearchRead    tool.SearchReadKind // classification for collapse behavior
 }
 

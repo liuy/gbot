@@ -1047,18 +1047,18 @@ func TestBuildResultMessages_RemovesOrphanedToolResults(t *testing.T) {
 	//   - user msg with tool_result (tool_use_id="kept_1") — has matching tool_use
 	kept := []*short.TranscriptMessage{
 		{
-			UUID:  "u1",
-			Type:  "user",
+			UUID:    "u1",
+			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"orphan_1","content":"\"old data\""}]`,
 		},
 		{
-			UUID:  "a1",
-			Type:  "assistant",
+			UUID:    "a1",
+			Type:    "assistant",
 			Content: `[{"type":"tool_use","id":"kept_1","name":"Bash","input":"{\"command\":\"ls\"}"}]`,
 		},
 		{
-			UUID:  "u2",
-			Type:  "user",
+			UUID:    "u2",
+			Type:    "user",
 			Content: `[{"type":"tool_result","tool_use_id":"kept_1","content":"\"kept data\""}]`,
 		},
 	}
@@ -1313,7 +1313,7 @@ func TestEngineToShort_PreservesAttachmentFields(t *testing.T) {
 	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
 	if err != nil {
 		t.Fatalf("EngineMessagesToStore: %v", err)
-		}
+	}
 	if len(shortMsgs) != 1 {
 		t.Fatalf("expected 1 short message, got %d", len(shortMsgs))
 	}
@@ -1341,7 +1341,7 @@ func TestEngineToShort_PreservesFlagMeta(t *testing.T) {
 	shortMsgs, err := short.EngineMessagesToStore([]types.Message{msg})
 	if err != nil {
 		t.Fatalf("EngineMessagesToStore: %v", err)
-		}
+	}
 	sm := shortMsgs[0]
 	if sm.Metadata == "" {
 		t.Fatal("metadata lost after EngineMessagesToStore: FlagMeta not preserved")

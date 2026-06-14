@@ -7,6 +7,7 @@
 package llm
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"cmp"
 	"slices"
 	"strings"
 	"sync"

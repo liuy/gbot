@@ -31,10 +31,10 @@ func newSessionTestApp(t *testing.T) (*App, *short.Store) {
 	eng.SetStore(store, projectDir)
 
 	a := &App{
-		engine:           eng,
-		sessionID:        session.SessionID,
-		projectDir:       projectDir,
-		repl:             NewReplState(),
+		engine:     eng,
+		sessionID:  session.SessionID,
+		projectDir: projectDir,
+		repl:       NewReplState(),
 	}
 	return a, store
 }
@@ -262,25 +262,25 @@ func TestHandleClear_Success(t *testing.T) {
 
 func TestResetDisplayState(t *testing.T) {
 	a := &App{
-		scrollOffset:         10,
-		scrollTotal:          20,
-		userScrolled:         true,
-		contentCache:         "old content",
-		contentDirty:         true,
-		allToolsExpanded:     true,
-		thinkingActive:       true,
-		thinkingStart:        parseTime("2026-01-01T00:00:00Z"),
-		thinkingDuration:     5 * time.Second,
-		progressStart:        parseTime("2026-01-01T00:00:00Z"),
-		responseCharCount:    100,
-		displayedInputTokens: 1000,
+		scrollOffset:          10,
+		scrollTotal:           20,
+		userScrolled:          true,
+		contentCache:          "old content",
+		contentDirty:          true,
+		allToolsExpanded:      true,
+		thinkingActive:        true,
+		thinkingStart:         parseTime("2026-01-01T00:00:00Z"),
+		thinkingDuration:      5 * time.Second,
+		progressStart:         parseTime("2026-01-01T00:00:00Z"),
+		responseCharCount:     100,
+		displayedInputTokens:  1000,
 		displayedOutputTokens: 200,
-		outputTokenTarget:    300,
-		inputTokenTarget:     1100,
-		cacheReadTokens:      5000,
-		cacheCreationTokens:  2000,
-		toolBlink:            true,
-		toolBlinkTick:        7,
+		outputTokenTarget:     300,
+		inputTokenTarget:      1100,
+		cacheReadTokens:       5000,
+		cacheCreationTokens:   2000,
+		toolBlink:             true,
+		toolBlinkTick:         7,
 	}
 
 	a.resetDisplayState()

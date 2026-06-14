@@ -10,9 +10,9 @@ import (
 // Source: utils/abortController.ts — createAbortController, createChildAbortController.
 //
 // The TS source uses a three-layer abort hierarchy:
-//   1. Parent controller (QueryEngine level) — user interrupt (ESC/new message)
-//   2. Sibling controller — cascading Bash error cancellation
-//   3. Per-tool controller — individual tool abort
+//  1. Parent controller (QueryEngine level) — user interrupt (ESC/new message)
+//  2. Sibling controller — cascading Bash error cancellation
+//  3. Per-tool controller — individual tool abort
 //
 // In Go, context.Context provides the same capability natively.
 // Current implementation uses a single-layer: context.Context for user interrupt.

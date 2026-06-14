@@ -19,9 +19,9 @@ import (
 
 // inMemoryProvider creates in-memory MCP transports for testing.
 type inMemoryProvider struct {
-	mu        sync.Mutex
+	mu         sync.Mutex
 	transports map[string]mcp.Transport
-	failConn  map[string]bool
+	failConn   map[string]bool
 }
 
 func newInMemoryProvider() *inMemoryProvider {
@@ -599,8 +599,8 @@ func TestRegistry_Close_WithConnections(t *testing.T) {
 	r.mu.Lock()
 	r.configs["test"] = cfg
 	r.connections["test"] = &ConnectedServer{
-		Name:   "test",
-		Config: cfg,
+		Name:    "test",
+		Config:  cfg,
 		Cleanup: func() error { return nil },
 	}
 	r.mu.Unlock()
@@ -907,9 +907,9 @@ func TestRegistry_BackoffCalculation(t *testing.T) {
 		attempt  int
 		expected time.Duration
 	}{
-		{0, reconnectMinBackoff},           // 1 * 2^0 = 1s
-		{1, reconnectMinBackoff * 2},       // 1 * 2^1 = 2s
-		{2, reconnectMinBackoff * 4},       // 1 * 2^2 = 4s
+		{0, reconnectMinBackoff},                            // 1 * 2^0 = 1s
+		{1, reconnectMinBackoff * 2},                        // 1 * 2^1 = 2s
+		{2, reconnectMinBackoff * 4},                        // 1 * 2^2 = 4s
 		{5, time.Duration(MaxBackoffMs) * time.Millisecond}, // 1 * 2^5 = 32s, capped at 30s
 	}
 
@@ -1431,8 +1431,8 @@ func TestRegistry_ScheduleReconnect_TimerFiresAndFails(t *testing.T) {
 
 	// Poll for reconnect timer to fire: the original timer will be replaced
 	// or removed once the reconnect attempt finishes.
-	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: unique persist ID
-	for time.Now().Before(deadline) {  // REAL-TIME: unique persist ID
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: unique persist ID
+	for time.Now().Before(deadline) {           // REAL-TIME: unique persist ID
 		r.mu.RLock()
 		_, hasTimer := r.reconnectTimers["remote"]
 		r.mu.RUnlock()
@@ -1490,8 +1490,8 @@ func TestRegistry_ScheduleReconnect_CallbackOnSuccess(t *testing.T) {
 	r.ScheduleReconnect("remote", 0)
 
 	// Poll for the status callback to fire
-	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: unique persist ID
-	for time.Now().Before(deadline) {  // REAL-TIME: unique persist ID
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: unique persist ID
+	for time.Now().Before(deadline) {           // REAL-TIME: unique persist ID
 		if statusChanged.Load() >= 1 {
 			break
 		}
@@ -1700,7 +1700,7 @@ func TestConnectAll_ConcurrentExecution(t *testing.T) {
 		}
 	}
 
-	start := time.Now()  // REAL-TIME: unique persist ID
+	start := time.Now() // REAL-TIME: unique persist ID
 	results := r.ConnectAll(context.Background(), configs)
 	elapsed := time.Since(start)
 

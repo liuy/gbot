@@ -316,10 +316,10 @@ func TestRegisterBundledSkill(t *testing.T) {
 
 	reg := NewRegistry(t.TempDir())
 	reg.RegisterBundledSkill(types.SkillCommand{
-		Name: "bundled-skill",
+		Name:        "bundled-skill",
 		Description: "Bundled skill",
-		Source: types.SkillSourceBundled,
-		LoadedFrom: "bundled",
+		Source:      types.SkillSourceBundled,
+		LoadedFrom:  "bundled",
 	})
 
 	all := reg.GetAllSkills()
@@ -727,12 +727,12 @@ func TestRegisterPluginSkills_VisibleInSkillTool(t *testing.T) {
 
 	pluginSkills := []types.SkillCommand{
 		{
-			Name:         "test-plugin:autopilot",
-			DisplayName:  "autopilot",
-			Description:  "Full autonomous execution",
-			Type:         "prompt",
-			LoadedFrom:   "plugin",
-			Source:       types.SkillSourcePlugin,
+			Name:        "test-plugin:autopilot",
+			DisplayName: "autopilot",
+			Description: "Full autonomous execution",
+			Type:        "prompt",
+			LoadedFrom:  "plugin",
+			Source:      types.SkillSourcePlugin,
 		},
 	}
 	reg.RegisterPluginSkills(pluginSkills)

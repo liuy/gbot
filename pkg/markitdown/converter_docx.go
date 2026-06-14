@@ -20,9 +20,6 @@ import (
 	"io"
 	"path"
 	"strings"
-
-	
-	
 )
 
 // DocxConverter handles DOCX files.

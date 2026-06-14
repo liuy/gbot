@@ -367,7 +367,7 @@ func TestExecute_WithProgress_ExitCode(t *testing.T) {
 	t.Parallel()
 
 	tctx := &tool.ToolUseContext{
-		Ctx: context.Background(),
+		Ctx:        context.Background(),
 		OnProgress: func(u tool.ProgressUpdate) {},
 	}
 	result, err := Execute(context.Background(), json.RawMessage(`{"command":"exit 42"}`), tctx)
@@ -1018,8 +1018,8 @@ func TestSpawnBackground_PIDNotZero(t *testing.T) {
 
 	// Poll for PID to be set by the goroutine
 	var pid int
-	deadline := time.Now().Add(2 * time.Second)  // REAL-TIME: polling deadline
-	for time.Now().Before(deadline) {  // REAL-TIME: polling deadline
+	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: polling deadline
+	for time.Now().Before(deadline) {           // REAL-TIME: polling deadline
 		job.mu.Lock()
 		pid = job.PID
 		job.mu.Unlock()

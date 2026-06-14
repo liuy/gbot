@@ -373,7 +373,7 @@ func TestClientManager_AuthCacheExpiry(t *testing.T) {
 
 	// Simulate TTL expiry by setting a past timestamp
 	store.mu.Lock()
-	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}  // REAL-TIME: auth cache TTL / process timing
+	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)} // REAL-TIME: auth cache TTL / process timing
 	store.mu.Unlock()
 
 	if store.isCached("server-a") {
@@ -542,7 +542,7 @@ func TestProcessCleanupEscalation(t *testing.T) {
 	}
 
 	// Run escalation — should terminate within ~500ms
-	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
+	start := time.Now() // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
@@ -697,7 +697,7 @@ func TestClientManager_EnsureConnected_NeedsAuth(t *testing.T) {
 	cm.SetAuthCached("test-server")
 
 	authConn := &ConnectedServer{
-		Name: "test-server",
+		Name:   "test-server",
 		Config: cfg,
 	}
 
@@ -905,7 +905,9 @@ func TestProcessCleanupEscalation_SIGINTStopsProcess(t *testing.T) {
 	ProcessCleanupEscalation(cmd.Process)
 
 	// Reap zombie
-	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
+	if err := cmd.Wait(); err == nil {
+		t.Log("process exited cleanly")
+	}
 
 	if processExists(pid) {
 		t.Error("process should be terminated")
@@ -927,11 +929,13 @@ func TestProcessCleanupEscalation_SigTermPath(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
+	start := time.Now() // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
-	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
+	if err := cmd.Wait(); err == nil {
+		t.Log("process exited cleanly")
+	}
 
 	if processExists(pid) {
 		t.Error("process should be terminated after SIGTERM")
@@ -953,11 +957,13 @@ func TestProcessCleanupEscalation_SigKillPath(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 
-	start := time.Now()  // REAL-TIME: auth cache TTL / process timing
+	start := time.Now() // REAL-TIME: auth cache TTL / process timing
 	ProcessCleanupEscalation(cmd.Process)
 	elapsed := time.Since(start)
 
-	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
+	if err := cmd.Wait(); err == nil {
+		t.Log("process exited cleanly")
+	}
 
 	if processExists(pid) {
 		t.Error("process should be terminated after SIGKILL")
@@ -984,7 +990,9 @@ func TestProcessCleanupEscalation_Unexported(t *testing.T) {
 	// Call ProcessCleanupEscalation directly
 	ProcessCleanupEscalation(cmd.Process)
 
-	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
+	if err := cmd.Wait(); err == nil {
+		t.Log("process exited cleanly")
+	}
 
 	if processExists(pid) {
 		t.Error("process should be terminated")
@@ -1024,7 +1032,9 @@ func TestWaitProcessGone_ProcessStillRunning(t *testing.T) {
 
 	// Clean up
 	_ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL)
-	if err := cmd.Wait(); err == nil { t.Log("process exited cleanly") }
+	if err := cmd.Wait(); err == nil {
+		t.Log("process exited cleanly")
+	}
 }
 
 // TestClientManager_ConnectToServer_ConcurrentErrorCacheHit tests the path
@@ -1066,6 +1076,7 @@ func TestClientManager_ConnectToServer_ConcurrentErrorCacheHit(t *testing.T) {
 		}
 	}
 }
+
 // TestClientManager_connectInner_StdioNoCommandTransport tests the path where
 // the config is stdio but transport is not a CommandTransport (cmd stays nil).
 func TestClientManager_connectInner_StdioNoCommandTransport(t *testing.T) {
@@ -1196,7 +1207,7 @@ func TestFileAuthCache_TTLExpiry(t *testing.T) {
 	store.set("server-a")
 	// Force expiry
 	store.mu.Lock()
-	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)}  // REAL-TIME: auth cache TTL / process timing
+	store.entries["server-a"] = authCacheEntry{timestamp: time.Now().Add(-authCacheTTL - time.Second)} // REAL-TIME: auth cache TTL / process timing
 	store.mu.Unlock()
 	if store.isCached("server-a") {
 		t.Error("should not be cached after TTL expiry")

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
-	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // textEventsWithStopReason creates stream events for a text response with a

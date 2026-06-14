@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -22,7 +23,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,16 +86,16 @@ type OAuthDiscoveryState struct {
 // OAuthTokenData represents stored token data for an MCP server.
 // Source: auth.ts — SecureStorageData.mcpOAuth entries
 type OAuthTokenData struct {
-	ServerName     string              `json:"serverName"`
-	ServerURL      string              `json:"serverUrl"`
-	AccessToken    string              `json:"accessToken"`
-	RefreshToken   string              `json:"refreshToken,omitempty"`
-	ExpiresAt      int64               `json:"expiresAt"` // Unix millis
-	Scope          string              `json:"scope,omitempty"`
-	ClientID       string              `json:"clientId,omitempty"`
-	ClientSecret   string              `json:"clientSecret,omitempty"`
+	ServerName     string               `json:"serverName"`
+	ServerURL      string               `json:"serverUrl"`
+	AccessToken    string               `json:"accessToken"`
+	RefreshToken   string               `json:"refreshToken,omitempty"`
+	ExpiresAt      int64                `json:"expiresAt"` // Unix millis
+	Scope          string               `json:"scope,omitempty"`
+	ClientID       string               `json:"clientId,omitempty"`
+	ClientSecret   string               `json:"clientSecret,omitempty"`
 	DiscoveryState *OAuthDiscoveryState `json:"discoveryState,omitempty"`
-	StepUpScope    string              `json:"stepUpScope,omitempty"`
+	StepUpScope    string               `json:"stepUpScope,omitempty"`
 }
 
 // OAuthClientConfig stores client configuration for an MCP server.
@@ -300,11 +300,11 @@ func RedactSensitiveURLParams(rawURL string) string {
 // OAuthMetadata represents OAuth server metadata.
 // Source: @modelcontextprotocol/sdk/shared/auth.js — AuthorizationServerMetadata
 type OAuthMetadata struct {
-	Scope            string   `json:"scope,omitempty"`
-	DefaultScope     string   `json:"default_scope,omitempty"`
-	ScopesSupported  []string `json:"scopes_supported,omitempty"`
-	TokenEndpoint    string   `json:"token_endpoint,omitempty"`
-	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	Scope              string   `json:"scope,omitempty"`
+	DefaultScope       string   `json:"default_scope,omitempty"`
+	ScopesSupported    []string `json:"scopes_supported,omitempty"`
+	TokenEndpoint      string   `json:"token_endpoint,omitempty"`
+	RevocationEndpoint string   `json:"revocation_endpoint,omitempty"`
 }
 
 // GetScopeFromMetadata extracts scope information from OAuth server metadata.
@@ -1129,7 +1129,7 @@ type MCPAuthHandler struct {
 	serverConfig McpServerConfig // SSEConfig or HTTPConfig
 	tokenStore   *FileTokenStore
 	redirectURI  string
-	configDir    string // for refresh lock files
+	configDir    string          // for refresh lock files
 	ctx          context.Context // lifetime context, cancelled when handler is discarded
 
 	mu                 sync.Mutex
@@ -1258,7 +1258,7 @@ func (h *MCPAuthHandler) SetMetadata(metadata *OAuthMetadata) {
 // Source: auth.ts:1417-1437
 func (h *MCPAuthHandler) ClientMetadata() map[string]any {
 	md := map[string]any{
-		"client_name":                 fmt.Sprintf("Claude Code (%s)", h.serverName),
+		"client_name":                fmt.Sprintf("Claude Code (%s)", h.serverName),
 		"redirect_uris":              []string{h.redirectURI},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},

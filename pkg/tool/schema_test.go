@@ -27,8 +27,8 @@ func TestSchemaBuilder_StringProp(t *testing.T) {
 		Build()
 
 	var parsed struct {
-		Type       string `json:"type"`
-		Required   []string             `json:"required"`
+		Type       string   `json:"type"`
+		Required   []string `json:"required"`
 		Properties map[string]struct {
 			Type        string `json:"type"`
 			Description string `json:"description"`

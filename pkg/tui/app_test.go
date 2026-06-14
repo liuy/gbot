@@ -506,6 +506,7 @@ func TestApp_Attachment_EmptyMsg_NoNotification(t *testing.T) {
 		t.Error("empty attachmentMsg should not create notification message")
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Update — attachmentMsg after query end (Case 2: idle path)
 // ---------------------------------------------------------------------------
@@ -6433,8 +6434,8 @@ func TestApp_ToolEndMsg_IsBackground_MarkedDone(t *testing.T) {
 
 	// tool_end with IsBackground=true (fork agent launched async), Agent=nil (main engine)
 	msg := toolEndMsg{
-		ToolUseID:    toolID,
-		Output:       "Fork agent \"fork-1\" launched in background",
+		ToolUseID: toolID,
+		Output:    "Fork agent \"fork-1\" launched in background",
 	}
 	handled, _ := app.updateRepl(msg)
 	if !handled {
@@ -6461,8 +6462,8 @@ func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
 
 	// Send toolEndMsg with IsBackground=true for a tool that doesn't exist
 	msg := toolEndMsg{
-		ToolUseID:    "nonexistent-tool",
-		Output:       "Fork agent launched",
+		ToolUseID: "nonexistent-tool",
+		Output:    "Fork agent launched",
 	}
 	// Should not panic, and should log a warning (verified by slog output)
 	handled, _ := app.updateRepl(msg)

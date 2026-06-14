@@ -21,8 +21,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-
-	
 )
 
 // PptxConverter handles PPTX files.

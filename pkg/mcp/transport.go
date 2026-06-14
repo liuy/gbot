@@ -358,4 +358,3 @@ func newHTTPTransport(name string, cfg *HTTPConfig) (mcp.Transport, error) {
 		HTTPClient: ssrfHTTPClient(),
 	}, nil
 }
-

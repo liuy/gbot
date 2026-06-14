@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	_ "modernc.org/sqlite"
 	"github.com/go-ego/gse"
+	_ "modernc.org/sqlite"
 )
 
 // DB wraps the underlying sql.DB so callers don't need to import database/sql.

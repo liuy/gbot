@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"os"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/liuy/gbot/pkg/tool"
@@ -127,7 +127,7 @@ func (t *REPLTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.T
 
 // handleExecute runs JS code in a session.
 func (t *REPLTool) handleExecute(ctx context.Context, code, sessionID string, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-		cleanCode, timeoutMs, err := parsePragma(code)
+	cleanCode, timeoutMs, err := parsePragma(code)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (t *REPLTool) handleExecute(ctx context.Context, code, sessionID string, tc
 func (t *REPLTool) handleReset(sessionID string) (*tool.ToolResult, error) {
 	sessionVal, ok := t.sessions.Load(sessionID)
 	if !ok {
-				return &tool.ToolResult{Data: "Session reset (new)"}, nil
+		return &tool.ToolResult{Data: "Session reset (new)"}, nil
 	}
 	session := sessionVal.(*Session)
 	if err := session.Reset(); err != nil {
@@ -238,4 +238,3 @@ func generateSessionID() string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
-

@@ -17,7 +17,7 @@ func TestBuildToolDefaults(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "TestTool",
+		Name_: "TestTool",
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "ok"}, nil
 		},
@@ -87,7 +87,7 @@ func TestBuildToolWithOverrides(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "Override",
+		Name_:    "Override",
 		Aliases_: []string{"ov"},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: "done"}, nil
@@ -98,12 +98,12 @@ func TestBuildToolWithOverrides(t *testing.T) {
 		Description_: func(input json.RawMessage) (string, error) {
 			return "override tool", nil
 		},
-		IsReadOnly_: func(input json.RawMessage) bool { return true },
-		IsDestructive_: func(input json.RawMessage) bool { return true },
+		IsReadOnly_:        func(input json.RawMessage) bool { return true },
+		IsDestructive_:     func(input json.RawMessage) bool { return true },
 		IsConcurrencySafe_: func(input json.RawMessage) bool { return true },
-		IsEnabled_: func() bool { return false },
+		IsEnabled_:         func() bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,
-		Prompt_: "I am override",
+		Prompt_:            "I am override",
 		CheckPermissions_: func(input json.RawMessage, tctx *tool.ToolUseContext) types.PermissionResult {
 			return types.PermissionDenyDecision{Message: "nope"}
 		},
@@ -149,7 +149,7 @@ func TestBuildToolCall(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "CallTest",
+		Name_: "CallTest",
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return &tool.ToolResult{Data: map[string]any{"echo": string(input)}}, nil
 		},
@@ -267,7 +267,7 @@ func TestMCPMetaJSON(t *testing.T) {
 	t.Parallel()
 
 	meta := tool.MCPMeta{
-		Meta: map[string]any{"key": "val"},
+		Meta:              map[string]any{"key": "val"},
 		StructuredContent: map[string]any{"result": true},
 	}
 
@@ -327,8 +327,10 @@ func TestBuildToolImplementsToolInterface(t *testing.T) {
 	t.Parallel()
 
 	built := tool.BuildTool(tool.ToolDef{
-		Name_:        "InterfaceCheck",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "InterfaceCheck",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return nil },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	})
@@ -347,8 +349,10 @@ func TestBuildTool_DefaultRenderResult(t *testing.T) {
 
 	// When RenderResult_ is nil, BuildTool sets a default that json.Marshal's the data.
 	def := tool.ToolDef{
-		Name_:  "RenderTest",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "RenderTest",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 		// RenderResult_ intentionally nil — exercises default on lines 198-203
@@ -368,8 +372,10 @@ func TestBuildTool_DefaultRenderResult_NilData(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "NilRender",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "NilRender",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -385,8 +391,10 @@ func TestBuildTool_DefaultRenderResult_StringData(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "StrRender",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "StrRender",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -406,8 +414,10 @@ func TestBuildTool_DefaultMaxResultSizeChars(t *testing.T) {
 	// interface. It is set to 50000 by default when 0 (verified in tool.go:230-232).
 	// This test confirms the tool builds without panic when the field is left zero.
 	def := tool.ToolDef{
-		Name_:        "SizeTest",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "SizeTest",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -426,11 +436,13 @@ func TestIsDeferred_True(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:          "Deferred",
-		Call_:          func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
-		InputSchema_:   func() json.RawMessage { return json.RawMessage(`{}`) },
-		Description_:   func(input json.RawMessage) (string, error) { return "", nil },
-		ShouldDefer_:   true,
+		Name_: "Deferred",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
+		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
+		Description_: func(input json.RawMessage) (string, error) { return "", nil },
+		ShouldDefer_: true,
 	}
 
 	tt := tool.BuildTool(def)
@@ -443,8 +455,10 @@ func TestIsDeferred_False(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:        "NotDeferred",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "NotDeferred",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -459,8 +473,10 @@ func TestSearchHint_WithHint(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:        "Hinted",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "Hinted",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 		SearchHint_:  "search files by pattern",
@@ -487,32 +503,34 @@ func TestSearchHint_NoHint(t *testing.T) {
 // minimalTool implements only the Tool interface — no optional interfaces.
 type minimalTool struct{}
 
-func (minimalTool) Name() string                                                  { return "minimal" }
-func (minimalTool) Aliases() []string                                             { return nil }
-func (minimalTool) Description(json.RawMessage) (string, error)                   { return "minimal", nil }
-func (minimalTool) InputSchema() json.RawMessage                                  { return json.RawMessage(`{}`) }
+func (minimalTool) Name() string                                { return "minimal" }
+func (minimalTool) Aliases() []string                           { return nil }
+func (minimalTool) Description(json.RawMessage) (string, error) { return "minimal", nil }
+func (minimalTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (minimalTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return nil, nil
 }
 func (minimalTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (minimalTool) IsReadOnly(json.RawMessage) bool       { return false }
-func (minimalTool) IsDestructive(json.RawMessage) bool    { return false }
-func (minimalTool) IsConcurrencySafe(json.RawMessage) bool { return false }
-func (minimalTool) IsEnabled() bool                       { return true }
+func (minimalTool) IsReadOnly(json.RawMessage) bool           { return false }
+func (minimalTool) IsDestructive(json.RawMessage) bool        { return false }
+func (minimalTool) IsConcurrencySafe(json.RawMessage) bool    { return false }
+func (minimalTool) IsEnabled() bool                           { return true }
 func (minimalTool) InterruptBehavior() tool.InterruptBehavior { return 0 }
-func (minimalTool) MaxResultSize() int                    { return 50000 }
-func (minimalTool) Prompt() string                        { return "" }
-func (minimalTool) RenderResult(any) string                { return "" }
-func (minimalTool) NewResultType() any { return nil }
+func (minimalTool) MaxResultSize() int                        { return 50000 }
+func (minimalTool) Prompt() string                            { return "" }
+func (minimalTool) RenderResult(any) string                   { return "" }
+func (minimalTool) NewResultType() any                        { return nil }
 
 func TestFormatWireResult(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:  "WireTool",
-		Call_:  func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "WireTool",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 		FormatWireResult_: func(data any) string {
@@ -537,8 +555,10 @@ func TestMaxResultSize_Default(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:        "SizeDefault",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "SizeDefault",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(input json.RawMessage) (string, error) { return "", nil },
 	}
@@ -553,8 +573,10 @@ func TestMaxResultSize_Custom(t *testing.T) {
 	t.Parallel()
 
 	def := tool.ToolDef{
-		Name_:              "SizeCustom",
-		Call_:              func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "SizeCustom",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_:       func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_:       func(input json.RawMessage) (string, error) { return "", nil },
 		MaxResultSizeChars: 100000,

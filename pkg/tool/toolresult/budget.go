@@ -40,7 +40,7 @@ type ContentReplacementState struct {
 //
 // TS: ContentReplacementRecord (toolResultStorage.ts:466-483)
 type ContentReplacementRecord struct {
-	Kind        string `json:"kind"`        // always "tool-result"
+	Kind        string `json:"kind"` // always "tool-result"
 	ToolUseID   string `json:"tool_use_id"`
 	Replacement string `json:"replacement"` // exact preview string
 }

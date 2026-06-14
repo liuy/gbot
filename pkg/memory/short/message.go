@@ -436,7 +436,7 @@ func (s *Store) appendMessageTx(tx *sql.Tx, sessionID string, msg *TranscriptMes
 
 	result, err := tx.Exec(query, sessionID, msg.UUID, msg.ParentUUID,
 		msg.LogicalParentUUID, msg.IsSidechain, msg.Type, msg.Subtype, msg.Content,
-			nullIfEmpty(msg.Metadata),
+		nullIfEmpty(msg.Metadata),
 		createdAt)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)

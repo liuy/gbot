@@ -271,7 +271,7 @@ func (h *Hooks) dispatch(ctx context.Context, event HookEventName, input *HookIn
 				if exec == nil {
 					continue
 				}
-			var extraEnv []string
+				var extraEnv []string
 				if cm.pluginRoot != "" {
 					extraEnv = []string{"GBOT_PLUGIN_ROOT=" + cm.pluginRoot}
 				}

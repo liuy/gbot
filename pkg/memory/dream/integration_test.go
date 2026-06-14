@@ -59,7 +59,7 @@ func setLockAge(t *testing.T, memoryDir string, age time.Duration) {
 // waitForEvents polls until dispatcher has at least n events or deadline.
 func waitForEvents(t *testing.T, d *mockDispatcher, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second) // REAL-TIME: polling deadline
+	deadline := time.Now().Add(5 * time.Second)              // REAL-TIME: polling deadline
 	for time.Now().Before(deadline) && len(d.Events()) < n { // REAL-TIME: poll condition
 		time.Sleep(10 * time.Millisecond) // REAL-TIME: polling for async event dispatch
 	}

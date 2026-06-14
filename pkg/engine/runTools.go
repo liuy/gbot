@@ -119,9 +119,9 @@ type StreamingToolExecutor struct {
 	siblingCtx    context.Context
 	siblingCancel context.CancelCauseFunc
 
-	hasErrored  bool
-	errToolDesc string
-	discarded   bool
+	hasErrored       bool
+	errToolDesc      string
+	discarded        bool
 	assistantContent []types.ContentBlock // current assistant message's content blocks (mid-stream)
 
 	// hooks is the lifecycle hooks system for PreToolUse/PostToolUse.

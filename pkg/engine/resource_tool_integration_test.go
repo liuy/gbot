@@ -334,8 +334,10 @@ func TestResourceTools_NameCollisionGuard(t *testing.T) {
 
 	// Pre-register a tool with the same name using BuildTool
 	collisionTool := tool.BuildTool(tool.ToolDef{
-		Name_:        "ListMcpResources",
-		Call_:        func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) { return nil, nil },
+		Name_: "ListMcpResources",
+		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
+			return nil, nil
+		},
 		InputSchema_: func() json.RawMessage { return json.RawMessage(`{}`) },
 		Description_: func(json.RawMessage) (string, error) { return "", nil },
 	})

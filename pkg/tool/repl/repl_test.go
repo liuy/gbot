@@ -1769,9 +1769,9 @@ func TestJsValueToString_MarshalError(t *testing.T) {
 
 func TestAdjustStackLines(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name:  "basic line adjustment",

@@ -996,7 +996,7 @@ func TestCheckResponse_TTLExpiry1Hour(t *testing.T) {
 
 	// Message from 2 hours ago
 	msgs := []messageWithTimestamp{
-		{role: "assistant", timestamp: time.Now().Add(-2 * time.Hour)},  // REAL-TIME: TTL expiry timestamp
+		{role: "assistant", timestamp: time.Now().Add(-2 * time.Hour)}, // REAL-TIME: TTL expiry timestamp
 	}
 	CheckResponseForCacheBreak(key, 5000, 100, msgs)
 
@@ -1017,7 +1017,7 @@ func TestCheckResponse_TTLExpiry5Min(t *testing.T) {
 
 	// Message from 10 minutes ago (>5min, <1h)
 	msgs := []messageWithTimestamp{
-		{role: "assistant", timestamp: time.Now().Add(-10 * time.Minute)},  // REAL-TIME: TTL expiry timestamp
+		{role: "assistant", timestamp: time.Now().Add(-10 * time.Minute)}, // REAL-TIME: TTL expiry timestamp
 	}
 	CheckResponseForCacheBreak(key, 5000, 100, msgs)
 }
@@ -1033,7 +1033,7 @@ func TestCheckResponse_ServerSide(t *testing.T) {
 
 	// Message from 1 minute ago (<5min)
 	msgs := []messageWithTimestamp{
-		{role: "assistant", timestamp: time.Now().Add(-1 * time.Minute)},  // REAL-TIME: TTL expiry timestamp
+		{role: "assistant", timestamp: time.Now().Add(-1 * time.Minute)}, // REAL-TIME: TTL expiry timestamp
 	}
 	CheckResponseForCacheBreak(key, 5000, 100, msgs)
 }

@@ -76,10 +76,10 @@ func buildTestBreakdown() *engine.ContextBreakdown {
 	}
 
 	bd.MessageBreakdown = &engine.MessageBreakdown{
-		ToolCallTokens:   8_000,
-		ToolResultTokens: 25_000,
+		ToolCallTokens:      8_000,
+		ToolResultTokens:    25_000,
 		AssistantTextTokens: 12_000,
-		UserTextTokens:   5_000,
+		UserTextTokens:      5_000,
 		ToolCallsByType: []engine.ToolCallByType{
 			{Name: "Bash", CallTokens: 4000, ResultTokens: 15000},
 			{Name: "Read", CallTokens: 3000, ResultTokens: 8000},

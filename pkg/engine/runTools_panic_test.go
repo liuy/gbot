@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/permission"
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -20,24 +20,24 @@ type panicTool struct {
 	name string
 }
 
-func (p *panicTool) Name() string                                                { return p.name }
-func (p *panicTool) Aliases() []string                                           { return nil }
-func (p *panicTool) Description(json.RawMessage) (string, error)                 { return p.name + " desc", nil }
-func (p *panicTool) InputSchema() json.RawMessage                                { return json.RawMessage(`{}`) }
+func (p *panicTool) Name() string                                { return p.name }
+func (p *panicTool) Aliases() []string                           { return nil }
+func (p *panicTool) Description(json.RawMessage) (string, error) { return p.name + " desc", nil }
+func (p *panicTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (p *panicTool) Call(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
 	panic("test panic in tool")
 }
 func (p *panicTool) CheckPermissions(json.RawMessage, *tool.ToolUseContext) types.PermissionResult {
 	return types.PermissionAllowDecision{}
 }
-func (p *panicTool) IsReadOnly(json.RawMessage) bool            { return true }
-func (p *panicTool) IsDestructive(json.RawMessage) bool         { return false }
-func (p *panicTool) IsConcurrencySafe(json.RawMessage) bool     { return true }
-func (p *panicTool) IsEnabled() bool                            { return true }
-func (p *panicTool) InterruptBehavior() tool.InterruptBehavior  { return tool.InterruptCancel }
-func (p *panicTool) Prompt() string                             { return "" }
-func (p *panicTool) MaxResultSize() int                         { return 50000 }
-func (p *panicTool) RenderResult(any) string                    { return "" }
+func (p *panicTool) IsReadOnly(json.RawMessage) bool           { return true }
+func (p *panicTool) IsDestructive(json.RawMessage) bool        { return false }
+func (p *panicTool) IsConcurrencySafe(json.RawMessage) bool    { return true }
+func (p *panicTool) IsEnabled() bool                           { return true }
+func (p *panicTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
+func (p *panicTool) Prompt() string                            { return "" }
+func (p *panicTool) MaxResultSize() int                        { return 50000 }
+func (p *panicTool) RenderResult(any) string                   { return "" }
 
 // TestConcurrentToolLoop_PanicRecovery_ToolResult verifies that a tool which
 // panics produces a valid error tool_result (not a crash). This tests the
@@ -193,7 +193,9 @@ func TestSetPermissionChecker_NilInterfaceTrap(t *testing.T) {
 	}
 	if rb.IsError {
 		var errMsg string
-		if err := json.Unmarshal(rb.Content, &errMsg); err != nil { t.Fatalf("unmarshal: %v", err) }
+		if err := json.Unmarshal(rb.Content, &errMsg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
 		t.Errorf("tool should succeed (broken permChecker should be ignored), got error: %q", errMsg)
 	}
 }
@@ -244,8 +246,10 @@ func TestSetPermissionChecker_NilInterfaceTrap_SecondTool(t *testing.T) {
 // TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds verifies that
 // after a tool panics and returns an error result, the LLM can make a
 // new tool call that succeeds. This simulates the real flow:
-//   Turn 1: LLM calls tool A → tool A panics → recovery returns error
-//   Turn 2: LLM calls tool B → tool B executes normally
+//
+//	Turn 1: LLM calls tool A → tool A panics → recovery returns error
+//	Turn 2: LLM calls tool B → tool B executes normally
+//
 // The panic in turn 1 must NOT corrupt system state or prevent turn 2.
 func TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds(t *testing.T) {
 	t.Parallel()
@@ -314,7 +318,9 @@ func TestConcurrentToolLoop_PanicRecovery_NextToolSucceeds(t *testing.T) {
 	}
 	if rb2.IsError {
 		var errMsg2 string
-		if err := json.Unmarshal(rb2.Content, &errMsg2); err != nil { t.Fatalf("unmarshal: %v", err) }
+		if err := json.Unmarshal(rb2.Content, &errMsg2); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
 		t.Errorf("turn 2: tool should succeed (previous panic must not affect new call), got error: %q", errMsg2)
 	}
 	// Verify success ToolEnd event

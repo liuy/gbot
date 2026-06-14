@@ -89,8 +89,8 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 	}`, providerDesc))
 
 	return tool.BuildTool(tool.ToolDef{
-		Name_:   "Web",
-		Aliases_: []string{"web"},
+		Name_:        "Web",
+		Aliases_:     []string{"web"},
 		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
@@ -349,11 +349,11 @@ var documentExtensions = map[string]bool{
 
 var documentContentTypes = map[string]bool{
 	"application/pdf": true,
-	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   true,
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": true,
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": true,
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         true,
 	"application/vnd.ms-excel": true,
-	"application/epub+zip": true,
+	"application/epub+zip":     true,
 }
 
 // fetchAndConvertDocument detects binary document URLs and converts them to markdown.

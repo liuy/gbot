@@ -37,7 +37,7 @@ type Task struct {
 	ActiveForm  string         `json:"activeForm,omitempty"`
 	Owner       string         `json:"owner,omitempty"`
 	Status      TaskStatus     `json:"status"`
-	Blocks      []string       `json:"blocks"`   // task IDs this task blocks
+	Blocks      []string       `json:"blocks"`    // task IDs this task blocks
 	BlockedBy   []string       `json:"blockedBy"` // task IDs that block this task
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
@@ -50,10 +50,10 @@ type TaskUpdates struct {
 	Description  *string
 	ActiveForm   *string
 	Status       *TaskStatus
-	Owner        *string         // nil = no change, &"" = clear
-	Metadata     map[string]any  // merge semantics: nil value = delete key
-	AddBlocks    []string        // atomically add block relationships
-	AddBlockedBy []string        // atomically add blockedBy relationships
+	Owner        *string        // nil = no change, &"" = clear
+	Metadata     map[string]any // merge semantics: nil value = delete key
+	AddBlocks    []string       // atomically add block relationships
+	AddBlockedBy []string       // atomically add blockedBy relationships
 }
 
 // Sentinel errors for the tasks package.
@@ -70,7 +70,7 @@ const highWaterMarkFile = ".highwatermark"
 // Source: utils/tasks.ts — module-level functions (createTask, getTask, etc.)
 type List struct {
 	mu           sync.Mutex
-	dir          string // ~/.gbot/tasks/<session-id>/
+	dir          string    // ~/.gbot/tasks/<session-id>/
 	allDoneSince time.Time // Set when all tasks first become completed; used for auto-reset.
 }
 
@@ -592,6 +592,7 @@ func maxInt(a, b int) int {
 	}
 	return b
 }
+
 // Atomic write via temp file + rename. The mutex protects data consistency, not the temp file itself.
 func atomicWrite(path string, data []byte) error {
 	suffix := make([]byte, 8)

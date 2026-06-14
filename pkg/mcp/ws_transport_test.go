@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ import (
 func TestWSTransport_Connect_Subprotocol(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +63,7 @@ func TestWSTransport_Connect_Subprotocol(t *testing.T) {
 func TestWSTransport_Connect_SubprotocolMismatch(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"other-protocol"}, // Not "mcp"
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +95,7 @@ func TestWSTransport_Connect_SubprotocolMismatch(t *testing.T) {
 func TestWSConn_ReadWrite_Echo(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +154,7 @@ func TestWSConn_ReadWrite_Echo(t *testing.T) {
 func TestWSConn_Close(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	serverClosed := make(chan struct{})
@@ -205,7 +205,7 @@ func TestWSConn_Close(t *testing.T) {
 func TestWSConn_Read_ContextCancelled(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	// Server that never sends anything
@@ -263,7 +263,7 @@ func TestWSTransport_CustomHeaders(t *testing.T) {
 
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +333,7 @@ func TestWSTransport_ConnectConnectionRefused(t *testing.T) {
 func TestWSTransport_ReadAfterClose(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +367,7 @@ func TestWSTransport_ReadAfterClose(t *testing.T) {
 func TestWSTransport_WriteAfterClose(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +471,7 @@ func TestWSTransport_Connect_WithHTTPError(t *testing.T) {
 func TestWSConn_ReadLoop_BinaryFrames(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +513,7 @@ func TestWSConn_ReadLoop_BinaryFrames(t *testing.T) {
 func TestWSConn_ReadLoop_DecodeError(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -584,7 +584,7 @@ func TestWSConn_wrapReadErr_UnexpectedClose(t *testing.T) {
 func TestWSConn_Read_IncomingChannelClosed(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -620,7 +620,7 @@ func TestWSConn_Read_IncomingChannelClosed(t *testing.T) {
 func TestWSConn_Write_Success(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -657,7 +657,7 @@ func TestWSConn_Write_Success(t *testing.T) {
 func TestWSConn_WriteEncodeSuccess(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -702,7 +702,7 @@ func TestWSConn_WriteEncodeSuccess(t *testing.T) {
 func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	serverCanClose := make(chan struct{})
@@ -747,7 +747,7 @@ func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 
 	// Poll until Read returns an error (readLoop detects close)
 	deadline := time.Now().Add(2 * time.Second) // REAL-TIME: polling deadline
-	for time.Now().Before(deadline) { // REAL-TIME: polling check
+	for time.Now().Before(deadline) {           // REAL-TIME: polling check
 		readCtx, readCancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		_, readErr := conn.Read(readCtx)
 		readCancel()
@@ -768,7 +768,7 @@ func TestWSConn_Read_ChannelClosedFirst(t *testing.T) {
 func TestWSConn_Write_ConnectionError(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	serverClosed := make(chan struct{})
@@ -819,7 +819,7 @@ func TestWSConn_Write_ConnectionError(t *testing.T) {
 func TestWSConn_Read_IncomingClosedNoMessage(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -856,7 +856,7 @@ func TestWSConn_Read_IncomingClosedNoMessage(t *testing.T) {
 func TestWSConn_Write_ContextCancelled(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -900,7 +900,7 @@ func TestWSConn_Write_ContextCancelled(t *testing.T) {
 func TestWSConn_ReadLoop_ServerSendsMultipleFrames(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -942,7 +942,7 @@ func TestWSConn_ReadLoop_ServerSendsMultipleFrames(t *testing.T) {
 func TestWSConn_Read_ClosedThenRead(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		Subprotocols: []string{"mcp"},
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:  func(r *http.Request) bool { return true },
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

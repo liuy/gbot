@@ -89,7 +89,7 @@ func TestTruncateForLog_MultiByteCharsMidRune(t *testing.T) {
 	// slices at the byte boundary which produces invalid UTF-8.
 	// This test documents that behavior — the function operates on bytes.
 	input := "你好世界" // 12 bytes total
-	maxLen := 4       // falls in the middle of the second rune (你=3 bytes, 好=3 bytes)
+	maxLen := 4     // falls in the middle of the second rune (你=3 bytes, 好=3 bytes)
 	got := truncateForLog(input, maxLen)
 
 	// The first 3 bytes are "你", the 4th byte is the first byte of "好"

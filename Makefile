@@ -28,6 +28,7 @@ lint:
 check: build test lint fix
 
 fix:
+	@gofmt -w $(shell find ./pkg ./cmd -name '*.go')
 	go fix ./pkg/... ./cmd/... 2>/dev/null || true
 
 clean:

@@ -215,9 +215,9 @@ func TestGetMcpDisplayName(t *testing.T) {
 
 func TestExtractMcpToolDisplayName(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{"with_mcp_suffix_and_prefix", "github - Add comment to issue (MCP)", "Add comment to issue"},
 		{"with_mcp_suffix_no_prefix", "read file (MCP)", "read file"},

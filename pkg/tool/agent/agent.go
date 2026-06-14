@@ -52,14 +52,14 @@ type SkillRegistry interface {
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
 	Prompt              string               // actual user prompt for the sub-agent
-	SystemPrompt        string      // sub-agent's system prompt
+	SystemPrompt        string               // sub-agent's system prompt
 	Tools               map[string]tool.Tool // filtered tool set
 	MaxTurns            int                  // 0 = no limit
 	Model               string               // "" = inherit from parent
 	AgentType           string               // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
-	ParentSystemPrompt  string      // fork: parent engine's rendered system prompt
+	ParentSystemPrompt  string               // fork: parent engine's rendered system prompt
 	UserContextMessages []types.Message      // [currentDate, claudeMd?, skill?...] injected before userPrompt
 }
 
@@ -74,11 +74,11 @@ type AgentTool struct {
 	parentTools func() map[string]tool.Tool // lazy accessor for parent engine tools
 	forkReg     *ForkAgentRegistry          // nil = fork disabled
 	notifyFn    func(xml string)            // injects notification into parent conversation
-	sysPromptFn func() string      // returns parent engine's rendered system prompt
+	sysPromptFn func() string               // returns parent engine's rendered system prompt
 
 	// Sub-agent environment context — loaded once at startup, read-only during execution
-	workingDir    string
-	gitStatus     *ctxbuild.GitStatusInfo
+	workingDir string
+	gitStatus  *ctxbuild.GitStatusInfo
 
 	// Skill registry — injected from main.go, provides all loaded skills.
 	skillReg    SkillRegistry

@@ -164,7 +164,7 @@ func TestSanitizeUnicodeRecursive_NestedJSON(t *testing.T) {
 		"nested": map[string]any{
 			"inner": "val\uE000ue",
 		},
-		"array": []any{"a\u200Bb", 123, true},
+		"array":  []any{"a\u200Bb", 123, true},
 		"number": 42,
 		"bool":   false,
 	}
@@ -299,7 +299,7 @@ func TestIsInvisibleChar_ExplicitRanges(t *testing.T) {
 		0x200B, 0x200C, 0x200D, 0x200E, 0x200F, // Zero-width + LTR/RTL
 		0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // Directional formatting
 		0x2066, 0x2067, 0x2068, 0x2069, // Directional isolates
-		0xFEFF, // BOM
+		0xFEFF,         // BOM
 		0xE000, 0xF8FF, // Private use range boundaries
 		0xF000, // Private use mid
 	}
@@ -314,8 +314,8 @@ func TestIsInvisibleChar_NormalChars(t *testing.T) {
 	normal := []rune{
 		'a', 'Z', '0', ' ', '\t', '\n', '\r',
 		'你', '日', // CJK
-		'🎉',       // emoji
-		'€',        // symbol
+		'🎉', // emoji
+		'€', // symbol
 	}
 	for _, r := range normal {
 		if isInvisibleChar(r) {

@@ -28,8 +28,8 @@ var ErrNotFound = errors.New("job not found")
 // JobInfo is a snapshot of a background job's state.
 type JobInfo struct {
 	ID          string `json:"job_id"`
-	Type        string `json:"job_type"`               // "local_bash"
-	Status      string `json:"status"`                  // running, completed, failed, killed
+	Type        string `json:"job_type"` // "local_bash"
+	Status      string `json:"status"`   // running, completed, failed, killed
 	Command     string `json:"command,omitempty"`
 	Description string `json:"description,omitempty"`
 	Output      string `json:"output,omitempty"`
@@ -87,7 +87,7 @@ type PollResult struct {
 
 // StopResult holds the result of a stop operation.
 type StopResult struct {
-	Status  string `json:"status"`   // "killed"
+	Status  string `json:"status"` // "killed"
 	JobID   string `json:"job_id"`
 	JobType string `json:"job_type"` // "local_bash", "local_agent"
 	Command string `json:"command"`  // the command/description of the killed job
@@ -168,11 +168,11 @@ func NewJob(reg Registry) tool.Tool {
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
-		ShouldDefer_:        false,
-		SearchHint_:         "manage background jobs -- poll output or stop a running job",
-		MaxResultSizeChars:  100000,
-		Prompt_:             jobPrompt(),
-		RenderResult_:       jobRenderResult,
+		ShouldDefer_:       false,
+		SearchHint_:        "manage background jobs -- poll output or stop a running job",
+		MaxResultSizeChars: 100000,
+		Prompt_:            jobPrompt(),
+		RenderResult_:      jobRenderResult,
 	})
 }
 

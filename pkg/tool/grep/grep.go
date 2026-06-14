@@ -11,6 +11,7 @@ package grep
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"cmp"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,8 +45,8 @@ var vcsDirsToExclude = []string{
 
 // Input is the Grep tool input schema.
 type Input struct {
-	Pattern         string `json:"pattern,omitempty"`       // regex to search file contents; required unless glob is set
-	Glob            string `json:"glob,omitempty"`          // file name glob (e.g. "*.go"); when set alone, lists matching files
+	Pattern         string `json:"pattern,omitempty"` // regex to search file contents; required unless glob is set
+	Glob            string `json:"glob,omitempty"`    // file name glob (e.g. "*.go"); when set alone, lists matching files
 	Path            string `json:"path,omitempty"`
 	OutputMode      string `json:"output_mode,omitempty"` // "content" | "files_with_matches" | "count"
 	ContextBefore   int    `json:"-B,omitempty"`          // lines before match (rg -B)

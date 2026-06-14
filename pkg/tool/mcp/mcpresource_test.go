@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	gbotmcp "github.com/liuy/gbot/pkg/mcp"
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/liuy/gbot/pkg/tool"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ---------------------------------------------------------------------------
@@ -864,4 +864,3 @@ func TestReadMcpResource_FormatWireResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-

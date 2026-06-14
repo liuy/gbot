@@ -872,10 +872,10 @@ func TestPermissionDeny_UserRejectMessage(t *testing.T) {
 
 type denyTestTool struct{}
 
-func (d *denyTestTool) Name() string                        { return "TestTool" }
-func (d *denyTestTool) Aliases() []string                   { return nil }
+func (d *denyTestTool) Name() string                                { return "TestTool" }
+func (d *denyTestTool) Aliases() []string                           { return nil }
 func (d *denyTestTool) Description(json.RawMessage) (string, error) { return "", nil }
-func (d *denyTestTool) InputSchema() json.RawMessage        { return json.RawMessage(`{}`) }
+func (d *denyTestTool) InputSchema() json.RawMessage                { return json.RawMessage(`{}`) }
 func (d *denyTestTool) Call(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return &tool.ToolResult{Data: "ok"}, nil
 }
@@ -888,8 +888,8 @@ func (d *denyTestTool) IsConcurrencySafe(json.RawMessage) bool    { return true 
 func (d *denyTestTool) IsEnabled() bool                           { return true }
 func (d *denyTestTool) InterruptBehavior() tool.InterruptBehavior { return tool.InterruptCancel }
 func (d *denyTestTool) Prompt() string                            { return "" }
-func (d *denyTestTool) RenderResult(any) string                     { return "" }
-func (d *denyTestTool) MaxResultSize() int                         { return 50000 }
+func (d *denyTestTool) RenderResult(any) string                   { return "" }
+func (d *denyTestTool) MaxResultSize() int                        { return 50000 }
 
 // ---------------------------------------------------------------------------
 // Regression: persisted output must be valid JSON

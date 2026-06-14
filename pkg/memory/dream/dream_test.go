@@ -31,7 +31,7 @@ type mockDispatcher struct {
 	mu     sync.Mutex
 	events []types.QueryEvent
 	done   chan struct{} // closed when len(events) reaches target
-	target int          // event count to close done
+	target int           // event count to close done
 }
 
 func (m *mockDispatcher) Dispatch(event types.QueryEvent) {

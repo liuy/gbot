@@ -138,9 +138,9 @@ func TestCompactPipeline_MicroThenAuto(t *testing.T) {
 		compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 200000)
 		tc := newEventCollector()
 		eng := New(&Params{
-			Provider:   p,
-			Model:      "test-model",
-			Compactor:  compactor,
+			Provider:  p,
+			Model:     "test-model",
+			Compactor: compactor,
 			AutoCompact: AutoCompactConfig{
 				ContextWindow: 500,
 			},
@@ -259,9 +259,9 @@ func TestCompactPipeline_MicroOnlyNoAuto(t *testing.T) {
 
 		compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 40000)
 		eng := New(&Params{
-			Provider:   p,
-			Model:      "test-model",
-			Compactor:  compactor,
+			Provider:  p,
+			Model:     "test-model",
+			Compactor: compactor,
 			AutoCompact: AutoCompactConfig{
 				ContextWindow: 100000, // high threshold → auto-compact won't trigger
 			},

@@ -17,11 +17,11 @@ import (
 
 // Config holds the full application configuration.
 type Config struct {
-	Model     string     `json:"model,omitempty"`      // "provider/model" or "model", empty → providers[0] first model
-	Providers []Provider `json:"providers,omitempty"`  // ordered by priority, providers[0] is primary
+	Model     string     `json:"model,omitempty"`     // "provider/model" or "model", empty → providers[0] first model
+	Providers []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
 
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
-	Permissions   json.RawMessage      `json:"permissions,omitempty"` // parsed by pkg/permission.LoadConfig()
+	Permissions    json.RawMessage      `json:"permissions,omitempty"` // parsed by pkg/permission.LoadConfig()
 
 	Theme string `json:"theme,omitempty"`
 
@@ -48,11 +48,11 @@ type ModelConfig struct {
 
 // Provider holds configuration for a single LLM provider.
 type Provider struct {
-	Name   string                 `json:"name"`              // display name, e.g. "zhipu", "minimax"
-	URL    string                 `json:"url"`               // e.g. "https://api.anthropic.com"
-	Keys   []string               `json:"keys"`              // API keys or "$ENV_VAR" references
-	Models map[string]ModelConfig `json:"models"`            // model name → metadata, e.g. {"glm-5": {context: "32k"}}
-	Type   string                 `json:"type,omitempty"`    // "auto" (default) | "openai" | "anthropic"
+	Name   string                 `json:"name"`           // display name, e.g. "zhipu", "minimax"
+	URL    string                 `json:"url"`            // e.g. "https://api.anthropic.com"
+	Keys   []string               `json:"keys"`           // API keys or "$ENV_VAR" references
+	Models map[string]ModelConfig `json:"models"`         // model name → metadata, e.g. {"glm-5": {context: "32k"}}
+	Type   string                 `json:"type,omitempty"` // "auto" (default) | "openai" | "anthropic"
 }
 
 const (

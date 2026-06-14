@@ -120,7 +120,7 @@ type BackgroundJob struct {
 	EndTime     time.Time // Source: Task.ts:51 — endTime
 	Status      JobStatus
 	ExitCode    int
-	Interrupted bool  // Source: guards.ts:15 — result.interrupted
+	Interrupted bool // Source: guards.ts:15 — result.interrupted
 	OutputPath  string
 	Output      *StreamingOutput
 	cancelStall func()
@@ -153,7 +153,7 @@ type BackgroundJob struct {
 // Source: AppState.jobs map in AppStateStore.ts:160
 type BackgroundJobRegistry struct {
 	mu     sync.Mutex
-	jobs  map[string]*BackgroundJob
+	jobs   map[string]*BackgroundJob
 	nextID int
 	// OnNotify is called when a job completes or stalls.
 	// Set by the caller (e.g., engine integration) to route notifications
@@ -529,7 +529,7 @@ func (t *BackgroundJob) buildNotificationLocked(status string) *JobNotification 
 		summary = fmt.Sprintf("%s\"%s\" %s", BackgroundBashSummaryPrefix, desc, status)
 	}
 	return &JobNotification{
-		JobID:     t.ID,
+		JobID:      t.ID,
 		ToolUseID:  t.ToolUseID,
 		Status:     status,
 		Summary:    summary,
@@ -581,7 +581,7 @@ func (t *BackgroundJob) startStallWatchdog() {
 		stallSummary := fmt.Sprintf("%s\"%s\" %s", BackgroundBashSummaryPrefix, desc, summary)
 		if t.onNotify != nil {
 			t.onNotify(JobNotification{
-				JobID:     t.ID,
+				JobID:      t.ID,
 				ToolUseID:  t.ToolUseID,
 				Summary:    stallSummary,
 				OutputFile: t.OutputPath,

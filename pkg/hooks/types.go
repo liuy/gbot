@@ -63,16 +63,16 @@ const (
 // HookConfig is a single hook definition.
 // Source: schemas/hooks.ts:32-163 — discriminated union on Type field.
 type HookConfig struct {
-	Type          HookType `json:"type"`                        // discriminator: "command"|"prompt"|"agent"
-	Command       string   `json:"command,omitempty"`            // command hook: shell command to execute
-	Prompt        string   `json:"prompt,omitempty"`             // prompt/agent hook: $ARGUMENTS substitution
-	Model         string   `json:"model,omitempty"`              // prompt/agent hook: model override (default: small fast model)
-	If            string   `json:"if,omitempty"`                 // permission rule filter (暂不实现)
-	Timeout       int      `json:"timeout,omitempty"`            // seconds, 0 → default (600s for command, 30s for prompt)
-	StatusMessage string   `json:"statusMessage,omitempty"`      // TUI spinner text
-	Once          bool     `json:"once,omitempty"`               // remove after first run
-	Async         bool     `json:"async,omitempty"`              // non-blocking (command hook only)
-	AsyncRewake   bool     `json:"asyncRewake,omitempty"`        // async + exit 2 wakes model (command hook only)
+	Type          HookType `json:"type"`                    // discriminator: "command"|"prompt"|"agent"
+	Command       string   `json:"command,omitempty"`       // command hook: shell command to execute
+	Prompt        string   `json:"prompt,omitempty"`        // prompt/agent hook: $ARGUMENTS substitution
+	Model         string   `json:"model,omitempty"`         // prompt/agent hook: model override (default: small fast model)
+	If            string   `json:"if,omitempty"`            // permission rule filter (暂不实现)
+	Timeout       int      `json:"timeout,omitempty"`       // seconds, 0 → default (600s for command, 30s for prompt)
+	StatusMessage string   `json:"statusMessage,omitempty"` // TUI spinner text
+	Once          bool     `json:"once,omitempty"`          // remove after first run
+	Async         bool     `json:"async,omitempty"`         // non-blocking (command hook only)
+	AsyncRewake   bool     `json:"asyncRewake,omitempty"`   // async + exit 2 wakes model (command hook only)
 }
 
 // ---------------------------------------------------------------------------
@@ -106,13 +106,13 @@ type HooksConfig map[string][]HookMatcher
 // All field names use snake_case to match the TS JSON schema exactly.
 // Source: coreSchemas.ts:387-443 — BaseHookInputSchema + event-specific extensions.
 type HookInput struct {
-	HookEventName  string          `json:"hook_event_name"`
-	SessionID      string          `json:"session_id"`
-	TranscriptPath string          `json:"transcript_path"`
-	Cwd            string          `json:"cwd"`
-	PermissionMode string          `json:"permission_mode,omitempty"` // Source: coreSchemas.ts:392
-	AgentID        string          `json:"agent_id,omitempty"`        // Source: coreSchemas.ts:393-401
-	AgentType      string          `json:"agent_type,omitempty"`      // Source: coreSchemas.ts:402-409
+	HookEventName  string `json:"hook_event_name"`
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	Cwd            string `json:"cwd"`
+	PermissionMode string `json:"permission_mode,omitempty"` // Source: coreSchemas.ts:392
+	AgentID        string `json:"agent_id,omitempty"`        // Source: coreSchemas.ts:393-401
+	AgentType      string `json:"agent_type,omitempty"`      // Source: coreSchemas.ts:402-409
 
 	// Tool-specific fields (PreToolUse, PostToolUse, PostToolUseFailure)
 	ToolName     string          `json:"tool_name,omitempty"`
@@ -139,12 +139,12 @@ type HookInput struct {
 // HookSpecificOutput fields are flattened into this struct.
 type HookOutput struct {
 	// Shared fields (all event types)
-	Decision          string          `json:"decision,omitempty"`          // "approve"|"block"
-	Reason            string          `json:"reason,omitempty"`
-	Continue          *bool           `json:"continue,omitempty"`          // default: true
-	StopReason        string          `json:"stopReason,omitempty"`
-	SystemMessage     string          `json:"systemMessage,omitempty"`
-	AdditionalContext string          `json:"additionalContext,omitempty"` // SubagentStart/SessionStart
+	Decision          string `json:"decision,omitempty"` // "approve"|"block"
+	Reason            string `json:"reason,omitempty"`
+	Continue          *bool  `json:"continue,omitempty"` // default: true
+	StopReason        string `json:"stopReason,omitempty"`
+	SystemMessage     string `json:"systemMessage,omitempty"`
+	AdditionalContext string `json:"additionalContext,omitempty"` // SubagentStart/SessionStart
 }
 
 // ---------------------------------------------------------------------------
@@ -157,10 +157,10 @@ type HookOutcome int
 
 const (
 	HookOutcomeSuccess          HookOutcome = iota // exit 0
-	HookOutcomeBlocking                             // exit 2 (TS: blocking error)
-	HookOutcomeNonBlockingError                     // exit other non-zero
-	HookOutcomeTimeout                              // exceeded timeout
-	HookOutcomeCancelled                            // context cancelled
+	HookOutcomeBlocking                            // exit 2 (TS: blocking error)
+	HookOutcomeNonBlockingError                    // exit other non-zero
+	HookOutcomeTimeout                             // exceeded timeout
+	HookOutcomeCancelled                           // context cancelled
 )
 
 // String returns a human-readable name for the outcome.

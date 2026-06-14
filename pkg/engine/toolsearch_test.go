@@ -717,9 +717,9 @@ func TestFilterToolsForRequest_DisabledInActivePartition(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Read":             tsStubTool("Read"),
 		"DisabledDeferred": disabled,
-		"DeferredA":         deferredStubTool("DeferredA"),
-		"DeferredB":       deferredStubTool("DeferredB"),
-		"DeferredC":       deferredStubTool("DeferredC"),
+		"DeferredA":        deferredStubTool("DeferredA"),
+		"DeferredB":        deferredStubTool("DeferredB"),
+		"DeferredC":        deferredStubTool("DeferredC"),
 	}
 	state := newToolSearchState()
 	order := []string{"Read", "DisabledDeferred", "DeferredA", "DeferredB", "DeferredC"}
@@ -913,9 +913,9 @@ func TestFilterToolsForRequest_DeferredToolSearchAlwaysActive(t *testing.T) {
 	tools := map[string]tool.Tool{
 		"Read":             tsStubTool("Read"),
 		ToolSearchToolName: deferredTS,
-		"DeferredA":         deferredStubTool("DeferredA"),
-		"DeferredB":       deferredStubTool("DeferredB"),
-		"DeferredC":       deferredStubTool("DeferredC"),
+		"DeferredA":        deferredStubTool("DeferredA"),
+		"DeferredB":        deferredStubTool("DeferredB"),
+		"DeferredC":        deferredStubTool("DeferredC"),
 	}
 	state := newToolSearchState()
 	order := []string{"Read", ToolSearchToolName, "DeferredA", "DeferredB", "DeferredC"}

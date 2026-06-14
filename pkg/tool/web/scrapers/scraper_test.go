@@ -3,8 +3,8 @@ package scrapers
 import (
 	"context"
 	"fmt"
-	neturl "net/url"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"testing"
 )

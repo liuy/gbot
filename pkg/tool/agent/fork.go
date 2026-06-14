@@ -2,10 +2,10 @@ package agent
 
 import (
 	"bytes"
-	"strings"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 

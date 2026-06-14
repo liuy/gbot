@@ -107,7 +107,7 @@ func BenchmarkMessageMarshal_LargeContent(b *testing.B) {
 		StopReason: "tool_use",
 		Usage:      &types.Usage{InputTokens: 5000, OutputTokens: 2000},
 		Content:    blocks,
-		Timestamp:  time.Now(),  // REAL-TIME: benchmark timestamp
+		Timestamp:  time.Now(), // REAL-TIME: benchmark timestamp
 	}
 
 	b.ReportAllocs()

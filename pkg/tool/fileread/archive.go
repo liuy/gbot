@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mholt/archives"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/mholt/archives"
 )
 
 // Supported archive extensions. mholt/archives auto-detects the underlying

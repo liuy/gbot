@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"golang.org/x/image/draw"
 	// gif, jpeg, png registered by image.Decode; webp needs explicit import

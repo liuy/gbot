@@ -68,16 +68,16 @@ type httpHeaders HTTPConfig
 type wsHeaders WSConfig
 
 func (c *sseHeaders) getHeadersHelper() string      { return c.HeadersHelper }
-func (c *sseHeaders) getURL() string                 { return c.URL }
-func (c *sseHeaders) getHeaders() map[string]string  { return c.Headers }
+func (c *sseHeaders) getURL() string                { return c.URL }
+func (c *sseHeaders) getHeaders() map[string]string { return c.Headers }
 
 func (c *httpHeaders) getHeadersHelper() string      { return c.HeadersHelper }
-func (c *httpHeaders) getURL() string                 { return c.URL }
-func (c *httpHeaders) getHeaders() map[string]string  { return c.Headers }
+func (c *httpHeaders) getURL() string                { return c.URL }
+func (c *httpHeaders) getHeaders() map[string]string { return c.Headers }
 
-func (c *wsHeaders) getHeadersHelper() string        { return c.HeadersHelper }
-func (c *wsHeaders) getURL() string                   { return c.URL }
-func (c *wsHeaders) getHeaders() map[string]string    { return c.Headers }
+func (c *wsHeaders) getHeadersHelper() string      { return c.HeadersHelper }
+func (c *wsHeaders) getURL() string                { return c.URL }
+func (c *wsHeaders) getHeaders() map[string]string { return c.Headers }
 
 // GetDynamicHeaders executes the headersHelper script from the config to
 // retrieve dynamic HTTP headers for an MCP server connection.

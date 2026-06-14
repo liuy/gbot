@@ -605,8 +605,8 @@ func TestExecTmux_OverrideNotMatched(t *testing.T) {
 func TestDoInitialize_FallbackPaths(t *testing.T) {
 	tests := []struct {
 		name         string
-		firstResp    tmuxResult // response to display-message with socket_path
-		secondResp   tmuxResult // response to display-message without socket_path
+		firstResp    tmuxResult    // response to display-message with socket_path
+		secondResp   tmuxResult    // response to display-message without socket_path
 		setup        func() func() // optional extra setup/cleanup
 		wantErr      bool
 		errContains  string

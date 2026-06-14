@@ -650,8 +650,8 @@ func TestDrainToScreen_NormalLines(t *testing.T) {
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte("hello\nworld\n")}, 64)
 	var lines []string
 	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
-			lines = append(lines, ev.Content)
-		}))
+		lines = append(lines, ev.Content)
+	}))
 	if len(lines) != 2 {
 		t.Fatalf("lines = %v, want 2 lines", lines)
 	}
@@ -673,8 +673,8 @@ func TestDrainToScreen_EOBBreak(t *testing.T) {
 	)
 	var lines []string
 	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
-			lines = append(lines, ev.Content)
-		}))
+		lines = append(lines, ev.Content)
+	}))
 	joined := strings.Join(lines, "")
 	if len(joined) != 32 {
 		t.Errorf("output len = %d, want 32, got %q", len(joined), joined)
@@ -692,8 +692,8 @@ func TestDrainToScreen_NonEOFError(t *testing.T) {
 	reader := bufio.NewReaderSize(r, 64)
 	var lines []string
 	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
-			lines = append(lines, ev.Content)
-		}))
+		lines = append(lines, ev.Content)
+	}))
 	if len(lines) < 1 {
 		t.Fatal("expected at least one line from flush")
 	}
@@ -713,8 +713,8 @@ func TestDrainToScreen_Empty(t *testing.T) {
 	reader := bufio.NewReaderSize(&dataThenEOFReader{data: []byte{}}, 64)
 	var lines []string
 	drainToScreen(reader, tool.NewScreen(func(ev tool.ScreenEvent) {
-			lines = append(lines, ev.Content)
-		}))
+		lines = append(lines, ev.Content)
+	}))
 	if len(lines) != 0 {
 		t.Errorf("lines = %v, want empty", lines)
 	}

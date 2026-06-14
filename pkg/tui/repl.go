@@ -529,7 +529,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-		a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
+			a.repl.PendingToolOutput(m.ToolUseID, m.DisplayOutput, m.Timing)
 		}
 		return true, a.readEvents()
 
@@ -696,7 +696,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
 			if parent != nil {
 				parent.Blocks = append(parent.Blocks, ContentBlock{
-					Type:     BlockThinking,
+					Type: BlockThinking,
 				})
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}

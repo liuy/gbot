@@ -34,8 +34,8 @@ func TestGetDynamicHeaders_UnsupportedConfig(t *testing.T) {
 func TestGetDynamicHeaders_TrustGate(t *testing.T) {
 	// Project scope, not trusted → should return nil even with a valid helper
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		HeadersHelper:  "echo '{}'",
+		URL:           "http://example.com",
+		HeadersHelper: "echo '{}'",
 	}
 	result := GetDynamicHeaders(context.Background(), "test", cfg, ScopeProject, false)
 	if result != nil {
@@ -215,7 +215,7 @@ func TestGetDynamicHeaders_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()  // REAL-TIME: start timing
+	start := time.Now() // REAL-TIME: start timing
 	result := GetDynamicHeaders(ctx, "test", cfg, ScopeUser, true)
 	elapsed := time.Since(start)
 
@@ -265,8 +265,8 @@ func TestGetMcpServerHeaders_StaticOnly(t *testing.T) {
 
 func TestGetMcpServerHeaders_DynamicOnly(t *testing.T) {
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		HeadersHelper:  `echo '{"X-Dynamic": "dyn"}'`,
+		URL:           "http://example.com",
+		HeadersHelper: `echo '{"X-Dynamic": "dyn"}'`,
 	}
 	result := GetMcpServerHeaders(context.Background(), "test", cfg, ScopeUser, true)
 	if result == nil {
@@ -280,9 +280,9 @@ func TestGetMcpServerHeaders_DynamicOnly(t *testing.T) {
 func TestGetMcpServerHeaders_DynamicOverridesStatic(t *testing.T) {
 	// Source: headersHelper.ts:134-137 — dynamic overrides static
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		Headers:        map[string]string{"Authorization": "static-token", "X-Only-Static": "yes"},
-		HeadersHelper:  `echo '{"Authorization": "dynamic-token", "X-Only-Dynamic": "yes"}'`,
+		URL:           "http://example.com",
+		Headers:       map[string]string{"Authorization": "static-token", "X-Only-Static": "yes"},
+		HeadersHelper: `echo '{"Authorization": "dynamic-token", "X-Only-Dynamic": "yes"}'`,
 	}
 	result := GetMcpServerHeaders(context.Background(), "test", cfg, ScopeUser, true)
 	if result == nil {
@@ -326,9 +326,9 @@ func TestGetMcpServerHeaders_UnsupportedConfig(t *testing.T) {
 
 func TestGetMcpServerHeaders_HTTPConfig(t *testing.T) {
 	cfg := &HTTPConfig{
-		URL:            "http://example.com",
-		Headers:        map[string]string{"X-Static": "s"},
-		HeadersHelper:  `echo '{"X-Dynamic": "d"}'`,
+		URL:           "http://example.com",
+		Headers:       map[string]string{"X-Static": "s"},
+		HeadersHelper: `echo '{"X-Dynamic": "d"}'`,
 	}
 	result := GetMcpServerHeaders(context.Background(), "test", cfg, ScopeUser, true)
 	if result["X-Static"] != "s" {
@@ -341,9 +341,9 @@ func TestGetMcpServerHeaders_HTTPConfig(t *testing.T) {
 
 func TestGetMcpServerHeaders_WSConfig(t *testing.T) {
 	cfg := &WSConfig{
-		URL:            "ws://example.com",
-		Headers:        map[string]string{"X-WS": "ws-static"},
-		HeadersHelper:  `echo '{"X-WS-Dyn": "ws-dynamic"}'`,
+		URL:           "ws://example.com",
+		Headers:       map[string]string{"X-WS": "ws-static"},
+		HeadersHelper: `echo '{"X-WS-Dyn": "ws-dynamic"}'`,
 	}
 	result := GetMcpServerHeaders(context.Background(), "test", cfg, ScopeUser, true)
 	if result["X-WS"] != "ws-static" {
@@ -356,8 +356,8 @@ func TestGetMcpServerHeaders_WSConfig(t *testing.T) {
 
 func TestGetMcpServerHeaders_TrustGate(t *testing.T) {
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		HeadersHelper:  `echo '{"X-Dynamic": "should-not-appear"}'`,
+		URL:           "http://example.com",
+		HeadersHelper: `echo '{"X-Dynamic": "should-not-appear"}'`,
 	}
 	// Project scope, not trusted → dynamic headers blocked, static headers still available
 	result := GetMcpServerHeaders(context.Background(), "test", cfg, ScopeProject, false)
@@ -441,8 +441,8 @@ func TestGetDynamicHeaders_WithHTTPServer(t *testing.T) {
 	// Helper uses curl to get headers from mock server
 	helper := "curl -s " + srv.URL
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		HeadersHelper:  helper,
+		URL:           "http://example.com",
+		HeadersHelper: helper,
 	}
 	result := GetDynamicHeaders(context.Background(), "test", cfg, ScopeUser, true)
 	if result == nil {
@@ -552,10 +552,10 @@ func TestGetDynamicHeaders_AllScopes(t *testing.T) {
 		{ScopeDynamic, false, true},
 		{ScopeClaudeAI, false, true},
 		{ScopeManaged, false, true},
-		{ScopeProject, false, false},  // trust gate blocks
-		{ScopeLocal, false, false},    // trust gate blocks
-		{ScopeProject, true, true},    // trust gate passed
-		{ScopeLocal, true, true},      // trust gate passed
+		{ScopeProject, false, false}, // trust gate blocks
+		{ScopeLocal, false, false},   // trust gate blocks
+		{ScopeProject, true, true},   // trust gate passed
+		{ScopeLocal, true, true},     // trust gate passed
 	}
 	for _, tt := range scopes {
 		t.Run(string(tt.scope)+"_trusted_"+func() string {
@@ -566,9 +566,9 @@ func TestGetDynamicHeaders_AllScopes(t *testing.T) {
 		}(), func(t *testing.T) {
 			cfg := &SSEConfig{URL: "http://example.com", HeadersHelper: helper}
 			// Override PATH to avoid interference
-				if err := os.Setenv("PATH", "/usr/bin:/bin:"+os.Getenv("PATH")); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.Setenv("PATH", "/usr/bin:/bin:"+os.Getenv("PATH")); err != nil {
+				t.Fatal(err)
+			}
 			result := GetDynamicHeaders(context.Background(), "test", cfg, tt.scope, tt.trusted)
 			if (result != nil) != tt.want {
 				t.Errorf("scope=%s trusted=%v: got result=%v, want non-nil=%v", tt.scope, tt.trusted, result, tt.want)
@@ -593,9 +593,9 @@ echo "{\"X-Helper\": \"from-script\", \"Server\": \"$CLAUDE_CODE_MCP_SERVER_NAME
 	}
 
 	cfg := &SSEConfig{
-		URL:            "http://example.com",
-		Headers:        map[string]string{"X-Static": "val"},
-		HeadersHelper:  "sh " + scriptPath,
+		URL:           "http://example.com",
+		Headers:       map[string]string{"X-Static": "val"},
+		HeadersHelper: "sh " + scriptPath,
 	}
 	result := GetMcpServerHeaders(context.Background(), "myserver", cfg, ScopeUser, true)
 	if result == nil {

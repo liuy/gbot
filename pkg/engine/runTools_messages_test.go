@@ -24,7 +24,7 @@ func TestExecuteAllResult_NewMessagesCollected(t *testing.T) {
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
 			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
-					Data:       "ok",
+					Data:        "ok",
 					NewMessages: []types.Message{msg1, msg2},
 				}, nil
 			},
@@ -92,7 +92,7 @@ func TestExecuteAllResult_MultipleToolsWithMessages(t *testing.T) {
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
 			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
-					Data:       "a",
+					Data: "a",
 					NewMessages: []types.Message{
 						{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg_a")}},
 					},
@@ -104,7 +104,7 @@ func TestExecuteAllResult_MultipleToolsWithMessages(t *testing.T) {
 			InputSchema_: func() json.RawMessage { return json.RawMessage(`{"type":"object"}`) },
 			Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 				return &tool.ToolResult{
-					Data:       "b",
+					Data: "b",
 					NewMessages: []types.Message{
 						{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg_b")}},
 					},

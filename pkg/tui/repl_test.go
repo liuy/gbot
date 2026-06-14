@@ -7,58 +7,58 @@ import (
 
 func TestExtractSummaryFromPartial(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		toolName string
-		partial string
-		want    string
+		partial  string
+		want     string
 	}{
 		{
-			name:    "FileRead extracts path",
+			name:     "FileRead extracts path",
 			toolName: "Read",
-			partial: `{"file_path": "/home/liuy/repos/gbot/go.mod"}`,
-			want:    "/home/liuy/repos/gbot/go.mod",
+			partial:  `{"file_path": "/home/liuy/repos/gbot/go.mod"}`,
+			want:     "/home/liuy/repos/gbot/go.mod",
 		},
 		{
-			name:    "Bash extracts command",
+			name:     "Bash extracts command",
 			toolName: "Bash",
-			partial: `{"command": "ls -la"}`,
-			want:    "ls -la",
+			partial:  `{"command": "ls -la"}`,
+			want:     "ls -la",
 		},
 		{
-			name:    "unknown tool returns empty",
+			name:     "unknown tool returns empty",
 			toolName: "UnknownTool",
-			partial: `{"file_path": "/tmp/test"}`,
-			want:    "",
+			partial:  `{"file_path": "/tmp/test"}`,
+			want:     "",
 		},
 		{
-			name:    "FileRead short path",
+			name:     "FileRead short path",
 			toolName: "Read",
-			partial: `{"file_path": "/tmp/test.txt"}`,
-			want:    "/tmp/test.txt",
+			partial:  `{"file_path": "/tmp/test.txt"}`,
+			want:     "/tmp/test.txt",
 		},
 		{
-			name:    "Bash long command truncated",
+			name:     "Bash long command truncated",
 			toolName: "Bash",
-			partial: `{"command": "ls -la /very/long/path/that/exceeds/thirty/characters"}`,
-			want:    "ls -la /very/long/path/that/ex...",
+			partial:  `{"command": "ls -la /very/long/path/that/exceeds/thirty/characters"}`,
+			want:     "ls -la /very/long/path/that/ex...",
 		},
 		{
-			name:    "FileRead long path truncated",
+			name:     "FileRead long path truncated",
 			toolName: "Read",
-			partial: `{"file_path": "/home/user/very/long/path/that/exceeds/forty/characters/file.go"}`,
-			want:    "...at/exceeds/forty/characters/file.go",
+			partial:  `{"file_path": "/home/user/very/long/path/that/exceeds/forty/characters/file.go"}`,
+			want:     "...at/exceeds/forty/characters/file.go",
 		},
 		{
-			name:    "FileRead partial JSON no closing brace",
+			name:     "FileRead partial JSON no closing brace",
 			toolName: "Read",
-			partial: `{"file_path": "/tmp/test`,
-			want:    "/tmp/test",
+			partial:  `{"file_path": "/tmp/test`,
+			want:     "/tmp/test",
 		},
 		{
-			name:    "FileRead extra whitespace",
+			name:     "FileRead extra whitespace",
 			toolName: "Read",
-			partial: `{"file_path" :  "/tmp/test"}`,
-			want:    "/tmp/test",
+			partial:  `{"file_path" :  "/tmp/test"}`,
+			want:     "/tmp/test",
 		},
 	}
 
@@ -86,8 +86,8 @@ func TestExtractSummaryFromPartial(t *testing.T) {
 			// Verify the want field is consistent with normalization expectations
 			if tt.toolName == "FileRead" || tt.toolName == "Bash" {
 				if tt.want == "" && got != "Read" && got != "Bash" {
-						t.Errorf("known tool %q should normalize, got %q", tt.toolName, got)
-					}
+					t.Errorf("known tool %q should normalize, got %q", tt.toolName, got)
+				}
 			}
 		})
 	}

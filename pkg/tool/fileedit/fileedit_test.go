@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileedit"
 )
 
 func TestNew(t *testing.T) {
@@ -947,10 +947,10 @@ func TestRenderResult_WithPatch(t *testing.T) {
 	tt := fileedit.New()
 	original := "line1\nline2\nline3\n"
 	out := &fileedit.Output{
-		FilePath:   "/tmp/test.txt",
-		OldString:  "line2",
-		NewString:  "replaced",
-		ReplaceAll: false,
+		FilePath:     "/tmp/test.txt",
+		OldString:    "line2",
+		NewString:    "replaced",
+		ReplaceAll:   false,
 		OriginalFile: &original,
 		StructuredPatch: []fileedit.PatchHunk{
 			{
@@ -970,10 +970,10 @@ func TestRenderResult_AdditionsOnly(t *testing.T) {
 	tt := fileedit.New()
 	original := "line1\n"
 	out := &fileedit.Output{
-		FilePath:   "/tmp/test.txt",
-		OldString:  "line1",
-		NewString:  "line1\nline2",
-		ReplaceAll: false,
+		FilePath:     "/tmp/test.txt",
+		OldString:    "line1",
+		NewString:    "line1\nline2",
+		ReplaceAll:   false,
 		OriginalFile: &original,
 		StructuredPatch: []fileedit.PatchHunk{
 			{
@@ -996,10 +996,10 @@ func TestRenderResult_RemovalsOnly(t *testing.T) {
 	tt := fileedit.New()
 	original := "line1\nline2\n"
 	out := &fileedit.Output{
-		FilePath:   "/tmp/test.txt",
-		OldString:  "line2",
-		NewString:  "",
-		ReplaceAll: false,
+		FilePath:     "/tmp/test.txt",
+		OldString:    "line2",
+		NewString:    "",
+		ReplaceAll:   false,
 		OriginalFile: &original,
 		StructuredPatch: []fileedit.PatchHunk{
 			{
@@ -1150,7 +1150,7 @@ func TestExecute_LargeFileDelete(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	firstLine := fmt.Sprintf("%05d delete test line", 0)
-	input := json.RawMessage(`{"file_path":"`+fp+`","old_string":"`+firstLine+`","new_string":""}`)
+	input := json.RawMessage(`{"file_path":"` + fp + `","old_string":"` + firstLine + `","new_string":""}`)
 	_, err := fileedit.Execute(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Execute() error: %v", err)
@@ -1223,9 +1223,9 @@ func TestExecute_SequentialEdit_UpdatesReadFileState(t *testing.T) {
 
 	// First edit: change "line one" → "line 1"
 	input1, _ := json.Marshal(map[string]string{
-		"file_path":   fp,
-		"old_string":  "line one",
-		"new_string":  "line 1",
+		"file_path":  fp,
+		"old_string": "line one",
+		"new_string": "line 1",
 	})
 	result1, err := fileedit.Execute(ctx, input1, tctx)
 	if err != nil {
@@ -1247,9 +1247,9 @@ func TestExecute_SequentialEdit_UpdatesReadFileState(t *testing.T) {
 	// Second edit: change "line two" → "line 2"
 	// This would fail before the fix because ReadFileState still had original content.
 	input2, _ := json.Marshal(map[string]string{
-		"file_path":   fp,
-		"old_string":  "line two",
-		"new_string":  "line 2",
+		"file_path":  fp,
+		"old_string": "line two",
+		"new_string": "line 2",
 	})
 	result2, err := fileedit.Execute(ctx, input2, tctx)
 	if err != nil {
@@ -1269,4 +1269,3 @@ func TestExecute_SequentialEdit_UpdatesReadFileState(t *testing.T) {
 		t.Errorf("final file = %q, old strings should be replaced", got)
 	}
 }
-

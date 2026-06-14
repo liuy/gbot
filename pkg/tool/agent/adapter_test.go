@@ -187,7 +187,7 @@ func TestAdapter_GetRunning(t *testing.T) {
 		t.Errorf("Output = %q, want empty for running task", info.Output)
 	}
 
-	close(blockCh) // unblock the goroutine
+	close(blockCh)       // unblock the goroutine
 	reg.Cancel(state.ID) // cleanup
 }
 

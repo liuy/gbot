@@ -234,7 +234,7 @@ func (p *OpenAIProvider) translateResponse(body []byte) (*Response, error) {
 	// GLM extended: reasoning_content → thinking block
 	if choice.Message.ReasoningContent != nil && *choice.Message.ReasoningContent != "" {
 		content = append(content, types.ContentBlock{
-			Type: types.ContentTypeThinking,
+			Type:     types.ContentTypeThinking,
 			Thinking: *choice.Message.ReasoningContent,
 		})
 	}

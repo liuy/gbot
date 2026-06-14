@@ -662,11 +662,11 @@ func TestExtractTodosFromTranscript_MalformedInput(t *testing.T) {
 func TestRestoreSkillStateFromMessages_CronTaskExtraction(t *testing.T) {
 	// Test cron task extraction edge cases
 	tests := []struct {
-		name       string
-		messages   []*TranscriptMessage
-		wantCron   bool
-		cronExpr   string
-		skillName  string
+		name      string
+		messages  []*TranscriptMessage
+		wantCron  bool
+		cronExpr  string
+		skillName string
 	}{
 		{
 			name: "valid cron task",
@@ -800,7 +800,7 @@ func TestRestoreAgentFromSession_InvalidAttachments(t *testing.T) {
 			name: "agent-setting with missing fields",
 			messages: []*TranscriptMessage{
 				{
-					Type:    "attachment",
+					Type: "attachment",
 					Content: mustMarshal(map[string]any{
 						"type": "agent-setting",
 						// Missing agent_type and model
@@ -1047,4 +1047,3 @@ func TestCheckResumeConsistency_DefaultCase(t *testing.T) {
 	// Should not panic or log warnings — just returns early
 	CheckResumeConsistency(chain)
 }
-

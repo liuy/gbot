@@ -30,15 +30,15 @@ type Provider interface {
 // Request represents an LLM API request.
 // Source: Anthropic Messages API POST /v1/messages
 type Request struct {
-	Model     string           `json:"model"`
-	MaxTokens int              `json:"max_tokens"`
-	Messages  []types.Message  `json:"messages"`
-	System    json.RawMessage  `json:"system,omitempty"`    // string or []ContentBlock
-	Tools     []ToolDef        `json:"tools,omitempty"`
-	Stream    bool             `json:"stream,omitempty"`
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	Messages  []types.Message `json:"messages"`
+	System    json.RawMessage `json:"system,omitempty"` // string or []ContentBlock
+	Tools     []ToolDef       `json:"tools,omitempty"`
+	Stream    bool            `json:"stream,omitempty"`
 
 	// Thinking configuration (extended thinking)
-	Thinking *ThinkingConfig  `json:"thinking,omitempty"`
+	Thinking *ThinkingConfig `json:"thinking,omitempty"`
 
 	// Temperature (0.0 to 1.0)
 	Temperature *float64 `json:"temperature,omitempty"`
@@ -73,7 +73,7 @@ type RequestMetadata struct {
 // ThinkingConfig configures extended thinking.
 // Source: utils/thinking.ts
 type ThinkingConfig struct {
-	Type         string `json:"type"`                    // "enabled" or "disabled"
+	Type         string `json:"type"` // "enabled" or "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
@@ -89,8 +89,8 @@ type ToolDef struct {
 // Source: Anthropic Messages API response.
 type Response struct {
 	ID         string               `json:"id"`
-	Type       string               `json:"type"`        // "message"
-	Role       string               `json:"role"`         // "assistant"
+	Type       string               `json:"type"` // "message"
+	Role       string               `json:"role"` // "assistant"
 	Content    []types.ContentBlock `json:"content"`
 	Model      string               `json:"model"`
 	StopReason string               `json:"stop_reason"`
@@ -107,13 +107,13 @@ type StreamEvent struct {
 	Message *MessageStart `json:"message,omitempty"`
 
 	// content_block_start, content_block_delta, content_block_stop
-	Index    int              `json:"index,omitempty"`
-	ContentBlock *types.ContentBlock `json:"content_block,omitempty"`   // content_block_start
-	Delta    *StreamDelta     `json:"delta,omitempty"`   // content_block_delta
+	Index        int                 `json:"index,omitempty"`
+	ContentBlock *types.ContentBlock `json:"content_block,omitempty"` // content_block_start
+	Delta        *StreamDelta        `json:"delta,omitempty"`         // content_block_delta
 
 	// message_delta (final usage/stop_reason)
-	Usage    *types.Usage     `json:"usage,omitempty"`
-	DeltaMsg *MessageDelta    `json:"delta_msg,omitempty"`
+	Usage    *types.Usage  `json:"usage,omitempty"`
+	DeltaMsg *MessageDelta `json:"delta_msg,omitempty"`
 
 	// Error
 	Error *APIError `json:"error,omitempty"`
@@ -124,11 +124,11 @@ type StreamEvent struct {
 
 // MessageStart carries the initial message metadata.
 type MessageStart struct {
-	ID    string        `json:"id"`
-	Type  string        `json:"type"`
-	Role  string        `json:"role"`
-	Model string        `json:"model"`
-	Usage types.Usage   `json:"usage"`
+	ID    string      `json:"id"`
+	Type  string      `json:"type"`
+	Role  string      `json:"role"`
+	Model string      `json:"model"`
+	Usage types.Usage `json:"usage"`
 }
 
 // StreamDelta carries incremental content during streaming.
@@ -151,7 +151,7 @@ type StreamDelta struct {
 
 // MessageDelta carries the final message-level delta.
 type MessageDelta struct {
-	StopReason string      `json:"stop_reason,omitempty"`
+	StopReason string       `json:"stop_reason,omitempty"`
 	Usage      *types.Usage `json:"usage,omitempty"`
 }
 
@@ -304,8 +304,8 @@ func truncateForLog(s string, maxLen int) string {
 // SystemBlockParam represents a single system prompt block.
 // Source: Anthropic API system parameter (array variant).
 type SystemBlockParam struct {
-	Type         string              `json:"type"`                    // "text"
-	Text         string              `json:"text"`
+	Type         string                    `json:"type"` // "text"
+	Text         string                    `json:"text"`
 	CacheControl *types.CacheControlConfig `json:"cache_control,omitempty"`
 }
 
@@ -327,74 +327,74 @@ func (k PromptStateKey) String() string {
 // Contains lazy diff-building closure. Not serializable.
 // Source: promptCacheBreakDetection.ts:28-69
 type promptStateInternal struct {
-	SystemHash           uint32
-	ToolsHash            uint32
-	CacheControlHash     uint32
-	ToolNames            []string
-	PerToolHashes        map[string]uint32
-	SystemCharCount      int
-	Model                string
-	FastMode             bool
-	GlobalCacheStrategy  string
-	Betas                []string
-	AutoModeActive       bool
-	IsUsingOverage       bool
-	CachedMCEnabled      bool
-	EffortValue          string
-	ExtraBodyHash        uint32
-	CallCount            int
-	PrevCacheRead        int
+	SystemHash            uint32
+	ToolsHash             uint32
+	CacheControlHash      uint32
+	ToolNames             []string
+	PerToolHashes         map[string]uint32
+	SystemCharCount       int
+	Model                 string
+	FastMode              bool
+	GlobalCacheStrategy   string
+	Betas                 []string
+	AutoModeActive        bool
+	IsUsingOverage        bool
+	CachedMCEnabled       bool
+	EffortValue           string
+	ExtraBodyHash         uint32
+	CallCount             int
+	PrevCacheRead         int
 	CacheDeletionsPending bool
-	BuildDiffableContent func() string // lazy eval (TS:206-222)
-	PendingChanges       *PendingChanges
+	BuildDiffableContent  func() string // lazy eval (TS:206-222)
+	PendingChanges        *PendingChanges
 }
 
 // PromptStateSnapshot records pre-call state for break detection (public input).
 // Source: promptCacheBreakDetection.ts:227-241
 type PromptStateSnapshot struct {
-	SystemHash           uint32
-	ToolsHash            uint32
-	CacheControlHash     uint32
-	ToolNames            []string
-	PerToolHashes        map[string]uint32
-	SystemCharCount      int
-	Model                string
-	FastMode             bool
-	GlobalCacheStrategy  string
-	Betas                []string
-	CallCount            int
-	PrevCacheRead        int
+	SystemHash            uint32
+	ToolsHash             uint32
+	CacheControlHash      uint32
+	ToolNames             []string
+	PerToolHashes         map[string]uint32
+	SystemCharCount       int
+	Model                 string
+	FastMode              bool
+	GlobalCacheStrategy   string
+	Betas                 []string
+	CallCount             int
+	PrevCacheRead         int
 	CacheDeletionsPending bool
 }
 
 // PendingChanges records what changed between calls.
 // Source: promptCacheBreakDetection.ts:71-99
 type PendingChanges struct {
-	SystemPromptChanged         bool
-	ToolSchemasChanged          bool
-	ModelChanged                bool
-	FastModeChanged             bool
-	CacheControlChanged         bool
-	GlobalCacheStrategyChanged  bool
-	BetasChanged                bool
-	AutoModeActiveChanged       bool
-	OverageChanged              bool
-	CachedMCEnabledChanged      bool
-	EffortChanged               bool
-	ExtraBodyChanged            bool
-	AddedToolCount              int
-	RemovedToolCount            int
-	SystemCharDelta             int
-	AddedTools                  []string
-	RemovedTools                []string
-	ChangedToolSchemas          []string
-	PreviousModel               string
-	NewModel                    string
-	PrevGlobalCacheStrategy     string
-	NewGlobalCacheStrategy      string
-	PrevEffortValue             string
-	NewEffortValue              string
-	AddedBetas                  []string
-	RemovedBetas                []string
-	BuildPrevDiffableContent    func() string // lazy eval: diff written only on cache break
+	SystemPromptChanged        bool
+	ToolSchemasChanged         bool
+	ModelChanged               bool
+	FastModeChanged            bool
+	CacheControlChanged        bool
+	GlobalCacheStrategyChanged bool
+	BetasChanged               bool
+	AutoModeActiveChanged      bool
+	OverageChanged             bool
+	CachedMCEnabledChanged     bool
+	EffortChanged              bool
+	ExtraBodyChanged           bool
+	AddedToolCount             int
+	RemovedToolCount           int
+	SystemCharDelta            int
+	AddedTools                 []string
+	RemovedTools               []string
+	ChangedToolSchemas         []string
+	PreviousModel              string
+	NewModel                   string
+	PrevGlobalCacheStrategy    string
+	NewGlobalCacheStrategy     string
+	PrevEffortValue            string
+	NewEffortValue             string
+	AddedBetas                 []string
+	RemovedBetas               []string
+	BuildPrevDiffableContent   func() string // lazy eval: diff written only on cache break
 }

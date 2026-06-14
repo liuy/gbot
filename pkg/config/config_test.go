@@ -107,9 +107,9 @@ func TestLoad_UserConfig(t *testing.T) {
 	}
 
 	userSettings := map[string]any{
-		"model":  "user-model",
-		"theme":  "dark",
-		"debug":  true,
+		"model": "user-model",
+		"theme": "dark",
+		"debug": true,
 	}
 	data, _ := json.Marshal(userSettings)
 	_ = os.WriteFile(filepath.Join(userGbotDir, "settings.json"), data, 0644)

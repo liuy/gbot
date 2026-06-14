@@ -212,8 +212,7 @@ func containsAny(s string, substrs []string) bool {
 }
 
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (
-		s[:len(substr)] == substr ||
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr ||
 		s[len(s)-len(substr):] == substr ||
 		containsMiddle(s, substr)))
 }
@@ -242,7 +241,9 @@ func TestAppendMessages_TransactionBeginError(t *testing.T) {
 	}
 
 	// Close store to force transaction errors
-	if err := store.Close(); err != nil { t.Fatalf("Close: %v", err) }
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	messages := []*TranscriptMessage{
 		{UUID: "uuid-1", Type: "user", Content: `[{"type":"text","text":"first"}]`},

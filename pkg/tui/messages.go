@@ -34,23 +34,23 @@ type streamMessageMsg struct {
 // toolStartMsg signals that the LLM has started a tool invocation.
 // Source: useStreaming hook onToolUseStart callback.
 type toolStartMsg struct {
-	ID        string
-	Name      string
-	Summary   string // context-aware display name (e.g., "Listing 1 directory")
-	Input     string // pretty-printed JSON
-	Agent     *types.AgentMeta // non-nil when from a sub-agent
-	IsSearch  bool
-	IsRead    bool
-	IsList    bool
+	ID       string
+	Name     string
+	Summary  string           // context-aware display name (e.g., "Listing 1 directory")
+	Input    string           // pretty-printed JSON
+	Agent    *types.AgentMeta // non-nil when from a sub-agent
+	IsSearch bool
+	IsRead   bool
+	IsList   bool
 }
 
 // toolParamDeltaMsg carries incremental input updates for a pending tool.
 // The TUI uses this to update the display name once input is available.
 type toolParamDeltaMsg struct {
-	ID      string // tool use ID
-	Delta   string // partial JSON delta
-	Summary string // pre-computed summary from engine
-	Agent   *types.AgentMeta // non-nil when from a sub-agent
+	ID       string           // tool use ID
+	Delta    string           // partial JSON delta
+	Summary  string           // pre-computed summary from engine
+	Agent    *types.AgentMeta // non-nil when from a sub-agent
 	IsSearch bool
 	IsRead   bool
 	IsList   bool
@@ -68,22 +68,22 @@ type toolOutputDeltaMsg struct {
 // toolEndMsg delivers a tool execution result.
 // Source: useStreaming hook onToolResult callback.
 type toolEndMsg struct {
-	ToolUseID    string
-	Output       string        // pretty-printed JSON
-	IsError      bool
-	Timing       time.Duration // elapsed time
-	Agent        *types.AgentMeta // non-nil when from a sub-agent
-	IsSearch     bool            // search/read/list classification
-	IsRead       bool
-	IsList       bool
+	ToolUseID string
+	Output    string // pretty-printed JSON
+	IsError   bool
+	Timing    time.Duration    // elapsed time
+	Agent     *types.AgentMeta // non-nil when from a sub-agent
+	IsSearch  bool             // search/read/list classification
+	IsRead    bool
+	IsList    bool
 }
 
 // queryEndMsg signals that the engine has finished processing.
 // Source: useStreaming hook onComplete callback.
 type queryEndMsg struct {
-	Err        error                 // nil on success
-	TotalUsage types.Usage           // engine's accumulated usage across all turns
-	Agent      *types.AgentMeta      // non-nil when from a sub-agent
+	Err        error            // nil on success
+	TotalUsage types.Usage      // engine's accumulated usage across all turns
+	Agent      *types.AgentMeta // non-nil when from a sub-agent
 }
 
 // usageMsg carries token usage from the LLM provider during streaming.
@@ -116,12 +116,12 @@ type thinkingDeltaMsg struct {
 // Carries notification info for TUI rendering. Empty fields = first dispatch
 // from EnqueueAttachment (no content yet, TUI ignores).
 type attachmentMsg struct {
-	JobID      string            // background job id
-	Preview    string            // summary text
-	Failed     bool              // true for "failed" or "killed"
-	UserText   string            // plain text from ItemModePrompt attachment
-	SourceUUID string            // UUID for matching pendingQueue entries
-	Agent      *types.AgentMeta  // non-nil when from a sub-agent
+	JobID      string           // background job id
+	Preview    string           // summary text
+	Failed     bool             // true for "failed" or "killed"
+	UserText   string           // plain text from ItemModePrompt attachment
+	SourceUUID string           // UUID for matching pendingQueue entries
+	Agent      *types.AgentMeta // non-nil when from a sub-agent
 }
 
 // idleAbortedMsg is returned when an idle readEvents is cancelled

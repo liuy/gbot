@@ -394,4 +394,3 @@ func TestExtractFirstPrompt_EmptyAfterStrip(t *testing.T) {
 		t.Errorf("expected empty for whitespace-only text, got %q", result)
 	}
 }
-

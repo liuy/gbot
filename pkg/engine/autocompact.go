@@ -102,17 +102,17 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 	}
 
 	// keepFrom == len: compact everything (tail=0).
-		// Build [boundary, summary] directly — no PartialCompact needed.
-		built := c.buildCompactAllResult(summaryText)
-		boundary := short.CreateCompactBoundaryMessage("auto", 0, "")
-		return &short.CompactResult{
-			BoundaryMarker:  boundary,
-			Summary:         summaryText,
-			BeforeTokens:    beforeTokens,
-			BeforeMessages:  len(messages),
-			AfterTokens:     EstimateMessagesTokens(built),
-			Messages:        built,
-		}, nil
+	// Build [boundary, summary] directly — no PartialCompact needed.
+	built := c.buildCompactAllResult(summaryText)
+	boundary := short.CreateCompactBoundaryMessage("auto", 0, "")
+	return &short.CompactResult{
+		BoundaryMarker: boundary,
+		Summary:        summaryText,
+		BeforeTokens:   beforeTokens,
+		BeforeMessages: len(messages),
+		AfterTokens:    EstimateMessagesTokens(built),
+		Messages:       built,
+	}, nil
 }
 
 // findKeepFrom determines how many recent messages to keep (count from tail).
@@ -416,4 +416,3 @@ func extractTextFromShortContent(content string) string {
 	}
 	return strings.TrimSpace(sb.String())
 }
-

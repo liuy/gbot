@@ -542,7 +542,7 @@ func TestHistory_Draft_UpFromDraftEntersHistory(t *testing.T) {
 
 	// Enter history, then down to draft
 	h.Up("我的草稿") // → old2
-	h.Down()        // → draft "我的草稿"
+	h.Down()     // → draft "我的草稿"
 
 	// Up from draft → re-enter history at newest
 	res := h.Up("我的草稿")
@@ -561,7 +561,7 @@ func TestHistory_Draft_UpFromDraftThenDown(t *testing.T) {
 
 	// idle → history → draft
 	h.Up("草稿") // → old2
-	h.Down()     // → draft "草稿"
+	h.Down()   // → draft "草稿"
 
 	// Up from draft → back to old2
 	res := h.Up("草稿")

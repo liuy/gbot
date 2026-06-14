@@ -327,10 +327,10 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 
 // TestSessionMemory_Integration_HotPath verifies the normal hot path:
 //
-//	1. Write initial session memory content
-//	2. SM-compact uses it → produces compact result
-//	3. Update session memory with new content
-//	4. SM-compact uses updated content → produces different result
+//  1. Write initial session memory content
+//  2. SM-compact uses it → produces compact result
+//  3. Update session memory with new content
+//  4. SM-compact uses updated content → produces different result
 //
 // Observable output: compact results reflect the current session memory content.
 func TestSessionMemory_Integration_HotPath(t *testing.T) {

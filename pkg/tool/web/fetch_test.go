@@ -246,7 +246,7 @@ func TestIsBotBlocked(t *testing.T) {
 
 func TestParseRetryAfterMs(t *testing.T) {
 	future := time.Now().Add(5 * time.Second).UTC().Format(http.TimeFormat) // REAL-TIME: need relative future date
-	past := time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat)  // REAL-TIME: need relative past date
+	past := time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat) // REAL-TIME: need relative past date
 
 	tests := []struct {
 		input string

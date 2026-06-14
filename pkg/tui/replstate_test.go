@@ -779,7 +779,8 @@ func TestMultipleToolsInQuery(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // setupNestedAgent creates a two-level nesting:
-//   pendingTool["agent1"] → Blocks[0] = ToolCall{ID: "child_agent"}
+//
+//	pendingTool["agent1"] → Blocks[0] = ToolCall{ID: "child_agent"}
 //
 // This simulates a child agent that has spawned its own agent tool (grandchild).
 func setupNestedAgent() *ReplState {
@@ -943,7 +944,7 @@ func TestQueryEndMsg_SubAgent_MarksParentDone(t *testing.T) {
 	t.Parallel()
 	s := freshState()
 	s.PendingToolStarted("tool-bg-1", "Agent", "fork", "{}", tool.SearchReadKind{})
-	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second)  // REAL-TIME: pending tool start time
+	s.pendingToolStart["tool-bg-1"] = time.Now().Add(-1 * time.Second) // REAL-TIME: pending tool start time
 
 	// Simulate sub-agent completion: manually set Done and Elapsed
 	// (the queryEndMsg handler does this)

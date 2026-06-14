@@ -3,8 +3,8 @@ package short
 import (
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -246,7 +246,8 @@ func (s *Store) UpdateContextTokens(sessionID string, tokens int) error {
 // TS aligned: extractFirstPromptFromHead() (sessionStoragePortable.ts:135-201)
 //
 // The contentJSON parameter should be the full message JSON, e.g.:
-//   {"type":"user","message":{"content":[...]}}
+//
+//	{"type":"user","message":{"content":[...]}}
 //
 // Skips tool_result, isMeta, isCompactSummary, slash commands.
 // Truncates to 200 chars. Bash input gets "!" prefix.
@@ -376,8 +377,8 @@ func (s *Store) getSession(sessionID string) (*Session, error) {
 	}
 	if settingsJSON != "" {
 		if err := json.Unmarshal([]byte(settingsJSON), &ses.Settings); err != nil {
-		slog.Warn("session: failed to parse settings", "error", err)
-	}
+			slog.Warn("session: failed to parse settings", "error", err)
+		}
 	}
 	if ses.Settings == nil {
 		ses.Settings = map[string]string{}
@@ -401,7 +402,7 @@ func (s *Store) insertSession(sess *Session) error {
 	_, err := s.db.Exec(query,
 		sess.SessionID, sess.ProjectDir, sess.Model, sess.Title,
 		sess.ParentSessionID, sess.ForkPointSeq, sess.AgentType, sess.Mode, string(settingsJSON),
-			sess.ContextTokens,
+		sess.ContextTokens,
 		sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err

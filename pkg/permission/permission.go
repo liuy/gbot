@@ -14,8 +14,8 @@ import (
 type Decision struct {
 	Action       RuleAction
 	Message      string
-	Rule         *Rule          // matching rule, nil for default allow
-	ContentRules []Rule         // content-specific rules for tool to evaluate
+	Rule         *Rule  // matching rule, nil for default allow
+	ContentRules []Rule // content-specific rules for tool to evaluate
 }
 
 // DefaultAllow is the default decision when no rules match.
@@ -205,9 +205,9 @@ func CheckBashPermission(command string, contentRules []Rule) (RuleAction, *Rule
 	}
 
 	shellRules := make([]struct {
-		rule    Rule
-		shell   ShellRule
-		isDeny  bool
+		rule   Rule
+		shell  ShellRule
+		isDeny bool
 	}, 0, len(contentRules))
 	for i := range contentRules {
 		r := contentRules[i]
@@ -217,9 +217,9 @@ func CheckBashPermission(command string, contentRules []Rule) (RuleAction, *Rule
 		pattern := *r.Value.RuleContent
 		sr := ParseShellRule(pattern)
 		shellRules = append(shellRules, struct {
-			rule    Rule
-			shell   ShellRule
-			isDeny  bool
+			rule   Rule
+			shell  ShellRule
+			isDeny bool
 		}{rule: r, shell: sr, isDeny: r.Action == ActionDeny})
 	}
 

@@ -363,9 +363,9 @@ func TestTranslateMessages_ToolResultsBeforeUserText(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentBlock{
 				{
-					Type: types.ContentTypeToolUse,
-					ID:   "call_agent1",
-					Name: "Agent",
+					Type:  types.ContentTypeToolUse,
+					ID:    "call_agent1",
+					Name:  "Agent",
 					Input: json.RawMessage(`{"prompt":"do work"}`),
 				},
 			},
@@ -760,9 +760,9 @@ func TestOpenAITranslateRequest_WithTools(t *testing.T) {
 	}
 
 	var parsed struct {
-		Model   string        `json:"model"`
-		Stream  bool          `json:"stream"`
-		Tools   []openaiTool  `json:"tools"`
+		Model   string          `json:"model"`
+		Stream  bool            `json:"stream"`
+		Tools   []openaiTool    `json:"tools"`
 		Message []openaiMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
