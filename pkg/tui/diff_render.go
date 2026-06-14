@@ -75,11 +75,15 @@ func isDiffMarker(line string) (marker byte, ok bool) {
 			}
 		}
 	}
-	// Must start with " NNN " — space, digits, space
-	if i >= len(line) || line[i] != ' ' {
+	// Must start with leading spaces then digits then space then marker.
+	// RenderDiff uses %*d padding, so maxDigits > 1 produces multiple spaces.
+	for i < len(line) && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) {
 		return 0, false
 	}
-	rest := line[i+1:]
+	rest := line[i:]
 	digitCount := 0
 	for len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9' {
 		rest = rest[1:]

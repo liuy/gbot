@@ -287,3 +287,22 @@ func TestApplyDiffBackground_ContextResetsBg(t *testing.T) {
 		}
 	}
 }
+
+// Padded line numbers (maxDigits >= 2, e.g. "  9 +content") must still match.
+// RenderDiff uses %*d which adds leading spaces when line numbers reach
+// double digits; isDiffMarker originally only expected one leading space.
+func TestIsDiffMarker_PaddedLineNumber(t *testing.T) {
+	t.Parallel()
+	marker, ok := isDiffMarker("  9 +content here")
+	if !ok || marker != '+' {
+		t.Errorf("isDiffMarker(\"  9 +content\") = %c, %v; want '+', true", marker, ok)
+	}
+	marker, ok = isDiffMarker(" 10 -old line")
+	if !ok || marker != '-' {
+		t.Errorf("isDiffMarker(\" 10 -old\") = %c, %v; want '-', true", marker, ok)
+	}
+	marker, ok = isDiffMarker(" 11  context")
+	if !ok || marker != ' ' {
+		t.Errorf("isDiffMarker(\" 11  ctx\") = %c, %v; want ' ', true", marker, ok)
+	}
+}
