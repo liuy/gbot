@@ -1163,6 +1163,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyEscape:
+		slog.Info("tui:key_escape",
+			"string", msg.String(),
+			"alt", msg.Alt,
+			"runes", len(msg.Runes),
+			"completions_visible", a.completions.Visible(),
+			"streaming", a.repl.IsStreaming(),
+		)
 		if a.completions.Visible() {
 			a.completions.Dismiss()
 			return a, nil
