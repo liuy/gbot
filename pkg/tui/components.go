@@ -1288,6 +1288,10 @@ func wordWrapIndent(text string, width int, contIndent string) string {
 			currentLine.Reset()
 			currentLen = 0
 			activeANSI.Reset()
+			if contIndent != "" {
+				currentLine.WriteString(contIndent)
+				currentLen = lipgloss.Width(contIndent)
+			}
 			i++
 			continue
 		}

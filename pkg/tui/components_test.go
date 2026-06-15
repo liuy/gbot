@@ -791,6 +791,27 @@ func TestWordWrapIndent_ContinuationIndented(t *testing.T) {
 	}
 }
 
+func TestWordWrapIndent_NewlineContinuationIndented(t *testing.T) {
+	t.Parallel()
+	// Multi-line summary (e.g. commit message with body): explicit \n in text
+	// should also apply contIndent to lines after the first.
+	v := wordWrapIndent("line one\nline two\nline three", 80, "  ")
+	lines := strings.Split(v, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), v)
+	}
+	// First line: no indent
+	if strings.HasPrefix(lines[0], "  ") {
+		t.Errorf("first line should not be indented: %q", lines[0])
+	}
+	// Lines after explicit \n must also get contIndent
+	for i, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("newline continuation line %d = %q, want 2-space prefix", i+2, line)
+		}
+	}
+}
+
 func TestWordWrap_Width(t *testing.T) {
 	t.Parallel()
 
