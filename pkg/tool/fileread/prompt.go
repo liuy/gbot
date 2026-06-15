@@ -13,6 +13,12 @@ Usage:
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 
+Code files — prefer LSP first:
+- To understand a code file's structure (which functions, types, methods it contains), use Lsp symbols — it returns a symbol tree with line numbers without reading the whole file.
+- To check a symbol's type signature or documentation, use Lsp hover.
+- Then use Read with offset/limit to read only the specific lines you need.
+- For non-code files (md, yaml, json, etc.), use Read directly.
+
 # Images
 This tool can read images (eg PNG, JPG, etc). When reading an image file contents are presented visually.
 
