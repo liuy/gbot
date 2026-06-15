@@ -74,6 +74,10 @@ Do NOT use Bash to run commands when a relevant dedicated tool is provided. This
   - Check a variable's type → Lsp hover, not Read + guess
   - Apply quick-fixes (missing imports, unused vars) → Lsp code_actions, not manual Edit
   - Rename across files → Lsp rename, NEVER Edit/Write/sed/awk/bash
+  - Read a single function/type body → Lsp source, not Read with offset/limit
+  - Understand a symbol's purpose and callers → Lsp inspect
+  - Assess what a change affects → Lsp impact
+  - LSP actions resolve symbols by name — no line numbers needed
 - For broader codebase exploration requiring multiple rounds, use the Agent tool
 - Reserve Bash exclusively for system commands and terminal operations that require shell execution
 

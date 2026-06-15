@@ -33,6 +33,9 @@ var readonlyActions = map[string]bool{
 	"workspace_symbol": true,
 	"incoming_calls":   true,
 	"outgoing_calls":   true,
+	"source":           true,
+	"inspect":          true,
+	"impact":           true,
 	"status":           true,
 	"capabilities":     true,
 }
@@ -59,7 +62,7 @@ func New(reg *lsp.Registry) tool.Tool {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "incoming_calls", "outgoing_calls"],
+				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "incoming_calls", "outgoing_calls", "source", "inspect", "impact"],
 				"description": "LSP action to perform"
 			},
 			"file": {
@@ -177,7 +180,7 @@ func dispatch(ctx context.Context, reg *lsp.Registry, in Input, workingDir strin
 		return request(ctx, reg, in, workingDir)
 	case "rename_file":
 		return renameFile(ctx, reg, in, workingDir)
-	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename", "incoming_calls", "outgoing_calls":
+	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename", "incoming_calls", "outgoing_calls", "source", "inspect", "impact":
 		return fileOp(ctx, reg, in, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown LSP action: %s", in.Action)
@@ -200,6 +203,16 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 			return nil, fmt.Errorf("file parameter required for symbols")
 		}
 		return symbolsAction(ctx, reg, in, workingDir)
+	}
+
+	// source, inspect, impact have their own resolve + dispatch
+	switch in.Action {
+	case "source":
+		return sourceAction(ctx, reg, in, workingDir)
+	case "inspect":
+		return inspectAction(ctx, reg, in, workingDir)
+	case "impact":
+		return impactAction(ctx, reg, in, workingDir)
 	}
 
 	// All other actions need a symbol name

@@ -17,6 +17,9 @@ Use ` + "`Lsp`" + ` INSTEAD of text-based tools (Grep, manual renames) when you 
 - **symbols** — List all symbols in a file (functions, types, variables) with their hierarchy.
 - **incoming_calls** — What functions/methods call this function?
 - **outgoing_calls** — What functions/methods does this function call?
+- **source** — Extract the full source text of a symbol by name. No line numbers needed.
+- **inspect** — Hover + definition + incoming_calls combined. The fastest way to understand a symbol.
+- **impact** — References + incoming + outgoing calls combined. Assess blast-radius before changes.
 - **request** — Send a raw LSP method call (escape hatch when no built-in action covers the method).
 
 ### How to pass symbols
@@ -38,6 +41,9 @@ Position-based actions (definition, references, hover, rename, etc.) take a ` + 
 | hover | yes | optional | Get type information + docs |
 | incoming_calls | yes | optional | What calls this function |
 | outgoing_calls | yes | optional | What this function calls |
+| source | yes | optional | Extract full source text of a symbol |
+| inspect | yes | optional | hover + definition + incoming_calls combined |
+| impact | yes | optional | references + incoming + outgoing combined |
 | symbols | — | yes | List symbols in a file (hierarchical) |
 | workspace_symbol | — | — | Search symbols across project (uses query param) |
 | code_actions | yes | optional | List available quick-fixes |

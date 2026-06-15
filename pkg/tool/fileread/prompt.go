@@ -16,6 +16,8 @@ Usage:
 Code files — prefer LSP first:
 - To understand a code file's structure (which functions, types, methods it contains), use Lsp symbols — it returns a symbol tree with line numbers without reading the whole file.
 - To check a symbol's type signature or documentation, use Lsp hover.
+- To read just one function or type body, use Lsp source.
+- To understand what a symbol does and who calls it, use Lsp inspect.
 - Then use Read with offset/limit to read only the specific lines you need.
 - For non-code files (md, yaml, json, etc.), use Read directly.
 

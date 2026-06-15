@@ -20,5 +20,7 @@ func grepPrompt() string {
 		"  - Multiline matching: By default patterns match within single lines only. For cross-line patterns like " + bt + "struct \\{[\\s\\S]*?field" + bt + ", use " + bt + "multiline: true" + bt + "\n\n" +
 		"  Code symbols vs text:\n" +
 		"  - For searching code symbols (function names, class names, type names, variable names), prefer Lsp references or Lsp workspace_symbol — they return only real code references and skip matches in comments, strings, and documentation.\n" +
+		"  - To understand what a symbol does and who calls it, use Lsp inspect.\n" +
+		"  - To assess the blast-radius of changing a symbol, use Lsp impact.\n" +
 		"  - For searching log messages, configuration values, documentation text, or any non-code content, continue using Grep."
 }
