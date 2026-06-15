@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-
-	"github.com/liuy/gbot/pkg/tool/lcs"
 )
 
 // ---------------------------------------------------------------------------
@@ -130,100 +128,6 @@ func TestToolWithoutOnProgress(t *testing.T) {
 	}
 	if result.Data != "ok" {
 		t.Errorf("Call() data = %v, want ok", result.Data)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// lcsDiffsToComponents — direct tests (unexported, package-internal)
-// ---------------------------------------------------------------------------
-
-func TestLcsDiffsToComponents_Basic(t *testing.T) {
-	t.Parallel()
-	// One edit: delete lines 0-1, insert lines 0-2
-	diffs := []lcs.Diff{{Start: 0, End: 1, ReplStart: 0, ReplEnd: 2}}
-	result := lcsDiffsToComponents(diffs, 3, 4)
-	// Expected: delete 1, insert 2, then trailing common 2
-	if len(result) != 3 {
-		t.Fatalf("expected 3 components, got %d: %+v", len(result), result)
-	}
-	if !result[0].removed || result[0].count != 1 {
-		t.Errorf("comp[0]: expected removed=1, got added=%v removed=%v count=%d", result[0].added, result[0].removed, result[0].count)
-	}
-	if !result[1].added || result[1].count != 2 {
-		t.Errorf("comp[1]: expected added=2, got added=%v removed=%v count=%d", result[1].added, result[1].removed, result[1].count)
-	}
-	if result[2].added || result[2].removed || result[2].count != 2 {
-		t.Errorf("comp[2]: expected common=2, got added=%v removed=%v count=%d", result[2].added, result[2].removed, result[2].count)
-	}
-}
-
-func TestLcsDiffsToComponents_Empty(t *testing.T) {
-	t.Parallel()
-	result := lcsDiffsToComponents(nil, 3, 3)
-	if len(result) != 1 || result[0].count != 3 {
-		t.Errorf("no diffs with equal lengths: expected 1 common component of 3, got %+v", result)
-	}
-}
-
-func TestLcsDiffsToComponents_MultipleEdits(t *testing.T) {
-	t.Parallel()
-	// Two edits separated by common lines
-	diffs := []lcs.Diff{
-		{Start: 0, End: 1, ReplStart: 0, ReplEnd: 0}, // delete line 0, insert nothing
-		{Start: 3, End: 4, ReplStart: 2, ReplEnd: 3}, // delete line 3, insert 1
-	}
-	result := lcsDiffsToComponents(diffs, 5, 4)
-	// Expected: del 1, common 2, del 1, ins 1, trailing common 1
-	if len(result) != 5 {
-		t.Fatalf("expected 5 components, got %d: %+v", len(result), result)
-	}
-	if !result[0].removed || result[0].count != 1 {
-		t.Errorf("comp[0]: expected del 1, got %+v", result[0])
-	}
-	if result[1].added || result[1].removed || result[1].count != 2 {
-		t.Errorf("comp[1]: expected common 2, got %+v", result[1])
-	}
-	if !result[2].removed || result[2].count != 1 {
-		t.Errorf("comp[2]: expected del 1, got %+v", result[2])
-	}
-	if !result[3].added || result[3].count != 1 {
-		t.Errorf("comp[3]: expected ins 1, got %+v", result[3])
-	}
-	if result[4].added || result[4].removed || result[4].count != 1 {
-		t.Errorf("comp[4]: expected common 1, got %+v", result[4])
-	}
-}
-
-func TestAppendDiffComponent_ZeroCount(t *testing.T) {
-	t.Parallel()
-	var list []diffComponent
-	list = appendDiffComponent(list, true, false, 0)
-	if len(list) != 0 {
-		t.Errorf("count==0 should not append, got %d items", len(list))
-	}
-}
-
-func TestAppendDiffComponent_MergeSame(t *testing.T) {
-	t.Parallel()
-	list := []diffComponent{{added: true, removed: false, count: 2}}
-	list = appendDiffComponent(list, true, false, 3)
-	if len(list) != 1 {
-		t.Fatalf("expected merge into 1 component, got %d", len(list))
-	}
-	if list[0].count != 5 {
-		t.Errorf("merged count = %d, want 5", list[0].count)
-	}
-}
-
-func TestAppendDiffComponent_Different(t *testing.T) {
-	t.Parallel()
-	list := []diffComponent{{added: true, removed: false, count: 2}}
-	list = appendDiffComponent(list, false, true, 1)
-	if len(list) != 2 {
-		t.Fatalf("expected new component, got %d", len(list))
-	}
-	if list[1].removed != true {
-		t.Error("second component should be removed")
 	}
 }
 

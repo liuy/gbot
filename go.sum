@@ -568,3 +568,5 @@ mvdan.cc/sh/v3 v3.13.1/go.mod h1:lXJ8SexMvEVcHCoDvAGLZgFJ9Wsm2sulmoNEXGhYZD0=
 rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=
 rsc.io/quote/v3 v3.1.0/go.mod h1:yEA65RcK8LyAZtP9Kv3t0HmxON59tX3rD+tICJqUlj0=
 rsc.io/sampler v1.3.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
+znkr.io/diff v1.0.1 h1:h+kd4J3DQHccrvJC6pZ5pI4B56cLQvGVubjJnXtU8rU=
+znkr.io/diff v1.0.1/go.mod h1:4MRwV40UKLveWSNArVT3wjYxbl8XFN+I+6QY2BlSGQM=

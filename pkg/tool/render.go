@@ -5,21 +5,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/liuy/gbot/pkg/tool/lcs"
+	"znkr.io/diff"
 )
 
 // ---------------------------------------------------------------------------
 // Line-level diff — equivalent to diff npm's diffLines + structuredPatch.
 // Source: node_modules/diff/lib/structuredPatch.js + libcjs/diff/line.js + libcjs/diff/base.js
-// Uses O(ND) Myers diff on lines via golang.org/x/tools/internal/diff/lcs.
+// Uses znkr.io/diff's Myers-based line diff with heuristics.
 // ---------------------------------------------------------------------------
-
-// diffComponent is a single component in the diff result.
-type diffComponent struct {
-	added   bool
-	removed bool
-	count   int
-}
 
 // tokenizeLines splits text into lines, each including its trailing newline
 // except the last. Mirrors the diff npm's splitLines().
@@ -49,66 +42,8 @@ func removeEmptyStrings(ss []string) []string {
 	return r
 }
 
-// appendDiffComponent merges with the last component if it has the same type.
-func appendDiffComponent(list []diffComponent, added, removed bool, count int) []diffComponent {
-	if count == 0 {
-		return list
-	}
-	if len(list) > 0 {
-		last := &list[len(list)-1]
-		if last.added == added && last.removed == removed {
-			last.count += count
-			return list
-		}
-	}
-	return append(list, diffComponent{added: added, removed: removed, count: count})
-}
-
-// lcsDiffsToComponents converts []lcs.Diff into []diffComponent.
-// lcs.Diff represents edits as (delete A[Start:End], insert B[ReplStart:ReplEnd]).
-// Between edits are equal (common) lines.
-func lcsDiffsToComponents(diffs []lcs.Diff, oldLen, newLen int) []diffComponent {
-	var result []diffComponent
-	oldPos, newPos := 0, 0
-
-	for _, d := range diffs {
-		// Common lines before this edit
-		commonOld := d.Start - oldPos
-		commonNew := d.ReplStart - newPos
-		common := min(commonOld, commonNew)
-		if common > 0 {
-			result = appendDiffComponent(result, false, false, common)
-		}
-
-		// Deleted lines
-		deleted := d.End - d.Start
-		if deleted > 0 {
-			result = appendDiffComponent(result, false, true, deleted)
-		}
-
-		// Inserted lines
-		inserted := d.ReplEnd - d.ReplStart
-		if inserted > 0 {
-			result = appendDiffComponent(result, true, false, inserted)
-		}
-
-		oldPos = d.End
-		newPos = d.ReplEnd
-	}
-
-	// Trailing common lines
-	commonOld := oldLen - oldPos
-	commonNew := newLen - newPos
-	common := min(commonOld, commonNew)
-	if common > 0 {
-		result = appendDiffComponent(result, false, false, common)
-	}
-
-	return result
-}
-
 // ComputePatch computes a line-level structured patch between old and new content.
-// Uses O(ND) Myers two-sided diff via golang.org/x/tools/internal/diff/lcs.
+// Uses Myers-based line diff with heuristics from znkr.io/diff.
 // Source: diff npm — tokenize + diffLines + structuredPatch, context=CONTEXT_LINES(3)
 func ComputePatch(oldContent, newContent string) []DiffHunk {
 	const ctxLines = 3
@@ -120,9 +55,63 @@ func ComputePatch(oldContent, newContent string) []DiffHunk {
 		return nil
 	}
 
-	diffs := lcs.DiffLines(oldLines, newLines)
-	components := lcsDiffsToComponents(diffs, len(oldLines), len(newLines))
-	return buildHunks(components, oldLines, newLines, ctxLines)
+	entries := hunksToLineEntries(diff.Hunks(oldLines, newLines), oldLines, newLines)
+	return buildHunks(entries, ctxLines)
+}
+
+// hunksToLineEntries converts znkr.io/diff hunks into a flat lineEntry sequence
+// that buildHunks can consume. Hunks cover only changed regions, so the gaps
+// between them (and before/after) are equal context lines.
+func hunksToLineEntries(hunks []diff.Hunk[string], oldLines, newLines []string) []lineEntry {
+	var entries []lineEntry
+	oldNum, newNum := 1, 1
+
+	for _, h := range hunks {
+		// Equal context lines before this hunk's first edit.
+		if h.PosX >= oldNum-1 && h.PosY >= newNum-1 {
+			ctx := min(h.PosY-(newNum-1), h.PosX-(oldNum-1))
+			for j := 0; j < ctx; j++ {
+				entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1+j], oldN: oldNum + j, newN: newNum + j})
+			}
+			oldNum += ctx
+			newNum += ctx
+		}
+
+		// Apply each edit in the hunk, advancing line numbers based on Op.
+		for _, e := range h.Edits {
+			switch e.Op {
+			case diff.Delete:
+				entries = append(entries, lineEntry{op: -1, line: e.X, oldN: oldNum, newN: newNum})
+				oldNum++
+			case diff.Insert:
+				entries = append(entries, lineEntry{op: +1, line: e.Y, oldN: oldNum, newN: newNum})
+				newNum++
+			case diff.Match:
+				entries = append(entries, lineEntry{op: 0, line: e.X, oldN: oldNum, newN: newNum})
+				oldNum++
+				newNum++
+			}
+		}
+	}
+
+	// Trailing equal context after the last hunk.
+	for oldNum-1 < len(oldLines) && newNum-1 < len(newLines) {
+		entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
+		oldNum++
+		newNum++
+	}
+	// Trailing deletes (more old lines than new).
+	for oldNum-1 < len(oldLines) {
+		entries = append(entries, lineEntry{op: -1, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
+		oldNum++
+	}
+	// Trailing inserts (more new lines than old).
+	for newNum-1 < len(newLines) {
+		entries = append(entries, lineEntry{op: +1, line: newLines[newNum-1], oldN: oldNum, newN: newNum})
+		newNum++
+	}
+
+	return entries
 }
 
 // lineEntry is a single line with its diff operation and line numbers.
@@ -133,38 +122,10 @@ type lineEntry struct {
 	newN int // new file line number (1-based)
 }
 
-// buildHunks converts diff components into structured hunks.
-// Mirrors diffLinesResultToPatch in structuredPatch.js, context=3.
-func buildHunks(components []diffComponent, oldLines, newLines []string, ctxLines int) []DiffHunk {
-	var entries []lineEntry
-	oldNum, newNum := 1, 1
-
-	for _, c := range components {
-		if c.added && !c.removed {
-			for i := 0; i < c.count; i++ {
-				if newNum-1 < len(newLines) {
-					entries = append(entries, lineEntry{op: +1, line: newLines[newNum-1], oldN: oldNum, newN: newNum})
-				}
-				newNum++
-			}
-		} else if c.removed && !c.added {
-			for i := 0; i < c.count; i++ {
-				if oldNum-1 < len(oldLines) {
-					entries = append(entries, lineEntry{op: -1, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
-				}
-				oldNum++
-			}
-		} else {
-			for i := 0; i < c.count; i++ {
-				if oldNum-1 < len(oldLines) {
-					entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1], oldN: oldNum, newN: newNum})
-				}
-				oldNum++
-				newNum++
-			}
-		}
-	}
-
+// buildHunks groups a flat lineEntry sequence into structured hunks with
+// ctxLines of context around each change. Mirrors diffLinesResultToPatch in
+// structuredPatch.js, context=3.
+func buildHunks(entries []lineEntry, ctxLines int) []DiffHunk {
 	// Strip trailing \n from each line (structuredPatch step 2)
 	for i := range entries {
 		entries[i].line = strings.TrimSuffix(entries[i].line, "\n")
@@ -174,7 +135,7 @@ func buildHunks(components []diffComponent, oldLines, newLines []string, ctxLine
 	var curRange []lineEntry
 	var oldRangeStart, newRangeStart int
 
-	for i := 0; i < len(entries); i++ {
+	for i := range entries {
 		e := entries[i]
 		if e.op != 0 {
 			// Change line
