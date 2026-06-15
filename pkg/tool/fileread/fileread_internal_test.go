@@ -896,6 +896,17 @@ func TestRenderResult_DefaultCase(t *testing.T) {
 	}
 }
 
+func TestRenderResult_JSONRawMessage(t *testing.T) {
+	t.Parallel()
+	// TUI passes marshaled output as json.RawMessage. renderResult must
+	// extract the content field rather than dump the whole JSON envelope.
+	raw := json.RawMessage(`{"content":"hello world","file_path":"/tmp/x.go","num_lines":1}`)
+	result := renderResult(raw)
+	if result != "hello world" {
+		t.Errorf("renderResult(json.RawMessage) = %q, want %q", result, "hello world")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // executeImage — read file error (line 516-518)
 // ---------------------------------------------------------------------------

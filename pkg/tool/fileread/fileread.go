@@ -450,6 +450,19 @@ func renderResult(data any) string {
 		return fmt.Sprintf("File unchanged: %s", out.FilePath)
 	case FileUnchangedOutput:
 		return fmt.Sprintf("File unchanged: %s", out.FilePath)
+	case json.RawMessage:
+		// TUI passes marshaled output. Decode and dispatch on the underlying type.
+		var probe map[string]json.RawMessage
+		if err := json.Unmarshal(out, &probe); err != nil {
+			return string(out)
+		}
+		if _, ok := probe["file_path"]; ok {
+			var to TextOutput
+			if err := json.Unmarshal(out, &to); err == nil {
+				return to.Content
+			}
+		}
+		return string(out)
 	default:
 		b, _ := json.Marshal(data)
 		return string(b)

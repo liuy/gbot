@@ -1254,7 +1254,7 @@ func wordWrap(text string, width int) string {
 
 // highlightSummary applies syntax highlighting to the summary field of tool
 // calls where the summary is code (Bash commands, Repl code). For tools whose
-// summary is plain text (file paths, patterns, etc.), it returns as-is.
+// summary is a path, only the basename is shown to keep headers short.
 func highlightSummary(toolName, summary string) string {
 	switch toolName {
 	case "Bash":
