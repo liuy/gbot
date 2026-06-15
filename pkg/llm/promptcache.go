@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sergi/go-diff/diffmatchpatch"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
 const (
@@ -275,9 +275,8 @@ func writeCacheBreakDiff(prevContent, newContent string) string {
 	if err != nil {
 		return ""
 	}
-	dmp := diffmatchpatch.New()
-	diffs := dmp.DiffMain(prevContent, newContent, true)
-	patch := dmp.PatchToText(dmp.PatchMake(prevContent, diffs))
+	hunks := tool.ComputePatch(prevContent, newContent)
+	patch := tool.RenderDiff(hunks)
 	if err := os.WriteFile(diffPath, []byte(patch), 0600); err != nil {
 		return ""
 	}

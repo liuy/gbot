@@ -23,10 +23,10 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klippa-app/go-pdfium v1.19.4
 	github.com/mattn/go-runewidth v0.0.23
+	github.com/mholt/archives v0.1.5
 	github.com/mmcdole/gofeed v1.3.0
 	github.com/modelcontextprotocol/go-sdk v1.6.0
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
-	github.com/sergi/go-diff v1.4.0
 	github.com/xuri/excelize/v2 v2.10.1
 	go.uber.org/goleak v1.3.0
 	golang.org/x/image v0.39.0
@@ -37,6 +37,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.0
 	mvdan.cc/sh/v3 v3.13.1
+	znkr.io/diff v1.0.1
 )
 
 require (
@@ -75,7 +76,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
-	github.com/mholt/archives v0.1.5 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.0.1 // indirect
 	github.com/mmcdole/goxpp v1.1.1-0.20240225020742-a0c311522b23 // indirect
@@ -112,5 +112,4 @@ require (
 	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	znkr.io/diff v1.0.1 // indirect
 )
