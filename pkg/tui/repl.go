@@ -649,7 +649,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			if streamDur := a.tokenRate.StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
 				ratePart = fmt.Sprintf(" · %.1f t/s", float64(queryUsage.OutputTokens)/streamDur.Seconds())
 			}
-			statsLine := styleDim.Render(tokensStr + cachePart + toolsPart + ratePart + " · " + elapsedStr)
+			statsLine := styleDim.Render(tokensStr + ratePart + cachePart + toolsPart + " · " + elapsedStr)
 			// Embed stats as a block in the last assistant message.
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
