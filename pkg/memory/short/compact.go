@@ -399,7 +399,7 @@ func TruncateToTokens(messages []*TranscriptMessage, maxTokens int) []*Transcrip
 	totalTokens := 0
 	// Count from tail backwards
 	for i := len(messages) - 1; i >= 0; i-- {
-		msgTokens := roughTokenCountForMessage(messages[i])
+		msgTokens := types.EstimateTokens(messages[i].Content)
 		if totalTokens+msgTokens > maxTokens {
 			// Include this message if we'd otherwise have nothing
 			if i == len(messages)-1 {
@@ -970,33 +970,12 @@ func (s *Store) indexMessageFTS(db dbExec, seq int64, content string) {
 }
 
 // roughTokenCount estimates token count for messages.
-// Same heuristic as engine.EstimateTokens: CJK-aware character classification.
-// Kept local due to import cycle (engine → memory/short).
 func roughTokenCount(messages []*TranscriptMessage) int {
 	count := 0
 	for _, msg := range messages {
-		count += roughTokenCountForMessage(msg)
+		count += types.EstimateTokens(msg.Content)
 	}
 	return count
-}
-
-// roughTokenCountForMessage estimates token count for a single message.
-// Same heuristic as engine.EstimateTokens: CJK ~1.5 tokens/char, non-CJK ~0.25.
-// Kept local due to import cycle (engine → memory/short).
-func roughTokenCountForMessage(msg *TranscriptMessage) int {
-	if msg.Content == "" {
-		return 0
-	}
-	cjk := 0
-	nonCJK := 0
-	for _, r := range msg.Content {
-		if types.IsCJK(r) {
-			cjk++
-		} else {
-			nonCJK++
-		}
-	}
-	return cjk*3/2 + nonCJK/4
 }
 
 // looksLikeFilePath checks if a string looks like a file path.

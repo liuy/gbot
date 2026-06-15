@@ -133,7 +133,7 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 
 	totalTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
-		tokens := EstimateTokens(messages[i].Content)
+		tokens := types.EstimateTokens(messages[i].Content)
 		if totalTokens+tokens > targetKeepTokens {
 			return i + 1
 		}

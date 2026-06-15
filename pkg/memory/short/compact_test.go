@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
@@ -795,27 +797,26 @@ func TestSegIsLive_SegmentStale(t *testing.T) {
 	}
 }
 
-func TestRoughTokenCountForMessage(t *testing.T) {
-	msg := &TranscriptMessage{Content: "1234567890"} // 10 chars
-
-	count := roughTokenCountForMessage(msg)
-
-	if count != 2 { // 10 / 4 = 2.5 → 2
-		t.Errorf("roughTokenCountForMessage() = %d, want 2", count)
+func TestEstimateTokens_Message(t *testing.T) {
+	// 10 numeric chars: EstimateTokens allNumeric → 1 token
+	msg := &TranscriptMessage{Content: "1234567890"}
+	count := types.EstimateTokens(msg.Content)
+	if count != 1 {
+		t.Errorf("EstimateTokens(1234567890) = %d, want 1", count)
 	}
 
-	// CJK: 1.5 tokens/char (3/2)
+	// CJK: EstimateTokens = 1 token/rune
 	cjkMsg := &TranscriptMessage{Content: "你好世界"} // 4 CJK chars
-	got := roughTokenCountForMessage(cjkMsg)
-	if got != 6 { // 4 * 3/2 = 6
-		t.Errorf("roughTokenCountForMessage(CJK) = %d, want 6", got)
+	got := types.EstimateTokens(cjkMsg.Content)
+	if got != 4 {
+		t.Errorf("EstimateTokens(CJK 你好世界) = %d, want 4", got)
 	}
 
-	// Mixed
-	mixedMsg := &TranscriptMessage{Content: "Hello 你好"} // 6 nonCJK + 2 CJK
-	got = roughTokenCountForMessage(mixedMsg)
-	if got != 4 { // 6/4 + 2*3/2 = 1 + 3 = 4
-		t.Errorf("roughTokenCountForMessage(mixed) = %d, want 4", got)
+	// Mixed: "Hello" (~1 token) + "你好" (2 tokens)
+	mixedMsg := &TranscriptMessage{Content: "Hello 你好"}
+	got = types.EstimateTokens(mixedMsg.Content)
+	if got != 3 {
+		t.Errorf("EstimateTokens(mixed) = %d, want 3", got)
 	}
 }
 
@@ -1463,24 +1464,24 @@ func TestShouldExcludeFromPostCompactRestore_Transient(t *testing.T) {
 
 func TestRoughTokenCount(t *testing.T) {
 	messages := []*TranscriptMessage{
-		{Content: "1234"},     // 4 chars -> 1 token
-		{Content: "12345678"}, // 8 chars -> 2 tokens
+		{Content: "1234"},     // allNumeric → 1 token
+		{Content: "12345678"}, // allNumeric → 1 token
 	}
 
 	count := roughTokenCount(messages)
 
-	if count != 3 {
-		t.Errorf("roughTokenCount = %d, want 3", count)
+	if count != 2 {
+		t.Errorf("roughTokenCount = %d, want 2", count)
 	}
 
 	// CJK messages
 	cjkMessages := []*TranscriptMessage{
-		{Content: "你好"},    // 2 CJK -> 3 tokens
-		{Content: "world"}, // 5 nonCJK -> 1 token
+		{Content: "你好"},    // 2 CJK → 2 tokens
+		{Content: "world"}, // 5 nonCJK → 1 token
 	}
 	got := roughTokenCount(cjkMessages)
-	if got != 4 { // 3 + 1 = 4
-		t.Errorf("roughTokenCount(CJK) = %d, want 4", got)
+	if got != 3 { // 2 + 1 = 3
+		t.Errorf("roughTokenCount(CJK) = %d, want 3", got)
 	}
 }
 

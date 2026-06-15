@@ -191,32 +191,6 @@ func getLanguageSpecificCharsPerToken(seg string) float64 {
 	return 0
 }
 
-// IsCJK reports whether r is a CJK character (Chinese, Japanese, Korean).
-// Kept for callers that need per-rune classification (e.g. status bar).
-func IsCJK(r rune) bool {
-	return (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
-		(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
-		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
-		(r >= 0x2A700 && r <= 0x2B73F) || // CJK Extension C
-		(r >= 0x2B740 && r <= 0x2B81F) || // CJK Extension D
-		(r >= 0x2B820 && r <= 0x2CEAF) || // CJK Extension E
-		(r >= 0x2CEB0 && r <= 0x2EBEF) || // CJK Extension F
-		(r >= 0x30000 && r <= 0x3134F) || // CJK Extension G
-		(r >= 0x3040 && r <= 0x309F) || // Hiragana
-		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
-		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul Syllables
-		(r >= 0x1100 && r <= 0x11FF) || // Hangul Jamo
-		(r >= 0x3130 && r <= 0x318F) || // Hangul Compatibility Jamo
-		(r >= 0x3000 && r <= 0x303F) || // CJK Symbols and Punctuation
-		(r >= 0xFF00 && r <= 0xFFEF) || // Halfwidth and Fullwidth Forms
-		(r >= 0x2E80 && r <= 0x2EFF) || // CJK Radicals Supplement
-		(r >= 0x31C0 && r <= 0x31EF) || // CJK Strokes
-		(r >= 0x3200 && r <= 0x32FF) || // Enclosed CJK Letters and Months
-		(r >= 0x3300 && r <= 0x33FF) || // CJK Compatibility
-		(r >= 0xA960 && r <= 0xA97F) || // Hangul Jamo Extended-A
-		(r >= 0xD7B0 && r <= 0xD7FF) // Hangul Jamo Extended-B
-}
-
 // FormatTokenCount formats a token count with K/M/G suffixes.
 // <1000: as-is, >=1K: "1.2k", >1M: "1.2M", >1G: "1.2G".
 // Uses 1024 as the base.

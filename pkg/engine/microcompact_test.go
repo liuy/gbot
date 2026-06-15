@@ -86,7 +86,7 @@ func TestEstimateTokens(t *testing.T) {
 		{"abc你好def", 8},
 	}
 	for _, tt := range tests {
-		got := EstimateTokens(tt.input)
+		got := types.EstimateTokens(tt.input)
 		if got != tt.want {
 			t.Errorf("EstimateTokens(%q) = %d, want %d", tt.input, got, tt.want)
 		}
@@ -101,7 +101,7 @@ func TestCalculateToolResultTokens_StringContent(t *testing.T) {
 	text := "Hello, this is a tool result with some content"
 	content := json.RawMessage(`"` + text + `"`)
 	got := calculateToolResultTokens(content)
-	want := EstimateTokens(text)
+	want := types.EstimateTokens(text)
 	if got != want {
 		t.Errorf("calculateToolResultTokens(string) = %d, want %d", got, want)
 	}
@@ -120,7 +120,7 @@ func TestCalculateToolResultTokens_MixedArray(t *testing.T) {
 	// Array with text + image blocks
 	content := json.RawMessage(`[{"type":"text","text":"Hello world"},{"type":"image","source":{"type":"base64","data":"..."}}]`)
 	got := calculateToolResultTokens(content)
-	wantText := EstimateTokens("Hello world")
+	wantText := types.EstimateTokens("Hello world")
 	want := wantText + ImageMaxTokenSize
 	if got != want {
 		t.Errorf("calculateToolResultTokens(mixed) = %d, want %d", got, want)
@@ -243,7 +243,7 @@ func TestEstimateMessagesTokens_Basic(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := EstimateTokens(text)
+	raw := types.EstimateTokens(text)
 	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(basic) = %d, want %d", got, want)
@@ -262,7 +262,7 @@ func TestEstimateMessagesTokens_ToolResult(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	// text="tool output here" (16 chars) → EstimateTokens=4 → padded=ceil(4*4/3)=6
-	want := int(math.Ceil(float64(EstimateTokens(text)) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(types.EstimateTokens(text)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_result) = %d, want %d", got, want)
 	}
@@ -276,7 +276,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(EstimateTokens(thinkingText)) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(types.EstimateTokens(thinkingText)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(thinking) = %d, want %d", got, want)
 	}
@@ -290,7 +290,7 @@ func TestEstimateMessagesTokens_RedactedThinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(EstimateTokens(data)) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(types.EstimateTokens(data)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(redacted_thinking) = %d, want %d", got, want)
 	}
@@ -305,7 +305,7 @@ func TestEstimateMessagesTokens_ToolUse(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	combined := "Read" + string(input)
-	want := int(math.Ceil(float64(EstimateTokens(combined)) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(types.EstimateTokens(combined)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_use) = %d, want %d", got, want)
 	}
@@ -320,7 +320,7 @@ func TestEstimateMessagesTokens_UnknownBlockType(t *testing.T) {
 	got := EstimateMessagesTokens(messages)
 	// Compute expected the same way the function does: JSON marshal → EstimateTokens → pad
 	raw, _ := json.Marshal(block)
-	want := int(math.Ceil(float64(EstimateTokens(string(raw))) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(types.EstimateTokens(string(raw))) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(unknown block) = %d, want %d", got, want)
 	}
@@ -732,11 +732,11 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 	// Compute expected from all block types:
 	// text "user text" + tool_result "tool output" + thinking "thinking text" +
 	// text "assistant text" + tool_use name+input "Read" + `{"path":"/x"}`
-	raw := EstimateTokens("user text") +
-		EstimateTokens("tool output") +
-		EstimateTokens("thinking text") +
-		EstimateTokens("assistant text") +
-		EstimateTokens("Read"+`{"path":"/x"}`)
+	raw := types.EstimateTokens("user text") +
+		types.EstimateTokens("tool output") +
+		types.EstimateTokens("thinking text") +
+		types.EstimateTokens("assistant text") +
+		types.EstimateTokens("Read"+`{"path":"/x"}`)
 	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(multiple) = %d, want %d", got, want)

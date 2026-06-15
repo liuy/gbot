@@ -181,20 +181,8 @@ func suppressCompactWarning() { compactWarningSuppressed.Store(true) }
 func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 
 // ---------------------------------------------------------------------------
-// EstimateTokens — source: tokenEstimation.ts
+// Token estimation uses types.EstimateTokens (see pkg/types/text.go).
 // ---------------------------------------------------------------------------
-
-// EstimateTokens estimates token count from text using character-type-aware heuristic.
-// CJK characters (Chinese/Japanese/Korean): ~1.5 tokens/char
-// Non-CJK (Latin, digits, symbols, etc.): ~0.25 tokens/char (1 token per 4 chars)
-//
-// This is a gbot improvement over TS: TS uses plain len/4 which severely
-// underestimates CJK content (~0.25 tokens/char instead of ~1.5).
-// Based on infinigence/tokenestimate linear regression model and Anthropic's
-// guidance that CJK is 2-3x more expensive per character.
-func EstimateTokens(text string) int {
-	return types.EstimateTokens(text)
-}
 
 // ---------------------------------------------------------------------------
 // calculateToolResultTokens — source: microCompact.ts:138-157
@@ -210,7 +198,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 	// Try to parse as string first (TS: typeof content === 'string')
 	var str string
 	if err := json.Unmarshal(content, &str); err == nil {
-		return EstimateTokens(str)
+		return types.EstimateTokens(str)
 	}
 
 	// Try to parse as array of blocks (TS: Array<TextBlock | ImageBlock | DocumentBlock>)
@@ -225,7 +213,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 			case "text":
 				var text string
 				if err := json.Unmarshal(block["text"], &text); err == nil {
-					total += EstimateTokens(text)
+					total += types.EstimateTokens(text)
 				}
 			case "image", "document":
 				// Images/documents ≈ 2000 tokens regardless of format.
@@ -237,7 +225,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 	}
 
 	// Fallback: estimate from raw bytes
-	return EstimateTokens(string(content))
+	return types.EstimateTokens(string(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -289,26 +277,26 @@ func EstimateMessagesTokens(messages []types.Message) int {
 		for _, block := range messages[i].Content {
 			switch block.Type {
 			case types.ContentTypeText:
-				totalTokens += EstimateTokens(block.Text)
+				totalTokens += types.EstimateTokens(block.Text)
 
 			case types.ContentTypeToolResult:
 				totalTokens += calculateToolResultTokens(block.Content)
 
 			case types.ContentTypeThinking:
-				totalTokens += EstimateTokens(block.Thinking)
+				totalTokens += types.EstimateTokens(block.Thinking)
 
 			case types.ContentTypeRedacted:
-				totalTokens += EstimateTokens(block.Data)
+				totalTokens += types.EstimateTokens(block.Data)
 
 			case types.ContentTypeToolUse:
 				// Source: microCompact.ts:190-195 — count name + input
-				totalTokens += EstimateTokens(block.Name + string(block.Input))
+				totalTokens += types.EstimateTokens(block.Name + string(block.Input))
 
 			default:
 				// server_tool_use, web_search_tool_result, etc.
 				// Source: microCompact.ts:197-199
 				raw, _ := json.Marshal(block)
-				totalTokens += EstimateTokens(string(raw))
+				totalTokens += types.EstimateTokens(string(raw))
 			}
 		}
 	}
