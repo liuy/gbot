@@ -141,6 +141,11 @@ type App struct {
 	// Dynamic token estimation (source: TS uses responseLength / 4)
 	responseCharCount int
 
+	// Real-time token rate tracking for streaming t/s display
+	tokenRate       *TokenRate
+	rateDisplayVal  float64   // cached for 1s to avoid jitter
+	rateDisplayTime time.Time // last time rateDisplayVal was refreshed
+
 	// Tool execution blink state
 	toolBlink     bool
 	toolBlinkTick int
@@ -198,6 +203,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 	a := &App{
 		input:            NewInput(),
 		status:           NewStatusBar(),
+		tokenRate:        NewTokenRate(),
 		spinner:          NewSpinner(),
 		repl:             NewReplState(),
 		engine:           eng,
@@ -658,6 +664,7 @@ func (a *App) resetDisplayState() {
 	a.thinkingDuration = 0
 	a.progressStart = time.Time{}
 	a.responseCharCount = 0
+	a.tokenRate.Reset()
 	a.displayedInputTokens = 0
 	a.displayedOutputTokens = 0
 	a.outputTokenTarget = 0
@@ -1064,7 +1071,13 @@ func (a *App) View() string {
 					toolsStr = fmt.Sprintf(" · %d tools", tc)
 				}
 			}
-			progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + toolsStr + thinkingStr + ")"
+			// Throttle rate display to 1 refresh/sec to avoid jitter.
+			if time.Since(a.rateDisplayTime) >= 500*time.Millisecond {
+				a.rateDisplayVal = a.tokenRate.Rate()
+				a.rateDisplayTime = time.Now()
+			}
+			rateStr := fmt.Sprintf(" · %.1f t/s", a.rateDisplayVal)
+			progressLine := spinnerFrame + " (" + elapsedStr + " · " + tokensStr + rateStr + toolsStr + thinkingStr + ")"
 			sb.WriteString(progressLine)
 			sb.WriteString("\n")
 		}

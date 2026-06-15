@@ -234,6 +234,10 @@ var checkPatterns = []checkPattern{
 		Regex: regexp.MustCompile(`\bgot\s*(==|!=|>|>=|<=|<)\s*0\b`),
 		Level: "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
+			// Exempt: float comparisons (0.0, 0.5, etc.) — these are precise
+			if regexp.MustCompile(`\b0\.\d`).MatchString(lines[lineIdx]) {
+				return true
+			}
 			// Exempt: comments
 			trimmed := strings.TrimSpace(lines[lineIdx])
 			if strings.HasPrefix(trimmed, "//") {

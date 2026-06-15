@@ -155,7 +155,7 @@ func TestEstimateTokens_GoldenData(t *testing.T) {
 		// CJK — 1 token/char per tokenx rule
 		{"chinese 2 chars", "中文", 2},
 		{"chinese 你好世界", "你好世界", 4},
-		{"japanese hiragana", "あいうえお", 1},  // hiragana NOT in tokenx CJK range → ceil(5/6)=1
+		{"japanese hiragana", "あいうえお", 1}, // hiragana NOT in tokenx CJK range → ceil(5/6)=1
 		{"japanese katakana", "アイウエオ", 5},
 		{"korean hangul", "안녕하세요", 5},
 
@@ -193,9 +193,9 @@ func TestEstimateTokens_GoldenData(t *testing.T) {
 
 		// Punctuation char-set (tokenx upstream parity). Underscore is
 		// a splitter, not a word char; angle brackets split comparisons.
-		{"snake_case", "foo_bar", 3},                  // 3 alphanumeric short segments
-		{"comparison operators", "a<b && c>d", 7},    // "a" "<" "b" "&&" "c" ">" "d"
-		{"url with port", "http://x:8080/api", 7},  // : splits → http, ://, x, :, 8080, /, api
+		{"snake_case", "foo_bar", 3},              // 3 alphanumeric short segments
+		{"comparison operators", "a<b && c>d", 7}, // "a" "<" "b" "&&" "c" ">" "d"
+		{"url with port", "http://x:8080/api", 7}, // : splits → http, ://, x, :, 8080, /, api
 
 		// Mixed CJK segment: tokenx CJK pattern is a substring test, so
 		// "hi中" doesn't match CJK (mixed); falls through to short path.

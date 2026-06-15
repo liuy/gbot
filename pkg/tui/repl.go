@@ -401,7 +401,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.repl.AppendChunk(m.Text)
 		}
 		a.responseCharCount += len(m.Text)
+		a.tokenRate.Add(m.Text)
 		return true, a.readEvents()
+
 	case textStartMsg:
 		a.retryActive = false
 		return true, a.readEvents()
@@ -510,6 +512,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
 		a.responseCharCount += len(m.Delta)
+		a.tokenRate.Add(m.Delta)
 		return true, a.readEvents()
 
 	case toolOutputDeltaMsg:
@@ -642,7 +645,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 					toolsPart = fmt.Sprintf(" · %d tools", tc)
 				}
 			}
-			statsLine := styleDim.Render(tokensStr + cachePart + toolsPart + " · " + elapsedStr)
+			var ratePart string
+			if streamDur := a.tokenRate.StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
+				ratePart = fmt.Sprintf(" · %.1f t/s", float64(queryUsage.OutputTokens)/streamDur.Seconds())
+			}
+			statsLine := styleDim.Render(tokensStr + cachePart + toolsPart + ratePart + " · " + elapsedStr)
 			// Embed stats as a block in the last assistant message.
 			// This is TUI-only — messages are not sent to the LLM.
 			if msg := a.repl.lastMsg(); msg != nil {
@@ -724,6 +731,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.PendingThinkingDelta(m.Text)
 		}
+		a.tokenRate.Add(m.Text)
 		return true, a.readEvents()
 
 	case thinkingEndMsg:
@@ -955,6 +963,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.thinkingDuration = 0
 	a.status.SetUsage(types.Usage{})
 	a.responseCharCount = 0
+	a.tokenRate.Reset()
 	a.displayedInputTokens = 0
 	a.displayedOutputTokens = 0
 	a.cacheReadTokens = 0

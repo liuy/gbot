@@ -39,8 +39,12 @@ func splitSegments(text string) []string {
 			j := i + 1
 			for j < len(runes) {
 				r2 := runes[j]
-				if wp && !isWS(r2) { break }
-				if !wp && !isPunctRune(r2) { break }
+				if wp && !isWS(r2) {
+					break
+				}
+				if !wp && !isPunctRune(r2) {
+					break
+				}
 				j++
 			}
 			segs = append(segs, string(runes[i:j]))
@@ -49,7 +53,9 @@ func splitSegments(text string) []string {
 			j := i + 1
 			for j < len(runes) {
 				r2 := runes[j]
-				if isWS(r2) || isPunctRune(r2) { break }
+				if isWS(r2) || isPunctRune(r2) {
+					break
+				}
 				j++
 			}
 			segs = append(segs, string(runes[i:j]))
@@ -173,18 +179,12 @@ func isCJKRune(r rune) bool {
 
 func getLanguageSpecificCharsPerToken(seg string) float64 {
 	for _, r := range seg {
-		switch {
-		case r == 'ä' || r == 'ö' || r == 'ü' || r == 'ß' || r == 'Ä' || r == 'Ö' || r == 'Ü' || r == 'ẞ':
+		switch r {
+		case 'ä', 'ö', 'ü', 'ß', 'Ä', 'Ö', 'Ü', 'ẞ':
 			return 3
-		case r == 'é' || r == 'è' || r == 'ê' || r == 'ë' || r == 'à' || r == 'â' ||
-			r == 'î' || r == 'ï' || r == 'ô' || r == 'û' || r == 'ù' || r == 'ü' ||
-			r == 'ÿ' || r == 'ç' || r == 'œ' || r == 'æ' || r == 'á' || r == 'í' ||
-			r == 'ó' || r == 'ú' || r == 'ñ':
+		case 'é', 'è', 'ê', 'ë', 'à', 'â', 'î', 'ï', 'ô', 'û', 'ù', 'ÿ', 'ç', 'œ', 'æ', 'á', 'í', 'ó', 'ú', 'ñ':
 			return 3
-		case r == 'ą' || r == 'ć' || r == 'ę' || r == 'ł' || r == 'ń' || r == 'ó' ||
-			r == 'ś' || r == 'ź' || r == 'ż' || r == 'ě' || r == 'š' || r == 'č' ||
-			r == 'ř' || r == 'ž' || r == 'ý' || r == 'ů' || r == 'ú' || r == 'ď' ||
-			r == 'ť' || r == 'ň':
+		case 'ą', 'ć', 'ę', 'ł', 'ń', 'ś', 'ź', 'ż', 'ě', 'š', 'č', 'ř', 'ž', 'ý', 'ů', 'ď', 'ť', 'ň':
 			return 3.5
 		}
 	}
