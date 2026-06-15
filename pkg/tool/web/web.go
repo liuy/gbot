@@ -115,6 +115,12 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			switch v := data.(type) {
 			case *Output:
 				return v.Content
+			case json.RawMessage:
+				var out Output
+				if err := json.Unmarshal(v, &out); err != nil {
+					return string(v)
+				}
+				return out.Content
 			case string:
 				return v
 			default:
