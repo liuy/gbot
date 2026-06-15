@@ -896,7 +896,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		}
 		header := runningDot + " " + styleNameBold.Render(agentName)
 		if tc.Summary != "" {
-			header += fmt.Sprintf("(%s)", tc.Summary)
+			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
 		header += " " + styleDim.Render("running...")
 		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
@@ -973,7 +973,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	hdr.WriteByte(' ')
 	hdr.WriteString(styleNameBold.Render(agentName))
 	if tc.Summary != "" {
-		fmt.Fprintf(&hdr, "(%s)", tc.Summary)
+		fmt.Fprintf(&hdr, "(%s)", highlightSummary(tc.Name, tc.Summary))
 	}
 	if tc.Elapsed > 0 {
 		hdr.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
@@ -1250,6 +1250,20 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 // under-wrapping and ghost content on re-render).
 func wordWrap(text string, width int) string {
 	return wordWrapIndent(text, width, "")
+}
+
+// highlightSummary applies syntax highlighting to the summary field of tool
+// calls where the summary is code (Bash commands, Repl code). For tools whose
+// summary is plain text (file paths, patterns, etc.), it returns as-is.
+func highlightSummary(toolName, summary string) string {
+	switch toolName {
+	case "Bash":
+		return tool.HighlightCode(summary, "bash")
+	case "Repl":
+		return tool.HighlightCode(summary, "javascript")
+	default:
+		return summary
+	}
 }
 
 // wordWrapIndent wraps text to width, indenting continuation lines by contIndent.
