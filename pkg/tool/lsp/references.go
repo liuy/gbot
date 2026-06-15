@@ -48,6 +48,11 @@ func references(ctx context.Context, c *lsp.Client, uri string, pos lsp.Position
 		return &tool.ToolResult{Data: "No references found"}, nil
 	}
 
+	locs = filterGitIgnored(ctx, locs, wd)
+	if len(locs) == 0 {
+		return &tool.ToolResult{Data: "No references found (all gitignored)"}, nil
+	}
+
 	totalCount := len(locs)
 	contextual := locs
 	plain := []lsp.Location{}

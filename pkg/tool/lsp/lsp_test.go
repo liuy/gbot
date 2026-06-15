@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -131,6 +132,17 @@ func serveFake(t *testing.T, conn net.Conn, handler fakeHandler) {
 		if !handled && handler != nil {
 			result, handled = handler(req.Method, req.Params)
 		}
+		// When the test's handler does not answer documentSymbol, synthesize a
+		// response by scanning the on-disk file for top-level `func NAME(`
+		// declarations. This lets every integration test that passes File +
+		// Symbol get automatic symbol→position resolution without each needing
+		// its own documentSymbol handler.
+		if !handled && req.Method == "textDocument/documentSymbol" {
+			if syms, ok := defaultDocumentSymbols(req.Params); ok {
+				result = syms
+				handled = true
+			}
+		}
 		if !handled {
 			result = nil
 		}
@@ -153,6 +165,68 @@ func mustInput(t *testing.T, in Input) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// declPatterns maps a regex (anchored at line start, allowing leading
+// whitespace) to the LSP SymbolKind assigned to matches. The first capture
+// group is the declared name. This covers the Go top-level declaration forms
+// used by the fake test files (func, var, type, const).
+var declPatterns = []struct {
+	re   *regexp.Regexp
+	kind lsp.SymbolKind
+}{
+	{regexp.MustCompile(`^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(`), lsp.SymbolFunction},
+	{regexp.MustCompile(`^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\b`), lsp.SymbolVariable},
+	{regexp.MustCompile(`^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b`), lsp.SymbolStruct},
+	{regexp.MustCompile(`^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\b`), lsp.SymbolConstant},
+}
+
+// defaultDocumentSymbols reads the file referenced by a documentSymbol request
+// and synthesizes a DocumentSymbol tree by scanning for common Go top-level
+// declarations (func/var/type/const). Returns ok=false when the file cannot
+// be read or the URI is malformed, so the caller falls back to a nil result.
+func defaultDocumentSymbols(params json.RawMessage) ([]lsp.DocumentSymbol, bool) {
+	var p struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, false
+	}
+	path := lsp.URItoPath(p.TextDocument.URI)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	lines := strings.Split(string(data), "\n")
+	var syms []lsp.DocumentSymbol
+	for i, line := range lines {
+		for _, pat := range declPatterns {
+			m := pat.re.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			name := m[1]
+			col := max(strings.Index(line, name), 0)
+			rng := lsp.Range{
+				Start: lsp.Position{Line: i, Character: 0},
+				End:   lsp.Position{Line: i, Character: len(line)},
+			}
+			sel := lsp.Range{
+				Start: lsp.Position{Line: i, Character: col},
+				End:   lsp.Position{Line: i, Character: col + len(name)},
+			}
+			syms = append(syms, lsp.DocumentSymbol{
+				Name:           name,
+				Kind:           pat.kind,
+				Range:          rng,
+				SelectionRange: sel,
+			})
+			break
+		}
+	}
+	return syms, true
 }
 
 // ---------------------------------------------------------------------------
@@ -191,12 +265,12 @@ func TestExecute_NoRegistry(t *testing.T) {
 	}
 }
 
-func TestExecute_NoFileForFileAction(t *testing.T) {
+func TestExecute_NoSymbolForFileAction(t *testing.T) {
 	reg := lsp.NewRegistry(t.TempDir())
 	reg.Scan([]lsp.ServerSpec{{Name: "gopls", Language: "Go", FileExts: []string{".go"}, Command: "gopls"}})
 	_, err := New(reg).Call(context.Background(), mustInput(t, Input{Action: "definition"}), basicCtx())
-	if err == nil || !strings.Contains(err.Error(), "file parameter required") {
-		t.Fatalf("expected file required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "symbol parameter required") {
+		t.Fatalf("expected symbol required error, got %v", err)
 	}
 }
 
@@ -344,103 +418,6 @@ func TestExtractHoverText(t *testing.T) {
 	}
 }
 
-func TestResolveSymbolColumn(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "main.go")
-	content := "func handleAuth() {}\nfunc handleAuthV2() {}\n"
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if col, err := resolveSymbolColumn(file, 1, "handleAuth"); err != nil || col != 5 {
-		t.Errorf("got col=%d err=%v, want col=5 err=nil", col, err)
-	}
-	// handleAuth#2 on line 1: only one match, occurrence 2 is out of bounds.
-	if _, err := resolveSymbolColumn(file, 1, "handleAuth#2"); err == nil {
-		t.Errorf("expected out-of-bounds error for handleAuth#2")
-	}
-	// nonexistent symbol: error, not silent col=0.
-	if _, err := resolveSymbolColumn(file, 1, "nonexistent"); err == nil {
-		t.Errorf("expected error for nonexistent symbol")
-	}
-	// line out of range: error (symbol not found on that line).
-	if _, err := resolveSymbolColumn(file, 999, "handleAuth"); err == nil {
-		t.Errorf("expected error for out-of-range line")
-	}
-	// empty filePath: col=0, no error.
-	if col, err := resolveSymbolColumn("", 1, "handleAuth"); err != nil || col != 0 {
-		t.Errorf("empty path: got col=%d err=%v, want col=0 err=nil", col, err)
-	}
-	// nonexistent file: error.
-	if _, err := resolveSymbolColumn(filepath.Join(dir, "nope.go"), 1, "x"); err == nil {
-		t.Errorf("expected file-not-found error")
-	}
-}
-
-func TestResolveSymbolColumn_WordBoundary(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "main.go")
-	content := "func handleAuth() {}\nvar Auth = 1\n"
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// "Auth" on line 1 is a substring of handleAuth — word boundary blocks it.
-	if _, err := resolveSymbolColumn(file, 1, "Auth"); err == nil {
-		t.Errorf("word boundary failed: expected error (Auth is substring of handleAuth)")
-	}
-	// Line 2 should find standalone Auth at col 4.
-	if col, err := resolveSymbolColumn(file, 2, "Auth"); err != nil || col != 4 {
-		t.Errorf("got col=%d err=%v, want col=4 err=nil", col, err)
-	}
-}
-
-func TestResolveSymbolColumn_Occurrence(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "main.go")
-	content := "foo := foo + foo\n"
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if col, err := resolveSymbolColumn(file, 1, "foo"); err != nil || col != 0 {
-		t.Errorf("first foo at col %d (err %v), want 0", col, err)
-	}
-	if col, err := resolveSymbolColumn(file, 1, "foo#2"); err != nil || col != 7 {
-		t.Errorf("second foo at col %d (err %v), want 7", col, err)
-	}
-	if col, err := resolveSymbolColumn(file, 1, "foo#3"); err != nil || col != 13 {
-		t.Errorf("third foo at col %d (err %v), want 13", col, err)
-	}
-}
-
-func TestResolveSymbolColumnFromContent_CJK(t *testing.T) {
-	// CJK characters before the symbol: byte offset ≠ UTF-16 code unit offset.
-	// LSP Position.Character uses UTF-16 code units. For BMP characters (CJK),
-	// rune offset == UTF-16 code unit offset.
-	content := []byte("// 中文注释 func foo() {}\n")
-	col, err := resolveSymbolColumnFromContent(content, 1, "foo")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// "foo" at UTF-16 offset 13, not byte offset 21.
-	if col != 13 {
-		t.Errorf("CJK line: got col=%d, want col=13 (UTF-16 code unit offset, not byte offset)", col)
-	}
-}
-
-func TestResolveSymbolColumnFromContent_EmptySymbolCJK(t *testing.T) {
-	// When symbol="" and line has CJK before the first non-whitespace char,
-	// whitespace is always ASCII so byte offset == UTF-16 offset. This test
-	// confirms that invariant holds.
-	content := []byte("\t\t中文 foo\n")
-	col, err := resolveSymbolColumnFromContent(content, 1, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// First non-whitespace is 中 at offset 2 (two tabs before it).
-	if col != 2 {
-		t.Errorf("CJK empty-symbol: got col=%d, want col=2", col)
-	}
-}
-
 func TestDecodeLocations(t *testing.T) {
 	// null
 	locs, err := decodeLocations(json.RawMessage("null"))
@@ -551,7 +528,7 @@ func TestIntegration_Definition(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "definition", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo",
+		Action: "definition", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -579,7 +556,7 @@ func TestIntegration_TypeDefinition(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "type_definition", File: filepath.Join(dir, "foo.go"), Line: 1, Symbol: "x",
+		Action: "type_definition", File: filepath.Join(dir, "foo.go"), Symbol: "x",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +583,7 @@ func TestIntegration_Implementation(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "implementation", File: filepath.Join(dir, "foo.go"), Line: 1, Symbol: "Foo",
+		Action: "implementation", File: filepath.Join(dir, "foo.go"), Symbol: "Foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +610,7 @@ func TestIntegration_References(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "references", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo",
+		Action: "references", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -681,7 +658,7 @@ func TestIntegration_References_ProjectAwareRetry(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "references", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo",
+		Action: "references", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +699,7 @@ func TestIntegration_References_TruncationReport(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "references", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo",
+		Action: "references", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -755,7 +732,7 @@ func TestIntegration_Hover(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "hover", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo",
+		Action: "hover", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -768,11 +745,11 @@ func TestIntegration_Hover(t *testing.T) {
 func TestIntegration_Hover_None(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, nil)
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "hover", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "hover", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -867,11 +844,11 @@ func TestIntegration_CodeActions(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -891,11 +868,11 @@ func TestIntegration_CodeActions_Empty(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -935,11 +912,11 @@ func TestIntegration_CodeActions_ApplyByIndex(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 		Apply: new(true), Query: "1",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
@@ -978,11 +955,11 @@ func TestIntegration_CodeActions_ApplyByTitle(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 		Apply: new(true), Query: "add",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
@@ -1006,11 +983,11 @@ func TestIntegration_CodeActions_ApplyNoQuery(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 		Apply: new(true),
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
@@ -1034,11 +1011,11 @@ func TestIntegration_CodeActions_ListFormat(t *testing.T) {
 		}
 	})
 	defer cleanup()
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Line: 1,
+		Action: "code_actions", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -1067,7 +1044,7 @@ func TestIntegration_Rename_NoEdits(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "rename", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo", NewName: "bar",
+		Action: "rename", File: filepath.Join(dir, "foo.go"), Symbol: "foo", NewName: "bar",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -1096,7 +1073,7 @@ func TestIntegration_Rename_WithEdits(t *testing.T) {
 
 	tt := New(reg)
 	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "rename", File: filepath.Join(dir, "foo.go"), Line: 2, Symbol: "foo", NewName: "bar",
+		Action: "rename", File: filepath.Join(dir, "foo.go"), Symbol: "foo", NewName: "bar",
 	}), &tool.ToolUseContext{WorkingDir: dir})
 	if err != nil {
 		t.Fatal(err)

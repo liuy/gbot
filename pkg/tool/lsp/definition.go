@@ -17,6 +17,7 @@ func definition(ctx context.Context, c *lsp.Client, uri string, pos lsp.Position
 	if err != nil {
 		return nil, fmt.Errorf("definition: %w", err)
 	}
+	locs = filterGitIgnored(ctx, locs, wd)
 	if len(locs) == 0 {
 		return &tool.ToolResult{Data: "No definition found"}, nil
 	}
@@ -44,6 +45,7 @@ func typeDefinition(ctx context.Context, c *lsp.Client, uri string, pos lsp.Posi
 	if err != nil {
 		return nil, err
 	}
+	locs = filterGitIgnored(ctx, locs, wd)
 	if len(locs) == 0 {
 		return &tool.ToolResult{Data: "No type definition found"}, nil
 	}
@@ -64,6 +66,7 @@ func implementation(ctx context.Context, c *lsp.Client, uri string, pos lsp.Posi
 	if err != nil {
 		return nil, fmt.Errorf("implementation: %w", err)
 	}
+	locs = filterGitIgnored(ctx, locs, wd)
 	if len(locs) == 0 {
 		return &tool.ToolResult{Data: "No implementation found"}, nil
 	}

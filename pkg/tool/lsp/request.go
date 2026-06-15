@@ -70,18 +70,14 @@ func request(ctx context.Context, reg *lsp.Registry, in Input, workingDir string
 			_ = c.EnsureFileOpen(ctx, uri, langID, string(content))
 		}
 
-		if in.Line > 0 {
-			col := 0
-			if in.Symbol != "" {
-				resolvedCol, err := resolveSymbolColumn(resolvedFile, in.Line, in.Symbol)
-				if err != nil {
-					return nil, err
-				}
-				col = resolvedCol
+		if in.Symbol != "" {
+			_, pos, err := resolveSymbolPosition(ctx, reg, in.Symbol, resolvedFile, workingDir)
+			if err != nil {
+				return nil, err
 			}
 			requestParams = map[string]any{
 				"textDocument": map[string]string{"uri": uri},
-				"position":     map[string]int{"line": in.Line - 1, "character": col},
+				"position":     pos,
 			}
 		} else {
 			requestParams = map[string]any{

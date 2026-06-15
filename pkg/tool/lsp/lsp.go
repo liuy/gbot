@@ -12,11 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/tool"
@@ -34,6 +31,8 @@ var readonlyActions = map[string]bool{
 	"hover":            true,
 	"symbols":          true,
 	"workspace_symbol": true,
+	"incoming_calls":   true,
+	"outgoing_calls":   true,
 	"status":           true,
 	"capabilities":     true,
 }
@@ -41,9 +40,8 @@ var readonlyActions = map[string]bool{
 // Input is the LSP tool input schema.
 type Input struct {
 	Action  string `json:"action"`             // required: definition, references, hover, symbols, rename, etc.
-	File    string `json:"file,omitempty"`     // file path (required for file-scoped actions)
-	Line    int    `json:"line,omitempty"`     // 1-based line number
-	Symbol  string `json:"symbol,omitempty"`   // symbol name at the position
+	File    string `json:"file,omitempty"`     // optional: file path (disambiguates + speeds up symbol resolution)
+	Symbol  string `json:"symbol,omitempty"`   // symbol name (resolved to position via documentSymbol or workspace_symbol)
 	NewName string `json:"new_name,omitempty"` // new name for rename / destination path for rename_file
 	Apply   *bool  `json:"apply,omitempty"`    // apply edits (default true for write actions)
 	Query   string `json:"query,omitempty"`    // query string for workspace_symbol / custom request
@@ -61,20 +59,16 @@ func New(reg *lsp.Registry) tool.Tool {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request"],
+				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "incoming_calls", "outgoing_calls"],
 				"description": "LSP action to perform"
 			},
 			"file": {
 				"type": "string",
-				"description": "Absolute path to the file (required for file-scoped actions like definition, references, hover, symbols)"
-			},
-			"line": {
-				"type": "integer",
-				"description": "1-based line number for the position (optional, default: 1)"
+				"description": "Optional. File path to disambiguate symbol resolution. When omitted, workspace_symbol is used to find the symbol across the project."
 			},
 			"symbol": {
 				"type": "string",
-				"description": "Symbol name at the position (required by project-aware servers for references/rename/definition to avoid fallback to wrong identifier)"
+				"description": "Symbol name (e.g. function/type/variable name). Required for position-based actions. Automatically resolved to a position via documentSymbol (if file given) or workspace_symbol. Use symbol#N to disambiguate the Nth occurrence."
 			},
 			"new_name": {
 				"type": "string",
@@ -183,78 +177,39 @@ func dispatch(ctx context.Context, reg *lsp.Registry, in Input, workingDir strin
 		return request(ctx, reg, in, workingDir)
 	case "rename_file":
 		return renameFile(ctx, reg, in, workingDir)
-	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename":
+	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename", "incoming_calls", "outgoing_calls":
 		return fileOp(ctx, reg, in, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown LSP action: %s", in.Action)
 	}
 }
 
-// fileOp is the dispatch for file-scoped actions (actions that need a file path
-// and resolve a position from line + symbol).
+// fileOp is the dispatch for file-scoped actions.
+// Position-based actions resolve the symbol to a position via documentSymbol
+// (if file is given) or workspace_symbol (if not), so the LLM never needs
+// to pass line numbers.
 func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (*tool.ToolResult, error) {
-	if in.File == "" {
-		return nil, fmt.Errorf("file parameter required for %s", in.Action)
-	}
-
-	targetFile := resolvePath(in.File, workingDir)
-	ext := filepath.Ext(targetFile)
-	if ext == "" {
-		return nil, fmt.Errorf("no extension: %s", targetFile)
-	}
-
-	c, err := reg.ForFile(ctx, targetFile)
-	if err != nil {
-		return nil, fmt.Errorf("lsp for file: %w", err)
-	}
-	spec, _ := reg.SpecForFile(targetFile)
-
-	uri := lsp.FileToURI(targetFile)
-	langID := lsp.DetectLanguage(targetFile)
-	if langID == "" {
-		return nil, fmt.Errorf("unknown language: %s", ext)
-	}
-
-	// Read file content and ensure it's open
-	content, err := os.ReadFile(targetFile)
-	if err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
-	}
-
-	if err := c.EnsureFileOpen(ctx, uri, langID, string(content)); err != nil {
-		return nil, fmt.Errorf("ensure open: %w", err)
-	}
-
-	// Validate action-specific params early so the LLM gets the right error
-	// (e.g. rename without new_name should fail on new_name, not on symbol).
+	// rename validation early so the error is about new_name, not symbol resolution
 	if in.Action == "rename" && in.NewName == "" {
 		return nil, fmt.Errorf("new_name parameter required for rename")
 	}
 
-	line := in.Line
-	if line <= 0 {
-		line = 1
+	// symbols only needs a file, no symbol resolution
+	if in.Action == "symbols" {
+		if in.File == "" {
+			return nil, fmt.Errorf("file parameter required for symbols")
+		}
+		return symbolsAction(ctx, reg, in, workingDir)
 	}
 
-	// Resolve column: reuse the already-read content to avoid duplicate I/O.
-	col, err := resolveSymbolColumnFromContent(content, line, in.Symbol)
+	// All other actions need a symbol name
+	if in.Symbol == "" {
+		return nil, fmt.Errorf("symbol parameter required for %s", in.Action)
+	}
+
+	uri, pos, c, spec, err := resolveAndOpen(ctx, reg, in, workingDir)
 	if err != nil {
 		return nil, err
-	}
-
-	pos := lsp.Position{Line: line - 1, Character: col}
-
-	// Symbol-required guard: project-aware servers (gopls/tsserver/rust-analyzer)
-	// need an explicit symbol name to disambiguate which identifier at the line
-	// the cursor is on; without it they fall back to whatever the heuristic
-	// picks and may return wrong-definition results. Mirrors omp
-	// PROJECT_INDEXED_ACTIONS symbol guard (index.ts:2122-2135).
-	symbolRequired := isProjectAwareLspServer(spec) && in.Symbol == ""
-	switch in.Action {
-	case "definition", "type_definition", "implementation", "references", "rename":
-		if symbolRequired {
-			return nil, fmt.Errorf("symbol parameter required for %s on project-aware servers (server may mis-identify the identifier)", in.Action)
-		}
 	}
 
 	switch in.Action {
@@ -268,8 +223,10 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 		return references(ctx, c, uri, pos, workingDir, spec)
 	case "hover":
 		return hover(ctx, c, uri, pos)
-	case "symbols":
-		return symbols(ctx, c, uri, targetFile, workingDir)
+	case "incoming_calls":
+		return callHierarchy(ctx, c, uri, pos, workingDir, "incoming")
+	case "outgoing_calls":
+		return callHierarchy(ctx, c, uri, pos, workingDir, "outgoing")
 	case "code_actions":
 		return codeActions(ctx, c, uri, pos, in)
 	case "rename":
@@ -277,6 +234,89 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 	default:
 		return nil, fmt.Errorf("unknown file action: %s", in.Action)
 	}
+}
+
+// resolveAndOpen resolves the symbol to a position, ensures the file is open
+// in the LSP server, and returns everything the action handlers need.
+func resolveAndOpen(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (uri string, pos lsp.Position, c *lsp.Client, spec lsp.ServerSpec, err error) {
+	uri, pos, err = resolveSymbolPosition(ctx, reg, in.Symbol, in.File, workingDir)
+	if err != nil {
+		return "", lsp.Position{}, nil, lsp.ServerSpec{}, err
+	}
+
+	targetFile := lsp.URItoPath(uri)
+	ext := filepath.Ext(targetFile)
+	if ext == "" {
+		return "", lsp.Position{}, nil, lsp.ServerSpec{}, fmt.Errorf("no extension: %s", targetFile)
+	}
+
+	c, err = reg.ForFile(ctx, targetFile)
+	if err != nil {
+		return "", lsp.Position{}, nil, lsp.ServerSpec{}, fmt.Errorf("lsp for file: %w", err)
+	}
+	spec, _ = reg.SpecForFile(targetFile)
+
+	langID := lsp.DetectLanguage(targetFile)
+	if langID == "" {
+		return "", lsp.Position{}, nil, lsp.ServerSpec{}, fmt.Errorf("unknown language: %s", ext)
+	}
+
+	if !c.IsFileOpen(uri) {
+		if err := ensureFileOpenWithGuard(ctx, c, uri, langID, targetFile); err != nil {
+			return "", lsp.Position{}, nil, lsp.ServerSpec{}, err
+		}
+	}
+
+	return uri, pos, c, spec, nil
+}
+
+// symbolsAction handles the symbols-only path (needs file, no symbol resolution).
+func symbolsAction(ctx context.Context, reg *lsp.Registry, in Input, workingDir string) (*tool.ToolResult, error) {
+	targetFile := resolvePath(in.File, workingDir)
+	ext := filepath.Ext(targetFile)
+	if ext == "" {
+		return nil, fmt.Errorf("no extension: %s", targetFile)
+	}
+
+	c, err := reg.ForFile(ctx, targetFile)
+	if err != nil {
+		return nil, fmt.Errorf("lsp for file: %w", err)
+	}
+
+	uri := lsp.FileToURI(targetFile)
+	langID := lsp.DetectLanguage(targetFile)
+	if langID == "" {
+		return nil, fmt.Errorf("unknown language: %s", ext)
+	}
+
+	if err := ensureFileOpenWithGuard(ctx, c, uri, langID, targetFile); err != nil {
+		return nil, err
+	}
+
+	return symbols(ctx, c, uri, targetFile, workingDir)
+}
+
+// ensureFileOpenWithGuard stats the file, checks the 10MB limit, reads it,
+// and sends didOpen to the server. Skips if already open.
+func ensureFileOpenWithGuard(ctx context.Context, c *lsp.Client, uri, langID, targetFile string) error {
+	if c.IsFileOpen(uri) {
+		return nil
+	}
+	info, err := os.Stat(targetFile)
+	if err != nil {
+		return fmt.Errorf("stat file: %w", err)
+	}
+	if info.Size() > 10*1024*1024 {
+		return fmt.Errorf("file too large for LSP analysis (%.1fMB, max 10MB)", float64(info.Size())/1024/1024)
+	}
+	content, err := os.ReadFile(targetFile)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	if err := c.EnsureFileOpen(ctx, uri, langID, string(content)); err != nil {
+		return fmt.Errorf("ensure open: %w", err)
+	}
+	return nil
 }
 
 func resolvePath(p, wd string) string {
@@ -303,148 +343,6 @@ func formatJSON(raw json.RawMessage) string {
 		return string(raw)
 	}
 	return string(b)
-}
-
-// resolveSymbolColumn finds the 0-based column offset of a symbol on a given line.
-// Reads the file from disk — callers that already have the file content should
-// call resolveSymbolColumnFromContent instead to avoid duplicate I/O.
-func resolveSymbolColumn(filePath string, line int, symbol string) (int, error) {
-	if filePath == "" {
-		return 0, nil
-	}
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("file not found: %s", filePath)
-	}
-	return resolveSymbolColumnFromContent(data, line, symbol)
-}
-
-// resolveSymbolColumnFromContent is the core column resolver that works on
-// already-read file content. Mirrors omp utils.ts resolveSymbolColumn.
-// Returns an error (not col=0) when the symbol is not found — a silent fallback
-// to col=0 would query the wrong identifier and mislead the LLM.
-func resolveSymbolColumnFromContent(content []byte, line int, symbol string) (int, error) {
-	lines := strings.Split(string(content), "\n")
-	if line < 1 {
-		line = 1
-	}
-	targetLine := ""
-	if line <= len(lines) {
-		targetLine = lines[line-1]
-	}
-
-	// No symbol: return first non-whitespace column.
-	if symbol == "" {
-		for i, c := range targetLine {
-			if c != ' ' && c != '\t' {
-				return i, nil
-			}
-		}
-		return 0, nil
-	}
-
-	sym, n := parseSymbolSpec(symbol)
-
-	indexes := findSymbolMatchIndexes(targetLine, sym)
-	if len(indexes) == 0 {
-		indexes = findSymbolMatchIndexesCI(targetLine, sym)
-	}
-	if len(indexes) == 0 {
-		return 0, fmt.Errorf("symbol %q not found on line %d", sym, line)
-	}
-	if n > len(indexes) {
-		return 0, fmt.Errorf("symbol %q occurrence %d is out of bounds on line %d (found %d)", sym, n, line, len(indexes))
-	}
-	return byteOffsetToUTF16(targetLine, indexes[n-1]), nil
-}
-
-// byteOffsetToUTF16 converts a byte offset in s to a UTF-16 code unit offset.
-// LSP Position.Character uses UTF-16 code units, not byte offsets. BMP characters
-// (including CJK) count as 1 code unit; supplementary plane characters (emoji)
-// count as 2 (surrogate pair).
-func byteOffsetToUTF16(s string, byteOffset int) int {
-	if byteOffset > len(s) {
-		byteOffset = len(s)
-	}
-	count := 0
-	for i := 0; i < byteOffset; {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		i += size
-		if r >= 0x10000 {
-			count += 2
-		} else {
-			count++
-		}
-	}
-	return count
-}
-
-// parseSymbolSpec splits "name#N" into name and 1-indexed occurrence.
-// Specs without trailing #N return occurrence=1. Greedy match on ".+"
-// so "#name#2" parses as symbol="#name" with occurrence 2.
-func parseSymbolSpec(spec string) (symbol string, occurrence int) {
-	m := parseSymbolSpecRe.FindStringSubmatch(spec)
-	if m == nil {
-		return spec, 1
-	}
-	n, _ := strconv.Atoi(m[2])
-	if n < 1 {
-		n = 1
-	}
-	return m[1], n
-}
-
-var parseSymbolSpecRe = regexp.MustCompile(`^(.+)#(\d+)$`)
-
-// findSymbolMatchIndexes returns byte offsets where symbol appears as a
-// standalone identifier in lineText. Bare identifiers (matching BARE_IDENTIFIER_RE)
-// require word boundaries on both sides; symbols with non-identifier chars
-// (e.g., operators) match anywhere.
-func findSymbolMatchIndexes(lineText, symbol string) []int {
-	if symbol == "" {
-		return nil
-	}
-	requireWordBoundary := bareIdentifierRe.MatchString(symbol)
-	var indexes []int
-	from := 0
-	for from <= len(lineText)-len(symbol) {
-		idx := strings.Index(lineText[from:], symbol)
-		if idx < 0 {
-			break
-		}
-		pos := from + idx
-		if requireWordBoundary {
-			before := byte(' ')
-			if pos > 0 {
-				before = lineText[pos-1]
-			}
-			after := byte(' ')
-			if pos+len(symbol) < len(lineText) {
-				after = lineText[pos+len(symbol)]
-			}
-			if isIdentChar(before) || isIdentChar(after) {
-				from = pos + 1
-				continue
-			}
-		}
-		indexes = append(indexes, pos)
-		from = pos + len(symbol)
-	}
-	return indexes
-}
-
-// findSymbolMatchIndexesCI is the case-insensitive fallback when exact match returns nothing.
-func findSymbolMatchIndexesCI(lineText, symbol string) []int {
-	return findSymbolMatchIndexes(strings.ToLower(lineText), strings.ToLower(symbol))
-}
-
-var bareIdentifierRe = regexp.MustCompile(`^[$A-Za-z_][\w$]*$`)
-
-func isIdentChar(b byte) bool {
-	return b == '_' || b == '$' ||
-		(b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9')
 }
 
 // extractHoverText converts LSP Hover contents to plain text.

@@ -608,3 +608,12 @@ func (c *Client) OpenURIs() []string {
 	}
 	return out
 }
+
+// IsFileOpen reports whether the server has been notified about uri via didOpen.
+// Lets callers skip stat+read+didOpen for already-opened files.
+func (c *Client) IsFileOpen(uri string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.openURIs[uri]
+	return ok
+}
