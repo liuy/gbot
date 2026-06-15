@@ -1032,11 +1032,6 @@ func (a *App) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Task list panel (auto-shows when tasks exist)
-	if taskPanel != "" {
-		sb.WriteString(taskPanel)
-	}
-
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
 	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
 		// Retry display: show user-friendly error + countdown for attempts >= 4
@@ -1081,6 +1076,11 @@ func (a *App) View() string {
 			sb.WriteString(progressLine)
 			sb.WriteString("\n")
 		}
+	}
+
+	// Task list panel (between progress line and input box)
+	if taskPanel != "" {
+		sb.WriteString(taskPanel)
 	}
 
 	// Queue box: dim preview of messages queued during streaming

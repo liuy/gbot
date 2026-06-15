@@ -38,7 +38,7 @@ func TestTokenRate_Rate_UsesActualElapsed(t *testing.T) {
 	// Rate() should reflect actual streaming time, not fixed window.
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			r.Add("six token chunk") // 6 tokens each = 30 total
 			time.Sleep(60 * time.Millisecond)
 		}
@@ -121,7 +121,7 @@ func TestTokenRate_Reset(t *testing.T) {
 func TestTokenRate_EvictCompactsBackingArray(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := NewTokenRate()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			r.Add("sample token text here")
 			time.Sleep(5 * time.Millisecond)
 		}
