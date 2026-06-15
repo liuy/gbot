@@ -85,7 +85,7 @@ func positionInRange(pos lsp.Position, r lsp.Range) bool {
 	return true
 }
 
-// inspectAction combines hover + definition + incoming_calls into one response.
+// inspectAction combines hover + definition + callers into one response.
 // The "understand this function" universal entry point.
 func inspectAction(ctx context.Context, reg *lsp.Registry, in Input, wd string) (*tool.ToolResult, error) {
 	uri, pos, c, _, err := resolveAndOpen(ctx, reg, in, wd)
@@ -113,17 +113,17 @@ func inspectAction(ctx context.Context, reg *lsp.Registry, in Input, wd string) 
 	}
 
 	// Incoming calls
-	callResult, err := callHierarchy(ctx, c, uri, pos, wd, "incoming")
+	callResult, err := callHierarchy(ctx, c, uri, pos, wd, "callers")
 	if err != nil {
-		fmt.Fprintf(&b, "## Incoming Calls\nError: %v\n\n", err)
+		fmt.Fprintf(&b, "## Callers\nError: %v\n\n", err)
 	} else {
-		fmt.Fprintf(&b, "## Incoming Calls\n%s\n", callResult.Data)
+		fmt.Fprintf(&b, "## Callers\n%s\n", callResult.Data)
 	}
 
 	return &tool.ToolResult{Data: b.String()}, nil
 }
 
-// impactAction combines references + incoming_calls + outgoing_calls into one response.
+// impactAction combines references + callers + callees into one response.
 // The blast-radius assessment before making changes.
 func impactAction(ctx context.Context, reg *lsp.Registry, in Input, wd string) (*tool.ToolResult, error) {
 	uri, pos, c, spec, err := resolveAndOpen(ctx, reg, in, wd)
@@ -143,19 +143,19 @@ func impactAction(ctx context.Context, reg *lsp.Registry, in Input, wd string) (
 	}
 
 	// Incoming calls
-	inResult, err := callHierarchy(ctx, c, uri, pos, wd, "incoming")
+	inResult, err := callHierarchy(ctx, c, uri, pos, wd, "callers")
 	if err != nil {
-		fmt.Fprintf(&b, "## Incoming Calls\nError: %v\n\n", err)
+		fmt.Fprintf(&b, "## Callers\nError: %v\n\n", err)
 	} else {
-		fmt.Fprintf(&b, "## Incoming Calls\n%s\n\n", inResult.Data)
+		fmt.Fprintf(&b, "## Callers\n%s\n\n", inResult.Data)
 	}
 
 	// Outgoing calls
-	outResult, err := callHierarchy(ctx, c, uri, pos, wd, "outgoing")
+	outResult, err := callHierarchy(ctx, c, uri, pos, wd, "callees")
 	if err != nil {
-		fmt.Fprintf(&b, "## Outgoing Calls\nError: %v\n\n", err)
+		fmt.Fprintf(&b, "## Callees\nError: %v\n\n", err)
 	} else {
-		fmt.Fprintf(&b, "## Outgoing Calls\n%s\n", outResult.Data)
+		fmt.Fprintf(&b, "## Callees\n%s\n", outResult.Data)
 	}
 
 	return &tool.ToolResult{Data: b.String()}, nil

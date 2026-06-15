@@ -20,14 +20,14 @@ type callHierarchyItem struct {
 	Detail string    `json:"detail,omitempty"`
 }
 
-// incomingCall represents a caller of the target function.
-type incomingCall struct {
+// callerEntry represents a caller of the target function.
+type callerEntry struct {
 	From       callHierarchyItem `json:"from"`
 	FromRanges []lsp.Range       `json:"fromRanges"`
 }
 
-// outgoingCall represents a callee of the target function.
-type outgoingCall struct {
+// calleeEntry represents a callee of the target function.
+type calleeEntry struct {
 	To         callHierarchyItem `json:"to"`
 	FromRanges []lsp.Range       `json:"fromRanges"`
 }
@@ -50,7 +50,7 @@ func callHierarchy(ctx context.Context, c *lsp.Client, uri string, pos lsp.Posit
 	}
 
 	method := "callHierarchy/incomingCalls"
-	if direction == "outgoing" {
+	if direction == "callees" {
 		method = "callHierarchy/outgoingCalls"
 	}
 
@@ -61,30 +61,30 @@ func callHierarchy(ctx context.Context, c *lsp.Client, uri string, pos lsp.Posit
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 
-	if direction == "incoming" {
-		return formatIncomingCalls(ctx, callRaw, wd)
+	if direction == "callers" {
+		return formatCallers(ctx, callRaw, wd)
 	}
-	return formatOutgoingCalls(ctx, callRaw, wd)
+	return formatCallees(ctx, callRaw, wd)
 }
 
-func formatIncomingCalls(ctx context.Context, raw json.RawMessage, wd string) (*tool.ToolResult, error) {
-	var calls []incomingCall
+func formatCallers(ctx context.Context, raw json.RawMessage, wd string) (*tool.ToolResult, error) {
+	var calls []callerEntry
 	if err := json.Unmarshal(raw, &calls); err != nil {
-		return nil, fmt.Errorf("decode incoming calls: %w", err)
+		return nil, fmt.Errorf("decode callers: %w", err)
 	}
 	if len(calls) == 0 {
-		return &tool.ToolResult{Data: "No incoming calls found (nothing calls this function)"}, nil
+		return &tool.ToolResult{Data: "No callers found (nothing calls this function)"}, nil
 	}
 
-	calls = filterGitIgnoredIncoming(ctx, calls, wd)
+	calls = filterGitIgnoredCallers(ctx, calls, wd)
 	if len(calls) == 0 {
-		return &tool.ToolResult{Data: "No incoming calls found (all gitignored)"}, nil
+		return &tool.ToolResult{Data: "No callers found (all gitignored)"}, nil
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Found %d incoming call(s):\n", len(calls))
+	fmt.Fprintf(&b, "Found %d caller(s):\n", len(calls))
 
-	byFile := groupIncomingByFile(calls, wd)
+	byFile := groupCallersByFile(calls, wd)
 	for _, fp := range sortedKeys(byFile) {
 		fmt.Fprintf(&b, "\n%s:\n", fp)
 		for _, call := range byFile[fp] {
@@ -100,24 +100,24 @@ func formatIncomingCalls(ctx context.Context, raw json.RawMessage, wd string) (*
 	return &tool.ToolResult{Data: b.String()}, nil
 }
 
-func formatOutgoingCalls(ctx context.Context, raw json.RawMessage, wd string) (*tool.ToolResult, error) {
-	var calls []outgoingCall
+func formatCallees(ctx context.Context, raw json.RawMessage, wd string) (*tool.ToolResult, error) {
+	var calls []calleeEntry
 	if err := json.Unmarshal(raw, &calls); err != nil {
-		return nil, fmt.Errorf("decode outgoing calls: %w", err)
+		return nil, fmt.Errorf("decode callees: %w", err)
 	}
 	if len(calls) == 0 {
-		return &tool.ToolResult{Data: "No outgoing calls found (this function calls nothing)"}, nil
+		return &tool.ToolResult{Data: "No callees found (this function calls nothing)"}, nil
 	}
 
-	calls = filterGitIgnoredOutgoing(ctx, calls, wd)
+	calls = filterGitIgnoredCallees(ctx, calls, wd)
 	if len(calls) == 0 {
-		return &tool.ToolResult{Data: "No outgoing calls found (all gitignored)"}, nil
+		return &tool.ToolResult{Data: "No callees found (all gitignored)"}, nil
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Found %d outgoing call(s):\n", len(calls))
+	fmt.Fprintf(&b, "Found %d callee(s):\n", len(calls))
 
-	byFile := groupOutgoingByFile(calls, wd)
+	byFile := groupCalleesByFile(calls, wd)
 	for _, fp := range sortedKeys(byFile) {
 		fmt.Fprintf(&b, "\n%s:\n", fp)
 		for _, call := range byFile[fp] {
@@ -133,8 +133,8 @@ func formatOutgoingCalls(ctx context.Context, raw json.RawMessage, wd string) (*
 	return &tool.ToolResult{Data: b.String()}, nil
 }
 
-func groupIncomingByFile(calls []incomingCall, wd string) map[string][]incomingCall {
-	byFile := make(map[string][]incomingCall)
+func groupCallersByFile(calls []callerEntry, wd string) map[string][]callerEntry {
+	byFile := make(map[string][]callerEntry)
 	for _, call := range calls {
 		fp := lsp.URItoRelativePath(call.From.URI, wd)
 		byFile[fp] = append(byFile[fp], call)
@@ -142,8 +142,8 @@ func groupIncomingByFile(calls []incomingCall, wd string) map[string][]incomingC
 	return byFile
 }
 
-func groupOutgoingByFile(calls []outgoingCall, wd string) map[string][]outgoingCall {
-	byFile := make(map[string][]outgoingCall)
+func groupCalleesByFile(calls []calleeEntry, wd string) map[string][]calleeEntry {
+	byFile := make(map[string][]calleeEntry)
 	for _, call := range calls {
 		fp := lsp.URItoRelativePath(call.To.URI, wd)
 		byFile[fp] = append(byFile[fp], call)
@@ -151,7 +151,7 @@ func groupOutgoingByFile(calls []outgoingCall, wd string) map[string][]outgoingC
 	return byFile
 }
 
-func filterGitIgnoredIncoming(ctx context.Context, calls []incomingCall, wd string) []incomingCall {
+func filterGitIgnoredCallers(ctx context.Context, calls []callerEntry, wd string) []callerEntry {
 	locs := make([]lsp.Location, len(calls))
 	for i, call := range calls {
 		locs[i] = lsp.Location{URI: call.From.URI}
@@ -174,7 +174,7 @@ func filterGitIgnoredIncoming(ctx context.Context, calls []incomingCall, wd stri
 	return out
 }
 
-func filterGitIgnoredOutgoing(ctx context.Context, calls []outgoingCall, wd string) []outgoingCall {
+func filterGitIgnoredCallees(ctx context.Context, calls []calleeEntry, wd string) []calleeEntry {
 	locs := make([]lsp.Location, len(calls))
 	for i, call := range calls {
 		locs[i] = lsp.Location{URI: call.To.URI}

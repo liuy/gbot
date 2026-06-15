@@ -31,8 +31,8 @@ var readonlyActions = map[string]bool{
 	"hover":            true,
 	"symbols":          true,
 	"workspace_symbol": true,
-	"incoming_calls":   true,
-	"outgoing_calls":   true,
+	"callers":          true,
+	"callees":          true,
 	"source":           true,
 	"inspect":          true,
 	"impact":           true,
@@ -62,7 +62,7 @@ func New(reg *lsp.Registry) tool.Tool {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "incoming_calls", "outgoing_calls", "source", "inspect", "impact"],
+				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "callers", "callees", "source", "inspect", "impact"],
 				"description": "LSP action to perform"
 			},
 			"file": {
@@ -180,7 +180,7 @@ func dispatch(ctx context.Context, reg *lsp.Registry, in Input, workingDir strin
 		return request(ctx, reg, in, workingDir)
 	case "rename_file":
 		return renameFile(ctx, reg, in, workingDir)
-	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename", "incoming_calls", "outgoing_calls", "source", "inspect", "impact":
+	case "definition", "type_definition", "implementation", "references", "hover", "symbols", "code_actions", "rename", "callers", "callees", "source", "inspect", "impact":
 		return fileOp(ctx, reg, in, workingDir)
 	default:
 		return nil, fmt.Errorf("unknown LSP action: %s", in.Action)
@@ -236,10 +236,10 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 		return references(ctx, c, uri, pos, workingDir, spec)
 	case "hover":
 		return hover(ctx, c, uri, pos)
-	case "incoming_calls":
-		return callHierarchy(ctx, c, uri, pos, workingDir, "incoming")
-	case "outgoing_calls":
-		return callHierarchy(ctx, c, uri, pos, workingDir, "outgoing")
+	case "callers":
+		return callHierarchy(ctx, c, uri, pos, workingDir, "callers")
+	case "callees":
+		return callHierarchy(ctx, c, uri, pos, workingDir, "callees")
 	case "code_actions":
 		return codeActions(ctx, c, uri, pos, in)
 	case "rename":
