@@ -20,6 +20,7 @@ Use ` + "`Lsp`" + ` INSTEAD of text-based tools (Grep, manual renames) when you 
 - **source** — Extract the full source text of a symbol by name. No line numbers needed.
 - **inspect** — Hover + definition + callers combined. The fastest way to understand a symbol.
 - **impact** — References + callers + callees combined. Assess blast-radius before changes.
+- **check** — Type errors and warnings. No params = all open files; file= = single file; symbol= = symbol's range only.
 - **request** — Send a raw LSP method call (escape hatch when no built-in action covers the method).
 
 ### How to pass symbols
@@ -44,6 +45,7 @@ Position-based actions (definition, references, hover, rename, etc.) take a ` + 
 | source | yes | optional | Extract full source text of a symbol |
 | inspect | yes | optional | hover + definition + callers combined |
 | impact | yes | optional | references + callers + callees combined |
+| check | optional | optional | Type errors and warnings (no params = all open files) |
 | symbols | — | yes | List symbols in a file (hierarchical) |
 | workspace_symbol | — | — | Search symbols across project (uses query param) |
 | code_actions | yes | optional | List available quick-fixes |
