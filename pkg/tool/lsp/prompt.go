@@ -52,7 +52,7 @@ Position-based actions (definition, references, hover, rename, etc.) use ` + "`f
 - **NEVER** do cross-file renames with Edit/Write or Bash when LSP servers are available. Use ` + "`Lsp action=rename`" + `. Text-based renames miss shadowing, re-exports, and indirect usages.
 - **ALWAYS** prefer ` + "`Lsp action=references`" + ` over Grep for finding symbol usages. LSP follows re-exports and gives line/column precision.
 - **ALWAYS** prefer ` + "`Lsp action=definition`" + ` for navigating to symbol definitions. Grep can miss re-exported symbols.
-- **Verify the line number before calling.** If you last read the file several turns ago or have since edited it, the line numbers may have shifted. Re-read the relevant section or use ` + "`symbols`" + ` / ` + "`workspace_symbol`" + ` to find the current line.
+- **Verify the line number before calling.** Line numbers shift when files are edited. Do NOT manually count lines from Read output — use ` + "`workspace_symbol`" + ` or ` + "`symbols`" + ` first to get the exact line, then pass that to position-based actions. If you last read the file several turns ago or have since edited it, re-check before calling.
 - **Use ` + "`workspace_symbol`" + `** when you need to quickly find a type, function, or variable by name across the project.
 - **Use ` + "`code_actions`" + `** to let the language server fix imports, add missing cases, or apply refactors.
 - **Use ` + "`symbols`" + `** to understand a file's structure at a glance before reading it.
