@@ -757,6 +757,40 @@ func TestWordWrap_ShortText(t *testing.T) {
 	}
 }
 
+func TestWordWrapIndent_NoIndentIdenticalToWordWrap(t *testing.T) {
+	t.Parallel()
+	// wordWrap is a thin wrapper around wordWrapIndent with empty contIndent.
+	// Output must be byte-identical so existing callers are unaffected.
+	cases := []string{
+		"hello",
+		"hello world",
+		"12345678901234567890",
+		"line1\nline2\nline3",
+		"hello\x1b[31mred\x1b[0m world",
+	}
+	for _, s := range cases {
+		got := wordWrap(s, 10)
+		want := wordWrapIndent(s, 10, "")
+		if got != want {
+			t.Errorf("wordWrap(%q) = %q, wordWrapIndent(.., \"\") = %q, want identical", s, got, want)
+		}
+	}
+}
+
+func TestWordWrapIndent_ContinuationIndented(t *testing.T) {
+	t.Parallel()
+	v := wordWrapIndent("12345678901234567890", 10, "  ")
+	lines := strings.Split(v, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected wrapping to produce multiple lines, got %d: %q", len(lines), v)
+	}
+	for i, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("continuation line %d = %q, want 2-space prefix", i+1, line)
+		}
+	}
+}
+
 func TestWordWrap_Width(t *testing.T) {
 	t.Parallel()
 
@@ -2659,6 +2693,34 @@ func TestRenderToolCall_RunningLabel(t *testing.T) {
 	v := m.View(80, false, "", false, false, 0)
 	if !strings.Contains(v, "running...") {
 		t.Errorf("running tool should show 'running...', got: %q", v)
+	}
+}
+
+func TestRenderToolCall_LongSummaryHeaderWrapsAligned(t *testing.T) {
+	t.Parallel()
+	longCmd := strings.Repeat("make check ", 10) // ~110 chars, wraps at width=30
+	m := MessageView{
+		Role: "assistant",
+		Blocks: []ContentBlock{
+			{Type: BlockTool, ToolCall: ToolCallView{
+				Name:    "Bash",
+				Summary: longCmd,
+				Done:    true,
+			}},
+		},
+	}
+	v := m.View(30, false, "", false, false, 0)
+	lines := strings.Split(v, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected header to wrap into multiple lines at width=30, got %d lines: %q", len(lines), v)
+	}
+	// Continuation lines should be indented to align with content after "● "
+	// i.e. start with spaces, not start at column 0.
+	for i, line := range lines[1:] {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed == line && line != "" {
+			t.Errorf("continuation line %d = %q, should be indented (start with spaces)", i+1, line)
+		}
 	}
 }
 

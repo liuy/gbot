@@ -899,7 +899,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			header += fmt.Sprintf("(%s)", tc.Summary)
 		}
 		header += " " + styleDim.Render("running...")
-		sb.WriteString(indent + wordWrap(header, availWidth))
+		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
 			subIndent := strings.Repeat("  ", depth+1)
@@ -978,7 +978,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	if tc.Elapsed > 0 {
 		hdr.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
 	}
-	sb.WriteString(indent + wordWrap(hdr.String(), availWidth))
+	sb.WriteString(indent + wordWrapIndent(hdr.String(), availWidth, indent+strings.Repeat(" ", 2)))
 
 	if len(tc.Blocks) > 0 {
 		// Agent with nested blocks: stats line + recursive sub-blocks
@@ -1235,7 +1235,7 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 		hdr.WriteString(styleNameBold.Render(" for "))
 		hdr.WriteString(styleDim.Render(formatDuration(tv.Duration)))
 	}
-	sb.WriteString(indent + wordWrap(hdr.String(), availWidth))
+	sb.WriteString(indent + wordWrapIndent(hdr.String(), availWidth, indent+strings.Repeat(" ", 2)))
 
 	// Show content with collapse/expand (italic to distinguish from tool output)
 	if tv.Text != "" {
@@ -1249,6 +1249,13 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 // display width (runewidth.RuneWidth('\t') returns 0, which would cause
 // under-wrapping and ghost content on re-render).
 func wordWrap(text string, width int) string {
+	return wordWrapIndent(text, width, "")
+}
+
+// wordWrapIndent wraps text to width, indenting continuation lines by contIndent.
+// Used for tool call headers where the first line has a "● " prefix and
+// continuation lines must align with the content after it.
+func wordWrapIndent(text string, width int, contIndent string) string {
 	if width <= 0 {
 		return text
 	}
@@ -1299,6 +1306,10 @@ func wordWrap(text string, width int) string {
 			lines = append(lines, currentLine.String())
 			currentLine.Reset()
 			currentLen = 0
+			if contIndent != "" {
+				currentLine.WriteString(contIndent)
+				currentLen = lipgloss.Width(contIndent)
+			}
 			if activeANSI.Len() > 0 {
 				currentLine.WriteString(activeANSI.String())
 			}
