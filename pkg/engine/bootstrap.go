@@ -23,6 +23,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/filewrite"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
+	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
 	"github.com/liuy/gbot/pkg/tool/repl"
 	skilltool "github.com/liuy/gbot/pkg/tool/skill"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -58,10 +59,10 @@ func CreateTools(deps SharedDeps) ToolRefs {
 
 	reg := tool.NewRegistry()
 	reg.MustRegister(bash.New(bashReg))
-	reg.MustRegister(fileread.New(deps.LSPReg))
-	reg.MustRegister(fileedit.New(deps.LSPReg))
-	reg.MustRegister(filewrite.New(deps.LSPReg))
-	reg.MustRegister(grep.New(deps.LSPReg))
+	reg.MustRegister(fileread.New())
+	reg.MustRegister(fileedit.New())
+	reg.MustRegister(filewrite.New())
+	reg.MustRegister(grep.New())
 
 	at := agenttool.New()
 	at.SetWorkingDir(deps.WorkingDir)
@@ -94,6 +95,8 @@ func CreateTools(deps SharedDeps) ToolRefs {
 		webOpts = append(webOpts, webtool.WithAPIKeys(webKeys))
 	}
 	reg.MustRegister(webtool.New(proxyClient, webOpts...))
+
+	reg.MustRegister(lsptool.New(deps.LSPReg))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

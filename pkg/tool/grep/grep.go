@@ -27,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/tool"
 )
 
@@ -86,7 +85,7 @@ type Match struct {
 
 // New creates the Grep tool.
 // Source: tools/GrepTool/GrepTool.ts
-func New(reg *lsp.Registry) tool.Tool {
+func New() tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -153,7 +152,7 @@ func New(reg *lsp.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        "Grep",
 		Aliases_:     []string{"grep"},
-		InputSchema_: func() json.RawMessage { return lsp.InjectLSPField(schema, reg) },
+		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {

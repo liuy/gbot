@@ -153,7 +153,7 @@ func TestCodeActions_BadJSON(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := CodeActions(ctx, c, "file:///x.go", Range{})
+	_, err := CodeActions(ctx, c, "file:///x.go", Range{}, CodeActionContext{TriggerKind: 1})
 	if err == nil {
 		t.Fatal("CodeActions: expected error for bad JSON")
 	}
@@ -246,10 +246,10 @@ func TestWriteMessage_ClosedStdin(t *testing.T) {
 // ------ mock system call tests ------
 
 func TestStartClient_ExecCommandFailsStart(t *testing.T) {
-	saved := execCommandContext
-	defer func() { execCommandContext = saved }()
+	saved := execCommand
+	defer func() { execCommand = saved }()
 
-	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+	execCommand = func(name string, args ...string) *exec.Cmd {
 		return exec.Command("this-binary-does-not-exist-xyz")
 	}
 
@@ -282,10 +282,10 @@ func TestSpawnClient_LookPathFails(t *testing.T) {
 }
 
 func TestSpawnClient_InitializeFails(t *testing.T) {
-	saved := execCommandContext
-	defer func() { execCommandContext = saved }()
+	saved := execCommand
+	defer func() { execCommand = saved }()
 
-	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+	execCommand = func(name string, args ...string) *exec.Cmd {
 		return exec.Command("echo", "-n")
 	}
 

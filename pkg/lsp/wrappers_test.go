@@ -302,7 +302,7 @@ func TestCodeActions_DecodeArray(t *testing.T) {
 	actions, err := CodeActions(ctx, c, "file:///repo/foo.go", Range{
 		Start: Position{Line: 0, Character: 0},
 		End:   Position{Line: 0, Character: 10},
-	})
+	}, CodeActionContext{TriggerKind: 1})
 	if err != nil {
 		t.Fatalf("CodeActions: %v", err)
 	}
@@ -345,8 +345,14 @@ func TestApplyCodeAction_NilEdit_NilCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	action := CodeAction{Title: "no-op", Kind: "quickfix"}
-	if err := ApplyCodeAction(ctx, c, action); err != nil {
+	applied, err := ApplyCodeAction(ctx, c, action, func(_ *WorkspaceEdit) ([]string, error) {
+		return nil, nil
+	})
+	if err != nil {
 		t.Errorf("ApplyCodeAction empty: %v", err)
+	}
+	if applied != nil {
+		t.Errorf("expected nil applied for empty action, got %+v", applied)
 	}
 }
 

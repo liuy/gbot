@@ -28,6 +28,7 @@ type Registry struct {
 	restarts  map[string]int           // spec.Name -> crash-induced restart count (excludes initial spawn)
 	sessions  map[string]*spawnSession // spec.Name -> in-progress spawn gate
 	closed    bool
+	done      chan struct{}
 }
 
 // spawnSession serializes spawn attempts per spec.
@@ -42,6 +43,7 @@ func NewRegistry(rootDir string) *Registry {
 		live:      make(map[string]*Client),
 		restarts:  make(map[string]int),
 		sessions:  make(map[string]*spawnSession),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -114,6 +116,19 @@ func (r *Registry) Snapshot() []ServerSpec {
 	return out
 }
 
+// SpecForFile returns the configured ServerSpec for the file's extension.
+// Returns ok=false when no server is configured for this file type.
+func (r *Registry) SpecForFile(path string) (ServerSpec, bool) {
+	ext := filepath.Ext(path)
+	if ext == "" {
+		return ServerSpec{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	spec, ok := r.extToSpec[ext]
+	return spec, ok
+}
+
 // ForFile returns a live LSP client for the file's extension, lazily spawning if needed.
 func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
 	ext := filepath.Ext(path)
@@ -129,6 +144,39 @@ func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
 	}
 
 	return r.clientFor(ctx, spec)
+}
+
+// ForSpec returns the client for a specific ServerSpec, spawning it if needed.
+// This avoids the sentinel-path workaround (e.g. "/x.go") that ForFile requires
+// when the caller already knows which server to talk to (workspace_symbol,
+// capabilities, reload, request without a file).
+func (r *Registry) ForSpec(ctx context.Context, spec ServerSpec) (*Client, error) {
+	return r.clientFor(ctx, spec)
+}
+
+// InjectClient registers a pre-made client directly, bypassing spawn.
+// The spec is needed to populate the extension→spec mapping for ForFile.
+// Only used in tests — the client's Dead channel is monitored for eviction.
+func (r *Registry) InjectClient(name string, spec ServerSpec, c *Client) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.live[name] = c
+	r.specs = append(r.specs, spec)
+	for _, ext := range spec.FileExts {
+		r.extToSpec[ext] = spec
+	}
+
+	go func() {
+		select {
+		case <-c.Dead():
+		case <-r.done:
+		}
+		r.mu.Lock()
+		if cur, ok := r.live[name]; ok && cur == c {
+			delete(r.live, name)
+		}
+		r.mu.Unlock()
+	}()
 }
 
 // clientFor returns a live client, spawning under single-flight.
@@ -192,16 +240,19 @@ func (r *Registry) clientFor(ctx context.Context, spec ServerSpec) (*Client, err
 		r.live[spec.Name] = c
 		r.mu.Unlock()
 
-		// Monitor for crashes: evict on Dead.
 		go func() {
-			<-c.Dead()
-			r.mu.Lock()
-			if cur, ok := r.live[spec.Name]; ok && cur == c {
-				delete(r.live, spec.Name)
-				// Increment crash counter only if this was a real crash (not Shutdown).
-				r.restarts[spec.Name]++
+			select {
+			case <-c.Dead():
+				// Real crash or Shutdown — evict from live map.
+				r.mu.Lock()
+				if cur, ok := r.live[spec.Name]; ok && cur == c {
+					delete(r.live, spec.Name)
+					r.restarts[spec.Name]++
+				}
+				r.mu.Unlock()
+			case <-r.done:
+				// Registry shutting down — exit gracefully.
 			}
-			r.mu.Unlock()
 		}()
 
 		return c, nil
@@ -248,6 +299,7 @@ func (r *Registry) Shutdown(ctx context.Context) {
 		return
 	}
 	r.closed = true
+	close(r.done)
 	clients := make([]*Client, 0, len(r.live))
 	for _, c := range r.live {
 		clients = append(clients, c)
@@ -273,6 +325,39 @@ func (r *Registry) NumServers() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.specs)
+}
+
+// StartedClient reports whether a server with the given name has been spawned
+// (live in the registry) and is still responsive. Mirrors omp's
+// startedByConfigName check (index.ts:1366-1375).
+func (r *Registry) StartedClient(name string) (*Client, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c, ok := r.live[name]
+	if !ok || !c.IsAlive() {
+		return nil, false
+	}
+	return c, true
+}
+
+// KillAndEvict kills the subprocess for `name` (if any) and removes it from
+// the live map so the next ForFile call respawns. Returns false if no live
+// client exists. Used by reload as the kill fallback when neither
+// rust-analyzer/reloadWorkspace nor workspace/didChangeConfiguration succeeds.
+func (r *Registry) KillAndEvict(name string) bool {
+	r.mu.Lock()
+	c, ok := r.live[name]
+	if ok {
+		delete(r.live, name)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	c.Kill()
+	// Shutdown would deadlock here (it waits on the same process we just killed).
+	// waitLoop goroutine started in StartClient reaps the zombie.
+	return true
 }
 
 func (r *Registry) HasExtension(ext string) bool {

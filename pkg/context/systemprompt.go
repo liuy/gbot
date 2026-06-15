@@ -66,6 +66,13 @@ Do NOT use Bash to run commands when a relevant dedicated tool is provided. This
 - To edit files use Edit instead of sed or awk
 - To create files use Write instead of cat with heredoc or echo redirection
 - To search file contents or file names, use Grep instead of grep, rg, find, or ls
+- For code files with an LSP server configured (see Environment), prefer the Lsp tool over Grep/Read/Edit:
+  - Find where a symbol is defined or used → Lsp definition/references, not Grep
+  - Search for a symbol by name across the project → Lsp workspace_symbol, not Grep
+  - Understand a file's structure → Lsp symbols, not Read
+  - Check a variable's type → Lsp hover, not Read + guess
+  - Apply quick-fixes (missing imports, unused vars) → Lsp code_actions, not manual Edit
+  - Rename across files → Lsp rename, NEVER Edit/Write
 - For broader codebase exploration requiring multiple rounds, use the Agent tool
 - Reserve Bash exclusively for system commands and terminal operations that require shell execution
 

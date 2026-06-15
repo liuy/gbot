@@ -300,7 +300,7 @@ func main() {
 	if store != nil && sessionID != "" && contextWindow > 0 {
 		smCfg := session.DefaultConfig()
 		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
-			editTool := fileedit.New(nil)
+			editTool := fileedit.New()
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
 				Tools:     map[string]tool.Tool{"Edit": editTool},
 				AgentType: "session_memory",
@@ -334,10 +334,10 @@ func main() {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			dreamTools := map[string]tool.Tool{
-				"Read":  fileread.New(nil),
-				"Edit":  fileedit.New(nil),
-				"Write": filewrite.New(nil),
-				"Grep":  grep.New(nil),
+				"Read":  fileread.New(),
+				"Edit":  fileedit.New(),
+				"Write": filewrite.New(),
+				"Grep":  grep.New(),
 			}
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
 				Tools:     dreamTools,

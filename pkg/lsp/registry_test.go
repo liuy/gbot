@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 )
@@ -109,37 +108,5 @@ func TestLSPString_WithServers(t *testing.T) {
 	s := r.LSPString()
 	if s != "gopls (Go) | tsserver (TypeScript)" {
 		t.Errorf("LSPString() = %q", s)
-	}
-}
-
-func TestInjectLSPField_NilReg(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}}}`)
-	result := InjectLSPField(schema, nil)
-	if string(result) != `{"type":"object","properties":{"pattern":{"type":"string"}}}` {
-		t.Errorf("InjectLSPField with nil reg modified schema: %s", result)
-	}
-}
-
-func TestInjectLSPField_EmptyReg(t *testing.T) {
-	r := NewRegistry("/tmp")
-	schema := json.RawMessage(`{"type":"object"}`)
-	result := InjectLSPField(schema, r)
-	if string(result) != `{"type":"object"}` {
-		t.Errorf("InjectLSPField with empty reg modified schema: %s", result)
-	}
-}
-
-func TestInjectLSPField_WithSpecs(t *testing.T) {
-	r := NewRegistry("/tmp")
-	r.mu.Lock()
-	r.specs = []ServerSpec{{Name: "gopls", Language: "Go"}}
-	r.mu.Unlock()
-	schema := json.RawMessage(`{"type":"object","properties":{}}`)
-	result := InjectLSPField(schema, r)
-	var m map[string]any
-	_ = json.Unmarshal(result, &m)
-	props, _ := m["properties"].(map[string]any)
-	if _, ok := props["lsp"]; !ok {
-		t.Errorf("InjectLSPField did not add lsp property: %s", result)
 	}
 }

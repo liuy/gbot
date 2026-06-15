@@ -103,10 +103,27 @@ type SymbolInformation struct {
 
 // CodeAction represents a quick-fix or refactor offered by the server.
 type CodeAction struct {
-	Title   string         `json:"title"`
-	Kind    string         `json:"kind,omitempty"`
-	Edit    *WorkspaceEdit `json:"edit,omitempty"`
-	Command *Command       `json:"command,omitempty"`
+	Title       string              `json:"title"`
+	Kind        string              `json:"kind,omitempty"`
+	Edit        *WorkspaceEdit      `json:"edit,omitempty"`
+	Command     *Command            `json:"command,omitempty"`
+	IsPreferred bool                `json:"isPreferred,omitempty"`
+	Disabled    *CodeActionDisabled `json:"disabled,omitempty"`
+}
+
+// CodeActionDisabled carries the reason a code action cannot be applied.
+type CodeActionDisabled struct {
+	Reason string `json:"reason"`
+}
+
+// Diagnostic is a server-emitted issue used by codeAction context and
+// (intentionally unused in gbot) the diagnostics action.
+type Diagnostic struct {
+	Range    Range  `json:"range"`
+	Severity int    `json:"severity,omitempty"`
+	Code     any    `json:"code,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Message  string `json:"message"`
 }
 
 // Command is an executable action returned by codeAction resolution.

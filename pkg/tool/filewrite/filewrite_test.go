@@ -21,7 +21,7 @@ import (
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 
 	if tt.Name() != "Write" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "Write")
@@ -49,7 +49,7 @@ func TestNew(t *testing.T) {
 func TestNewInputSchema(t *testing.T) {
 	t.Parallel()
 
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	schema := tt.InputSchema()
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -60,7 +60,7 @@ func TestNewInputSchema(t *testing.T) {
 func TestDescription(t *testing.T) {
 	t.Parallel()
 
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 
 	tests := []struct {
 		name  string
@@ -771,7 +771,7 @@ func TestExecute_MustReadFirst_AllowsFullRead(t *testing.T) {
 
 func TestRenderResult_Create(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	out := &filewrite.Output{
 		Type:     filewrite.WriteTypeCreate,
 		FilePath: "/tmp/newfile.go",
@@ -796,7 +796,7 @@ func TestRenderResult_Create(t *testing.T) {
 
 func TestRenderResult_Create_LongContent(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	// Build 15 lines of content
 	var lines []string
 	for i := 1; i <= 15; i++ {
@@ -821,7 +821,7 @@ func TestRenderResult_Create_LongContent(t *testing.T) {
 
 func TestRenderResult_Create_Empty(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	out := &filewrite.Output{
 		Type:     filewrite.WriteTypeCreate,
 		FilePath: "/tmp/empty.go",
@@ -835,7 +835,7 @@ func TestRenderResult_Create_Empty(t *testing.T) {
 
 func TestRenderResult_Update_WithDiff(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	oldContent := "line1\nline2\nline3\n"
 	out := &filewrite.Output{
 		Type:     filewrite.WriteTypeUpdate,
@@ -857,7 +857,7 @@ func TestRenderResult_Update_WithDiff(t *testing.T) {
 
 func TestRenderResult_Update_NoChanges(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	oldContent := "same\n"
 	out := &filewrite.Output{
 		Type:            filewrite.WriteTypeUpdate,
@@ -875,7 +875,7 @@ func TestRenderResult_Update_NoChanges(t *testing.T) {
 
 func TestRenderResult_NonOutputData(t *testing.T) {
 	t.Parallel()
-	tt := filewrite.New(nil)
+	tt := filewrite.New()
 	got := tt.RenderResult("not an output")
 	if !strings.Contains(got, "not an output") {
 		t.Errorf("expected fallback string representation, got: %q", got)

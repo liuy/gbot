@@ -25,7 +25,7 @@ import (
 func TestNew(t *testing.T) {
 	t.Parallel()
 
-	tt := fileread.New(nil)
+	tt := fileread.New()
 
 	if tt.Name() != "Read" {
 		t.Errorf("Name() = %q, want %q", tt.Name(), "Read")
@@ -53,7 +53,7 @@ func TestNew(t *testing.T) {
 func TestNewInputSchema(t *testing.T) {
 	t.Parallel()
 
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	schema := tt.InputSchema()
 	var obj map[string]any
 	if err := json.Unmarshal(schema, &obj); err != nil {
@@ -78,7 +78,7 @@ func TestNewInputSchema(t *testing.T) {
 func TestDescription(t *testing.T) {
 	t.Parallel()
 
-	tt := fileread.New(nil)
+	tt := fileread.New()
 
 	tests := []struct {
 		name  string
@@ -878,7 +878,7 @@ func TestExecute_DedupDifferentOffset(t *testing.T) {
 
 func TestReadTool_IsSearchOrRead(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
 	if srk.IsSearch || !srk.IsRead || srk.IsList {
 		t.Errorf("ReadTool.IsSearchOrRead() = %+v, want {IsRead:true}", srk)
@@ -887,7 +887,7 @@ func TestReadTool_IsSearchOrRead(t *testing.T) {
 
 func TestRenderResult_TextOutput(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(&fileread.TextOutput{
 		Type:       "text",
 		FilePath:   "/tmp/test.go",
@@ -904,7 +904,7 @@ func TestRenderResult_TextOutput(t *testing.T) {
 
 func TestRenderResult_ImageOutput(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(&fileread.ImageOutput{
 		Type:           "image",
 		FilePath:       "/tmp/img.png",
@@ -919,7 +919,7 @@ func TestRenderResult_ImageOutput(t *testing.T) {
 
 func TestRenderResult_FileUnchanged(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(&fileread.FileUnchangedOutput{
 		Type:     "file_unchanged",
 		FilePath: "/tmp/test.go",
@@ -936,7 +936,7 @@ func TestRenderResult_FileUnchanged(t *testing.T) {
 
 func TestCheckPermissions_ValidInput(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	input := json.RawMessage(`{"file_path":"/tmp/test.txt"}`)
 	result := tt.CheckPermissions(input, nil)
 	if result.Behavior() != types.BehaviorAllow {
@@ -946,7 +946,7 @@ func TestCheckPermissions_ValidInput(t *testing.T) {
 
 func TestCheckPermissions_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	input := json.RawMessage(`{invalid`)
 	result := tt.CheckPermissions(input, nil)
 	// Invalid JSON should still return allow (early return on unmarshal error)
@@ -956,7 +956,7 @@ func TestCheckPermissions_InvalidJSON(t *testing.T) {
 }
 
 func TestCheckPermissions_ToolResultPath(t *testing.T) {
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	// IsToolResultPath checks for <home>/.gbot/sessions/<id>/tool-results/<file>
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -978,7 +978,7 @@ func TestCheckPermissions_ToolResultPath(t *testing.T) {
 
 func TestRenderResult_TextOutputValueType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(fileread.TextOutput{
 		Type:       "text",
 		FilePath:   "/tmp/test.go",
@@ -994,7 +994,7 @@ func TestRenderResult_TextOutputValueType(t *testing.T) {
 
 func TestRenderResult_ImageOutputValueType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(fileread.ImageOutput{
 		Type:           "image",
 		FilePath:       "/tmp/img.png",
@@ -1009,7 +1009,7 @@ func TestRenderResult_ImageOutputValueType(t *testing.T) {
 
 func TestRenderResult_PDFOutputPointer(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(&fileread.PDFOutput{
 		Type:         "pdf",
 		FilePath:     "/tmp/test.pdf",
@@ -1023,7 +1023,7 @@ func TestRenderResult_PDFOutputPointer(t *testing.T) {
 
 func TestRenderResult_PDFOutputValueType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(fileread.PDFOutput{
 		Type:         "pdf",
 		FilePath:     "/tmp/test.pdf",
@@ -1037,7 +1037,7 @@ func TestRenderResult_PDFOutputValueType(t *testing.T) {
 
 func TestRenderResult_PartsOutputPointer(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(&fileread.PartsOutput{
 		Type:         "parts",
 		FilePath:     "/tmp/test.pdf",
@@ -1052,7 +1052,7 @@ func TestRenderResult_PartsOutputPointer(t *testing.T) {
 
 func TestRenderResult_PartsOutputValueType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(fileread.PartsOutput{
 		Type:         "parts",
 		FilePath:     "/tmp/test.pdf",
@@ -1067,7 +1067,7 @@ func TestRenderResult_PartsOutputValueType(t *testing.T) {
 
 func TestRenderResult_FileUnchangedValueType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(fileread.FileUnchangedOutput{
 		Type:     "file_unchanged",
 		FilePath: "/tmp/test.go",
@@ -1080,7 +1080,7 @@ func TestRenderResult_FileUnchangedValueType(t *testing.T) {
 
 func TestRenderResult_UnknownType(t *testing.T) {
 	t.Parallel()
-	tt := fileread.New(nil)
+	tt := fileread.New()
 	result := tt.RenderResult(map[string]string{"foo": "bar"})
 	if !strings.Contains(result, "foo") {
 		t.Errorf("RenderResult(unknown) = %q, should contain 'foo'", result)

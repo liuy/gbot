@@ -20,6 +20,7 @@ type ServerSpec struct {
 	FileExts []string // extensions this server owns, e.g. []string{".go"}
 	Language string   // short label for Environment section, e.g. "Go"
 	ExtraEnv []string // additional env var KEY=VALUE entries (test use only, e.g. GBOT_FAKE_LSP=1)
+	IsLinter bool     // true for standalone linters (swiftlint, biome) — they don't do project indexing
 }
 
 // DefaultServers is the static probe list, ordered by stability of binary names.

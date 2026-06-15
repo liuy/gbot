@@ -20,33 +20,10 @@ import (
 // ErrServerDead is returned when the LSP server process has exited.
 var ErrServerDead = errors.New("lsp server is not running")
 
-// execCommandContext and execLookPath are package-level vars so tests can replace them.
-var execCommandContext = exec.CommandContext
+// execCommand and execLookPath are package-level vars so tests can replace them.
+// execCommand intentionally does NOT take a context — see StartClient comment.
+var execCommand = exec.Command
 var execLookPath = exec.LookPath
-
-// InjectLSPField conditionally adds an `lsp` boolean parameter to a tool's JSON
-// Schema. When the registry is nil or has no discovered servers the input schema
-// is returned unchanged — the model never sees a knob that does nothing.
-func InjectLSPField(schema json.RawMessage, reg *Registry) json.RawMessage {
-	if reg == nil || reg.NumServers() == 0 {
-		return schema
-	}
-	var m map[string]any
-	if err := json.Unmarshal(schema, &m); err != nil {
-		return schema
-	}
-	props, _ := m["properties"].(map[string]any)
-	if props == nil {
-		props = make(map[string]any)
-	}
-	props["lsp"] = map[string]any{
-		"type":        "boolean",
-		"description": "Enable Language Server Protocol enhancements. When set, results are symbol-aware and missing imports are auto-applied. Requires an LSP server for the file type (see # Environment).",
-	}
-	m["properties"] = props
-	modified, _ := json.Marshal(m)
-	return json.RawMessage(modified)
-}
 
 // Client wraps a single LSP server subprocess speaking JSON-RPC 2.0 over stdio.
 type Client struct {
@@ -60,6 +37,9 @@ type Client struct {
 	nextID   int64
 	openURIs map[string]int // uri -> version, for didOpen/didChange dedup
 
+	diagMu sync.RWMutex
+	diags  map[string][]Diagnostic // uri -> latest diagnostics from server
+
 	writeMu sync.Mutex
 
 	teardownOnce sync.Once
@@ -68,6 +48,24 @@ type Client struct {
 	readWG       sync.WaitGroup // tracks readLoop goroutine (for test cleanup)
 
 	capabilities json.RawMessage
+}
+
+// NewTestClient creates a Client backed by a connection (net.Conn, pipe, etc.)
+// instead of a subprocess. Used by tests that provide a fake LSP server.
+// The caller is responsible for closing conn and waiting on readWG.
+func NewTestClient(name string, conn io.ReadWriteCloser) *Client {
+	c := &Client{
+		name:     name,
+		pending:  make(map[int64]chan *rpcResponse),
+		openURIs: make(map[string]int),
+		diags:    make(map[string][]Diagnostic),
+		done:     make(chan struct{}),
+		dead:     make(chan struct{}),
+		stdin:    conn,
+		stdout:   conn,
+	}
+	c.readWG.Go(func() { c.readLoop() })
+	return c
 }
 
 type rpcResponse struct {
@@ -107,7 +105,13 @@ type rpcNotification struct {
 // Does NOT send initialize; caller calls Initialize() next.
 // extraEnv allows passing additional environment variables (e.g., GBOT_FAKE_LSP for tests).
 func StartClient(ctx context.Context, name, command string, args []string, cwd string, extraEnv ...string) (*Client, error) {
-	cmd := execCommandContext(ctx, command, args...)
+	// Use exec.Command (NOT exec.CommandContext) so the subprocess survives
+	// the caller's ctx. The spawn ctx is only for the handshake; the process
+	// should outlive it. Lifecycle is owned by the Client via Shutdown.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("lsp %s: %w", name, err)
+	}
+	cmd := execCommand(command, args...)
 	cmd.Dir = cwd
 	cmd.Stderr = nil
 	if len(extraEnv) > 0 {
@@ -136,6 +140,7 @@ func StartClient(ctx context.Context, name, command string, args []string, cwd s
 		stdout:   stdout,
 		pending:  make(map[int64]chan *rpcResponse),
 		openURIs: make(map[string]int),
+		diags:    make(map[string][]Diagnostic),
 		done:     make(chan struct{}),
 		dead:     make(chan struct{}),
 	}
@@ -212,9 +217,13 @@ func (c *Client) readLoop() {
 			c.handleServerRequest(*probe.ID, probe.Method, probe.Params)
 			continue
 		}
-		// Server→client notification: log and drop.
+		// Server→client notification: capture diagnostics, drop the rest.
 		if probe.Method != "" && probe.ID == nil {
-			slog.Debug("lsp:notification_dropped", "name", c.name, "method", probe.Method)
+			if probe.Method == "textDocument/publishDiagnostics" {
+				c.storeDiagnostics(probe.Params)
+			} else {
+				slog.Debug("lsp:notification_dropped", "name", c.name, "method", probe.Method)
+			}
 			continue
 		}
 
@@ -506,7 +515,10 @@ func (c *Client) Shutdown(ctx context.Context) {
 		default:
 		}
 	}
-	<-c.dead
+	select {
+	case <-c.dead:
+	case <-ctx.Done():
+	}
 }
 
 func (c *Client) Name() string { return c.name }
@@ -519,6 +531,27 @@ func (c *Client) Capabilities() json.RawMessage {
 
 func (c *Client) Dead() <-chan struct{} { return c.dead }
 
+// IsAlive reports whether the client subprocess (or in-process connection)
+// is still responsive. False once teardown has fired.
+func (c *Client) IsAlive() bool {
+	select {
+	case <-c.dead:
+		return false
+	default:
+		return true
+	}
+}
+
+// Kill forcibly terminates the subprocess (SIGKILL). No-op for in-process
+// clients (cmd is nil). Used as the last-resort reload fallback when the
+// server neither implements rust-analyzer/reloadWorkspace nor responds to
+// workspace/didChangeConfiguration. The next ForFile call respawns.
+func (c *Client) Kill() {
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
+}
+
 // encodeMessage is exported for tests that want to inspect the framing layout.
 func encodeMessage(msg any) ([]byte, error) {
 	body, err := json.Marshal(msg)
@@ -529,4 +562,49 @@ func encodeMessage(msg any) ([]byte, error) {
 	fmt.Fprintf(&buf, "Content-Length: %d\r\n\r\n", len(body))
 	buf.Write(body)
 	return buf.Bytes(), nil
+}
+
+// storeDiagnostics parses a publishDiagnostics notification and caches the
+// latest diagnostics for each URI. Called from readLoop.
+func (c *Client) storeDiagnostics(params json.RawMessage) {
+	var notif struct {
+		URI         string       `json:"uri"`
+		Diagnostics []Diagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(params, &notif); err != nil {
+		slog.Debug("lsp:bad_diagnostics", "name", c.name, "err", err)
+		return
+	}
+	c.diagMu.Lock()
+	defer c.diagMu.Unlock()
+	if len(notif.Diagnostics) == 0 {
+		delete(c.diags, notif.URI)
+	} else {
+		c.diags[notif.URI] = notif.Diagnostics
+	}
+}
+
+// DiagnosticsFor returns the cached diagnostics for a URI, or nil if none.
+// Returns a defensive copy so callers can't race with storeDiagnostics.
+func (c *Client) DiagnosticsFor(uri string) []Diagnostic {
+	c.diagMu.RLock()
+	defer c.diagMu.RUnlock()
+	s := c.diags[uri]
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]Diagnostic, len(s))
+	copy(out, s)
+	return out
+}
+
+// OpenURIs returns a snapshot of currently-open URIs (for didClose before rename).
+func (c *Client) OpenURIs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.openURIs))
+	for uri := range c.openURIs {
+		out = append(out, uri)
+	}
+	return out
 }

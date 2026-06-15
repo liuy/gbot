@@ -4,16 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
-
-// =============================================================================
-// LSP method wrappers — one per method used by Phase 2 tools.
-// All take a *Client and return typed results; errors propagate verbatim.
-// =============================================================================
 
 // Definition returns the location where the symbol at position is defined.
 func Definition(ctx context.Context, c *Client, uri string, pos Position) ([]Location, error) {
@@ -160,19 +156,22 @@ func Rename(ctx context.Context, c *Client, uri string, pos Position, newName st
 	return &edit, nil
 }
 
+// CodeActionContext describes the context passed to textDocument/codeAction,
+// including optional diagnostics and a filter list of CodeActionKinds.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+	Only        []string     `json:"only,omitempty"`
+	TriggerKind int          `json:"triggerKind,omitempty"`
+}
+
 // CodeActions lists available quick-fixes / refactors for a range.
-func CodeActions(ctx context.Context, c *Client, uri string, rng Range) ([]CodeAction, error) {
+// Only filter and diagnostics are passed in the request context (mirrors omp
+// index.ts:2297-2301). Pass nil for both to omit them.
+func CodeActions(ctx context.Context, c *Client, uri string, rng Range, cctx CodeActionContext) ([]CodeAction, error) {
 	params := map[string]any{
 		"textDocument": TextDocumentIdentifier{URI: uri},
 		"range":        rng,
-		"context": map[string]any{
-			"diagnostics": []any{},
-			"only": []string{
-				"quickfix",
-				"source.organizeImports",
-				"source.fixAll",
-			},
-		},
+		"context":      cctx,
 	}
 	raw, err := c.Request(ctx, "textDocument/codeAction", params)
 	if err != nil {
@@ -185,22 +184,73 @@ func CodeActions(ctx context.Context, c *Client, uri string, rng Range) ([]CodeA
 	return out, nil
 }
 
-// ApplyCodeAction executes a code action that carries a Command (workspace/executeCommand).
-// Code actions with an embedded WorkspaceEdit should use ApplyWorkspaceEdit instead.
-func ApplyCodeAction(ctx context.Context, c *Client, action CodeAction) error {
-	if action.Command == nil {
-		if action.Edit != nil {
-			_, err := ApplyWorkspaceEdit(action.Edit)
-			return err
+// AppliedCodeActionResult describes what got applied by ApplyCodeAction.
+// Mirrors omp AppliedCodeActionResult (utils.ts:506-510).
+type AppliedCodeActionResult struct {
+	Title            string
+	Edits            []string
+	ExecutedCommands []string
+}
+
+// ApplyCodeAction executes a code action. If the action has no embedded edit,
+// it is first resolved via codeAction/resolve. Then either the workspace edit
+// is applied (recording per-file modifications) or the command is executed.
+// Returns nil when the action carries neither an edit nor a command (mirrors
+// omp applyCodeAction null return).
+// Mirrors omp utils.ts:512-552.
+func ApplyCodeAction(
+	ctx context.Context,
+	c *Client,
+	action CodeAction,
+	applyEdit func(*WorkspaceEdit) ([]string, error),
+) (*AppliedCodeActionResult, error) {
+	resolved := action
+	if resolved.Edit == nil {
+		// Try codeAction/resolve; ignore errors (resolve is optional).
+		r, err := ResolveCodeAction(ctx, c, action)
+		if err == nil && r.Edit != nil {
+			resolved = *r
 		}
-		return nil
 	}
-	params := map[string]any{
-		"command":   action.Command.Command,
-		"arguments": action.Command.Arguments,
+
+	result := &AppliedCodeActionResult{Title: resolved.Title}
+
+	if resolved.Edit != nil {
+		var err error
+		result.Edits, err = applyEdit(resolved.Edit)
+		if err != nil {
+			return nil, fmt.Errorf("apply workspace edit: %w", err)
+		}
 	}
-	_, err := c.Request(ctx, "workspace/executeCommand", params)
-	return err
+	if resolved.Command != nil {
+		params := map[string]any{
+			"command":   resolved.Command.Command,
+			"arguments": resolved.Command.Arguments,
+		}
+		if _, err := c.Request(ctx, "workspace/executeCommand", params); err != nil {
+			return nil, fmt.Errorf("execute command %s: %w", resolved.Command.Command, err)
+		}
+		result.ExecutedCommands = append(result.ExecutedCommands, resolved.Command.Command)
+	}
+
+	if len(result.Edits) == 0 && len(result.ExecutedCommands) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+// ResolveCodeAction calls codeAction/resolve to fill in the action's edit/command.
+// Mirrors omp codeAction/resolve (utils.ts:525-531).
+func ResolveCodeAction(ctx context.Context, c *Client, action CodeAction) (*CodeAction, error) {
+	raw, err := c.Request(ctx, "codeAction/resolve", action)
+	if err != nil {
+		return nil, err
+	}
+	var out CodeAction
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("lsp codeAction/resolve: %w", err)
+	}
+	return &out, nil
 }
 
 // =============================================================================
@@ -230,7 +280,6 @@ func ApplyWorkspaceEdit(edit *WorkspaceEdit) ([]string, error) {
 		for _, dc := range edit.DocumentChanges {
 			uri, edits, ok := extractTextDocumentEdit(dc)
 			if ok {
-				// Text edit.
 				if len(edits) == 0 {
 					continue
 				}
@@ -242,7 +291,6 @@ func ApplyWorkspaceEdit(edit *WorkspaceEdit) ([]string, error) {
 				changed = append(changed, path)
 				continue
 			}
-			// Resource op (create/rename/delete).
 			if desc, err := applyResourceOp(dc); err != nil {
 				errs = append(errs, err.Error())
 			} else if desc != "" {
@@ -336,6 +384,12 @@ func extractTextDocumentEdit(dc map[string]any) (string, []TextEdit, bool) {
 		return uri, nil, true
 	}
 	return uri, edits, true
+}
+
+// ApplyEditsToPath is the exported form of applyEditsToPath, used by tool/lsp
+// callers (rename_file) that need to write pre-validated edits to a single path.
+func ApplyEditsToPath(path string, edits []TextEdit) error {
+	return applyEditsToPath(path, edits)
 }
 
 // applyEditsToPath applies TextEdits to a file in place.
@@ -439,6 +493,39 @@ func comparePos(a, b Position) int {
 	return a.Character - b.Character
 }
 
+// RangesOverlap reports whether two Ranges share any position other than a
+// touching boundary. Mirrors omp edits.ts rangesOverlap.
+func RangesOverlap(a, b Range) bool {
+	return comparePos(a.Start, b.End) < 0 && comparePos(b.Start, a.End) < 0
+}
+
+// FlattenWorkspaceTextEdits collects all TextEdits from a WorkspaceEdit into a
+// map[uri]edits, ignoring resource ops (create/rename/delete). Mirrors omp
+// edits.ts flattenWorkspaceTextEdits — used by rename_file to coalesce
+// per-server edits before applying.
+func FlattenWorkspaceTextEdits(edit *WorkspaceEdit) map[string][]TextEdit {
+	out := make(map[string][]TextEdit)
+	if edit == nil {
+		return out
+	}
+	push := func(uri string, edits []TextEdit) {
+		if len(edits) == 0 {
+			return
+		}
+		out[uri] = append(out[uri], edits...)
+	}
+	for uri, edits := range edit.Changes {
+		push(uri, edits)
+	}
+	for _, dc := range edit.DocumentChanges {
+		uri, edits, ok := extractTextDocumentEdit(dc)
+		if ok {
+			push(uri, edits)
+		}
+	}
+	return out
+}
+
 // uriToPath converts a file:// URI back to a filesystem path.
 func uriToPath(uri string) string {
 	uri = strings.TrimPrefix(uri, "file://")
@@ -453,8 +540,10 @@ func uriToPath(uri string) string {
 	return uri
 }
 
-// decodeLocations handles both single-Location and []Location server responses.
-// Dispatches by peeking at the first non-whitespace byte: '[' = array, '{' = single.
+// decodeLocations handles both single-Location and []Location server responses,
+// including LocationLink responses (targetUri/targetRange) that some servers
+// return regardless of linkSupport negotiation. Mirrors omp
+// normalizeLocationResult (index.ts:377-389).
 func decodeLocations(raw json.RawMessage) ([]Location, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -469,18 +558,66 @@ func decodeLocations(raw json.RawMessage) ([]Location, error) {
 	}
 	switch first {
 	case '[':
-		var arr []Location
-		if err := json.Unmarshal(raw, &arr); err != nil {
+		// Peek element shape: Location{uri,range} vs LocationLink{targetUri,...}.
+		var generic []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &generic); err != nil {
 			return nil, fmt.Errorf("decodeLocations array: %w", err)
 		}
-		return arr, nil
+		out := make([]Location, 0, len(generic))
+		for _, m := range generic {
+			loc, ok := locationFromMap(m)
+			if !ok {
+				var ks []string
+				for k := range m {
+					ks = append(ks, k)
+				}
+				slog.Debug("lsp:decodeLocations:dropped_malformed_element", "keys", ks)
+				continue
+			}
+			out = append(out, loc)
+		}
+		return out, nil
 	case '{':
-		var one Location
-		if err := json.Unmarshal(raw, &one); err != nil {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
 			return nil, fmt.Errorf("decodeLocations single: %w", err)
 		}
-		return []Location{one}, nil
+		loc, ok := locationFromMap(m)
+		if !ok {
+			return nil, fmt.Errorf("decodeLocations: unrecognized object: %s", string(raw))
+		}
+		return []Location{loc}, nil
 	default:
 		return nil, fmt.Errorf("decodeLocations: unexpected token %q in %s", first, string(raw))
 	}
+}
+
+// locationFromMap converts either a Location ({uri, range}) or a LocationLink
+// ({targetUri, targetSelectionRange, targetRange}) to a Location.
+func locationFromMap(m map[string]json.RawMessage) (Location, bool) {
+	if uriRaw, ok := m["uri"]; ok {
+		var uri string
+		if err := json.Unmarshal(uriRaw, &uri); err != nil {
+			return Location{}, false
+		}
+		var rng Range
+		if rRaw, ok := m["range"]; ok {
+			_ = json.Unmarshal(rRaw, &rng)
+		}
+		return Location{URI: uri, Range: rng}, true
+	}
+	if tURI, ok := m["targetUri"]; ok {
+		var uri string
+		if err := json.Unmarshal(tURI, &uri); err != nil {
+			return Location{}, false
+		}
+		var rng Range
+		if rRaw, ok := m["targetSelectionRange"]; ok {
+			_ = json.Unmarshal(rRaw, &rng)
+		} else if rRaw, ok := m["targetRange"]; ok {
+			_ = json.Unmarshal(rRaw, &rng)
+		}
+		return Location{URI: uri, Range: rng}, true
+	}
+	return Location{}, false
 }

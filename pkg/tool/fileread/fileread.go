@@ -24,7 +24,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/markitdown"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -364,7 +363,7 @@ func (FileUnchangedOutput) output() {}
 
 // New creates the FileRead tool.
 // Source: tools/FileReadTool/FileReadTool.ts
-func New(reg *lsp.Registry) tool.Tool {
+func New() tool.Tool {
 	schema := json.RawMessage(`{
 		"type": "object",
 		"required": ["file_path"],
@@ -391,7 +390,7 @@ func New(reg *lsp.Registry) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:        "Read",
 		Aliases_:     []string{"fileread", "read", "cat"},
-		InputSchema_: func() json.RawMessage { return lsp.InjectLSPField(schema, reg) },
+		InputSchema_: func() json.RawMessage { return schema },
 		Description_: func(input json.RawMessage) (string, error) {
 			var in Input
 			if err := json.Unmarshal(input, &in); err != nil {

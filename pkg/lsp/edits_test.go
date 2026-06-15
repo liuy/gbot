@@ -184,7 +184,9 @@ func TestApplyCodeAction_WithEdit(t *testing.T) {
 		Kind:  "quickfix",
 		Edit:  &WorkspaceEdit{},
 	}
-	if err := ApplyCodeAction(ctx, c, action); err != nil {
+	if _, err := ApplyCodeAction(ctx, c, action, func(_ *WorkspaceEdit) ([]string, error) {
+		return nil, nil
+	}); err != nil {
 		t.Errorf("ApplyCodeAction: %v", err)
 	}
 }
@@ -205,8 +207,19 @@ func TestApplyCodeAction_WithCommand(t *testing.T) {
 		Command: &Command{Title: "o", Command: "go.import.fix"},
 	}
 	// Server's default handler responds with null for unknown methods.
-	if err := ApplyCodeAction(ctx, c, action); err != nil {
+	applied, err := ApplyCodeAction(ctx, c, action, func(_ *WorkspaceEdit) ([]string, error) {
+		return nil, nil
+	})
+	if err != nil {
 		t.Errorf("ApplyCodeAction: %v", err)
+	}
+	// The server responds null for unknown commands, so ApplyCodeAction
+	// returns a result struct with no edits applied (empty Edits).
+	if applied == nil {
+		t.Fatal("ApplyCodeAction applied=nil, want non-nil result")
+	}
+	if len(applied.Edits) != 0 {
+		t.Errorf("ApplyCodeAction Edits=%v, want empty", applied.Edits)
 	}
 }
 

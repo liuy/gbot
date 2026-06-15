@@ -64,10 +64,12 @@ func TestWrappers_DeadClient(t *testing.T) {
 	if _, err := Rename(ctx, c, "file:///x.go", Position{}, "x"); err == nil {
 		t.Error("Rename: expected error on dead client")
 	}
-	if _, err := CodeActions(ctx, c, "file:///x.go", Range{}); err == nil {
+	if _, err := CodeActions(ctx, c, "file:///x.go", Range{}, CodeActionContext{TriggerKind: 1}); err == nil {
 		t.Error("CodeActions: expected error on dead client")
 	}
-	if err := ApplyCodeAction(ctx, c, CodeAction{Command: &Command{Command: "x"}}); err == nil {
+	if _, err := ApplyCodeAction(ctx, c, CodeAction{Command: &Command{Command: "x"}}, func(_ *WorkspaceEdit) ([]string, error) {
+		return nil, nil
+	}); err == nil {
 		t.Error("ApplyCodeAction: expected error on dead client")
 	}
 }

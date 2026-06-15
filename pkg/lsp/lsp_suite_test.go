@@ -246,3 +246,43 @@ func TestStartClient_CommandNotFound(t *testing.T) {
 	}
 	_ = err.Error()
 }
+
+// When the caller's ctx is canceled after StartClient returns,
+// the spawned subprocess must NOT be killed. The ctx is only for the
+// handshake; the process should outlive it.
+func TestStartClient_CtxCancel_DoesNotKillProcess(t *testing.T) {
+	if os.Getenv("GBOT_TEST_SKIP_SUBPROCESS") != "" {
+		t.Skip("GBOT_TEST_SKIP_SUBPROCESS is set")
+	}
+
+	bin := buildFakeBinary(t, t.TempDir())
+
+	// Use a short-lived ctx for spawn.
+	spawnCtx, spawnCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c, err := StartClient(spawnCtx, "fake", bin, nil, t.TempDir(), "GBOT_FAKE_LSP=1")
+	if err != nil {
+		t.Fatalf("StartClient: %v", err)
+	}
+	defer c.Shutdown(context.Background())
+
+	// Cancel spawn ctx immediately.
+	spawnCancel()
+
+	// Give the kernel a moment to deliver SIGKILL if the bug exists.
+	// REAL-TIME delay is unavoidable — testing observable kernel behavior, not goroutine scheduling.
+	time.Sleep(100 * time.Millisecond)
+
+	// Client must still be alive.
+	select {
+	case <-c.Dead():
+		t.Fatal("subprocess died after spawn ctx cancel — process should outlive the spawn ctx")
+	default:
+	}
+
+	// And still serve requests.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	if err := c.Initialize(initCtx, pathToURI(t.TempDir())); err != nil {
+		t.Fatalf("Initialize after ctx cancel: %v", err)
+	}
+}
