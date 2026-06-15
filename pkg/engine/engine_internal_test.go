@@ -2571,7 +2571,7 @@ func TestQuery_PreTurnCompact_Succeeds_OldFormat(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()
@@ -2649,7 +2649,7 @@ func TestQuery_PreTurnCompact_UsesRealAPITokens(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()
@@ -2741,7 +2741,7 @@ func TestQuery_PreTurnCompact_Succeeds(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()
@@ -2811,7 +2811,7 @@ func TestQuery_PreTurnCompact_CompactFails_APIProceeds(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()
@@ -2913,7 +2913,7 @@ func TestQuery_PreTurnCompact_StillOverLimit(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()
@@ -3028,7 +3028,7 @@ func TestQuery_PreTurnCompact_NoOp_APIProceeds(t *testing.T) {
 	for range 8 {
 		eng.SetMessages(append(eng.Messages(), types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 16000))},
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("x", 26250))},
 		}))
 	}
 	eng.mu.Lock()

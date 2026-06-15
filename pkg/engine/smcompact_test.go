@@ -80,7 +80,7 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
-	msgs := makeLargeMessages(20, 500)
+	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -123,11 +123,11 @@ smcompact_test.go — test file
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
-	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
+	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 500)
 
 	// Create enough messages for PartialCompact to work
 	// Need at least keepFrom > 1 and keepFrom < len(messages)
-	msgs := makeLargeMessages(20, 500)
+	msgs := makeLargeMessages(25, 500)
 
 	result, err := ac.TrySMCompact(msgs, sm)
 	if err != nil {
@@ -215,7 +215,7 @@ func TestTrySMCompact_NoFile(t *testing.T) {
 	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
-	msgs := makeLargeMessages(20, 500)
+	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -65,22 +65,25 @@ func TestCompactableTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEstimateTokens(t *testing.T) {
+	// Verify against actual ported tokenx algorithm output.
+	// Run `go run -tags calc` if values drift.
 	tests := []struct {
 		input string
 		want  int
 	}{
 		{"", 0},
-		{"a", 0},          // 1/4 = 0
-		{"abcd", 1},       // 4/4 = 1
-		{"abcdefgh", 2},   // 8/4 = 2
-		{"abcdefghij", 2}, // 10/4 = 2
-		// CJK: 1.5 tokens/char (3/2)
-		{"你好", 3},       // 2 CJK → 2*3/2 = 3
-		{"你好世界", 6},     // 4 CJK → 4*3/2 = 6
-		{"Hello 你好", 4}, // 6 nonCJK(1) + 2 CJK(3) = 4
-		{"こんにちは", 7},    // 5 Japanese Katakana → 5*3/2 = 7
-		{"안녕하세요", 7},    // 5 Korean Hangul → 5*3/2 = 7
-		{"abc你好def", 4}, // 6 nonCJK(1) + 2 CJK(3) = 4
+		{"a", 1},          // 1 char short segment
+		{"abcd", 1},       // len=4, ceil(4/6)=1
+		{"abcdefgh", 2},   // len=8, ceil(8/6)=2
+		{"abcdefghij", 2}, // len=10, ceil(10/6)=2
+		// CJK: 1 token/char
+		{"你好", 2},
+		{"你好世界", 4},
+		// Mixed: "Hello"(1) " "(0) "你好"(2) = 3
+		{"Hello 你好", 3},
+		{"こんにちは", 1}, // hiragana not in tokenx CJK → ceil(5/6)=1
+		{"안녕하세요", 5},
+		{"abc你好def", 8},
 	}
 	for _, tt := range tests {
 		got := EstimateTokens(tt.input)
@@ -98,7 +101,7 @@ func TestCalculateToolResultTokens_StringContent(t *testing.T) {
 	text := "Hello, this is a tool result with some content"
 	content := json.RawMessage(`"` + text + `"`)
 	got := calculateToolResultTokens(content)
-	want := len(text) / 4
+	want := EstimateTokens(text)
 	if got != want {
 		t.Errorf("calculateToolResultTokens(string) = %d, want %d", got, want)
 	}
@@ -117,7 +120,7 @@ func TestCalculateToolResultTokens_MixedArray(t *testing.T) {
 	// Array with text + image blocks
 	content := json.RawMessage(`[{"type":"text","text":"Hello world"},{"type":"image","source":{"type":"base64","data":"..."}}]`)
 	got := calculateToolResultTokens(content)
-	wantText := len("Hello world") / 4
+	wantText := EstimateTokens("Hello world")
 	want := wantText + ImageMaxTokenSize
 	if got != want {
 		t.Errorf("calculateToolResultTokens(mixed) = %d, want %d", got, want)
@@ -233,13 +236,14 @@ func TestIsMainThreadSource(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEstimateMessagesTokens_Basic(t *testing.T) {
+	text := "Hello world, this is a test message"
 	messages := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewTextBlock("Hello world, this is a test message"),
+			types.NewTextBlock(text),
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := len("Hello world, this is a test message") / 4
+	raw := EstimateTokens(text)
 	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(basic) = %d, want %d", got, want)
@@ -272,7 +276,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(len(thinkingText)/4) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(EstimateTokens(thinkingText)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(thinking) = %d, want %d", got, want)
 	}
@@ -286,7 +290,7 @@ func TestEstimateMessagesTokens_RedactedThinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(len(data)/4) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(EstimateTokens(data)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(redacted_thinking) = %d, want %d", got, want)
 	}
@@ -301,7 +305,7 @@ func TestEstimateMessagesTokens_ToolUse(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	combined := "Read" + string(input)
-	want := int(math.Ceil(float64(len(combined)/4) * 4.0 / 3.0))
+	want := int(math.Ceil(float64(EstimateTokens(combined)) * 4.0 / 3.0))
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_use) = %d, want %d", got, want)
 	}

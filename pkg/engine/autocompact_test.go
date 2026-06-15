@@ -124,10 +124,17 @@ func extractTextFromBlocks(blocks []types.ContentBlock) string {
 	return sb.String()
 }
 
-// makeLargeMessages creates n messages, each with ~tokensPerMsg estimated tokens.
-// Uses the 4 chars/token heuristic to match the engine.currentInputTokens().
+// makeLargeMessages creates n messages whose post-EngineMessagesToStore
+// JSON-wrap token estimate is ~tokensPerMsg.
+//
+// findKeepFrom operates on TranscriptMessage.Content (the JSON-marshalled
+// block array). The JSON wrapper makes the inner text fall into the
+// "other" branch of EstimateTokens (1 token per char) because the
+// surrounding quotes are non-alphanumeric. So a chars-only string here
+// yields ~1 token per char; we use tokensPerMsg raw chars to hit
+// ~tokensPerMsg tokens after wrapping.
 func makeLargeMessages(n, tokensPerMsg int) []types.Message {
-	text := strings.Repeat("x", tokensPerMsg*4)
+	text := strings.Repeat("x", tokensPerMsg)
 	msgs := make([]types.Message, n)
 	for i := range msgs {
 		role := types.RoleUser
@@ -676,7 +683,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	mp := &compactMockProvider{}
 	sc := NewAutoCompactor(store, "test-session", "test-model", mp, 8000)
 
-	msgs := makeMessages(10, 1000)
+	msgs := makeMessages(10, 3000)
 
 	result, err := sc.Compact(context.Background(), msgs)
 	if err != nil {
@@ -1178,12 +1185,11 @@ func TestFindKeepFrom_LastMessageHuge_CompactEverything(t *testing.T) {
 
 func TestFindKeepFrom_AllHuge_CompactEverything(t *testing.T) {
 	t.Parallel()
-	// 8 messages, each ~5K tokens (20K chars). First from tail exceeds 8K budget.
-	// Nothing fits in tail → keepFrom = len (compact everything, tail=0).
-	msgs := makeLargeMessages(8, 5000)
-	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
-	// First message from tail (5K tokens) fits in 8K budget, second doesn't (10K > 8K).
+	// 8 messages, each ~5K tokens. contextWindow=40K → target=8K.
+	// Each message alone (5K) fits, but two (10K) > 8K budget.
 	// So tail = 1 message, keepFrom = len - 1 = 7.
+	msgs := makeLargeMessages(8, 30000)
+	keepFrom := newFindKeepFromHelper(t, 40000, msgs)
 	tail := len(msgs) - keepFrom
 	if tail != 1 {
 		t.Errorf("tail should be 1 (first fits, second overflows), got tail=%d keepFrom=%d", tail, keepFrom)
@@ -1211,15 +1217,17 @@ func TestFindKeepFrom_Mixed_StopsAtTokenBudget(t *testing.T) {
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 3")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("old 4")}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("old 5")}},
-		// Last 3 messages: each ~3K tokens (12K chars). Total ~9K > 8K budget.
+		// Last 3 messages: each ~3K tokens (3000 chars, see makeLargeMessages
+		// comment for why ~1 char/token in the JSON-wrapped representation).
+		// Total ~9K > 8K budget.
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("a", 12000)),
+			types.NewTextBlock(strings.Repeat("a", 18000)),
 		}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("b", 12000)),
+			types.NewTextBlock(strings.Repeat("b", 18000)),
 		}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
-			types.NewTextBlock(strings.Repeat("c", 12000)),
+			types.NewTextBlock(strings.Repeat("c", 18000)),
 		}},
 	}
 	keepFrom := newFindKeepFromHelper(t, 40000, msgs)

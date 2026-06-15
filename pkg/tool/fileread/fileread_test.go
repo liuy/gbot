@@ -1593,9 +1593,8 @@ func TestExecute_MaxTokens_Exceeded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "dense.txt")
-	// ~120KB of text, under 256KB byte limit, but ~30K tokens > 25K limit
-	// Each char ≈ 0.25 token, so 120K chars ≈ 30K tokens
-	denseContent := strings.Repeat("a", 120*1024)
+	// 200KB of text, under 256KB byte limit, but > 25K tokens at 6 chars/token.
+	denseContent := strings.Repeat("a", 200*1024)
 	if err := os.WriteFile(fp, []byte(denseContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
