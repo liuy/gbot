@@ -70,7 +70,7 @@ func hunksToLineEntries(hunks []diff.Hunk[string], oldLines, newLines []string) 
 		// Equal context lines before this hunk's first edit.
 		if h.PosX >= oldNum-1 && h.PosY >= newNum-1 {
 			ctx := min(h.PosY-(newNum-1), h.PosX-(oldNum-1))
-			for j := 0; j < ctx; j++ {
+			for j := range ctx {
 				entries = append(entries, lineEntry{op: 0, line: oldLines[oldNum-1+j], oldN: oldNum + j, newN: newNum + j})
 			}
 			oldNum += ctx

@@ -68,6 +68,10 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	at.SetWorkingDir(deps.WorkingDir)
 	at.SetGitStatus(deps.GitStatus)
 	at.SetSkillRegistry(deps.SkillReg)
+	// Inject tier resolver so agent model: "max" resolves to the configured model.
+	if deps.Cfg != nil {
+		at.SetResolveTierFn(deps.Cfg.ResolveTier)
+	}
 	// Stub SetNotifyFn — must be called before JobAdapter() so forkReg is initialized.
 	at.SetNotifyFn(func(string) {}, func() string { return "" })
 	reg.MustRegister(at)

@@ -125,7 +125,7 @@ func TestCreateAllProviders_SpecificModel(t *testing.T) {
 	t.Parallel()
 	// Request a specific model by name.
 	cfg := &Config{
-		Model: "myprovider/lite-model",
+		Model: ModelSpec{"default": "myprovider/lite-model"},
 		Providers: []Provider{
 			{
 				Name: "myprovider",

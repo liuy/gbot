@@ -43,7 +43,7 @@ func newTestAppWithProviders(t *testing.T) *App {
 	}
 
 	cfg := &config.Config{
-		Model: "openai/glm-5",
+		Model: config.ModelSpec{"default": "openai/glm-5"},
 		Providers: []config.Provider{
 			{
 				Name: "openai",

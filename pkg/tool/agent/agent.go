@@ -70,11 +70,12 @@ type AgentOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	factory     SubEngineFactory            // injected via SetFactory
-	parentTools func() map[string]tool.Tool // lazy accessor for parent engine tools
-	forkReg     *ForkAgentRegistry          // nil = fork disabled
-	notifyFn    func(xml string)            // injects notification into parent conversation
-	sysPromptFn func() string               // returns parent engine's rendered system prompt
+	factory       SubEngineFactory            // injected via SetFactory
+	parentTools   func() map[string]tool.Tool // lazy accessor for parent engine tools
+	forkReg       *ForkAgentRegistry          // nil = fork disabled
+	notifyFn      func(xml string)            // injects notification into parent conversation
+	sysPromptFn   func() string               // returns parent engine's rendered system prompt
+	resolveTierFn func(tier string) string    // resolves tier names ("lite","pro","max") to model strings; nil = passthrough
 
 	// Sub-agent environment context — loaded once at startup, read-only during execution
 	workingDir string
@@ -113,6 +114,10 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 
 // SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
 func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
+
+// SetResolveTierFn injects a tier-name resolver for agent model selection.
+// When nil (default), agent model values pass through unchanged.
+func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTierFn = fn }
 
 // SetGitStatus sets the git status for sub-agent system prompt injection.
 func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
@@ -252,6 +257,15 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 	// Normalize to "" so NewSubEngine inherits via e.model (engine.go:740-743).
 	if model == "inherit" {
 		model = ""
+	}
+	// Tier resolution: if a tier resolver is configured (e.g. "lite"/"pro"/"max"),
+	// translate the tier name to a concrete model string. If the resolver returns
+	// empty or is nil, pass through the original value (backward compat with
+	// direct "provider/model" specifications).
+	if model != "" && t.resolveTierFn != nil {
+		if resolved := t.resolveTierFn(model); resolved != "" {
+			model = resolved
+		}
 	}
 
 	// Step 5: Build enhanced system prompt

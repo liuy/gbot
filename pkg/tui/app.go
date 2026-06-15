@@ -281,7 +281,7 @@ func (a *App) persistModelSelection() {
 	if a.cfg == nil {
 		return
 	}
-	a.cfg.Model = a.currentProvider + "/" + a.currentModel
+	a.cfg.Model = config.ModelSpec{"default": a.currentProvider + "/" + a.currentModel}
 	if err := a.cfg.Save(); err != nil {
 		slog.Warn("model: failed to persist selection", "error", err)
 	}

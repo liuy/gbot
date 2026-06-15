@@ -17,7 +17,7 @@ import (
 
 // Config holds the full application configuration.
 type Config struct {
-	Model     string     `json:"model,omitempty"`     // "provider/model" or "model", empty → providers[0] first model
+	Model     ModelSpec  `json:"model"`               // string "provider/model" or map of tiers {default,lite,pro,max,...}
 	Providers []Provider `json:"providers,omitempty"` // ordered by priority, providers[0] is primary
 
 	PermissionMode types.PermissionMode `json:"permission_mode,omitempty"`
@@ -198,13 +198,22 @@ func ConfigDir() (string, error) {
 //   - "model"          → ("", "model") — cross-provider lookup needed
 //   - ""               → ("", "") — use first provider's first model
 func (c *Config) ParseModel() (providerName, modelName string, err error) {
-	if c.Model == "" {
+	m := c.Model.String()
+	if m == "" {
 		return "", "", nil
 	}
-	if before, after, ok := strings.Cut(c.Model, "/"); ok {
+	if before, after, ok := strings.Cut(m, "/"); ok {
 		return before, after, nil
 	}
-	return "", c.Model, nil
+	return "", m, nil
+}
+
+// ResolveTier returns the model string for a given tier name.
+// For a single-string ModelSpec, returns that string regardless of tier.
+// For a tiers map, looks up the tier; falls back to "default", then "".
+// If tier is empty, returns the default.
+func (c *Config) ResolveTier(tier string) string {
+	return c.Model.ResolveTier(tier)
 }
 
 // ResolveModel resolves Config.Model into a concrete Provider and model name.
@@ -330,4 +339,32 @@ func (c *Config) Save() error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// ModelSpec is a map of named tiers to model strings
+// (e.g. {"default":"zhipu/glm-5.2","lite":"minimax/minimax-3","pro":"zhipu/glm-5.1","max":"zhipu/glm-5.2"}).
+// "default" is the main conversation model; other keys are tier names
+// referenced by agents via model: <tier> in their frontmatter.
+type ModelSpec map[string]string
+
+// String returns the default model (the "default" key value, or "" if unset).
+func (m ModelSpec) String() string {
+	return m["default"]
+}
+
+// IsZero reports whether the spec is empty.
+func (m ModelSpec) IsZero() bool {
+	return len(m) == 0
+}
+
+// ResolveTier returns the model for a given tier name.
+// Falls back to "default" if the tier is not found or tier is empty.
+func (m ModelSpec) ResolveTier(tier string) string {
+	if tier == "" {
+		return m["default"]
+	}
+	if v, ok := m[tier]; ok {
+		return v
+	}
+	return m["default"]
 }

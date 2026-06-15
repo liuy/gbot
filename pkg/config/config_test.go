@@ -77,7 +77,7 @@ func TestLoad_ProjectConfig(t *testing.T) {
 	}
 
 	projectSettings := map[string]any{
-		"model": "project-model",
+		"model": map[string]string{"default": "project-model"},
 	}
 	data, _ := json.Marshal(projectSettings)
 	_ = os.WriteFile(filepath.Join(projectGbotDir, "settings.json"), data, 0644)
@@ -92,7 +92,7 @@ func TestLoad_ProjectConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Model != "project-model" {
+	if cfg.Model.String() != "project-model" {
 		t.Errorf("expected Model 'project-model', got %s", cfg.Model)
 	}
 }
@@ -107,7 +107,7 @@ func TestLoad_UserConfig(t *testing.T) {
 	}
 
 	userSettings := map[string]any{
-		"model": "user-model",
+		"model": map[string]string{"default": "user-model"},
 		"theme": "dark",
 		"debug": true,
 	}
@@ -122,7 +122,7 @@ func TestLoad_UserConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Model != "user-model" {
+	if cfg.Model.String() != "user-model" {
 		t.Errorf("expected Model 'user-model', got %s", cfg.Model)
 	}
 	if cfg.Theme != "dark" {
@@ -291,7 +291,7 @@ func TestLoadFromFile_FileNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Should return defaults since no config files exist
-	if cfg.Model != "" {
+	if cfg.Model.String() != "" {
 		t.Errorf("expected Model empty, got %s", cfg.Model)
 	}
 }
@@ -708,7 +708,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 	}
 
 	settings := map[string]any{
-		"model": "openai/gpt-4o",
+		"model": map[string]string{"default": "openai/gpt-4o"},
 		"providers": []map[string]any{
 			{
 				"name": "openai",
@@ -739,7 +739,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Model != "openai/gpt-4o" {
+	if cfg.Model.String() != "openai/gpt-4o" {
 		t.Errorf("Model = %q, want %q", cfg.Model, "openai/gpt-4o")
 	}
 	if len(cfg.Providers) != 1 {
@@ -772,7 +772,7 @@ func TestLoad_ProviderConfig(t *testing.T) {
 
 func TestParseModel_ProviderSlashModel(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: "zhipu/glm-5"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "zhipu/glm-5"}}
 	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -787,7 +787,7 @@ func TestParseModel_ProviderSlashModel(t *testing.T) {
 
 func TestParseModel_ModelOnly(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: "glm-5"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "glm-5"}}
 	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -802,7 +802,7 @@ func TestParseModel_ModelOnly(t *testing.T) {
 
 func TestParseModel_Empty(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: ""}
+	cfg := &config.Config{Model: config.ModelSpec{"default": ""}}
 	provider, model, err := cfg.ParseModel()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -822,7 +822,7 @@ func TestParseModel_Empty(t *testing.T) {
 func TestResolveModel_ExactMatch(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
-		Model: "zhipu/glm-5",
+		Model: config.ModelSpec{"default": "zhipu/glm-5"},
 		Providers: []config.Provider{
 			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
 		},
@@ -842,7 +842,7 @@ func TestResolveModel_ExactMatch(t *testing.T) {
 func TestResolveModel_FuzzyMatch(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
-		Model: "glm-5",
+		Model: config.ModelSpec{"default": "glm-5"},
 		Providers: []config.Provider{
 			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}, "glm-5.1": {}}},
 		},
@@ -881,7 +881,7 @@ func TestResolveModel_Empty(t *testing.T) {
 func TestResolveModel_NotFound(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
-		Model: "nonexistent",
+		Model: config.ModelSpec{"default": "nonexistent"},
 		Providers: []config.Provider{
 			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
 		},
@@ -897,7 +897,7 @@ func TestResolveModel_NotFound(t *testing.T) {
 
 func TestResolveModel_NoProviders(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Model: "glm-5"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "glm-5"}}
 	_, _, err := cfg.ResolveModel()
 	if err == nil {
 		t.Fatal("expected error with no providers")
@@ -916,7 +916,7 @@ func TestSave_CreatesFile(t *testing.T) {
 	_ = os.Setenv("HOME", dir)
 	defer func() { _ = os.Unsetenv("HOME") }()
 
-	cfg := &config.Config{Model: "zhipu/pro"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "zhipu/pro"}}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
@@ -930,8 +930,12 @@ func TestSave_CreatesFile(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(raw["model"]) != `"zhipu/pro"` {
-		t.Errorf("model = %s, want %q", string(raw["model"]), `"zhipu/pro"`)
+	var modelField map[string]string
+	if err := json.Unmarshal(raw["model"], &modelField); err != nil {
+		t.Fatalf("model field not a valid object: %v", err)
+	}
+	if modelField["default"] != "zhipu/pro" {
+		t.Errorf("model.default = %q, want %q", modelField["default"], "zhipu/pro")
 	}
 }
 
@@ -951,7 +955,7 @@ func TestSave_FieldLevelUpdate(t *testing.T) {
 	existingData, _ := json.Marshal(existing)
 	_ = os.WriteFile(filepath.Join(gbotDir, "settings.json"), existingData, 0644)
 
-	cfg := &config.Config{Model: "zhipu/lite"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "zhipu/lite"}}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
@@ -965,8 +969,12 @@ func TestSave_FieldLevelUpdate(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(raw["model"]) != `"zhipu/lite"` {
-		t.Errorf("model = %s, want %q", string(raw["model"]), `"zhipu/lite"`)
+	var modelField map[string]string
+	if err := json.Unmarshal(raw["model"], &modelField); err != nil {
+		t.Fatalf("model field not a valid object: %v", err)
+	}
+	if modelField["default"] != "zhipu/lite" {
+		t.Errorf("model.default = %q, want %q", modelField["default"], "zhipu/lite")
 	}
 	if string(raw["theme"]) != `"dark"` {
 		t.Errorf("theme should be preserved, got %s", string(raw["theme"]))
@@ -986,7 +994,7 @@ func TestSave_CorruptedFile(t *testing.T) {
 	// Write corrupted JSON
 	_ = os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte("{{broken}}"), 0644)
 
-	cfg := &config.Config{Model: "pro"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
@@ -1000,8 +1008,12 @@ func TestSave_CorruptedFile(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(raw["model"]) != `"pro"` {
-		t.Errorf("model = %s, want %q", string(raw["model"]), `"pro"`)
+	var modelField map[string]string
+	if err := json.Unmarshal(raw["model"], &modelField); err != nil {
+		t.Fatalf("model field not a valid object: %v", err)
+	}
+	if modelField["default"] != "pro" {
+		t.Errorf("model.default = %q, want %q", modelField["default"], "pro")
 	}
 	// Corrupted content should be gone — only model field
 	if len(raw) != 1 {
@@ -1014,7 +1026,7 @@ func TestSave_NoTmpFileLeft(t *testing.T) {
 	_ = os.Setenv("HOME", dir)
 	defer func() { _ = os.Unsetenv("HOME") }()
 
-	cfg := &config.Config{Model: "pro"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
@@ -1038,7 +1050,7 @@ func TestLoad_APITimeoutEnv(t *testing.T) {
 	if err := os.MkdirAll(gbotDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte(`{"model":"pro"}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(gbotDir, "settings.json"), []byte(`{"model":{"default":"pro"}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1060,7 +1072,7 @@ func TestSave_ConfigDirError(t *testing.T) {
 	_ = os.Setenv("HOME", "")
 	defer func() { _ = os.Setenv("HOME", origHome) }()
 
-	cfg := &config.Config{Model: "pro"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	err := cfg.Save()
 	if err == nil {
 		t.Fatal("Save should fail when ConfigDir errors")
@@ -1081,7 +1093,7 @@ func TestSave_WriteTempError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{Model: "pro"}
+	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
 	err := cfg.Save()
 	if err == nil {
 		t.Fatal("Save should fail when temp file write fails")

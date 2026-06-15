@@ -488,7 +488,7 @@ type AgentDefinition struct {
 	SystemPrompt    func() string // lazily generated system prompt
 	Tools           []string      // nil or ["*"] = all tools
 	DisallowedTools []string      // blacklist
-	Model           string        // "inherit", "haiku", "sonnet", "opus"
+	Model           string        // "inherit" (use parent engine's model), tier name ("lite","pro","max"), or "provider/model"
 	OmitClaudeMd    bool
 	MaxTurns        int // 0 = no limit
 
