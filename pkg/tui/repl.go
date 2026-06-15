@@ -558,8 +558,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		} else {
 			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
-			a.taskListDirty = true
 		}
+		a.taskListDirty = true
 		if m.IsError {
 			slog.Error("tui:tool_error", "id", m.ToolUseID, "output", m.Output)
 		}

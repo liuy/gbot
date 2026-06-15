@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/tool/task"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func newTaskTestApp() *App {
@@ -161,6 +162,22 @@ func TestApp_TaskListDirty_OnToolEnd(t *testing.T) {
 	a := model.(*App)
 	if !a.taskListDirty {
 		t.Error("toolEndMsg should mark task list dirty")
+	}
+}
+
+func TestApp_TaskListDirty_OnSubagentToolEnd(t *testing.T) {
+	app := newTaskTestApp()
+	app.taskListDirty = false
+
+	agent := &types.AgentMeta{ParentToolUseID: "parent-1"}
+	model, _ := app.Update(toolEndMsg{
+		ToolUseID: "sub-task-1",
+		Output:    "ok",
+		Agent:     agent,
+	})
+	a := model.(*App)
+	if !a.taskListDirty {
+		t.Error("subagent toolEndMsg should mark task list dirty (sub-agent may modify tasks)")
 	}
 }
 
