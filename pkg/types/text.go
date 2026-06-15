@@ -4,8 +4,6 @@ package types
 import (
 	"fmt"
 	"math"
-	"regexp"
-	"unicode/utf8"
 )
 
 // Token estimation ported 1:1 from johannschopplich/tokenx.
@@ -15,132 +13,180 @@ const (
 	shortTokenThreshold  = 3
 )
 
-// Tokenx upstream punctuation class — character set is part of the
-// algorithm contract; do not add or remove chars without verifying
-// against johannschopplich/tokenx test/index.test.ts.
-const punctClass = `.,!?;(){}[]<>:/\\|@#$%^&*+=` + "`" + `~_-`
-
-// punctSet avoids RE2 character-class issues with * + ?.
-var punctSet = func() map[rune]struct{} {
-	m := make(map[rune]struct{}, len(punctClass))
-	for _, r := range punctClass {
-		m[r] = struct{}{}
-	}
-	return m
-}()
-
-var (
-	patternWhitespace = regexp.MustCompile(`^[\p{Z}\t\n\v\f\r\x{FEFF}]+$`)
-	patternNumeric    = regexp.MustCompile(`^\d+(?:[.,]\d+)*$`)
-	patternAlphanumeric = regexp.MustCompile(`^[a-zA-Z0-9À-ÖØ-öø-ÿ]+$`)
-
-	// Uses \p{Z}+\t\n\v\f\r+\x{FEFF} to match JS \s (Go \s is ASCII-only).
-	patternSplit = regexp.MustCompile(`([\p{Z}\t\n\v\f\r\x{FEFF}]+|[-.,:!?;(){}\[\]<>/\\|@#$%^\&*+=` + "`" + `~_]+)`)
-	// CJK: substring test — a segment with any CJK rune counts 1 token/char.
-	patternCJK = regexp.MustCompile(`[\x{4E00}-\x{9FFF}\x{3400}-\x{4DBF}\x{3000}-\x{303F}\x{FF00}-\x{FFEF}\x{30A0}-\x{30FF}\x{2E80}-\x{2EFF}\x{31C0}-\x{31EF}\x{3200}-\x{32FF}\x{3300}-\x{33FF}\x{AC00}-\x{D7AF}\x{1100}-\x{11FF}\x{3130}-\x{318F}\x{A960}-\x{A97F}\x{D7B0}-\x{D7FF}]`)
-
-	patternGerman        = regexp.MustCompile(`(?i)[äöüßẞ]`)
-	patternFrenchSpanish = regexp.MustCompile(`(?i)[éèêëàâîïôûùüÿçœæáíóúñ]`)
-	patternSlavic        = regexp.MustCompile(`(?i)[ąćęłńóśźżěščřžýůúďťň]`)
-)
-
 // EstimateTokens returns a heuristic token count. Not for billing.
 func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
 	}
 
-	segments := splitSegments(text)
 	total := 0
-	for _, seg := range segments {
+	for _, seg := range splitSegments(text) {
 		total += estimateSegmentTokens(seg)
 	}
 	return total
 }
 
-// splitSegments mirrors JS String.prototype.split with a capturing group.
-// Go's regexp.Split drops capture-group matches, so we hand-roll it here.
+// splitSegments splits text into word runs and separator runs (whitespace
+// or punctuation), mirroring JS String.prototype.split with a capturing group.
 func splitSegments(text string) []string {
-	matches := patternSplit.FindAllStringIndex(text, -1)
-	if len(matches) == 0 {
-		return []string{text}
-	}
-	out := make([]string, 0, len(matches)*2+1)
-	prev := 0
-	for _, m := range matches {
-		if m[0] > prev {
-			out = append(out, text[prev:m[0]])
+	runes := []rune(text)
+	var segs []string
+	i := 0
+	for i < len(runes) {
+		r := runes[i]
+		if isWS(r) || isPunctRune(r) {
+			wp := isWS(r)
+			j := i + 1
+			for j < len(runes) {
+				r2 := runes[j]
+				if wp && !isWS(r2) { break }
+				if !wp && !isPunctRune(r2) { break }
+				j++
+			}
+			segs = append(segs, string(runes[i:j]))
+			i = j
+		} else {
+			j := i + 1
+			for j < len(runes) {
+				r2 := runes[j]
+				if isWS(r2) || isPunctRune(r2) { break }
+				j++
+			}
+			segs = append(segs, string(runes[i:j]))
+			i = j
 		}
-		out = append(out, text[m[0]:m[1]])
-		prev = m[1]
 	}
-	if prev < len(text) {
-		out = append(out, text[prev:])
-	}
-	filtered := out[:0]
-	for _, s := range out {
-		if s != "" {
-			filtered = append(filtered, s)
-		}
-	}
-	return filtered
+	return segs
 }
 
 func estimateSegmentTokens(seg string) int {
 	if seg == "" {
 		return 0
 	}
-	if patternWhitespace.MatchString(seg) {
+
+	runeCount := 0
+	allWhitespace := true
+	allNumeric := true
+	allAlpha := true
+	hasCJK := false
+	allPunct := true
+
+	for _, r := range seg {
+		runeCount++
+		if isWS(r) {
+			allAlpha = false
+			allNumeric = false
+			allPunct = false
+			continue
+		}
+		allWhitespace = false
+		if isCJKRune(r) {
+			hasCJK = true
+			allAlpha = false
+			allNumeric = false
+			allPunct = false
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			allAlpha = false
+			allPunct = false
+			continue
+		}
+		if r == '.' || r == ',' {
+			allAlpha = false
+			allPunct = false
+			continue
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '\u00C0' && r <= '\u00D6') || (r >= '\u00D8' && r <= '\u00F6') ||
+			(r >= '\u00F8' && r <= '\u00FF') {
+			allNumeric = false
+			allPunct = false
+			continue
+		}
+		allNumeric = false
+		allAlpha = false
+		if !isPunctRune(r) {
+			allPunct = false
+		}
+	}
+
+	if allWhitespace && runeCount > 0 {
 		return 0
 	}
-	if patternCJK.MatchString(seg) {
-		return utf8.RuneCountInString(seg)
+	if hasCJK {
+		return runeCount
 	}
-	if patternNumeric.MatchString(seg) {
+	if allNumeric && runeCount > 0 {
 		return 1
 	}
-	if utf8.RuneCountInString(seg) <= shortTokenThreshold {
+	if runeCount <= shortTokenThreshold {
 		return 1
 	}
-	if isAllPunct(seg) {
-		if utf8.RuneCountInString(seg) > 1 {
-			return (utf8.RuneCountInString(seg) + 1) / 2
-		}
-		return 1
+	if allPunct {
+		return (runeCount + 1) / 2
 	}
-	if patternAlphanumeric.MatchString(seg) {
+	if allAlpha {
 		cpt := getLanguageSpecificCharsPerToken(seg)
 		if cpt == 0 {
 			cpt = float64(defaultCharsPerToken)
 		}
-		// ceil(runeCount / cpt) — matches tokenx Math.ceil(segment.length / charsPerToken).
-		runeCount := utf8.RuneCountInString(seg)
 		return int(math.Ceil(float64(runeCount) / cpt))
 	}
-	runeCount := utf8.RuneCountInString(seg)
 	return int(math.Ceil(float64(runeCount) / defaultCharsPerToken))
 }
 
-// isAllPunct reports whether seg consists entirely of tokenx punctuation chars.
-func isAllPunct(seg string) bool {
-	for _, r := range seg {
-		if _, ok := punctSet[r]; !ok {
-			return false
-		}
-	}
-	return true
+func isWS(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' ||
+		r == '\u00a0' || r == '\u3000' || r == '\uFEFF' ||
+		(r >= '\u2000' && r <= '\u200a') ||
+		r == '\u2028' || r == '\u2029' ||
+		r == '\u1680' || r == '\u205f' || r == '\u0085'
 }
 
-// getLanguageSpecificCharsPerToken returns a chars/token ratio for diacritic-rich
-// segments (German/French/Spanish=3, Slavic=3.5), else 0 (use default=6).
+func isPunctRune(r rune) bool {
+	switch r {
+	case '.', ',', '!', '?', ';', '(', ')', '{', '}', '[', ']',
+		'<', '>', '/', '\\', '|', '@', '#', '$', '%', '^',
+		'&', '*', '+', '=', '`', '~', '-', '_', ':':
+		return true
+	}
+	return false
+}
+
+func isCJKRune(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0x3400 && r <= 0x4DBF) ||
+		(r >= 0x3000 && r <= 0x303F) ||
+		(r >= 0xFF00 && r <= 0xFFEF) ||
+		(r >= 0x30A0 && r <= 0x30FF) ||
+		(r >= 0x2E80 && r <= 0x2EFF) ||
+		(r >= 0x31C0 && r <= 0x31EF) ||
+		(r >= 0x3200 && r <= 0x32FF) ||
+		(r >= 0x3300 && r <= 0x33FF) ||
+		(r >= 0xAC00 && r <= 0xD7AF) ||
+		(r >= 0x1100 && r <= 0x11FF) ||
+		(r >= 0x3130 && r <= 0x318F) ||
+		(r >= 0xA960 && r <= 0xA97F) ||
+		(r >= 0xD7B0 && r <= 0xD7FF)
+}
+
 func getLanguageSpecificCharsPerToken(seg string) float64 {
-	switch {
-	case patternGerman.MatchString(seg):
-		return 3
-	case patternFrenchSpanish.MatchString(seg):
-		return 3
-	case patternSlavic.MatchString(seg):
-		return 3.5
+	for _, r := range seg {
+		switch {
+		case r == 'ä' || r == 'ö' || r == 'ü' || r == 'ß' || r == 'Ä' || r == 'Ö' || r == 'Ü' || r == 'ẞ':
+			return 3
+		case r == 'é' || r == 'è' || r == 'ê' || r == 'ë' || r == 'à' || r == 'â' ||
+			r == 'î' || r == 'ï' || r == 'ô' || r == 'û' || r == 'ù' || r == 'ü' ||
+			r == 'ÿ' || r == 'ç' || r == 'œ' || r == 'æ' || r == 'á' || r == 'í' ||
+			r == 'ó' || r == 'ú' || r == 'ñ':
+			return 3
+		case r == 'ą' || r == 'ć' || r == 'ę' || r == 'ł' || r == 'ń' || r == 'ó' ||
+			r == 'ś' || r == 'ź' || r == 'ż' || r == 'ě' || r == 'š' || r == 'č' ||
+			r == 'ř' || r == 'ž' || r == 'ý' || r == 'ů' || r == 'ú' || r == 'ď' ||
+			r == 'ť' || r == 'ň':
+			return 3.5
+		}
 	}
 	return 0
 }
@@ -172,7 +218,7 @@ func IsCJK(r rune) bool {
 }
 
 // FormatTokenCount formats a token count with K/M/G suffixes.
-// <1000: as-is, >=1K: "1.2k", >=1M: "1.2M", >=1G: "1.2G".
+// <1000: as-is, >=1K: "1.2k", >1M: "1.2M", >1G: "1.2G".
 // Uses 1024 as the base.
 func FormatTokenCount(n int) string {
 	if n < 1000 {
