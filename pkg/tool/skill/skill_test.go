@@ -3,10 +3,13 @@ package skill
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/liuy/gbot/pkg/skills"
+	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -53,7 +56,7 @@ func TestNew_CreatesTool(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	if tool.Name() != "Skill" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "Skill")
@@ -70,7 +73,7 @@ func TestNew_InputSchema(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	schema := tool.InputSchema()
 	if !strings.Contains(string(schema), "skill") {
@@ -85,7 +88,7 @@ func TestNew_Description(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "commit"}`)
 	desc, err := tool.Description(input)
@@ -99,7 +102,7 @@ func TestNew_Description(t *testing.T) {
 
 func TestTool_Call_Inline(t *testing.T) {
 	reg := setupRegistry(t)
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "commit"}`)
 	result, err := tool.Call(context.TODO(), input, nil)
@@ -127,7 +130,7 @@ func TestTool_Call_Inline(t *testing.T) {
 
 func TestTool_Call_WithArgs(t *testing.T) {
 	reg := setupRegistry(t)
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "commit", "args": "-m fix"}`)
 	result, err := tool.Call(context.TODO(), input, nil)
@@ -155,7 +158,7 @@ func TestTool_Call_WithArgs(t *testing.T) {
 
 func TestTool_Call_StripLeadingSlash(t *testing.T) {
 	reg := setupRegistry(t)
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "/commit"}`)
 	result, err := tool.Call(context.TODO(), input, nil)
@@ -171,7 +174,7 @@ func TestTool_Call_StripLeadingSlash(t *testing.T) {
 
 func TestTool_Call_UnknownSkill(t *testing.T) {
 	reg := setupRegistry(t)
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "nonexistent"}`)
 	_, err := tool.Call(context.TODO(), input, nil)
@@ -185,7 +188,6 @@ func TestTool_Call_UnknownSkill(t *testing.T) {
 
 func TestTool_Call_ForkedSkill(t *testing.T) {
 	reg := setupRegistry(t)
-	// Register a fork skill
 	reg.RegisterBundledSkill(types.SkillCommand{
 		Name:            "deep-review",
 		Description:     "Deep code review",
@@ -197,20 +199,87 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 		Content:         "Perform a deep review.",
 	})
 
-	tool := New(reg)
-	input := json.RawMessage(`{"skill": "deep-review"}`)
-	_, err := tool.Call(context.TODO(), input, nil)
-	if err == nil {
-		t.Fatal("expected error for fork execution (not yet implemented)")
-	}
-	if !strings.Contains(err.Error(), "fork execution not yet implemented") {
-		t.Errorf("error = %q, want mention of fork not implemented", err.Error())
-	}
+	t.Run("nil runner returns error", func(t *testing.T) {
+		tool := New(reg, nil)
+		input := json.RawMessage(`{"skill": "deep-review"}`)
+		_, err := tool.Call(context.TODO(), input, nil)
+		if err == nil {
+			t.Fatal("expected error for fork with nil runner")
+		}
+		if !strings.Contains(err.Error(), "no agent runner") {
+			t.Errorf("error = %q, want mention of no agent runner", err.Error())
+		}
+	})
+
+	t.Run("runner invoked", func(t *testing.T) {
+		var capturedOpts agenttool.AgentOpts
+		mockAgent := agenttool.New()
+		mockAgent.SetFactory(func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+			capturedOpts = opts
+			return &types.SubQueryResult{Content: "Review complete."}, nil
+		}, func() map[string]tool.Tool { return nil })
+
+		skillTool := New(reg, mockAgent.Runner())
+		input := json.RawMessage(`{"skill": "deep-review"}`)
+		result, err := skillTool.Call(context.TODO(), input, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if capturedOpts.Prompt != "Perform a deep review." {
+			t.Errorf("prompt = %q, want skill content", capturedOpts.Prompt)
+		}
+		if capturedOpts.AgentType != "General" {
+			t.Errorf("agentType = %q, want General", capturedOpts.AgentType)
+		}
+
+		out, ok := result.Data.(skillOutput)
+		if !ok {
+			t.Fatalf("result.Data type = %T, want skillOutput", result.Data)
+		}
+		if out.Status != "forked" {
+			t.Errorf("status = %q, want forked", out.Status)
+		}
+		if out.Result != "Review complete." {
+			t.Errorf("result = %q, want factory content", out.Result)
+		}
+
+		// Verify invoked skill was cleaned up after successful fork.
+		agentID := "skill-fork:deep-review"
+		invoked := reg.GetInvokedSkillsForAgent(agentID)
+		if len(invoked) != 0 {
+			t.Errorf("invoked skills for %s = %d, want 0 after cleanup", agentID, len(invoked))
+		}
+	})
+
+	t.Run("factory error cleans up invoked skill", func(t *testing.T) {
+		mockAgent := agenttool.New()
+		mockAgent.SetFactory(func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+			return nil, fmt.Errorf("sub-agent crashed")
+		}, func() map[string]tool.Tool { return nil })
+
+		skillTool := New(reg, mockAgent.Runner())
+		input := json.RawMessage(`{"skill": "deep-review"}`)
+		_, err := skillTool.Call(context.TODO(), input, nil)
+		if err == nil {
+			t.Fatal("expected error when factory returns error")
+		}
+		if !strings.Contains(err.Error(), "sub-agent crashed") {
+			t.Errorf("error = %q, want mention of sub-agent crashed", err.Error())
+		}
+
+		// Verify invoked skill was still cleaned up via defer.
+		agentID := "skill-fork:deep-review"
+		invoked := reg.GetInvokedSkillsForAgent(agentID)
+		if len(invoked) != 0 {
+			t.Errorf("invoked skills for %s = %d, want 0 after error", agentID, len(invoked))
+		}
+	})
 }
 
 func TestTool_CheckPermissions_SafeSkill(t *testing.T) {
 	reg := setupRegistry(t)
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	input := json.RawMessage(`{"skill": "commit"}`)
 	result := tool.CheckPermissions(input, nil)
@@ -237,7 +306,7 @@ func TestTool_CheckPermissions_UnsafeSkill(t *testing.T) {
 		Content:         "Do something dangerous.",
 	})
 
-	tool := New(reg)
+	tool := New(reg, nil)
 	input := json.RawMessage(`{"skill": "danger"}`)
 	result := tool.CheckPermissions(input, nil)
 
@@ -377,7 +446,7 @@ func TestTool_Prompt(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	prompt := tool.Prompt()
 	if !strings.Contains(prompt, "skill") {
@@ -469,7 +538,7 @@ func TestFormatCommandLoadingMetadata_FallbackSlashFormat(t *testing.T) {
 
 func TestMakeSkillCallFn_InvalidJSON(t *testing.T) {
 	reg := skills.NewRegistry(t.TempDir())
-	callFn := makeSkillCallFn(reg)
+	callFn := makeSkillCallFn(reg, nil)
 
 	_, err := callFn(context.TODO(), json.RawMessage(`{invalid`), nil)
 	if err == nil {
@@ -482,7 +551,7 @@ func TestMakeSkillCallFn_InvalidJSON(t *testing.T) {
 
 func TestMakeSkillCallFn_StripLeadingSlash(t *testing.T) {
 	reg := setupRegistry(t)
-	callFn := makeSkillCallFn(reg)
+	callFn := makeSkillCallFn(reg, nil)
 
 	input := json.RawMessage(`{"skill": "/commit"}`)
 	result, err := callFn(context.TODO(), input, nil)
@@ -564,7 +633,7 @@ func TestNew_DescriptionInvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	// Description with invalid JSON should return fallback
 	desc, err := tool.Description(json.RawMessage(`{invalid`))
@@ -580,7 +649,7 @@ func TestNew_IsReadOnly(t *testing.T) {
 	t.Parallel()
 
 	reg := skills.NewRegistry(t.TempDir())
-	tool := New(reg)
+	tool := New(reg, nil)
 
 	if !tool.IsReadOnly(json.RawMessage(`{}`)) {
 		t.Error("SkillTool should be read-only")
@@ -612,7 +681,7 @@ func TestFormatCommandLoadingMetadata_FallbackWithArgs(t *testing.T) {
 
 func TestTool_FormatWireResult_Inline(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 	wf, ok := tk.(interface{ FormatWireResult(data any) string })
 	if !ok {
 		t.Fatal("SkillTool should implement ToolWithWireFormat")
@@ -632,7 +701,7 @@ func TestTool_FormatWireResult_Inline(t *testing.T) {
 
 func TestTool_FormatWireResult_Forked(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 	wf, ok := tk.(interface{ FormatWireResult(data any) string })
 	if !ok {
 		t.Fatal("SkillTool should implement ToolWithWireFormat")
@@ -655,7 +724,7 @@ func TestTool_FormatWireResult_Forked(t *testing.T) {
 
 func TestTool_RenderResult_Inline(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 
 	got := tk.RenderResult(skillOutput{
 		Success:     true,
@@ -669,7 +738,7 @@ func TestTool_RenderResult_Inline(t *testing.T) {
 
 func TestTool_RenderResult_WithToolsAndModel(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 
 	got := tk.RenderResult(skillOutput{
 		Success:      true,
@@ -691,7 +760,7 @@ func TestTool_RenderResult_WithToolsAndModel(t *testing.T) {
 
 func TestTool_RenderResult_SingleTool(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 
 	got := tk.RenderResult(skillOutput{
 		Success:      true,
@@ -706,7 +775,7 @@ func TestTool_RenderResult_SingleTool(t *testing.T) {
 
 func TestTool_RenderResult_Forked(t *testing.T) {
 	reg := setupRegistry(t)
-	tk := New(reg)
+	tk := New(reg, nil)
 
 	got := tk.RenderResult(skillOutput{
 		Success:     true,

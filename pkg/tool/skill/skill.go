@@ -14,6 +14,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -91,7 +92,7 @@ var skillInputSchema = json.RawMessage(`{
 // New creates a new SkillTool using the BuildTool factory pattern.
 // Source: SkillTool.ts:331 — buildTool({...})
 // Uses BuildTool factory, matching pkg/tool/bash/ etc.
-func New(registry *skills.Registry) tool.Tool {
+func New(registry *skills.Registry, runner *agenttool.AgentRunner) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:              skillToolName,
 		Prompt_:            skillDescription,
@@ -105,7 +106,7 @@ func New(registry *skills.Registry) tool.Tool {
 			// Show just the skill name (TS: UI.tsx:47-61 — renderToolUseMessage)
 			return in.Skill, nil
 		},
-		Call_:              makeSkillCallFn(registry),
+		Call_:              makeSkillCallFn(registry, runner),
 		CheckPermissions_:  makeSkillPermissionsFn(registry),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
@@ -157,17 +158,15 @@ func New(registry *skills.Registry) tool.Tool {
 
 // makeSkillCallFn returns the Call implementation.
 // Source: SkillTool.ts:580-780 — call()
-func makeSkillCallFn(registry *skills.Registry) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+func makeSkillCallFn(registry *skills.Registry, runner *agenttool.AgentRunner) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 		var in skillInput
 		if err := json.Unmarshal(input, &in); err != nil {
 			return nil, fmt.Errorf("skill tool: invalid input: %w", err)
 		}
 
-		// Normalize: trim and strip leading slash
 		commandName := strings.TrimPrefix(strings.TrimSpace(in.Skill), "/")
 
-		// Find the command
 		cmd := registry.FindSkill(commandName)
 		if cmd == nil {
 			return nil, fmt.Errorf("unknown skill: %s", commandName)
@@ -180,13 +179,10 @@ func makeSkillCallFn(registry *skills.Registry) func(context.Context, json.RawMe
 
 		slog.Debug("skill: executing", "name", commandName, "args", args, "context", cmd.Context)
 
-		// Fork path: if context == "fork", delegate to sub-agent
-		// Source: SkillTool.ts:622-632
 		if cmd.Context == "fork" {
-			return executeForkedSkill(commandName)
+			return executeForkedSkill(ctx, cmd, commandName, args, registry, runner, tctx)
 		}
 
-		// Inline path (default)
 		return executeInlineSkill(cmd, commandName, args, registry)
 	}
 }
@@ -270,14 +266,60 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	}, nil
 }
 
-// executeForkedSkill runs a skill in a sub-agent.
+// executeForkedSkill runs a skill in a sub-agent via AgentTool.RunAgent().
 // Source: SkillTool.ts:122-289 — executeForkedSkill
-// Skill content as user message, NOT system prompt; finally block clears invoked skills.
-func executeForkedSkill(commandName string) (*tool.ToolResult, error) {
-	// Fork execution requires agent infrastructure not yet wired.
-	// Return explicit error so caller knows it's unimplemented,
-	// rather than silently succeeding with no result.
-	return nil, fmt.Errorf("skill: fork execution not yet implemented for %q", commandName)
+func executeForkedSkill(
+	ctx context.Context,
+	cmd *types.SkillCommand,
+	commandName, args string,
+	registry *skills.Registry,
+	runner *agenttool.AgentRunner,
+	tctx *tool.ToolUseContext,
+) (*tool.ToolResult, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("skill: fork execution not available for %q (no agent runner)", commandName)
+	}
+
+	content := skills.SubstituteArguments(cmd.Content, args, argNames(cmd), true)
+	content = strings.ReplaceAll(content, "${SKILL_DIR}", cmd.SourceDir)
+
+	agentID := "skill-fork:" + commandName
+	registry.AddInvokedSkill(commandName, string(cmd.Source)+":"+commandName, content, agentID)
+	// Defer cleanup so it runs on error paths too — matches TS try/finally.
+	defer registry.ClearInvokedSkillsForAgent(agentID)
+
+	slog.Info("skill: forked invocation",
+		"name", commandName,
+		"model", cmd.Model,
+		"agentType", cmd.AgentType,
+		"allowedTools", cmd.AllowedTools,
+	)
+
+	result, err := runner.RunAgent(ctx, agenttool.RunAgentOpts{
+		Prompt:       content,
+		AgentType:    cmd.AgentType,
+		Model:        cmd.Model,
+		AllowedTools: cmd.AllowedTools,
+	}, tctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("skill fork %q: %w", commandName, err)
+	}
+
+	resultText := "Skill execution completed"
+	if result != nil && result.Content != "" {
+		resultText = result.Content
+	}
+
+	return &tool.ToolResult{
+		Data: skillOutput{
+			Success:     true,
+			CommandName: commandName,
+			Status:      "forked",
+			AgentID:     agentID,
+			Result:      resultText,
+		},
+	}, nil
 }
 
 // formatCommandLoadingMetadata returns the metadata string for a skill invocation.

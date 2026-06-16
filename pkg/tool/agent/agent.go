@@ -7,8 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"maps"
 	"os"
 	"os/exec"
 	"runtime"
@@ -70,40 +68,27 @@ type AgentOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	factory       SubEngineFactory            // injected via SetFactory
-	parentTools   func() map[string]tool.Tool // lazy accessor for parent engine tools
-	forkReg       *ForkAgentRegistry          // nil = fork disabled
-	notifyFn      func(xml string)            // injects notification into parent conversation
-	sysPromptFn   func() string               // returns parent engine's rendered system prompt
-	resolveTierFn func(tier string) string    // resolves tier names ("lite","pro","max") to model strings; nil = passthrough
-
-	// Sub-agent environment context — loaded once at startup, read-only during execution
-	workingDir string
-	gitStatus  *ctxbuild.GitStatusInfo
-
-	// Skill registry — injected from main.go, provides all loaded skills.
-	skillReg    SkillRegistry
-	skillsOnce  sync.Once
-	skillsCache []types.SkillCommand
-
-	// MCP connector — injected from main.go for agent-specific MCP servers.
-	mcpConnect McpConnectFunc
+	runner      *AgentRunner       // shared execution engine (AgentRunner.RunAgent)
+	forkReg     *ForkAgentRegistry // nil = fork disabled
+	notifyFn    func(xml string)
+	sysPromptFn func() string
 }
 
 // New creates a new AgentTool with no dependencies.
 func New() *AgentTool {
-	return &AgentTool{}
+	return &AgentTool{runner: &AgentRunner{}}
 }
+
+// Runner returns the shared AgentRunner for other tools (e.g. SkillTool) to use.
+func (t *AgentTool) Runner() *AgentRunner { return t.runner }
 
 // SetFactory injects the sub-engine factory and parent tools accessor.
-// Called after engine construction in main.go to break the circular dependency.
 func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[string]tool.Tool) {
-	t.factory = factory
-	t.parentTools = toolsFn
+	t.runner.Factory = factory
+	t.runner.ParentTools = toolsFn
 }
 
-// SetNotifyFn enables fork agent support. Injects the notification callback
-// and system prompt accessor for fork agent lifecycle management.
+// SetNotifyFn enables fork agent support.
 func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() string) {
 	t.notifyFn = notifyFn
 	t.sysPromptFn = sysPromptFn
@@ -113,21 +98,19 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 }
 
 // SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
-func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
+func (t *AgentTool) SetWorkingDir(dir string) { t.runner.WorkingDir = dir }
 
 // SetResolveTierFn injects a tier-name resolver for agent model selection.
-// When nil (default), agent model values pass through unchanged.
-func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTierFn = fn }
+func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.runner.ResolveTierFn = fn }
 
 // SetGitStatus sets the git status for sub-agent system prompt injection.
-func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
+func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.runner.GitStatus = gs }
 
 // SetSkillRegistry sets the skill registry for agent skill preloading.
-func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
+func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.runner.SkillReg = reg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
-// Injected from main.go to avoid agent → mcp import.
-func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
+func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.runner.McpConnect = fn }
 
 // JobAdapter returns a job.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -185,7 +168,7 @@ func (t *AgentTool) InputSchema() json.RawMessage {
 // Call executes the sub-agent synchronously (or spawns fork agent in background).
 // Source: AgentTool.tsx:239-1261 — call() sync path
 func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	if t.factory == nil {
+	if t.runner.Factory == nil {
 		return nil, fmt.Errorf("agent tool not initialized: sub-engine factory not set")
 	}
 
@@ -208,138 +191,15 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		return t.callFork(ctx, agentInput, tctx)
 	}
 
-	// Step 2: Resolve agent type (default: General)
-	agentType := agentInput.SubagentType
-	if agentType == "" {
-		agentType = "General"
-	}
-
-	// Step 3: Look up agent definition
-	agentDef, err := GetAgentDefinition(agentType)
-	if err != nil {
-		return nil, fmt.Errorf("unknown agent type %q: %w", agentType, err)
-	}
-
-	// Step 4: Filter tools for this agent
-	parentTools := t.parentTools()
-	filteredTools := ResolveAgentTools(parentTools, agentDef)
-
-	// Step 4.5: Filter MCP tools by RequiredMcpServers
-	// Source: runAgent.ts:95-218 — initializeAgentMcpServers
-	filteredTools = FilterMCPToolsForAgent(filteredTools, agentDef.RequiredMcpServers)
-
-	// Step 4.6: Connect agent-specific MCP servers (if any)
-	// Source: runAgent.ts:95-218 — initializeAgentMcpServers (inline defs)
-	if len(agentDef.McpServersRaw) > 0 && t.mcpConnect != nil {
-		mcpResult, err := t.mcpConnect(ctx, "agent-"+agentType, agentDef.McpServersRaw)
-		if err != nil {
-			slog.Warn("agent MCP connect failed", "agent", agentType, "error", err)
-		}
-		if mcpResult != nil {
-			if mcpResult.Cleanup != nil {
-				defer func() {
-					if cerr := mcpResult.Cleanup(); cerr != nil {
-						slog.Warn("agent MCP cleanup failed", "agent", agentType, "error", cerr)
-					}
-				}()
-			}
-			maps.Copy(filteredTools, mcpResult.Tools)
-		}
-	}
-
-	// Step 5.5: Resolve model (needed for enhanceSystemPrompt)
-	// Source: AgentTool.tsx:579-583 — model resolution
-	model := agentInput.Model
-	if model == "" {
-		model = agentDef.Model
-	}
-	// "inherit" means use the parent engine's model.
-	// Normalize to "" so NewSubEngine inherits via e.model (engine.go:740-743).
-	if model == "inherit" {
-		model = ""
-	}
-	// Tier resolution: if a tier resolver is configured (e.g. "lite"/"pro"/"max"),
-	// translate the tier name to a concrete model string. If the resolver returns
-	// empty or is nil, pass through the original value (backward compat with
-	// direct "provider/model" specifications).
-	if model != "" && t.resolveTierFn != nil {
-		if resolved := t.resolveTierFn(model); resolved != "" {
-			model = resolved
-		}
-	}
-
-	// Step 5: Build enhanced system prompt
-	// Source: runAgent.ts:906-932 — getAgentSystemPrompt()
-	basePrompt := agentDef.SystemPrompt()
-	isGit := t.gitStatus != nil && t.gitStatus.IsGit
-	systemPromptStr := enhanceSystemPrompt(basePrompt, filteredTools, t.workingDir, isGit, model)
-
-	// Append gitStatus to system prompt for non-Explore/Plan agents.
-	// Source: runAgent.ts:403-410 — appendSystemContext()
-	if t.gitStatus != nil && agentDef.AgentType != "Explore" && agentDef.AgentType != "Plan" {
-		section := formatGitStatusForSystemPrompt(t.gitStatus)
-		if section != "" {
-			systemPromptStr += section
-		}
-	}
-
-	systemPrompt := systemPromptStr
-
-	// Step 6: Build user context messages
-	// Source: runAgent.ts:380-398 — getUserContext() + prependUserContext()
-	var userCtxMsgs []types.Message
-	ctxMap := ctxbuild.LoadContextFiles(t.workingDir)
-	ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
-	if agentDef.OmitClaudeMd {
-		delete(ctxMap, ctxbuild.KeyClaudeMd)
-		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
-	}
-	ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
-	if ctxText != "" {
-		userCtxMsgs = append(userCtxMsgs, types.Message{
-			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
-			Flags:   types.FlagMeta,
-		})
-	}
-
-	// Step 6.5: Skill preloading
-	// Source: runAgent.ts:578-646 â resolveSkillName + load + inject
-	if len(agentDef.Skills) > 0 && t.skillReg != nil {
-		t.skillsOnce.Do(func() {
-			t.skillsCache = t.skillReg.GetAllSkills()
-		})
-		allSkills := t.skillsCache
-		resolved := ResolveSkillNames(agentDef.Skills, allSkills, agentType)
-		skillMsgs := BuildSkillMessages(resolved)
-		userCtxMsgs = append(userCtxMsgs, skillMsgs...)
-	}
-
-	// Step 7: Call factory to create sub-engine and execute
-	var parentToolUseID string
-	if tctx != nil {
-		parentToolUseID = tctx.ToolUseID
-	}
-	opts := AgentOpts{
-		Prompt:              agentInput.Prompt,
-		SystemPrompt:        systemPrompt,
-		Tools:               filteredTools,
-		MaxTurns:            agentDef.MaxTurns,
-		Model:               model,
-		AgentType:           agentType,
-		ParentToolUseID:     parentToolUseID,
-		UserContextMessages: userCtxMsgs,
-	}
-
-	result, err := t.factory(ctx, opts)
+	result, err := t.runner.RunAgent(ctx, RunAgentOpts{
+		Prompt:    agentInput.Prompt,
+		AgentType: agentInput.SubagentType,
+		Model:     agentInput.Model,
+	}, tctx)
 	if err != nil {
 		return nil, fmt.Errorf("sub-agent execution failed: %w", err)
 	}
-
-	// Step 8: Return result
-	return &tool.ToolResult{
-		Data: result,
-	}, nil
+	return &tool.ToolResult{Data: result}, nil
 }
 
 // CheckPermissions always allows — the engine handles permission checks
@@ -437,7 +297,7 @@ const forkMaxTurns = 200
 // If run_in_background is true, spawns asynchronously via Spawn.
 // Otherwise, runs synchronously via the factory (RunForkedQuery).
 func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	parentTools := t.parentTools()
+	parentTools := t.runner.ParentTools()
 
 	// Source: runAgent.ts:370-373 — [...filterIncompleteToolCalls(forkContextMessages), ...promptMessages]
 	// Source: AgentTool.tsx:239 — assistantMessage parameter passed to call()
@@ -491,7 +351,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Sync path: run fork in-process and return result directly
 	if !input.RunInBackground {
-		result, err := t.factory(ctx, opts)
+		result, err := t.runner.Factory(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("fork agent execution failed: %w", err)
 		}
@@ -500,7 +360,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Async path: spawn in background
 	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
-		return t.factory(runCtx, opts)
+		return t.runner.Factory(runCtx, opts)
 	}
 
 	// Build the notifyFn closure

@@ -545,7 +545,7 @@ func TestSetSkillRegistry(t *testing.T) {
 	at := New()
 	reg := &testSkillRegistry{}
 	at.SetSkillRegistry(reg)
-	if at.skillReg != reg {
+	if at.Runner().SkillReg != reg {
 		t.Error("SetSkillRegistry did not set the registry")
 	}
 }
@@ -556,7 +556,7 @@ func TestSetMcpConnect(t *testing.T) {
 		return nil, nil
 	}
 	at.SetMcpConnect(fn)
-	if at.mcpConnect == nil {
+	if at.Runner().McpConnect == nil {
 		t.Error("SetMcpConnect did not set the function")
 	}
 }

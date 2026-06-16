@@ -749,14 +749,15 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect
 
 	// Verify mcpConnect was set, then invoke it to exercise the closure body.
-	rv := reflect.ValueOf(refs.Agent).Elem().FieldByName("mcpConnect")
-	if !rv.IsValid() || rv.IsNil() {
-		t.Fatal("mcpConnect not set")
+	runnerRV := reflect.ValueOf(refs.Agent).Elem().FieldByName("runner")
+	if !runnerRV.IsValid() {
+		t.Fatal("AgentTool has no runner field")
 	}
-	// Use unsafe.Pointer to call unexported method via reflection.
-	// reflect.Value.Call refuses on unexported fields, so extract the
-	// function pointer via unsafe and call it through a wrapper.
-	mcpFn := *(*func(context.Context, string, []json.RawMessage) (*agenttool.McpConnectResult, error))(unsafe.Pointer(reflect.ValueOf(refs.Agent).Elem().FieldByName("mcpConnect").UnsafeAddr()))
+	rv := runnerRV.Elem().FieldByName("McpConnect")
+	if !rv.IsValid() || rv.IsNil() {
+		t.Fatal("McpConnect not set")
+	}
+	mcpFn := *(*func(context.Context, string, []json.RawMessage) (*agenttool.McpConnectResult, error))(unsafe.Pointer(runnerRV.Elem().FieldByName("McpConnect").UnsafeAddr()))
 	// Call the closure — it will try ConnectAgentServers with our inline spec.
 	// The command doesn't exist, so err is non-nil — exercising the error path.
 	_, _ = mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
@@ -797,12 +798,15 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 
 	WireEngine(eng, refs, deps)
 
-	// Verify the McpConnect callback was registered on the agent via reflection
-	// (mcpConnect is unexported; this confirms WireEngine's MCP wiring path).
+	// Verify the McpConnect callback was registered on the agent's runner via reflection.
 	at := refs.Agent
-	rv := reflect.ValueOf(at).Elem().FieldByName("mcpConnect")
+	runnerRV := reflect.ValueOf(at).Elem().FieldByName("runner")
+	if !runnerRV.IsValid() {
+		t.Fatal("AgentTool has no runner field")
+	}
+	rv := runnerRV.Elem().FieldByName("McpConnect")
 	if !rv.IsValid() {
-		t.Fatal("AgentTool has no mcpConnect field")
+		t.Fatal("AgentRunner has no McpConnect field")
 	}
 	if rv.IsNil() {
 		t.Fatal("mcpConnect should be set after WireEngine with non-nil McpReg")
