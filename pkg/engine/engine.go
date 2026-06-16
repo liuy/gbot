@@ -139,6 +139,13 @@ type Engine struct {
 	// 0 means no limit — aligns with TS built-in agents (undefined maxTurns).
 	maxTurns int
 
+	// modelThinking maps model name → Anthropic `thinking` request field value.
+	// Unset models omit the field entirely. The user is responsible for picking
+	// a value their model accepts (e.g. "adaptive" for newer models, "enabled"
+	// for older ones, "disabled" for explicit no-thinking). gbot does not
+	// translate between modes.
+	modelThinking map[string]llm.ThinkingMode
+
 	// retryConfig controls retry behavior for stream-level failures.
 	// nil means use llm.DefaultRetryConfig(). Tests can override for faster backoff.
 	retryConfig *llm.RetryConfig
@@ -257,6 +264,11 @@ type Params struct {
 	PermissionChecker permission.PermissionChecker
 	WorkingDir        string     // working directory for file history snapshots
 	TaskList          *task.List // file-backed task storage for context injection
+
+	// ModelThinking holds per-model Anthropic `thinking` request field values
+	// keyed by model name. Models not in the map omit the field entirely.
+	// gbot does not translate between modes — values are passed through to the API.
+	ModelThinking map[string]llm.ThinkingMode
 }
 
 // QueryResult is the final result of a query.
@@ -316,6 +328,7 @@ func New(p *Params) *Engine {
 		agentMetaDepth:          0,
 		toolSearch:              newToolSearchState(),
 		taskList:                p.TaskList,
+		modelThinking:           p.ModelThinking,
 	}
 }
 
@@ -1299,6 +1312,19 @@ func (e *Engine) callLLMWithRetry(ctx context.Context, systemPrompt string) (*ty
 	return nil, nil, fmt.Errorf("callLLMWithRetry: unreachable")
 }
 
+// resolveThinking returns the Anthropic `thinking` config for the current model.
+// Returns nil when the model is not in modelThinking (field omitted).
+func (e *Engine) resolveThinking(model string) *llm.ThinkingConfig {
+	if e.modelThinking == nil {
+		return nil
+	}
+	level, ok := e.modelThinking[model]
+	if !ok || level == "" {
+		return nil
+	}
+	return llm.TranslateThinking(level)
+}
+
 func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Message, *StreamingToolExecutor, error) {
 	e.refreshTools()
 
@@ -1434,6 +1460,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 		Stream:         true,
 		CacheControl:   cacheControl,
 		PromptStateKey: promptStateKey,
+		Thinking:       e.resolveThinking(e.model),
 	}
 
 	streamCh, err := e.provider.Stream(ctx, req)

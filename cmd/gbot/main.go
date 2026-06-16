@@ -212,6 +212,17 @@ func main() {
 	// Create per-engine tool instances for the main engine
 	mainRefs := engine.CreateTools(deps)
 
+	// Collect per-model Anthropic `thinking` overrides from every provider's
+	// Models config. Models not present in any provider omit the field entirely.
+	modelThinking := map[string]llm.ThinkingMode{}
+	for i := range cfg.Providers {
+		for name, mc := range cfg.Providers[i].Models {
+			if mc.Thinking != "" {
+				modelThinking[name] = mc.Thinking
+			}
+		}
+	}
+
 	eng := engine.New(&engine.Params{
 		Provider:          provider,
 		ToolsProvider:     mainRefs.Reg.ToolMapFn(),
@@ -225,6 +236,7 @@ func main() {
 		PermissionChecker: permCheckerIface,
 		WorkingDir:        workingDir,
 		TaskList:          taskList,
+		ModelThinking:     modelThinking,
 	})
 
 	eng.SetOnClose(func(sessionID string) {
