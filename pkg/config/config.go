@@ -42,9 +42,9 @@ type Config struct {
 
 // ModelConfig holds per-model metadata.
 type ModelConfig struct {
-	Context   IntOrHuman        `json:"context,omitempty"`    // context window in tokens, e.g. "200k", "1M". Default: 200k.
-	Input     []string          `json:"input,omitempty"`      // accepted input types, e.g. ["text", "image"]. Default: ["text"].
-	MaxTokens IntOrHuman        `json:"max_tokens,omitempty"` // max output tokens. Default: 32k.
+	Context   IntOrHuman       `json:"context,omitempty"`    // context window in tokens, e.g. "200k", "1M". Default: 200k.
+	Input     []string         `json:"input,omitempty"`      // accepted input types, e.g. ["text", "image"]. Default: ["text"].
+	MaxTokens IntOrHuman       `json:"max_tokens,omitempty"` // max output tokens. Default: 32k.
 	Thinking  llm.ThinkingMode `json:"thinking,omitempty"`   // Anthropic thinking field. Allowed: "enabled", "disabled", "adaptive". Empty = omit.
 }
 

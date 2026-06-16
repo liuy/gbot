@@ -1,9 +1,10 @@
-.PHONY: all build test lint check clean agent-start agent-stop
+.PHONY: all build test lint check clean agent-start agent-stop install
 
 BINARY := gbot
 CMD := ./cmd/gbot/
 PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
+GBOT_HOME := $(HOME)/.gbot
 
 all: build
 	./$(BINARY)
@@ -45,3 +46,19 @@ agent-start: build
 
 agent-stop:
 	./gbot-agent stop
+
+install: build
+	@mkdir -p $(GBOT_HOME)/agents $(GBOT_HOME)/skills
+	@if [ -d agents ]; then \
+		cp agents/*.md $(GBOT_HOME)/agents/; \
+		echo "Installed agents to $(GBOT_HOME)/agents/"; \
+	fi
+	@for dir in skills/*/; do \
+		if [ -f "$${dir}SKILL.md" ]; then \
+			skill_name=$$(basename $$dir); \
+			mkdir -p $(GBOT_HOME)/skills/$$skill_name; \
+			cp $${dir}SKILL.md $(GBOT_HOME)/skills/$$skill_name/; \
+			echo "Installed skill: $$skill_name"; \
+		fi; \
+	done
+	@echo "Done. Run 'gbot' to use /plan, /execute, /review, /goal."

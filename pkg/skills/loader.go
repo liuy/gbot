@@ -64,7 +64,8 @@ func NewRegistry(cwd string) *Registry {
 func (r *Registry) Load() error {
 	var allSkills []types.SkillCommand
 
-	// Source 1: Bundled skills are registered separately via RegisterBundledSkill.
+	// Source 1: Bundled skills (embedded via go:embed).
+	r.RegisterBundledSkills()
 
 	// Source 2: Managed skills (policy)
 	// TS: managedSkills — loadSkillsDir.ts:686-688
