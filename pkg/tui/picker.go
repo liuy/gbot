@@ -105,12 +105,10 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 
 	selected := items[idx]
 
-	// Same session — no-op
 	if selected.SessionID == a.sessionID {
 		return a, a.showInfo("Already on this session")
 	}
 
-	// Resume the selected session via engine
 	engineMsgs, err := a.engine.SwitchSession(selected.SessionID)
 	if err != nil {
 		return a, a.showInfo(fmt.Sprintf("Failed to load session: %v", err))
@@ -120,7 +118,9 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 
 	*a.repl = *NewReplState()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
-	a.committedCount = len(a.repl.messages)
+	// committedCount=0 so WindowSizeMsg re-commits the resumed messages
+	a.committedCount = 0
+	a.resetDisplayState()
 
 	slog.Info("session: switched via picker", "sessionID", selected.SessionID, "messages", len(engineMsgs))
 
@@ -133,7 +133,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	if title == "" {
 		title = selected.SessionID[:8]
 	}
-	return a, a.showInfo(fmt.Sprintf("Switched to session: %s", title))
+	return a, tea.Batch(tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to session: %s", title)))
 }
 
 // NewListPicker creates a Dialog from PickerItem slice with optional functional options.

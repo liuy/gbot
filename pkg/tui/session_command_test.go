@@ -3,9 +3,12 @@ package tui
 import (
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -374,4 +377,163 @@ func TestWriteWorkspaceMeta_EmptyDir(t *testing.T) {
 	if err != nil {
 		t.Errorf("empty dir should skip write and return nil, got: %v", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Session switch (/clear, resume, fork) must clear screen and reset
+// committedCount so WindowSizeMsg can re-commit new session messages.
+// ---------------------------------------------------------------------------
+
+func containsClearScreen(t *testing.T, cmd tea.Cmd) bool {
+	t.Helper()
+	if cmd == nil {
+		return false
+	}
+	return msgContainsClearScreen(t, cmd())
+}
+
+func msgContainsClearScreen(t *testing.T, msg tea.Msg) bool {
+	t.Helper()
+	if msg == nil {
+		return false
+	}
+	if reflect.TypeOf(msg).Name() == "clearScreenMsg" {
+		return true
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if containsClearScreen(t, sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestClear_EmitsClearScreen(t *testing.T) {
+	a, _ := newSessionTestApp(t)
+	cmd := a.handleClear(nil)
+	if !containsClearScreen(t, cmd) {
+		t.Error("handleClear should emit tea.ClearScreen to wipe terminal, but cmd produced no clearScreenMsg")
+	}
+}
+
+// handleSubmitRepl packages old uncommitted messages as a tea.Println commitCmd
+// before dispatching the slash command. Batch runs concurrently, so Println can
+// land after ClearScreen and re-print old content — visually no clear happened.
+func TestClear_DiscardsCommitCmd(t *testing.T) {
+	a, _ := newSessionTestApp(t)
+	commitCmd := tea.Println("OLD CONTENT THAT SHOULD BE WIPED")
+	cmd := a.handleClear(commitCmd)
+	if cmdContainsPrintln(t, cmd) {
+		t.Error("handleClear should discard commitCmd (tea.Println of old messages); " +
+			"passing it through races with ClearScreen and re-prints old content")
+	}
+}
+
+func cmdContainsPrintln(t *testing.T, cmd tea.Cmd) bool {
+	t.Helper()
+	if cmd == nil {
+		return false
+	}
+	return msgContainsPrintln(t, cmd())
+}
+
+func msgContainsPrintln(t *testing.T, msg tea.Msg) bool {
+	t.Helper()
+	if msg == nil {
+		return false
+	}
+	if reflect.TypeOf(msg).Name() == "printLineMessage" {
+		return true
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if cmdContainsPrintln(t, sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
+	a, store := newSessionTestApp(t)
+
+	a.committedCount = 3
+	a.displayedInputTokens = 999
+	a.displayedOutputTokens = 888
+	a.scrollOffset = 15
+	a.thinkingActive = true
+
+	session2, err := store.CreateSession(a.projectDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	a.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("msg from session2")}},
+	})
+	a.engine.SetSessionID(session2.SessionID)
+	a.engine.PersistNewMessages()
+
+	items := []SessionItem{{SessionID: session2.SessionID, Title: "session2"}}
+	_, cmd := a.handleSessionPickerDone(newSelectedDialog(0), items)
+
+	if a.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 (resetDisplayState not called on resume)", a.displayedInputTokens)
+	}
+	if a.thinkingActive {
+		t.Error("thinkingActive should be false after resume (resetDisplayState not called)")
+	}
+	if a.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0 after resume", a.scrollOffset)
+	}
+	// committedCount=0 lets WindowSizeMsg re-commit the resumed messages; setting
+	// it to len(messages) would hide them from View() since uncommitted is empty.
+	if a.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (must be 0 so WindowSizeMsg commits resumed messages)", a.committedCount)
+	}
+	if !containsClearScreen(t, cmd) {
+		t.Error("resume should emit tea.ClearScreen to wipe old session content")
+	}
+}
+
+func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
+	a, _ := newSessionTestApp(t)
+
+	a.committedCount = 2
+	a.displayedInputTokens = 777
+	a.thinkingActive = true
+	a.scrollOffset = 10
+
+	a.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	})
+	a.engine.PersistNewMessages()
+
+	cmd := a.forkCurrentSession("fork-test", nil)
+
+	if a.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 after fork", a.displayedInputTokens)
+	}
+	if a.thinkingActive {
+		t.Error("thinkingActive should be false after fork")
+	}
+	if a.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0 after fork", a.scrollOffset)
+	}
+	if a.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (forked messages must be re-committed via WindowSizeMsg)", a.committedCount)
+	}
+	if !containsClearScreen(t, cmd) {
+		t.Error("fork should emit tea.ClearScreen to wipe old session content")
+	}
+}
+
+func newSelectedDialog(idx int) *Dialog {
+	d := NewDialog("test", []DialogOption{{Label: "item0"}})
+	d.cursor = idx
+	d.done = true
+	return d
 }

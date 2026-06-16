@@ -87,7 +87,7 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	}
 	slog.Info("session: created new session", "sessionID", a.sessionID, "title", title)
 
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
+	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
 }
 
 // forkCurrentSession forks the current session with the given title.
@@ -108,7 +108,6 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 		}
 	}
 
-	// Engine handles fork, load, and state update
 	engineMsgs, err := a.engine.ForkSession(title)
 	if err != nil {
 		slog.Error("session: fork session failed", "error", err)
@@ -118,10 +117,11 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	parentID := a.sessionID
 	a.sessionID = a.engine.SessionID()
 
-	// Reset REPL state
 	*a.repl = *NewReplState()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
-	a.committedCount = len(a.repl.messages)
+	// committedCount=0 so WindowSizeMsg re-commits the forked messages
+	a.committedCount = 0
+	a.resetDisplayState()
 
 	// Update workspace meta
 	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
@@ -130,7 +130,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	slog.Info("session: forked session", "parent", parentID, "child", a.sessionID, "title", title)
 
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Forked session: %s", title)))
+	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("Forked session: %s", title)))
 }
 
 // showInfo returns a tea.Cmd that displays a transient info message.

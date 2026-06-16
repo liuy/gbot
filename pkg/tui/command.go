@@ -165,5 +165,8 @@ func (a *App) handleClear(commitCmd tea.Cmd) tea.Cmd {
 	if !a.engine.HasStore() {
 		return a.showInfo("Session storage not available")
 	}
-	return a.createNewSession("", "Cleared", commitCmd)
+	// Discard commitCmd (tea.Println of old messages from handleSubmitRepl).
+	// /clear should wipe everything — passing commitCmd would race with
+	// ClearScreen in tea.Batch and re-print old content after the clear.
+	return a.createNewSession("", "Cleared", nil)
 }
