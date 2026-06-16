@@ -33,7 +33,6 @@ var readonlyActions = map[string]bool{
 	"workspace_symbol": true,
 	"callers":          true,
 	"callees":          true,
-	"check":            true,
 	"source":           true,
 	"inspect":          true,
 	"impact":           true,
@@ -63,7 +62,7 @@ func New(reg *lsp.Registry) tool.Tool {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "callers", "callees", "source", "inspect", "impact", "check"],
+				"enum": ["definition", "type_definition", "implementation", "references", "hover", "symbols", "workspace_symbol", "code_actions", "rename", "rename_file", "reload", "status", "capabilities", "request", "callers", "callees", "source", "inspect", "impact"],
 				"description": "LSP action to perform"
 			},
 			"file": {
@@ -206,7 +205,7 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 		return symbolsAction(ctx, reg, in, workingDir)
 	}
 
-	// source, inspect, impact, diagnostics have their own resolve + dispatch
+	// source, inspect, impact have their own resolve + dispatch
 	switch in.Action {
 	case "source":
 		return sourceAction(ctx, reg, in, workingDir)
@@ -214,8 +213,6 @@ func fileOp(ctx context.Context, reg *lsp.Registry, in Input, workingDir string)
 		return inspectAction(ctx, reg, in, workingDir)
 	case "impact":
 		return impactAction(ctx, reg, in, workingDir)
-	case "check":
-		return diagnosticsAction(ctx, reg, in, workingDir)
 	}
 
 	// All other actions need a symbol name

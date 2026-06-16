@@ -291,63 +291,6 @@ func TestIntegration_Impact(t *testing.T) {
 	}
 }
 
-func TestIntegration_Check_FileLevel(t *testing.T) {
-	reg, dir, cleanup := newFakeEnv(t, nil)
-	defer cleanup()
-
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
-
-	tt := New(reg)
-	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "check", File: filepath.Join(dir, "foo.go"),
-	}), &tool.ToolUseContext{WorkingDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := fmt.Sprintf("%v", result.Data)
-	if !strings.Contains(got, "No diagnostics") {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestIntegration_Check_ProjectLevel(t *testing.T) {
-	reg, dir, cleanup := newFakeEnv(t, nil)
-	defer cleanup()
-
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
-
-	tt := New(reg)
-	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "check",
-	}), &tool.ToolUseContext{WorkingDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := fmt.Sprintf("%v", result.Data)
-	if !strings.Contains(got, "No diagnostics") {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestIntegration_Check_SymbolLevel(t *testing.T) {
-	reg, dir, cleanup := newFakeEnv(t, nil)
-	defer cleanup()
-
-	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
-
-	tt := New(reg)
-	result, err := tt.Call(context.Background(), mustInput(t, Input{
-		Action: "check", Symbol: "foo", File: filepath.Join(dir, "foo.go"),
-	}), &tool.ToolUseContext{WorkingDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := fmt.Sprintf("%v", result.Data)
-	if !strings.Contains(got, "No diagnostics") {
-		t.Errorf("got %q", got)
-	}
-}
-
 func TestIntegration_Source_NotFound(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, nil)
 	defer cleanup()

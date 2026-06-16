@@ -1547,7 +1547,7 @@ func TestNew_IsReadOnly_AllActions(t *testing.T) {
 		"references": true, "hover": true, "symbols": true,
 		"workspace_symbol": true, "capabilities": true,
 		"callers": true, "callees": true, "source": true,
-		"inspect": true, "impact": true, "check": true,
+		"inspect": true, "impact": true,
 		"status":       true,
 		"code_actions": false, "reload": false,
 		"rename": false, "rename_file": false, "request": false,
