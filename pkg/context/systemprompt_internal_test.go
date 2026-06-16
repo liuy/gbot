@@ -2,6 +2,7 @@ package context
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -201,5 +202,84 @@ func TestRuntimeInfo_SHELLNotSet(t *testing.T) {
 	info := b.RuntimeInfo()
 	if !strings.Contains(info, "shell=/bin/bash") {
 		t.Errorf("RuntimeInfo should default shell to /bin/bash when SHELL is unset, got %q", info)
+	}
+}
+
+// TestLoadSystemFile_Public covers the exported LoadSystemFile — exercises
+// both happy path (SYSTEM.md present) and missing-file path.
+func TestLoadSystemFile_Public(t *testing.T) {
+	homeDir := t.TempDir()
+	gbotDir := filepath.Join(homeDir, ".gbot")
+	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", homeDir)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+	got, err := LoadSystemFile()
+	if err != nil {
+		t.Fatalf("LoadSystemFile returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("LoadSystemFile should return empty when no SYSTEM.md, got %q", got)
+	}
+
+	content := "# System\nYou are gbot."
+	if err := os.WriteFile(filepath.Join(gbotDir, "SYSTEM.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LoadSystemFile()
+	if err != nil {
+		t.Fatalf("LoadSystemFile returned error: %v", err)
+	}
+	if got != content {
+		t.Errorf("LoadSystemFile = %q, want %q", got, content)
+	}
+}
+
+func TestDetectOS(t *testing.T) {
+	osName := detectOS()
+	if osName == "" {
+		t.Fatal("detectOS returned empty string")
+	}
+	if !strings.Contains(osName, runtime.GOARCH) {
+		t.Errorf("detectOS = %q, expected to contain %q", osName, runtime.GOARCH)
+	}
+}
+
+func TestDetectWorkspace(t *testing.T) {
+	homeDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	t.Setenv("HOME", homeDir)
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	if got := detectWorkspace(); got != "" {
+		t.Errorf("detectWorkspace = %q, want empty when ~/.gbot absent", got)
+	}
+
+	if err := os.MkdirAll(filepath.Join(homeDir, ".gbot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := detectWorkspace()
+	want := filepath.Join(homeDir, ".gbot")
+	if got != want {
+		t.Errorf("detectWorkspace = %q, want %q", got, want)
+	}
+}
+
+func TestDetectRepoRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	got := detectRepoRoot(tmpDir)
+	if got == "" {
+		t.Error("detectRepoRoot on a git repo should return non-empty")
+	}
+
+	noGit := t.TempDir()
+	if got := detectRepoRoot(noGit); got != "" {
+		t.Errorf("detectRepoRoot outside a git repo = %q, want empty", got)
 	}
 }

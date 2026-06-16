@@ -2,6 +2,7 @@ package lsptool
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,10 @@ func TestIsMethodNotFoundError(t *testing.T) {
 		if got := isMethodNotFoundError(err); got != want {
 			t.Errorf("isMethodNotFoundError(%q) = %v, want %v", msg, got, want)
 		}
+	}
+	// nil error must return false without panicking.
+	if isMethodNotFoundError(nil) {
+		t.Error("isMethodNotFoundError(nil) = true, want false")
 	}
 }
 
@@ -283,3 +288,183 @@ func TestRenameFile_NoServers_PhysicalRename(t *testing.T) {
 		t.Errorf("destination file not created: %v", err)
 	}
 }
+
+// TestIntegration_RenameFile_WithEdits covers the willRenameFiles round-trip:
+// server returns a WorkspaceEdit, renameFile applies it to disk, then performs
+// the physical rename. Verifies the apply-mode happy path.
+func TestIntegration_RenameFile_WithEdits(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, params json.RawMessage) (any, bool) {
+			switch method {
+			case "workspace/willRenameFiles":
+				// In a real rename, gopls would update import paths in
+				// referencing files. Simulate by editing another.go: replace
+				// "oldname" with "newname".
+				otherURI := lsp.FileToURI(filepath.Join(d, "other.go"))
+				return map[string]any{
+					"changes": map[string][]map[string]any{
+						otherURI: {
+							{
+								"range": map[string]any{
+									"start": map[string]any{"line": 0, "character": 0},
+									"end":   map[string]any{"line": 0, "character": 7},
+								},
+								"newText": "newname",
+							},
+						},
+					},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	// Create source file and another file referencing the old name.
+	src := filepath.Join(dir, "oldname.go")
+	dst := filepath.Join(dir, "newname.go")
+	other := filepath.Join(dir, "other.go")
+	if err := os.WriteFile(src, []byte("package main\nfunc foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// "oldname" occupies chars 0-7 on line 0; the willRenameFiles edit above
+	// replaces those 7 chars with "newname".
+	if err := os.WriteFile(other, []byte("oldname reference\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "rename_file", File: src, NewName: dst, Apply: new(true),
+	}), basicCtxWithDir(t, dir))
+	if err != nil {
+		t.Fatalf("rename_file: %v", err)
+	}
+
+	got := result.Data.(string)
+	// Verify summary mentions the applied edit and the rename.
+	if !strings.Contains(got, "applied 1 edit") {
+		t.Errorf("expected 'applied 1 edit' in summary, got: %s", got)
+	}
+	if !strings.Contains(got, "Renamed") {
+		t.Errorf("expected 'Renamed' in summary, got: %s", got)
+	}
+
+	// Verify edit was applied to other.go.
+	otherContent, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(otherContent), "oldname") {
+		t.Errorf("other.go should have 'oldname' replaced with 'newname', got: %s", otherContent)
+	}
+	if !strings.Contains(string(otherContent), "newname") {
+		t.Errorf("other.go should contain 'newname', got: %s", otherContent)
+	}
+
+	// Verify physical rename happened.
+	if _, err := os.Stat(src); err == nil {
+		t.Error("source file still exists")
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Error("destination file missing")
+	}
+}
+
+// TestIntegration_RenameFile_PreviewMode covers the preview path (apply=false):
+// no disk writes, edits listed as what-would-happen.
+func TestIntegration_RenameFile_PreviewMode(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, params json.RawMessage) (any, bool) {
+			switch method {
+			case "workspace/willRenameFiles":
+				otherURI := lsp.FileToURI(filepath.Join(d, "caller.go"))
+				return map[string]any{
+					"changes": map[string][]map[string]any{
+						otherURI: {{
+							"range": map[string]any{
+								"start": map[string]any{"line": 0, "character": 0},
+								"end":   map[string]any{"line": 0, "character": 3},
+							},
+							"newText": "NEW",
+						}},
+					},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	src := filepath.Join(dir, "old.go")
+	dst := filepath.Join(dir, "new.go")
+	caller := filepath.Join(dir, "caller.go")
+	if err := os.WriteFile(src, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	originalCaller := "ABC reference\n"
+	if err := os.WriteFile(caller, []byte(originalCaller), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "rename_file", File: src, NewName: dst, Apply: new(false),
+	}), basicCtxWithDir(t, dir))
+	if err != nil {
+		t.Fatalf("rename_file preview: %v", err)
+	}
+	got := result.Data.(string)
+	if !strings.Contains(got, "preview") {
+		t.Errorf("preview output should mention 'preview', got: %s", got)
+	}
+
+	// Preview mode: source must still exist, caller must be unchanged.
+	if _, err := os.Stat(src); err != nil {
+		t.Error("source should still exist in preview mode")
+	}
+	gotCaller, _ := os.ReadFile(caller)
+	if string(gotCaller) != originalCaller {
+		t.Errorf("caller.go modified in preview mode: %q", gotCaller)
+	}
+}
+
+// TestIntegration_RenameFile_MethodNotSupported covers the case where the
+// server returns method-not-found for willRenameFiles — should skip the edit
+// step and still do the physical rename.
+func TestIntegration_RenameFile_MethodNotSupported(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, params json.RawMessage) (any, bool) {
+			if method == "workspace/willRenameFiles" {
+				// Return an error response — handled as MethodNotFound.
+				return nil, false
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	src := filepath.Join(dir, "a.go")
+	dst := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(src, []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "rename_file", File: src, NewName: dst,
+	}), basicCtxWithDir(t, dir))
+	if err != nil {
+		t.Fatalf("rename_file: %v", err)
+	}
+	got := result.Data.(string)
+	// Server returned null → no edits applied → just physical rename.
+	if !strings.Contains(got, "Renamed") {
+		t.Errorf("expected physical rename to succeed, got: %s", got)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Error("destination file missing")
+	}
+}
+
+// boolPtr returns a pointer to b, used to set Input.Apply.
+//
+//go:fix inline
+func boolPtr(b bool) *bool { return new(b) }

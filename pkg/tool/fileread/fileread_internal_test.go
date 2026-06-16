@@ -1324,3 +1324,26 @@ func TestFormatFileSize_LargeBytes(t *testing.T) {
 		t.Errorf("formatFileSize(2048) = %q, want %q", got, "2.0KB")
 	}
 }
+
+// TestOutput_InterfaceConformance verifies all output types satisfy the
+// Output interface. This exercises the marker methods that are otherwise
+// never called directly (0% coverage otherwise).
+func TestOutput_InterfaceConformance(t *testing.T) {
+	var _ Output = TextOutput{}
+	var _ Output = ImageOutput{}
+	var _ Output = PDFOutput{}
+	var _ Output = PartsOutput{}
+	var _ Output = FileUnchangedOutput{}
+
+	// Also verify the methods are callable through the interface.
+	out := []Output{
+		TextOutput{Type: "text"},
+		ImageOutput{Type: "image"},
+		PDFOutput{Type: "pdf"},
+		PartsOutput{Type: "parts"},
+		FileUnchangedOutput{},
+	}
+	for _, o := range out {
+		o.output()
+	}
+}

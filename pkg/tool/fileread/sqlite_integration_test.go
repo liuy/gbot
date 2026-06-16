@@ -3,6 +3,7 @@ package fileread
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1160,5 +1161,99 @@ func TestBytesEqual(t *testing.T) {
 	}
 	if bytesEqual([]byte{1, 2, 3}, []byte{1, 2, 4}) {
 		t.Error("different values returned true")
+	}
+}
+
+// TestProbeRowCount_AtLeastCap covers the "counted > cap" branch in
+// probeRowCount — table with more rows than the cap returns kind="atLeast".
+func TestProbeRowCount_AtLeastCap(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE big (id INTEGER PRIMARY KEY)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use recursive CTE for fast bulk insert — individual INSERTs are too slow.
+	_, err = db.Exec(`WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < ?)
+		INSERT INTO big (id) SELECT x FROM cnt`, sqliteRowCountProbeCap+100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := probeRowCount(db, "big")
+	if got.kind != "atLeast" {
+		t.Errorf("probeRowCount kind = %q, want \"atLeast\"", got.kind)
+	}
+	if got.rows != sqliteRowCountProbeCap {
+		t.Errorf("probeRowCount rows = %d, want %d", got.rows, sqliteRowCountProbeCap)
+	}
+}
+
+// TestProbeRowCount_QueryError covers the err != nil branch — querying a
+// nonexistent table should yield {exact, 0} silently.
+func TestProbeRowCount_QueryError(t *testing.T) {
+	dbPath := createTestDB(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	got := probeRowCount(db, "does_not_exist")
+	if got.kind != "exact" {
+		t.Errorf("kind = %q, want \"exact\"", got.kind)
+	}
+	if got.rows != 0 {
+		t.Errorf("rows = %d, want 0", got.rows)
+	}
+}
+
+// TestProbeRowCount_WithStat1Estimate covers the estimate > cap short-circuit.
+// When sqlite_stat1 reports a count above the cap, probeRowCount returns
+// kind="estimate" without doing a COUNT query.
+func TestProbeRowCount_WithStat1Estimate(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE big (id INTEGER PRIMARY KEY)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ANALYZE populates sqlite_stat1 with a row count estimate.
+	for range 10 {
+		_, err = db.Exec("INSERT INTO big DEFAULT VALUES")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = db.Exec("ANALYZE")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually inflate the stat1 row count so it exceeds the cap.
+	_, err = db.Exec("UPDATE sqlite_stat1 SET stat = ? WHERE tbl = 'big'",
+		fmt.Sprintf("%d", sqliteRowCountProbeCap+5))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := probeRowCount(db, "big")
+	if got.kind != "estimate" {
+		t.Errorf("kind = %q, want \"estimate\"", got.kind)
+	}
+	if got.rows != int64(sqliteRowCountProbeCap+5) {
+		t.Errorf("rows = %d, want %d", got.rows, sqliteRowCountProbeCap+5)
 	}
 }

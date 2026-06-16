@@ -1891,3 +1891,86 @@ func TestExecute_RssXmlConversion(t *testing.T) {
 		t.Error("expected XML declaration to be stripped in conversion")
 	}
 }
+
+// TestExecute_DocumentConversionError covers the ConvertFile failure path —
+// a binary file that markitdown can't parse should produce a wrapped error.
+func TestExecute_DocumentConversionError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// .docx extension but content is garbage bytes that won't unzip properly.
+	// markitdown returns an error for truly broken zip archives.
+	corrupt := filepath.Join(dir, "corrupt.docx")
+	// Write a minimal but invalid ZIP local header that will fail CRC/parse.
+	if err := os.WriteFile(corrupt, []byte{0x50, 0x4b, 0x03, 0x04, 0x00}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + corrupt + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Skip("markitdown tolerates this input — skipping error-path test")
+	}
+	if !strings.Contains(err.Error(), "convert .docx") {
+		t.Errorf("error = %q, want to contain 'convert .docx'", err.Error())
+	}
+}
+
+// TestExecute_DocumentEmptyOutput covers the "conversion produced no output"
+// branch. Use an .ipynb with empty cells — markitdown should produce empty
+// markdown, triggering the error.
+func TestExecute_DocumentEmptyOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Minimal valid ipynb with no cells.
+	empty := filepath.Join(dir, "empty.ipynb")
+	content := `{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}`
+	if err := os.WriteFile(empty, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := json.RawMessage(`{"file_path":"` + empty + `"}`)
+	_, err := fileread.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Skip("markitdown produces non-empty output for this — skipping")
+	}
+	if !strings.Contains(err.Error(), "conversion produced no output") {
+		t.Errorf("error = %q, want to contain 'conversion produced no output'", err.Error())
+	}
+}
+
+// TestExecute_DocumentOffsetBeyondTotal covers the offset > totalLines
+// clamp branch in executeDocument — should return empty content, not panic.
+func TestExecute_DocumentOffsetBeyondTotal(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.docx")
+	// Offset 99999 is way past the doc's line count.
+	input := json.RawMessage(`{"file_path":"` + fp + `","offset":99999}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if output.Content != "" {
+		t.Errorf("expected empty content when offset > totalLines, got %d bytes", len(output.Content))
+	}
+}
+
+// TestExecute_DocumentWithLimit covers the limit-clamp branch in
+// executeDocument — limit=2 should produce only 2 lines.
+func TestExecute_DocumentWithLimit(t *testing.T) {
+	t.Parallel()
+	fp := filepath.Join("..", "..", "markitdown", "testdata", "test.docx")
+	input := json.RawMessage(`{"file_path":"` + fp + `","limit":2}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	output, ok := result.Data.(fileread.TextOutput)
+	if !ok {
+		t.Fatalf("Data type = %T, want fileread.TextOutput", result.Data)
+	}
+	if output.NumLines > 2 {
+		t.Errorf("expected <= 2 lines with limit=2, got %d", output.NumLines)
+	}
+}

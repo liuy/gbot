@@ -1307,6 +1307,60 @@ func TestIntegration_Rename_WithEdits(t *testing.T) {
 	}
 }
 
+// TestIntegration_Rename_PreviewMode covers apply=false: edits listed as
+// what-would-happen, no disk writes.
+func TestIntegration_Rename_PreviewMode(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/rename" {
+				uri := "file://" + filepath.Join(d, "foo.go")
+				return lsp.WorkspaceEdit{
+					Changes: map[string][]lsp.TextEdit{
+						uri: {{Range: lsp.Range{Start: lsp.Position{Line: 1, Character: 5}, End: lsp.Position{Line: 1, Character: 8}}, NewText: "bar"}},
+					},
+				}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+	src := filepath.Join(dir, "foo.go")
+	original := "package main\nfunc foo(){}\n"
+	if err := os.WriteFile(src, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "rename", File: src, Symbol: "foo", NewName: "bar", Apply: new(false),
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "preview") {
+		t.Errorf("expected 'preview' in output, got: %s", got)
+	}
+	// Source unchanged in preview mode.
+	data, _ := os.ReadFile(src)
+	if string(data) != original {
+		t.Errorf("source modified in preview mode: %q", data)
+	}
+}
+
+// TestIntegration_Rename_EmptyNewName covers the validation error.
+func TestIntegration_Rename_EmptyNewName(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, nil)
+	defer cleanup()
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo(){}\n"), 0644)
+
+	_, err := New(reg).Call(context.Background(), mustInput(t, Input{
+		Action: "rename", File: filepath.Join(dir, "foo.go"), Symbol: "foo", NewName: "",
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "new_name parameter required") {
+		t.Fatalf("expected 'new_name parameter required' error, got: %v", err)
+	}
+}
+
 func TestIntegration_WorkspaceSymbol(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
 		return func(method string, _ json.RawMessage) (any, bool) {
