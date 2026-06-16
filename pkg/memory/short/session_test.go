@@ -1009,3 +1009,52 @@ func TestSessionsTouchedSince_NoneRecent(t *testing.T) {
 		t.Errorf("expected 0 sessions, got %d", len(ids))
 	}
 }
+
+// TestPruneEmptySessions verifies that sessions with no messages and no title
+// are removed, while sessions with messages or user-set titles are kept.
+func TestPruneEmptySessions(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	// empty session — /clear with no follow-up. Should be pruned.
+	emptySes, _ := store.CreateSession("/project", "model")
+
+	// session with messages — should be kept.
+	msgSes, _ := store.CreateSession("/project", "model")
+	_, err := store.db.Exec(
+		"INSERT INTO messages (session_id, uuid, type, content) VALUES (?, ?, ?, ?)",
+		msgSes.SessionID, uuid.New().String(), "user", `{"type":"text","text":"hello"}`,
+	)
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	// empty session with user-set title — should be kept (/session -n title then never use).
+	titledSes, _ := store.CreateSession("/project", "model")
+	if err := store.UpdateSessionTitle(titledSes.SessionID, "my session"); err != nil {
+		t.Fatalf("UpdateSessionTitle: %v", err)
+	}
+
+	pruned, err := store.PruneEmptySessions("/project")
+	if err != nil {
+		t.Fatalf("PruneEmptySessions failed: %v", err)
+	}
+
+	if len(pruned) != 1 {
+		t.Fatalf("expected 1 session pruned, got %d: %v", len(pruned), pruned)
+	}
+	if pruned[0] != emptySes.SessionID {
+		t.Errorf("pruned session = %s, want %s", pruned[0], emptySes.SessionID)
+	}
+
+	// Verify the other two survived.
+	if _, err := store.GetSession(msgSes.SessionID); err != nil {
+		t.Errorf("session with messages should survive prune, got: %v", err)
+	}
+	if _, err := store.GetSession(titledSes.SessionID); err != nil {
+		t.Errorf("titled session should survive prune, got: %v", err)
+	}
+	if _, err := store.GetSession(emptySes.SessionID); err == nil {
+		t.Error("empty session should be pruned but still exists")
+	}
+}

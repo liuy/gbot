@@ -59,6 +59,12 @@ func pickerItemsToOptions(items []PickerItem) []DialogOption {
 
 // openPicker loads sessions and opens the session picker dialog.
 func (a *App) openPicker(commitCmd tea.Cmd) tea.Cmd {
+	// Prune orphan sessions (no messages, no title) before listing so the
+	// picker isn't polluted by /clear sessions that were never used.
+	if _, err := a.engine.PruneEmptySessions(); err != nil {
+		slog.Warn("session picker: prune empty sessions failed", "error", err)
+	}
+
 	sessions, err := a.engine.ListSessions(100)
 	if err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to list sessions: %v", err))

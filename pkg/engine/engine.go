@@ -2835,6 +2835,20 @@ func (e *Engine) ListSessions(limit int) ([]*short.Session, error) {
 	return store.ListSessions(projectDir, limit)
 }
 
+// PruneEmptySessions deletes orphan sessions (no messages, no title) in the
+// current project directory. Called before opening the session picker so the
+// list isn't polluted by /clear sessions that were never used.
+func (e *Engine) PruneEmptySessions() ([]string, error) {
+	e.mu.RLock()
+	store := e.store
+	projectDir := e.projectDir
+	e.mu.RUnlock()
+	if store == nil {
+		return nil, fmt.Errorf("engine: no store")
+	}
+	return store.PruneEmptySessions(projectDir)
+}
+
 // RewindResult contains information about what was rewound.
 type RewindResult struct {
 	MessageCount  int      // number of messages after rewind

@@ -219,6 +219,41 @@ func (s *Store) SessionsTouchedSince(projectDir string, since time.Time, exclude
 	return ids, rows.Err()
 }
 
+// PruneEmptySessions deletes sessions that have no messages and no title,
+// scoped to a project directory. These are orphans left by /clear when the
+// user never sends a follow-up query. Returns the pruned session IDs.
+func (s *Store) PruneEmptySessions(projectDir string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT s.session_id FROM sessions s
+		 WHERE s.project_dir = ? AND s.title = ''
+		   AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)`,
+		projectDir,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query empty sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var pruned []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan session id: %w", err)
+		}
+		pruned = append(pruned, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, id := range pruned {
+		if _, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, id); err != nil {
+			return nil, fmt.Errorf("delete session %s: %w", id, err)
+		}
+	}
+	return pruned, nil
+}
+
 // DeleteSession deletes a session and all its messages (cascade).
 func (s *Store) DeleteSession(sessionID string) error {
 
