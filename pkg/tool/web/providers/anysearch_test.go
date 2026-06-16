@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -198,5 +199,113 @@ func TestAnySearch_Search_EmptyResults(t *testing.T) {
 	}
 	if resp.Answer != "" {
 		t.Errorf("Answer = %q, want empty", resp.Answer)
+	}
+}
+
+func TestAnySearch_client_Default(t *testing.T) {
+	a := &AnySearchProvider{}
+	if a.client() != http.DefaultClient {
+		t.Fatal("expected DefaultClient when Client is nil")
+	}
+}
+
+func TestAnySearch_Search_RequestError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.Close() // Force the connection to fail.
+
+	a := &AnySearchProvider{Client: server.Client()}
+	oldURL := anySearchAPIURL
+	anySearchAPIURL = server.URL
+	defer func() { anySearchAPIURL = oldURL }()
+
+	_, err := a.Search(context.Background(), SearchParams{Query: "test"})
+	if err == nil {
+		t.Fatal("should fail when server is closed")
+	}
+	spe, ok := err.(*SearchProviderError)
+	if !ok {
+		t.Fatalf("error type = %T, want *SearchProviderError", err)
+	}
+	if spe.Provider != "anysearch" {
+		t.Errorf("Provider = %q, want %q", spe.Provider, "anysearch")
+	}
+	if spe.Status != 0 {
+		t.Errorf("Status = %d, want 0 (request failed)", spe.Status)
+	}
+	if !strings.Contains(spe.Message, "request failed") {
+		t.Errorf("Message = %q, want to contain 'request failed'", spe.Message)
+	}
+}
+
+func TestAnySearch_Search_ReadBodyError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write headers then immediately close the connection mid-stream to break ReadAll.
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if hijacker, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hijacker.Hijack()
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	a := &AnySearchProvider{Client: server.Client()}
+	oldURL := anySearchAPIURL
+	anySearchAPIURL = server.URL
+	defer func() { anySearchAPIURL = oldURL }()
+
+	_, err := a.Search(context.Background(), SearchParams{Query: "test"})
+	if err == nil {
+		t.Fatal("should fail when response body read fails")
+	}
+	spe, ok := err.(*SearchProviderError)
+	if !ok {
+		t.Fatalf("error type = %T, want *SearchProviderError", err)
+	}
+	if spe.Provider != "anysearch" {
+		t.Errorf("Provider = %q, want %q", spe.Provider, "anysearch")
+	}
+	if !strings.Contains(spe.Message, "read response") {
+		t.Errorf("Message = %q, want to contain 'read response'", spe.Message)
+	}
+}
+
+func TestAnySearch_Search_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not valid json`))
+	}))
+	defer server.Close()
+
+	a := &AnySearchProvider{Client: server.Client()}
+	oldURL := anySearchAPIURL
+	anySearchAPIURL = server.URL
+	defer func() { anySearchAPIURL = oldURL }()
+
+	_, err := a.Search(context.Background(), SearchParams{Query: "test"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse response") {
+		t.Errorf("error = %v, want to contain 'parse response'", err)
+	}
+}
+
+func TestAnySearch_Search_BuildRequestError(t *testing.T) {
+	// Invalid URL triggers NewRequestWithContext failure.
+	a := &AnySearchProvider{Client: http.DefaultClient}
+	oldURL := anySearchAPIURL
+	anySearchAPIURL = "http://[::1]:namedport" // invalid host
+	defer func() { anySearchAPIURL = oldURL }()
+
+	_, err := a.Search(context.Background(), SearchParams{Query: "test"})
+	if err == nil {
+		t.Fatal("expected error for malformed URL")
+	}
+	if !strings.Contains(err.Error(), "build request") {
+		t.Errorf("error = %v, want to contain 'build request'", err)
 	}
 }

@@ -518,3 +518,187 @@ func TestLoadPage_ReadBodyError(t *testing.T) {
 type errorReader struct{}
 
 func (e *errorReader) Read(p []byte) (int, error) { return 0, fmt.Errorf("read error") }
+
+func TestParseRetryAfterMs_HTTPDateBeyondCap(t *testing.T) {
+	// HTTP date >10s in the future should clamp to retryAfterMaxMs (10s).
+	future := time.Now().Add(30 * time.Second).UTC().Format(http.TimeFormat) // REAL-TIME: need relative future date
+	got := parseRetryAfterMs(future)
+	if got != 10*time.Second {
+		t.Errorf("parseRetryAfterMs(future+30s) = %v, want 10s (capped)", got)
+	}
+}
+
+func TestLoadPage_429RetryThroughLoadPage(t *testing.T) {
+	// Drive the full LoadPage 429-retry path: first response is 429 with
+	// Retry-After: 0 (parsed to 1s default since "0" fails Sscanf > 0 check),
+	// second is 200. Exercises the retry429=true branch in LoadPage and the
+	// 429 handling + ctx.Done() select inside loadPageAttempt.
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok after retry")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{Timeout: 5 * time.Second})
+	if !result.OK {
+		t.Fatalf("expected OK after 429 retry, got error: %s", result.Error)
+	}
+	if requests != 2 {
+		t.Errorf("expected 2 requests (429 then 200), got %d", requests)
+	}
+	if !strings.Contains(result.Content, "ok after retry") {
+		t.Errorf("content = %q, want containing 'ok after retry'", result.Content)
+	}
+}
+
+func TestLoadPage_429RetryContextCanceled(t *testing.T) {
+	// Trigger 429 retry, then cancel context during the retry delay so the
+	// ctx.Done() branch in loadPageAttempt fires.
+	ctx, cancel := context.WithCancel(context.Background())
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	// Cancel shortly after the first request returns so the retry sleep sees ctx.Done.
+	go func() {
+		time.Sleep(200 * time.Millisecond) // REAL-TIME: cancel after first response
+		cancel()
+	}()
+
+	result := LoadPage(ctx, server.URL, LoadPageOptions{Timeout: 5 * time.Second})
+	if result.OK {
+		t.Fatal("expected not OK when ctx canceled during 429 retry delay")
+	}
+	if !strings.Contains(result.Error, "cancel") {
+		t.Errorf("error should mention cancel, got: %q", result.Error)
+	}
+	if requests != 1 {
+		t.Errorf("expected exactly 1 request before cancel, got %d", requests)
+	}
+}
+
+func TestLoadPage_ClientDoContextCanceled(t *testing.T) {
+	// Cancel ctx while client.Do is in flight on a slow server. loadPageAttempt
+	// should report "context canceled" rather than the transport error.
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // REAL-TIME: slow server to allow mid-request cancel
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	go func() {
+		time.Sleep(50 * time.Millisecond) // REAL-TIME: cancel mid-request
+		cancel()
+	}()
+
+	result := LoadPage(ctx, server.URL, LoadPageOptions{Timeout: 5 * time.Second})
+	if result.OK {
+		t.Fatal("expected not OK when ctx canceled mid-request")
+	}
+	if !strings.Contains(result.Error, "cancel") {
+		t.Errorf("error should mention cancel, got: %q", result.Error)
+	}
+}
+
+func TestLoadPage_NonLastAttemptReadError(t *testing.T) {
+	// Force a body read error on every attempt by hijacking the conn and
+	// declaring Content-Length > actual bytes — io.ReadAll returns
+	// io.ErrUnexpectedEOF (which is != io.EOF), triggering the read-error
+	// branch on non-final attempts that returns (nil, false) for retry.
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Lie about Content-Length so io.ReadAll gets io.ErrUnexpectedEOF.
+		_, _ = fmt.Fprint(bufrw, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nContent-Type: text/plain\r\n\r\nshort")
+		_ = bufrw.Flush()
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{Timeout: 5 * time.Second})
+	if result.OK {
+		t.Error("expected not OK when all attempts have body read errors")
+	}
+	if requests < 2 {
+		t.Errorf("expected retries on read error, got %d requests", requests)
+	}
+}
+
+func TestLoadPage_LastAttemptReadError(t *testing.T) {
+	// Force a read error on the final UA attempt by closing the connection
+	// mid-response. Use a handler that writes a short Content-Length then
+	// more bytes than declared — http.Client returns an error on body read.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == userAgents[len(userAgents)-1] {
+			// Last attempt: lie about Content-Length to force read error.
+			w.Header().Set("Content-Length", "5")
+			_, _ = w.Write([]byte("this is way more than 5 bytes so the client should error reading the body"))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, "blocked")
+	}))
+	defer server.Close()
+
+	result := LoadPage(context.Background(), server.URL, LoadPageOptions{Timeout: 5 * time.Second})
+	if result.OK {
+		t.Error("expected not OK when final attempt has read error")
+	}
+}
+
+func TestLoadPage_AllAttemptsErrorFallThrough(t *testing.T) {
+	// When all attempts return errors but none is the final-attempt short
+	// circuit, LoadPage falls out of the loop and returns the lastError.
+	// Connection-refused on 127.0.0.1:1 (definitely not listening) gives
+	// an error per attempt; the last attempt sets lastError and returns it.
+	result := LoadPage(context.Background(), "http://127.0.0.1:1", LoadPageOptions{Timeout: time.Second})
+	if result.OK {
+		t.Fatal("expected not OK for unreachable URL")
+	}
+	if result.Error == "" {
+		t.Fatal("expected non-empty Error for unreachable URL")
+	}
+}
+
+func TestFormatISODate_NonStandardString(t *testing.T) {
+	// time.Parse branch is unreachable because any ISO-like date matches
+	// the len>=10 && v[4]=='-' && v[7]=='-' fast path. This documents that
+	// non-ISO strings fall through and return "".
+	tests := []struct {
+		input any
+		want  string
+	}{
+		{"Jan 2, 2006", ""},
+		{"2006/01/02", ""},
+		{"yesterday", ""},
+		{true, ""}, // unsupported type
+		{[]string{}, ""},
+	}
+	for _, tt := range tests {
+		got := FormatISODate(tt.input)
+		if got != tt.want {
+			t.Errorf("FormatISODate(%v) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

@@ -23,6 +23,7 @@ func rawPipeTest(t *testing.T) (*Client, net.Conn, func()) {
 		name:     "raw",
 		pending:  make(map[int64]chan *rpcResponse),
 		openURIs: make(map[string]int),
+		diags:    make(map[string][]Diagnostic),
 		done:     make(chan struct{}),
 		dead:     make(chan struct{}),
 		stdin:    &pipeWriteCloser{conn: clientConn},
@@ -206,15 +207,14 @@ func TestUriToPath_Absolute(t *testing.T) {
 }
 
 func TestRequest_CancelledContext(t *testing.T) {
-	c, _, cleanup := newInProcessServer(t)
+	c, srv, cleanup := newInProcessServer(t)
 	defer cleanup()
+	// Block the method so the server doesn't respond — Request must block on
+	// ctx.Done() instead of racing against a quick echo response.
+	srv.blockMethods = map[string]bool{"textDocument/references": true}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// Ensure the cancel is observed by the runtime before issuing the request.
-	// Without this, under parallel test load the select in Request can race
-	// between ctx.Done() and a spurious channel read, returning nil.
-	runtime.Gosched()
 
 	_, err := c.Request(ctx, "textDocument/references", nil)
 	if err == nil {

@@ -1099,3 +1099,24 @@ func TestSave_WriteTempError(t *testing.T) {
 		t.Fatal("Save should fail when temp file write fails")
 	}
 }
+
+func TestSave_MkdirAllError(t *testing.T) {
+	// Force MkdirAll to fail by pointing HOME at a regular file,
+	// so $HOME/.gbot cannot be created as a directory.
+	dir := t.TempDir()
+	blockerPath := filepath.Join(dir, "blocker-file")
+	if err := os.WriteFile(blockerPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("setup write: %v", err)
+	}
+	_ = os.Setenv("HOME", blockerPath)
+	defer func() { _ = os.Unsetenv("HOME") }()
+
+	cfg := &config.Config{Model: config.ModelSpec{"default": "pro"}}
+	err := cfg.Save()
+	if err == nil {
+		t.Fatal("Save should fail when MkdirAll fails (HOME is a regular file)")
+	}
+	if !strings.Contains(err.Error(), "not a directory") && !strings.Contains(err.Error(), "file exists") {
+		t.Errorf("expected MkdirAll-related error, got: %v", err)
+	}
+}

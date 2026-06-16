@@ -575,12 +575,18 @@ func (c *Client) storeDiagnostics(params json.RawMessage) {
 		slog.Debug("lsp:bad_diagnostics", "name", c.name, "err", err)
 		return
 	}
+	c.InjectDiagnostics(notif.URI, notif.Diagnostics)
+}
+
+// InjectDiagnostics replaces the cached diagnostics for a URI. Exposed for
+// test injection.
+func (c *Client) InjectDiagnostics(uri string, diags []Diagnostic) {
 	c.diagMu.Lock()
 	defer c.diagMu.Unlock()
-	if len(notif.Diagnostics) == 0 {
-		delete(c.diags, notif.URI)
+	if len(diags) == 0 {
+		delete(c.diags, uri)
 	} else {
-		c.diags[notif.URI] = notif.Diagnostics
+		c.diags[uri] = diags
 	}
 }
 

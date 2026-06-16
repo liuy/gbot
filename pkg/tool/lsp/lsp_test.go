@@ -462,6 +462,135 @@ func TestDecodeLocations(t *testing.T) {
 	}
 }
 
+func TestDecodeLocations_LocationLink(t *testing.T) {
+	raw := json.RawMessage(`[{"targetUri":"file:///link.go","targetSelectionRange":{"start":{"line":5,"character":2}}}]`)
+	locs, err := decodeLocations(raw)
+	if err != nil {
+		t.Fatalf("decodeLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("expected 1 location, got %d", len(locs))
+	}
+	if locs[0].URI != "file:///link.go" {
+		t.Errorf("URI = %q", locs[0].URI)
+	}
+	if locs[0].Range.Start.Line != 5 {
+		t.Errorf("Line = %d", locs[0].Range.Start.Line)
+	}
+}
+
+func TestDecodeLocations_BadArray(t *testing.T) {
+	_, err := decodeLocations(json.RawMessage(`[{bad}]`))
+	if err == nil {
+		t.Fatal("should fail for bad array")
+	}
+	if !strings.Contains(err.Error(), "decodeLocations") {
+		t.Errorf("wrong error: %v", err)
+	}
+}
+
+func TestDecodeLocations_BadSingle(t *testing.T) {
+	_, err := decodeLocations(json.RawMessage(`{bad}`))
+	if err == nil {
+		t.Fatal("should fail for bad object")
+	}
+	if !strings.Contains(err.Error(), "decodeLocations") {
+		t.Errorf("wrong error: %v", err)
+	}
+}
+
+func TestDecodeLocations_UnrecognizedObject(t *testing.T) {
+	_, err := decodeLocations(json.RawMessage(`{"foo":"bar"}`))
+	if err == nil {
+		t.Fatal("should fail for unrecognized object")
+	}
+	if !strings.Contains(err.Error(), "unrecognized") {
+		t.Errorf("wrong error: %v", err)
+	}
+}
+
+func TestDecodeLocations_EmptyArray(t *testing.T) {
+	locs, err := decodeLocations(json.RawMessage(`[]`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(locs) != 0 {
+		t.Errorf("expected 0 locations, got %d", len(locs))
+	}
+}
+
+func TestLocationFromMap_TargetRangeFallback(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"targetUri":   json.RawMessage(`"file:///c.go"`),
+		"targetRange": json.RawMessage(`{"start":{"line":3,"character":0}}`),
+	}
+	loc, ok := locationFromMap(m)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if loc.URI != "file:///c.go" {
+		t.Errorf("URI = %q", loc.URI)
+	}
+	if loc.Range.Start.Line != 3 {
+		t.Errorf("Line = %d", loc.Range.Start.Line)
+	}
+}
+
+func TestLocationFromMap_BadURI(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"uri": json.RawMessage(`123`),
+	}
+	_, ok := locationFromMap(m)
+	if ok {
+		t.Fatal("expected !ok for non-string uri")
+	}
+}
+
+func TestLocationFromMap_BadTargetURI(t *testing.T) {
+	m := map[string]json.RawMessage{
+		"targetUri": json.RawMessage(`123`),
+	}
+	_, ok := locationFromMap(m)
+	if ok {
+		t.Fatal("expected !ok for non-string targetUri")
+	}
+}
+
+func TestExtractHoverText_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{"map without value", map[string]any{"foo": "bar"}, "map[foo:bar]"},
+		{"raw json string", json.RawMessage(`"hello"`), "hello"},
+		{"raw json array", json.RawMessage(`["a","b"]`), "a\n\nb"},
+		{"raw json bad", json.RawMessage(`not json`), "not json"},
+		{"raw json empty", json.RawMessage(``), "[]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractHoverText(tc.input); got != tc.want {
+				t.Errorf("extractHoverText(%v) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatJSON_Nested(t *testing.T) {
+	got := formatJSON(json.RawMessage(`{"a":{"b":1}}`))
+	if got == "" {
+		t.Error("expected non-empty formatted JSON")
+	}
+}
+
+func TestFormatJSON_MarshalError(t *testing.T) {
+	got := formatJSON(json.RawMessage(`123`))
+	if got != "123" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestFormatJSON(t *testing.T) {
 	tests := []struct {
 		input json.RawMessage
@@ -590,6 +719,92 @@ func TestIntegration_Implementation(t *testing.T) {
 	}
 	if got := fmt.Sprintf("%v", result.Data); !strings.Contains(got, "Found 1 implementation") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// --- "no results" error paths for read-only navigation actions ---
+
+func TestIntegration_Definition_NoResults(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return emptyHandler()
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main\nfunc foo() {}\n"), 0644)
+
+	tt := New(reg)
+	result, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "definition", Symbol: "foo", File: filepath.Join(dir, "test.go"),
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "No definition found") {
+		t.Errorf("expected 'No definition found': %q", got)
+	}
+}
+
+func TestIntegration_TypeDefinition_NoResults(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return emptyHandler()
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main\nfunc foo() {}\n"), 0644)
+
+	tt := New(reg)
+	result, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "type_definition", Symbol: "foo", File: filepath.Join(dir, "test.go"),
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "No type definition") {
+		t.Errorf("expected 'No type definition': %q", got)
+	}
+}
+
+func TestIntegration_Implementation_NoResults(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return emptyHandler()
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main\nfunc foo() {}\n"), 0644)
+
+	tt := New(reg)
+	result, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "implementation", Symbol: "foo", File: filepath.Join(dir, "test.go"),
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "No implementation") {
+		t.Errorf("expected 'No implementation': %q", got)
+	}
+}
+
+func TestIntegration_References_NoResults(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return emptyHandler()
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main\nfunc foo() {}\n"), 0644)
+
+	tt := New(reg)
+	result, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "references", Symbol: "foo", File: filepath.Join(dir, "test.go"),
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "No references found") {
+		t.Errorf("expected 'No references found': %q", got)
 	}
 }
 
@@ -1193,6 +1408,51 @@ func TestIntegration_Request_WithPayload(t *testing.T) {
 	}
 }
 
+// TestIntegration_Request_WithSymbol exercises the symbol-resolution branch of
+// the request action: when Symbol is set the tool resolves it via
+// documentSymbol and forwards Query to that position.
+func TestIntegration_Request_WithSymbol(t *testing.T) {
+	reg, dir, cleanup := newFakeEnv(t, func(d string) fakeHandler {
+		return func(method string, _ json.RawMessage) (any, bool) {
+			if method == "textDocument/hover" {
+				return map[string]any{
+					"contents": "func foo()",
+				}, true
+			}
+			if method == "textDocument/documentSymbol" {
+				return []map[string]any{{
+					"name": "foo",
+					"kind": 12,
+					"range": map[string]any{
+						"start": map[string]any{"line": 0, "character": 5},
+						"end":   map[string]any{"line": 0, "character": 8},
+					},
+					"selectionRange": map[string]any{
+						"start": map[string]any{"line": 0, "character": 5},
+						"end":   map[string]any{"line": 0, "character": 8},
+					},
+				}}, true
+			}
+			return nil, false
+		}
+	})
+	defer cleanup()
+
+	_ = os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package main\nfunc foo() {}\n"), 0644)
+
+	tt := New(reg)
+	result, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "request", Query: "textDocument/hover", File: filepath.Join(dir, "foo.go"), Symbol: "foo",
+	}), &tool.ToolUseContext{WorkingDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := fmt.Sprintf("%v", result.Data)
+	if !strings.Contains(got, "hover") || !strings.Contains(got, "foo") {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestIntegration_Capabilities(t *testing.T) {
 	reg, dir, cleanup := newFakeEnv(t, nil)
 	defer cleanup()
@@ -1251,4 +1511,96 @@ func basicCtx() *tool.ToolUseContext {
 func basicCtxWithDir(t *testing.T, dir string) *tool.ToolUseContext {
 	t.Helper()
 	return &tool.ToolUseContext{WorkingDir: dir}
+}
+
+// --- Description / IsReadOnly / RenderResult ---
+
+func TestNew_Description(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	desc, err := tt.Description(mustInput(t, Input{Action: "definition"}))
+	if err != nil {
+		t.Fatalf("Description: %v", err)
+	}
+	if desc != "Lsp definition" {
+		t.Errorf("Description = %q", desc)
+	}
+}
+
+func TestNew_Description_InvalidJSON(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	desc, err := tt.Description(json.RawMessage(`{bad json`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc != "Query language server for code intelligence" {
+		t.Errorf("Description fallback = %q", desc)
+	}
+}
+
+func TestNew_IsReadOnly_AllActions(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	readonly := map[string]bool{
+		"definition": true, "type_definition": true, "implementation": true,
+		"references": true, "hover": true, "symbols": true,
+		"workspace_symbol": true, "capabilities": true,
+		"callers": true, "callees": true, "source": true,
+		"inspect": true, "impact": true, "check": true,
+		"status":       true,
+		"code_actions": false, "reload": false,
+		"rename": false, "rename_file": false, "request": false,
+	}
+	for action, wantRO := range readonly {
+		got := tt.IsReadOnly(mustInput(t, Input{Action: action}))
+		if got != wantRO {
+			t.Errorf("IsReadOnly(%q) = %v, want %v", action, got, wantRO)
+		}
+	}
+}
+
+func TestNew_IsReadOnly_InvalidJSON(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	if tt.IsReadOnly(json.RawMessage(`{bad json`)) {
+		t.Error("expected IsReadOnly=false for invalid JSON")
+	}
+}
+
+func TestNew_RenderResult(t *testing.T) {
+	reg := lsp.NewRegistry(t.TempDir())
+	tt := New(reg)
+	got := tt.RenderResult("hello")
+	if got != "hello" {
+		t.Errorf("RenderResult(string) = %q", got)
+	}
+	got = tt.RenderResult(map[string]any{"a": 1})
+	if got == "" {
+		t.Error("expected non-empty JSON render")
+	}
+}
+
+func TestNew_Constructor(t *testing.T) {
+	reg := lsp.NewRegistry("/test")
+	tt := New(reg)
+	if tt == nil {
+		t.Fatal("New returned nil")
+	}
+}
+
+func TestComparePosition(t *testing.T) {
+	a := lsp.Position{Line: 5, Character: 3}
+	b := lsp.Position{Line: 5, Character: 3}
+	if comparePosition(a, b) != 0 {
+		t.Errorf("equal positions should return 0")
+	}
+
+	if comparePosition(lsp.Position{Line: 3}, lsp.Position{Line: 5}) >= 0 {
+		t.Errorf("smaller line should be negative")
+	}
+
+	if comparePosition(lsp.Position{Line: 5, Character: 10}, lsp.Position{Line: 5, Character: 3}) <= 0 {
+		t.Errorf("larger character should be positive")
+	}
 }

@@ -20,6 +20,10 @@ type inProcessServer struct {
 	// handleCustom lets a test override the response for specific methods.
 	// Returning (nil, false) falls through to the default echo handler.
 	handleCustom func(req rpcRequest) (any, bool)
+	// blockMethods, if non-nil, is consulted before handleCustom. Methods in
+	// this set get NO response — the server simply skips them. Used to test
+	// client-side timeouts and teardown races.
+	blockMethods map[string]bool
 	wg           sync.WaitGroup // tracks serve goroutine
 }
 
@@ -41,6 +45,7 @@ func newInProcessServer(t *testing.T) (*Client, *inProcessServer, func()) {
 		name:         "fake",
 		pending:      make(map[int64]chan *rpcResponse),
 		openURIs:     make(map[string]int),
+		diags:        make(map[string][]Diagnostic),
 		teardownOnce: sync.Once{},
 		done:         make(chan struct{}),
 		dead:         make(chan struct{}),
@@ -110,6 +115,10 @@ func (s *inProcessServer) serve() {
 		case "exit":
 			return
 		default:
+			// Blocklisted methods get no response.
+			if s.blockMethods != nil && s.blockMethods[req.Method] {
+				continue
+			}
 			// Allow test override first.
 			if s.handleCustom != nil {
 				if resp, ok := s.handleCustom(req); ok {

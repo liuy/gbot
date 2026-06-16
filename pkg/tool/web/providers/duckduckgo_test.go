@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -217,5 +218,98 @@ func TestDuckDuckGo_Search_SkipEmptyResult(t *testing.T) {
 	}
 	if len(sources) != 0 {
 		t.Errorf("expected 0 sources for empty result, got %d", len(sources))
+	}
+}
+
+func TestDuckDuckGo_searchWithClient_BuildRequestError(t *testing.T) {
+	d := &DuckDuckGoProvider{Client: http.DefaultClient}
+	// Malformed URL with invalid host triggers NewRequestWithContext error.
+	_, err := d.searchWithClient(context.Background(), SearchParams{Query: "test"}, "http://[::1]:namedport")
+	if err == nil {
+		t.Fatal("expected error for malformed URL")
+	}
+	if !strings.Contains(err.Error(), "build request") {
+		t.Errorf("error = %v, want to contain 'build request'", err)
+	}
+}
+
+func TestDuckDuckGo_searchWithClient_RequestError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.Close() // close to force connection failure
+
+	d := &DuckDuckGoProvider{Client: server.Client()}
+	_, err := d.searchWithClient(context.Background(), SearchParams{Query: "test"}, server.URL)
+	if err == nil {
+		t.Fatal("expected error when server is closed")
+	}
+	var spe *SearchProviderError
+	if !errors.As(err, &spe) {
+		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
+	}
+	if spe.Status != 0 {
+		t.Errorf("Status = %d, want 0 (request failed)", spe.Status)
+	}
+	if !strings.Contains(spe.Message, "request failed") {
+		t.Errorf("Message = %q, want to contain 'request failed'", spe.Message)
+	}
+}
+
+func TestDuckDuckGo_searchWithClient_ParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not html"))
+	}))
+	defer server.Close()
+
+	d := &DuckDuckGoProvider{Client: server.Client()}
+	resp, err := d.searchWithClient(context.Background(), SearchParams{Query: "test"}, server.URL)
+	// goquery is permissive and won't error on plain text — it parses it as a
+	// single text node. The function returns no sources but no error.
+	if err != nil {
+		t.Fatalf("goquery should accept plain text, got error: %v", err)
+	}
+	if resp.Provider != "duckduckgo" {
+		t.Errorf("Provider = %q, want %q", resp.Provider, "duckduckgo")
+	}
+	if len(resp.Sources) != 0 {
+		t.Errorf("len(Sources) = %d, want 0 for plain text body", len(resp.Sources))
+	}
+}
+
+func TestParseDDGHTML_Error(t *testing.T) {
+	// A reader that always errors triggers goquery's NewDocumentFromReader error path.
+	_, err := parseDDGHTML(&errReader{}, 10)
+	if err == nil {
+		t.Fatal("expected error from failing reader")
+	}
+	if !strings.Contains(err.Error(), "parse HTML") {
+		t.Errorf("error = %v, want to contain 'parse HTML'", err)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) {
+	return 0, errors.New("read failed")
+}
+
+func TestExtractDDGURL_MalformedURL(t *testing.T) {
+	// A URL containing "uddg=" that url.Parse rejects.
+	// Per RFC 3986, a literal control character in the host is invalid.
+	got := extractDDGURL("http://exam\x00ple.com/?uddg=https%3A%2F%2Ftarget.com")
+	// url.Parse with control char is rejected → fall through to return href as-is.
+	if got == "" {
+		t.Errorf("extractDDGURL returned empty for malformed URL; expected href fallback")
+	}
+}
+
+func TestExtractDDGURL_QueryUnescapeError(t *testing.T) {
+	// Construct an href whose uddg query value is invalid percent-encoding.
+	// url.QueryUnescape fails on a stray '%' that doesn't form valid hex pairs.
+	// Force encoded!= "" and QueryUnescape failure to hit the `return encoded` branch.
+	href := "https://duckduckgo.com/l/?uddg=%zz"
+	got := extractDDGURL(href)
+	if got == "" {
+		t.Errorf("expected non-empty fallback to raw encoded value")
 	}
 }

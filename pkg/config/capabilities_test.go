@@ -77,3 +77,49 @@ func TestResolveMaxTokens_FallbackToDefault(t *testing.T) {
 		t.Errorf("fallback ResolveMaxTokens = %d, want %d", mt, 32*1024)
 	}
 }
+
+func TestResolveInput_ModelConfigOverride(t *testing.T) {
+	t.Parallel()
+
+	want := []string{"text", "image", "audio"}
+	p := &Provider{
+		Models: map[string]ModelConfig{
+			"multimodal": {Input: want},
+		},
+	}
+	got := p.ResolveInput("multimodal")
+	if len(got) != len(want) {
+		t.Fatalf("ResolveInput(multimodal) = %v (len %d), want %v (len %d)", got, len(got), want, len(want))
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("ResolveInput(multimodal)[%d] = %q, want %q", i, got[i], v)
+		}
+	}
+}
+
+func TestResolveInput_FallbackToDefault(t *testing.T) {
+	t.Parallel()
+
+	// Unknown model → default ["text"]
+	p := &Provider{Models: map[string]ModelConfig{}}
+	got := p.ResolveInput("unknown")
+	want := []string{"text"}
+	if len(got) != len(want) {
+		t.Fatalf("fallback ResolveInput = %v (len %d), want %v (len %d)", got, len(got), want, len(want))
+	}
+	if got[0] != want[0] {
+		t.Errorf("fallback ResolveInput[0] = %q, want %q", got[0], want[0])
+	}
+
+	// Known model with empty Input → default ["text"]
+	p2 := &Provider{
+		Models: map[string]ModelConfig{
+			"empty-input": {Input: nil},
+		},
+	}
+	got2 := p2.ResolveInput("empty-input")
+	if len(got2) != 1 || got2[0] != "text" {
+		t.Errorf("ResolveInput(empty-input) = %v, want [text]", got2)
+	}
+}

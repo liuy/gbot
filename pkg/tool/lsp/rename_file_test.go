@@ -260,3 +260,26 @@ func TestRenameFile_NoServer_PhysicalRename(t *testing.T) {
 		t.Error("destination missing after rename")
 	}
 }
+
+// TestRenameFile_NoServers_PhysicalRename verifies that when no LSP servers
+// are configured at all, rename_file still physically moves the file.
+func TestRenameFile_NoServers_PhysicalRename(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "old.go")
+	dst := filepath.Join(dir, "new.go")
+	if err := os.WriteFile(src, []byte("package main\nfunc foo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := lsp.NewRegistry(dir)
+	tt := New(reg)
+	_, err := tt.Call(context.Background(), mustInput(t, Input{
+		Action: "rename_file", File: src, NewName: dst,
+	}), basicCtxWithDir(t, dir))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Errorf("destination file not created: %v", err)
+	}
+}

@@ -413,3 +413,223 @@ func TestZhipuSearchEmptyResults(t *testing.T) {
 		t.Errorf("len(Sources) = %d, want 0", len(resp.Sources))
 	}
 }
+
+func TestZhipuSearch_BuildRequestError(t *testing.T) {
+	origURL := zhipuMCPURL
+	zhipuMCPURL = "http://[::1]:namedport" // invalid host
+	defer func() { zhipuMCPURL = origURL }()
+
+	z := &ZhipuProvider{Client: http.DefaultClient, APIKey: "test.key"}
+	_, err := z.Search(context.Background(), SearchParams{Query: "test", Limit: 3})
+	if err == nil {
+		t.Fatal("expected error for malformed URL")
+	}
+	if !strings.Contains(err.Error(), "build request") {
+		t.Errorf("error = %v, want to contain 'build request'", err)
+	}
+}
+
+func TestZhipuSearch_JSONUnmarshalError(t *testing.T) {
+	// SSE data line with invalid JSON triggers the Unmarshal error path.
+	body := "id:1\nevent:message\ndata:not valid json\n"
+	_, err := parseZhipuResponse(strings.NewReader(body), 10)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON in SSE data")
+	}
+	if !strings.Contains(err.Error(), "parse JSON-RPC") {
+		t.Errorf("error = %v, want to contain 'parse JSON-RPC'", err)
+	}
+}
+
+func TestZhipuSearch_JSONRPCErrorWithMCPError(t *testing.T) {
+	// JSON-RPC level error whose message embeds an "MCP error -NNN:" string.
+	// This exercises the extractMCPError branch inside the rpcResp.Error != nil block.
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"error": map[string]any{
+			"code":    -1,
+			"message": "MCP error -429: monthly quota exhausted",
+		},
+	})
+
+	_, err := parseZhipuResponse(strings.NewReader(sseBody), 10)
+	if err == nil {
+		t.Fatal("expected error for JSON-RPC error with embedded MCP error")
+	}
+	var spe *SearchProviderError
+	if !errors.As(err, &spe) {
+		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
+	}
+	if spe.Status != 429 {
+		t.Errorf("Status = %d, want 429 (extracted from MCP error)", spe.Status)
+	}
+	if spe.Message != "monthly quota exhausted" {
+		t.Errorf("Message = %q, want %q", spe.Message, "monthly quota exhausted")
+	}
+}
+
+func TestZhipuSearch_IsErrorFallbackText(t *testing.T) {
+	// Result.IsError=true but the error text is not an MCP error → use raw text.
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"result": map[string]any{
+			"content": []map[string]string{
+				{"type": "text", "text": "internal failure"},
+			},
+			"isError": true,
+		},
+	})
+
+	_, err := parseZhipuResponse(strings.NewReader(sseBody), 10)
+	if err == nil {
+		t.Fatal("expected error for isError result without MCP error")
+	}
+	var spe *SearchProviderError
+	if !errors.As(err, &spe) {
+		t.Fatalf("expected SearchProviderError, got %T: %v", err, err)
+	}
+	if spe.Message != "internal failure" {
+		t.Errorf("Message = %q, want %q", spe.Message, "internal failure")
+	}
+	if spe.Status != 500 {
+		t.Errorf("Status = %d, want 500 (non-MCP error fallback)", spe.Status)
+	}
+}
+
+func TestZhipuSearch_LimitOuterLoop(t *testing.T) {
+	// Two content blocks; limit=1 so the outer for-loop's len(allSources) >= limit
+	// break must fire before consuming the second block.
+	results1 := []zhipuSearchResult{{Title: "A", Link: "https://a.example", Content: "a"}}
+	results2 := []zhipuSearchResult{{Title: "B", Link: "https://b.example", Content: "b"}}
+	text1 := zhipuSearchResults(t, results1)
+	text2 := zhipuSearchResults(t, results2)
+
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"result": map[string]any{
+			"content": []map[string]string{
+				{"type": "text", "text": text1},
+				{"type": "text", "text": text2},
+			},
+		},
+	})
+
+	resp, err := parseZhipuResponse(strings.NewReader(sseBody), 1)
+	if err != nil {
+		t.Fatalf("parseZhipuResponse error: %v", err)
+	}
+	if len(resp.Sources) != 1 {
+		t.Fatalf("len(Sources) = %d, want 1 (limit applied at outer loop)", len(resp.Sources))
+	}
+	if resp.Sources[0].URL != "https://a.example" {
+		t.Errorf("Sources[0].URL = %q, want %q", resp.Sources[0].URL, "https://a.example")
+	}
+}
+
+func TestZhipuSearch_NonTextContentSkipped(t *testing.T) {
+	// A non-text content block is skipped; the following text block is parsed.
+	results := []zhipuSearchResult{{Title: "T", Link: "https://t.example", Content: "t"}}
+	textContent := zhipuSearchResults(t, results)
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"result": map[string]any{
+			"content": []map[string]string{
+				{"type": "image", "text": "ignored"},
+				{"type": "text", "text": textContent},
+			},
+		},
+	})
+
+	resp, err := parseZhipuResponse(strings.NewReader(sseBody), 10)
+	if err != nil {
+		t.Fatalf("parseZhipuResponse error: %v", err)
+	}
+	if len(resp.Sources) != 1 {
+		t.Fatalf("len(Sources) = %d, want 1 (non-text skipped)", len(resp.Sources))
+	}
+	if resp.Sources[0].URL != "https://t.example" {
+		t.Errorf("Sources[0].URL = %q, want %q", resp.Sources[0].URL, "https://t.example")
+	}
+}
+
+func TestZhipuSearch_InnerJSONUnmarshalError(t *testing.T) {
+	// A text block whose content is neither a JSON string nor a JSON array of
+	// results triggers the inner Unmarshal error path → continue.
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"result": map[string]any{
+			"content": []map[string]string{
+				{"type": "text", "text": "totally not json {{{"},
+			},
+		},
+	})
+
+	resp, err := parseZhipuResponse(strings.NewReader(sseBody), 10)
+	if err != nil {
+		t.Fatalf("parseZhipuResponse error: %v", err)
+	}
+	if len(resp.Sources) != 0 {
+		t.Errorf("len(Sources) = %d, want 0 (unparseable text skipped)", len(resp.Sources))
+	}
+}
+
+func TestZhipuSearch_TitleFallbackToLink(t *testing.T) {
+	results := []zhipuSearchResult{{Title: "", Link: "https://only-link.example", Content: "snippet"}}
+	textContent := zhipuSearchResults(t, results)
+	sseBody := zhipuSSEResponse(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "test",
+		"result": map[string]any{
+			"content": []map[string]string{
+				{"type": "text", "text": textContent},
+			},
+		},
+	})
+
+	resp, err := parseZhipuResponse(strings.NewReader(sseBody), 10)
+	if err != nil {
+		t.Fatalf("parseZhipuResponse error: %v", err)
+	}
+	if len(resp.Sources) != 1 {
+		t.Fatalf("len(Sources) = %d, want 1", len(resp.Sources))
+	}
+	if resp.Sources[0].Title != "https://only-link.example" {
+		t.Errorf("Sources[0].Title = %q, want link as fallback", resp.Sources[0].Title)
+	}
+	if resp.Sources[0].URL != "https://only-link.example" {
+		t.Errorf("Sources[0].URL = %q, want %q", resp.Sources[0].URL, "https://only-link.example")
+	}
+}
+
+func TestExtractMCPError_SscanfError(t *testing.T) {
+	// "MCP error abc: msg" has the colon but the code is non-numeric → Sscanf fails.
+	code, msg := extractMCPError("MCP error abc: some message")
+	if code != 0 {
+		t.Errorf("code = %d, want 0 (non-numeric code)", code)
+	}
+	if msg != "MCP error abc: some message" {
+		t.Errorf("msg = %q, want original text", msg)
+	}
+}
+
+func TestParseZhipuResponse_ScannerError(t *testing.T) {
+	// A reader that errors mid-scan triggers scanner.Err().
+	_, err := parseZhipuResponse(&failingReader{}, 10)
+	if err == nil {
+		t.Fatal("expected error from failing reader")
+	}
+	if !strings.Contains(err.Error(), "read response") {
+		t.Errorf("error = %v, want to contain 'read response'", err)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(p []byte) (int, error) {
+	return 0, errors.New("read failed")
+}

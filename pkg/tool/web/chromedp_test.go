@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	neturl "net/url"
 	"strings"
 	"sync"
@@ -241,5 +242,183 @@ func TestExecuteFetch_ScraperJSFetcher_Mock(t *testing.T) {
 	}
 	if !jsCalled {
 		t.Error("expected JSFetcher to be called")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Real Chrome integration tests — only run when Chrome is installed.
+// These exercise realChromedpFetch, waitForJSRender, and getWithProxy paths
+// that require a live Chrome process.
+// ---------------------------------------------------------------------------
+
+func TestRealChromedpFetch_AboutBlank(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+	// Reset pool and availability cache for a clean state.
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><head><title>Chrome Test</title></head><body><div id="content">Rendered by Chrome</div></body></html>`)
+	}))
+	defer server.Close()
+
+	html, err := realChromedpFetch(context.Background(), server.URL, 30*time.Second, "")
+	if err != nil {
+		t.Fatalf("realChromedpFetch() error = %v", err)
+	}
+	if !strings.Contains(html, "Rendered by Chrome") {
+		t.Errorf("expected rendered content, got: %q", truncate(html, 200))
+	}
+	if !strings.Contains(html, "<html") {
+		t.Errorf("expected <html> tag, got: %q", truncate(html, 200))
+	}
+}
+
+func TestRealChromedpFetch_EmptyContent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+
+	// Serve a page with an empty body so OuterHTML returns empty/whitespace.
+	// In practice this is hard to achieve — about:blank has <html></html>.
+	// Instead test the error path: unreachable URL causes chromedp.Run to fail.
+	_, err := realChromedpFetch(context.Background(), "http://127.0.0.1:1/unreachable", 5*time.Second, "")
+	if err == nil {
+		t.Fatal("expected error for unreachable URL via Chrome")
+	}
+	if !strings.Contains(err.Error(), "chromedp fetch") {
+		t.Errorf("error should mention chromedp fetch, got: %v", err)
+	}
+}
+
+func TestChromePool_GetWithProxy_ReadyReuse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+
+	// First call creates Chrome and marks pool ready.
+	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first getWithProxy() error = %v", err)
+	}
+	cancel1()
+
+	// Second call with same proxyURL should reuse the ready pool
+	// (the `p.ready && p.proxyURL == proxyURL` branch).
+	_, cancel2, err := defaultPool.getWithProxy(context.Background(), "")
+	if err != nil {
+		t.Fatalf("second getWithProxy() error = %v", err)
+	}
+	cancel2()
+
+	defaultPool.mu.Lock()
+	ready := defaultPool.ready
+	defaultPool.mu.Unlock()
+	if !ready {
+		t.Error("pool should remain ready after reuse")
+	}
+}
+
+func TestChromePool_GetWithProxy_ProxyChangeResets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+
+	// Bootstrap with no proxy.
+	_, cancel1, err := defaultPool.getWithProxy(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first getWithProxy() error = %v", err)
+	}
+	cancel1()
+
+	// Second call with different proxy should hit the
+	// `p.ready && p.proxyURL != proxyURL` reset branch, then re-create
+	// Chrome with the new proxy flag. Chrome accepts --proxy-server even
+	// for unreachable proxies, so the pool should end up ready with the
+	// new proxyURL stored.
+	_, cancel2, err := defaultPool.getWithProxy(context.Background(), "http://127.0.0.1:9")
+	if err != nil {
+		t.Fatalf("second getWithProxy() with new proxy error = %v", err)
+	}
+	cancel2()
+
+	defaultPool.mu.Lock()
+	ready := defaultPool.ready
+	storedProxy := defaultPool.proxyURL
+	defaultPool.mu.Unlock()
+	if !ready {
+		t.Error("pool should be ready after proxy change re-create")
+	}
+	if storedProxy != "http://127.0.0.1:9" {
+		t.Errorf("proxyURL = %q, want %q", storedProxy, "http://127.0.0.1:9")
+	}
+}
+
+func TestRealChromedpFetch_UnstablePage(t *testing.T) {
+	// A page that keeps adding children exercises the waitForJSRender
+	// maxWait deadline branch (content never stabilises).
+	if testing.Short() {
+		t.Skip("skipping Chrome integration test in short mode")
+	}
+	if !chromeAvailable {
+		t.Skip("Chrome/Chromium not installed")
+	}
+	defaultPool.reset()
+	chromedpAvailable.once = sync.Once{}
+	t.Cleanup(func() { defaultPool.reset(); chromedpAvailable.once = sync.Once{} })
+
+	// Page adds a new child every 50ms forever.
+	page := `<html><body><script>
+let n = 0;
+setInterval(() => {
+	const d = document.createElement("div");
+	d.id = "n" + (++n);
+	document.body.appendChild(d);
+}, 50);
+</script></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, page)
+	}))
+	defer server.Close()
+
+	// Short timeout so the test doesn't wait the full default maxWait (5s).
+	html, err := realChromedpFetch(context.Background(), server.URL, 10*time.Second, "")
+	if err != nil {
+		// Two acceptable outcomes: success with rendered content, or timeout
+		// error from the outer context.WithTimeout. Either way the deadline
+		// branch in waitForJSRender was exercised.
+		if !strings.Contains(err.Error(), "chromedp") {
+			t.Fatalf("unexpected error type: %v", err)
+		}
+		return
+	}
+	if !strings.Contains(html, "<html") {
+		t.Errorf("expected <html> tag in output, got: %q", truncate(html, 200))
 	}
 }

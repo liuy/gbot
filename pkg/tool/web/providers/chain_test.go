@@ -266,3 +266,23 @@ func TestSearchChain_AvailableProviders_ZhipuNoKey(t *testing.T) {
 		t.Errorf("auto should fallback to duckduckgo, got %s", resp.Provider)
 	}
 }
+
+func TestSearchChain_GenericErrorWrapped(t *testing.T) {
+	// A provider that returns a plain (non-SearchProvider) error exercises the
+	// failures-append branch that wraps the error with the provider ID.
+	chain := &SearchChain{
+		Providers: []SearchProvider{
+			&mockProvider{id: "p1", available: true, err: fmt.Errorf("network down")},
+		},
+	}
+	_, err := chain.Search(context.Background(), SearchParams{Query: "test"})
+	if err == nil {
+		t.Fatal("expected error when provider returns generic error")
+	}
+	if !strings.Contains(err.Error(), "all search providers failed") {
+		t.Errorf("error = %v, want to contain 'all search providers failed'", err)
+	}
+	if !strings.Contains(err.Error(), "p1: network down") {
+		t.Errorf("error = %v, want to contain 'p1: network down' (ID-prefixed)", err)
+	}
+}

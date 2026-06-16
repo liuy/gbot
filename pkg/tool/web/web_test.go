@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/web/providers"
 	"unicode/utf8"
 )
@@ -268,6 +269,31 @@ func TestExtractProxyURL(t *testing.T) {
 	})
 }
 
+func TestFormatForLLM_PublishedDateFallback(t *testing.T) {
+	// When AgeSeconds <= 0 but PublishedDate is set, formatForLLM should
+	// use PublishedDate in the title parenthetical instead of leaving it blank.
+	resp := &providers.SearchResponse{
+		Provider: "test",
+		Sources: []providers.SearchSource{
+			{Title: "Old Article", URL: "https://example.com/old", PublishedDate: "2020-01-15"},
+		},
+	}
+	got := formatForLLM(resp)
+	if !strings.Contains(got, "Old Article (2020-01-15)") {
+		t.Errorf("expected title with PublishedDate in parens, got: %q", got)
+	}
+}
+
+func TestIsURL_DotAtEnd(t *testing.T) {
+	// "foo." hits tldStart >= len(query) → false.
+	if IsURL("foo.") {
+		t.Error("IsURL(\"foo.\") = true, want false (tldStart out of range)")
+	}
+	if IsURL("a.") {
+		t.Error("IsURL(\"a.\") = true, want false")
+	}
+}
+
 func TestExtByMime(t *testing.T) {
 	tests := []struct {
 		mime string
@@ -496,6 +522,46 @@ func TestFetchAndConvertDocument_ConversionFailure(t *testing.T) {
 	// We only verify it didn't panic and returned no error.
 	if md == "" {
 		t.Log("markitdown returned empty for invalid PDF (acceptable)")
+	}
+}
+
+func TestFetchAndConvertDocument_GetNetworkError(t *testing.T) {
+	// Extension-matched URL on an unreachable host triggers the GET client.Do
+	// error path, which returns ("", nil).
+	md, err := fetchAndConvertDocument(context.Background(), "http://127.0.0.1:1/doc.docx", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md != "" {
+		t.Errorf("expected empty markdown for unreachable host, got %d chars", len(md))
+	}
+}
+
+func TestFetchAndConvertDocument_BodyReadError(t *testing.T) {
+	// Trigger io.ReadAll error by hijacking the conn and declaring a large
+	// Content-Length then closing early — io.ReadAll returns io.ErrUnexpectedEOF.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "no hijack", http.StatusInternalServerError)
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprint(bufrw, "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nContent-Type: application/pdf\r\n\r\nshort")
+		_ = bufrw.Flush()
+	}))
+	defer server.Close()
+
+	md, err := fetchAndConvertDocument(context.Background(), server.URL+"/file.pdf", server.Client())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if md != "" {
+		t.Errorf("expected empty markdown for body read error, got %d chars", len(md))
 	}
 }
 
@@ -842,5 +908,150 @@ func TestNew_CallSearch(t *testing.T) {
 	}
 	if output.Raw.Provider != "test" {
 		t.Errorf("provider = %q, want test", output.Raw.Provider)
+	}
+}
+
+func TestNew_RenderResult_Output(t *testing.T) {
+	tl := New(nil)
+	// Use reflection-free path: call via Call_ and inspect result.Data,
+	// then call RenderResult_ via Tool interface.
+	// Tool interface exposes RenderResult(data any) string.
+	type renderer interface {
+		RenderResult(data any) string
+	}
+	r, ok := tl.(renderer)
+	if !ok {
+		t.Fatalf("tool must implement RenderResult")
+	}
+
+	// Case *Output
+	got := r.RenderResult(&Output{Mode: "fetch", Content: "hello-output"})
+	if got != "hello-output" {
+		t.Errorf("RenderResult(*Output) = %q, want %q", got, "hello-output")
+	}
+}
+
+func TestNew_RenderResult_JSONRawMessage(t *testing.T) {
+	tl := New(nil)
+	type renderer interface {
+		RenderResult(data any) string
+	}
+	r, _ := tl.(renderer)
+
+	// Valid JSON Output → content
+	valid := json.RawMessage(`{"Mode":"fetch","Content":"hello-json"}`)
+	got := r.RenderResult(valid)
+	if got != "hello-json" {
+		t.Errorf("RenderResult(valid json) = %q, want %q", got, "hello-json")
+	}
+
+	// Invalid JSON → raw string
+	invalid := json.RawMessage(`not json`)
+	got = r.RenderResult(invalid)
+	if got != "not json" {
+		t.Errorf("RenderResult(invalid json) = %q, want %q", got, "not json")
+	}
+}
+
+func TestNew_RenderResult_StringAndDefault(t *testing.T) {
+	tl := New(nil)
+	type renderer interface {
+		RenderResult(data any) string
+	}
+	r, _ := tl.(renderer)
+
+	// case string
+	if got := r.RenderResult("plain-string"); got != "plain-string" {
+		t.Errorf("RenderResult(string) = %q, want %q", got, "plain-string")
+	}
+
+	// default case (int) → JSON marshal
+	got := r.RenderResult(42)
+	if !strings.Contains(got, "42") {
+		t.Errorf("RenderResult(42) = %q, want containing 42", got)
+	}
+}
+
+func TestNew_IsSearchOrRead(t *testing.T) {
+	tl := New(nil)
+	type searchOrReader interface {
+		IsSearchOrRead(input json.RawMessage) interface{ IsCollapsible() bool }
+	}
+	// The Tool interface returns SearchReadKind; verify via concrete cast.
+	type searchOrReadConcrete interface {
+		IsSearchOrRead(input json.RawMessage) tool.SearchReadKind
+	}
+	_ = searchOrReader(nil) // keep interface name referenced
+	r, ok := tl.(searchOrReadConcrete)
+	if !ok {
+		t.Fatalf("tool must implement IsSearchOrRead")
+	}
+	kind := r.IsSearchOrRead(json.RawMessage(`{"query": "test"}`))
+	if !kind.IsSearch {
+		t.Errorf("IsSearchOrRead().IsSearch = false, want true")
+	}
+	if kind.IsRead || kind.IsList {
+		t.Errorf("IsRead/IsList should be false")
+	}
+}
+
+func TestExecuteFetch_TruncationNote(t *testing.T) {
+	// Trigger result.Truncated via a > MaxBytes (50MB) response through executeFetch.
+	// Serve a body that exceeds MaxBytes so LoadPage marks Truncated=true and
+	// executeFetch appends the "output truncated" note to the FetchResult.
+	big := strings.Repeat("x", 51*1024*1024+100)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(big))
+	}))
+	defer server.Close()
+
+	result, err := execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"query": "%s"}`, server.URL)), nil, server.Client(), nil)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+	output := result.Data.(*Output)
+	if output.Mode != "fetch" {
+		t.Errorf("mode = %q, want fetch", output.Mode)
+	}
+	// The truncated content should be at most MaxBytes (50MB) and likely
+	// trimmed further by FinalizeOutput (MaxOutputChars). At minimum,
+	// the response should be well under the raw 51MB.
+	if len(output.Content) > 51*1024*1024 {
+		t.Errorf("content len = %d, should be truncated below 51MB", len(output.Content))
+	}
+	// Content must be non-empty and consist of 'x' chars (not garbled).
+	if len(output.Content) == 0 {
+		t.Fatal("content should be non-empty after truncation")
+	}
+	if output.Content[0] != 'x' {
+		t.Errorf("first char = %q, want 'x'", output.Content[0])
+	}
+}
+
+func TestExtractProxyURL_ProxyReturnsError(t *testing.T) {
+	// A transport whose Proxy func returns an error should yield "".
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return nil, fmt.Errorf("proxy lookup failed")
+			},
+		},
+	}
+	if got := extractProxyURL(client); got != "" {
+		t.Errorf("expected empty when Proxy returns error, got %q", got)
+	}
+}
+
+func TestExtractProxyURL_ProxyReturnsNil(t *testing.T) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return nil, nil
+			},
+		},
+	}
+	if got := extractProxyURL(client); got != "" {
+		t.Errorf("expected empty when Proxy returns nil, got %q", got)
 	}
 }
