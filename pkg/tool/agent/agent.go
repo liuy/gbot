@@ -22,12 +22,14 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// SubEngineFactory — avoids circular dependency on engine package
+// SubagentEngine — avoids circular dependency on engine package
 // ---------------------------------------------------------------------------
 
-// SubEngineFactory creates a sub-engine and synchronously executes a query.
-// Injected by main.go after engine construction to avoid agent → engine import cycle.
-type SubEngineFactory func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error)
+// SubagentEngine is the interface sub-agent execution engines must implement.
+// Implemented by engine.Engine; injected via AgentTool.SetEngine after wiring.
+type SubagentEngine interface {
+	RunAgent(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error)
+}
 
 // McpConnectResult holds the result of connecting agent-specific MCP servers.
 type McpConnectResult struct {
@@ -46,19 +48,23 @@ type SkillRegistry interface {
 	GetAllSkills() []types.SkillCommand
 }
 
-// AgentOpts passes parameters to the sub-engine factory.
+// AgentOpts passes parameters to SubagentEngine.RunAgent.
 // Uses only types from shared packages (no engine dependency).
 type AgentOpts struct {
-	Prompt              string               // actual user prompt for the sub-agent
-	SystemPrompt        string               // sub-agent's system prompt
-	Tools               map[string]tool.Tool // filtered tool set
-	MaxTurns            int                  // 0 = no limit
-	Model               string               // "" = inherit from parent
-	AgentType           string               // resolved agent type (e.g. "General", "Explore")
-	ParentToolUseID     string               // parent Agent tool call ID for TUI progress display
-	ForkMessages        []types.Message      // non-nil: use pre-built fork messages instead of Prompt
-	ParentSystemPrompt  string               // fork: parent engine's rendered system prompt
-	UserContextMessages []types.Message      // [currentDate, claudeMd?, skill?...] injected before userPrompt
+	Prompt              string                  // actual user prompt for the sub-agent
+	SystemPrompt        string                  // sub-agent's system prompt (pre-built; empty = build from agent def)
+	Tools               map[string]tool.Tool    // filtered tool set
+	MaxTurns            int                     // 0 = no limit
+	Model               string                  // "" = inherit from parent
+	AgentType           string                  // resolved agent type (e.g. "General", "Explore")
+	ParentToolUseID     string                  // parent Agent tool call ID for TUI progress display
+	ForkMessages        []types.Message         // non-nil: use pre-built fork messages instead of Prompt
+	ParentSystemPrompt  string                  // fork: parent engine's rendered system prompt
+	UserContextMessages []types.Message         // [currentDate, claudeMd?, skill?...] injected before userPrompt
+	GitStatus           *ctxbuild.GitStatusInfo // git status for system prompt injection (nil = no git info)
+	ResolveTierFn       func(string) string     // model tier resolver (nil = identity)
+	McpConnect          McpConnectFunc          // agent-specific MCP server connector (nil = skip)
+	AllowedTools        []string                // further restrict tools to this list (nil = use agent def)
 }
 
 // ---------------------------------------------------------------------------
@@ -68,24 +74,32 @@ type AgentOpts struct {
 // AgentTool is the tool that allows the LLM to spawn sub-agents.
 // Source: AgentTool.tsx:239-1261 — call() sync path
 type AgentTool struct {
-	runner      *AgentRunner       // shared execution engine (AgentRunner.RunAgent)
+	engine      SubagentEngine     // shared sub-agent engine (engine.Engine)
 	forkReg     *ForkAgentRegistry // nil = fork disabled
 	notifyFn    func(xml string)
 	sysPromptFn func() string
+	workingDir  string
+	gitStatus   *ctxbuild.GitStatusInfo
+	skillReg    SkillRegistry
+	mcpConnect  McpConnectFunc
+	resolveTier func(string) string
 }
 
 // New creates a new AgentTool with no dependencies.
 func New() *AgentTool {
-	return &AgentTool{runner: &AgentRunner{}}
+	return &AgentTool{}
 }
 
-// Runner returns the shared AgentRunner for other tools (e.g. SkillTool) to use.
-func (t *AgentTool) Runner() *AgentRunner { return t.runner }
+// SetEngine injects the sub-agent execution engine. Called by WireEngine.
+func (t *AgentTool) SetEngine(eng SubagentEngine) { t.engine = eng }
 
-// SetFactory injects the sub-engine factory and parent tools accessor.
-func (t *AgentTool) SetFactory(factory SubEngineFactory, toolsFn func() map[string]tool.Tool) {
-	t.runner.Factory = factory
-	t.runner.ParentTools = toolsFn
+// Runner returns an AgentRunner backed by this AgentTool's engine.
+// Used by SkillTool and other tools that need sub-agent execution.
+func (t *AgentTool) Runner() *AgentRunner {
+	return &AgentRunner{
+		Engine:     t.engine,
+		McpConnect: t.mcpConnect,
+	}
 }
 
 // SetNotifyFn enables fork agent support.
@@ -98,19 +112,19 @@ func (t *AgentTool) SetNotifyFn(notifyFn func(xml string), sysPromptFn func() st
 }
 
 // SetWorkingDir sets the working directory for sub-agent system prompt enhancement.
-func (t *AgentTool) SetWorkingDir(dir string) { t.runner.WorkingDir = dir }
+func (t *AgentTool) SetWorkingDir(dir string) { t.workingDir = dir }
 
 // SetResolveTierFn injects a tier-name resolver for agent model selection.
-func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.runner.ResolveTierFn = fn }
+func (t *AgentTool) SetResolveTierFn(fn func(tier string) string) { t.resolveTier = fn }
 
 // SetGitStatus sets the git status for sub-agent system prompt injection.
-func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.runner.GitStatus = gs }
+func (t *AgentTool) SetGitStatus(gs *ctxbuild.GitStatusInfo) { t.gitStatus = gs }
 
 // SetSkillRegistry sets the skill registry for agent skill preloading.
-func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.runner.SkillReg = reg }
+func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
-func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.runner.McpConnect = fn }
+func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
 
 // JobAdapter returns a job.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -168,8 +182,8 @@ func (t *AgentTool) InputSchema() json.RawMessage {
 // Call executes the sub-agent synchronously (or spawns fork agent in background).
 // Source: AgentTool.tsx:239-1261 — call() sync path
 func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	if t.runner.Factory == nil {
-		return nil, fmt.Errorf("agent tool not initialized: sub-engine factory not set")
+	if t.engine == nil {
+		return nil, fmt.Errorf("agent tool not initialized: sub-agent engine not set")
 	}
 
 	// Step 1: Parse input
@@ -191,11 +205,14 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		return t.callFork(ctx, agentInput, tctx)
 	}
 
-	result, err := t.runner.RunAgent(ctx, RunAgentOpts{
-		Prompt:    agentInput.Prompt,
-		AgentType: agentInput.SubagentType,
-		Model:     agentInput.Model,
-	}, tctx)
+	result, err := t.engine.RunAgent(ctx, AgentOpts{
+		Prompt:        agentInput.Prompt,
+		AgentType:     agentInput.SubagentType,
+		Model:         agentInput.Model,
+		GitStatus:     t.gitStatus,
+		ResolveTierFn: t.resolveTier,
+	})
+
 	if err != nil {
 		return nil, fmt.Errorf("sub-agent execution failed: %w", err)
 	}
@@ -295,10 +312,8 @@ const forkMaxTurns = 200
 
 // callFork handles the fork path — inherits parent conversation context.
 // If run_in_background is true, spawns asynchronously via Spawn.
-// Otherwise, runs synchronously via the factory (RunForkedQuery).
+// Otherwise, runs synchronously via engine.RunAgent (RunForkedQuery).
 func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
-	parentTools := t.runner.ParentTools()
-
 	// Source: runAgent.ts:370-373 — [...filterIncompleteToolCalls(forkContextMessages), ...promptMessages]
 	// Source: AgentTool.tsx:239 — assistantMessage parameter passed to call()
 	var contextHistory []types.Message
@@ -341,17 +356,18 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 		// forkMessages via buildForkDirective. See: forkSubagent.ts:163.
 		ForkMessages:       forkMessages,
 		SystemPrompt:       systemPrompt,
-		Tools:              parentTools,
 		MaxTurns:           forkMaxTurns,
 		Model:              model,
 		AgentType:          agentType,
 		ParentToolUseID:    parentToolUseID,
 		ParentSystemPrompt: systemPrompt,
+		GitStatus:          t.gitStatus,
+		ResolveTierFn:      t.resolveTier,
 	}
 
 	// Sync path: run fork in-process and return result directly
 	if !input.RunInBackground {
-		result, err := t.runner.Factory(ctx, opts)
+		result, err := t.engine.RunAgent(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("fork agent execution failed: %w", err)
 		}
@@ -360,7 +376,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 
 	// Async path: spawn in background
 	runFn := func(runCtx context.Context) (*types.SubQueryResult, error) {
-		return t.runner.Factory(runCtx, opts)
+		return t.engine.RunAgent(runCtx, opts)
 	}
 
 	// Build the notifyFn closure
@@ -394,7 +410,7 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 // formatGitStatusForSystemPrompt formats git status for the agent system prompt.
 // Mirrors Builder.GitStatusSection() but works without a Builder instance.
 // Source: runAgent.ts:403-410 — appendSystemContext()
-func formatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
+func FormatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
 	if !gs.IsGit {
 		return ""
 	}
@@ -428,12 +444,12 @@ const agentNotes = `Notes:
 - For clear communication with the user the assistant MUST avoid using emojis.
 - Do not use a colon before tool calls. Text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
 
-// enhanceSystemPrompt appends environment details and tool names to the agent's
+// EnhanceSystemPrompt appends environment details and tool names to the agent's
 // base system prompt, aligning with TS enhanceSystemPromptWithEnvDetails().
 //
 // Source: runAgent.ts:906 — getAgentSystemPrompt()
 // Source: prompts.ts:760-791 — enhanceSystemPromptWithEnvDetails()
-func enhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingDir string, isGit bool, model string) string {
+func EnhanceSystemPrompt(basePrompt string, tools map[string]tool.Tool, workingDir string, isGit bool, model string) string {
 	var parts []string
 
 	// Base prompt (or fallback to DEFAULT_AGENT_PROMPT)

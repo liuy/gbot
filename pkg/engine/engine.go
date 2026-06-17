@@ -26,6 +26,7 @@ import (
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
+	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
 	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -411,27 +412,125 @@ func (e *Engine) SetSharedDeps(deps *SharedDeps) {
 	e.sharedDeps = deps
 }
 
-// AgentRunOpts configures a sub-agent execution via RunAgent.
-type AgentRunOpts struct {
-	Prompt              string
-	SystemPrompt        string
-	Tools               map[string]tool.Tool // filtered tool set (nil = all)
-	MaxTurns            int
-	Model               string
-	AgentType           string
-	ParentToolUseID     string
-	UserContextMessages []types.Message
-	ForkMessages        []types.Message
-}
-
-// RunAgent creates a sub-engine and executes a query synchronously.
+// RunAgent creates a sub-engine and executes a sub-agent synchronously.
 // This is the unified sub-agent execution entry point — used by AgentTool,
 // SkillTool (fork path), and RunSkill (slash command dispatch).
+// Implements agent.SubagentEngine.
 // Mirrors TS runAgent(): one function that handles all sub-agent execution.
-func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
+func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 	if e.sharedDeps == nil {
-		return QueryResult{Error: fmt.Errorf("engine: RunAgent called but sharedDeps is nil (sub-engines cannot spawn sub-agents)")}
+		return nil, fmt.Errorf("engine: RunAgent called but sharedDeps is nil (sub-engines cannot spawn sub-agents)")
 	}
+
+	startTime := time.Now()
+
+	// Resolve agent type
+	agentType := opts.AgentType
+	if agentType == "" {
+		agentType = "General"
+	}
+
+	agentDef, err := agenttool.GetAgentDefinition(agentType)
+	if err != nil {
+		return nil, fmt.Errorf("unknown agent type %q: %w", agentType, err)
+	}
+
+	// Filter tools from parent engine's tool set by agent definition.
+	// e.tools may be nil in tests where the engine isn't fully initialized;
+	// ResolveAgentTools handles nil/empty safely (returns empty map).
+	parentTools := e.tools
+	if parentTools == nil {
+		parentTools = make(map[string]tool.Tool)
+	}
+	filteredTools := agenttool.ResolveAgentTools(parentTools, agentDef)
+	filteredTools = agenttool.FilterMCPToolsForAgent(filteredTools, agentDef.RequiredMcpServers)
+
+	// Agent-specific MCP servers (from agentDef.McpServersRaw)
+	if len(agentDef.McpServersRaw) > 0 && opts.McpConnect != nil {
+		mcpResult, mcpErr := opts.McpConnect(ctx, "agent-"+agentType, agentDef.McpServersRaw)
+		if mcpErr != nil {
+			slog.Warn("agent MCP connect failed", "agent", agentType, "error", mcpErr)
+		}
+		if mcpResult != nil {
+			if mcpResult.Cleanup != nil {
+				defer func() {
+					if cerr := mcpResult.Cleanup(); cerr != nil {
+						slog.Warn("agent MCP cleanup failed", "agent", agentType, "error", cerr)
+					}
+				}()
+			}
+			maps.Copy(filteredTools, mcpResult.Tools)
+		}
+	}
+
+	// Skill allowedTools override
+	if len(opts.AllowedTools) > 0 {
+		restricted := make(map[string]tool.Tool, len(opts.AllowedTools))
+		for _, name := range opts.AllowedTools {
+			if t, ok := filteredTools[name]; ok {
+				restricted[name] = t
+			}
+		}
+		filteredTools = restricted
+	}
+
+	// Resolve model
+	model := opts.Model
+	if model == "" {
+		model = agentDef.Model
+	}
+	if model == "inherit" || model == "" {
+		model = ""
+	}
+	if model != "" && opts.ResolveTierFn != nil {
+		if resolved := opts.ResolveTierFn(model); resolved != "" {
+			model = resolved
+		}
+	}
+
+	// Build system prompt (if not pre-built)
+	systemPrompt := opts.SystemPrompt
+	if systemPrompt == "" {
+		basePrompt := agentDef.SystemPrompt()
+		isGit := opts.GitStatus != nil && opts.GitStatus.IsGit
+		workingDir := e.sharedDeps.WorkingDir
+		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, workingDir, isGit, model)
+
+		if opts.GitStatus != nil && agentDef.AgentType != "Explore" && agentDef.AgentType != "Plan" {
+			section := agenttool.FormatGitStatusForSystemPrompt(opts.GitStatus)
+			if section != "" {
+				systemPrompt += section
+			}
+		}
+	}
+
+	// Build user context messages
+	userCtxMsgs := opts.UserContextMessages
+	workingDir := e.sharedDeps.WorkingDir
+	ctxMap := ctxbuild.LoadContextFiles(workingDir)
+	ctxMap[ctxbuild.KeyCurrentDate] = fmt.Sprintf("Today's date is %s.", time.Now().Format("2006/01/02"))
+	if agentDef.OmitClaudeMd {
+		delete(ctxMap, ctxbuild.KeyClaudeMd)
+		delete(ctxMap, ctxbuild.KeyProjectClaudeMd)
+	}
+	ctxText := ctxbuild.BuildPrependUserContext(ctxMap)
+	if ctxText != "" {
+		userCtxMsgs = append(userCtxMsgs, types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(ctxText)},
+			Flags:   types.FlagMeta,
+		})
+	}
+
+	// Skill preloading
+	if len(agentDef.Skills) > 0 && e.sharedDeps.SkillReg != nil {
+		allSkills := e.sharedDeps.SkillReg.GetAllSkills()
+		resolved := agenttool.ResolveSkillNames(agentDef.Skills, allSkills, agentType)
+		skillMsgs := agenttool.BuildSkillMessages(resolved)
+		userCtxMsgs = append(userCtxMsgs, skillMsgs...)
+	}
+
+	// ---- Sub-engine creation ----
 
 	subRefs := CreateTools(*e.sharedDeps)
 
@@ -442,9 +541,10 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 	}
 
 	subTools := subRefs.Reg.ToolMap()
-	if len(opts.Tools) > 0 {
-		filtered := make(map[string]tool.Tool, len(opts.Tools))
-		for name := range opts.Tools {
+	// Filter fresh sub-tools to match the agent-filtered tool set
+	if len(filteredTools) > 0 {
+		filtered := make(map[string]tool.Tool, len(filteredTools))
+		for name := range filteredTools {
 			if t, ok := subTools[name]; ok {
 				filtered[name] = t
 			}
@@ -454,11 +554,11 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 
 	subEng := e.NewSubEngine(SubEngineOptions{
 		Tools:           subTools,
-		SystemPrompt:    opts.SystemPrompt,
-		MaxTurns:        opts.MaxTurns,
-		Model:           opts.Model,
+		SystemPrompt:    systemPrompt,
+		MaxTurns:        agentDef.MaxTurns,
+		Model:           model,
 		ParentToolUseID: opts.ParentToolUseID,
-		AgentType:       opts.AgentType,
+		AgentType:       agentType,
 	})
 
 	WireEngine(subEng, subRefs, *e.sharedDeps)
@@ -468,11 +568,11 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 		hookInput := &hooks.HookInput{
 			HookEventName: "SubagentStart",
 			AgentID:       subEng.SessionID(),
-			AgentType:     opts.AgentType,
+			AgentType:     agentType,
 		}
 		for _, r := range e.sharedDeps.Hooks.SubagentStart(ctx, hookInput) {
 			if r.AdditionalContext != "" {
-				opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
+				userCtxMsgs = append(userCtxMsgs, types.Message{
 					Role:    types.RoleUser,
 					Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
 				})
@@ -480,7 +580,8 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 		}
 	}
 
-	messages := opts.UserContextMessages
+	// Assemble messages
+	messages := userCtxMsgs
 	if opts.Prompt != "" {
 		messages = append(messages, types.Message{
 			ID:      uuid.New().String(),
@@ -492,11 +593,12 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 		messages = append(opts.ForkMessages, messages...)
 	}
 
+	// Execute
 	var result QueryResult
-	if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
-		result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
+	if len(opts.ForkMessages) > 0 || len(userCtxMsgs) > 0 {
+		result = subEng.RunForkedQuery(ctx, messages, systemPrompt)
 	} else {
-		result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+		result = subEng.QuerySync(ctx, opts.Prompt, systemPrompt)
 	}
 
 	if result.Error != nil {
@@ -505,7 +607,12 @@ func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
 		}
 	}
 
-	return result
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	toolUseCount := agenttool.CountToolUses(result.Messages)
+	return agenttool.FinalizeResult(result.Messages, agentType, startTime, result.TotalUsage, toolUseCount), nil
 }
 
 // SetSkillRegistry injects the skill registry for slash command dispatch.
@@ -586,7 +693,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				ToolUse: &types.ToolUseEvent{ID: forkToolID, Name: "Skill"},
 			})
 
-			result := e.RunAgent(ctx, AgentRunOpts{
+			result, runErr := e.RunAgent(ctx, agenttool.AgentOpts{
 				Prompt:          content,
 				AgentType:       cmd.AgentType,
 				Model:           cmd.Model,
@@ -594,19 +701,8 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 			})
 
 			resultText := "Skill execution completed"
-			if result.Error == nil {
-				for i := len(result.Messages) - 1; i >= 0; i-- {
-					if result.Messages[i].Role != types.RoleAssistant {
-						continue
-					}
-					for _, blk := range result.Messages[i].Content {
-						if blk.Type == types.ContentTypeText && blk.Text != "" {
-							resultText = blk.Text
-							break
-						}
-					}
-					break
-				}
+			if runErr == nil && result != nil && result.Content != "" {
+				resultText = result.Content
 			}
 
 			e.emitEvent(types.QueryEvent{
@@ -614,12 +710,12 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				ToolResult: &types.ToolResultEvent{
 					ToolUseID:     forkToolID,
 					DisplayOutput: resultText,
-					IsError:       result.Error != nil,
+					IsError:       runErr != nil,
 				},
 			})
 
-			if result.Error != nil {
-				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: result.Error})
+			if runErr != nil {
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: runErr})
 				return
 			}
 			// Sub-agent result is already shown via the virtual tool card.

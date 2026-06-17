@@ -8,10 +8,21 @@ import (
 	"testing"
 
 	"github.com/liuy/gbot/pkg/skills"
-	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
+
+// mockSubEngine implements agent.SubagentEngine for testing.
+type mockSubEngine struct {
+	runFn func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error)
+}
+
+func (m *mockSubEngine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+	if m.runFn != nil {
+		return m.runFn(ctx, opts)
+	}
+	return &types.SubQueryResult{AgentType: opts.AgentType, Content: "ok"}, nil
+}
 
 // setupRegistry creates a registry with test skills.
 func setupRegistry(t *testing.T) *skills.Registry {
@@ -214,10 +225,10 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 	t.Run("runner invoked", func(t *testing.T) {
 		var capturedOpts agenttool.AgentOpts
 		mockAgent := agenttool.New()
-		mockAgent.SetFactory(func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+		mockAgent.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 			capturedOpts = opts
 			return &types.SubQueryResult{Content: "Review complete."}, nil
-		}, func() map[string]tool.Tool { return nil })
+		}})
 
 		skillTool := New(reg, mockAgent.Runner())
 		input := json.RawMessage(`{"skill": "deep-review"}`)
@@ -229,8 +240,8 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 		if capturedOpts.Prompt != "Perform a deep review." {
 			t.Errorf("prompt = %q, want skill content", capturedOpts.Prompt)
 		}
-		if capturedOpts.AgentType != "General" {
-			t.Errorf("agentType = %q, want General", capturedOpts.AgentType)
+		if capturedOpts.AgentType != "" {
+			t.Errorf("agentType = %q, want empty (resolved by Engine.RunAgent)", capturedOpts.AgentType)
 		}
 
 		out, ok := result.Data.(skillOutput)
@@ -254,9 +265,9 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 
 	t.Run("factory error cleans up invoked skill", func(t *testing.T) {
 		mockAgent := agenttool.New()
-		mockAgent.SetFactory(func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+		mockAgent.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 			return nil, fmt.Errorf("sub-agent crashed")
-		}, func() map[string]tool.Tool { return nil })
+		}})
 
 		skillTool := New(reg, mockAgent.Runner())
 		input := json.RawMessage(`{"skill": "deep-review"}`)

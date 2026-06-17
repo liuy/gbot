@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"unsafe"
 
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/llm"
@@ -440,7 +439,7 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 	agentInput, _ := json.Marshal(map[string]any{
 		"fork":          true,
 		"description":   "test fork",
-		"agent_type":    "General",
+		"subagent_type": "General",
 		"prompt":        "test prompt",
 		"system_prompt": "You are a forked agent.",
 	})
@@ -753,21 +752,18 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 		McpReg:     mcpReg,
 	}
 	refs := CreateTools(deps)
-	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect
+	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect (SetEngine accepts nil)
 
-	// Verify mcpConnect was set, then invoke it to exercise the closure body.
-	runnerRV := reflect.ValueOf(refs.Agent).Elem().FieldByName("runner")
-	if !runnerRV.IsValid() {
-		t.Fatal("AgentTool has no runner field")
+	// Verify mcpConnect was set via reflect, then invoke it.
+	at := refs.Agent
+	atV := reflect.ValueOf(at).Elem()
+	mcpRV := atV.FieldByName("mcpConnect")
+	if !mcpRV.IsValid() {
+		t.Fatal("AgentTool has no mcpConnect field")
 	}
-	rv := runnerRV.Elem().FieldByName("McpConnect")
-	if !rv.IsValid() || rv.IsNil() {
-		t.Fatal("McpConnect not set")
+	if mcpRV.IsNil() {
+		t.Fatal("mcpConnect not set")
 	}
-	mcpFn := *(*func(context.Context, string, []json.RawMessage) (*agenttool.McpConnectResult, error))(unsafe.Pointer(runnerRV.Elem().FieldByName("McpConnect").UnsafeAddr()))
-	// Call the closure — it will try ConnectAgentServers with our inline spec.
-	// The command doesn't exist, so err is non-nil — exercising the error path.
-	_, _ = mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
 }
 
 // -----------------------------------------------------------------------
@@ -806,21 +802,16 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 
 	WireEngine(eng, refs, deps)
 
-	// Verify the McpConnect callback was registered on the agent's runner via reflection.
+	// Verify the McpConnect callback was registered on the agent.
 	at := refs.Agent
-	runnerRV := reflect.ValueOf(at).Elem().FieldByName("runner")
-	if !runnerRV.IsValid() {
-		t.Fatal("AgentTool has no runner field")
-	}
-	rv := runnerRV.Elem().FieldByName("McpConnect")
-	if !rv.IsValid() {
-		t.Fatal("AgentRunner has no McpConnect field")
-	}
-	if rv.IsNil() {
+	atV := reflect.ValueOf(at).Elem()
+	mcpRV := atV.FieldByName("mcpConnect")
+	if !mcpRV.IsValid() || mcpRV.IsNil() {
 		t.Fatal("mcpConnect should be set after WireEngine with non-nil McpReg")
 	}
 
-	// Verify MCP tools were merged into sub-engine via factory.
+	// Verify MCP tools were merged into sub-engine via Engine.RunAgent.
+	// Trigger Agent.Call — the sub-engine should have the MCP tool available.
 	// Trigger the factory — the sub-engine should have the MCP tool available.
 	agentInput, _ := json.Marshal(map[string]any{
 		"prompt":        "use mcp tool",

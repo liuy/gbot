@@ -103,9 +103,9 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }
 
-// WireEngine recursively wires notification callbacks and the agent factory
-// for an engine and its tool set. Each sub-engine created through the factory
-// gets its own fresh tool instances via CreateTools.
+// WireEngine wires notification callbacks and injects the engine into tools.
+// Each sub-engine created through RunAgent gets its own fresh tool instances
+// via CreateTools.
 func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 	// Bash background job notifications → engine's attachment queue.
 	refs.BashReg.OnNotify = func(n bash.JobNotification) {
@@ -128,31 +128,12 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		func() string { return eng.SystemPrompt() },
 	)
 
-	// Agent factory — delegates to Engine.RunAgent (unified sub-agent execution).
-	refs.Agent.SetFactory(
-		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
-			startTime := time.Now()
-			result := eng.RunAgent(ctx, AgentRunOpts{
-				Prompt:              opts.Prompt,
-				SystemPrompt:        opts.SystemPrompt,
-				Tools:               opts.Tools,
-				MaxTurns:            opts.MaxTurns,
-				Model:               opts.Model,
-				AgentType:           opts.AgentType,
-				ParentToolUseID:     opts.ParentToolUseID,
-				UserContextMessages: opts.UserContextMessages,
-				ForkMessages:        opts.ForkMessages,
-			})
-			if result.Error != nil {
-				return nil, result.Error
-			}
-			toolUseCount := agenttool.CountToolUses(result.Messages)
-			return agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, toolUseCount), nil
-		},
-		refs.Reg.ToolMap,
-	)
+	// Inject the engine into AgentTool so it can spawn sub-agents directly.
+	// Engine.RunAgent implements SubagentEngine and handles all business
+	// logic (agentDef resolution, system prompt building, tool filtering).
+	refs.Agent.SetEngine(eng)
 
-	// MCP connect — agent-specific MCP servers.
+	// MCP connect — agent-specific MCP servers (used by ForkAgent + SkillTool).
 	if deps.McpReg != nil {
 		refs.Agent.SetMcpConnect(func(ctx context.Context, agentID string, rawSpecs []json.RawMessage) (*agenttool.McpConnectResult, error) {
 			handle, err := deps.McpReg.ConnectAgentServers(ctx, agentID, rawSpecs)
