@@ -92,7 +92,14 @@ var skillInputSchema = json.RawMessage(`{
 // New creates a new SkillTool using the BuildTool factory pattern.
 // Source: SkillTool.ts:331 — buildTool({...})
 // Uses BuildTool factory, matching pkg/tool/bash/ etc.
-func New(registry *skills.Registry, deps *agenttool.SubagentDeps) tool.Tool {
+// New creates a new SkillTool using the BuildTool factory pattern.
+// Source: SkillTool.ts:331 — buildTool({...})
+//
+// agentTool is captured by reference so the skill tool sees the engine
+// wired by WireEngine after CreateTools. SubagentDeps is fetched on each
+// call instead of snapshotted at construction (which would freeze a nil
+// engine, since WireEngine runs after CreateTools).
+func New(registry *skills.Registry, agentTool *agenttool.AgentTool) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:              skillToolName,
 		Prompt_:            skillDescription,
@@ -106,7 +113,7 @@ func New(registry *skills.Registry, deps *agenttool.SubagentDeps) tool.Tool {
 			// Show just the skill name (TS: UI.tsx:47-61 — renderToolUseMessage)
 			return in.Skill, nil
 		},
-		Call_:              makeSkillCallFn(registry, deps),
+		Call_:              makeSkillCallFn(registry, agentTool),
 		CheckPermissions_:  makeSkillPermissionsFn(registry),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
@@ -158,7 +165,10 @@ func New(registry *skills.Registry, deps *agenttool.SubagentDeps) tool.Tool {
 
 // makeSkillCallFn returns the Call implementation.
 // Source: SkillTool.ts:580-780 — call()
-func makeSkillCallFn(registry *skills.Registry, deps *agenttool.SubagentDeps) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+//
+// agentTool is captured by pointer; deps are re-fetched on each call so a
+// late WireEngine call is visible. Inline skills don't need deps.
+func makeSkillCallFn(registry *skills.Registry, agentTool *agenttool.AgentTool) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 		var in skillInput
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -183,8 +193,10 @@ func makeSkillCallFn(registry *skills.Registry, deps *agenttool.SubagentDeps) fu
 		case "", "inline":
 			return executeInlineSkill(cmd, commandName, args, registry)
 		case "new":
+			deps := agentTool.SubagentDeps() // safe: AgentTool.SubagentDeps handles nil receiver
 			return executeNewSkill(ctx, cmd, commandName, args, registry, deps, tctx)
 		case "fork":
+			deps := agentTool.SubagentDeps()
 			return executeForkSkill(ctx, cmd, commandName, args, registry, deps, tctx)
 		default:
 			return nil, fmt.Errorf("skill %q: invalid context %q (want inline|new|fork)", commandName, cmd.Context)

@@ -231,7 +231,7 @@ func TestTool_Call_NewSkill(t *testing.T) {
 			return &types.SubQueryResult{Content: "Review complete."}, nil
 		}})
 
-		skillTool := New(reg, mockAgent.SubagentDeps())
+		skillTool := New(reg, mockAgent)
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		result, err := skillTool.Call(context.TODO(), input, nil)
 		if err != nil {
@@ -272,7 +272,7 @@ func TestTool_Call_NewSkill(t *testing.T) {
 			return nil, fmt.Errorf("sub-agent crashed")
 		}})
 
-		skillTool := New(reg, mockAgent.SubagentDeps())
+		skillTool := New(reg, mockAgent)
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		_, err := skillTool.Call(context.TODO(), input, nil)
 		if err == nil {
@@ -320,7 +320,7 @@ func TestTool_Call_ForkSkill(t *testing.T) {
 		mockAgent.SetEngine(&mockSubEngine{})
 		mockAgent.SetNotifyFn(func(string) {}, func() string { return "parent prompt" })
 
-		skillTool := New(reg, mockAgent.SubagentDeps())
+		skillTool := New(reg, mockAgent)
 		input := json.RawMessage(`{"skill": "forked-review"}`)
 		_, err := skillTool.Call(context.TODO(), input, nil)
 		if err == nil {
@@ -332,13 +332,13 @@ func TestTool_Call_ForkSkill(t *testing.T) {
 	})
 
 	t.Run("missing SysPromptFn returns error", func(t *testing.T) {
-		// Build a bare deps without SysPromptFn to simulate the misconfiguration.
-		deps := &agenttool.SubagentDeps{
-			Engine:      &mockSubEngine{},
-			SysPromptFn: nil,
-		}
+		// AgentTool without SetNotifyFn wired → SubagentDeps().SysPromptFn is nil.
+		// SkillTool derives from AgentTool, so we construct one directly and
+		// set only the engine (skip SetNotifyFn).
+		mockAgent := agenttool.New()
+		mockAgent.SetEngine(&mockSubEngine{})
 
-		skillTool := New(reg, deps)
+		skillTool := New(reg, mockAgent)
 		tctx := &tool.ToolUseContext{Messages: []types.Message{{Role: types.RoleUser}}}
 		input := json.RawMessage(`{"skill": "forked-review"}`)
 		_, err := skillTool.Call(context.TODO(), input, tctx)
@@ -359,7 +359,7 @@ func TestTool_Call_ForkSkill(t *testing.T) {
 		}})
 		mockAgent.SetNotifyFn(func(string) {}, func() string { return "parent system prompt" })
 
-		skillTool := New(reg, mockAgent.SubagentDeps())
+		skillTool := New(reg, mockAgent)
 
 		// tctx with parent messages — fork should inherit these.
 		tctx := &tool.ToolUseContext{
@@ -948,5 +948,51 @@ func TestTool_RenderResult_Forked(t *testing.T) {
 	})
 	if got != "Done" {
 		t.Errorf("RenderResult(forked) = %q, want %q", got, "Done")
+	}
+}
+
+// TestSkill_EngineWiredAfterConstruction verifies that SkillTool picks up
+// the engine even when SetEngine is called AFTER SubagentDeps() — which is
+// what happens in production (CreateTools → SubagentDeps → WireEngine → SetEngine).
+//
+// Without a lazy accessor, SubagentDeps captures a nil engine at construction
+// time and context=new skills fail with "no sub-agent engine".
+func TestSkill_EngineWiredAfterConstruction(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry(t.TempDir())
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name:            "wired-test",
+		Type:            "prompt",
+		Context:         "new",
+		AgentType:       "General",
+		IsUserInvocable: true,
+		Source:          types.SkillSourceBundled,
+		Content:         "Do the thing.",
+	})
+
+	// Construct agent + capture deps BEFORE wiring engine (mirrors CreateTools).
+	mockAgent := agenttool.New()
+	skillTool := New(reg, mockAgent)
+
+	// Wire engine AFTER construction (mirrors WireEngine).
+	var capturedOpts agenttool.AgentOpts
+	mockAgent.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+		capturedOpts = opts
+		return &types.SubQueryResult{Content: "sub-agent ran"}, nil
+	}})
+
+	// Invoke the skill via the tool — must not error with "no sub-agent engine".
+	input := `{"skill":"wired-test"}`
+	result, err := skillTool.Call(context.Background(), json.RawMessage(input), nil)
+	if err != nil {
+		t.Fatalf("skill call failed: %v — engine wiring is stale", err)
+	}
+	if result == nil {
+		t.Fatal("nil result")
+	}
+	// Verify the sub-agent was actually invoked.
+	if capturedOpts.Prompt == "" {
+		t.Error("sub-agent RunAgent was not called — engine wiring did not propagate")
 	}
 }

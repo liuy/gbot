@@ -79,7 +79,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 
 	reg.MustRegister(task.New(deps.TaskList))
 
-	reg.MustRegister(skilltool.New(deps.SkillReg, at.SubagentDeps()))
+	reg.MustRegister(skilltool.New(deps.SkillReg, at))
 
 	replTool := repl.New()
 	reg.MustRegister(replTool)

@@ -94,7 +94,12 @@ func (t *AgentTool) SetEngine(eng SubagentEngine) { t.engine = eng }
 
 // SubagentDeps returns a SubagentDeps backed by this AgentTool's engine.
 // Used by SkillTool and other tools that need sub-agent execution.
+// Safe on nil receiver — returns nil, which downstream callers translate
+// to "no sub-agent engine" error.
 func (t *AgentTool) SubagentDeps() *SubagentDeps {
+	if t == nil {
+		return nil
+	}
 	return &SubagentDeps{
 		Engine:        t.engine,
 		GitStatus:     t.gitStatus,
