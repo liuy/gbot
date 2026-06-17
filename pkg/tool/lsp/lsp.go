@@ -105,7 +105,7 @@ func New(reg *lsp.Registry) tool.Tool {
 			if err := json.Unmarshal(input, &in); err != nil {
 				return "Query language server for code intelligence", nil
 			}
-			return "Lsp " + in.Action, nil
+			return formatLspDescription(in), nil
 		},
 		Call_: func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 			return execute(ctx, reg, input, tctx)
@@ -552,4 +552,69 @@ func isMethodNotFoundError(err error) bool {
 		strings.Contains(msg, "unhandled method") ||
 		strings.Contains(msg, "not supported") ||
 		strings.Contains(msg, "-32601")
+}
+
+// formatLspDescription returns a short summary of an LSP invocation for the
+// TUI tool header. Format: "<action> <target>".
+// Examples:
+//
+//	"definition pkg/foo.go:Bar"   // position-based, with file and symbol
+//	"definition Bar"             // position-based, symbol only
+//	"rename Bar → Baz"            // rename
+//	"rename_file old.go → new.go" // rename_file
+//	"symbols pkg/foo.go"          // file-scoped
+//	"workspace_symbol Foo"        // query-driven
+//	"request textDocument/hover"  // raw method
+//	"status"                      // no params
+func formatLspDescription(in Input) string {
+	switch in.Action {
+	case "rename":
+		switch {
+		case in.Symbol != "" && in.NewName != "":
+			return fmt.Sprintf("rename %s → %s", in.Symbol, in.NewName)
+		case in.NewName != "":
+			return "rename → " + in.NewName
+		case in.Symbol != "":
+			return "rename " + in.Symbol
+		}
+		return "rename"
+	case "rename_file":
+		switch {
+		case in.Symbol != "" && in.NewName != "":
+			return fmt.Sprintf("rename_file %s → %s", in.Symbol, in.NewName)
+		case in.NewName != "":
+			return "rename_file → " + in.NewName
+		case in.Symbol != "":
+			return "rename_file " + in.Symbol
+		}
+		return "rename_file"
+	case "symbols":
+		if in.File != "" {
+			return "symbols " + in.File
+		}
+		return "symbols"
+	case "workspace_symbol":
+		if in.Query != "" {
+			return "workspace_symbol " + in.Query
+		}
+		return "workspace_symbol"
+	case "request":
+		if in.Query != "" {
+			return "request " + in.Query
+		}
+		return "request"
+	case "status", "capabilities", "reload":
+		return in.Action
+	}
+	// Position-based actions: definition, type_definition, implementation,
+	// references, hover, code_actions, callers, callees, source, inspect, impact.
+	switch {
+	case in.Symbol != "" && in.File != "":
+		return fmt.Sprintf("%s %s:%s", in.Action, in.File, in.Symbol)
+	case in.Symbol != "":
+		return in.Action + " " + in.Symbol
+	case in.File != "":
+		return in.Action + " " + in.File
+	}
+	return in.Action
 }

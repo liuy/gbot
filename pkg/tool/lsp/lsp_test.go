@@ -1576,8 +1576,8 @@ func TestNew_Description(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description: %v", err)
 	}
-	if desc != "Lsp definition" {
-		t.Errorf("Description = %q", desc)
+	if desc != "definition" {
+		t.Errorf("Description = %q, want %q", desc, "definition")
 	}
 }
 
