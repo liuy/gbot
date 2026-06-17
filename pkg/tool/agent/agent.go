@@ -215,12 +215,22 @@ func (t *AgentTool) Call(ctx context.Context, input json.RawMessage, tctx *tool.
 		return t.callFork(ctx, agentInput, tctx)
 	}
 
+	// ParentToolUseID lets NewSubEngine wire a taggedDispatcher so the
+	// parent TUI's Agent tool card receives the sub-agent's streaming
+	// events (text_delta/tool_start/tool_end). Without it, every event
+	// dispatched inside the sub-engine is dropped.
+	var parentToolUseID string
+	if tctx != nil {
+		parentToolUseID = tctx.ToolUseID
+	}
+
 	result, err := t.engine.RunAgent(ctx, AgentOpts{
-		Prompt:        agentInput.Prompt,
-		AgentType:     agentInput.SubagentType,
-		Model:         agentInput.Model,
-		GitStatus:     t.gitStatus,
-		ResolveTierFn: t.resolveTier,
+		Prompt:          agentInput.Prompt,
+		AgentType:       agentInput.SubagentType,
+		Model:           agentInput.Model,
+		GitStatus:       t.gitStatus,
+		ResolveTierFn:   t.resolveTier,
+		ParentToolUseID: parentToolUseID,
 	})
 
 	if err != nil {

@@ -267,6 +267,20 @@ func TestCall_InvalidAgentType_FallsBackToEmpty(t *testing.T) {
 	// Engine handles agent def; Call just passes the value through
 }
 
+// TestCallPassesToolUseID is a regression test: when the LLM invokes the
+// Agent tool, the parent tool_use_id (from ToolUseContext.ToolUseID) must
+// be forwarded to engine.RunAgent via AgentOpts.ParentToolUseID.
+//
+// Without it, NewSubEngine skips wiring the taggedDispatcher, and every
+// sub-agent event (text_delta, tool_start, tool_end, ...) dispatched inside
+// the sub-engine is dropped on the floor. Symptom: the Agent tool card in
+// the TUI shows no progress while the sub-agent runs; only the final result
+// appears. See taggedDispatcher guard in engine.NewSubEngine:
+//
+//	if e.dispatcher != nil && opts.ParentToolUseID != "" { ... }
+//
+// Fork path (callFork) already forwards this; the non-fork path used to
+// forget it.
 func TestCallPassesToolUseID(t *testing.T) {
 	var capturedOpts AgentOpts
 	factory := func(ctx context.Context, opts AgentOpts) (*types.SubQueryResult, error) {
@@ -293,9 +307,13 @@ func TestCallPassesToolUseID(t *testing.T) {
 		t.Fatal("result is nil")
 	}
 
-	// The critical assertion: factory must receive ParentToolUseID
-	// ParentToolUseID passes through to engine
-	_ = capturedOpts.AgentType
+	// The critical assertion: factory must receive ParentToolUseID.
+	// Without this, NewSubEngine's taggedDispatcher is never wired and
+	// sub-agent events never reach the parent TUI tool card.
+	if capturedOpts.ParentToolUseID != "call_abc123" {
+		t.Errorf("AgentOpts.ParentToolUseID = %q, want %q (from ToolUseContext.ToolUseID)",
+			capturedOpts.ParentToolUseID, "call_abc123")
+	}
 }
 func TestInterfaceCompliance(t *testing.T) {
 	// Verify AgentTool satisfies tool.Tool interface
