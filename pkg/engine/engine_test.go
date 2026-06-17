@@ -40,7 +40,10 @@ func (ec *eventCollector) Dispatch(event types.QueryEvent) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 	ec.events = append(ec.events, event)
-	if event.Type == types.EventQueryEnd {
+	// Only signal done on the engine's own QueryEnd (no Agent tag).
+	// Sub-engine QueryEnds arrive via taggedDispatcher and must not close
+	// the channel before the main engine finishes.
+	if event.Type == types.EventQueryEnd && event.Agent == nil {
 		ec.result = QueryResult{Error: event.Error}
 		if event.Usage != nil {
 			ec.result.TotalUsage = types.Usage{

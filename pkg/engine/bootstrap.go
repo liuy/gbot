@@ -7,8 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/liuy/gbot/pkg/config"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/hooks"
@@ -130,80 +128,22 @@ func WireEngine(eng *Engine, refs ToolRefs, deps SharedDeps) {
 		func() string { return eng.SystemPrompt() },
 	)
 
-	// Agent factory — creates fresh tool set per sub-engine (recursive).
+	// Agent factory — delegates to Engine.RunAgent (unified sub-agent execution).
 	refs.Agent.SetFactory(
 		func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
 			startTime := time.Now()
-			subRefs := CreateTools(deps)
-
-			// Merge MCP tools into sub-registry.
-			if deps.McpReg != nil {
-				for _, dt := range deps.McpReg.GetTools() {
-					subRefs.Reg.MustRegister(NewMCPTool(dt, deps.McpReg))
-				}
-			}
-
-			// agent.go's ResolveAgentTools already decided which tool names are allowed.
-			// Map those names to fresh instances from the new registry.
-			subTools := subRefs.Reg.ToolMap()
-			if len(opts.Tools) > 0 {
-				filtered := make(map[string]tool.Tool, len(opts.Tools))
-				for name := range opts.Tools {
-					if t, ok := subTools[name]; ok {
-						filtered[name] = t
-					}
-				}
-				subTools = filtered
-			}
-
-			subEng := eng.NewSubEngine(SubEngineOptions{
-				Tools:           subTools,
-				SystemPrompt:    string(opts.SystemPrompt),
-				MaxTurns:        opts.MaxTurns,
-				Model:           opts.Model,
-				ParentToolUseID: opts.ParentToolUseID,
-				AgentType:       opts.AgentType,
+			result := eng.RunAgent(ctx, AgentRunOpts{
+				Prompt:              opts.Prompt,
+				SystemPrompt:        opts.SystemPrompt,
+				Tools:               opts.Tools,
+				MaxTurns:            opts.MaxTurns,
+				Model:               opts.Model,
+				AgentType:           opts.AgentType,
+				ParentToolUseID:     opts.ParentToolUseID,
+				UserContextMessages: opts.UserContextMessages,
+				ForkMessages:        opts.ForkMessages,
 			})
-
-			WireEngine(subEng, subRefs, deps)
-
-			// Fire SubagentStart hook — collect additional context from plugins.
-			hookInput := &hooks.HookInput{
-				HookEventName: "SubagentStart",
-				AgentID:       subEng.SessionID(),
-				AgentType:     opts.AgentType,
-			}
-			for _, r := range deps.Hooks.SubagentStart(ctx, hookInput) {
-				if r.AdditionalContext != "" {
-					opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
-						Role:    types.RoleUser,
-						Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
-					})
-				}
-			}
-
-			messages := opts.UserContextMessages
-			if opts.Prompt != "" {
-				messages = append(messages, types.Message{
-					ID:      uuid.New().String(),
-					Role:    types.RoleUser,
-					Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
-				})
-			}
-			if len(opts.ForkMessages) > 0 {
-				messages = append(opts.ForkMessages, messages...)
-			}
-			var result QueryResult
-			if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
-				result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
-			} else {
-				result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
-			}
 			if result.Error != nil {
-				if ctx.Err() != nil {
-					r := agenttool.FinalizeResult(result.Messages, opts.AgentType, startTime, result.TotalUsage, 0)
-					return r, nil
-				}
 				return nil, result.Error
 			}
 			toolUseCount := agenttool.CountToolUses(result.Messages)

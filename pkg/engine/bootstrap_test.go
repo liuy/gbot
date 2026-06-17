@@ -183,6 +183,7 @@ func newTestDepsAndRefs(t *testing.T) (SharedDeps, ToolRefs, *Engine) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	t.Cleanup(func() { eng.Close() })
 	return deps, refs, eng
 }
@@ -383,6 +384,7 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -429,6 +431,7 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -506,6 +509,7 @@ func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -555,6 +559,7 @@ func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -651,6 +656,7 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -701,6 +707,7 @@ func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -794,6 +801,7 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)
@@ -867,6 +875,7 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 		Logger:     slog.Default(),
 		Dispatcher: &mockDispatcher{},
 	})
+	eng.SetSharedDeps(&deps)
 	defer eng.Close()
 
 	WireEngine(eng, refs, deps)

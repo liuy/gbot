@@ -24,6 +24,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/permission"
+	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	mcpresource "github.com/liuy/gbot/pkg/tool/mcp"
 	"github.com/liuy/gbot/pkg/tool/task"
@@ -175,6 +176,13 @@ type Engine struct {
 
 	// mcpRegistry manages MCP server connections and tool discovery.
 	mcpRegistry *mcp.Registry
+
+	// sharedDeps holds tool creation dependencies for recursive sub-engine
+	// creation in RunAgent. Only set on the main engine; nil on sub-engines.
+	sharedDeps *SharedDeps
+
+	// skillReg provides skill lookup for RunSkill (slash command dispatch).
+	skillReg *skills.Registry
 
 	// hooks is the user-configurable lifecycle hooks system.
 	// Nil when no hooks are configured.
@@ -395,6 +403,249 @@ func (e *Engine) Query(ctx context.Context, userMessage string, systemPrompt str
 // Public API for callers that need to explicitly trigger attachment processing.
 func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
 	go e.processAttachments(ctx, systemPrompt)
+}
+
+// SetSharedDeps injects the tool creation dependencies for RunAgent.
+// Called by main.go after engine construction. Only the main engine needs this.
+func (e *Engine) SetSharedDeps(deps *SharedDeps) {
+	e.sharedDeps = deps
+}
+
+// AgentRunOpts configures a sub-agent execution via RunAgent.
+type AgentRunOpts struct {
+	Prompt              string
+	SystemPrompt        string
+	Tools               map[string]tool.Tool // filtered tool set (nil = all)
+	MaxTurns            int
+	Model               string
+	AgentType           string
+	ParentToolUseID     string
+	UserContextMessages []types.Message
+	ForkMessages        []types.Message
+}
+
+// RunAgent creates a sub-engine and executes a query synchronously.
+// This is the unified sub-agent execution entry point — used by AgentTool,
+// SkillTool (fork path), and RunSkill (slash command dispatch).
+// Mirrors TS runAgent(): one function that handles all sub-agent execution.
+func (e *Engine) RunAgent(ctx context.Context, opts AgentRunOpts) QueryResult {
+	if e.sharedDeps == nil {
+		return QueryResult{Error: fmt.Errorf("engine: RunAgent called but sharedDeps is nil (sub-engines cannot spawn sub-agents)")}
+	}
+
+	subRefs := CreateTools(*e.sharedDeps)
+
+	if e.sharedDeps.McpReg != nil {
+		for _, dt := range e.sharedDeps.McpReg.GetTools() {
+			subRefs.Reg.MustRegister(NewMCPTool(dt, e.sharedDeps.McpReg))
+		}
+	}
+
+	subTools := subRefs.Reg.ToolMap()
+	if len(opts.Tools) > 0 {
+		filtered := make(map[string]tool.Tool, len(opts.Tools))
+		for name := range opts.Tools {
+			if t, ok := subTools[name]; ok {
+				filtered[name] = t
+			}
+		}
+		subTools = filtered
+	}
+
+	subEng := e.NewSubEngine(SubEngineOptions{
+		Tools:           subTools,
+		SystemPrompt:    opts.SystemPrompt,
+		MaxTurns:        opts.MaxTurns,
+		Model:           opts.Model,
+		ParentToolUseID: opts.ParentToolUseID,
+		AgentType:       opts.AgentType,
+	})
+
+	WireEngine(subEng, subRefs, *e.sharedDeps)
+
+	// Fire SubagentStart hook
+	if e.sharedDeps.Hooks != nil {
+		hookInput := &hooks.HookInput{
+			HookEventName: "SubagentStart",
+			AgentID:       subEng.SessionID(),
+			AgentType:     opts.AgentType,
+		}
+		for _, r := range e.sharedDeps.Hooks.SubagentStart(ctx, hookInput) {
+			if r.AdditionalContext != "" {
+				opts.UserContextMessages = append(opts.UserContextMessages, types.Message{
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(r.AdditionalContext)},
+				})
+			}
+		}
+	}
+
+	messages := opts.UserContextMessages
+	if opts.Prompt != "" {
+		messages = append(messages, types.Message{
+			ID:      uuid.New().String(),
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(opts.Prompt)},
+		})
+	}
+	if len(opts.ForkMessages) > 0 {
+		messages = append(opts.ForkMessages, messages...)
+	}
+
+	var result QueryResult
+	if len(opts.ForkMessages) > 0 || len(opts.UserContextMessages) > 0 {
+		result = subEng.RunForkedQuery(ctx, messages, opts.SystemPrompt)
+	} else {
+		result = subEng.QuerySync(ctx, opts.Prompt, opts.SystemPrompt)
+	}
+
+	if result.Error != nil {
+		if ctx.Err() != nil {
+			result.Error = nil
+		}
+	}
+
+	return result
+}
+
+// SetSkillRegistry injects the skill registry for slash command dispatch.
+func (e *Engine) SetSkillRegistry(reg *skills.Registry) {
+	e.skillReg = reg
+}
+
+// RunSkill dispatches a skill invoked via slash command (/skill-name args).
+// Mirrors TS processSlashCommand: TUI intercepts /skill-name, engine looks up
+// the skill, and either runs it inline (content → user message → runTurns) or
+// forks it (→ RunAgent → sub-engine). Streaming events flow normally so TUI
+// rendering works identically to a regular query.
+func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt string) {
+	ctx, cancel := context.WithCancel(ctx)
+	e.activeCancelMu.Lock()
+	e.activeCancel = cancel
+	e.activeCancelMu.Unlock()
+
+	go func() {
+		atomic.StoreInt32(&e.queryActive, 1)
+		defer func() {
+			cancel()
+			atomic.StoreInt32(&e.queryActive, 0)
+			e.activeCancelMu.Lock()
+			e.activeCancel = nil
+			e.activeCancelMu.Unlock()
+			e.startProcessAttachmentsIfIdle()
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("engine: panic in RunSkill", "error", r, "stack", string(debug.Stack()))
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("internal error: %v", r)})
+			}
+		}()
+
+		if e.skillReg == nil {
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("skill registry not configured")})
+			return
+		}
+
+		cmd := e.skillReg.FindSkill(skillName)
+		if cmd == nil {
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("unknown skill: %s", skillName)})
+			return
+		}
+
+		content := skills.SubstituteArguments(cmd.Content, args, skills.ArgNames(cmd), true)
+		content = strings.ReplaceAll(content, "${SKILL_DIR}", cmd.SourceDir)
+		e.skillReg.AddInvokedSkill(skillName, string(cmd.Source)+":"+skillName, content, "")
+
+		slog.Info("engine: running skill", "name", skillName, "context", cmd.Context)
+
+		if cmd.Context == "fork" {
+			// Emit QueryStart first so TUI creates the assistant message
+			// placeholder. Tool events need an assistant message to attach to.
+			userMsg := types.Message{
+				ID:        uuid.New().String(),
+				Role:      types.RoleUser,
+				Content:   []types.ContentBlock{types.NewTextBlock("/" + skillName)},
+				Timestamp: time.Now(),
+			}
+			e.currentTurnMsgID = userMsg.ID
+			e.appendMessage(userMsg)
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+
+			// Virtual tool card for sub-agent events (like Compact).
+			forkToolID := "skill-fork-" + uuid.New().String()[:8]
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventToolStart,
+				ToolUse: &types.ToolUseEvent{
+					ID:      forkToolID,
+					Name:    "Skill",
+					Summary: skillName,
+				},
+			})
+			e.emitEvent(types.QueryEvent{
+				Type:    types.EventToolRun,
+				ToolUse: &types.ToolUseEvent{ID: forkToolID, Name: "Skill"},
+			})
+
+			result := e.RunAgent(ctx, AgentRunOpts{
+				Prompt:          content,
+				AgentType:       cmd.AgentType,
+				Model:           cmd.Model,
+				ParentToolUseID: forkToolID,
+			})
+
+			resultText := "Skill execution completed"
+			if result.Error == nil {
+				for i := len(result.Messages) - 1; i >= 0; i-- {
+					if result.Messages[i].Role != types.RoleAssistant {
+						continue
+					}
+					for _, blk := range result.Messages[i].Content {
+						if blk.Type == types.ContentTypeText && blk.Text != "" {
+							resultText = blk.Text
+							break
+						}
+					}
+					break
+				}
+			}
+
+			e.emitEvent(types.QueryEvent{
+				Type: types.EventToolEnd,
+				ToolResult: &types.ToolResultEvent{
+					ToolUseID:     forkToolID,
+					DisplayOutput: resultText,
+					IsError:       result.Error != nil,
+				},
+			})
+
+			if result.Error != nil {
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: result.Error})
+				return
+			}
+			// Sub-agent result is already shown via the virtual tool card.
+			// Append it as an assistant message context, then run the main loop.
+			e.appendMessage(types.Message{
+				ID:        uuid.New().String(),
+				Role:      types.RoleUser,
+				Content:   []types.ContentBlock{types.NewTextBlock("Skill \"" + skillName + "\" completed.\n\n" + resultText)},
+				Timestamp: time.Now(),
+				Flags:     types.FlagMeta,
+			})
+			e.runTurns(ctx, systemPrompt)
+		} else {
+			// Inline skill: skill content becomes the user message directly.
+			userMsg := types.Message{
+				ID:        uuid.New().String(),
+				Role:      types.RoleUser,
+				Content:   []types.ContentBlock{types.NewTextBlock(content)},
+				Timestamp: time.Now(),
+			}
+			e.currentTurnMsgID = userMsg.ID
+			e.appendMessage(userMsg)
+			e.emitEvent(types.QueryEvent{Type: types.EventQueryStart, Message: &userMsg})
+			e.runTurns(ctx, systemPrompt)
+		}
+	}()
 }
 
 // startProcessAttachmentsIfIdle checks whether the attachment queue has items

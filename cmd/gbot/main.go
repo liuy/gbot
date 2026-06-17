@@ -153,19 +153,18 @@ func main() {
 		_ = loadedPlugins.EnvVars
 		skillReg.RegisterPluginSkills(loadedPlugins.Skills)
 		agenttool.GlobalLoader().RegisterPluginAgents(loadedPlugins.Agents)
+	}
 
-		// Register plugin skills for TUI slash command completion.
-		// Skills appear in the / dropdown but fall through to engine as user messages.
-		if skillCmds := skillReg.GetSkillToolSkills(); len(skillCmds) > 0 {
-			slashCmds := make(map[string]tui.CommandDef, len(skillCmds))
-			for _, sc := range skillCmds {
-				slashCmds[sc.Name] = tui.CommandDef{
-					Description: sc.Description,
-					HasArgs:     true,
-				}
+	// Register ALL skills (user + plugin) for TUI slash command dispatch.
+	if skillCmds := skillReg.GetSkillToolSkills(); len(skillCmds) > 0 {
+		slashCmds := make(map[string]tui.CommandDef, len(skillCmds))
+		for _, sc := range skillCmds {
+			slashCmds[sc.Name] = tui.CommandDef{
+				Description: sc.Description,
+				HasArgs:     true,
 			}
-			tui.RegisterSlashCommands(slashCmds)
 		}
+		tui.RegisterSlashCommands(slashCmds)
 	}
 
 	// Permission rules
@@ -259,6 +258,8 @@ func main() {
 	eng.SetSystemPrompt(systemPrompt)
 	eng.SetSkillListing(skillListing)
 	eng.SetAgentDefs(agenttool.ListAgentDefinitions())
+	eng.SetSharedDeps(&deps)
+	eng.SetSkillRegistry(skillReg)
 	// 6. Initialize short-term memory store
 	configDir, _ = config.ConfigDir()
 	var store *short.Store

@@ -932,6 +932,41 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		return a.handleSlashCommand(cmd, commitCmd)
 	}
 
+	// Skill slash command: /skill-name args
+	// Intercept and dispatch to engine.RunSkill, bypassing the LLM's
+	// tool-use decision. Mirrors TS processSlashCommand.
+	if skillName, skillArgs, ok := LookupSkillCommand(text); ok {
+		a.history.Add(text)
+		a.input.Reset()
+		a.pasteStore = make(map[int]string)
+		a.nextPasteID = 1
+		a.restoreStash()
+		a.scrollOffset = 0
+		a.scrollTotal = 0
+		a.userScrolled = false
+		a.markViewportDirty()
+		if a.idleStop != nil {
+			close(a.idleStop)
+		}
+		a.idleStop = make(chan struct{})
+		a.repl.cancelFunc = a.engine.Abort
+
+		displayText := "/" + skillName
+		if skillArgs != "" {
+			displayText += " " + skillArgs
+		}
+		a.repl.AddUserMessage(displayText)
+		a.engine.RunSkill(context.Background(), skillName, skillArgs, a.systemPrompt)
+		a.repl.StartQuery()
+		a.status.SetStreaming(true)
+		a.spinner.Start()
+		a.progressStart = time.Now()
+		a.thinkingActive = false
+		a.thinkingDuration = 0
+		a.status.SetUsage(types.Usage{})
+		return a.readEvents()
+	}
+
 	a.repl.AddUserMessage(text)
 	a.history.Add(text)
 	a.input.Reset()

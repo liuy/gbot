@@ -463,8 +463,3 @@ func TestIntegration_RenameFile_MethodNotSupported(t *testing.T) {
 		t.Error("destination file missing")
 	}
 }
-
-// boolPtr returns a pointer to b, used to set Input.Apply.
-//
-//go:fix inline
-func boolPtr(b bool) *bool { return new(b) }

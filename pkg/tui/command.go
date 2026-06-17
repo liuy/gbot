@@ -5,9 +5,13 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// cmdMu guards concurrent access to skillDefs and sortedCommands.
+var cmdMu sync.RWMutex
 
 // SlashCommand represents a parsed slash command from user input.
 type SlashCommand struct {
@@ -46,11 +50,13 @@ func init() {
 // RegisterSlashCommands adds skill commands for tab completion.
 // These appear in the / dropdown but fall through to the engine (not handleSlashCommand).
 func RegisterSlashCommands(cmds map[string]CommandDef) {
+	cmdMu.Lock()
+	defer cmdMu.Unlock()
 	if skillDefs == nil {
 		skillDefs = make(map[string]CommandDef, len(cmds))
 	}
 	maps.Copy(skillDefs, cmds)
-	sortedCommands = AllCommands()
+	sortedCommands = AllCommandsLocked()
 }
 
 // getCommandDef returns the CommandDef for a name, checking builtins then skills.
@@ -68,6 +74,13 @@ func getCommandDef(name string) (CommandDef, bool) {
 
 // AllCommands returns all command names sorted alphabetically.
 func AllCommands() []string {
+	cmdMu.RLock()
+	defer cmdMu.RUnlock()
+	return AllCommandsLocked()
+}
+
+// AllCommandsLocked is the unlocked variant for callers already holding cmdMu.
+func AllCommandsLocked() []string {
 	names := make([]string, 0, len(commandDefs)+len(skillDefs))
 	for name := range commandDefs {
 		names = append(names, name)
@@ -104,6 +117,37 @@ func LookupSlashCommand(text string) (SlashCommand, bool) {
 
 	args := strings.TrimSpace(trimmed[1+spaceIdx:])
 	return SlashCommand{Name: name, Args: args}, true
+}
+
+// LookupSkillCommand checks if text is a registered skill slash command
+// (user/plugin skill, not builtin). Returns (name, args, true) if matched.
+func LookupSkillCommand(text string) (name, args string, ok bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/") {
+		return "", "", false
+	}
+	rest := trimmed[1:]
+	spaceIdx := strings.Index(rest, " ")
+	if spaceIdx == -1 {
+		name = rest
+		args = ""
+	} else {
+		name = rest[:spaceIdx]
+		args = strings.TrimSpace(rest[spaceIdx:])
+	}
+	// Must exist in skillDefs, not commandDefs (builtins)
+	if _, isBuiltin := commandDefs[name]; isBuiltin {
+		return "", "", false
+	}
+	cmdMu.RLock()
+	defer cmdMu.RUnlock()
+	if skillDefs == nil {
+		return "", "", false
+	}
+	if _, exists := skillDefs[name]; !exists {
+		return "", "", false
+	}
+	return name, args, true
 }
 
 // handleSlashCommand dispatches a slash command to the appropriate handler.

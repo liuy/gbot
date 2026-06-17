@@ -3,6 +3,8 @@ package skills
 import (
 	"regexp"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // Pre-compiled regexes for argument substitution.
@@ -293,4 +295,16 @@ func isOnlyDigits(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+// ArgNames extracts argument names from a SkillCommand's Arguments frontmatter.
+func ArgNames(cmd *types.SkillCommand) []string {
+	if len(cmd.Arguments) == 0 {
+		return nil
+	}
+	names := make([]string, len(cmd.Arguments))
+	for i, a := range cmd.Arguments {
+		names[i] = a.Name
+	}
+	return names
 }
