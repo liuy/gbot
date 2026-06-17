@@ -827,7 +827,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Commit resumed messages to terminal scrollback on first resize.
 		// SetStore leaves committedCount=0 with messages present; this is
 		// the first Update where width > 0, so we can render and commit.
-		if a.committedCount == 0 && len(a.repl.messages) > 0 {
+		//
+		// Guard against streaming: a fresh query after /clear also has
+		// committedCount=0 + messages>0 (user + assistant placeholder),
+		// but those are mid-stream and must NOT be committed — otherwise
+		// any SIGWINCH during stream blanks the TUI (blank render bug).
+		if a.committedCount == 0 && len(a.repl.messages) > 0 && !a.repl.IsStreaming() {
 			const maxResumeMessages = 30
 			msgs := a.repl.messages
 			skipped := 0
