@@ -179,11 +179,16 @@ func makeSkillCallFn(registry *skills.Registry, deps *agenttool.SubagentDeps) fu
 
 		slog.Debug("skill: executing", "name", commandName, "args", args, "context", cmd.Context)
 
-		if cmd.Context == "fork" {
-			return executeForkedSkill(ctx, cmd, commandName, args, registry, deps, tctx)
+		switch cmd.Context {
+		case "", "inline":
+			return executeInlineSkill(cmd, commandName, args, registry)
+		case "new":
+			return executeNewSkill(ctx, cmd, commandName, args, registry, deps, tctx)
+		case "fork":
+			return executeForkSkill(ctx, cmd, commandName, args, registry, deps, tctx)
+		default:
+			return nil, fmt.Errorf("skill %q: invalid context %q (want inline|new|fork)", commandName, cmd.Context)
 		}
-
-		return executeInlineSkill(cmd, commandName, args, registry)
 	}
 }
 
@@ -266,9 +271,9 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	}, nil
 }
 
-// executeForkedSkill runs a skill in a sub-agent via the shared SubagentDeps.
-// Source: SkillTool.ts:122-289 — executeForkedSkill
-func executeForkedSkill(
+// executeNewSkill runs a skill in a fresh sub-agent (no parent context inheritance).
+// Source: SkillTool.ts:122-289 — executeForkedSkill (historical name)
+func executeNewSkill(
 	ctx context.Context,
 	cmd *types.SkillCommand,
 	commandName, args string,
@@ -277,18 +282,17 @@ func executeForkedSkill(
 	tctx *tool.ToolUseContext,
 ) (*tool.ToolResult, error) {
 	if deps == nil || deps.Engine == nil {
-		return nil, fmt.Errorf("skill: fork execution not available for %q (no sub-agent engine)", commandName)
+		return nil, fmt.Errorf("skill: %q has context=new but no sub-agent engine", commandName)
 	}
 
 	content := skills.SubstituteArguments(cmd.Content, args, argNames(cmd), true)
 	content = strings.ReplaceAll(content, "${SKILL_DIR}", cmd.SourceDir)
 
-	agentID := "skill-fork:" + commandName
+	agentID := "skill-new:" + commandName
 	registry.AddInvokedSkill(commandName, string(cmd.Source)+":"+commandName, content, agentID)
-	// Defer cleanup so it runs on error paths too — matches TS try/finally.
 	defer registry.ClearInvokedSkillsForAgent(agentID)
 
-	slog.Info("skill: forked invocation",
+	slog.Info("skill: new sub-agent invocation",
 		"name", commandName,
 		"model", cmd.Model,
 		"agentType", cmd.AgentType,
@@ -312,7 +316,79 @@ func executeForkedSkill(
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("skill fork %q: %w", commandName, err)
+		return nil, fmt.Errorf("skill %q (new): %w", commandName, err)
+	}
+
+	resultText := "Skill execution completed"
+	if result != nil && result.Content != "" {
+		resultText = result.Content
+	}
+
+	return &tool.ToolResult{
+		Data: skillOutput{
+			Success:     true,
+			CommandName: commandName,
+			Status:      "forked",
+			AgentID:     agentID,
+			Result:      resultText,
+		},
+	}, nil
+}
+
+// executeForkSkill runs a skill in a true fork of the parent agent's
+// conversation — sub-agent inherits parent's system prompt and message history.
+func executeForkSkill(
+	ctx context.Context,
+	cmd *types.SkillCommand,
+	commandName, args string,
+	registry *skills.Registry,
+	deps *agenttool.SubagentDeps,
+	tctx *tool.ToolUseContext,
+) (*tool.ToolResult, error) {
+	if deps == nil || deps.Engine == nil {
+		return nil, fmt.Errorf("skill: %q has context=fork but no sub-agent engine", commandName)
+	}
+	if deps.SysPromptFn == nil {
+		return nil, fmt.Errorf("skill: %q has context=fork but SysPromptFn not wired", commandName)
+	}
+	if tctx == nil {
+		return nil, fmt.Errorf("skill: %q has context=fork but no tool-use context (parent messages unavailable)", commandName)
+	}
+
+	content := skills.SubstituteArguments(cmd.Content, args, argNames(cmd), true)
+	content = strings.ReplaceAll(content, "${SKILL_DIR}", cmd.SourceDir)
+
+	agentID := "skill-fork:" + commandName
+	registry.AddInvokedSkill(commandName, string(cmd.Source)+":"+commandName, content, agentID)
+	defer registry.ClearInvokedSkillsForAgent(agentID)
+
+	slog.Info("skill: forked invocation",
+		"name", commandName,
+		"model", cmd.Model,
+		"agentType", cmd.AgentType,
+		"allowedTools", cmd.AllowedTools,
+		"inheritedMsgs", len(tctx.Messages),
+	)
+
+	// Construct fork messages: parent's full conversation history + skill prompt appended.
+	// Mirrors AgentTool.callFork (agent.go:320-360) — BuildForkMessages handles
+	// filterIncompleteToolCalls + triggerAssistantMsg + prompt wrapping.
+	forkMessages := agenttool.BuildForkMessages(nil, tctx.Messages, content)
+
+	result, err := deps.Engine.RunAgent(ctx, agenttool.AgentOpts{
+		ForkMessages:    forkMessages,
+		SystemPrompt:    deps.SysPromptFn(),
+		AgentType:       cmd.AgentType,
+		Model:           cmd.Model,
+		AllowedTools:    cmd.AllowedTools,
+		ParentToolUseID: tctx.ToolUseID,
+		McpConnect:      deps.McpConnect,
+		GitStatus:       deps.GitStatus,
+		ResolveTierFn:   deps.ResolveTierFn,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("skill %q (fork): %w", commandName, err)
 	}
 
 	resultText := "Skill execution completed"
@@ -424,7 +500,7 @@ func skillHasOnlySafeProperties(cmd *types.SkillCommand) bool {
 	if cmd.Shell != nil {
 		return false
 	}
-	if cmd.Context == "fork" {
+	if cmd.Context == "new" || cmd.Context == "fork" {
 		return false
 	}
 	return true

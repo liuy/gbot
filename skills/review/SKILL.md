@@ -1,6 +1,6 @@
 ---
 description: "Review recent changes against the plan. Produces a structured verdict with issues and recommendations."
-context: fork
+context: new
 agent: Reviewer
 is-user-invocable: true
 ---

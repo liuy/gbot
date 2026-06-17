@@ -100,6 +100,7 @@ func (t *AgentTool) SubagentDeps() *SubagentDeps {
 		GitStatus:     t.gitStatus,
 		ResolveTierFn: t.resolveTier,
 		McpConnect:    t.mcpConnect,
+		SysPromptFn:   t.sysPromptFn,
 	}
 }
 

@@ -1,6 +1,6 @@
 ---
 description: "Execute a plan file step by step, verifying after each change."
-context: fork
+context: new
 agent: Executor
 is-user-invocable: true
 ---

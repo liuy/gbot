@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/liuy/gbot/pkg/skills"
+	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -197,13 +198,13 @@ func TestTool_Call_UnknownSkill(t *testing.T) {
 	}
 }
 
-func TestTool_Call_ForkedSkill(t *testing.T) {
+func TestTool_Call_NewSkill(t *testing.T) {
 	reg := setupRegistry(t)
 	reg.RegisterBundledSkill(types.SkillCommand{
 		Name:            "deep-review",
 		Description:     "Deep code review",
 		Type:            "prompt",
-		Context:         "fork",
+		Context:         "new",
 		Source:          types.SkillSourceBundled,
 		LoadedFrom:      "bundled",
 		IsUserInvocable: true,
@@ -215,7 +216,7 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		_, err := tool.Call(context.TODO(), input, nil)
 		if err == nil {
-			t.Fatal("expected error for fork with nil deps")
+			t.Fatal("expected error for new with nil deps")
 		}
 		if !strings.Contains(err.Error(), "no sub-agent engine") {
 			t.Errorf("error = %q, want mention of no sub-agent engine", err.Error())
@@ -243,6 +244,9 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 		if capturedOpts.AgentType != "" {
 			t.Errorf("agentType = %q, want empty (resolved by Engine.RunAgent)", capturedOpts.AgentType)
 		}
+		if len(capturedOpts.ForkMessages) != 0 {
+			t.Errorf("ForkMessages should be empty for context=new, got %d", len(capturedOpts.ForkMessages))
+		}
 
 		out, ok := result.Data.(skillOutput)
 		if !ok {
@@ -255,8 +259,7 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 			t.Errorf("result = %q, want factory content", out.Result)
 		}
 
-		// Verify invoked skill was cleaned up after successful fork.
-		agentID := "skill-fork:deep-review"
+		agentID := "skill-new:deep-review"
 		invoked := reg.GetInvokedSkillsForAgent(agentID)
 		if len(invoked) != 0 {
 			t.Errorf("invoked skills for %s = %d, want 0 after cleanup", agentID, len(invoked))
@@ -279,13 +282,151 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 			t.Errorf("error = %q, want mention of sub-agent crashed", err.Error())
 		}
 
-		// Verify invoked skill was still cleaned up via defer.
-		agentID := "skill-fork:deep-review"
+		agentID := "skill-new:deep-review"
 		invoked := reg.GetInvokedSkillsForAgent(agentID)
 		if len(invoked) != 0 {
 			t.Errorf("invoked skills for %s = %d, want 0 after error", agentID, len(invoked))
 		}
 	})
+}
+
+func TestTool_Call_ForkSkill(t *testing.T) {
+	reg := setupRegistry(t)
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name:            "forked-review",
+		Description:     "Forked review",
+		Type:            "prompt",
+		Context:         "fork",
+		Source:          types.SkillSourceBundled,
+		LoadedFrom:      "bundled",
+		IsUserInvocable: true,
+		Content:         "Continue the review.",
+	})
+
+	t.Run("nil deps returns error", func(t *testing.T) {
+		tool := New(reg, nil)
+		input := json.RawMessage(`{"skill": "forked-review"}`)
+		_, err := tool.Call(context.TODO(), input, nil)
+		if err == nil {
+			t.Fatal("expected error for fork with nil deps")
+		}
+		if !strings.Contains(err.Error(), "no sub-agent engine") {
+			t.Errorf("error = %q, want mention of no sub-agent engine", err.Error())
+		}
+	})
+
+	t.Run("nil tctx returns error", func(t *testing.T) {
+		mockAgent := agenttool.New()
+		mockAgent.SetEngine(&mockSubEngine{})
+		mockAgent.SetNotifyFn(func(string) {}, func() string { return "parent prompt" })
+
+		skillTool := New(reg, mockAgent.SubagentDeps())
+		input := json.RawMessage(`{"skill": "forked-review"}`)
+		_, err := skillTool.Call(context.TODO(), input, nil)
+		if err == nil {
+			t.Fatal("expected error for fork with nil tctx")
+		}
+		if !strings.Contains(err.Error(), "parent messages unavailable") {
+			t.Errorf("error = %q, want mention of parent messages unavailable", err.Error())
+		}
+	})
+
+	t.Run("missing SysPromptFn returns error", func(t *testing.T) {
+		// Build a bare deps without SysPromptFn to simulate the misconfiguration.
+		deps := &agenttool.SubagentDeps{
+			Engine:      &mockSubEngine{},
+			SysPromptFn: nil,
+		}
+
+		skillTool := New(reg, deps)
+		tctx := &tool.ToolUseContext{Messages: []types.Message{{Role: types.RoleUser}}}
+		input := json.RawMessage(`{"skill": "forked-review"}`)
+		_, err := skillTool.Call(context.TODO(), input, tctx)
+		if err == nil {
+			t.Fatal("expected error when SysPromptFn missing")
+		}
+		if !strings.Contains(err.Error(), "SysPromptFn not wired") {
+			t.Errorf("error = %q, want mention of SysPromptFn not wired", err.Error())
+		}
+	})
+
+	t.Run("engine invoked with fork messages", func(t *testing.T) {
+		var capturedOpts agenttool.AgentOpts
+		mockAgent := agenttool.New()
+		mockAgent.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
+			capturedOpts = opts
+			return &types.SubQueryResult{Content: "Fork done."}, nil
+		}})
+		mockAgent.SetNotifyFn(func(string) {}, func() string { return "parent system prompt" })
+
+		skillTool := New(reg, mockAgent.SubagentDeps())
+
+		// tctx with parent messages — fork should inherit these.
+		tctx := &tool.ToolUseContext{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("user asked something")}},
+				{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("assistant replied")}},
+			},
+		}
+		input := json.RawMessage(`{"skill": "forked-review"}`)
+		result, err := skillTool.Call(context.TODO(), input, tctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(capturedOpts.ForkMessages) == 0 {
+			t.Fatal("ForkMessages should be populated for context=fork")
+		}
+		if capturedOpts.SystemPrompt != "parent system prompt" {
+			t.Errorf("SystemPrompt = %q, want parent system prompt", capturedOpts.SystemPrompt)
+		}
+		if capturedOpts.Prompt != "" {
+			t.Errorf("Prompt should be empty for fork (embedded in ForkMessages), got %q", capturedOpts.Prompt)
+		}
+
+		out, ok := result.Data.(skillOutput)
+		if !ok {
+			t.Fatalf("result.Data type = %T, want skillOutput", result.Data)
+		}
+		if out.Status != "forked" {
+			t.Errorf("status = %q, want forked", out.Status)
+		}
+		if out.Result != "Fork done." {
+			t.Errorf("result = %q, want Fork done.", out.Result)
+		}
+
+		agentID := "skill-fork:forked-review"
+		invoked := reg.GetInvokedSkillsForAgent(agentID)
+		if len(invoked) != 0 {
+			t.Errorf("invoked skills for %s = %d, want 0 after cleanup", agentID, len(invoked))
+		}
+	})
+}
+
+func TestTool_Call_InvalidContext(t *testing.T) {
+	reg := setupRegistry(t)
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name:            "broken",
+		Type:            "prompt",
+		Context:         "weird",
+		Source:          types.SkillSourceBundled,
+		LoadedFrom:      "bundled",
+		IsUserInvocable: true,
+		Content:         "noop",
+	})
+
+	tool := New(reg, nil)
+	input := json.RawMessage(`{"skill": "broken"}`)
+	_, err := tool.Call(context.TODO(), input, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid context")
+	}
+	if !strings.Contains(err.Error(), "invalid context") {
+		t.Errorf("error = %q, want mention of invalid context", err.Error())
+	}
+	if !strings.Contains(err.Error(), "inline|new|fork") {
+		t.Errorf("error = %q, want hint about allowed values", err.Error())
+	}
 }
 
 func TestTool_CheckPermissions_SafeSkill(t *testing.T) {
@@ -438,6 +579,18 @@ func TestSkillHasOnlySafeProperties_Unsafe_Model(t *testing.T) {
 	}
 	if skillHasOnlySafeProperties(cmd) {
 		t.Error("skill with Model override should be unsafe")
+	}
+}
+
+func TestSkillHasOnlySafeProperties_Unsafe_New(t *testing.T) {
+	t.Parallel()
+
+	cmd := &types.SkillCommand{
+		Name:    "unsafe",
+		Context: "new",
+	}
+	if skillHasOnlySafeProperties(cmd) {
+		t.Error("skill with new context should be unsafe")
 	}
 }
 

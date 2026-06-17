@@ -12,4 +12,5 @@ type SubagentDeps struct {
 	GitStatus     *ctxbuild.GitStatusInfo // git status for system prompt injection
 	ResolveTierFn func(string) string     // model tier resolver
 	McpConnect    McpConnectFunc          // agent-specific MCP server connector
+	SysPromptFn   func() string           // parent engine's rendered system prompt (for true fork)
 }
