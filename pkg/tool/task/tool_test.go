@@ -1424,3 +1424,59 @@ func TestTasks_CheckAutoReset_AllCompleted(t *testing.T) {
 		t.Log("ShouldCleanupCompleted returned false (timer path)")
 	}
 }
+
+func TestUpdateItem_UnmarshalJSON_TaskIDAsStringOrNumber(t *testing.T) {
+	t.Parallel()
+
+	// LLMs sometimes send taskId as a number despite the schema declaring
+	// "type":"string". Both forms must work; without tolerant unmarshaling
+	// the whole batch fails with "cannot unmarshal number into string".
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"string form", `{"taskId":"5","status":"completed"}`, "5"},
+		{"number form", `{"taskId":5,"status":"completed"}`, "5"},
+		{"large number", `{"taskId":12345}`, "12345"},
+		{"string zero", `{"taskId":"0"}`, "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var u UpdateItem
+			if err := json.Unmarshal([]byte(tt.json), &u); err != nil {
+				t.Fatalf("UnmarshalJSON failed: %v", err)
+			}
+			if u.TaskID != tt.want {
+				t.Errorf("TaskID = %q, want %q", u.TaskID, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpdateItem_UnmarshalJSON_BatchPreservesOtherFields(t *testing.T) {
+	t.Parallel()
+
+	// Batch update mixing number and string taskId — must not fail mid-batch.
+	input := `[
+		{"taskId": 5, "status": "completed"},
+		{"taskId": "6", "status": "in_progress", "subject": "next step"}
+	]`
+	var updates []UpdateItem
+	if err := json.Unmarshal([]byte(input), &updates); err != nil {
+		t.Fatalf("batch UnmarshalJSON failed: %v", err)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("got %d updates, want 2", len(updates))
+	}
+	if updates[0].TaskID != "5" {
+		t.Errorf("updates[0].TaskID = %q, want \"5\"", updates[0].TaskID)
+	}
+	if updates[1].TaskID != "6" {
+		t.Errorf("updates[1].TaskID = %q, want \"6\"", updates[1].TaskID)
+	}
+	if updates[1].Subject == nil || *updates[1].Subject != "next step" {
+		t.Errorf("updates[1].Subject lost; got %v", updates[1].Subject)
+	}
+}

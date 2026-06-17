@@ -133,7 +133,7 @@ type Engine struct {
 	// Source: tokenBudget.ts:45-53 — checkTokenBudget skips when agentId is set.
 	isSubagent bool
 
-	// agentType is the sub-agent type (e.g. "General", "Explore", "Plan").
+	// agentType is the sub-agent type (e.g. "General", "Explore", "Planner").
 	// Empty for the main engine. Set by NewSubEngine from SubEngineOptions.AgentType.
 	agentType string
 
@@ -496,7 +496,10 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		workingDir := e.sharedDeps.WorkingDir
 		systemPrompt = agenttool.EnhanceSystemPrompt(basePrompt, filteredTools, workingDir, isGit, model)
 
-		if opts.GitStatus != nil && agentDef.AgentType != "Explore" && agentDef.AgentType != "Plan" {
+		// Skip git-status context for read-only planning/exploration agents;
+		// they don't act on the working tree, so the section only adds noise.
+		readOnlyAgents := map[string]bool{"Explore": true, "Plan": true, "Planner": true}
+		if opts.GitStatus != nil && !readOnlyAgents[agentDef.AgentType] {
 			section := agenttool.FormatGitStatusForSystemPrompt(opts.GitStatus)
 			if section != "" {
 				systemPrompt += section
@@ -3496,7 +3499,7 @@ type SubEngineOptions struct {
 	MaxTurns        int                  // 0 = no limit
 	Model           string               // "" = inherit from parent
 	ParentToolUseID string               // parent Agent tool call ID for event tagging
-	AgentType       string               // "General", "Explore", "Plan"
+	AgentType       string               // "General", "Explore", "Planner", etc.
 }
 
 // NewSubEngine creates a new Engine that shares the Provider and Logger
@@ -3560,12 +3563,21 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 }
 
-// isBuiltInAgent returns true for the three built-in agent types.
-// Source: builtInAgents.ts — General, Explore, Plan
+// isBuiltInAgent returns true for built-in agent types: hardcoded
+// General/Explore plus bundled Planner/Executor/Reviewer.
+// Custom user/project agents return false and route to QuerySourceAgentCustom.
 func isBuiltInAgent(agentType string) bool {
+	if agentType == "" {
+		return false
+	}
 	switch agentType {
-	case "General", "Explore", "Plan":
+	case "General", "Explore", "Plan", "Planner", "Executor", "Reviewer":
 		return true
+	}
+	// Consult the loader (when initialized) so future bundled agents are
+	// recognized without updating this switch.
+	if def, err := agenttool.GetAgentDefinition(agentType); err == nil && def != nil {
+		return def.Source == types.AgentSourceBuiltIn
 	}
 	return false
 }

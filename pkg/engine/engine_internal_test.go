@@ -2082,6 +2082,10 @@ func TestIsBuiltInAgent(t *testing.T) {
 		{"General", true},
 		{"Explore", true},
 		{"Plan", true},
+		// Bundled agents — must route to agent:builtin:* not agent:custom:*
+		{"Planner", true},
+		{"Executor", true},
+		{"Reviewer", true},
 		{"general-purpose", false},
 		{"my-custom-agent", false},
 		{"", false},

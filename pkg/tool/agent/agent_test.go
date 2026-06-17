@@ -439,8 +439,10 @@ func TestPrompt(t *testing.T) {
 	if prompt == "" {
 		t.Fatal("Prompt() returned empty string")
 	}
-	// Verify it contains agent type names
-	for _, name := range []string{"General", "Explore", "Plan"} {
+	// Without a Loader initialized, ListAgentDefinitions returns only the
+	// hardcoded General/Explore agents. Bundled Planner/Executor/Reviewer
+	// appear once the Loader is initialized (see loader_test.go).
+	for _, name := range []string{"General", "Explore"} {
 		if !strings.Contains(prompt, name) {
 			t.Errorf("Prompt() should contain %q", name)
 		}

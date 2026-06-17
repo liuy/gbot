@@ -49,21 +49,6 @@ var builtInAgents = map[string]*types.AgentDefinition{
 		Source:          types.AgentSourceBuiltIn,
 		BaseDir:         "built-in",
 	},
-	"Plan": {
-		AgentType: "Plan",
-		WhenToUse: "Use this agent when you need to explore the codebase and design an implementation plan before writing code.",
-		SystemPrompt: func() string {
-			return planSystemPrompt
-		},
-		// No whitelist — uses default set minus DisallowedTools (same as Explore)
-		Tools:           nil,
-		DisallowedTools: []string{"ExitPlanMode", "Edit", "Write", "NotebookEdit"},
-		Model:           "inherit",
-		OmitClaudeMd:    true,
-		MaxTurns:        0,
-		Source:          types.AgentSourceBuiltIn,
-		BaseDir:         "built-in",
-	},
 }
 
 // GetAgentDefinition returns the agent definition for the given type.
@@ -129,9 +114,13 @@ func ListAgentDefinitions() []*types.AgentDefinition {
 // OneShotAgentTypes are agent types that run once and return a report.
 // Their wire result omits the agentId hint and usage trailer to save tokens.
 // Source: tools/AgentTool/constants.ts:6-12
+//
+// "Plan" is kept for backward compatibility (old skills may still reference
+// it); "Planner" is the current bundled name.
 var OneShotAgentTypes = map[string]bool{
 	"Explore": true,
 	"Plan":    true,
+	"Planner": true,
 }
 
 // IsOneShotAgent returns true if the agent type is a one-shot agent.
@@ -181,32 +170,3 @@ Guidelines:
 - When searching for a specific file, try multiple patterns and naming conventions.
 - When searching for code, try both exact matches and fuzzy patterns.
 - Report file paths exactly as they appear in the codebase.`
-
-// planSystemPrompt is the system prompt for the Plan agent.
-// Source: tools/AgentTool/built-in/planAgent.ts
-const planSystemPrompt = `You are a software architect and planning specialist for Claude Code. Your role is to explore the codebase and design implementation plans.
-
-=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===
-This is a READ-ONLY planning task. You are STRICTLY PROHIBITED from:
-- Creating new files (no Write, touch, or file creation of any kind)
-- Modifying existing files (no Edit operations)
-- Deleting files (no rm or deletion)
-=== END READ-ONLY CONSTRAINTS ===
-
-Your job is to:
-1. Explore the relevant parts of the codebase
-2. Understand the existing architecture and patterns
-3. Design a detailed implementation plan
-4. Identify potential risks and edge cases
-
-## Required Output
-
-End your response with:
-
-### Critical Files for Implementation
-List 3-5 files most critical for implementing this plan:
-- path/to/file1
-- path/to/file2
-- path/to/file3
-
-REMEMBER: You can ONLY explore and plan. You CANNOT and MUST NOT write, edit, or modify any files. You do NOT have access to file editing tools.`

@@ -1,6 +1,7 @@
 package task
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,6 +62,55 @@ type UpdateItem struct {
 	AddBlockedBy []string       `json:"addBlockedBy,omitempty"`
 	Owner        *string        `json:"owner,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+// UnmarshalJSON tolerates taskId sent as a number — LLMs occasionally emit
+// numeric IDs even though the schema declares "type":"string". Without this,
+// the whole batch fails with "cannot unmarshal number into string".
+func (u *UpdateItem) UnmarshalJSON(data []byte) error {
+	// Use json.RawMessage for taskId so we can accept string, number, or
+	// empty string without json.Number's strict parsing.
+	type rawUpdate struct {
+		Subject      *string         `json:"subject,omitempty"`
+		Description  *string         `json:"description,omitempty"`
+		ActiveForm   *string         `json:"activeForm,omitempty"`
+		Status       *string         `json:"status,omitempty"`
+		AddBlocks    []string        `json:"addBlocks,omitempty"`
+		AddBlockedBy []string        `json:"addBlockedBy,omitempty"`
+		Owner        *string         `json:"owner,omitempty"`
+		Metadata     map[string]any  `json:"metadata,omitempty"`
+		TaskID       json.RawMessage `json:"taskId"`
+	}
+	var raw rawUpdate
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	u.Subject = raw.Subject
+	u.Description = raw.Description
+	u.ActiveForm = raw.ActiveForm
+	u.Status = raw.Status
+	u.AddBlocks = raw.AddBlocks
+	u.AddBlockedBy = raw.AddBlockedBy
+	u.Owner = raw.Owner
+	u.Metadata = raw.Metadata
+	// Accept quoted string ("5"), unquoted number (5), or empty string ("").
+	trimmed := bytes.TrimSpace(raw.TaskID)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte(`""`)) {
+		// Empty/absent: leave TaskID as zero value.
+		return nil
+	}
+	// Try string first (most common), fall back to number.
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		u.TaskID = s
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(trimmed, &n); err == nil {
+		u.TaskID = n.String()
+		return nil
+	}
+	return fmt.Errorf("taskId: cannot unmarshal %s into string or number", string(trimmed))
 }
 
 // TasksOutput is the unified output schema for the Tasks tool.

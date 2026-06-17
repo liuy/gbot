@@ -360,7 +360,7 @@ const (
 // spawned by the Agent tool, not from the main engine.
 type AgentMeta struct {
 	ParentToolUseID string // parent Agent tool call ID (e.g. "call_abc123")
-	AgentType       string // "General", "Explore", "Plan"
+	AgentType       string // "General", "Explore", "Planner", etc.
 	Depth           int    // nesting depth: 0 = direct child, 1 = grandchild
 }
 

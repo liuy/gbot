@@ -731,7 +731,7 @@ type MessageView struct {
 
 // AgentLogEntry records one tool call from a sub-agent for live progress display.
 type AgentLogEntry struct {
-	AgentType string // "General", "Explore", "Plan"
+	AgentType string // "General", "Explore", "Planner", etc.
 	Depth     int    // nesting depth
 	ToolName  string // "Read", "Grep", "Bash", etc.
 	Summary   string // tool summary text
@@ -756,7 +756,7 @@ type ToolCallView struct {
 	ContextSize   int                 // sub-agent latest context size (InputTokens + CacheRead + CacheCreation + OutputTokens)
 	ContextWindow int                 // sub-agent context window size (set once at tool start)
 	Blocks        []ContentBlock      // nested blocks for agent's sub-events (text/tool/thinking)
-	AgentType     string              // agent type name (e.g., "Explore", "Plan")
+	AgentType     string              // agent type name (e.g., "Explore", "Planner")
 	SearchRead    tool.SearchReadKind // classification for collapse behavior
 }
 

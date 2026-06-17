@@ -1392,3 +1392,83 @@ func TestGlobalLoader_AfterInit(t *testing.T) {
 		t.Fatal("GlobalLoader() should return non-nil after InitLoader")
 	}
 }
+
+func TestLoad_PreservesBundledAgents(t *testing.T) {
+	// Not parallel: mutates HOME (os.Setenv), would race with other tests.
+
+	// Isolate HOME/cwd so no user/project agents leak in.
+	prev := os.Getenv("HOME")
+	if err := os.Setenv("HOME", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Setenv("HOME", prev); err != nil {
+			t.Logf("restore HOME: %v", err)
+		}
+	}()
+
+	l := NewLoader(t.TempDir())
+	l.Load()
+
+	// Executor, Planner, Reviewer ship as bundled markdown and must be
+	// discoverable after Load(). Without the bundled loader wiring, only
+	// hardcoded General/Explore would exist.
+	for _, agentType := range []string{"Executor", "Planner", "Reviewer"} {
+		def := l.Get(agentType)
+		if def == nil {
+			t.Errorf("Get(%q) returned nil after Load() — bundled agent not registered", agentType)
+			continue
+		}
+		if def.Source != types.AgentSourceBuiltIn {
+			t.Errorf("%q source = %v, want BuiltIn", agentType, def.Source)
+		}
+		if def.SystemPrompt == nil || def.SystemPrompt() == "" {
+			t.Errorf("%q has empty system prompt — bundled markdown not parsed", agentType)
+		}
+	}
+}
+
+func TestLoad_UserAgentOverridesBundled(t *testing.T) {
+	// Not parallel: mutates HOME.
+
+	homeDir := t.TempDir()
+	userAgentsDir := filepath.Join(homeDir, ".gbot", "agents")
+	if err := os.MkdirAll(userAgentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// User-defined Planner with a unique marker in the prompt.
+	userPlanner := `---
+name: Planner
+description: user override
+tools: ["Read"]
+model: inherit
+---
+USER_PLANNER_MARKER`
+	if err := os.WriteFile(filepath.Join(userAgentsDir, "planner.md"), []byte(userPlanner), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := os.Getenv("HOME")
+	if err := os.Setenv("HOME", homeDir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Setenv("HOME", prev); err != nil {
+			t.Logf("restore HOME: %v", err)
+		}
+	}()
+
+	l := NewLoader(t.TempDir())
+	l.Load()
+
+	def := l.Get("Planner")
+	if def == nil {
+		t.Fatal("Planner not found")
+	}
+	if def.Source != types.AgentSourceUserSettings {
+		t.Errorf("Planner source = %v, want UserSettings (override)", def.Source)
+	}
+	if !strings.Contains(def.SystemPrompt(), "USER_PLANNER_MARKER") {
+		t.Errorf("Planner prompt = %q, want user override marker", def.SystemPrompt())
+	}
+}

@@ -8,6 +8,10 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+// Note: Plan/Executor/Reviewer agents ship as bundled markdown under
+// pkg/tool/agent/bundled/ and are only visible through the Loader. The
+// tests here cover the hardcoded General/Explore agents only.
+
 func TestGetAgentDefinition(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -16,7 +20,6 @@ func TestGetAgentDefinition(t *testing.T) {
 	}{
 		{"General", "General", "General"},
 		{"Explore", "Explore", "Explore"},
-		{"Plan", "Plan", "Plan"},
 	}
 
 	for _, tt := range tests {
@@ -46,8 +49,6 @@ func TestGetAgentDefinition_CaseInsensitive(t *testing.T) {
 	}{
 		{"explore", "Explore"},
 		{"EXPLORE", "Explore"},
-		{"plan", "Plan"},
-		{"PLAN", "Plan"},
 		{"general", "General"},
 		{"GENERAL", "General"},
 	}
@@ -80,10 +81,11 @@ func TestGetAgentDefinitionUnknown(t *testing.T) {
 
 func TestListAgentDefinitions(t *testing.T) {
 	defs := ListAgentDefinitions()
-	if len(defs) < 3 {
-		t.Errorf("expected at least 3 agent definitions, got %d", len(defs))
+	// Only General and Explore are hardcoded now; Plan/Executor/Reviewer
+	// come from bundled markdown and require Loader initialization.
+	if len(defs) < 2 {
+		t.Errorf("expected at least 2 hardcoded agent definitions, got %d", len(defs))
 	}
-	// Verify sorted order
 	for i := 1; i < len(defs); i++ {
 		if defs[i].AgentType < defs[i-1].AgentType {
 			t.Errorf("definitions not sorted: %q before %q", defs[i-1].AgentType, defs[i].AgentType)
@@ -131,14 +133,6 @@ func TestExploreAgentDisallowedTools(t *testing.T) {
 	}
 }
 
-func TestPlanAgentDisallowedTools(t *testing.T) {
-	def, _ := GetAgentDefinition("Plan")
-	expectedDisallowed := []string{"ExitPlanMode", "Edit", "Write", "NotebookEdit"}
-	if len(def.DisallowedTools) != len(expectedDisallowed) {
-		t.Fatalf("Plan should have %d disallowed tools, got %d", len(expectedDisallowed), len(def.DisallowedTools))
-	}
-}
-
 func TestSystemPromptsNotEmpty(t *testing.T) {
 	for _, def := range ListAgentDefinitions() {
 		prompt := def.SystemPrompt()
@@ -156,14 +150,6 @@ func TestExploreSystemPromptContainsReadOnly(t *testing.T) {
 	}
 }
 
-func TestPlanSystemPromptContainsCriticalFiles(t *testing.T) {
-	def, _ := GetAgentDefinition("Plan")
-	prompt := def.SystemPrompt()
-	if !strings.Contains(prompt, "Critical Files for Implementation") {
-		t.Error("Plan system prompt should mention 'Critical Files for Implementation'")
-	}
-}
-
 func TestIsOneShotAgent(t *testing.T) {
 	tests := []struct {
 		agentType string
@@ -171,7 +157,10 @@ func TestIsOneShotAgent(t *testing.T) {
 	}{
 		{"Explore", true},
 		{"Plan", true},
+		{"Planner", true},
 		{"General", false},
+		{"Executor", false},
+		{"Reviewer", false},
 		{"", false},
 		{"nonexistent", false},
 	}

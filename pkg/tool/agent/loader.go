@@ -72,10 +72,12 @@ func (l *Loader) Load() {
 // load is the internal implementation (caller must hold write lock).
 func (l *Loader) load() {
 	// Source: loadAgentsDir.ts:308 — loadMarkdownFilesForSubdir('agents', cwd)
+	bundledFiles := loadBundledAgentFiles()
 	userFiles := loadMarkdownFiles(userAgentDir(), types.AgentSourceUserSettings)
 	projectFiles := loadMarkdownFiles(projectAgentDir(l.cwd), types.AgentSourceProjectSettings)
 
 	var allFiles []markdownFileEntry
+	allFiles = append(allFiles, bundledFiles...)
 	allFiles = append(allFiles, userFiles...)
 	allFiles = append(allFiles, projectFiles...)
 
