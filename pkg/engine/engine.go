@@ -3548,6 +3548,12 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 		isSubagent:              true,
 		agentType:               opts.AgentType,
 		maxTurns:                subMaxTurns(opts.MaxTurns),
+		// sharedDeps propagates so sub-agents can themselves spawn
+		// sub-agents (grandchildren). Without this, AgentTool.Call inside
+		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the
+		// grandchild never runs — e.g. Planner (a sub-agent) trying to
+		// dispatch parallel explore agents fails on every call.
+		sharedDeps:              e.sharedDeps,
 		compactor:               e.compactor,
 		autoCompactConfig:       e.autoCompactConfig,
 		mcpRegistry:             e.mcpRegistry,

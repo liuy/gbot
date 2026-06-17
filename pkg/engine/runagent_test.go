@@ -367,3 +367,91 @@ func (e *echoBashStub) InterruptBehavior() tool.InterruptBehavior {
 func (e *echoBashStub) MaxResultSize() int      { return 0 }
 func (e *echoBashStub) Prompt() string          { return "" }
 func (e *echoBashStub) RenderResult(any) string { return "" }
+
+// TestEngine_RunAgent_NestedSubAgent_Allowed verifies that a sub-agent can
+// itself spawn a sub-agent (grandchild). TS Claude Code supports arbitrary
+// nesting depth; gbot's NewSubEngine used to skip wiring sharedDeps on
+// child engines, causing RunAgent to reject any Agent tool call from inside
+// a sub-agent with:
+//
+//	engine: RunAgent called but sharedDeps is nil (sub-engines cannot spawn sub-agents)
+//
+// Symptom: Planner (a sub-agent) tried to spawn explore sub-agents in
+// parallel and every call failed. Planner's definition explicitly allows
+// the Agent tool and its prompt instructs it to spawn parallel explores,
+// so the engine must honor that.
+//
+// This test drives two levels of nesting via mock providers:
+//
+//	outer engine  →  RunAgent("General")       (sub-engine 1)
+//	  sub-engine 1 emits a tool_use for Agent   (sub-engine 2 = grandchild)
+//	    sub-engine 2 emits a final text
+//
+// If sharedDeps isn't propagated, sub-engine 1's RunAgent returns the
+// "sharedDeps is nil" error and the test fails on the outer result.
+func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
+	t.Parallel()
+
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		TaskList:   taskpkg.NewList(t.TempDir()),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	mp := &mockProvider{}
+	// Sub-engine 1 turn 1: emit an Agent tool_use to spawn a grandchild.
+	mp.addResponse(toolUseStreamEvents("test", "call_sub1_agent", "Agent",
+		`{"description":"grandchild","prompt":"explore"}`), nil)
+	// Grandchild turn: a single text response.
+	mp.addResponse(textStreamEvents("test", "grandchild done"), nil)
+	// Sub-engine 1 turn 2: final text after grandchild returns.
+	mp.addResponse(textStreamEvents("test", "sub1 done"), nil)
+
+	// Use the real Agent tool so the test exercises the production path
+	// (AgentTool.Call → engine.RunAgent) at the sub-engine level. SetEngine
+	// wires the parent engine so AgentTool.Call can reach RunAgent.
+	agentTool := agenttool.New()
+	eng := New(&Params{
+		Provider:   mp,
+		Model:      "test",
+		Tools:      []tool.Tool{agentTool},
+		Dispatcher: newEventCollector(),
+	})
+	eng.SetSharedDeps(&deps)
+	agentTool.SetEngine(eng)
+	defer eng.Close()
+
+	result, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:          "spawn a grandchild",
+		AgentType:       "General",
+		ParentToolUseID: "parent_outer",
+	})
+	if err != nil {
+		t.Fatalf("outer RunAgent failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("outer RunAgent returned nil result")
+	}
+	// Sub-engine 1's final assistant text must include "sub1 done" — that
+	// only gets emitted if the grandchild call returned successfully and
+	// the sub-engine continued to its next turn.
+	if !strings.Contains(result.Content, "sub1 done") {
+		t.Errorf("outer result Content = %q; must contain \"sub1 done\" — "+
+			"if it contains a sharedDeps-is-nil error instead, NewSubEngine "+
+			"forgot to propagate sharedDeps and nesting is broken",
+			result.Content)
+	}
+	// Three LLM calls means the grandchild actually ran:
+	//   1. sub-engine 1 turn 1 → Agent tool_use
+	//   2. grandchild turn     → text
+	//   3. sub-engine 1 turn 2 → final text
+	// If sharedDeps wasn't propagated, the grandchild call fails fast
+	// without touching the provider and callCount caps at 2.
+	if got := mp.callCount(); got != 3 {
+		t.Errorf("provider call count = %d, want 3 (grandchild must reach the LLM); "+
+			"if <3, NewSubEngine didn't propagate sharedDeps and the Agent "+
+			"tool call inside the sub-agent failed before spawning grandchild",
+			got)
+	}
+}
