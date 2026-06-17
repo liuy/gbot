@@ -203,11 +203,20 @@ func TestMinimaxFetcher_Fetch_OK(t *testing.T) {
 			"status_code": 0,
 			"status_msg":  "",
 		},
-		"model_name":                         "abab",
-		"start_time":                         1799989200000,
-		"end_time":                           endMs,
-		"current_interval_remaining_percent": 85,
-		"current_interval_status":            1,
+		"model_remains": []map[string]any{
+			{
+				"model_name":                         "general",
+				"start_time":                         1799989200000,
+				"end_time":                           endMs,
+				"current_interval_remaining_percent": 85,
+				"current_interval_status":            1,
+			},
+			{
+				"model_name":                         "video",
+				"end_time":                           endMs,
+				"current_interval_remaining_percent": 100,
+			},
+		},
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -242,9 +251,13 @@ func TestMinimaxFetcher_Fetch_ClampsNegative(t *testing.T) {
 	t.Parallel()
 	body := mustJSON(t, map[string]any{
 		"base_resp": map[string]any{"status_code": 0},
-		"end_time":  1800000000000,
-		// 105% remaining is impossible — Used should clamp to 0.
-		"current_interval_remaining_percent": 105,
+		"model_remains": []map[string]any{
+			{
+				"model_name":                         "general",
+				"end_time":                           1800000000000,
+				"current_interval_remaining_percent": 105,
+			},
+		},
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
@@ -257,6 +270,80 @@ func TestMinimaxFetcher_Fetch_ClampsNegative(t *testing.T) {
 	}
 	if info.Used != 0 {
 		t.Errorf("Used = %d, want 0 (clamped from negative)", info.Used)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_EmptyRemains(t *testing.T) {
+	t.Parallel()
+	body := mustJSON(t, map[string]any{
+		"base_resp":     map[string]any{"status_code": 0},
+		"model_remains": []map[string]any{},
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	_, err := NewMinimaxFetcher(srv.URL, "k").Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "empty model_remains") {
+		t.Fatalf("want 'empty model_remains' error, got %v", err)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_FallbackToFirstEntry(t *testing.T) {
+	t.Parallel()
+	const endMs = 1800000000000
+	body := mustJSON(t, map[string]any{
+		"base_resp": map[string]any{"status_code": 0},
+		"model_remains": []map[string]any{
+			// No "general" entry — should fall back to first.
+			{
+				"model_name":                         "audio",
+				"end_time":                           endMs,
+				"current_interval_remaining_percent": 50,
+			},
+		},
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	info, err := NewMinimaxFetcher(srv.URL, "k").Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Used != 50 {
+		t.Errorf("Used = %d, want 50 (100-50, fallback to first entry)", info.Used)
+	}
+}
+
+func TestMinimaxFetcher_PickBucket(t *testing.T) {
+	t.Parallel()
+	entries := []minimaxModelRemains{
+		{ModelName: "video", CurrentIntervalRemainingPercent: 100},
+		{ModelName: "general", CurrentIntervalRemainingPercent: 85},
+		{ModelName: "audio", CurrentIntervalRemainingPercent: 100},
+	}
+	p := pickMinimaxBucket(entries)
+	if p == nil || p.ModelName != "general" {
+		t.Errorf("pickMinimaxBucket = %+v, want 'general'", p)
+	}
+}
+
+func TestMinimaxFetcher_PickBucket_Empty(t *testing.T) {
+	t.Parallel()
+	if p := pickMinimaxBucket(nil); p != nil {
+		t.Errorf("pickMinimaxBucket(nil) = %+v, want nil", p)
+	}
+}
+
+func TestMinimaxFetcher_PickBucket_NoGeneral(t *testing.T) {
+	t.Parallel()
+	entries := []minimaxModelRemains{
+		{ModelName: "video", CurrentIntervalRemainingPercent: 100},
+	}
+	p := pickMinimaxBucket(entries)
+	if p == nil || p.ModelName != "video" {
+		t.Errorf("pickMinimaxBucket = %+v, want first entry 'video'", p)
 	}
 }
 
@@ -284,6 +371,102 @@ func TestMinimaxFetcher_NormalizesBaseURL(t *testing.T) {
 	f := NewMinimaxFetcher("https://api.minimax.io/", "k")
 	if f.BaseURL != "https://api.minimax.io" {
 		t.Errorf("BaseURL = %q, want no trailing slash", f.BaseURL)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_RealResponseShape(t *testing.T) {
+	t.Parallel()
+	// This test uses the exact response shape observed from the live API.
+	// The "general" entry has current_interval_remaining_percent=63, which
+	// means 63% remaining → 37% used (100-63).
+	const endMs = 1781697600000
+	body := mustJSON(t, map[string]any{
+		"base_resp": map[string]any{
+			"status_code": 0,
+			"status_msg":  "success",
+		},
+		"model_remains": []map[string]any{
+			{
+				"model_name":                         "general",
+				"start_time":                         1781679600000,
+				"end_time":                           endMs,
+				"remains_time":                       16862587,
+				"current_interval_total_count":       0,
+				"current_interval_usage_count":       0,
+				"current_weekly_total_count":         0,
+				"current_weekly_usage_count":         0,
+				"weekly_start_time":                  1781452800000,
+				"weekly_end_time":                    1782057600000,
+				"weekly_remains_time":                376862587,
+				"current_interval_status":            1,
+				"current_interval_remaining_percent": 63,
+				"current_weekly_status":              3,
+				"current_weekly_remaining_percent":   100,
+			},
+			{
+				"model_name":                         "video",
+				"start_time":                         1781625600000,
+				"end_time":                           1781712000000,
+				"remains_time":                       31262587,
+				"current_interval_total_count":       0,
+				"current_interval_usage_count":       0,
+				"current_weekly_total_count":         0,
+				"current_weekly_usage_count":         0,
+				"weekly_start_time":                  1781452800000,
+				"weekly_end_time":                    1782057600000,
+				"weekly_remains_time":                376862587,
+				"current_interval_status":            3,
+				"current_interval_remaining_percent": 100,
+				"current_weekly_status":              3,
+				"current_weekly_remaining_percent":   100,
+			},
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/token_plan/remains" {
+			t.Errorf("path = %q, want /v1/token_plan/remains", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer mmxkey" {
+			t.Errorf("Authorization = %q, want 'Bearer mmxkey'", got)
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := NewMinimaxFetcher(srv.URL, "mmxkey")
+	info, err := f.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// API returns current_interval_remaining_percent=63 (remaining)
+	// Our code: used = 100 - 63 = 37
+	if info.Used != 37 {
+		t.Errorf("Used = %d, want 37 (100-63)", info.Used)
+	}
+	if info.Remaining() != 63 {
+		t.Errorf("Remaining = %d, want 63", info.Remaining())
+	}
+	// Verify formatter output would show "63%/4h40m"-ish
+	if info.ResetAt.UnixMilli() != endMs {
+		t.Errorf("ResetAt = %d, want %d", info.ResetAt.UnixMilli(), endMs)
+	}
+}
+
+func TestPickMinimaxBucket_GeneralFirst(t *testing.T) {
+	t.Parallel()
+	// The real API returns "general" as the first entry — verify it's picked.
+	entries := []minimaxModelRemains{
+		{ModelName: "general", CurrentIntervalRemainingPercent: 63},
+		{ModelName: "video", CurrentIntervalRemainingPercent: 100},
+	}
+	p := pickMinimaxBucket(entries)
+	if p == nil || p.ModelName != "general" {
+		t.Errorf("pickMinimaxBucket = %+v, want 'general'", p)
+	}
+	if p.CurrentIntervalRemainingPercent != 63 {
+		t.Errorf("percent = %d, want 63", p.CurrentIntervalRemainingPercent)
 	}
 }
 

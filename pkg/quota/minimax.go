@@ -36,17 +36,23 @@ func NewMinimaxFetcher(baseURL, apiKey string) *MinimaxFetcher {
 	}
 }
 
-type minimaxResponse struct {
-	BaseResp struct {
-		StatusCode int    `json:"status_code"`
-		StatusMsg  string `json:"status_msg"`
-	} `json:"base_resp"`
+type minimaxModelRemains struct {
 	ModelName                       string `json:"model_name"`
 	StartTime                       int64  `json:"start_time"`
 	EndTime                         int64  `json:"end_time"`
 	CurrentIntervalRemainingPercent int    `json:"current_interval_remaining_percent"`
 	CurrentIntervalStatus           int    `json:"current_interval_status"`
 	CurrentWeeklyRemainingPercent   int    `json:"current_weekly_remaining_percent"`
+}
+
+type minimaxResponse struct {
+	BaseResp struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+	} `json:"base_resp"`
+	// Real response is wrapped in a model_remains array, one entry per
+	// quota bucket (e.g. "general" for coding, "video", "audio").
+	ModelRemains []minimaxModelRemains `json:"model_remains"`
 }
 
 func (f *MinimaxFetcher) Fetch(ctx context.Context) (Info, error) {
@@ -84,11 +90,45 @@ func (f *MinimaxFetcher) Fetch(ctx context.Context) (Info, error) {
 			parsed.BaseResp.StatusCode, parsed.BaseResp.StatusMsg)
 	}
 
+	// Pick the most relevant entry: prefer "general" (covers coding-plan
+	// usage), fall back to the first available entry. Some accounts may
+	// have only a single bucket.
+	picked := pickMinimaxBucket(parsed.ModelRemains)
+	if picked == nil {
+		return Info{}, fmt.Errorf("minimax quota: empty model_remains")
+	}
+
 	// Remaining% comes from the API; convert to used% for the unified Info shape.
-	used := min(max(100-parsed.CurrentIntervalRemainingPercent, 0), 100)
+	used := clamp100(100 - picked.CurrentIntervalRemainingPercent)
 
 	return Info{
 		Used:    used,
-		ResetAt: time.UnixMilli(parsed.EndTime),
+		ResetAt: time.UnixMilli(picked.EndTime),
 	}, nil
+}
+
+// pickMinimaxBucket returns the most relevant model_remains entry for
+// a coding-plan user. Prefers the "general" bucket; falls back to
+// the first available entry. Returns nil if the slice is empty.
+func pickMinimaxBucket(entries []minimaxModelRemains) *minimaxModelRemains {
+	if len(entries) == 0 {
+		return nil
+	}
+	for i := range entries {
+		if entries[i].ModelName == "general" {
+			return &entries[i]
+		}
+	}
+	return &entries[0]
+}
+
+// clamp100 constrains v to [0, 100] (defensive against malformed responses).
+func clamp100(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }

@@ -115,6 +115,9 @@ type App struct {
 	// Quota fetcher for the current provider (nil = no quota display).
 	// Built once in SetProviders from cfg.Providers[0].
 	quotaFetcher quota.Fetcher
+	// quotaFetchSeq increments each time the provider switches, allowing
+	// in-flight async quota responses from the old provider to be dropped.
+	quotaFetchSeq int
 
 	// Hub — callback-based event routing
 	hub        *hub.Hub

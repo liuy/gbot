@@ -705,6 +705,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case quotaUpdatedMsg:
+		// Drop stale fetches triggered before the current provider switch.
+		// Async fetches run in the background; if zhipu's HTTP reply arrives
+		// after we've switched to minimax, ignoring it preserves the fresh
+		// (or empty) state set by refreshQuotaFromProvider.
+		if m.seq != a.quotaFetchSeq {
+			return true, nil
+		}
 		// Update status bar with fresh quota. Errors are silent —
 		// the previous value (if any) stays until a successful fetch.
 		if m.err == nil {
@@ -1118,9 +1125,12 @@ func (a *App) markViewportDirty() {
 }
 
 // quotaUpdatedMsg carries a fresh quota snapshot from the async fetcher.
+// seq ties the response to the provider context at the time of fetch —
+// if the user switches provider mid-flight, the stale response is dropped.
 type quotaUpdatedMsg struct {
 	info quota.Info
 	err  error
+	seq  int
 }
 
 // fetchQuota returns a tea.Cmd that queries the current provider's quota
@@ -1129,14 +1139,19 @@ func (a *App) fetchQuota() tea.Cmd {
 	if a.quotaFetcher == nil {
 		return nil
 	}
+	seq := a.quotaFetchSeq
 	fetcher := a.quotaFetcher
+	provider := a.currentProvider
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		info, err := fetcher.Fetch(ctx)
 		if err != nil {
-			slog.Debug("quota: fetch failed", "error", err)
+			slog.Error("quota: fetch failed", "provider", provider, "error", err)
+		} else {
+			slog.Info("quota: fetched", "provider", provider,
+				"used", info.Used, "remaining", info.Remaining(), "reset_at", info.ResetAt)
 		}
-		return quotaUpdatedMsg{info: info, err: err}
+		return quotaUpdatedMsg{info: info, err: err, seq: seq}
 	}
 }

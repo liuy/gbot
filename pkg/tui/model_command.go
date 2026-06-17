@@ -109,6 +109,7 @@ func (a *App) refreshQuotaFromProvider() {
 	} else {
 		a.quotaFetcher = nil
 	}
+	a.quotaFetchSeq++
 	a.status.SetQuota(nil)
 }
 
