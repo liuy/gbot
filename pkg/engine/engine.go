@@ -671,7 +671,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 
 		slog.Info("engine: running skill", "name", skillName, "context", cmd.Context)
 
-		if cmd.Context == "fork" {
+		if cmd.Context == "fork" || cmd.Context == "new" {
 			// Emit QueryStart first so TUI creates the assistant message
 			// placeholder. Tool events need an assistant message to attach to.
 			userMsg := types.Message{

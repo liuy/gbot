@@ -107,7 +107,77 @@ func TestRunSkill_Fork_EmitsQueryEvents(t *testing.T) {
 	}
 }
 
-// TestRunSkill_Inline_EmitsQueryEvents verifies inline skill path emits events.
+// TestRunSkill_New_EmitsSubAgentEvents verifies that a skill with context=new
+// is dispatched to a sub-agent (like fork), NOT treated as inline.
+// Observable signals:
+//   - emits virtual tool_start/tool_end (sub-agent tool card)
+//   - main agent makes TWO LLM calls (sub-agent + main summary), inline makes ONE
+//   - emits text_delta from sub-agent (not silent like the ↑0 ↓0 bug)
+func TestRunSkill_New_EmitsSubAgentEvents(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry(t.TempDir())
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name:      "new-test",
+		Type:      "prompt",
+		Context:   "new",
+		AgentType: "General",
+		Source:    types.SkillSourceBundled,
+		Content:   "Review the code.",
+	})
+
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		TaskList:   taskpkg.NewList(t.TempDir()),
+		SkillReg:   reg,
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	// Two responses: one for sub-agent, one for main agent's summary turn.
+	// If new is mis-routed as inline, only ONE response is consumed and the
+	// second is never drained — that's our red signal.
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test", "sub-agent review result"), nil)
+	mp.addResponse(textStreamEvents("test", "main agent summary"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+	})
+	eng.SetSharedDeps(&deps)
+	eng.SetSkillRegistry(reg)
+	defer eng.Close()
+
+	ec := newEventCollector()
+	eng.SetDispatcher(ec)
+
+	eng.RunSkill(context.Background(), "new-test", "", "test system prompt")
+	result := ec.WaitForResult()
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+
+	// Sub-agent path must emit a virtual tool card.
+	if len(ec.FindEvents(types.EventToolStart)) == 0 {
+		t.Error("context=new did not emit tool_start — routed as inline, not sub-agent")
+	}
+	if len(ec.FindEvents(types.EventToolEnd)) == 0 {
+		t.Error("context=new did not emit tool_end — routed as inline, not sub-agent")
+	}
+
+	// Sub-agent must stream text events (regression for silent sub-agent bug).
+	hasTextDelta := false
+	for _, evt := range ec.Events() {
+		if evt.Type == types.EventTextDelta {
+			hasTextDelta = true
+			break
+		}
+	}
+	if !hasTextDelta {
+		t.Error("sub-agent text events did not reach dispatcher — TUI will show ↑0 ↓0 tokens")
+	}
+}
 func TestRunSkill_Inline_EmitsQueryEvents(t *testing.T) {
 	t.Parallel()
 

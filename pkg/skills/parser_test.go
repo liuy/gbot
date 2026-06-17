@@ -211,14 +211,33 @@ func TestParseSkill_ContextFork(t *testing.T) {
 	}
 }
 
+func TestParseSkill_ContextNew(t *testing.T) {
+	t.Parallel()
+
+	input := "---\ncontext: new\n---\nBody."
+	cmd := ParseSkill("test", "/test/SKILL.md", input, types.SkillSourceUser)
+	if cmd.Context != "new" {
+		t.Errorf("context: new should be preserved as 'new' (fresh sub-agent), got %q", cmd.Context)
+	}
+}
+
 func TestParseSkill_ContextInline(t *testing.T) {
 	t.Parallel()
 
 	input := "---\ncontext: inline\n---\nBody."
 	cmd := ParseSkill("test", "/test/SKILL.md", input, types.SkillSourceUser)
-	// only "fork" maps to fork, everything else is empty (inline)
 	if cmd.Context != "" {
-		t.Errorf("context: inline should map to empty (not store 'inline'), got %q", cmd.Context)
+		t.Errorf("context: inline should map to empty (default inline), got %q", cmd.Context)
+	}
+}
+
+func TestParseSkill_ContextAbsent(t *testing.T) {
+	t.Parallel()
+
+	input := "---\ndescription: x\n---\nBody."
+	cmd := ParseSkill("test", "/test/SKILL.md", input, types.SkillSourceUser)
+	if cmd.Context != "" {
+		t.Errorf("absent context should default to empty (inline), got %q", cmd.Context)
 	}
 }
 

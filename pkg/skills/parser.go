@@ -251,14 +251,24 @@ func parseModel(v any) string {
 }
 
 // parseContext parses the context field.
-// Source: loadSkillsDir.ts:260 — 'fork' if context === 'fork', else undefined
-// empty string = inline (default), "fork" = fork
+// gbot adds a `new` value on top of TS's binary `fork` vs inline.
+//
+// Parsed value is preserved as-is; semantic interpretation depends on the
+// call site:
+//   - pkg/tool/skill/skill.go distinguishes all three:
+//     "" / "inline" → inject into current conversation
+//     "new"         → fresh sub-agent, no parent inheritance
+//     "fork"        → sub-agent inherits parent messages + system prompt
+//   - pkg/engine/engine.go (slash-command dispatch) runs both "new" and
+//     "fork" as fresh sub-agents (no parent inheritance). The slash path
+//     does not currently honor the fork/inheritance distinction.
 func parseContext(v any) string {
 	s := stringFieldFromAny(v)
-	if s == "fork" {
-		return "fork"
+	switch s {
+	case "new", "fork":
+		return s
 	}
-	return "" // empty = inline (default)
+	return "" // empty/inline/unknown → inline (default)
 }
 
 // parseShell parses the shell field.
