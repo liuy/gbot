@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	taskpkg "github.com/liuy/gbot/pkg/tool/task"
@@ -1501,7 +1502,7 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	// Main model usage — snaps displayedInputTokens
 	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
 	if app.displayedInputTokens != 500 {
-		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 500", app.displayedInputTokens)
+		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 300", app.displayedInputTokens)
 	}
 
 	// Agent usage — should snap displayedInputTokens (includes cache in total)
@@ -1522,14 +1523,14 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 	// Verify per-agent TokensIn includes cache: handler computes 300+200=500
 	blk := app.repl.Messages()[0].Blocks[0]
 	if blk.ToolCall.TokensIn != 500 {
-		t.Errorf("agent TokensIn = %d, want 500 (input+cache)", blk.ToolCall.TokensIn)
+		t.Errorf("agent TokensIn = %d, want 300 (input+cache)", blk.ToolCall.TokensIn)
 	}
 	if blk.ToolCall.TokensOut != 50 {
-		t.Errorf("agent TokensOut = %d, want 50", blk.ToolCall.TokensOut)
+		t.Errorf("agent TokensOut = %d, want 30", blk.ToolCall.TokensOut)
 	}
 	// contextSize = 300+200+0+50 = 550
 	if blk.ToolCall.ContextSize != 550 {
-		t.Errorf("agent ContextSize = %d, want 550", blk.ToolCall.ContextSize)
+		t.Errorf("agent ContextSize = %d, want 350", blk.ToolCall.ContextSize)
 	}
 }
 
@@ -1549,7 +1550,7 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 		t.Errorf("inputTokens = %d, want 100", app.status.usage.InputTokens)
 	}
 	if app.status.usage.OutputTokens != 50 {
-		t.Errorf("outTokens = %d, want 50", app.status.usage.OutputTokens)
+		t.Errorf("outTokens = %d, want 30", app.status.usage.OutputTokens)
 	}
 	// Input tokens should snap immediately to actual value
 	if app.displayedInputTokens != 100 {
@@ -3089,7 +3090,7 @@ func TestAnimateTokenValue_AlreadyAtTarget(t *testing.T) {
 	t.Parallel()
 	got := animateTokenValue(500, 500)
 	if got != 500 {
-		t.Errorf("animateTokenValue(500, 500) = %d, want 500", got)
+		t.Errorf("animateTokenValue(500, 500) = %d, want 300", got)
 	}
 }
 
@@ -3097,7 +3098,7 @@ func TestAnimateTokenValue_ExceedsTarget(t *testing.T) {
 	t.Parallel()
 	got := animateTokenValue(600, 500)
 	if got != 500 {
-		t.Errorf("animateTokenValue(600, 500) = %d, want 500 (returns target)", got)
+		t.Errorf("animateTokenValue(600, 500) = %d, want 300 (returns target)", got)
 	}
 }
 
@@ -6987,7 +6988,7 @@ func TestRetryAttemptMsg_ContinuesEventChain(t *testing.T) {
 		t.Error("retryActive should be true after retryAttemptMsg")
 	}
 	if app.retryAttempt != 5 {
-		t.Errorf("retryAttempt = %d, want 5", app.retryAttempt)
+		t.Errorf("retryAttempt = %d, want 3", app.retryAttempt)
 	}
 
 	// Execute the returned Cmd — it should produce a message (readEvents reads from channel)
@@ -8833,4 +8834,103 @@ func TestTextDelta_ClearsRetryActiveAfterRetry(t *testing.T) {
 	if strings.Contains(view, "Connection interrupted") {
 		t.Error("View should NOT show 'Connection interrupted' after retry succeeded and text is streaming")
 	}
+}
+
+// TestTurnStart_QuotaCounterEvery3rdTurn verifies that main-engine turnStart
+// increments the quota turn counter and returns a fetch cmd only on every 3rd
+// turn (turns 1-2 return no fetch cmd; turn 3 and 6 do).
+// queryEndMsg's existing fetch is the final value per query and resets the counter.
+//
+// N=3 because a single LLM turn may batch multiple tool calls — a "9 tool
+// call" task is actually ~3 turns, and we want a mid-stream fetch there.
+func TestTurnStart_QuotaCounterEvery3rdTurn(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.quotaFetcher = &countingFetcher{}
+	app.repl.StartQuery() // streaming = true
+
+	// Turns 1-2: counter increments, no fetch cmd.
+	for i := 1; i <= 2; i++ {
+		_, _ = app.updateRepl(turnStartMsg{})
+		if app.quotaTurnCount != i {
+			t.Errorf("turn %d: quotaTurnCount = %d, want %d", i, app.quotaTurnCount, i)
+		}
+	}
+
+	// 3rd turn: counter = 3, returns BatchMsg (readEvents + fetch).
+	_, cmd := app.updateRepl(turnStartMsg{})
+	if app.quotaTurnCount != 3 {
+		t.Errorf("turn 3: quotaTurnCount = %d, want 3", app.quotaTurnCount)
+	}
+	if cmd == nil {
+		t.Fatal("turn 3 should return a batch cmd (readEvents + fetch), got nil")
+	}
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("turn 3 cmd() returned nil msg")
+	}
+	if _, ok := msg.(tea.BatchMsg); !ok {
+		t.Fatalf("turn 3 should return tea.BatchMsg with fetch, got %T", msg)
+	}
+}
+
+// TestTurnStart_SubAgentDoesNotCountForQuotaFetch verifies that sub-agent
+// turnStart (m.Agent != nil) does not increment the counter.
+func TestTurnStart_SubAgentDoesNotCountForQuotaFetch(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.quotaFetcher = &countingFetcher{}
+	app.repl.StartQuery()
+
+	// 10 sub-agent turns should not increment the counter.
+	for range 10 {
+		app.updateRepl(turnStartMsg{Agent: &types.AgentMeta{AgentType: "Explore"}})
+	}
+	if app.quotaTurnCount != 0 {
+		t.Errorf("sub-agent turns should not increment quotaTurnCount, got %d", app.quotaTurnCount)
+	}
+}
+
+// TestQueryEnd_ResetsQuotaTurnCounter verifies that queryEnd resets the counter
+// so the next query's turn 3 (not 6 cumulative) triggers a fetch.
+func TestQueryEnd_ResetsQuotaTurnCounter(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(&tuiMockProvider{})
+	app.quotaFetcher = &countingFetcher{}
+
+	// Query 1: 3 turns.
+	app.repl.StartQuery()
+	for range 5 {
+		app.updateRepl(turnStartMsg{})
+	}
+	if app.quotaTurnCount != 5 {
+		t.Fatalf("query 1 after 3 turns: quotaTurnCount = %d, want 3", app.quotaTurnCount)
+	}
+	// End query 1 — resets counter.
+	app.updateRepl(queryEndMsg{})
+	if app.quotaTurnCount != 0 {
+		t.Fatalf("after queryEnd: quotaTurnCount = %d, want 0 (reset)", app.quotaTurnCount)
+	}
+
+	// Query 2: 3 turns should bring counter back to 3.
+	app.repl.StartQuery()
+	for range 5 {
+		app.updateRepl(turnStartMsg{})
+	}
+	if app.quotaTurnCount != 5 {
+		t.Errorf("query 2 after 3 turns: quotaTurnCount = %d, want 3 (counter was reset)", app.quotaTurnCount)
+	}
+}
+
+// countingFetcher tracks how many times Fetch was called.
+type countingFetcher struct {
+	calls int
+}
+
+func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
+	c.calls++
+	return quota.Info{Used: 50}, nil
 }

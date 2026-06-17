@@ -448,6 +448,18 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				}),
 			)
 		}
+		// Main-engine turn: count and fetch quota every 3rd turn so long
+		// queries get mid-stream quota updates without waiting for queryEnd.
+		// N=3 chosen because a single LLM turn may batch multiple tool calls,
+		// so a "9 tool call" task is actually ~3 turns.
+		a.quotaTurnCount++
+		var fetchCmd tea.Cmd
+		if a.quotaTurnCount%3 == 0 {
+			fetchCmd = a.fetchQuota()
+		}
+		if fetchCmd != nil {
+			return true, tea.Batch(a.readEvents(), fetchCmd)
+		}
 		return true, a.readEvents()
 
 	case retryAttemptMsg:
@@ -671,6 +683,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Async quota refresh: fetch fresh 5h-window quota after each query,
 		// update the status bar when the result arrives. Non-blocking —
 		// any in-flight fetch is discarded on the next query.
+		a.quotaTurnCount = 0 // reset per-query counter
 		fetchCmd := a.fetchQuota()
 
 		// Keep listening for Hub events while idle (Path B: fork agent

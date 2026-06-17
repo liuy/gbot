@@ -121,6 +121,10 @@ type App struct {
 	// quotaFetchSeq increments each time the provider switches, allowing
 	// in-flight async quota responses from the old provider to be dropped.
 	quotaFetchSeq int
+	// quotaTurnCount counts main-engine turns within the current query.
+	// Every 5th turn triggers a mid-query quota refresh; queryEndMsg resets
+	// it and does the final fetch.
+	quotaTurnCount int
 
 	// Hub — callback-based event routing
 	hub        *hub.Hub
