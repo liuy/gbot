@@ -12,6 +12,7 @@ import (
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -93,9 +94,22 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 	a.updateEngineCapabilities(selected.Provider, selected.Model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
+	a.refreshQuotaFromProvider()
 
 	slog.Info("model: switched", "provider", selected.Provider, "model", selected.Model)
 	return a, a.showInfo(fmt.Sprintf("Switched to %s/%s", selected.Provider, selected.Model))
+}
+
+// refreshQuotaFromProvider rebuilds the fetcher from the new provider and
+// updates the status bar immediately (clearing the old value if the new
+// provider has no quota endpoint).
+func (a *App) refreshQuotaFromProvider() {
+	if p, ok := a.providerConfigs[a.currentProvider]; ok {
+		a.quotaFetcher = quota.Detect(p)
+	} else {
+		a.quotaFetcher = nil
+	}
+	a.status.SetQuota(nil)
 }
 
 // switchProviderModel switches both provider and model.
@@ -123,6 +137,7 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 	a.updateEngineCapabilities(providerName, matched)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
+	a.refreshQuotaFromProvider()
 
 	slog.Info("model: switched", "provider", providerName, "model", matched)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", providerName, matched)))
@@ -174,6 +189,7 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 	a.updateEngineCapabilities(providerName, model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
+	a.refreshQuotaFromProvider()
 
 	slog.Info("model: switched provider", "provider", providerName, "model", model)
 	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", providerName, model)))

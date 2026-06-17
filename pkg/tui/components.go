@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
@@ -500,9 +501,9 @@ var (
 	statusSep        = statusDimStyle.Render(" • ")
 )
 
-// StatusBar shows model info, context usage, and tool count below the input.
-// Design: " sonnet-4 │ 84K/200K │ tools 13" — no background, green model,
-// context default→yellow(≥80%)→red(≥90%), gray separators.
+// StatusBar shows model info, quota, context usage, and tool count below the input.
+// Design: "model • 85%/2h30m • 84K/200K • 13 tools" — green model, quota/context
+// default→yellow(≥80% used)→red(≥90% used), gray separators.
 type StatusBar struct {
 	model        string
 	streaming    bool
@@ -513,6 +514,7 @@ type StatusBar struct {
 	contextUsed  int // current context input tokens
 	contextTotal int // model context window size
 	toolCount    int
+	quota        *quota.Info // nil = hidden (no provider with quota endpoint)
 }
 
 // NewStatusBar creates a new status bar.
@@ -561,9 +563,14 @@ func (s *StatusBar) SetToolCount(n int) {
 	s.toolCount = n
 }
 
+// SetQuota sets the provider quota info (5h window). Pass nil to hide.
+func (s *StatusBar) SetQuota(q *quota.Info) {
+	s.quota = q
+}
+
 // View renders the status bar below the input field.
-// Format: " model • usedK/totalK • N tools"
-// Model: green. Context: default color, yellow ≥80%, red ≥90%. Separators: gray.
+// Format: " model • 85%/2h30m • usedK/totalK • N tools"
+// Model: green. Quota: green→yellow(<20% left)→red(<10% left). Separators: gray.
 func (s StatusBar) View() string {
 	modelStr := s.model
 	if modelStr == "" {
@@ -571,16 +578,64 @@ func (s StatusBar) View() string {
 	}
 	left := statusGreenStyle.Render(modelStr)
 
+	parts := []string{left}
+
+	if s.quota != nil && !s.quota.ResetAt.IsZero() {
+		q := quotaStyle(s.quota.Remaining()).Render(formatQuota(s.quota))
+		parts = append(parts, q)
+	}
+
 	ctxStr := formatContextSize(s.contextUsed, s.contextTotal)
 	mid := ctxStyle(s.contextUsed, s.contextTotal).Render(ctxStr)
+	parts = append(parts, mid)
 
-	right := fmt.Sprintf("%d tools", s.toolCount)
-
-	parts := []string{left, mid}
 	if s.toolCount > 0 {
-		parts = append(parts, right)
+		parts = append(parts, fmt.Sprintf("%d tools", s.toolCount))
 	}
 	return " " + strings.Join(parts, statusSep) + " "
+}
+
+// formatQuota renders quota as "remaining%/countdown".
+// Examples: "85%/2h30m", "30%/45m", "8%/3m".
+func formatQuota(q *quota.Info) string {
+	rem := q.Remaining()
+	left := time.Until(q.ResetAt)
+	return fmt.Sprintf("%d%%/%s", rem, formatCountdown(left))
+}
+
+// formatCountdown compactly renders a duration:
+// "2d", "2h30m", "45m", "3m", "0m" if negative.
+func formatCountdown(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	hours := int(d.Hours())
+	if hours >= 24 {
+		days := hours / 24
+		return fmt.Sprintf("%dd", days)
+	}
+	if hours >= 1 {
+		mins := int(d.Minutes()) - hours*60
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	}
+	mins := int(d.Minutes())
+	if mins < 1 {
+		return "0m"
+	}
+	return fmt.Sprintf("%dm", mins)
+}
+
+// quotaStyle picks the color for the quota segment based on remaining %.
+// ≥20% left = green, ≥10% left = yellow, <10% left = red.
+func quotaStyle(remaining int) lipgloss.Style {
+	switch {
+	case remaining < 10:
+		return statusRedCtx
+	case remaining < 20:
+		return statusYellowCtx
+	default:
+		return statusGreenStyle
+	}
 }
 
 // ctxColor returns the lipgloss color for the context usage based on percentage.

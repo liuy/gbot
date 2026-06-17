@@ -23,6 +23,7 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
@@ -110,6 +111,10 @@ type App struct {
 	currentProvider string
 	currentModel    string
 	providerConfigs map[string]*config.Provider
+
+	// Quota fetcher for the current provider (nil = no quota display).
+	// Built once in SetProviders from cfg.Providers[0].
+	quotaFetcher quota.Fetcher
 
 	// Hub — callback-based event routing
 	hub        *hub.Hub
@@ -251,6 +256,11 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 	a.currentModel = modelName
 	if a.currentModel == "" && len(cfg.Providers) > 0 {
 		a.currentModel = cfg.Providers[0].FirstModelName()
+	}
+
+	// Build quota fetcher from the primary provider (nil if unsupported).
+	if len(cfg.Providers) > 0 {
+		a.quotaFetcher = quota.Detect(&cfg.Providers[0])
 	}
 }
 
@@ -840,7 +850,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		attachmentMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg,
-		permissionAskMsg, inputAskMsg, retryAttemptMsg:
+		permissionAskMsg, inputAskMsg, retryAttemptMsg,
+		quotaUpdatedMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd

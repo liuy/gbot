@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/fileread"
@@ -1028,6 +1029,119 @@ func TestStatusBar_View_DefaultModel(t *testing.T) {
 	v := s.View()
 	if !strings.Contains(v, "gbot") {
 		t.Errorf("default model should show 'gbot', got: %q", v)
+	}
+}
+
+func TestStatusBar_Quota_HiddenWhenNil(t *testing.T) {
+	t.Parallel()
+	s := NewStatusBar()
+	s.SetModel("glm-5.2")
+	s.SetContext(0, 200000)
+	s.SetToolCount(5)
+	v := s.View()
+	if strings.Contains(v, "%") {
+		t.Errorf("View() = %q, should not contain '%%' when quota is nil", v)
+	}
+}
+
+func TestStatusBar_Quota_ShownWhenSet(t *testing.T) {
+	t.Parallel()
+	s := NewStatusBar()
+	s.SetModel("glm-5.2")
+	s.SetContext(0, 200000)
+	s.SetToolCount(5)
+	// Fixed future timestamp — far enough that countdown is deterministic.
+	// 2027-01-15T08:00:00Z → reset is far in the future; countdown will be
+	// very large so we only assert the percentage + the "h" suffix.
+	q := &quota.Info{Used: 15, ResetAt: time.UnixMilli(1800000000000)}
+	s.SetQuota(q)
+	v := s.View()
+	if !strings.Contains(v, "85%") {
+		t.Errorf("View() = %q, should show 85%%", v)
+	}
+}
+
+func TestStatusBar_Quota_PositionedBeforeContext(t *testing.T) {
+	t.Parallel()
+	s := NewStatusBar()
+	s.SetModel("glm")
+	s.SetContext(84000, 200000)
+	s.SetToolCount(3)
+	s.SetQuota(&quota.Info{Used: 60, ResetAt: time.UnixMilli(1800000000000)})
+	v := s.View()
+	quotaIdx := strings.Index(v, "40%")
+	ctxIdx := strings.Index(v, "82.0k")
+	if quotaIdx == -1 || ctxIdx == -1 {
+		t.Fatalf("View() = %q, expected quota and context", v)
+	}
+	if quotaIdx > ctxIdx {
+		t.Errorf("quota should come before context: quota@%d, ctx@%d", quotaIdx, ctxIdx)
+	}
+}
+
+func TestStatusBar_Quota_CountdownFormats(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		dur  time.Duration
+		want string
+	}{
+		{"2days", 48 * time.Hour, "2d"},
+		{"2h30m", 2*time.Hour + 30*time.Minute, "2h30m"},
+		{"45m", 45 * time.Minute, "45m"},
+		{"10s", 10 * time.Second, "0m"},
+		{"negative", -5 * time.Minute, "0m"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := formatCountdown(c.dur)
+			if got != c.want {
+				t.Errorf("formatCountdown(%v) = %q, want %q", c.dur, got, c.want)
+			}
+		})
+	}
+}
+
+func TestStatusBar_Quota_QuotaStyle(t *testing.T) {
+	t.Parallel()
+	// ≥20% left = green, ≥10% left = yellow, <10% = red
+	// Compare by rendering — same color → same rendered output.
+	cmp := func(s lipgloss.Style) string { return lipgloss.NewStyle().Foreground(s.GetForeground()).Render("x") }
+	if got, want := cmp(quotaStyle(50)), cmp(statusGreenStyle); got != want {
+		t.Errorf("remaining=50 color = %q, want green %q", got, want)
+	}
+	if got, want := cmp(quotaStyle(15)), cmp(statusYellowCtx); got != want {
+		t.Errorf("remaining=15 color = %q, want yellow %q", got, want)
+	}
+	if got, want := cmp(quotaStyle(5)), cmp(statusRedCtx); got != want {
+		t.Errorf("remaining=5 color = %q, want red %q", got, want)
+	}
+}
+
+func TestStatusBar_Quota_SetNilHidesAfterSet(t *testing.T) {
+	t.Parallel()
+	s := NewStatusBar()
+	s.SetModel("glm")
+	s.SetContext(0, 200000)
+	s.SetQuota(&quota.Info{Used: 15, ResetAt: time.UnixMilli(1800000000000)})
+	if v := s.View(); !strings.Contains(v, "85%") {
+		t.Fatalf("expected 85%%, got %q", v)
+	}
+	s.SetQuota(nil)
+	if v := s.View(); strings.Contains(v, "%") {
+		t.Errorf("after SetQuota(nil), should not show '%%', got %q", v)
+	}
+}
+
+func TestStatusBar_Quota_ZeroResetAtHidden(t *testing.T) {
+	t.Parallel()
+	s := NewStatusBar()
+	s.SetModel("glm")
+	s.SetContext(0, 200000)
+	s.SetQuota(&quota.Info{Used: 15, ResetAt: time.Time{}}) // zero time
+	v := s.View()
+	if strings.Contains(v, "%") {
+		t.Errorf("zero ResetAt should hide quota, got %q", v)
 	}
 }
 

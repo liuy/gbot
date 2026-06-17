@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -667,9 +668,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.contentCache = ""
 		a.contentDirty = false
 
+		// Async quota refresh: fetch fresh 5h-window quota after each query,
+		// update the status bar when the result arrives. Non-blocking —
+		// any in-flight fetch is discarded on the next query.
+		fetchCmd := a.fetchQuota()
+
 		// Keep listening for Hub events while idle (Path B: fork agent
 		// notifications). readEvents blocks on appCh.
-		return true, a.readEvents()
+		return true, tea.Batch(a.readEvents(), fetchCmd)
 
 	case usageMsg:
 		// Accumulate billing cost from each turn's message_delta.
@@ -697,6 +703,15 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		}
 		return true, a.readEvents()
+
+	case quotaUpdatedMsg:
+		// Update status bar with fresh quota. Errors are silent —
+		// the previous value (if any) stays until a successful fetch.
+		if m.err == nil {
+			info := m.info
+			a.status.SetQuota(&info)
+		}
+		return true, nil
 
 	case thinkingStartMsg:
 		if m.Agent != nil {
@@ -1100,4 +1115,28 @@ func renderMessagesFull(messages []MessageView, width int, expandTools bool, too
 // markViewportDirty marks the content cache as needing rebuild.
 func (a *App) markViewportDirty() {
 	a.contentDirty = true
+}
+
+// quotaUpdatedMsg carries a fresh quota snapshot from the async fetcher.
+type quotaUpdatedMsg struct {
+	info quota.Info
+	err  error
+}
+
+// fetchQuota returns a tea.Cmd that queries the current provider's quota
+// endpoint and produces a quotaUpdatedMsg. Returns nil cmd if no fetcher.
+func (a *App) fetchQuota() tea.Cmd {
+	if a.quotaFetcher == nil {
+		return nil
+	}
+	fetcher := a.quotaFetcher
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		info, err := fetcher.Fetch(ctx)
+		if err != nil {
+			slog.Debug("quota: fetch failed", "error", err)
+		}
+		return quotaUpdatedMsg{info: info, err: err}
+	}
 }

@@ -7,12 +7,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/quota"
 )
 
 // mockLLMProvider is a minimal mock for testing model switching.
@@ -268,6 +270,54 @@ func TestHandleModel_SwitchProvider_Success(t *testing.T) {
 	}
 	if a.currentModel != "claude-sonnet" {
 		t.Errorf("currentModel = %q, want %q", a.currentModel, "claude-sonnet")
+	}
+}
+
+// RED-LIGHT: switching from a provider with quota to one without
+// must clear both the fetcher and the visible quota. Otherwise the
+// status bar shows the old value indefinitely.
+func TestHandleModel_SwitchProvider_ClearsQuotaWhenNoFetcher(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Simulate quota from the first provider (openai's URL is example.com → no fetcher,
+	// so we inject one to verify the clear path).
+	a.status.SetQuota(&quota.Info{Used: 40, ResetAt: time.UnixMilli(1800000000000)})
+
+	// Sanity: before the switch, quota is visible.
+	if v := a.status.View(); !strings.Contains(v, "60%") {
+		t.Fatalf("precondition: status should show 60%%, got %q", v)
+	}
+
+	_ = a.handleModel("anthropic", nil)
+
+	// After switching, fetcher must be nil and the bar must not show "%".
+	if a.quotaFetcher != nil {
+		t.Errorf("quotaFetcher = %T, want nil after switching to no-quota provider", a.quotaFetcher)
+	}
+	if v := a.status.View(); strings.Contains(v, "%") {
+		t.Errorf("after switch, status should not show '%%', got %q", v)
+	}
+}
+
+// RED-LIGHT: query_end on a provider with no fetcher must not leave
+// a stale quota from the previous provider visible. Reproduce by
+// seeding a quota value, then firing queryEndMsg and verifying the
+// bar stays clean (or updates, but never shows stale data).
+func TestUpdate_QueryEnd_WhenFetcherNil_KeepsQuotaCleared(t *testing.T) {
+	a := newTestAppWithProviders(t)
+	_ = a.handleModel("anthropic", nil) // switches to a no-quota provider
+	if a.quotaFetcher != nil {
+		t.Fatalf("precondition: fetcher should be nil, got %T", a.quotaFetcher)
+	}
+	// Simulate a stale value from a prior session leaking through.
+	a.status.SetQuota(&quota.Info{Used: 40, ResetAt: time.UnixMilli(1800000000000)})
+	if v := a.status.View(); !strings.Contains(v, "60%") {
+		t.Fatalf("precondition: status should show 60%%, got %q", v)
+	}
+	// fetchQuota must return nil when the fetcher is nil, so query_end
+	// can't accidentally revive the stale value.
+	if cmd := a.fetchQuota(); cmd != nil {
+		t.Errorf("fetchQuota() = %v, want nil cmd when fetcher is nil", cmd)
 	}
 }
 
