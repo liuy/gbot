@@ -17,6 +17,12 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/dop251/goja_nodejs/eventloop"
+	"github.com/dop251/goja_nodejs/require"
+	// Node-compatible builtin modules — import for side effects (init registers them).
+	_ "github.com/dop251/goja_nodejs/buffer"
+	_ "github.com/dop251/goja_nodejs/process"
+	_ "github.com/dop251/goja_nodejs/url"
+	_ "github.com/dop251/goja_nodejs/util"
 )
 
 // Timeout constants.
@@ -47,6 +53,9 @@ func NewSession() (*Session, error) {
 	var regErr error
 	s.loop.Run(func(vm *goja.Runtime) {
 		s.vm = vm
+		// Enable require + Node-compatible builtins (buffer, process, url, util).
+		// Modules self-register via init(); importing them is sufficient.
+		require.NewRegistry().Enable(vm)
 		regErr = s.registerGlobals(vm)
 	})
 	if regErr != nil {
