@@ -51,7 +51,7 @@ type ToolRefs struct {
 }
 
 // CreateTools creates a fresh, complete set of tool instances for one engine.
-// Notification wiring (OnNotify, SetFactory) is done separately by WireEngine.
+// Engine wiring (SetEngine, OnNotify) is done separately by WireEngine.
 func CreateTools(deps SharedDeps) ToolRefs {
 	bashReg := bash.NewBackgroundJobRegistry()
 
@@ -79,7 +79,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 
 	reg.MustRegister(task.New(deps.TaskList))
 
-	reg.MustRegister(skilltool.New(deps.SkillReg, at.Runner()))
+	reg.MustRegister(skilltool.New(deps.SkillReg, at.SubagentDeps()))
 
 	replTool := repl.New()
 	reg.MustRegister(replTool)

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -754,16 +753,15 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 	refs := CreateTools(deps)
 	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect (SetEngine accepts nil)
 
-	// Verify mcpConnect was set via reflect, then invoke it.
-	at := refs.Agent
-	atV := reflect.ValueOf(at).Elem()
-	mcpRV := atV.FieldByName("mcpConnect")
-	if !mcpRV.IsValid() {
-		t.Fatal("AgentTool has no mcpConnect field")
-	}
-	if mcpRV.IsNil() {
+	// Verify mcpConnect was set, then invoke it to exercise the closure body.
+	mcpFn := refs.Agent.McpConnectFn()
+	if mcpFn == nil {
 		t.Fatal("mcpConnect not set")
 	}
+	// Call the closure — it will try ConnectAgentServers with our inline spec.
+	// The MCP client manager in test mode returns an error or empty result.
+	// We just verify the closure executes without panic.
+	_, _ = mcpFn(context.Background(), "agent-test", []json.RawMessage{json.RawMessage(`{"command":"__nonexistent__","args":["x"]}`)})
 }
 
 // -----------------------------------------------------------------------
@@ -803,10 +801,8 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 	WireEngine(eng, refs, deps)
 
 	// Verify the McpConnect callback was registered on the agent.
-	at := refs.Agent
-	atV := reflect.ValueOf(at).Elem()
-	mcpRV := atV.FieldByName("mcpConnect")
-	if !mcpRV.IsValid() || mcpRV.IsNil() {
+	mcpFn := refs.Agent.McpConnectFn()
+	if mcpFn == nil {
 		t.Fatal("mcpConnect should be set after WireEngine with non-nil McpReg")
 	}
 

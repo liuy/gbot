@@ -210,19 +210,19 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 		Content:         "Perform a deep review.",
 	})
 
-	t.Run("nil runner returns error", func(t *testing.T) {
+	t.Run("nil deps returns error", func(t *testing.T) {
 		tool := New(reg, nil)
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		_, err := tool.Call(context.TODO(), input, nil)
 		if err == nil {
-			t.Fatal("expected error for fork with nil runner")
+			t.Fatal("expected error for fork with nil deps")
 		}
-		if !strings.Contains(err.Error(), "no agent runner") {
-			t.Errorf("error = %q, want mention of no agent runner", err.Error())
+		if !strings.Contains(err.Error(), "no sub-agent engine") {
+			t.Errorf("error = %q, want mention of no sub-agent engine", err.Error())
 		}
 	})
 
-	t.Run("runner invoked", func(t *testing.T) {
+	t.Run("engine invoked", func(t *testing.T) {
 		var capturedOpts agenttool.AgentOpts
 		mockAgent := agenttool.New()
 		mockAgent.SetEngine(&mockSubEngine{runFn: func(ctx context.Context, opts agenttool.AgentOpts) (*types.SubQueryResult, error) {
@@ -230,7 +230,7 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 			return &types.SubQueryResult{Content: "Review complete."}, nil
 		}})
 
-		skillTool := New(reg, mockAgent.Runner())
+		skillTool := New(reg, mockAgent.SubagentDeps())
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		result, err := skillTool.Call(context.TODO(), input, nil)
 		if err != nil {
@@ -269,7 +269,7 @@ func TestTool_Call_ForkedSkill(t *testing.T) {
 			return nil, fmt.Errorf("sub-agent crashed")
 		}})
 
-		skillTool := New(reg, mockAgent.Runner())
+		skillTool := New(reg, mockAgent.SubagentDeps())
 		input := json.RawMessage(`{"skill": "deep-review"}`)
 		_, err := skillTool.Call(context.TODO(), input, nil)
 		if err == nil {

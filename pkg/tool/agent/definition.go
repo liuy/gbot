@@ -89,6 +89,12 @@ func GetAgentDefinition(agentType string) (*types.AgentDefinition, error) {
 	if def, ok := builtInAgents[agentType]; ok {
 		return def, nil
 	}
+	// "fork" is a runtime-only agent type for forked sub-agents. It uses
+	// the General definition since fork agents inherit parent context
+	// rather than having their own specialized behavior.
+	if agentType == "fork" {
+		return builtInAgents["General"], nil
+	}
 	// Case-insensitive fallback — LLM may send "explore" instead of "Explore"
 	lower := strings.ToLower(agentType)
 	for key, def := range builtInAgents {

@@ -59,7 +59,6 @@ type AgentOpts struct {
 	AgentType           string                  // resolved agent type (e.g. "General", "Explore")
 	ParentToolUseID     string                  // parent Agent tool call ID for TUI progress display
 	ForkMessages        []types.Message         // non-nil: use pre-built fork messages instead of Prompt
-	ParentSystemPrompt  string                  // fork: parent engine's rendered system prompt
 	UserContextMessages []types.Message         // [currentDate, claudeMd?, skill?...] injected before userPrompt
 	GitStatus           *ctxbuild.GitStatusInfo // git status for system prompt injection (nil = no git info)
 	ResolveTierFn       func(string) string     // model tier resolver (nil = identity)
@@ -93,12 +92,14 @@ func New() *AgentTool {
 // SetEngine injects the sub-agent execution engine. Called by WireEngine.
 func (t *AgentTool) SetEngine(eng SubagentEngine) { t.engine = eng }
 
-// Runner returns an AgentRunner backed by this AgentTool's engine.
+// SubagentDeps returns a SubagentDeps backed by this AgentTool's engine.
 // Used by SkillTool and other tools that need sub-agent execution.
-func (t *AgentTool) Runner() *AgentRunner {
-	return &AgentRunner{
-		Engine:     t.engine,
-		McpConnect: t.mcpConnect,
+func (t *AgentTool) SubagentDeps() *SubagentDeps {
+	return &SubagentDeps{
+		Engine:        t.engine,
+		GitStatus:     t.gitStatus,
+		ResolveTierFn: t.resolveTier,
+		McpConnect:    t.mcpConnect,
 	}
 }
 
@@ -125,6 +126,9 @@ func (t *AgentTool) SetSkillRegistry(reg SkillRegistry) { t.skillReg = reg }
 
 // SetMcpConnect sets the MCP connector for agent-specific MCP server connections.
 func (t *AgentTool) SetMcpConnect(fn McpConnectFunc) { t.mcpConnect = fn }
+
+// McpConnectFn returns the MCP connector (for testing).
+func (t *AgentTool) McpConnectFn() McpConnectFunc { return t.mcpConnect }
 
 // JobAdapter returns a job.Registry wrapping the fork agent registry.
 // Returns nil if fork is not enabled (SetNotifyFn not called).
@@ -354,15 +358,14 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	opts := AgentOpts{
 		// Prompt intentionally left empty — it's already embedded in
 		// forkMessages via buildForkDirective. See: forkSubagent.ts:163.
-		ForkMessages:       forkMessages,
-		SystemPrompt:       systemPrompt,
-		MaxTurns:           forkMaxTurns,
-		Model:              model,
-		AgentType:          agentType,
-		ParentToolUseID:    parentToolUseID,
-		ParentSystemPrompt: systemPrompt,
-		GitStatus:          t.gitStatus,
-		ResolveTierFn:      t.resolveTier,
+		ForkMessages:    forkMessages,
+		SystemPrompt:    systemPrompt,
+		MaxTurns:        forkMaxTurns,
+		Model:           model,
+		AgentType:       agentType,
+		ParentToolUseID: parentToolUseID,
+		GitStatus:       t.gitStatus,
+		ResolveTierFn:   t.resolveTier,
 	}
 
 	// Sync path: run fork in-process and return result directly

@@ -92,7 +92,7 @@ var skillInputSchema = json.RawMessage(`{
 // New creates a new SkillTool using the BuildTool factory pattern.
 // Source: SkillTool.ts:331 — buildTool({...})
 // Uses BuildTool factory, matching pkg/tool/bash/ etc.
-func New(registry *skills.Registry, runner *agenttool.AgentRunner) tool.Tool {
+func New(registry *skills.Registry, deps *agenttool.SubagentDeps) tool.Tool {
 	return tool.BuildTool(tool.ToolDef{
 		Name_:              skillToolName,
 		Prompt_:            skillDescription,
@@ -106,7 +106,7 @@ func New(registry *skills.Registry, runner *agenttool.AgentRunner) tool.Tool {
 			// Show just the skill name (TS: UI.tsx:47-61 — renderToolUseMessage)
 			return in.Skill, nil
 		},
-		Call_:              makeSkillCallFn(registry, runner),
+		Call_:              makeSkillCallFn(registry, deps),
 		CheckPermissions_:  makeSkillPermissionsFn(registry),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		IsReadOnly_:        func(json.RawMessage) bool { return true },
@@ -158,7 +158,7 @@ func New(registry *skills.Registry, runner *agenttool.AgentRunner) tool.Tool {
 
 // makeSkillCallFn returns the Call implementation.
 // Source: SkillTool.ts:580-780 — call()
-func makeSkillCallFn(registry *skills.Registry, runner *agenttool.AgentRunner) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
+func makeSkillCallFn(registry *skills.Registry, deps *agenttool.SubagentDeps) func(context.Context, json.RawMessage, *tool.ToolUseContext) (*tool.ToolResult, error) {
 	return func(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseContext) (*tool.ToolResult, error) {
 		var in skillInput
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -180,7 +180,7 @@ func makeSkillCallFn(registry *skills.Registry, runner *agenttool.AgentRunner) f
 		slog.Debug("skill: executing", "name", commandName, "args", args, "context", cmd.Context)
 
 		if cmd.Context == "fork" {
-			return executeForkedSkill(ctx, cmd, commandName, args, registry, runner, tctx)
+			return executeForkedSkill(ctx, cmd, commandName, args, registry, deps, tctx)
 		}
 
 		return executeInlineSkill(cmd, commandName, args, registry)
@@ -266,18 +266,18 @@ func executeInlineSkill(cmd *types.SkillCommand, commandName, args string, regis
 	}, nil
 }
 
-// executeForkedSkill runs a skill in a sub-agent via AgentTool.RunAgent().
+// executeForkedSkill runs a skill in a sub-agent via the shared SubagentDeps.
 // Source: SkillTool.ts:122-289 — executeForkedSkill
 func executeForkedSkill(
 	ctx context.Context,
 	cmd *types.SkillCommand,
 	commandName, args string,
 	registry *skills.Registry,
-	runner *agenttool.AgentRunner,
+	deps *agenttool.SubagentDeps,
 	tctx *tool.ToolUseContext,
 ) (*tool.ToolResult, error) {
-	if runner == nil {
-		return nil, fmt.Errorf("skill: fork execution not available for %q (no agent runner)", commandName)
+	if deps == nil || deps.Engine == nil {
+		return nil, fmt.Errorf("skill: fork execution not available for %q (no sub-agent engine)", commandName)
 	}
 
 	content := skills.SubstituteArguments(cmd.Content, args, argNames(cmd), true)
@@ -295,12 +295,21 @@ func executeForkedSkill(
 		"allowedTools", cmd.AllowedTools,
 	)
 
-	result, err := runner.RunAgent(ctx, agenttool.RunAgentOpts{
-		Prompt:       content,
-		AgentType:    cmd.AgentType,
-		Model:        cmd.Model,
-		AllowedTools: cmd.AllowedTools,
-	}, tctx)
+	var parentToolUseID string
+	if tctx != nil {
+		parentToolUseID = tctx.ToolUseID
+	}
+
+	result, err := deps.Engine.RunAgent(ctx, agenttool.AgentOpts{
+		Prompt:          content,
+		AgentType:       cmd.AgentType,
+		Model:           cmd.Model,
+		AllowedTools:    cmd.AllowedTools,
+		ParentToolUseID: parentToolUseID,
+		McpConnect:      deps.McpConnect,
+		GitStatus:       deps.GitStatus,
+		ResolveTierFn:   deps.ResolveTierFn,
+	})
 
 	if err != nil {
 		return nil, fmt.Errorf("skill fork %q: %w", commandName, err)

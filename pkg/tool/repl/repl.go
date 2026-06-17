@@ -23,7 +23,7 @@ type replInput struct {
 }
 
 // REPLTool implements tool.Tool for JavaScript REPL execution.
-// Uses SetToolExecutor injection (like AgentTool's SetFactory) to get full
+// Uses SetToolExecutor injection (like AgentTool's SetEngine) to get full
 // permission-checked tool execution from the engine.
 //
 // Session lifecycle: ownership-based cleanup. Callers (engine/sub-engine)
@@ -55,7 +55,7 @@ func (t *REPLTool) Close() {
 //  2. permissionChecker.Check(name, args) → ask → askUser → TUI
 //  3. checkContentPermissions → content-level rules
 //
-// Pattern mirrors AgentTool.SetFactory (injection to break circular dependency).
+// Pattern mirrors AgentTool.SetEngine (injection to break circular dependency).
 func (t *REPLTool) SetToolExecutor(fn func(ctx context.Context, name string, args json.RawMessage) (string, error)) {
 	t.toolExecutor = fn
 }

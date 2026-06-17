@@ -552,10 +552,16 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 		subTools = filtered
 	}
 
+	// MaxTurns: caller override takes precedence over agentDef default.
+	maxTurns := agentDef.MaxTurns
+	if opts.MaxTurns > 0 {
+		maxTurns = opts.MaxTurns
+	}
+
 	subEng := e.NewSubEngine(SubEngineOptions{
 		Tools:           subTools,
 		SystemPrompt:    systemPrompt,
-		MaxTurns:        agentDef.MaxTurns,
+		MaxTurns:        maxTurns,
 		Model:           model,
 		ParentToolUseID: opts.ParentToolUseID,
 		AgentType:       agentType,
