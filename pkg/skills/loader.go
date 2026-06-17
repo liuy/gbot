@@ -65,7 +65,12 @@ func (r *Registry) Load() error {
 	var allSkills []types.SkillCommand
 
 	// Source 1: Bundled skills (embedded via go:embed).
+	// RegisterBundledSkills writes them into r.skills. Snapshot them here
+	// before the unconditional/conditional split overwrites r.skills, and
+	// merge them into allSkills so they survive the final assignment.
 	r.RegisterBundledSkills()
+	bundled := r.GetAllSkills()
+	allSkills = append(allSkills, bundled...)
 
 	// Source 2: Managed skills (policy)
 	// TS: managedSkills — loadSkillsDir.ts:686-688
