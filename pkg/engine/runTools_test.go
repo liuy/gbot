@@ -1086,6 +1086,64 @@ func TestConcurrentToolLoop_DeferredToolHint(t *testing.T) {
 	}
 }
 
+// TestToolNotFound_GlobHint verifies that calling the long-gone "Glob" tool
+// (merged into Grep) returns an actionable hint instead of a bare "no such
+// tool" error — without it, models trained on Claude Code keep retrying Glob.
+func TestToolNotFound_GlobHint(t *testing.T) {
+	filteredTools := map[string]tool.Tool{} // empty — Glob is unknown
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_glob", Name: "Glob", Input: json.RawMessage(`{"pattern":"*.go"}`)},
+	}
+	result := ConcurrentToolLoop(context.Background(), filteredTools, blocks, nil, func(types.QueryEvent) {})
+
+	if len(result.ToolResultBlocks) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result.ToolResultBlocks))
+	}
+	if !result.ToolResultBlocks[0].IsError {
+		t.Fatal("expected error for unknown tool")
+	}
+	var msg string
+	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &msg); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	// Must mention Grep (the replacement tool) and concrete JSON syntax
+	// so the LLM sees `glob` as a field name in the input JSON, not
+	// a CLI flag or shorthand.
+	if !strings.Contains(msg, "Grep") {
+		t.Errorf("hint should mention Grep, got: %q", msg)
+	}
+	if !strings.Contains(msg, `"glob"`) {
+		t.Errorf("hint should show `glob` as a JSON field name, got: %q", msg)
+	}
+	if !strings.Contains(msg, "*.go") {
+		t.Errorf("hint should show a concrete glob example, got: %q", msg)
+	}
+	if strings.Contains(msg, "No such tool available") {
+		t.Errorf("hint should replace the generic 'no such tool' message, got: %q", msg)
+	}
+}
+
+// TestToolNotFound_UnknownTool_NoHint verifies that for tools the hint
+// registry doesn't know about, the error stays generic (no false hint).
+func TestToolNotFound_UnknownTool_NoHint(t *testing.T) {
+	filteredTools := map[string]tool.Tool{}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "tu_x", Name: "SomeRandomName", Input: json.RawMessage(`{}`)},
+	}
+	result := ConcurrentToolLoop(context.Background(), filteredTools, blocks, nil, func(types.QueryEvent) {})
+
+	if len(result.ToolResultBlocks) != 1 || !result.ToolResultBlocks[0].IsError {
+		t.Fatalf("expected 1 error result, got %+v", result.ToolResultBlocks)
+	}
+	var msg string
+	if err := json.Unmarshal(result.ToolResultBlocks[0].Content, &msg); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !strings.Contains(msg, "No such tool available: SomeRandomName") {
+		t.Errorf("expected generic message, got: %q", msg)
+	}
+}
+
 // TestChain_BashFileBackup_EmptyWorkingDir_NoBackupRecorded verifies the full
 // executeTool chain for Bash tools when WorkingDir is empty. In this case
 // executeTool skips TakeSnapshot (requires non-empty WorkingDir), so no files

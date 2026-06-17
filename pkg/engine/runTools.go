@@ -281,20 +281,37 @@ func (e *StreamingToolExecutor) askUser(tt *TrackedTool, decision permission.Dec
 	}
 }
 
+// toolNotFoundHints maps tool names that LLM training data references but
+// don't exist in gbot (or were merged) to actionable Grep/Bash equivalents.
+// Surfaces in AddTool's "No such tool" error so the model can self-correct
+// on the next turn instead of looping the same broken call.
+var toolNotFoundHints = map[string]string{
+	"Glob": "Tool 'Glob' does not exist — it was merged into Grep. " +
+		"Pass the glob via the `glob` JSON field: Grep {\"glob\": \"*.go\"} " +
+		"(use \"**/*.go\" for recursive).",
+}
+
+func toolNotFoundHint(name string) string {
+	return toolNotFoundHints[name]
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-// AddTool adds a tool block to the execution queue and starts it if eligible.
 // Source: StreamingToolExecutor.ts:76-124 — addTool().
 func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 	t, ok := e.toolMap[block.Name]
 	if !ok {
 		errMsg := fmt.Sprintf("No such tool available: %s", block.Name)
-		// When ToolSearch is active and the tool exists in the full map but
-		// is deferred, hint the model to use ToolSearch to discover its schema.
-		// Source: toolExecution.ts — buildSchemaNotSentHint
-		if e.tctx != nil && e.tctx.Options.Tools != nil {
+		// Tool name maps to a known merged/renamed tool (e.g. Glob → Grep).
+		// Hint takes priority over the generic message so the model can
+		// self-correct on the next turn.
+		if hint := toolNotFoundHint(block.Name); hint != "" {
+			errMsg = hint
+		} else if e.tctx != nil && e.tctx.Options.Tools != nil {
+			// When ToolSearch is active and the tool exists in the full map but
+			// is deferred, hint the model to use ToolSearch to discover its schema.
+			// Source: toolExecution.ts — buildSchemaNotSentHint
 			if fullTool, exists := e.tctx.Options.Tools[block.Name]; exists && tool.IsDeferred(fullTool) {
 				if _, hasTS := e.toolMap[ToolSearchToolName]; hasTS {
 					errMsg = fmt.Sprintf(
@@ -613,6 +630,9 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 	if !ok {
 		// Should not happen (checked in AddTool), but handle defensively.
 		errMsg := fmt.Sprintf("No such tool available: %s", tt.Name)
+		if hint := toolNotFoundHint(tt.Name); hint != "" {
+			errMsg = hint
+		}
 		errBlock := CreateToolErrorBlock(tt.ID, errMsg)
 		e.doEmit(types.QueryEvent{
 			Type: types.EventToolEnd,
