@@ -97,6 +97,9 @@ type App struct {
 	// Active dialog overlay (unified for list picking and permission asking)
 	activeDialog *Dialog
 	onDialogDone func(*Dialog) (tea.Model, tea.Cmd)
+	// modelPickerItems stores the current model list while the picker is
+	// open, so async quota fetches can update Quota on the right items.
+	modelPickerItems []ModelItem
 
 	// Info overlay (read-only text, dismiss with Esc/q)
 	infoOverlay       string
@@ -762,6 +765,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return handler(dialog)
 			}
 			return a, nil
+		case modelQuotaFetchedMsg:
+			// Fall through to the main type switch — dialog items need updating.
 		default:
 			return a, nil
 		}
@@ -854,7 +859,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		attachmentMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg,
 		permissionAskMsg, inputAskMsg, retryAttemptMsg,
-		quotaUpdatedMsg:
+		quotaUpdatedMsg, modelQuotaFetchedMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd

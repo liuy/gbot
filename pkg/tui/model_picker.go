@@ -13,6 +13,7 @@ type ModelItem struct {
 	Provider string
 	Model    string
 	Current  bool
+	Quota    string // non-empty = quota display for this provider (shared across models)
 }
 
 // Label returns a display line for the model item.
@@ -21,7 +22,11 @@ func (m *ModelItem) Label() string {
 	if m.Current {
 		current = " *"
 	}
-	return fmt.Sprintf("%s / %s%s", m.Provider, m.Model, current)
+	label := fmt.Sprintf("%s / %s%s", m.Provider, m.Model, current)
+	if m.Quota != "" {
+		label += "  " + m.Quota
+	}
+	return label
 }
 
 // buildModelItems constructs an ordered list of model items from provider configs.

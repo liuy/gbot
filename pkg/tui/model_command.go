@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -54,6 +56,8 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
+	a.modelPickerItems = modelItems
+
 	items := make([]PickerItem, len(modelItems))
 	for i := range modelItems {
 		items[i] = &modelItems[i]
@@ -67,7 +71,58 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 	a.onDialogDone = func(d *Dialog) (tea.Model, tea.Cmd) {
 		return a.handleModelPickerDone(d, captured)
 	}
-	return commitCmd
+
+	// Spawn a quota fetch for each provider that supports it.
+	// Results come back as modelQuotaFetchedMsg and rebuild the dialog.
+	fetchCmds := a.spawnModelQuotaFetches()
+	return tea.Batch(append([]tea.Cmd{commitCmd}, fetchCmds...)...)
+}
+
+// modelQuotaFetchedMsg carries the result of a single provider's quota fetch
+// for the model picker.
+type modelQuotaFetchedMsg struct {
+	provider string
+	info     quota.Info
+	err      error
+}
+
+// spawnModelQuotaFetches launches one async quota fetch per provider that has
+// a quota endpoint. Each fetch returns a modelQuotaFetchedMsg.
+func (a *App) spawnModelQuotaFetches() []tea.Cmd {
+	// Track which providers already had their fetch spawned (deduplicate).
+	seen := map[string]bool{}
+	var cmds []tea.Cmd
+
+	for _, item := range a.modelPickerItems {
+		if seen[item.Provider] {
+			continue
+		}
+		p, ok := a.providerConfigs[item.Provider]
+		if !ok {
+			seen[item.Provider] = true
+			continue
+		}
+		f := quota.Detect(p)
+		if f == nil {
+			seen[item.Provider] = true
+			continue
+		}
+
+		provider := item.Provider
+		fetcher := f
+		seen[provider] = true
+
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			info, err := fetcher.Fetch(ctx)
+			if err != nil {
+				slog.Error("quota: model picker fetch failed", "provider", provider, "error", err)
+			}
+			return modelQuotaFetchedMsg{provider: provider, info: info, err: err}
+		})
+	}
+	return cmds
 }
 
 // handleModelPickerDone processes the model picker selection or cancellation.

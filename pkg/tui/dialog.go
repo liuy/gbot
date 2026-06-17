@@ -141,6 +141,23 @@ func (d *Dialog) SelectedIndex() int {
 	return -1
 }
 
+// Cursor returns the current cursor position (-1 if empty options).
+func (d *Dialog) Cursor() int {
+	return d.cursor
+}
+
+// SetCursor sets the cursor position (clamped to valid range).
+func (d *Dialog) SetCursor(n int) {
+	if n < 0 {
+		n = 0
+	}
+	if n >= len(d.options) {
+		n = len(d.options) - 1
+	}
+	d.cursor = n
+	d.clampScroll()
+}
+
 // HandleKey processes a key event. Returns true if the key was consumed.
 func (d *Dialog) HandleKey(key tea.KeyMsg) bool {
 	if d.Done() {

@@ -94,6 +94,118 @@ func helperSetupModelPicker(a *App) []ModelItem {
 	return captured
 }
 
+func TestModelPicker_QuotaAppearsAfterFetch(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Open model picker.
+	_ = a.openModelPicker(nil)
+	if a.activeDialog == nil {
+		t.Fatal("dialog should be open after openModelPicker")
+	}
+	if len(a.modelPickerItems) == 0 {
+		t.Fatal("modelPickerItems should be populated")
+	}
+
+	// Send quota result for a known provider.
+	resetAt := time.Now().Add(2*time.Hour + 30*time.Minute) // REAL-TIME: quota reset time is inherently wall-clock based
+	msg := modelQuotaFetchedMsg{
+		provider: "openai",
+		info:     quota.Info{Used: 15, ResetAt: resetAt},
+		err:      nil,
+	}
+	handled, cmd := a.updateRepl(msg)
+	if !handled {
+		t.Fatal("updateRepl should handle modelQuotaFetchedMsg")
+	}
+	if cmd != nil {
+		t.Fatal("expected nil cmd from quota handler")
+	}
+
+	// All "openai" items should now have quota set.
+	var quotaCount int
+	for _, item := range a.modelPickerItems {
+		if item.Provider == "openai" {
+			if item.Quota == "" {
+				t.Errorf("openai item %s/%s should have quota set, got empty", item.Provider, item.Model)
+			}
+			quotaCount++
+		}
+	}
+	if quotaCount == 0 {
+		t.Fatal("no openai items found in modelPickerItems")
+	}
+
+	// Dialog options should contain the formatted quota string.
+	view := a.activeDialog.View()
+	if !strings.Contains(view, "85%") || !strings.Contains(view, "2h") {
+		t.Errorf("dialog view should contain quota '85%%/2h..m', got:\n%s", view)
+	}
+
+	// Sending a second result for the same provider should update in-place.
+	resetAt2 := time.Now().Add(1 * time.Hour) // REAL-TIME: quota reset time is inherently wall-clock based
+	msg2 := modelQuotaFetchedMsg{
+		provider: "openai",
+		info:     quota.Info{Used: 50, ResetAt: resetAt2},
+		err:      nil,
+	}
+	handled2, _ := a.updateRepl(msg2)
+	if !handled2 {
+		t.Fatal("second quota msg should be handled")
+	}
+	view2 := a.activeDialog.View()
+	// Countdown may round down to 59m depending on test timing; check Used part.
+	if !strings.Contains(view2, "50%") {
+		t.Errorf("dialog view should update to 50%%, got:\n%s", view2)
+	}
+}
+
+// TestModelPicker_QuotaThroughUpdate verifies that modelQuotaFetchedMsg
+// reaches the handler via App.Update with an active dialog.
+func TestModelPicker_QuotaThroughUpdate(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Open model picker via handleModel (the real entry point).
+	_ = a.handleModel("", nil)
+	if a.activeDialog == nil {
+		t.Fatal("dialog should be open after handleModel")
+	}
+	if len(a.modelPickerItems) == 0 {
+		t.Fatal("modelPickerItems should be populated")
+	}
+
+	// Send quota result through App.Update (the real message dispatch path).
+	resetAt := time.Now().Add(40 * time.Minute) // REAL-TIME: quota reset time
+	msg := modelQuotaFetchedMsg{
+		provider: "openai",
+		info:     quota.Info{Used: 70, ResetAt: resetAt},
+		err:      nil,
+	}
+	_, cmd := a.Update(msg)
+	if cmd != nil {
+		t.Fatal("expected nil cmd")
+	}
+
+	// All "openai" items should have quota set.
+	var quotaCount int
+	for _, item := range a.modelPickerItems {
+		if item.Provider == "openai" {
+			if item.Quota == "" {
+				t.Errorf("openai item %s/%s should have quota set, got empty", item.Provider, item.Model)
+			}
+			quotaCount++
+		}
+	}
+	if quotaCount == 0 {
+		t.Fatal("no openai items found in modelPickerItems")
+	}
+
+	// Dialog should display the quota.
+	view := a.activeDialog.View()
+	if !strings.Contains(view, "30%") {
+		t.Errorf("dialog view should contain '30%%' (100-70), got:\n%s", view)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleModel — streaming guard
 // ---------------------------------------------------------------------------

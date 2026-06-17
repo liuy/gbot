@@ -720,6 +720,34 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, nil
 
+	case modelQuotaFetchedMsg:
+		if m.err != nil || a.activeDialog == nil || len(a.modelPickerItems) == 0 {
+			return true, nil
+		}
+		quotaDisplay := formatQuota(&m.info)
+		updated := false
+		for i := range a.modelPickerItems {
+			if a.modelPickerItems[i].Provider == m.provider {
+				a.modelPickerItems[i].Quota = quotaDisplay
+				updated = true
+			}
+		}
+		if !updated {
+			return true, nil
+		}
+		slog.Info("quota: model picker updated", "provider", m.provider, "display", quotaDisplay)
+		// Rebuild dialog options from the (now updated) items, preserving cursor.
+		items := make([]PickerItem, len(a.modelPickerItems))
+		for i := range a.modelPickerItems {
+			items[i] = &a.modelPickerItems[i]
+		}
+		cursor := a.activeDialog.Cursor()
+		a.activeDialog = NewDialog("Select model", pickerItemsToOptions(items))
+		a.activeDialog.SetCursor(cursor)
+		a.activeDialog.width = a.width
+		a.markViewportDirty()
+		return true, nil
+
 	case thinkingStartMsg:
 		if m.Agent != nil {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
