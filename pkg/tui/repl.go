@@ -1014,7 +1014,19 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		a.thinkingActive = false
 		a.thinkingDuration = 0
 		a.status.SetUsage(types.Usage{})
-		return a.readEvents()
+		a.responseCharCount = 0
+		a.tokenRate.Reset()
+		a.displayedInputTokens = 0
+		a.displayedOutputTokens = 0
+		a.cacheReadTokens = 0
+		a.cacheCreationTokens = 0
+		a.inputTokenTarget = types.EstimateTokens(a.systemPrompt) + types.EstimateTokens(displayText)
+		return tea.Batch(
+			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+				return spinnerTickMsg{}
+			}),
+			a.readEvents(),
+		)
 	}
 
 	a.repl.AddUserMessage(text)
