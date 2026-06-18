@@ -30,21 +30,43 @@ func (m *ModelItem) Label() string {
 }
 
 // buildModelItems constructs an ordered list of model items from provider configs.
+//
+// Regular providers appear first (alphabetical). Providers marked `free: true`
+// (OpenRouter free models) appear last so they don't drown out the main
+// configured providers in the picker.
 func buildModelItems(providers map[string]llm.Provider, providerConfigs map[string]*config.Provider, currentProvider string, currentModel string) []ModelItem {
-	var items []ModelItem
-
-	names := make([]string, 0, len(providerConfigs))
-	for n := range providerConfigs {
-		names = append(names, n)
+	// Split names into regular and free groups so free providers sort last.
+	var regular, free []string
+	for n, cfg := range providerConfigs {
+		if cfg.Free {
+			free = append(free, n)
+		} else {
+			regular = append(regular, n)
+		}
 	}
-	sort.Strings(names)
+	sort.Strings(regular)
+	sort.Strings(free)
 
-	for _, name := range names {
+	var items []ModelItem
+	for _, name := range regular {
 		cfg := providerConfigs[name]
 		if _, ok := providers[name]; !ok {
 			continue
 		}
-		for modelName := range cfg.Models {
+		for _, modelName := range cfg.Models.Ordered() {
+			items = append(items, ModelItem{
+				Provider: name,
+				Model:    modelName,
+				Current:  name == currentProvider && modelName == currentModel,
+			})
+		}
+	}
+	for _, name := range free {
+		cfg := providerConfigs[name]
+		if _, ok := providers[name]; !ok {
+			continue
+		}
+		for _, modelName := range cfg.Models.Ordered() {
 			items = append(items, ModelItem{
 				Provider: name,
 				Model:    modelName,

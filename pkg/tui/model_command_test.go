@@ -51,19 +51,19 @@ func newTestAppWithProviders(t *testing.T) *App {
 				Name: "openai",
 				URL:  "https://api.example.com",
 				Keys: []string{"test-key"},
-				Models: map[string]config.ModelConfig{
+				Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 					"glm-lite": {},
 					"glm-5":    {},
 					"glm-max":  {},
-				},
+				}),
 			},
 			{
 				Name: "anthropic",
 				URL:  "https://api.anthropic.com",
 				Keys: []string{"test-key-2"},
-				Models: map[string]config.ModelConfig{
+				Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 					"claude-sonnet": {},
-				},
+				}),
 			},
 		},
 	}
@@ -653,15 +653,15 @@ func TestBuildModelItems_SkipsProviderWithoutImpl(t *testing.T) {
 	providerConfigs := map[string]*config.Provider{
 		"openai": {
 			Name: "openai",
-			Models: map[string]config.ModelConfig{
+			Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 				"glm-5": {},
-			},
+			}),
 		},
 		"anthropic": {
 			Name: "anthropic",
-			Models: map[string]config.ModelConfig{
+			Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 				"claude-sonnet": {},
-			},
+			}),
 		},
 	}
 	items := buildModelItems(providers, providerConfigs, "openai", "glm-5")

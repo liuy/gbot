@@ -34,9 +34,9 @@ func TestResolveContext_ModelConfigOverride(t *testing.T) {
 	t.Parallel()
 
 	p := &Provider{
-		Models: map[string]ModelConfig{
+		Models: NewModelsFromMap(map[string]ModelConfig{
 			"glm-5": {Context: IntOrHuman(256000)},
-		},
+		}),
 	}
 	cw := p.ResolveContext("glm-5")
 	if cw != 256000 {
@@ -47,7 +47,7 @@ func TestResolveContext_ModelConfigOverride(t *testing.T) {
 func TestResolveContext_FallbackToDefault(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{Models: map[string]ModelConfig{}}
+	p := &Provider{Models: NewModelsFromMap(map[string]ModelConfig{})}
 	cw := p.ResolveContext("glm-5")
 	if cw != 200*1024 {
 		t.Errorf("fallback ResolveContext = %d, want %d", cw, 200*1024)
@@ -58,9 +58,9 @@ func TestResolveMaxTokens_ModelConfigOverride(t *testing.T) {
 	t.Parallel()
 
 	p := &Provider{
-		Models: map[string]ModelConfig{
+		Models: NewModelsFromMap(map[string]ModelConfig{
 			"glm-5": {MaxTokens: IntOrHuman(8192)},
-		},
+		}),
 	}
 	mt := p.ResolveMaxTokens("glm-5")
 	if mt != 8192 {
@@ -71,7 +71,7 @@ func TestResolveMaxTokens_ModelConfigOverride(t *testing.T) {
 func TestResolveMaxTokens_FallbackToDefault(t *testing.T) {
 	t.Parallel()
 
-	p := &Provider{Models: map[string]ModelConfig{}}
+	p := &Provider{Models: NewModelsFromMap(map[string]ModelConfig{})}
 	mt := p.ResolveMaxTokens("glm-5")
 	if mt != 32*1024 {
 		t.Errorf("fallback ResolveMaxTokens = %d, want %d", mt, 32*1024)
@@ -83,9 +83,9 @@ func TestResolveInput_ModelConfigOverride(t *testing.T) {
 
 	want := []string{"text", "image", "audio"}
 	p := &Provider{
-		Models: map[string]ModelConfig{
+		Models: NewModelsFromMap(map[string]ModelConfig{
 			"multimodal": {Input: want},
-		},
+		}),
 	}
 	got := p.ResolveInput("multimodal")
 	if len(got) != len(want) {
@@ -102,7 +102,7 @@ func TestResolveInput_FallbackToDefault(t *testing.T) {
 	t.Parallel()
 
 	// Unknown model → default ["text"]
-	p := &Provider{Models: map[string]ModelConfig{}}
+	p := &Provider{Models: NewModelsFromMap(map[string]ModelConfig{})}
 	got := p.ResolveInput("unknown")
 	want := []string{"text"}
 	if len(got) != len(want) {
@@ -114,9 +114,9 @@ func TestResolveInput_FallbackToDefault(t *testing.T) {
 
 	// Known model with empty Input → default ["text"]
 	p2 := &Provider{
-		Models: map[string]ModelConfig{
+		Models: NewModelsFromMap(map[string]ModelConfig{
 			"empty-input": {Input: nil},
-		},
+		}),
 	}
 	got2 := p2.ResolveInput("empty-input")
 	if len(got2) != 1 || got2[0] != "text" {

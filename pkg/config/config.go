@@ -50,11 +50,12 @@ type ModelConfig struct {
 
 // Provider holds configuration for a single LLM provider.
 type Provider struct {
-	Name   string                 `json:"name"`           // display name, e.g. "zhipu", "minimax"
-	URL    string                 `json:"url"`            // e.g. "https://api.anthropic.com"
-	Keys   []string               `json:"keys"`           // API keys or "$ENV_VAR" references
-	Models map[string]ModelConfig `json:"models"`         // model name → metadata, e.g. {"glm-5": {context: "32k"}}
-	Type   string                 `json:"type,omitempty"` // "auto" (default) | "openai" | "anthropic"
+	Name   string   `json:"name"`           // display name, e.g. "zhipu", "minimax"
+	URL    string   `json:"url"`            // e.g. "https://api.anthropic.com"
+	Keys   []string `json:"keys"`           // API keys or "$ENV_VAR" references
+	Models Models   `json:"models"`         // model name → metadata. Ordered (see Models type).
+	Type   string   `json:"type,omitempty"` // "auto" (default) | "openai" | "anthropic"
+	Free   bool     `json:"free,omitempty"` // if true, fetch free models from /api/v1/models at startup (OpenRouter)
 }
 
 const (
@@ -92,35 +93,34 @@ func (p *Provider) ResolveKey() string {
 	return ""
 }
 
-// ModelNames returns all model names defined for this provider.
+// ModelNames returns all model names defined for this provider, in
+// configuration order (settings.json key order, or API-returned order
+// for free providers).
 func (p *Provider) ModelNames() []string {
-	names := make([]string, 0, len(p.Models))
-	for name := range p.Models {
-		names = append(names, name)
-	}
-	return names
+	return p.Models.Ordered()
 }
 
 // HasModel returns true if this provider has a model with the exact name.
 func (p *Provider) HasModel(name string) bool {
-	_, ok := p.Models[name]
-	return ok
+	return p.Models.Has(name)
 }
 
 // GetModelConfig returns the ModelConfig for a model, or nil if not found.
 func (p *Provider) GetModelConfig(name string) *ModelConfig {
-	if mc, ok := p.Models[name]; ok {
+	if mc, ok := p.Models.Get(name); ok {
 		return &mc
 	}
 	return nil
 }
 
-// FirstModelName returns the first model name. Used as fallback when Config.Model is empty.
+// FirstModelName returns the first model name (in config order). Used as
+// fallback when Config.Model is empty.
 func (p *Provider) FirstModelName() string {
-	for name := range p.Models {
-		return name
+	names := p.Models.Ordered()
+	if len(names) == 0 {
+		return ""
 	}
-	return ""
+	return names[0]
 }
 
 // DefaultConfig returns the default configuration.

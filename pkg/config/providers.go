@@ -1,8 +1,10 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/liuy/gbot/pkg/llm"
 )
@@ -14,6 +16,36 @@ type ProviderMap map[string]llm.Provider
 // Each provider must have at least one model defined.
 func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 	m := make(ProviderMap)
+
+	// Fetch free models for providers marked with `free: true`.
+	// Done once at startup; failures are logged and skipped (user can
+	// still use other providers).
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if !p.Free {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		models, err := FetchFreeModels(ctx, p.URL)
+		cancel()
+		if err != nil {
+			slog.Warn("free models fetch failed", "provider", p.Name, "error", err)
+			continue
+		}
+		if len(models) == 0 {
+			slog.Warn("free models fetch returned 0 models", "provider", p.Name)
+			continue
+		}
+		for _, mm := range models {
+			if p.Models.Has(mm.ID) {
+				continue // static config takes precedence
+			}
+			p.Models.Set(mm.ID, ModelConfig{
+				Context: IntOrHuman(mm.ContextLength),
+			})
+		}
+		slog.Info("free models loaded", "provider", p.Name, "count", len(models))
+	}
 
 	provider, modelName, err := cfg.ResolveModel()
 	if err != nil {
@@ -29,7 +61,7 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 		if apiKey == "" {
 			continue
 		}
-		if len(p.Models) == 0 {
+		if p.Models.Len() == 0 {
 			slog.Warn("provider has no models defined, skipping", "provider", p.Name)
 			continue
 		}

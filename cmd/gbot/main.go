@@ -215,7 +215,8 @@ func main() {
 	// Models config. Models not present in any provider omit the field entirely.
 	modelThinking := map[string]llm.ThinkingMode{}
 	for i := range cfg.Providers {
-		for name, mc := range cfg.Providers[i].Models {
+		for _, name := range cfg.Providers[i].Models.Ordered() {
+			mc, _ := cfg.Providers[i].Models.Get(name)
 			if mc.Thinking != "" {
 				modelThinking[name] = mc.Thinking
 			}

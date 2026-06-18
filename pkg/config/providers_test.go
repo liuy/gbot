@@ -14,19 +14,19 @@ func TestCreateAllProviders_AnthropicAndOpenAI(t *testing.T) {
 				Name: "claude",
 				URL:  "https://api.anthropic.com",
 				Keys: []string{"sk-test-key-1"},
-				Models: map[string]ModelConfig{
+				Models: NewModelsFromMap(map[string]ModelConfig{
 					"claude-3-5-sonnet": {},
 					"claude-3-opus":     {},
-				},
+				}),
 				Type: ProviderTypeAnthropic,
 			},
 			{
 				Name: "deepseek",
 				URL:  "https://api.deepseek.com",
 				Keys: []string{"sk-test-key-2"},
-				Models: map[string]ModelConfig{
+				Models: NewModelsFromMap(map[string]ModelConfig{
 					"deepseek-chat": {},
-				},
+				}),
 				Type: ProviderTypeOpenAI,
 			},
 		},
@@ -64,9 +64,9 @@ func TestCreateAllProviders_NoAPIKey(t *testing.T) {
 			{
 				Name: "nokey",
 				Keys: []string{},
-				Models: map[string]ModelConfig{
+				Models: NewModelsFromMap(map[string]ModelConfig{
 					"some-model": {},
-				},
+				}),
 			},
 		},
 	}
@@ -85,9 +85,9 @@ func TestCreateAllProviders_DefaultAnthropicURL(t *testing.T) {
 			{
 				Name: "claude-default-url",
 				Keys: []string{"sk-key"},
-				Models: map[string]ModelConfig{
+				Models: NewModelsFromMap(map[string]ModelConfig{
 					"claude-3-5-sonnet": {},
-				},
+				}),
 				Type: ProviderTypeAnthropic,
 				// URL intentionally empty
 			},
@@ -130,10 +130,10 @@ func TestCreateAllProviders_SpecificModel(t *testing.T) {
 			{
 				Name: "myprovider",
 				Keys: []string{"sk-key"},
-				Models: map[string]ModelConfig{
+				Models: NewModelsFromMap(map[string]ModelConfig{
 					"pro-model":  {},
 					"lite-model": {},
-				},
+				}),
 				Type: ProviderTypeOpenAI,
 			},
 		},

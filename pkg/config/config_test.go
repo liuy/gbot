@@ -553,11 +553,11 @@ func TestProvider_ModelNames(t *testing.T) {
 
 	p := config.Provider{
 		Name: "test",
-		Models: map[string]config.ModelConfig{
+		Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 			"glm-5":     {},
 			"glm-5.1":   {Context: config.IntOrHuman(200 * 1024)},
 			"minimax-3": {Context: config.IntOrHuman(1024 * 1024), Input: []string{"text", "image"}},
-		},
+		}),
 	}
 
 	names := p.ModelNames()
@@ -577,12 +577,12 @@ func TestProvider_ModelNames(t *testing.T) {
 func TestProvider_FirstModelName(t *testing.T) {
 	t.Parallel()
 
-	p := config.Provider{Name: "test", Models: map[string]config.ModelConfig{"glm-5": {}}}
+	p := config.Provider{Name: "test", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}})}
 	if p.FirstModelName() != "glm-5" {
 		t.Errorf("FirstModelName() = %q, want %q", p.FirstModelName(), "glm-5")
 	}
 
-	empty := config.Provider{Name: "test", Models: map[string]config.ModelConfig{}}
+	empty := config.Provider{Name: "test", Models: config.NewModelsFromMap(map[string]config.ModelConfig{})}
 	if empty.FirstModelName() != "" {
 		t.Errorf("empty FirstModelName() = %q, want empty", empty.FirstModelName())
 	}
@@ -593,9 +593,9 @@ func TestProvider_ResolveContext_Default(t *testing.T) {
 
 	p := config.Provider{
 		Name: "test",
-		Models: map[string]config.ModelConfig{
+		Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 			"model-a": {},
-		},
+		}),
 	}
 
 	// Empty ModelConfig → default 200k
@@ -616,10 +616,10 @@ func TestProvider_ResolveContext_Custom(t *testing.T) {
 
 	p := config.Provider{
 		Name: "test",
-		Models: map[string]config.ModelConfig{
+		Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 			"big-model":   {Context: config.IntOrHuman(1024 * 1024)},
 			"small-model": {Context: config.IntOrHuman(50 * 1024)},
-		},
+		}),
 	}
 
 	if ctx := p.ResolveContext("big-model"); ctx != 1024*1024 {
@@ -635,9 +635,9 @@ func TestProvider_ResolveMaxTokens_Default(t *testing.T) {
 
 	p := config.Provider{
 		Name: "test",
-		Models: map[string]config.ModelConfig{
+		Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 			"model-a": {},
-		},
+		}),
 	}
 
 	// Empty ModelConfig → default 32k
@@ -652,9 +652,9 @@ func TestProvider_ResolveMaxTokens_Custom(t *testing.T) {
 
 	p := config.Provider{
 		Name: "test",
-		Models: map[string]config.ModelConfig{
+		Models: config.NewModelsFromMap(map[string]config.ModelConfig{
 			"model-a": {MaxTokens: config.IntOrHuman(16 * 1024)},
-		},
+		}),
 	}
 
 	mt := p.ResolveMaxTokens("model-a")
@@ -824,7 +824,7 @@ func TestResolveModel_ExactMatch(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5"},
 		Providers: []config.Provider{
-			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}})},
 		},
 	}
 	p, model, err := cfg.ResolveModel()
@@ -844,7 +844,7 @@ func TestResolveModel_FuzzyMatch(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "glm-5"},
 		Providers: []config.Provider{
-			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}, "glm-5.1": {}}},
+			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}, "glm-5.1": {}})},
 		},
 	}
 	p, model, err := cfg.ResolveModel()
@@ -863,7 +863,7 @@ func TestResolveModel_Empty(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
 		Providers: []config.Provider{
-			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}})},
 		},
 	}
 	p, model, err := cfg.ResolveModel()
@@ -883,7 +883,7 @@ func TestResolveModel_NotFound(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "nonexistent"},
 		Providers: []config.Provider{
-			{Name: "zhipu", Models: map[string]config.ModelConfig{"glm-5": {}}},
+			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}})},
 		},
 	}
 	_, _, err := cfg.ResolveModel()

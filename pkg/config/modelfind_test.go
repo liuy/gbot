@@ -97,7 +97,7 @@ func TestResolveModel_ProviderHasNoModels(t *testing.T) {
 
 	cfg := &Config{
 		Providers: []Provider{
-			{Name: "empty", Models: map[string]ModelConfig{}},
+			{Name: "empty", Models: NewModelsFromMap(map[string]ModelConfig{})},
 		},
 	}
 	_, _, err := cfg.ResolveModel()
@@ -115,7 +115,7 @@ func TestResolveModel_ProviderNotFound(t *testing.T) {
 	cfg := &Config{
 		Model: ModelSpec{"default": "unknown/glm-5"},
 		Providers: []Provider{
-			{Name: "zhipu", Models: map[string]ModelConfig{"glm-5": {}}},
+			{Name: "zhipu", Models: NewModelsFromMap(map[string]ModelConfig{"glm-5": {}})},
 		},
 	}
 	_, _, err := cfg.ResolveModel()
@@ -136,7 +136,7 @@ func TestResolveModel_ModelNotFoundInProvider(t *testing.T) {
 	cfg := &Config{
 		Model: ModelSpec{"default": "zhipu/nonexistent"},
 		Providers: []Provider{
-			{Name: "zhipu", Models: map[string]ModelConfig{"glm-5": {}}},
+			{Name: "zhipu", Models: NewModelsFromMap(map[string]ModelConfig{"glm-5": {}})},
 		},
 	}
 	_, _, err := cfg.ResolveModel()
@@ -171,8 +171,8 @@ func TestResolveModel_CrossProviderMatch(t *testing.T) {
 	cfg := &Config{
 		Model: ModelSpec{"default": "glm-5"},
 		Providers: []Provider{
-			{Name: "zhipu", Models: map[string]ModelConfig{"glm-5": {}}},
-			{Name: "other", Models: map[string]ModelConfig{"other-model": {}}},
+			{Name: "zhipu", Models: NewModelsFromMap(map[string]ModelConfig{"glm-5": {}})},
+			{Name: "other", Models: NewModelsFromMap(map[string]ModelConfig{"other-model": {}})},
 		},
 	}
 	p, model, err := cfg.ResolveModel()
@@ -323,13 +323,13 @@ func TestCreateAllProviders_ProviderWithoutModels(t *testing.T) {
 			{
 				Name:   "with-models",
 				Keys:   []string{"sk-key2"},
-				Models: map[string]ModelConfig{"real-model": {}},
+				Models: NewModelsFromMap(map[string]ModelConfig{"real-model": {}}),
 				Type:   ProviderTypeOpenAI,
 			},
 			{
 				Name:   "empty-models",
 				Keys:   []string{"sk-key"},
-				Models: map[string]ModelConfig{},
+				Models: NewModelsFromMap(map[string]ModelConfig{}),
 				Type:   ProviderTypeOpenAI,
 			},
 		},
