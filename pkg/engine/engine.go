@@ -707,6 +707,7 @@ func (e *Engine) RunSkill(ctx context.Context, skillName, args, systemPrompt str
 				AgentType:       cmd.AgentType,
 				Model:           cmd.Model,
 				ParentToolUseID: forkToolID,
+				GitStatus:       e.sharedDeps.GitStatus,
 			})
 
 			resultText := "Skill execution completed"

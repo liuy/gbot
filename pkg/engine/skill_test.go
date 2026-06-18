@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/skills"
 	taskpkg "github.com/liuy/gbot/pkg/tool/task"
@@ -259,5 +260,60 @@ func TestRunSkill_UnknownSkill_EmitsError(t *testing.T) {
 	}
 	if !strings.Contains(result.Error.Error(), "unknown skill") {
 		t.Errorf("error = %q, want 'unknown skill'", result.Error.Error())
+	}
+}
+
+// TestRunSkill_Fork_PassesGitStatus verifies that a fork skill launches its
+// sub-agent WITH GitStatus propagated, so the sub-agent's <env> block says
+// "Is directory a git repo: Yes" instead of "No".
+//
+// Regression: engine.RunSkill's fork/new branch called RunAgent without
+// passing GitStatus, so sub-agents launched via /<skill> (e.g. /plan →
+// Planner) saw "Not a git repo" in their system prompt even when running
+// inside a git repo. The AgentTool.Call path was unaffected because it
+// passes t.gitStatus explicitly.
+func TestRunSkill_Fork_PassesGitStatus(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry(t.TempDir())
+	reg.RegisterBundledSkill(types.SkillCommand{
+		Name:      "fork-git-test",
+		Type:      "prompt",
+		Context:   "fork",
+		AgentType: "General",
+		Source:    types.SkillSourceBundled,
+		Content:   "Review the code.",
+	})
+
+	gs := &ctxbuild.GitStatusInfo{IsGit: true, Branch: "master", IsDirty: false}
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		GitStatus:  gs,
+		TaskList:   taskpkg.NewList(t.TempDir()),
+		SkillReg:   reg,
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	cp := &captureProvider{events: textStreamEvents("test", "ok")}
+	eng := New(&Params{Provider: cp, Model: "test"})
+	eng.SetSharedDeps(&deps)
+	eng.SetSkillRegistry(reg)
+	defer eng.Close()
+
+	ec := newEventCollector()
+	eng.SetDispatcher(ec)
+
+	eng.RunSkill(context.Background(), "fork-git-test", "", "test system prompt")
+	_ = ec.WaitForResult()
+
+	if len(cp.allReqs) == 0 {
+		t.Fatal("provider Stream not invoked — sub-agent never ran")
+	}
+	// The first request is the sub-agent's (fork runs sub before main summary).
+	subReq := cp.allReqs[0]
+	// The <env> block in the sub-agent system prompt must reflect git status.
+	// Source: pkg/tool/agent/agent.go buildEnvBlock — writes "Yes" or "No".
+	if !strings.Contains(string(subReq.System), "Is directory a git repo: Yes") {
+		t.Errorf("sub-agent system prompt missing 'Is directory a git repo: Yes'\n--- got ---\n%s", string(subReq.System))
 	}
 }

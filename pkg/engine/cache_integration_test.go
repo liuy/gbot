@@ -17,6 +17,7 @@ import (
 // captureProvider records the request passed to Stream for assertion.
 type captureProvider struct {
 	lastReq *llm.Request
+	allReqs []*llm.Request
 	events  []llm.StreamEvent
 }
 
@@ -26,6 +27,7 @@ func (c *captureProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Resp
 
 func (c *captureProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
 	c.lastReq = req
+	c.allReqs = append(c.allReqs, req)
 	ch := make(chan llm.StreamEvent, len(c.events)+1)
 	go func() {
 		defer close(ch)
