@@ -1776,6 +1776,59 @@ func TestNewSubEngine_TaggedDispatcher(t *testing.T) {
 	}
 }
 
+// TestNewSubEngine_GrandchildDepthIsTwo verifies that a sub-engine spawned
+// from another sub-engine (grandchild, depth=2) carries AgentMeta.Depth=2,
+// not Depth=1.
+//
+// Regression: NewSubEngine did not propagate agentMetaDepth from parent to
+// child, so every sub-engine defaulted to depth=0 and computed its own
+// dispatcher meta depth as 0+1=1 regardless of nesting level. The TUI then
+// rendered grandchildren at the same indent as their parent sub-agent.
+func TestNewSubEngine_GrandchildDepthIsTwo(t *testing.T) {
+	t.Parallel()
+
+	md := &mockDispatcher{}
+	eng := New(&Params{
+		Provider:   &testProvider{},
+		Dispatcher: md,
+		Model:      "test",
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	// Depth 1: main → sub
+	subEng := eng.NewSubEngine(SubEngineOptions{
+		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
+		ParentToolUseID: "call_sub",
+		AgentType:       "General",
+	})
+	// Depth 2: sub → grandchild
+	grandEng := subEng.NewSubEngine(SubEngineOptions{
+		Tools:           map[string]tool.Tool{"test": &testTool{name: "test"}},
+		ParentToolUseID: "call_grand",
+		AgentType:       "General",
+	})
+
+	// Emit an event through the grandchild and verify its AgentMeta.Depth.
+	grandEng.emitEvent(types.QueryEvent{
+		Type:    types.EventToolStart,
+		ToolUse: &types.ToolUseEvent{ID: "grand_tool", Name: "Bash"},
+	})
+
+	if len(md.events) != 1 {
+		t.Fatalf("expected 1 event via mock dispatcher, got %d", len(md.events))
+	}
+	got := md.events[0].Agent
+	if got == nil {
+		t.Fatal("grandchild event should carry AgentMeta")
+	}
+	if got.Depth != 2 {
+		t.Errorf("grandchild AgentMeta.Depth = %d, want 2 (nesting level main→sub→grand)", got.Depth)
+	}
+	if got.ParentToolUseID != "call_grand" {
+		t.Errorf("grandchild ParentToolUseID = %q, want %q", got.ParentToolUseID, "call_grand")
+	}
+}
+
 func TestNewSubEngine_NoDispatcher_NoTagged(t *testing.T) {
 	t.Parallel()
 

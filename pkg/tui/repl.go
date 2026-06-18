@@ -481,6 +481,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.markViewportDirty()
 		if m.Agent != nil {
 			parent := a.repl.findToolView(m.Agent.ParentToolUseID)
+			slog.Info("tui:tool_start_subagent", "id", m.ID, "name", m.Name, "parentID", m.Agent.ParentToolUseID, "depth", m.Agent.Depth, "agentType", m.Agent.AgentType, "parentFound", parent != nil)
 			if parent != nil {
 				srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
 				parent.Blocks = append(parent.Blocks, ContentBlock{

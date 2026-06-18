@@ -3483,9 +3483,32 @@ type taggedDispatcher struct {
 }
 
 func (d *taggedDispatcher) Dispatch(event types.QueryEvent) {
-	event.Agent = d.meta
-	slog.Info("tagged:dispatch", "type", event.Type, "agentType", d.meta.AgentType, "parentID", d.meta.ParentToolUseID, "text", truncate(event.Text, 40))
+	// Preserve the deepest agent meta. When a grandchild event bubbles up
+	// through sub → main, each layer's taggedDispatcher used to overwrite
+	// event.Agent, leaving the TUI with the outermost (least-nested) meta
+	// and causing grandchildren to render at their parent's indent.
+	// Keep the first (deepest) assignment; outer layers only forward.
+	if event.Agent == nil {
+		event.Agent = d.meta
+	}
+	slog.Info("tagged:dispatch", "type", event.Type, "agentType", d.meta.AgentType, "parentID", d.meta.ParentToolUseID, "depth", d.meta.Depth, "toolID", eventToolID(event), "eventAgentDepth", agentDepthField(event.Agent), "text", truncate(event.Text, 40))
 	d.parent.Dispatch(event)
+}
+
+// agentDepthField safely extracts Depth from a possibly-nil AgentMeta for logging.
+func agentDepthField(m *types.AgentMeta) int {
+	if m == nil {
+		return -1
+	}
+	return m.Depth
+}
+
+// eventToolID extracts the tool use ID from an event for logging, or "" if none.
+func eventToolID(event types.QueryEvent) string {
+	if event.ToolUse != nil {
+		return event.ToolUse.ID
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -3533,21 +3556,22 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 
 	return &Engine{
-		provider:                e.provider,
-		tools:                   opts.Tools,
-		toolOrder:               toolOrder,
-		model:                   model,
-		maxTokens:               e.maxTokens,
-		logger:                  e.logger,
-		messages:                []types.Message{},
-		tokenBudget:             0, // sub-agents bypass budget checks via isSubagent
-		turnCount:               0,
-		dispatcher:              dispatcher,
-		attachments:             &attachment.Queue{},
-		reminderEngine:          attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
-		isSubagent:              true,
-		agentType:               opts.AgentType,
-		maxTurns:                subMaxTurns(opts.MaxTurns),
+		provider:       e.provider,
+		tools:          opts.Tools,
+		toolOrder:      toolOrder,
+		model:          model,
+		maxTokens:      e.maxTokens,
+		logger:         e.logger,
+		messages:       []types.Message{},
+		tokenBudget:    0, // sub-agents bypass budget checks via isSubagent
+		turnCount:      0,
+		dispatcher:     dispatcher,
+		attachments:    &attachment.Queue{},
+		reminderEngine: attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
+		isSubagent:     true,
+		agentMetaDepth: e.agentMetaDepth + 1,
+		agentType:      opts.AgentType,
+		maxTurns:       subMaxTurns(opts.MaxTurns),
 		// sharedDeps propagates so sub-agents can themselves spawn
 		// sub-agents (grandchildren). Without this, AgentTool.Call inside
 		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the
