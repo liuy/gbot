@@ -168,8 +168,12 @@ var checkPatterns = []checkPattern{
 		Regex: regexp.MustCompile(`len\([^)]+\)\s*>\s*0`),
 		Level: "P3",
 		Exempt: func(match string, lines []string, lineIdx int) bool {
-			// Exempt: for loop conditions (trim pattern)
+			// Exempt: comments — same as other patterns in this file.
 			trimmed := strings.TrimSpace(lines[lineIdx])
+			if strings.HasPrefix(trimmed, "//") {
+				return true
+			}
+			// Exempt: for loop conditions (trim pattern)
 			if strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "for(") {
 				return true
 			}
