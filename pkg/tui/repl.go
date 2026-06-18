@@ -448,18 +448,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				}),
 			)
 		}
-		// Main-engine turn: count and fetch quota every 3rd turn so long
-		// queries get mid-stream quota updates without waiting for queryEnd.
-		// N=3 chosen because a single LLM turn may batch multiple tool calls,
-		// so a "9 tool call" task is actually ~3 turns.
-		a.quotaTurnCount++
-		var fetchCmd tea.Cmd
-		if a.quotaTurnCount%3 == 0 {
-			fetchCmd = a.fetchQuota()
-		}
-		if fetchCmd != nil {
-			return true, tea.Batch(a.readEvents(), fetchCmd)
-		}
 		return true, a.readEvents()
 
 	case retryAttemptMsg:
@@ -681,15 +669,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.contentCache = ""
 		a.contentDirty = false
 
-		// Async quota refresh: fetch fresh 5h-window quota after each query,
-		// update the status bar when the result arrives. Non-blocking —
-		// any in-flight fetch is discarded on the next query.
-		a.quotaTurnCount = 0 // reset per-query counter
-		fetchCmd := a.fetchQuota()
-
 		// Keep listening for Hub events while idle (Path B: fork agent
 		// notifications). readEvents blocks on appCh.
-		return true, tea.Batch(a.readEvents(), fetchCmd)
+		return true, a.readEvents()
 
 	case usageMsg:
 		// Accumulate billing cost from each turn's message_delta.
@@ -958,9 +940,22 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
 			outputTarget := max(a.responseCharCount/4, a.outputTokenTarget)
 			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
-			return true, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-				return spinnerTickMsg{}
-			})
+
+			// Quota fetch piggybacks on the 100ms spinner tick: every 100
+			// ticks (~10s) fire one fetch. This replaces the turnStart
+			// per-3-turn approach — cleaner because it ties to wall time
+			// rather than turn count, and only runs while streaming.
+			var fetchCmd tea.Cmd
+			if a.toolBlinkTick%100 == 0 {
+				fetchCmd = a.fetchQuota()
+			}
+
+			return true, tea.Batch(
+				tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+					return spinnerTickMsg{}
+				}),
+				fetchCmd,
+			)
 		}
 		return true, nil
 

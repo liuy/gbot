@@ -1142,6 +1142,52 @@ func TestApp_Update_SpinnerTick_NotStreaming_ReturnsNil(t *testing.T) {
 	}
 }
 
+// TestApp_QuotaFetch_PiggybacksOnSpinnerTick verifies that quota fetching
+// is driven by the spinner tick counter (every 100 ticks ≈ 10s), replacing
+// the old turnStart per-3-turn approach.
+//
+// Strategy: two sub-tests.
+//  1. fetchUnit — fetchQuota() returns a cmd that, when executed,
+//     calls the quota fetcher exactly once.
+//  2. tickTrigger — after 100 spinner ticks, the returned cmd is non-nil
+//     (contains a fetch), proving the %100 gate works.
+func TestApp_QuotaFetch_PiggybacksOnSpinnerTick(t *testing.T) {
+	t.Run("fetchUnit", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		fetcher := &countingFetcher{}
+		app.quotaFetcher = fetcher
+
+		cmd := app.fetchQuota()
+		if cmd == nil {
+			t.Fatal("fetchQuota() returned nil cmd")
+		}
+		msg := cmd()
+		if _, ok := msg.(quotaUpdatedMsg); !ok {
+			t.Fatalf("fetchQuota() cmd returned %T, want quotaUpdatedMsg", msg)
+		}
+		if fetcher.calls != 1 {
+			t.Errorf("fetcher.Fetch calls = %d, want 1", fetcher.calls)
+		}
+	})
+	t.Run("tickTrigger", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.streaming = true
+		app.spinner.Start()
+		fetcher := &countingFetcher{}
+		app.quotaFetcher = fetcher
+
+		// 99 ticks → no fetch (toolBlinkTick=99, 99%100≠0)
+		for range 99 {
+			app.updateRepl(spinnerTickMsg{})
+		}
+		// 100th tick → fetch should fire
+		_, cmd := app.updateRepl(spinnerTickMsg{})
+		if cmd == nil {
+			t.Fatal("at tick 100: spinner tick returned nil cmd, expected Batch with fetch")
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // AppendChunk / AppendTextItem — nil lastMsg
 // ---------------------------------------------------------------------------
@@ -8843,88 +8889,6 @@ func TestTextDelta_ClearsRetryActiveAfterRetry(t *testing.T) {
 //
 // N=3 because a single LLM turn may batch multiple tool calls — a "9 tool
 // call" task is actually ~3 turns, and we want a mid-stream fetch there.
-func TestTurnStart_QuotaCounterEvery3rdTurn(t *testing.T) {
-	t.Parallel()
-
-	app := newTestApp(&tuiMockProvider{})
-	app.quotaFetcher = &countingFetcher{}
-	app.repl.StartQuery() // streaming = true
-
-	// Turns 1-2: counter increments, no fetch cmd.
-	for i := 1; i <= 2; i++ {
-		_, _ = app.updateRepl(turnStartMsg{})
-		if app.quotaTurnCount != i {
-			t.Errorf("turn %d: quotaTurnCount = %d, want %d", i, app.quotaTurnCount, i)
-		}
-	}
-
-	// 3rd turn: counter = 3, returns BatchMsg (readEvents + fetch).
-	_, cmd := app.updateRepl(turnStartMsg{})
-	if app.quotaTurnCount != 3 {
-		t.Errorf("turn 3: quotaTurnCount = %d, want 3", app.quotaTurnCount)
-	}
-	if cmd == nil {
-		t.Fatal("turn 3 should return a batch cmd (readEvents + fetch), got nil")
-	}
-	msg := cmd()
-	if msg == nil {
-		t.Fatal("turn 3 cmd() returned nil msg")
-	}
-	if _, ok := msg.(tea.BatchMsg); !ok {
-		t.Fatalf("turn 3 should return tea.BatchMsg with fetch, got %T", msg)
-	}
-}
-
-// TestTurnStart_SubAgentDoesNotCountForQuotaFetch verifies that sub-agent
-// turnStart (m.Agent != nil) does not increment the counter.
-func TestTurnStart_SubAgentDoesNotCountForQuotaFetch(t *testing.T) {
-	t.Parallel()
-
-	app := newTestApp(&tuiMockProvider{})
-	app.quotaFetcher = &countingFetcher{}
-	app.repl.StartQuery()
-
-	// 10 sub-agent turns should not increment the counter.
-	for range 10 {
-		app.updateRepl(turnStartMsg{Agent: &types.AgentMeta{AgentType: "Explore"}})
-	}
-	if app.quotaTurnCount != 0 {
-		t.Errorf("sub-agent turns should not increment quotaTurnCount, got %d", app.quotaTurnCount)
-	}
-}
-
-// TestQueryEnd_ResetsQuotaTurnCounter verifies that queryEnd resets the counter
-// so the next query's turn 3 (not 6 cumulative) triggers a fetch.
-func TestQueryEnd_ResetsQuotaTurnCounter(t *testing.T) {
-	t.Parallel()
-
-	app := newTestApp(&tuiMockProvider{})
-	app.quotaFetcher = &countingFetcher{}
-
-	// Query 1: 3 turns.
-	app.repl.StartQuery()
-	for range 5 {
-		app.updateRepl(turnStartMsg{})
-	}
-	if app.quotaTurnCount != 5 {
-		t.Fatalf("query 1 after 3 turns: quotaTurnCount = %d, want 3", app.quotaTurnCount)
-	}
-	// End query 1 — resets counter.
-	app.updateRepl(queryEndMsg{})
-	if app.quotaTurnCount != 0 {
-		t.Fatalf("after queryEnd: quotaTurnCount = %d, want 0 (reset)", app.quotaTurnCount)
-	}
-
-	// Query 2: 3 turns should bring counter back to 3.
-	app.repl.StartQuery()
-	for range 5 {
-		app.updateRepl(turnStartMsg{})
-	}
-	if app.quotaTurnCount != 5 {
-		t.Errorf("query 2 after 3 turns: quotaTurnCount = %d, want 3 (counter was reset)", app.quotaTurnCount)
-	}
-}
-
 // countingFetcher tracks how many times Fetch was called.
 type countingFetcher struct {
 	calls int
