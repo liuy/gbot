@@ -37,6 +37,10 @@ type Config struct {
 	// Empty value = anonymous mode. Omitted provider = not registered.
 	Web map[string]string `json:"web,omitempty"`
 
+	// Plugins toggles discovered plugins by name. Missing key = enabled
+	// (default). Explicit false = disabled. Used by pkg/plugins.LoadAndInitialize.
+	Plugins map[string]bool `json:"plugins,omitempty"`
+
 	Hooks json.RawMessage `json:"hooks,omitempty"`
 }
 
@@ -263,7 +267,22 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 	return nil, "", fmt.Errorf("model %q not found in any provider", modelName)
 }
 
+// IsPluginEnabled reports whether a discovered plugin should be loaded.
+// Plugins are enabled by default; only an explicit false in settings.json
+// disables them.
+func (c *Config) IsPluginEnabled(name string) bool {
+	if c.Plugins == nil {
+		return true
+	}
+	enabled, ok := c.Plugins[name]
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
 // findProvider finds a provider by name (exact match).
+
 func (c *Config) findProvider(name string) *Provider {
 	for i := range c.Providers {
 		if c.Providers[i].Name == name {

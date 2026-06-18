@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -791,7 +792,7 @@ func TestLoadAndInitialize_FullPlugin(t *testing.T) {
 	pluginsDirOverride = pluginsDir
 	defer func() { pluginsDirOverride = "" }()
 
-	loaded, err := LoadAndInitialize(context.Background(), base)
+	loaded, err := LoadAndInitialize(context.Background(), base, nil)
 	if err != nil {
 		t.Fatalf("LoadAndInitialize error: %v", err)
 	}
@@ -881,7 +882,7 @@ func TestLoadAndInitialize_NoPlugins(t *testing.T) {
 	pluginsDirOverride = pluginsDir
 	defer func() { pluginsDirOverride = "" }()
 
-	loaded, err := LoadAndInitialize(context.Background(), base)
+	loaded, err := LoadAndInitialize(context.Background(), base, nil)
 	if err != nil {
 		t.Fatalf("LoadAndInitialize error: %v", err)
 	}
@@ -890,11 +891,109 @@ func TestLoadAndInitialize_NoPlugins(t *testing.T) {
 	}
 }
 
+// TestLoadAndInitialize_DisabledPlugin verifies that a plugin listed as
+// false in cfg.Plugins is skipped entirely — no MCP servers, hooks,
+// skills, or agents loaded.
+func TestLoadAndInitialize_DisabledPlugin(t *testing.T) {
+	base := t.TempDir()
+	pluginsDir := filepath.Join(base, "plugins")
+
+	root := filepath.Join(pluginsDir, "full-plugin")
+	createMockPluginAt(t, root, "full-plugin")
+
+	pluginsDirOverride = pluginsDir
+	defer func() { pluginsDirOverride = "" }()
+
+	cfg := &config.Config{
+		Plugins: map[string]bool{"full-plugin": false},
+	}
+	loaded, err := LoadAndInitialize(context.Background(), base, cfg)
+	if err != nil {
+		t.Fatalf("LoadAndInitialize error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil loaded (skipped plugins still return empty struct)")
+	}
+	if len(loaded.McpServers) != 0 {
+		t.Errorf("McpServers count = %d, want 0 (plugin disabled)", len(loaded.McpServers))
+	}
+	if len(loaded.Hooks) != 0 {
+		t.Errorf("Hooks count = %d, want 0 (plugin disabled)", len(loaded.Hooks))
+	}
+	if len(loaded.Skills) != 0 {
+		t.Errorf("Skills count = %d, want 0 (plugin disabled)", len(loaded.Skills))
+	}
+	if len(loaded.Agents) != 0 {
+		t.Errorf("Agents count = %d, want 0 (plugin disabled)", len(loaded.Agents))
+	}
+}
+
+// TestLoadAndInitialize_ExplicitlyEnabled verifies that a plugin listed
+// as true in cfg.Plugins loads normally.
+func TestLoadAndInitialize_ExplicitlyEnabled(t *testing.T) {
+	base := t.TempDir()
+	pluginsDir := filepath.Join(base, "plugins")
+
+	root := filepath.Join(pluginsDir, "full-plugin")
+	createMockPluginAt(t, root, "full-plugin")
+
+	pluginsDirOverride = pluginsDir
+	defer func() { pluginsDirOverride = "" }()
+
+	cfg := &config.Config{
+		Plugins: map[string]bool{"full-plugin": true},
+	}
+	loaded, err := LoadAndInitialize(context.Background(), base, cfg)
+	if err != nil {
+		t.Fatalf("LoadAndInitialize error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected loaded to be non-nil")
+	}
+	if len(loaded.McpServers) != 1 {
+		t.Errorf("McpServers count = %d, want 1", len(loaded.McpServers))
+	}
+}
+
+// TestLoadAndInitialize_PartialDisable verifies that disabling one plugin
+// does not affect other plugins discovered in the same directory.
+func TestLoadAndInitialize_PartialDisable(t *testing.T) {
+	base := t.TempDir()
+	pluginsDir := filepath.Join(base, "plugins")
+
+	createMockPluginAt(t, filepath.Join(pluginsDir, "alpha"), "alpha")
+	createMockPluginAt(t, filepath.Join(pluginsDir, "beta"), "beta")
+
+	pluginsDirOverride = pluginsDir
+	defer func() { pluginsDirOverride = "" }()
+
+	cfg := &config.Config{
+		Plugins: map[string]bool{"alpha": false},
+	}
+	loaded, err := LoadAndInitialize(context.Background(), base, cfg)
+	if err != nil {
+		t.Fatalf("LoadAndInitialize error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected loaded to be non-nil")
+	}
+	// alpha disabled, beta enabled → only plugin:beta:my-server
+	if _, ok := loaded.McpServers["plugin:alpha:my-server"]; ok {
+		t.Error("alpha MCP server should not be loaded (disabled)")
+	}
+	if _, ok := loaded.McpServers["plugin:beta:my-server"]; !ok {
+		t.Error("beta MCP server should be loaded (enabled)")
+	}
+	if len(loaded.McpServers) != 1 {
+		t.Errorf("McpServers count = %d, want 1 (only beta)", len(loaded.McpServers))
+	}
+}
+
 func TestLoadAndInitialize_MissingPluginDir(t *testing.T) {
 	pluginsDirOverride = "/nonexistent/path/plugins"
 	defer func() { pluginsDirOverride = "" }()
 
-	loaded, err := LoadAndInitialize(context.Background(), "/tmp")
+	loaded, err := LoadAndInitialize(context.Background(), "/tmp", nil)
 	if err != nil {
 		t.Fatalf("LoadAndInitialize error: %v", err)
 	}
@@ -929,7 +1028,7 @@ func TestLoadAndInitialize_BrokenPlugin_FailOpen(t *testing.T) {
 	pluginsDirOverride = pluginsDir
 	defer func() { pluginsDirOverride = "" }()
 
-	loaded, err := LoadAndInitialize(context.Background(), base)
+	loaded, err := LoadAndInitialize(context.Background(), base, nil)
 	if err != nil {
 		t.Fatalf("LoadAndInitialize error: %v", err)
 	}
@@ -1259,7 +1358,7 @@ func TestLoadAndInitialize_DiscoverError(t *testing.T) {
 	_ = os.Setenv("HOME", "")
 	defer func() { _ = os.Setenv("HOME", origHome) }()
 
-	_, err := LoadAndInitialize(context.Background(), "/tmp")
+	_, err := LoadAndInitialize(context.Background(), "/tmp", nil)
 	if err == nil {
 		t.Fatal("expected error when DiscoverPlugins fails")
 	}

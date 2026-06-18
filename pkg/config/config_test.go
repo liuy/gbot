@@ -1120,3 +1120,29 @@ func TestSave_MkdirAllError(t *testing.T) {
 		t.Errorf("expected MkdirAll-related error, got: %v", err)
 	}
 }
+
+func TestIsPluginEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		plugins map[string]bool
+		input   string
+		want    bool
+	}{
+		{"nil map missing plugin", nil, "anything", true},
+		{"nil map known plugin", nil, "oh-my-claudecode", true},
+		{"map missing key defaults enabled", map[string]bool{}, "anything", true},
+		{"explicit true", map[string]bool{"omc": true}, "omc", true},
+		{"explicit false", map[string]bool{"omc": false}, "omc", false},
+		{"disabled plugin does not affect others", map[string]bool{"omc": false}, "other", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &config.Config{Plugins: tc.plugins}
+			if got := cfg.IsPluginEnabled(tc.input); got != tc.want {
+				t.Errorf("IsPluginEnabled(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}

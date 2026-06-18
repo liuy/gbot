@@ -100,7 +100,7 @@ func main() {
 	agenttool.InitLoader(workingDir)
 
 	// Plugin system — discover and load plugins before MCP/hooks/skills
-	loadedPlugins, pluginErr := plugins.LoadAndInitialize(context.Background(), workingDir)
+	loadedPlugins, pluginErr := plugins.LoadAndInitialize(context.Background(), workingDir, cfg)
 	if pluginErr != nil {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
 	}

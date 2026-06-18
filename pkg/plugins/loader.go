@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/markdown"
 	"github.com/liuy/gbot/pkg/mcp"
@@ -37,9 +38,13 @@ type LoadedPlugins struct {
 // Discovers all plugins, loads their MCP servers, hooks, skills, agents.
 // ---------------------------------------------------------------------------
 
-// LoadAndInitialize discovers and loads all plugins.
+// LoadAndInitialize discovers and loads all enabled plugins.
 // Returns nil (not error) if no plugins found — caller should treat as no-op.
-func LoadAndInitialize(ctx context.Context, cwd string) (*LoadedPlugins, error) {
+//
+// cfg gates plugins by name: an entry {name: false} in cfg.Plugins skips
+// that plugin entirely (no MCP servers, hooks, skills, or agents loaded).
+// Missing entries default to enabled.
+func LoadAndInitialize(ctx context.Context, cwd string, cfg *config.Config) (*LoadedPlugins, error) {
 	pluginList, err := DiscoverPlugins()
 	if err != nil {
 		return nil, fmt.Errorf("plugins: discover: %w", err)
@@ -53,6 +58,10 @@ func LoadAndInitialize(ctx context.Context, cwd string) (*LoadedPlugins, error) 
 	}
 
 	for _, plugin := range pluginList {
+		if cfg != nil && !cfg.IsPluginEnabled(plugin.Name) {
+			slog.Info("plugins: skip disabled", "name", plugin.Name)
+			continue
+		}
 		slog.Info("plugins: loading", "name", plugin.Name, "version", plugin.Manifest.Version)
 
 		// Collect env vars for all plugins
