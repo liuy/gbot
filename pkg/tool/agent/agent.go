@@ -426,24 +426,15 @@ func (t *AgentTool) callFork(ctx context.Context, input types.AgentInput, tctx *
 	}, nil
 }
 
-// formatGitStatusForSystemPrompt formats git status for the agent system prompt.
-// Mirrors Builder.GitStatusSection() but works without a Builder instance.
-// Source: runAgent.ts:403-410 — appendSystemContext()
+// FormatGitStatusForSystemPrompt formats git status for the agent system prompt.
+//
+// Returns empty string — the <env> block in EnhanceSystemPrompt already
+// includes "Is directory a git repo: Yes/No". Branch, default branch, and
+// dirty/clean state are intentionally omitted because they go stale (computed
+// once at startup). Sub-agents that need live state should run git commands
+// directly.
 func FormatGitStatusForSystemPrompt(gs *ctxbuild.GitStatusInfo) string {
-	if !gs.IsGit {
-		return ""
-	}
-	var buf strings.Builder
-	fmt.Fprintf(&buf, "\n\nGit branch: %s", gs.Branch)
-	if gs.DefaultBranch != "" {
-		fmt.Fprintf(&buf, "\nDefault branch: %s", gs.DefaultBranch)
-	}
-	if gs.IsDirty {
-		buf.WriteString("\nWorking tree: dirty (uncommitted changes)")
-	} else {
-		buf.WriteString("\nWorking tree: clean")
-	}
-	return buf.String()
+	return ""
 }
 
 // ---------------------------------------------------------------------------

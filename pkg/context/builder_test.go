@@ -48,7 +48,11 @@ func TestBuild_Basic(t *testing.T) {
 	}
 }
 
-func TestBuild_WithGitStatus(t *testing.T) {
+func TestBuild_GitStatusNotInjected(t *testing.T) {
+	// Git branch, default branch, and clean/dirty state go stale as soon
+	// as the user runs git checkout or edits a file. They're not injected
+	// into the built system prompt anymore — sub-agents run `git` themselves
+	// if they need live state.
 	t.Parallel()
 	b := context.NewBuilder("/work")
 	b.GitStatus = &context.GitStatusInfo{
@@ -64,8 +68,14 @@ func TestBuild_WithGitStatus(t *testing.T) {
 
 	promptStr := result
 
-	if !strings.Contains(promptStr, "Git branch: test-branch") {
-		t.Error("built prompt missing git status")
+	if strings.Contains(promptStr, "Git branch:") {
+		t.Error("built prompt should not contain 'Git branch:' — git section was removed (stale state)")
+	}
+	if strings.Contains(promptStr, "Default branch:") {
+		t.Error("built prompt should not contain 'Default branch:' — git section was removed")
+	}
+	if strings.Contains(promptStr, "Working tree:") {
+		t.Error("built prompt should not contain 'Working tree:' — git section was removed")
 	}
 }
 
@@ -96,10 +106,9 @@ func TestBuild_AllSections(t *testing.T) {
 	t.Parallel()
 	b := context.NewBuilder("/project")
 	b.GitStatus = &context.GitStatusInfo{
-		IsGit:         true,
-		Branch:        "develop",
-		DefaultBranch: "main",
-		IsDirty:       true,
+		IsGit:   true,
+		Branch:  "develop",
+		IsDirty: true,
 	}
 
 	result, err := b.Build()
@@ -112,9 +121,6 @@ func TestBuild_AllSections(t *testing.T) {
 	expectedParts := []string{
 		"{{SYSTEM}}",
 		"/project",
-		"Git branch: develop",
-		"Default branch: main",
-		"dirty",
 	}
 
 	for _, part := range expectedParts {
@@ -172,59 +178,6 @@ func TestRuntimeInfo(t *testing.T) {
 	}
 	if !strings.Contains(info, "model={{MODEL}}") {
 		t.Error("runtime info missing model={{MODEL}}")
-	}
-}
-
-func TestGitStatusSection_NonGit(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GitStatus = &context.GitStatusInfo{IsGit: false}
-	section := b.GitStatusSection()
-	if !strings.Contains(section, "Not a git repository") {
-		t.Errorf("expected 'Not a git repository', got %q", section)
-	}
-	if strings.Contains(section, "Git branch:") {
-		t.Errorf("non-git section should not contain 'Git branch:', got %q", section)
-	}
-}
-
-func TestGitStatusSection_Clean(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GitStatus = &context.GitStatusInfo{
-		IsGit:   true,
-		Branch:  "main",
-		IsDirty: false,
-	}
-	section := b.GitStatusSection()
-	if !strings.Contains(section, "Git branch: main") {
-		t.Errorf("expected 'Git branch: main', got %q", section)
-	}
-	if !strings.Contains(section, "clean") {
-		t.Errorf("expected 'clean', got %q", section)
-	}
-	if strings.Contains(section, "dirty") {
-		t.Errorf("clean status should not contain 'dirty', got %q", section)
-	}
-}
-
-func TestGitStatusSection_Dirty(t *testing.T) {
-	t.Parallel()
-	b := context.NewBuilder("/work")
-	b.GitStatus = &context.GitStatusInfo{
-		IsGit:   true,
-		Branch:  "feature",
-		IsDirty: true,
-	}
-	section := b.GitStatusSection()
-	if !strings.Contains(section, "Git branch: feature") {
-		t.Errorf("expected 'Git branch: feature', got %q", section)
-	}
-	if !strings.Contains(section, "dirty") {
-		t.Errorf("expected 'dirty', got %q", section)
-	}
-	if strings.Contains(section, "clean") {
-		t.Errorf("dirty status should not contain 'clean', got %q", section)
 	}
 }
 

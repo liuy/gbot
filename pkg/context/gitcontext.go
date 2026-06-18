@@ -1,7 +1,6 @@
 package context
 
 import (
-	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -56,19 +55,13 @@ func LoadGitStatus(workingDir string) *GitStatusInfo {
 }
 
 // GitStatusSection formats git status for the system prompt.
+//
+// Only the "is this a git repo" signal is injected — the <env> block in
+// EnhanceSystemPrompt already says "Is directory a git repo: Yes/No". Branch,
+// default branch, and dirty/clean state are intentionally omitted: they are
+// computed once at startup and go stale the moment the user runs git checkout,
+// commit, or edits a file. Sub-agents that need live state should run
+// `git status` / `git branch --show-current` themselves.
 func (b *Builder) GitStatusSection() string {
-	if !b.GitStatus.IsGit {
-		return "\n\nNot a git repository."
-	}
-	var buf strings.Builder
-	fmt.Fprintf(&buf, "\n\nGit branch: %s", b.GitStatus.Branch)
-	if b.GitStatus.DefaultBranch != "" {
-		fmt.Fprintf(&buf, "\nDefault branch: %s", b.GitStatus.DefaultBranch)
-	}
-	if b.GitStatus.IsDirty {
-		buf.WriteString("\nWorking tree: dirty (uncommitted changes)")
-	} else {
-		buf.WriteString("\nWorking tree: clean")
-	}
-	return buf.String()
+	return ""
 }
