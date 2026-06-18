@@ -155,17 +155,9 @@ func main() {
 		agenttool.GlobalLoader().RegisterPluginAgents(loadedPlugins.Agents)
 	}
 
-	// Register ALL skills (user + plugin) for TUI slash command dispatch.
-	if skillCmds := skillReg.GetSkillToolSkills(); len(skillCmds) > 0 {
-		slashCmds := make(map[string]tui.CommandDef, len(skillCmds))
-		for _, sc := range skillCmds {
-			slashCmds[sc.Name] = tui.CommandDef{
-				Description: sc.Description,
-				HasArgs:     true,
-			}
-		}
-		tui.RegisterSlashCommands(slashCmds)
-	}
+	// Register ALL skills (user + plugin) — collected here for TUI dispatch
+	// after App is constructed (RegisterSlashCommands needs *App).
+	skillCmdsForTUI := skillReg.GetSkillToolSkills()
 
 	// Permission rules
 	configDir, _ := config.ConfigDir()
@@ -381,6 +373,16 @@ func main() {
 	// 8. Create TUI App
 	app := tui.NewApp(eng, systemPrompt, h)
 	app.SetProviders(providerMap, cfg)
+	if len(skillCmdsForTUI) > 0 {
+		slashCmds := make(map[string]tui.CommandDef, len(skillCmdsForTUI))
+		for _, sc := range skillCmdsForTUI {
+			slashCmds[sc.Name] = tui.CommandDef{
+				Description: sc.Description,
+				HasArgs:     true,
+			}
+		}
+		app.RegisterSkillCommands(slashCmds)
+	}
 	app.SetStore(store, sessionID, workingDir)
 
 	// Estimate initial context usage

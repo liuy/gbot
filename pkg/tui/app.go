@@ -136,6 +136,11 @@ type App struct {
 	doublePress *DoublePress
 	completions *Completions
 
+	// commands holds the per-App slash command tables (builtins + skills).
+	// Tests rely on this being per-instance so they can run in parallel
+	// without polluting each other's command state.
+	commands *CommandRegistry
+
 	// Paste reference state
 	pasteStore  map[int]string
 	nextPasteID int
@@ -224,6 +229,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
 		completions:      NewCompletions(),
+		commands:         NewCommandRegistry(),
 		pasteStore:       make(map[int]string),
 		nextPasteID:      1,
 		allToolsExpanded: false,
@@ -239,6 +245,12 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		a.status.SetModel(eng.Model())
 	}
 	return a
+}
+
+// RegisterSkillCommands replaces the per-App skill command registrations.
+// Forwards to a.commands; see CommandRegistry.RegisterSkillCommands.
+func (a *App) RegisterSkillCommands(cmds map[string]CommandDef) {
+	a.commands.RegisterSkillCommands(cmds)
 }
 
 // SetProviders configures multi-provider model switching.
@@ -1325,13 +1337,13 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyBackspace:
 		a.resetNavAndAccum()
 		a.input.BackspaceToken()
-		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value), a.commands)
 		return a, nil
 
 	case tea.KeyDelete:
 		a.resetNavAndAccum()
 		a.input.DeleteForward()
-		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value), a.commands)
 		return a, nil
 
 	case tea.KeyHome:
@@ -1347,7 +1359,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeySpace:
 		a.resetNavAndAccum()
 		a.input.InsertChar(' ')
-		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value), a.commands)
 		return a, nil
 
 	case tea.KeyLeft:
@@ -1486,7 +1498,7 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.input.InsertChar(ch)
 			}
 		}
-		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
+		a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value), a.commands)
 		return a, nil
 	}
 	a.resetNavAndAccum()
@@ -1496,7 +1508,7 @@ func (a *App) handleRunes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.input.InsertChar(ch)
 	}
-	a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value))
+	a.completions.Update(a.input.Value(), a.input.cursor == len(a.input.value), a.commands)
 	return a, nil
 }
 

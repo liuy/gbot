@@ -5145,7 +5145,7 @@ func TestApp_Completion_ShowsOnSlash(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/")
-	app.completions.Update(app.input.Value(), app.input.cursor == len(app.input.value))
+	app.completions.Update(app.input.Value(), app.input.cursor == len(app.input.value), app.commands)
 
 	view := app.View()
 	if !app.completions.Visible() {
@@ -5167,7 +5167,7 @@ func TestApp_Completion_TabFillsWithSpace(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/s")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 	if !app.completions.Visible() {
 		t.Fatal("completions should be visible")
 	}
@@ -5188,7 +5188,7 @@ func TestApp_Completion_EscDismisses(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 	if !app.completions.Visible() {
 		t.Fatal("should be visible")
 	}
@@ -5205,7 +5205,7 @@ func TestApp_Completion_UpDownNavigation(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 
 	if app.completions.SelectedIndex() != 0 {
 		t.Fatalf("initial index = %d, want 0", app.completions.SelectedIndex())
@@ -5232,7 +5232,7 @@ func TestApp_Completion_EnterExecutesNoArgs(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/cl")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 	if !app.completions.Visible() {
 		t.Fatal("should be visible")
 	}
@@ -5252,7 +5252,7 @@ func TestApp_Completion_EnterFillsWithArgs(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/s")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 
 	app.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -5270,7 +5270,7 @@ func TestApp_Completion_IMEGuard(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/你好")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 
 	if app.completions.Visible() {
 		t.Error("should not trigger for non-ASCII input")
@@ -5282,13 +5282,13 @@ func TestApp_Completion_SpaceDismisses(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/s")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 	if !app.completions.Visible() {
 		t.Fatal("should be visible")
 	}
 
 	app.input.InsertChar(' ')
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 
 	if app.completions.Visible() {
 		t.Error("should dismiss after space")
@@ -5300,7 +5300,7 @@ func TestApp_Completion_RenderedBelowInput(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 
 	view := app.View()
 
@@ -5336,7 +5336,7 @@ func TestApp_Tab_CursorNotAtEnd_NoOp(t *testing.T) {
 	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	app.input.SetValue("/session")
-	app.completions.Update(app.input.Value(), true)
+	app.completions.Update(app.input.Value(), true, app.commands)
 	if !app.completions.Visible() {
 		t.Fatal("should be visible")
 	}

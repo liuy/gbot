@@ -983,7 +983,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		commitCmd = tea.Println(rendered)
 	}
 	// Check for slash commands before adding user message to engine.
-	if cmd, ok := LookupSlashCommand(text); ok {
+	if cmd, ok := a.commands.LookupSlashCommand(text); ok {
 		a.history.Add(text)
 		a.input.Reset()
 		a.pasteStore = make(map[int]string)
@@ -994,7 +994,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// Skill slash command: /skill-name args
 	// Intercept and dispatch to engine.RunSkill, bypassing the LLM's
 	// tool-use decision. Mirrors TS processSlashCommand.
-	if skillName, skillArgs, ok := LookupSkillCommand(text); ok {
+	if skillName, skillArgs, ok := a.commands.LookupSkillCommand(text); ok {
 		a.history.Add(text)
 		a.input.Reset()
 		a.pasteStore = make(map[int]string)
@@ -1097,7 +1097,7 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	if _, ok := LookupSlashCommand(text); ok {
+	if _, ok := a.commands.LookupSlashCommand(text); ok {
 		return nil
 	}
 	id := uuid.NewString()

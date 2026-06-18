@@ -43,7 +43,7 @@ func TestHandleSubmitRepl_SkillCommand_Inline(t *testing.T) {
 	app.width = 80
 	app.height = 24
 
-	RegisterSlashCommands(map[string]CommandDef{
+	app.RegisterSkillCommands(map[string]CommandDef{
 		"test-skill": {Description: "test", HasArgs: true},
 	})
 
@@ -122,7 +122,7 @@ func TestHandleSubmitRepl_SkillCommand_Fork_VisibleInMessages(t *testing.T) {
 	app.width = 80
 	app.height = 24
 
-	RegisterSlashCommands(map[string]CommandDef{
+	app.RegisterSkillCommands(map[string]CommandDef{
 		"review": {Description: "review", HasArgs: true},
 	})
 
@@ -228,7 +228,7 @@ func TestHandleSubmitRepl_SkillCommand_StartsSpinnerTick(t *testing.T) {
 	app.width = 80
 	app.height = 24
 
-	RegisterSlashCommands(map[string]CommandDef{
+	app.RegisterSkillCommands(map[string]CommandDef{
 		"test-skill-tick": {Description: "test", HasArgs: true},
 	})
 
@@ -300,8 +300,8 @@ func TestHandleSubmitRepl_SkillCommand_StartsSpinnerTick(t *testing.T) {
 
 func TestLookupSkillCommand_Basic(t *testing.T) {
 	t.Parallel()
-
-	RegisterSlashCommands(map[string]CommandDef{
+	r := NewCommandRegistry()
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"my-skill": {Description: "test", HasArgs: true},
 	})
 
@@ -319,7 +319,7 @@ func TestLookupSkillCommand_Basic(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		name, args, ok := LookupSkillCommand(tt.input)
+		name, args, ok := r.LookupSkillCommand(tt.input)
 		if ok != tt.wantOk {
 			t.Errorf("LookupSkillCommand(%q) ok = %v, want %v", tt.input, ok, tt.wantOk)
 			continue

@@ -5,16 +5,18 @@ import (
 	"testing"
 )
 
+// TestAllCommands verifies NewCommandRegistry seeds the built-in commands
+// and sorts them alphabetically.
 func TestAllCommands(t *testing.T) {
-	cmds := AllCommands()
+	t.Parallel()
+	r := NewCommandRegistry()
+	cmds := r.AllCommands()
 	if len(cmds) != 5 {
 		t.Fatalf("AllCommands() returned %d commands, want 5", len(cmds))
 	}
-	// Must be sorted alphabetically
 	if !slices.IsSorted(cmds) {
 		t.Errorf("AllCommands() not sorted: %v", cmds)
 	}
-	// Must contain all known commands
 	want := []string{"clear", "context", "model", "rewind", "session"}
 	for _, w := range want {
 		if !slices.Contains(cmds, w) {
@@ -23,8 +25,10 @@ func TestAllCommands(t *testing.T) {
 	}
 }
 
+// TestCommandDefs_HasDescription verifies every builtin command has a Description.
 func TestCommandDefs_HasDescription(t *testing.T) {
-	for name, def := range commandDefs {
+	t.Parallel()
+	for name, def := range builtinCommandDefs {
 		if def.Description == "" {
 			t.Errorf("command %q has empty Description", name)
 		}
@@ -32,69 +36,81 @@ func TestCommandDefs_HasDescription(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RegisterSlashCommands — dynamic skill registration for tab completion
+// RegisterSkillCommands — dynamic skill registration for tab completion
 // ---------------------------------------------------------------------------
 
-func TestRegisterSlashCommands_AddsToAllCommands(t *testing.T) {
-	defer func() { skillDefs = nil; sortedCommands = AllCommands() }()
-	RegisterSlashCommands(map[string]CommandDef{
+// TestRegisterSkillCommands_AddsToAllCommands verifies skills merge with
+// builtins for completion display.
+func TestRegisterSkillCommands_AddsToAllCommands(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"commit":                     {Description: "Create a commit", HasArgs: true},
 		"oh-my-claudecode:autopilot": {Description: "Run autopilot mode", HasArgs: true},
 	})
 
-	cmds := AllCommands()
-
-	// Builtin commands must still be present
+	cmds := r.AllCommands()
+	if got := len(cmds); got != 7 {
+		t.Fatalf("AllCommands() returned %d, want 7 (5 builtin + 2 skill)", got)
+	}
 	for _, builtin := range []string{"session", "clear", "model"} {
 		if !slices.Contains(cmds, builtin) {
 			t.Errorf("builtin command %q missing from AllCommands", builtin)
 		}
 	}
-
-	// Plugin skills must appear
 	if !slices.Contains(cmds, "commit") {
-		t.Error("expected 'commit' in AllCommands after RegisterSlashCommands")
+		t.Error("expected 'commit' in AllCommands after RegisterSkillCommands")
 	}
 	if !slices.Contains(cmds, "oh-my-claudecode:autopilot") {
-		t.Error("expected 'oh-my-claudecode:autopilot' in AllCommands after RegisterSlashCommands")
+		t.Error("expected 'oh-my-claudecode:autopilot' in AllCommands after RegisterSkillCommands")
 	}
 }
 
-func TestRegisterSlashCommands_NotDispatched(t *testing.T) {
-	defer func() { skillDefs = nil; sortedCommands = AllCommands() }()
-	// Skills registered for completion must NOT be dispatched by LookupSlashCommand.
-	// They should fall through to the engine as regular user messages.
-	RegisterSlashCommands(map[string]CommandDef{
+// TestRegisterSkillCommands_NotDispatched verifies skills are NOT matched
+// by LookupSlashCommand — they must fall through to the engine.
+func TestRegisterSkillCommands_NotDispatched(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"commit": {Description: "Create a commit", HasArgs: true},
 	})
 
-	_, ok := LookupSlashCommand("/commit")
-	if ok {
-		t.Error("LookupSlashCommand should not match registered skill commands — they must fall through to engine")
+	if _, ok := r.LookupSlashCommand("/commit"); ok {
+		t.Error("LookupSlashCommand should not match skill commands — they must fall through to engine")
 	}
-
-	// Builtins still work
-	_, ok = LookupSlashCommand("/clear")
-	if !ok {
+	if _, ok := r.LookupSlashCommand("/clear"); !ok {
 		t.Error("LookupSlashCommand should still match builtin commands")
 	}
 }
 
-func TestRegisterSlashCommands_Idempotent(t *testing.T) {
-	defer func() { skillDefs = nil; sortedCommands = AllCommands() }()
-	RegisterSlashCommands(map[string]CommandDef{
+// TestRegisterSkillCommands_ReplaceSemantics verifies the second call
+// replaces (not merges) previously-registered skills.
+func TestRegisterSkillCommands_ReplaceSemantics(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"commit": {Description: "v1", HasArgs: true},
 	})
-	RegisterSlashCommands(map[string]CommandDef{
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"commit": {Description: "v2", HasArgs: false},
+		"review": {Description: "review", HasArgs: true},
 	})
 
-	def, ok := getCommandDef("commit")
+	def, ok := r.getCommandDef("commit")
 	if !ok {
 		t.Fatal("expected 'commit' to be registered")
 	}
 	if def.Description != "v2" {
 		t.Errorf("expected last-write wins, got description %q", def.Description)
+	}
+	if def, ok := r.getCommandDef("review"); !ok || def.Description != "review" {
+		t.Errorf("expected 'review' to be registered after second call, got ok=%v def=%+v", ok, def)
+	}
+	// 'commit' is the only one from the first call; if merge semantics
+	// were in effect, we wouldn't be able to detect it from this case.
+	// SkillCommandCount asserts the total matches the second map size.
+	if got := r.SkillCommandCount(); got != 2 {
+		t.Errorf("SkillCommandCount = %d, want 2 (replace semantics)", got)
 	}
 }
 
@@ -104,6 +120,7 @@ func TestRegisterSlashCommands_Idempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCommandParts(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		want []string
@@ -116,6 +133,7 @@ func TestCommandParts(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := commandParts(tc.name)
 			if len(got) != len(tc.want) {
 				t.Fatalf("commandParts(%q) = %v, want %v", tc.name, got, tc.want)
@@ -135,29 +153,27 @@ func TestCommandParts(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCommandMatchPriority(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		query string
 		want  int
 	}{
-		// Exact match
 		{"session", "session", 0},
-		// Full prefix match
 		{"session", "s", 1},
 		{"session", "ses", 1},
 		{"oh-my-claudecode:ralph", "oh", 1},
-		// Part prefix match
 		{"oh-my-claudecode:ralph", "ral", 2},
 		{"oh-my-claudecode:ralph", "ralph", 2},
 		{"oh-my-claudecode:autopilot", "auto", 2},
 		{"oh-my-claudecode:autopilot", "claude", 2},
-		// No match
 		{"session", "xyz", -1},
 		{"oh-my-claudecode:ralph", "zzz", -1},
 		{"clear", "xxx", -1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name+"/"+tc.query, func(t *testing.T) {
+			t.Parallel()
 			got := commandMatchPriority(tc.name, tc.query)
 			if got != tc.want {
 				t.Errorf("commandMatchPriority(%q, %q) = %d, want %d", tc.name, tc.query, got, tc.want)
@@ -167,6 +183,7 @@ func TestCommandMatchPriority(t *testing.T) {
 }
 
 func TestLookupSlashCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		wantOK   bool
@@ -188,7 +205,9 @@ func TestLookupSlashCommand(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			cmd, ok := LookupSlashCommand(tc.input)
+			t.Parallel()
+			r := NewCommandRegistry()
+			cmd, ok := r.LookupSlashCommand(tc.input)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}

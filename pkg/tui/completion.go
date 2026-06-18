@@ -40,7 +40,8 @@ func NewCompletions() *Completions {
 
 // Update regenerates completions for the given input text.
 // Filtering uses commandMatchPriority: exact > full prefix > part prefix.
-func (c *Completions) Update(text string, cursorAtEnd bool) {
+// The registry supplies the per-App command tables.
+func (c *Completions) Update(text string, cursorAtEnd bool, registry *CommandRegistry) {
 	// Guard: must start with "/" and cursor at end
 	if !cursorAtEnd || !strings.HasPrefix(text, "/") {
 		c.dismiss()
@@ -69,8 +70,8 @@ func (c *Completions) Update(text string, cursorAtEnd bool) {
 		priority   int
 	}
 	var matched []matchEntry
-	for _, name := range sortedCommands {
-		def, ok := getCommandDef(name)
+	for _, name := range registry.sortedCommands {
+		def, ok := registry.getCommandDef(name)
 		if !ok {
 			continue
 		}

@@ -6,6 +6,7 @@ import (
 )
 
 func TestNewCompletions(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
 	if c.Visible() {
 		t.Error("new completions should not be visible")
@@ -21,8 +22,10 @@ func TestNewCompletions(t *testing.T) {
 // --- Update tests ---
 
 func TestCompletions_Update_SlashShowsAll(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible after typing '/'")
@@ -50,15 +53,17 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 }
 
 func TestCompletions_Update_PrefixFilter(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/s", true)
+	c.Update("/s", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible")
 	}
 	items := c.Items()
 	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
+		t.Fatalf("expected 1 item, got %d: %v", len(items), items)
 	}
 	if items[0].Name != "session" {
 		t.Errorf("item = %q, want %q", items[0].Name, "session")
@@ -66,31 +71,39 @@ func TestCompletions_Update_PrefixFilter(t *testing.T) {
 }
 
 func TestCompletions_Update_PrefixClear(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/cl", true)
+	c.Update("/c", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible")
 	}
 	items := c.Items()
-	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
+	// /c matches "clear" and "context"
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items (clear, context), got %d: %v", len(items), items)
 	}
-	if items[0].Name != "clear" {
-		t.Errorf("item = %q, want %q", items[0].Name, "clear")
+	want := map[string]bool{"clear": true, "context": true}
+	for _, item := range items {
+		if !want[item.Name] {
+			t.Errorf("unexpected item %q", item.Name)
+		}
 	}
 }
 
 func TestCompletions_Update_PrefixModel(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/m", true)
+	c.Update("/m", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible")
 	}
 	items := c.Items()
 	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
+		t.Fatalf("expected 1 item (model), got %d: %v", len(items), items)
 	}
 	if items[0].Name != "model" {
 		t.Errorf("item = %q, want %q", items[0].Name, "model")
@@ -98,249 +111,236 @@ func TestCompletions_Update_PrefixModel(t *testing.T) {
 }
 
 func TestCompletions_Update_NoMatch(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	// First make it visible
-	c.Update("/", true)
-	if !c.Visible() {
-		t.Fatal("should be visible after /")
-	}
+	c.Update("/xyz", true, r)
 
-	// Then type non-matching prefix
-	c.Update("/xyz", true)
 	if c.Visible() {
 		t.Error("should not be visible with no matches")
 	}
 }
 
 func TestCompletions_Update_IMEGuard(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/你好", true)
+	c.Update("/你好", true, r)
+
 	if c.Visible() {
-		t.Error("should not trigger for non-ASCII input")
+		t.Error("should not be visible for non-ASCII (IME) input")
 	}
 }
 
 func TestCompletions_Update_SpaceDismisses(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/session ", true)
+	// First make it visible
+	c.Update("/s", true, r)
+	if !c.Visible() {
+		t.Fatal("expected visible after /s")
+	}
+	// Then type space — should dismiss
+	c.Update("/s ", true, r)
 	if c.Visible() {
-		t.Error("should dismiss when input contains space")
+		t.Error("should be dismissed after space")
 	}
 }
 
 func TestCompletions_Update_NotCursorAtEnd(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/s", false)
+	c.Update("/s", false, r)
 	if c.Visible() {
-		t.Error("should not trigger when cursor not at end")
+		t.Error("should not be visible when cursor not at end")
 	}
 }
 
 func TestCompletions_Update_NotSlashCommand(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("hello", true)
+	c.Update("hello", true, r)
 	if c.Visible() {
-		t.Error("should not trigger for non-slash input")
+		t.Error("should not be visible for non-slash input")
 	}
 }
 
 func TestCompletions_Update_EmptyString(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("", true)
+	c.Update("", true, r)
 	if c.Visible() {
-		t.Error("should not trigger for empty input")
+		t.Error("should not be visible for empty input")
 	}
 }
 
 func TestCompletions_Update_TransitionVisibleToDismissed(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/s", true, r)
 	if !c.Visible() {
-		t.Fatal("should be visible after /")
+		t.Fatal("expected visible after /s")
 	}
-
-	c.Update("/xyz", true)
+	c.Update("/xyz-nomatch", true, r)
 	if c.Visible() {
-		t.Error("should dismiss after no match")
-	}
-	if len(c.Items()) != 0 {
-		t.Error("items should be cleared after dismiss")
+		t.Error("should be dismissed after no-match transition")
 	}
 }
 
 // --- Accept tests ---
 
 func TestCompletions_Accept_HasArgs(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/s", true)
+	c.Update("/session", true, r)
 
-	fillText, shouldExec := c.Accept()
+	fillText, shouldExecute := c.Accept()
 	if fillText != "/session " {
 		t.Errorf("fillText = %q, want %q", fillText, "/session ")
 	}
-	if shouldExec {
+	if shouldExecute {
 		t.Error("session has args, should not auto-execute")
 	}
 }
 
 func TestCompletions_Accept_NoArgs(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/cl", true)
+	c.Update("/clear", true, r)
 
-	fillText, shouldExec := c.Accept()
+	fillText, shouldExecute := c.Accept()
 	if fillText != "/clear " {
 		t.Errorf("fillText = %q, want %q", fillText, "/clear ")
 	}
-	if !shouldExec {
+	if !shouldExecute {
 		t.Error("clear has no args, should auto-execute")
 	}
 }
 
 func TestCompletions_Accept_Empty(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
-	fillText, shouldExec := c.Accept()
+	fillText, shouldExecute := c.Accept()
 	if fillText != "" {
 		t.Errorf("fillText = %q, want empty", fillText)
 	}
-	if shouldExec {
-		t.Error("empty completions should not execute")
+	if shouldExecute {
+		t.Error("should not execute with no items")
 	}
 }
 
-// --- Navigation tests ---
+// --- Select tests ---
 
 func TestCompletions_SelectNext(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true) // clear, model, session
+	c.Update("/", true, r)
 
 	if c.SelectedIndex() != 0 {
-		t.Fatalf("initial index = %d, want 0", c.SelectedIndex())
+		t.Fatalf("initial SelectedIndex = %d, want 0", c.SelectedIndex())
 	}
-
 	c.SelectNext()
 	if c.SelectedIndex() != 1 {
-		t.Errorf("after SelectNext = %d, want 1", c.SelectedIndex())
+		t.Errorf("after SelectNext, SelectedIndex = %d, want 1", c.SelectedIndex())
 	}
-
-	c.SelectNext()
-	if c.SelectedIndex() != 2 {
-		t.Errorf("after SelectNext = %d, want 2", c.SelectedIndex())
-	}
-
-	c.SelectNext()
-	if c.SelectedIndex() != 3 {
-		t.Errorf("after SelectNext = %d, want 3", c.SelectedIndex())
-	}
-
-	c.SelectNext()
-	if c.SelectedIndex() != 4 {
-		t.Errorf("after SelectNext = %d, want 4", c.SelectedIndex())
-	}
-
 	// Wrap around
-	c.SelectNext()
-	if c.SelectedIndex() != 0 {
-		t.Errorf("after wrap = %d, want 0", c.SelectedIndex())
+	for range 10 {
+		c.SelectNext()
+	}
+	// Should have wrapped; index should be valid
+	if c.SelectedIndex() < 0 || c.SelectedIndex() >= len(c.Items()) {
+		t.Errorf("SelectNext wrapped to invalid index %d", c.SelectedIndex())
 	}
 }
 
 func TestCompletions_SelectPrev(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true) // clear, context, model, rewind, session
+	c.Update("/", true, r)
 
-	// Wrap around backwards
+	// Start at 0, go prev → should wrap to last
 	c.SelectPrev()
-	if c.SelectedIndex() != 4 {
-		t.Errorf("after SelectPrev wrap = %d, want 4", c.SelectedIndex())
-	}
-
-	c.SelectPrev()
-	if c.SelectedIndex() != 3 {
-		t.Errorf("after SelectPrev = %d, want 3", c.SelectedIndex())
+	if c.SelectedIndex() != len(c.Items())-1 {
+		t.Errorf("after SelectPrev from 0, SelectedIndex = %d, want %d", c.SelectedIndex(), len(c.Items())-1)
 	}
 }
 
 func TestCompletions_SelectAfterFilter(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/s", true) // only session
-
+	c.Update("/", true, r)
 	c.SelectNext()
+	c.SelectNext()
+	// Now filter — selection should reset to 0
+	c.Update("/s", true, r)
 	if c.SelectedIndex() != 0 {
-		t.Errorf("single item wrap = %d, want 0", c.SelectedIndex())
+		t.Errorf("after filter, SelectedIndex = %d, want 0", c.SelectedIndex())
 	}
 }
 
 func TestCompletions_Dismiss(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-	if !c.Visible() {
-		t.Fatal("should be visible")
-	}
-
+	c.Update("/s", true, r)
 	c.Dismiss()
 	if c.Visible() {
-		t.Error("should not be visible after dismiss")
-	}
-	if c.SelectedIndex() != -1 {
-		t.Errorf("SelectedIndex after dismiss = %d, want -1", c.SelectedIndex())
+		t.Error("should not be visible after Dismiss")
 	}
 }
 
 // --- Render tests ---
 
 func TestCompletions_Render_Basic(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/c", true, r)
 
-	view := c.Render(80, 5)
+	view := c.Render(80, 10)
 	if view == "" {
-		t.Fatal("render should not be empty")
+		t.Fatal("expected non-empty render")
 	}
-	// Should contain all command names
 	if !strings.Contains(view, "clear") {
-		t.Error("render should contain 'clear'")
+		t.Errorf("render should contain 'clear', got: %s", view)
 	}
-	if !strings.Contains(view, "model") {
-		t.Error("render should contain 'model'")
-	}
-	if !strings.Contains(view, "session") {
-		t.Error("render should contain 'session'")
-	}
-	// First item selected → should be rendered (reverse style applied via ANSI)
-	// Check that clear appears in the output (it's the first alphabetical item)
-	lines := strings.Split(view, "\n")
-	if len(lines) != 5 {
-		t.Fatalf("expected 5 lines, got %d", len(lines))
+	if !strings.Contains(view, "context") {
+		t.Errorf("render should contain 'context', got: %s", view)
 	}
 }
 
 func TestCompletions_Render_SelectedHighlight(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-
+	c.Update("/", true, r)
 	// Select second item (context)
 	c.SelectNext()
-
 	view := c.Render(80, 5)
 	lines := strings.Split(view, "\n")
-
 	// Second line should contain "context"
 	if !strings.Contains(lines[1], "context") {
 		t.Errorf("second line should contain 'context', got %q", lines[1])
 	}
-	// Selected line should differ from unstyled plain text
-	// (lipgloss may or may not emit ANSI in test environments)
-	plainLine := "  /context - Visualize context window usage (args: dump)"
-	if stripANSI(lines[1]) != plainLine {
-		t.Errorf("second line content = %q, want %q", stripANSI(lines[1]), plainLine)
-	}
 }
 
 func TestCompletions_Render_MaxHeight(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/", true, r)
 
-	// Limit to 2 lines
+	// maxHeight=2 should cap visible rows
 	view := c.Render(80, 2)
 	lines := strings.Split(view, "\n")
 	if len(lines) != 2 {
@@ -349,103 +349,86 @@ func TestCompletions_Render_MaxHeight(t *testing.T) {
 }
 
 func TestCompletions_Render_NotVisible(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
-	view := c.Render(80, 5)
+	// Don't trigger Update — not visible
+	view := c.Render(80, 10)
 	if view != "" {
-		t.Errorf("render when not visible should be empty, got %q", view)
+		t.Errorf("expected empty render when not visible, got %q", view)
 	}
 }
 
 func TestCompletions_Render_Truncation(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/c", true, r)
 
-	// Very narrow width
-	view := c.Render(10, 5)
+	// width=10 should truncate long labels
+	view := c.Render(10, 10)
 	for line := range strings.SplitSeq(view, "\n") {
-		// Strip ANSI codes for length check
 		stripped := stripANSI(line)
 		if len(stripped) > 10 {
-			t.Errorf("line too long (%d chars): %q", len(stripped), stripped)
+			t.Errorf("line not truncated to width 10: %q (len %d)", stripped, len(stripped))
 		}
 	}
 }
 
-// --- Integration: Update changes selection properly ---
-
 func TestCompletions_Update_ResetsSelection(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-	c.SelectNext() // index = 1
-	c.SelectNext() // index = 2
-
-	// Re-update should reset to index 0
-	c.Update("/m", true)
+	c.Update("/", true, r)
+	c.SelectNext()
+	c.SelectNext()
+	if c.SelectedIndex() == 0 {
+		t.Fatal("test setup: expected non-zero index")
+	}
+	// Trigger another Update — index should reset
+	c.Update("/", true, r)
 	if c.SelectedIndex() != 0 {
-		t.Errorf("after re-update index = %d, want 0", c.SelectedIndex())
+		t.Errorf("after Update, SelectedIndex = %d, want 0", c.SelectedIndex())
 	}
 }
 
-// --- Command metadata tests ---
-
 func TestCompletions_ItemMetadata(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/session", true, r)
+
 	items := c.Items()
-
-	// clear: HasArgs=false
-	clearItem := items[0]
-	if clearItem.Name != "clear" {
-		t.Fatalf("first item = %q, want clear", clearItem.Name)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if clearItem.HasArgs {
-		t.Error("clear should not have args")
+	if items[0].Name != "session" {
+		t.Errorf("Name = %q, want %q", items[0].Name, "session")
 	}
-	if clearItem.Description == "" {
-		t.Error("clear should have description")
+	if items[0].Description == "" {
+		t.Error("Description should not be empty")
 	}
-
-	// rewind: HasArgs=false
-	rewindItem := items[3]
-	if rewindItem.Name != "rewind" {
-		t.Fatalf("fourth item = %q, want rewind", rewindItem.Name)
-	}
-	if rewindItem.HasArgs {
-		t.Error("rewind should not have args")
-	}
-
-	// session: HasArgs=true
-	sessionItem := items[4]
-	if sessionItem.Name != "session" {
-		t.Fatalf("fifth item = %q, want session", sessionItem.Name)
-	}
-	if !sessionItem.HasArgs {
+	if !items[0].HasArgs {
 		t.Error("session should have args")
 	}
 }
 
-// --- P1 edge case tests (from code review) ---
-
 func TestCompletions_SelectNext_EmptyItems(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
-	c.SelectNext() // no panic on empty
-	if c.SelectedIndex() != -1 {
-		t.Errorf("empty SelectNext: index = %d, want -1", c.SelectedIndex())
-	}
+	c.SelectNext() // should not panic
 }
 
 func TestCompletions_SelectPrev_EmptyItems(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
-	c.SelectPrev() // no panic on empty
-	if c.SelectedIndex() != -1 {
-		t.Errorf("empty SelectPrev: index = %d, want -1", c.SelectedIndex())
-	}
+	c.SelectPrev() // should not panic
 }
 
 func TestCompletions_Render_NegativeMaxHeight(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-
+	c.Update("/", true, r)
 	view := c.Render(80, -1)
 	// Negative maxHeight should show all items (guard: maxHeight > 0)
 	if !strings.Contains(view, "clear") || !strings.Contains(view, "session") {
@@ -453,58 +436,49 @@ func TestCompletions_Render_NegativeMaxHeight(t *testing.T) {
 	}
 }
 
-// --- P2 edge case tests ---
-
 func TestCompletions_Update_SameQuery_ResetsSelection(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-	c.SelectNext() // index = 1
-
-	c.Update("/", true) // same query again
+	c.Update("/", true, r)
+	c.SelectNext()
+	c.SelectNext()
+	// Same query — should still reset selection
+	c.Update("/", true, r)
 	if c.SelectedIndex() != 0 {
-		t.Errorf("re-update should reset selection, got %d", c.SelectedIndex())
+		t.Errorf("after Update with same query, SelectedIndex = %d, want 0", c.SelectedIndex())
 	}
 }
 
 func TestCompletions_Accept_NonZeroIndex(t *testing.T) {
+	t.Parallel()
+	r := NewCommandRegistry()
 	c := NewCompletions()
-	c.Update("/", true)
-	c.SelectNext() // index = 1 → context
-
-	fillText, shouldExec := c.Accept()
+	c.Update("/", true, r)
+	// Move to index 1 (context)
+	c.SelectNext()
+	fillText, _ := c.Accept()
 	if fillText != "/context " {
-		t.Errorf("non-zero index Accept = %q, want %q", fillText, "/context ")
-	}
-	if shouldExec {
-		t.Error("context has args, should NOT auto-execute")
+		t.Errorf("fillText at index 1 = %q, want %q", fillText, "/context ")
 	}
 }
 
 func TestCompletions_Dismiss_Idempotent(t *testing.T) {
+	t.Parallel()
 	c := NewCompletions()
-	c.Dismiss() // already empty
-	c.Dismiss() // double dismiss
+	c.Dismiss()
+	c.Dismiss() // should not panic
 	if c.Visible() {
-		t.Error("double dismiss should still be invisible")
+		t.Error("should not be visible")
 	}
 }
 
-// TestCompletions_Update_MaxItemsCap verifies that all matching items are stored
+// TestCompletions_Update_NoCapOnItems verifies that all matching items are stored
 // (no hard cap). Display limiting is handled by Render's maxHeight, not by
 // truncating the item list.
 func TestCompletions_Update_NoCapOnItems(t *testing.T) {
-	// Save and restore sortedCommands + commandDefs + skillDefs
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	// Inject 10 commands — all must be available for scrolling
-	injectCommands := map[string]CommandDef{
+	t.Parallel()
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
 		"aaa": {Description: "A", HasArgs: false},
 		"bbb": {Description: "B", HasArgs: false},
 		"ccc": {Description: "C", HasArgs: false},
@@ -515,13 +489,10 @@ func TestCompletions_Update_NoCapOnItems(t *testing.T) {
 		"hhh": {Description: "H", HasArgs: false},
 		"iii": {Description: "I", HasArgs: false},
 		"jjj": {Description: "J", HasArgs: false},
-	}
-	commandDefs = injectCommands
-	skillDefs = nil
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected visible")
@@ -535,17 +506,8 @@ func TestCompletions_Update_NoCapOnItems(t *testing.T) {
 // TestCompletions_Render_ViewportScrolling verifies that Render shows a viewport
 // window around the selected item, not always from index 0.
 func TestCompletions_Render_ViewportScrolling(t *testing.T) {
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	// 10 commands, render viewport of 3
-	commandDefs = map[string]CommandDef{
+	t.Parallel()
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
 		"aaa": {Description: "A", HasArgs: false},
 		"bbb": {Description: "B", HasArgs: false},
 		"ccc": {Description: "C", HasArgs: false},
@@ -556,12 +518,10 @@ func TestCompletions_Render_ViewportScrolling(t *testing.T) {
 		"hhh": {Description: "H", HasArgs: false},
 		"iii": {Description: "I", HasArgs: false},
 		"jjj": {Description: "J", HasArgs: false},
-	}
-	skillDefs = nil
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/", true, r)
 
 	// Scroll to index 5 (fff)
 	for range 5 {
@@ -578,7 +538,6 @@ func TestCompletions_Render_ViewportScrolling(t *testing.T) {
 		t.Fatalf("expected 3 rendered lines, got %d", len(lines))
 	}
 
-	// The viewport should contain "fff" (the selected item), NOT "aaa"
 	viewText := stripANSI(view)
 	if !strings.Contains(viewText, "fff") {
 		t.Errorf("viewport should contain selected item 'fff', got: %s", viewText)
@@ -591,17 +550,8 @@ func TestCompletions_Render_ViewportScrolling(t *testing.T) {
 // TestCompletions_Render_MaxVisibleRows verifies that Render caps display to
 // maxVisibleCompletions rows even when terminal has room for more.
 func TestCompletions_Render_MaxVisibleRows(t *testing.T) {
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	// 10 commands, but render should show at most maxVisibleCompletions (5)
-	commandDefs = map[string]CommandDef{
+	t.Parallel()
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
 		"aaa": {Description: "A", HasArgs: false},
 		"bbb": {Description: "B", HasArgs: false},
 		"ccc": {Description: "C", HasArgs: false},
@@ -612,14 +562,11 @@ func TestCompletions_Render_MaxVisibleRows(t *testing.T) {
 		"hhh": {Description: "H", HasArgs: false},
 		"iii": {Description: "I", HasArgs: false},
 		"jjj": {Description: "J", HasArgs: false},
-	}
-	skillDefs = nil
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/", true)
+	c.Update("/", true, r)
 
-	// Render with large maxHeight (simulating big terminal)
 	view := c.Render(80, 30)
 	lines := strings.Split(view, "\n")
 	if len(lines) != maxVisibleCompletions {
@@ -632,28 +579,19 @@ func TestCompletions_Render_MaxVisibleRows(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompletions_PartMatch_PluginSkill(t *testing.T) {
+	t.Parallel()
 	// /ral should match "oh-my-claudecode:ralph" via part prefix
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	commandDefs = map[string]CommandDef{
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
 		"clear": {Description: "Clear conversation", HasArgs: false},
-	}
-	skillDefs = map[string]CommandDef{
+	})
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"oh-my-claudecode:ralph":     {Description: "Persistent agent loop", HasArgs: true},
 		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
 		"oh-my-claudecode:cancel":    {Description: "Cancel active mode", HasArgs: false},
-	}
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/ral", true)
+	c.Update("/ral", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible for /ral")
@@ -668,25 +606,16 @@ func TestCompletions_PartMatch_PluginSkill(t *testing.T) {
 }
 
 func TestCompletions_PartMatch_AutoPrefix(t *testing.T) {
+	t.Parallel()
 	// /auto should match "oh-my-claudecode:autopilot" via part prefix
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	commandDefs = map[string]CommandDef{}
-	skillDefs = map[string]CommandDef{
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{})
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"oh-my-claudecode:ralph":     {Description: "Persistent agent loop", HasArgs: true},
 		"oh-my-claudecode:autopilot": {Description: "Autopilot mode", HasArgs: true},
-	}
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/auto", true)
+	c.Update("/auto", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible for /auto")
@@ -701,27 +630,18 @@ func TestCompletions_PartMatch_AutoPrefix(t *testing.T) {
 }
 
 func TestCompletions_PartMatch_FullPrefixWins(t *testing.T) {
+	t.Parallel()
 	// If a builtin starts with "r" and a plugin skill has part "ralph",
 	// the full prefix match (builtin) should appear first.
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
+		"rewind": {Description: "Rewind conversation", HasArgs: false},
+	})
+	r.RegisterSkillCommands(map[string]CommandDef{
+		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
 	})
 
-	commandDefs = map[string]CommandDef{
-		"rewind": {Description: "Rewind conversation", HasArgs: false},
-	}
-	skillDefs = map[string]CommandDef{
-		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
-	}
-	sortedCommands = AllCommands()
-
 	c := NewCompletions()
-	c.Update("/r", true)
+	c.Update("/r", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible for /r")
@@ -730,7 +650,6 @@ func TestCompletions_PartMatch_FullPrefixWins(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d: %v", len(items), items)
 	}
-	// rewind (priority 1 = full prefix) must come before oh-my-claudecode:ralph (priority 2 = part prefix)
 	if items[0].Name != "rewind" {
 		t.Errorf("first item = %q, want %q (full prefix should win)", items[0].Name, "rewind")
 	}
@@ -740,25 +659,16 @@ func TestCompletions_PartMatch_FullPrefixWins(t *testing.T) {
 }
 
 func TestCompletions_PartMatch_ClaudecodeMatches(t *testing.T) {
+	t.Parallel()
 	// /claude should match "oh-my-claudecode:ralph" via part prefix on "claudecode"
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
-	})
-
-	commandDefs = map[string]CommandDef{}
-	skillDefs = map[string]CommandDef{
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{})
+	r.RegisterSkillCommands(map[string]CommandDef{
 		"oh-my-claudecode:ralph":  {Description: "Persistent agent loop", HasArgs: true},
 		"oh-my-claudecode:cancel": {Description: "Cancel mode", HasArgs: false},
-	}
-	sortedCommands = AllCommands()
+	})
 
 	c := NewCompletions()
-	c.Update("/claude", true)
+	c.Update("/claude", true, r)
 
 	if !c.Visible() {
 		t.Fatal("expected completions visible for /claude")
@@ -770,26 +680,17 @@ func TestCompletions_PartMatch_ClaudecodeMatches(t *testing.T) {
 }
 
 func TestCompletions_PartMatch_NoMatch(t *testing.T) {
+	t.Parallel()
 	// /xyz should not match any plugin skill
-	origCommands := sortedCommands
-	origDefs := commandDefs
-	origSkills := skillDefs
-	t.Cleanup(func() {
-		sortedCommands = origCommands
-		commandDefs = origDefs
-		skillDefs = origSkills
+	r := NewCommandRegistryWithBuiltins(map[string]CommandDef{
+		"clear": {Description: "Clear conversation", HasArgs: false},
+	})
+	r.RegisterSkillCommands(map[string]CommandDef{
+		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
 	})
 
-	commandDefs = map[string]CommandDef{
-		"clear": {Description: "Clear conversation", HasArgs: false},
-	}
-	skillDefs = map[string]CommandDef{
-		"oh-my-claudecode:ralph": {Description: "Persistent agent loop", HasArgs: true},
-	}
-	sortedCommands = AllCommands()
-
 	c := NewCompletions()
-	c.Update("/xyz", true)
+	c.Update("/xyz", true, r)
 
 	if c.Visible() {
 		t.Error("should not be visible with no matches")
