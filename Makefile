@@ -1,16 +1,35 @@
-.PHONY: all build test lint check clean agent-start agent-stop install
+.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install
 
 BINARY := gbot
+BINARY_DEBUG := gbot-debug
 CMD := ./cmd/gbot/
 PKG := ./pkg/...
 ALL := ./pkg/... ./cmd/...
 GBOT_HOME := $(HOME)/.gbot
 
+# -N: disable optimization (keeps locals alive for inspection)
+# -l: disable inlining (preserves real call frames)
+DEBUG_GCFLAGS := -gcflags="all=-N -l"
+
 all: build
 	./$(BINARY)
 
-build:
+# build compiles both the optimized gbot and the dlv-friendly gbot-debug.
+# Use `make build-debug` for just the debug binary.
+build: build-debug
 	go build -o $(BINARY) $(CMD)
+
+build-debug:
+	go build $(DEBUG_GCFLAGS) -o $(BINARY_DEBUG) $(CMD)
+
+# Alias for clarity when only one is wanted.
+build-all: build
+
+# debug launches gbot-debug under dlv (interactive REPL).
+# gbot runs as a child of dlv, so ptrace_scope=1 is fine.
+# Connect from another terminal with: dlv connect :2345
+debug: build-debug
+	dlv exec ./$(BINARY_DEBUG) --headless --api-version=2 --listen=127.0.0.1:2345
 
 test:
 	go test $(PKG) -race -count=1 -timeout 120s -coverprofile=coverage.out
@@ -33,7 +52,7 @@ fix:
 	go fix ./pkg/... ./cmd/... 2>/dev/null || true
 
 clean:
-	rm -f $(BINARY) coverage.out *.out *.prof *.test
+	rm -f $(BINARY) $(BINARY_DEBUG) coverage.out *.out *.prof *.test
 	rm -f /tmp/gbot-screen.raw /tmp/gbot-agent.pid /tmp/gbot-input
 	rm -rf /tmp/Test*
 	screen -S gbot -X quit 2>/dev/null || true
