@@ -16,7 +16,7 @@ all: build
 
 # build compiles both the optimized gbot and the dlv-friendly gbot-debug.
 # Use `make build-debug` for just the debug binary.
-build: build-debug
+build:
 	go build -o $(BINARY) $(CMD)
 
 build-debug:
