@@ -41,6 +41,11 @@ type Config struct {
 	// (default). Explicit false = disabled. Used by pkg/plugins.LoadAndInitialize.
 	Plugins map[string]bool `json:"plugins,omitempty"`
 
+	// PprofAddr is the TCP address for the pprof HTTP server. Empty = use
+	// default "localhost:6060". Set GBOT_PPROF_ADDR env to override at
+	// runtime; "off" disables the server entirely.
+	PprofAddr string `json:"pprof_addr,omitempty"`
+
 	Hooks json.RawMessage `json:"hooks,omitempty"`
 }
 
@@ -282,7 +287,6 @@ func (c *Config) IsPluginEnabled(name string) bool {
 }
 
 // findProvider finds a provider by name (exact match).
-
 func (c *Config) findProvider(name string) *Provider {
 	for i := range c.Providers {
 		if c.Providers[i].Name == name {

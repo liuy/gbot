@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	_ "net/http/pprof"
 
 	"github.com/google/uuid"
 	"os"
@@ -67,6 +70,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// pprof HTTP server: exposes /debug/pprof/* for runtime introspection
+	// (heap, goroutine, CPU profiles). Always-on; bound to localhost only.
+	// Override address with GBOT_PPROF_ADDR; set to "" to disable.
+	startPprofServer(cfg.PprofAddr)
 
 	// 2. Create LLM providers from config
 	providerMap, err := config.CreateAllProviders(cfg)
@@ -470,6 +478,35 @@ func main() {
 // loadConfig reads configuration from gbot's own settings files and env vars.
 func loadConfig() (*config.Config, error) {
 	return config.Load()
+}
+
+// startPprofServer starts a localhost-bound pprof HTTP server.
+// Priority: GBOT_PPROF_ADDR env > cfg.PprofAddr > "localhost:6060" default.
+// "off" or "-" disables the server. Logs the listen address (or skip notice).
+func startPprofServer(cfgAddr string) {
+	addr := cfgAddr
+	if env := os.Getenv("GBOT_PPROF_ADDR"); env != "" {
+		addr = env
+	}
+	if addr == "" {
+		addr = "localhost:6060"
+	}
+	if addr == "off" || addr == "-" {
+		slog.Info("pprof:disabled")
+		return
+	}
+	// net/http/pprof registers handlers on DefaultServeMux at import time.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		slog.Warn("pprof:listen_failed", "addr", addr, "error", err)
+		return
+	}
+	go func() {
+		slog.Info("pprof:listen", "addr", ln.Addr().String())
+		if err := http.Serve(ln, http.DefaultServeMux); err != nil {
+			slog.Warn("pprof:server_failed", "error", err)
+		}
+	}()
 }
 
 // resolvePrimaryProvider resolves Config.Model into a concrete provider, model name,
