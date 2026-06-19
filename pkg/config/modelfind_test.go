@@ -7,84 +7,139 @@ import (
 	"testing"
 )
 
-func TestFindModelByLongestPrefix_ExactMatch(t *testing.T) {
+func TestFindModel_ExactMatch(t *testing.T) {
 	t.Parallel()
 
 	candidates := []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1"}
-	got := FindModelByLongestPrefix("gpt-4o", candidates)
+	got := FindModel("gpt-4o", candidates)
 	if got != "gpt-4o" {
-		t.Errorf("exact match FindModelByLongestPrefix = %q, want %q", got, "gpt-4o")
+		t.Errorf("exact match = %q, want %q", got, "gpt-4o")
 	}
 }
 
-func TestFindModelByLongestPrefix_NoMatch(t *testing.T) {
+func TestFindModel_FuzzyMatch(t *testing.T) {
 	t.Parallel()
 
-	candidates := []string{"gpt-4o", "glm-5"}
-	got := FindModelByLongestPrefix("nonexistent", candidates)
+	// "max3" fuzzy-matches "MiniMax-M3" via character-order subsequence.
+	got := FindModel("max3", []string{"MiniMax-M3", "glm-5.2"})
+	if got != "MiniMax-M3" {
+		t.Errorf("fuzzy match = %q, want %q", got, "MiniMax-M3")
+	}
+}
+
+func TestFindModel_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	got := FindModel("zzzzz", []string{"MiniMax-M3", "glm-5.2"})
 	if got != "" {
-		t.Errorf("no-match FindModelByLongestPrefix = %q, want empty", got)
+		t.Errorf("no-match = %q, want empty", got)
 	}
 }
 
-func TestFindModelByLongestPrefix_LongestNormalized(t *testing.T) {
+func TestFindModel_EmptyInput(t *testing.T) {
 	t.Parallel()
 
-	// All candidates start with the normalized input "glm5";
-	// the function must pick the one whose normalized form is longest
-	// (i.e. the most specific match). Strict > comparison means
-	// candidates with equal normalized length keep the first match.
-	// Here "glm-5.1-preview" (norm "glm51preview", 11 chars) beats
-	// "glm-5" (norm "glm5", 4 chars).
-	candidates := []string{"glm-5", "glm-5.1-preview"}
-	got := FindModelByLongestPrefix("glm5", candidates)
-	if got != "glm-5.1-preview" {
-		t.Errorf("longest normalized FindModelByLongestPrefix = %q, want %q", got, "glm-5.1-preview")
-	}
-}
-
-func TestFindModelByLongestPrefix_LongestNormalizedStableOrder(t *testing.T) {
-	t.Parallel()
-
-	// When two candidates have equal normalized length, the iteration
-	// order determines the winner (strict > means later equal-length
-	// candidates do NOT replace the earlier one).
-	candidates := []string{"glm-5.1", "glm-5.2"}
-	got := FindModelByLongestPrefix("glm5", candidates)
-	if got != "glm-5.1" {
-		t.Errorf("equal-length normalized FindModelByLongestPrefix = %q, want first %q", got, "glm-5.1")
-	}
-}
-
-func TestFindModelByLongestPrefix_NormalizedInput(t *testing.T) {
-	t.Parallel()
-
-	// Input with separators should normalize before comparison.
-	candidates := []string{"glm5", "glm-5-lite"}
-	got := FindModelByLongestPrefix("glm_5", candidates)
-	if got != "glm-5-lite" {
-		t.Errorf("normalized input FindModelByLongestPrefix = %q, want %q", got, "glm-5-lite")
-	}
-}
-
-func TestFindModelByLongestPrefix_PartialPrefixSkipped(t *testing.T) {
-	t.Parallel()
-
-	// "gpt5" is not a prefix of "gpt-4o" (normalized "gpt4o"),
-	// so the function should return "".
-	candidates := []string{"gpt-4o"}
-	got := FindModelByLongestPrefix("gpt5", candidates)
+	got := FindModel("", []string{"glm-5"})
 	if got != "" {
-		t.Errorf("non-prefix FindModelByLongestPrefix = %q, want empty", got)
+		t.Errorf("empty input = %q, want empty", got)
 	}
 }
 
-func TestFindModelByLongestPrefix_EmptyCandidates(t *testing.T) {
+func TestFindModel_EmptyCandidates(t *testing.T) {
 	t.Parallel()
 
-	got := FindModelByLongestPrefix("glm-5", nil)
+	got := FindModel("glm-5", nil)
 	if got != "" {
-		t.Errorf("empty candidates FindModelByLongestPrefix = %q, want empty", got)
+		t.Errorf("empty candidates = %q, want empty", got)
+	}
+}
+
+func TestFindModel_ClosestNotFirst(t *testing.T) {
+	t.Parallel()
+
+	// When the closest match is NOT the first candidate, FindModel must
+	// still return it. "mimo2.5" → "mimo-v2.5" (distance 1) beats
+	// "mimo-v2.5-pro" (distance 4) even though pro appears first.
+	candidates := []string{"mimo-v2.5-pro", "mimo-v2.5"}
+	got := FindModel("mimo2.5", candidates)
+	if got != "mimo-v2.5" {
+		t.Errorf("FindModel(\"mimo2.5\") = %q, want %q", got, "mimo-v2.5")
+	}
+}
+
+func TestFindModel_ClosestNotFirst_Rank(t *testing.T) {
+	t.Parallel()
+
+	candidates := []string{"mimo-v2.5-pro", "mimo-v2.5"}
+	got, dist := FindModelRank("mimo2.5", candidates)
+	if got != "mimo-v2.5" {
+		t.Errorf("FindModelRank = %q, want %q", got, "mimo-v2.5")
+	}
+	if dist != 1 {
+		t.Errorf("distance = %d, want 1", dist)
+	}
+}
+
+func TestFindModel_PrefixCompromised(t *testing.T) {
+	t.Parallel()
+
+	// "glm5" still matches "glm-5.2" (normalized "glm52" starts with "glm5").
+	got := FindModel("glm5", []string{"glm-5.2"})
+	if got != "glm-5.2" {
+		t.Errorf("prefix-like match = %q, want %q", got, "glm-5.2")
+	}
+}
+
+func TestFindModel_CrossProviderPrefix(t *testing.T) {
+	t.Parallel()
+
+	// "gpt5" fuzzy-matches "gpt-4o" (via g-p-t-5 characters... actually
+	// "gpt5" doesn't match "gpt4o" because 5 ≠ 4o. Let's use a valid case.)
+	got := FindModel("gpt4", []string{"gpt-4o", "gpt-4o-mini"})
+	if got == "" {
+		t.Error("gpt4 should match at least one gpt-4 model")
+	}
+}
+
+func TestFindModel_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	got := FindModel("MINIMAX", []string{"MiniMax-M3"})
+	if got != "MiniMax-M3" {
+		t.Errorf("case-insensitive = %q, want %q", got, "MiniMax-M3")
+	}
+}
+
+func TestFindModel_SeparatorAgnostic(t *testing.T) {
+	t.Parallel()
+
+	got := FindModel("glm_5", []string{"glm-5.2"})
+	if got != "glm-5.2" {
+		t.Errorf("separator agnostic = %q, want %q", got, "glm-5.2")
+	}
+}
+
+func TestNormalizeModelName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"glm-5", "glm5"},
+		{"glm_5", "glm5"},
+		{"glm.5", "glm5"},
+		{"MiniMax-M3", "minimaxm3"},
+		{"gpt-4o-mini", "gpt4omini"},
+		{"plain", "plain"},
+		{"", ""},
+		{"-_.", ""},
+		{"a-b.c_d", "abcd"},
+	}
+	for _, tc := range tests {
+		if got := normalizeModelName(tc.input); got != tc.want {
+			t.Errorf("normalizeModelName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
 	}
 }
 
@@ -154,7 +209,6 @@ func TestResolveModel_ModelNotFoundInProvider(t *testing.T) {
 func TestResolveModel_NoProvidersConfigured(t *testing.T) {
 	t.Parallel()
 
-	// Empty ModelSpec + no providers → "no providers configured"
 	cfg := &Config{}
 	_, _, err := cfg.ResolveModel()
 	if err == nil {
@@ -227,33 +281,6 @@ func TestFindProvider_Found(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// normalizeModelName tests
-// ---------------------------------------------------------------------------
-
-func TestNormalizeModelName(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"glm-5", "glm5"},
-		{"glm_5", "glm5"},
-		{"glm.5", "glm5"},
-		{"gpt-4o-mini", "gpt4omini"},
-		{"plain", "plain"},
-		{"", ""},
-		{"-_.", ""},
-		{"a-b.c_d", "abcd"},
-	}
-	for _, tc := range tests {
-		if got := normalizeModelName(tc.input); got != tc.want {
-			t.Errorf("normalizeModelName(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ProxyHTTPClient tests
 // ---------------------------------------------------------------------------
 
@@ -283,13 +310,11 @@ func TestProxyHTTPClient_ValidProxy(t *testing.T) {
 func TestProxyHTTPClient_InvalidProxyURL(t *testing.T) {
 	t.Parallel()
 
-	// An invalid proxy URL should fall back to http.DefaultClient.
 	cfg := &Config{Proxy: "://not-a-url"}
 	client := cfg.ProxyHTTPClient()
 	if client == nil {
 		t.Fatal("ProxyHTTPClient() returned nil for invalid proxy")
 	}
-	// http.DefaultClient has nil Transport; a configured proxy has non-nil Transport.
 	if client.Transport != nil {
 		t.Errorf("expected default client (nil Transport) for invalid proxy URL, got Transport=%v", client.Transport)
 	}
@@ -315,9 +340,6 @@ func TestProxyHTTPClient_SOCKSProxy(t *testing.T) {
 func TestCreateAllProviders_ProviderWithoutModels(t *testing.T) {
 	t.Parallel()
 
-	// The first provider determines the resolved model via ResolveModel,
-	// so it must have at least one model. The second provider has a key
-	// but no models and should be skipped by the loop's len(p.Models) == 0 guard.
 	cfg := &Config{
 		Providers: []Provider{
 			{
@@ -374,7 +396,6 @@ func TestIntOrHuman_UnmarshalJSON_ParseIntOrHumanFailure(t *testing.T) {
 		name  string
 		input string
 	}{
-		// Valid JSON string but invalid human format → triggers ParseIntOrHuman error.
 		{"non-numeric string", `"abc"`},
 		{"mixed alphanum", `"12x"`},
 		{"lone k unit", `"k"`},
@@ -393,7 +414,6 @@ func TestIntOrHuman_UnmarshalJSON_ParseIntOrHumanFailure(t *testing.T) {
 			if !strings.Contains(err.Error(), "IntOrHuman") {
 				t.Errorf("error should mention IntOrHuman prefix, got: %v", err)
 			}
-			// Value must remain zero.
 			if h.Int() != 0 {
 				t.Errorf("value should be 0 after error, got %d", h.Int())
 			}

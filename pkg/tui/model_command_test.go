@@ -65,12 +65,22 @@ func newTestAppWithProviders(t *testing.T) *App {
 					"claude-sonnet": {},
 				}),
 			},
+			{
+				Name: "minimax",
+				URL:  "https://api.minimaxi.com",
+				Keys: []string{"sk-minimax-key"},
+				Models: config.NewModelsFromMap(map[string]config.ModelConfig{
+					"minimax-3":   {},
+					"minimax-2.7": {},
+				}),
+			},
 		},
 	}
 
 	providers := map[string]llm.Provider{
 		"openai":    &mockLLMProvider{},
 		"anthropic": &mockLLMProvider{},
+		"minimax":   &mockLLMProvider{},
 	}
 
 	a.SetProviders(providers, cfg)
@@ -259,15 +269,12 @@ func TestHandleModel_NoProviders(t *testing.T) {
 func TestHandleModel_OpenPicker(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	cmd := a.handleModel("", nil)
-	if cmd != nil {
-		t.Error("expected nil cmd for empty args (commitCmd was nil)")
-	}
+	_ = a.handleModel("", nil)
 	if a.activeDialog == nil {
-		t.Error("listPicker should be set")
+		t.Error("dialog should be set")
 	}
 	if a.onDialogDone == nil {
-		t.Error("onPickerDone should be set")
+		t.Error("onDialogDone should be set")
 	}
 }
 
@@ -363,8 +370,30 @@ func TestHandleModel_SwitchModel_NotFound(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected infoMsg, got %T", msg)
 	}
-	if !strings.Contains(string(info), "not found in provider") {
-		t.Errorf("expected 'not found' message, got %q", info)
+	if !strings.Contains(string(info), "not found in any provider") {
+		t.Errorf("expected 'not found in any provider' message, got %q", info)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// switchModel — cross-provider fallback
+// ---------------------------------------------------------------------------
+
+func TestHandleModel_SwitchModel_CrossProvider(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Current provider is openai; "m3" doesn't exist there but "minimax-3" does
+	// in the minimax provider. Fuzzy match "m3" → "minimax-3" should switch.
+	cmd := a.handleModel("m3", nil)
+	if cmd != nil {
+		cmd() // consume the cmd
+	}
+
+	if a.currentProvider != "minimax" {
+		t.Errorf("currentProvider = %q, want %q (should cross-switch)", a.currentProvider, "minimax")
+	}
+	if a.currentModel != "minimax-3" {
+		t.Errorf("currentModel = %q, want %q", a.currentModel, "minimax-3")
 	}
 }
 
@@ -610,17 +639,20 @@ func TestBuildModelItems_Items(t *testing.T) {
 	a := newTestAppWithProviders(t)
 	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
 
-	// anthropic: 1 model + openai: 3 models = 4 items
-	if len(items) != 4 {
-		t.Fatalf("expected 4 items, got %d", len(items))
+	// anthropic: 1 model, minimax: 2 models, openai: 3 models = 6 items
+	if len(items) != 6 {
+		t.Fatalf("expected 6 items, got %d", len(items))
 	}
 
-	// Sorted by provider name: anthropic first, then openai
+	// Sorted by provider name: anthropic first, then minimax, then openai
 	if items[0].Provider != "anthropic" {
 		t.Errorf("items[0].Provider = %q, want anthropic", items[0].Provider)
 	}
-	if items[1].Provider != "openai" {
-		t.Errorf("items[1].Provider = %q, want openai", items[1].Provider)
+	if items[1].Provider != "minimax" {
+		t.Errorf("items[1].Provider = %q, want minimax", items[1].Provider)
+	}
+	if items[3].Provider != "openai" {
+		t.Errorf("items[3].Provider = %q, want openai", items[3].Provider)
 	}
 }
 

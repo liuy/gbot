@@ -10,8 +10,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/lithammer/fuzzysearch/fuzzy"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -254,7 +256,7 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 		if p == nil {
 			return nil, "", fmt.Errorf("provider %q not found", providerName)
 		}
-		matched := FindModelByLongestPrefix(modelName, p.ModelNames())
+		matched := FindModel(modelName, p.ModelNames())
 		if matched == "" {
 			return nil, "", fmt.Errorf("model %q not found in provider %q", modelName, p.Name)
 		}
@@ -264,7 +266,7 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 	// No provider → cross-provider fuzzy search.
 	for i := range c.Providers {
 		p := &c.Providers[i]
-		matched := FindModelByLongestPrefix(modelName, p.ModelNames())
+		matched := FindModel(modelName, p.ModelNames())
 		if matched != "" {
 			return p, matched, nil
 		}
@@ -296,7 +298,7 @@ func (c *Config) findProvider(name string) *Provider {
 	return nil
 }
 
-// normalizeModelName strips -_. separators for fuzzy matching.
+// normalizeModelName strips -_. separators and lowercases for fuzzy matching.
 func normalizeModelName(s string) string {
 	var b strings.Builder
 	for _, c := range s {
@@ -305,33 +307,73 @@ func normalizeModelName(s string) string {
 		}
 		b.WriteRune(c)
 	}
-	return b.String()
+	return strings.ToLower(b.String())
 }
 
-// FindModelByLongestPrefix finds the model name whose normalized form
-// starts with the normalized input. Returns the longest match.
-// Returns empty string if no match. Exported for use by TUI model commands.
-func FindModelByLongestPrefix(input string, candidates []string) string {
+// FindModel finds the closest model name from candidates using fuzzy search
+// (character-order subsequence matching, case-insensitive, separator-agnostic).
+// Catches "max3" → "MiniMax-M3", "glm5" → "glm-5.2", etc.
+// Returns empty string if no candidate has any matching characters.
+func FindModel(input string, candidates []string) string {
+	if input == "" || len(candidates) == 0 {
+		return ""
+	}
 	ni := normalizeModelName(input)
 
-	var best string
-	var bestNorm string
-	for _, c := range candidates {
-		// Exact match wins immediately.
-		if c == input {
-			return c
-		}
-		nc := normalizeModelName(c)
-		if !strings.HasPrefix(nc, ni) {
-			continue
-		}
-		// Pick longest normalized match.
-		if best == "" || len(nc) > len(bestNorm) {
-			best = c
-			bestNorm = nc
-		}
+	// Normalize candidates once, building a lookup slice.
+	type entry struct {
+		original string
+		norm     string
 	}
-	return best
+	entries := make([]entry, len(candidates))
+	normCandidates := make([]string, len(candidates))
+	for i, c := range candidates {
+		e := entry{original: c, norm: normalizeModelName(c)}
+		entries[i] = e
+		normCandidates[i] = e.norm
+	}
+
+	ranks := fuzzy.RankFind(ni, normCandidates)
+	if len(ranks) == 0 {
+		return ""
+	}
+	// fuzzy.RankFind returns matches in candidate-list order, not sorted
+	// by distance. Sort ascending so the closest match wins.
+	sort.Slice(ranks, func(i, j int) bool {
+		return ranks[i].Distance < ranks[j].Distance
+	})
+	return entries[ranks[0].OriginalIndex].original
+}
+
+// FindModelRank finds the best fuzzy match and returns its distance.
+// Returns -1 if no candidate matches. Used for cross-provider selection
+// where the globally closest match (across providers) wins.
+func FindModelRank(input string, candidates []string) (model string, distance int) {
+	if input == "" || len(candidates) == 0 {
+		return "", -1
+	}
+	ni := normalizeModelName(input)
+
+	type entry struct {
+		original string
+		norm     string
+	}
+	entries := make([]entry, len(candidates))
+	normCandidates := make([]string, len(candidates))
+	for i, c := range candidates {
+		e := entry{original: c, norm: normalizeModelName(c)}
+		entries[i] = e
+		normCandidates[i] = e.norm
+	}
+
+	ranks := fuzzy.RankFind(ni, normCandidates)
+	if len(ranks) == 0 {
+		return "", -1
+	}
+	sort.Slice(ranks, func(i, j int) bool {
+		return ranks[i].Distance < ranks[j].Distance
+	})
+	return entries[ranks[0].OriginalIndex].original, ranks[0].Distance
 }
 
 // Save writes the configuration back to the user settings file.

@@ -181,7 +181,7 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 	}
 
 	// Fuzzy match model name within provider
-	matched := config.FindModelByLongestPrefix(modelName, cfgProvider.ModelNames())
+	matched := config.FindModel(modelName, cfgProvider.ModelNames())
 	if matched == "" {
 		return a.showInfo(fmt.Sprintf("model %q not found in provider %s", modelName, providerName))
 	}
@@ -200,25 +200,63 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 }
 
 // switchModel switches model on current provider using fuzzy match.
+// If not found in current provider, searches all providers and switches
+// to the globally closest match (lowest Levenshtein distance).
 func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 	cfgProvider := a.providerConfigs[a.currentProvider]
 	if cfgProvider == nil {
 		return a.showInfo(fmt.Sprintf("no config for provider %s", a.currentProvider))
 	}
 
-	matched := config.FindModelByLongestPrefix(modelName, cfgProvider.ModelNames())
-	if matched == "" {
-		return a.showInfo(fmt.Sprintf("model %q not found in provider %s", modelName, a.currentProvider))
+	if matched := config.FindModel(modelName, cfgProvider.ModelNames()); matched != "" {
+		a.engine.SetModel(matched)
+		a.currentModel = matched
+		a.updateEngineCapabilities(a.currentProvider, matched)
+		a.status.SetModel(a.engine.Model())
+		a.persistModelSelection()
+
+		slog.Info("model: switched model", "provider", a.currentProvider, "model", matched)
+		return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", a.currentProvider, matched)))
 	}
 
-	a.engine.SetModel(matched)
-	a.currentModel = matched
-	a.updateEngineCapabilities(a.currentProvider, matched)
+	// Cross-provider fallback: pick the globally best (lowest distance) match.
+	bestProvider := ""
+	bestModel := ""
+	bestDistance := -1
+	for providerName := range a.providers {
+		if providerName == a.currentProvider {
+			continue
+		}
+		cfg := a.providerConfigs[providerName]
+		if cfg == nil {
+			continue
+		}
+		matched, distance := config.FindModelRank(modelName, cfg.ModelNames())
+		if distance < 0 {
+			continue
+		}
+		if bestDistance < 0 || distance < bestDistance {
+			bestProvider = providerName
+			bestModel = matched
+			bestDistance = distance
+		}
+	}
+
+	if bestModel == "" {
+		return a.showInfo(fmt.Sprintf("model %q not found in any provider", modelName))
+	}
+
+	a.engine.SetProvider(a.providers[bestProvider])
+	a.engine.SetModel(bestModel)
+	a.currentProvider = bestProvider
+	a.currentModel = bestModel
+	a.updateEngineCapabilities(bestProvider, bestModel)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
+	a.refreshQuotaFromProvider()
 
-	slog.Info("model: switched model", "provider", a.currentProvider, "model", matched)
-	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", a.currentProvider, matched)))
+	slog.Info("model: switched", "provider", bestProvider, "model", bestModel, "distance", bestDistance)
+	return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", bestProvider, bestModel)))
 }
 
 // switchProvider switches provider, using first model of new provider.
