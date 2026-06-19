@@ -91,3 +91,37 @@ func TestStripColorFromLeadingWhitespace(t *testing.T) {
 		})
 	}
 }
+
+// TestHighlightCode_CacheHit verifies repeated calls with same (code, lang)
+// return identical output and hit the cache (verified via Len()).
+func TestHighlightCode_CacheHit(t *testing.T) {
+	// Clear cache state for deterministic Len assertion.
+	highlightCache.Purge()
+
+	got1 := HighlightCode(`fmt.Println("x")`, "go")
+	got2 := HighlightCode(`fmt.Println("x")`, "go")
+	if got1 != got2 {
+		t.Errorf("cache returned different results for same input:\n  first:  %q\n  second: %q", got1, got2)
+	}
+	if n := highlightCache.Len(); n != 1 {
+		t.Errorf("cache Len = %d after one unique call, want 1", n)
+	}
+
+	// Different input grows cache.
+	HighlightCode(`echo hi`, "bash")
+	if n := highlightCache.Len(); n != 2 {
+		t.Errorf("cache Len = %d after two unique calls, want 2", n)
+	}
+}
+
+// TestHighlightCode_CacheKeySeparatesByLanguage verifies (code, lang) pairs
+// are cached independently — same code with different language must not collide.
+func TestHighlightCode_CacheKeySeparatesByLanguage(t *testing.T) {
+	highlightCache.Purge()
+	const code = `x = 1`
+	HighlightCode(code, "go")
+	HighlightCode(code, "python")
+	if n := highlightCache.Len(); n != 2 {
+		t.Errorf("cache Len = %d, want 2 (same code, different lang should be distinct)", n)
+	}
+}

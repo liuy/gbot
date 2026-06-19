@@ -9,12 +9,28 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
+
+// highlightCache memoizes HighlightCode results. Keyed by language + NUL + code.
+// Text-delta redraws call HighlightCode repeatedly with the same tool summaries,
+// and chroma tokenization is the dominant CPU consumer — cache cuts >75% of calls.
+var highlightCache, _ = lru.New[string, string](512)
 
 // HighlightCode uses chroma to syntax-highlight code for terminal output.
 // If language is a known chroma lexer name (e.g. "go", "python"), it's used directly.
 // Otherwise it's treated as a file path for auto-detection via extension.
 func HighlightCode(code, language string) string {
+	key := language + "\x00" + code
+	if v, ok := highlightCache.Get(key); ok {
+		return v
+	}
+	result := highlightUncached(code, language)
+	highlightCache.Add(key, result)
+	return result
+}
+
+func highlightUncached(code, language string) string {
 	// Try as language name first (e.g. "go", "python" from markdown fences)
 	lexer := lexers.Get(language)
 	if lexer == nil {
