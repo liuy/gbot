@@ -1035,10 +1035,12 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 	// TS calls fileHistoryMakeSnapshot before the ask() loop, so the snapshot
 	// captures pre-edit state. Rewind can then restore files to before edits.
 	if e.fileHistory != nil && e.currentTurnMsgID != "" && !e.isSubagent {
+		snapStart := time.Now()
 		if err := e.fileHistory.MakeSnapshot(e.currentTurnMsgID); err != nil {
 			e.logger.Error("engine:make_snapshot_failed", "err", err)
 		} else {
-			slog.Info("engine:make_snapshot", "msgID", e.currentTurnMsgID, "trackedFiles", len(e.fileHistory.State().TrackedFiles), "snapshots", len(e.fileHistory.State().Snapshots))
+			snapDur := time.Since(snapStart)
+			slog.Info("engine:make_snapshot", "msgID", e.currentTurnMsgID, "trackedFiles", len(e.fileHistory.State().TrackedFiles), "snapshots", len(e.fileHistory.State().Snapshots), "dur_ms", snapDur.Milliseconds())
 			if e.fileHistoryWriter != nil {
 				e.fileHistoryWriter(e.fileHistory.State())
 			}

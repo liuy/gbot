@@ -279,6 +279,21 @@ func (t *Tracker) MakeSnapshot(messageID string) error {
 
 	allSnapshots := append(t.state.Snapshots, newSnapshot)
 	if len(allSnapshots) > MAX_SNAPSHOTS {
+		// Evict oldest snapshots from memory AND disk.
+		// Previously only the in-memory slice was trimmed, leaving orphan
+		// backup files on disk that accumulate to GBs over long sessions.
+		evicted := allSnapshots[:len(allSnapshots)-MAX_SNAPSHOTS]
+		for _, snap := range evicted {
+			for _, backup := range snap.TrackedFileBackups {
+				if backup.BackupFileName == "" {
+					continue
+				}
+				backupPath := filepath.Join(t.dir, backup.BackupFileName)
+				if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+					slog.Warn("filehistory:evict:remove_failed", "file", backupPath, "err", err)
+				}
+			}
+		}
 		allSnapshots = allSnapshots[len(allSnapshots)-MAX_SNAPSHOTS:]
 	}
 

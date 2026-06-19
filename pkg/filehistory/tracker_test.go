@@ -1190,6 +1190,43 @@ func TestMakeSnapshot_EvictsOldSnapshots(t *testing.T) {
 			t.Errorf("old snapshot %q should have been evicted", snap.MessageID)
 		}
 	}
+
+	// Regression: evicted snapshots must have their backup files removed from disk.
+	// Previously only the in-memory slice was trimmed, leaving orphan files that
+	// accumulate to GBs over long sessions.
+	retainedBackups := make(map[string]bool)
+	for _, snap := range state.Snapshots {
+		for _, backup := range snap.TrackedFileBackups {
+			if backup.BackupFileName != "" {
+				retainedBackups[backup.BackupFileName] = true
+			}
+		}
+	}
+
+	// Walk the backup directory and verify every file on disk is referenced
+	// by a retained snapshot.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var orphans []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// main.go is the tracked source file, not a backup.
+		if name == "main.go" {
+			continue
+		}
+		if !retainedBackups[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	if got, want := len(orphans), 0; got != want {
+		t.Errorf("orphan backup files on disk = %d, want %d (evicted snapshots should have removed them); first few: %v",
+			got, want, orphans[:min(len(orphans), 5)])
+	}
 }
 
 // ---------------------------------------------------------------------------

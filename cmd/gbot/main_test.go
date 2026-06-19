@@ -18,7 +18,9 @@ func freePort(t *testing.T) string {
 		t.Fatalf("freePort: %v", err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
 	return addr
 }
 
@@ -36,7 +38,7 @@ func dialReachable(t *testing.T, addr string) string {
 		}
 		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return "http://" + addr
 		}
 	}
@@ -66,7 +68,7 @@ func TestStartPprofServer_Disabled(t *testing.T) {
 	startPprofServer("off")
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:6060", 100*time.Millisecond)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Skip("default :6060 already has a listener (perhaps from another test); cannot assert absence reliably")
 	}
 }
@@ -87,7 +89,7 @@ func TestStartPprofServer_EnvOverride(t *testing.T) {
 	// cfgAddr should NOT be reachable (env won).
 	conn, err := net.DialTimeout("tcp", cfgAddr, 200*time.Millisecond)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Errorf("cfgAddr %s unexpectedly has a listener; env override should have won", cfgAddr)
 	}
 }
