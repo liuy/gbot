@@ -66,6 +66,11 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Z.AI / Zhipu's anthropic-compatible endpoint does not honor nested
+	// cache_control fields — strip them before sending to avoid silent
+	// cache misses. Other hosts are unchanged.
+	body = stripCacheControlForZAI(p.baseURL, body)
+
 	// Record prompt state for cache break detection (pre-call).
 	// Source: promptCacheBreakDetection.ts:247-430
 	if req.PromptStateKey != nil {
@@ -127,6 +132,11 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+
+	// Z.AI / Zhipu's anthropic-compatible endpoint does not honor nested
+	// cache_control fields — strip them before sending to avoid silent
+	// cache misses. Other hosts are unchanged.
+	body = stripCacheControlForZAI(p.baseURL, body)
 
 	// Record prompt state for cache break detection (pre-call).
 	if req.PromptStateKey != nil {
