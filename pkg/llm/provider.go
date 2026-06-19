@@ -251,6 +251,23 @@ type BaseProvider struct {
 	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider
 }
 
+// newLLMTransport returns an http.Transport tuned for LLM API streaming.
+// All providers share this config so connection pooling behaves consistently.
+//
+// HTTP/2 negotiation is left to Go defaults (ALPN during TLS handshake);
+// all major LLM endpoints already serve H2.
+//
+//   - MaxIdleConnsPerHost: 100 — fork/sub-agent bursts can exceed the default 2.
+//   - IdleConnTimeout: 5m — long enough to span a multi-turn query, short enough
+//     to release idle sockets when the user steps away.
+func newLLMTransport() *http.Transport {
+	return &http.Transport{
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     5 * time.Minute,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
 // CalculateBackoff computes exponential backoff with jitter.
 // Source: services/api/withRetry.ts — 1:1 port.
 func CalculateBackoff(attempt int, cfg *RetryConfig) time.Duration {

@@ -44,7 +44,7 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 
 	return &AnthropicProvider{
 		BaseProvider: BaseProvider{
-			httpClient:  &http.Client{Timeout: cfg.Timeout},
+			httpClient:  &http.Client{Timeout: cfg.Timeout, Transport: newLLMTransport()},
 			retryConfig: cfg.RetryConfig,
 			idleTimeout: DefaultSSETimeout,
 		},

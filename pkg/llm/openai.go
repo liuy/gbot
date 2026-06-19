@@ -53,12 +53,8 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 	return &OpenAIProvider{
 		BaseProvider: BaseProvider{
 			httpClient: &http.Client{
-				Timeout: cfg.Timeout,
-				Transport: &http.Transport{
-					MaxIdleConnsPerHost: 10,
-					IdleConnTimeout:     90 * time.Second,
-					TLSHandshakeTimeout: 10 * time.Second,
-				},
+				Timeout:   cfg.Timeout,
+				Transport: newLLMTransport(),
 			},
 			retryConfig: DefaultRetryConfig(),
 			idleTimeout: 60 * time.Second,
