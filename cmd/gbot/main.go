@@ -333,6 +333,14 @@ func main() {
 
 			// Use parent's system prompt for cache sharing (TS: cacheSafeParams).
 			result := subEng.RunForkedQuery(ctx, forkMessages, systemPrompt)
+
+			// Sanitize: enforce structural invariants on SESSION_NOTES.md
+			// after the agent has finished editing. This catches duplicate
+			// headers, stray sections, and other structural drift.
+			if err := session.SanitizeNotes(notesPath); err != nil {
+				slog.Warn("session memory: sanitize failed", "error", err)
+			}
+
 			return result.Error
 		}
 		sm := session.New(smCfg, workingDir, extractFn, slog.Default())
