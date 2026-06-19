@@ -276,8 +276,12 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 		a.currentModel = cfg.Providers[0].FirstModelName()
 	}
 
-	// Build quota fetcher from the primary provider (nil if unsupported).
-	if len(cfg.Providers) > 0 {
+	// Build quota fetcher from the resolved provider (nil if unsupported).
+	// Use current provider (from model spec), not Providers[0], since the
+	// resolved model may point to a non-primary provider.
+	if p, ok := a.providerConfigs[a.currentProvider]; ok {
+		a.quotaFetcher = quota.Detect(p)
+	} else if len(cfg.Providers) > 0 {
 		a.quotaFetcher = quota.Detect(&cfg.Providers[0])
 	}
 }

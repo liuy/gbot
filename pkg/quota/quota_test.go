@@ -471,16 +471,13 @@ func TestPickMinimaxBucket_GeneralFirst(t *testing.T) {
 }
 
 func TestDetect_ZhipuByName(t *testing.T) {
+	// DISABLED 2026-06-20: zhipu quota endpoint disabled to prevent
+	// rate-limit triggers from background polling. Re-enable when safe.
 	t.Parallel()
 	p := &config.Provider{Name: "zhipu", URL: "https://open.bigmodel.cn/api/coding/paas/v4", Keys: []string{"k"}}
 	f := Detect(p)
-	if _, ok := f.(*ZhipuFetcher); !ok {
-		t.Errorf("Detect(zhipu) = %T, want *ZhipuFetcher", f)
-	}
-	if zf, ok := f.(*ZhipuFetcher); ok {
-		if want := "https://open.bigmodel.cn"; zf.BaseURL != want {
-			t.Errorf("BaseURL = %q, want %q (host only, no path)", zf.BaseURL, want)
-		}
+	if f != nil {
+		t.Errorf("Detect(zhipu) = %T, want nil (disabled)", f)
 	}
 }
 
@@ -488,8 +485,8 @@ func TestDetect_ZhipuByZaiURL(t *testing.T) {
 	t.Parallel()
 	p := &config.Provider{Name: "intl", URL: "https://api.z.ai/v1/messages", Keys: []string{"k"}}
 	f := Detect(p)
-	if _, ok := f.(*ZhipuFetcher); !ok {
-		t.Errorf("Detect(z.ai url) = %T, want *ZhipuFetcher", f)
+	if f != nil {
+		t.Errorf("Detect(z.ai url) = %T, want nil (disabled)", f)
 	}
 }
 
@@ -497,8 +494,8 @@ func TestDetect_ZhipuByGLMName(t *testing.T) {
 	t.Parallel()
 	p := &config.Provider{Name: "glm-official", URL: "https://x.com", Keys: []string{"k"}}
 	f := Detect(p)
-	if _, ok := f.(*ZhipuFetcher); !ok {
-		t.Errorf("Detect(glm name) = %T, want *ZhipuFetcher", f)
+	if f != nil {
+		t.Errorf("Detect(glm name) = %T, want nil (disabled)", f)
 	}
 }
 

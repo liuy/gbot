@@ -1,6 +1,7 @@
 package session
 
 import (
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -88,17 +89,25 @@ func SanitizeNotes(notesPath string) error {
 	// Parse sections: each is "## Header\nbody\n" until next "## ".
 	sections := parseSections(content[firstHeaderIdx+1:])
 
-	// Merge sections by canonical header name.
+	// Merge sections by canonical header name. Track counts for logging.
 	merged := make(map[string][]string) // canonical → list of bodies
+	var dropped, aliased, duplicates, empty int
 
 	for _, sec := range sections {
 		canonical := resolveHeader(sec.header)
 		if canonical == "" {
-			continue // dropped
+			dropped++
+			continue
 		}
 		body := strings.TrimSpace(sec.body)
 		if body == "" {
+			empty++
 			continue
+		}
+		if _, exists := merged[canonical]; exists {
+			duplicates++
+		} else if sec.header != canonical {
+			aliased++
 		}
 		merged[canonical] = append(merged[canonical], body)
 	}
@@ -126,8 +135,21 @@ func SanitizeNotes(notesPath string) error {
 
 	result := out.String()
 	if result == content {
+		if dropped+aliased+duplicates+empty > 0 {
+			// Edge case: parse differences exist but reorder/normalization
+			// produces byte-identical output. Still useful for visibility.
+			slog.Info("session notes: sanitize",
+				"dropped", dropped, "aliased", aliased,
+				"duplicates_merged", duplicates, "empty_removed", empty,
+				"status", "no_change")
+		}
 		return nil // no changes needed
 	}
+	slog.Info("session notes: sanitize",
+		"dropped", dropped, "aliased", aliased,
+		"duplicates_merged", duplicates, "empty_removed", empty,
+		"size_before", len(content), "size_after", len(result),
+		"status", "rewritten")
 	return os.WriteFile(notesPath, []byte(result), 0o644)
 }
 

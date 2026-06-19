@@ -942,10 +942,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
 
 			// Quota fetch piggybacks on the 100ms spinner tick: every 100
-			// ticks (~10s) fire one fetch. Skip zhipu — its quota endpoint
-			// may trigger rate-limit detection on frequent background polling.
+			// ticks (~10s) fire one fetch.
 			var fetchCmd tea.Cmd
-			if a.toolBlinkTick%100 == 0 && a.currentProvider != "zhipu" {
+			if a.toolBlinkTick%100 == 0 {
 				fetchCmd = a.fetchQuota()
 			}
 

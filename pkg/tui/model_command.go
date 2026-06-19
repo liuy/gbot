@@ -214,6 +214,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 		a.updateEngineCapabilities(a.currentProvider, matched)
 		a.status.SetModel(a.engine.Model())
 		a.persistModelSelection()
+		a.refreshQuotaFromProvider()
 
 		slog.Info("model: switched model", "provider", a.currentProvider, "model", matched)
 		return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", a.currentProvider, matched)))

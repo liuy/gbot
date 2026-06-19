@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/llm"
@@ -8897,4 +8899,43 @@ type countingFetcher struct {
 func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
 	c.calls++
 	return quota.Info{Used: 50}, nil
+}
+
+// ---------------------------------------------------------------------------
+// SetProviders: quota fetcher must match the resolved provider, not Providers[0]
+// ---------------------------------------------------------------------------
+
+// RED-LIGHT: SetProviders builds quotaFetcher from cfg.Providers[0] regardless
+// of the resolved model. If the resolved model (zhipu) differs from Providers[0]
+// (minimax), the fetcher should be zhipu's, not minimax's.
+func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
+	cfg := &config.Config{
+		Model: config.ModelSpec{"default": "zhipu/glm-5"},
+		Providers: []config.Provider{
+			{Name: "minimax", Keys: []string{"sk-key"}, Models: config.NewModelsFromMap(map[string]config.ModelConfig{"minimax-3": {}})},
+			{Name: "zhipu", Keys: []string{"sk-key"}, Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {}})},
+		},
+	}
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{},
+		Model:    "glm-5",
+		Logger:   slog.Default(),
+	})
+	a := &App{engine: eng, repl: NewReplState()}
+
+	providers := map[string]llm.Provider{
+		"minimax": &mockLLMProvider{},
+		"zhipu":   &mockLLMProvider{},
+	}
+	a.SetProviders(providers, cfg)
+
+	if a.currentProvider != "zhipu" {
+		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "zhipu")
+	}
+	// With the bug, quotaFetcher is minimax's (from cfg.Providers[0]).
+	// After fix, it should be zhipu's.
+	if _, ok := a.quotaFetcher.(*quota.ZhipuFetcher); !ok {
+		t.Errorf("quotaFetcher = %T, want *quota.ZhipuFetcher (resolved provider zhipu), got minimax's fetcher (from Providers[0])", a.quotaFetcher)
+	}
 }
