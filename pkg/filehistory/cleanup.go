@@ -11,8 +11,9 @@ import (
 )
 
 // DefaultCleanupAge is the default maximum age for backup session directories.
-// Source: TS cleanup.ts:23 — DEFAULT_CLEANUP_PERIOD_DAYS = 30
-const DefaultCleanupAge = 30 * 24 * time.Hour
+// Rewind is only useful within the current session, so 1 day covers all
+// realistic use cases. Git history handles anything older.
+const DefaultCleanupAge = 24 * time.Hour
 
 // CleanupOldBackups removes backup session directories older than maxAge under
 // the given fileHistoryDir (typically ~/.gbot/file-history/).
