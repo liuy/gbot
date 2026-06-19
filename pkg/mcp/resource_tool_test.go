@@ -60,7 +60,7 @@ func TestListMcpResources_FilterByServer(t *testing.T) {
 	})
 
 	// Populate cache — but nil session means FetchResourcesForServer returns nil
-	reg.resourceCache.Put("server-a", []ServerResource{
+	reg.resourceCache.Add("server-a", []ServerResource{
 		{URI: "test://a1", Name: "a1", Server: "server-a"},
 	})
 

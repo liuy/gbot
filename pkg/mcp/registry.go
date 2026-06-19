@@ -15,7 +15,19 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
+
+// mustLRU wraps lru.New; capacity is a positive constant so the only failure
+// mode (non-positive capacity) is impossible at runtime.
+func mustLRU[K comparable, V any](capacity int) *lru.Cache[K, V] {
+	c, err := lru.New[K, V](capacity)
+	if err != nil {
+		panic(fmt.Sprintf("lru.New: %v", err))
+	}
+	return c
+}
 
 // ---------------------------------------------------------------------------
 // Reconnection constants — Source: useManageMCPConnections.ts:16-18
@@ -79,9 +91,9 @@ type Registry struct {
 	disabled    map[string]bool
 
 	// Discovery caches
-	toolCache     *LRUCache[string, []DiscoveredTool]
-	resourceCache *LRUCache[string, []ServerResource]
-	commandCache  *LRUCache[string, []MCPCommand]
+	toolCache     *lru.Cache[string, []DiscoveredTool]
+	resourceCache *lru.Cache[string, []ServerResource]
+	commandCache  *lru.Cache[string, []MCPCommand]
 
 	// Aggregated discovery results
 	tools     []DiscoveredTool
@@ -114,9 +126,9 @@ func NewRegistry(manager *ClientManager, callbacks ChangeCallbacks) *Registry {
 		configs:         make(map[string]ScopedMcpServerConfig),
 		connections:     make(map[string]ServerConnection),
 		disabled:        make(map[string]bool),
-		toolCache:       NewLRUCache[string, []DiscoveredTool](fetchCacheCapacity),
-		resourceCache:   NewLRUCache[string, []ServerResource](fetchCacheCapacity),
-		commandCache:    NewLRUCache[string, []MCPCommand](fetchCacheCapacity),
+		toolCache:       mustLRU[string, []DiscoveredTool](fetchCacheCapacity),
+		resourceCache:   mustLRU[string, []ServerResource](fetchCacheCapacity),
+		commandCache:    mustLRU[string, []MCPCommand](fetchCacheCapacity),
 		reconnectTimers: make(map[string]*time.Timer),
 		ctx:             ctx,
 		cancel:          cancel,
@@ -268,9 +280,9 @@ func (r *Registry) Reconnect(ctx context.Context, serverName string) (ServerConn
 	r.manager.InvalidateCache(serverName, cfg)
 
 	// Clear caches
-	r.toolCache.Delete(serverName)
-	r.resourceCache.Delete(serverName)
-	r.commandCache.Delete(serverName)
+	r.toolCache.Remove(serverName)
+	r.resourceCache.Remove(serverName)
+	r.commandCache.Remove(serverName)
 
 	// Reconnect
 	conn, err := r.manager.ConnectToServer(ctx, serverName, cfg)
@@ -332,9 +344,9 @@ func (r *Registry) Disconnect(serverName string) error {
 
 	// Remove from connections
 	delete(r.connections, serverName)
-	r.toolCache.Delete(serverName)
-	r.resourceCache.Delete(serverName)
-	r.commandCache.Delete(serverName)
+	r.toolCache.Remove(serverName)
+	r.resourceCache.Remove(serverName)
+	r.commandCache.Remove(serverName)
 	r.rebuildAggregatesLocked()
 	r.mu.Unlock()
 
@@ -416,7 +428,7 @@ func (r *Registry) SetConnectionForTest(name string, conn ServerConnection) {
 func (r *Registry) PutResourceCacheForTest(serverName string, resources []ServerResource) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.resourceCache.Put(serverName, resources)
+	r.resourceCache.Add(serverName, resources)
 	r.resources = append(r.resources, resources...)
 }
 

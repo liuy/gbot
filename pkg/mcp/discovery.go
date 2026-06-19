@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ const fetchCacheCapacity = 20 // Source: client.ts:1726 MCP_FETCH_CACHE_SIZE
 //
 // Returns empty slice for non-connected servers or if tools capability is absent.
 // Results are cached per server name in the provided LRU cache.
-func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []DiscoveredTool]) ([]DiscoveredTool, error) {
+func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []DiscoveredTool]) ([]DiscoveredTool, error) {
 	if conn == nil {
 		return nil, nil
 	}
@@ -183,7 +185,7 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUC
 		})
 	}
 
-	cache.Put(conn.Name, tools)
+	cache.Add(conn.Name, tools)
 	return tools, nil
 }
 
@@ -194,7 +196,7 @@ func FetchToolsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUC
 
 // FetchResourcesForServer fetches resources from a connected MCP server.
 // Source: client.ts:2000-2031
-func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []ServerResource]) ([]ServerResource, error) {
+func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []ServerResource]) ([]ServerResource, error) {
 	if conn == nil || conn.Session == nil {
 		return nil, nil
 	}
@@ -215,7 +217,7 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 
 	if result == nil || len(result.Resources) == 0 {
 		empty := []ServerResource{}
-		cache.Put(conn.Name, empty)
+		cache.Add(conn.Name, empty)
 		return empty, nil
 	}
 
@@ -231,7 +233,7 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 		})
 	}
 
-	cache.Put(conn.Name, resources)
+	cache.Add(conn.Name, resources)
 	return resources, nil
 }
 
@@ -242,7 +244,7 @@ func FetchResourcesForServer(ctx context.Context, conn *ConnectedServer, cache *
 
 // FetchCommandsForServer fetches commands (MCP prompts mapped to slash commands).
 // Source: client.ts:2033-2116
-func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []MCPCommand]) ([]MCPCommand, error) {
+func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []MCPCommand]) ([]MCPCommand, error) {
 	if conn == nil || conn.Session == nil {
 		return nil, nil
 	}
@@ -263,7 +265,7 @@ func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *L
 
 	if result == nil || len(result.Prompts) == 0 {
 		empty := []MCPCommand{}
-		cache.Put(conn.Name, empty)
+		cache.Add(conn.Name, empty)
 		return empty, nil
 	}
 
@@ -285,7 +287,7 @@ func FetchCommandsForServer(ctx context.Context, conn *ConnectedServer, cache *L
 		commands = append(commands, cmd)
 	}
 
-	cache.Put(conn.Name, commands)
+	cache.Add(conn.Name, commands)
 	return commands, nil
 }
 
@@ -312,9 +314,9 @@ type ServerDiscovery struct {
 // Local servers (stdio/sdk): GetLocalBatchSize() concurrent (default 3)
 // Remote servers (sse/http/ws): GetRemoteBatchSize() concurrent (default 20)
 func BatchDiscovery(ctx context.Context, connections []*ConnectedServer,
-	toolCache *LRUCache[string, []DiscoveredTool],
-	resourceCache *LRUCache[string, []ServerResource],
-	commandCache *LRUCache[string, []MCPCommand],
+	toolCache *lru.Cache[string, []DiscoveredTool],
+	resourceCache *lru.Cache[string, []ServerResource],
+	commandCache *lru.Cache[string, []MCPCommand],
 ) []ServerDiscovery {
 	results := make([]ServerDiscovery, len(connections))
 
@@ -359,9 +361,9 @@ func BatchDiscovery(ctx context.Context, connections []*ConnectedServer,
 
 // discoverForServer fetches all discovery data for a single server.
 func discoverForServer(ctx context.Context, conn *ConnectedServer,
-	toolCache *LRUCache[string, []DiscoveredTool],
-	resourceCache *LRUCache[string, []ServerResource],
-	commandCache *LRUCache[string, []MCPCommand],
+	toolCache *lru.Cache[string, []DiscoveredTool],
+	resourceCache *lru.Cache[string, []ServerResource],
+	commandCache *lru.Cache[string, []MCPCommand],
 ) ServerDiscovery {
 	d := ServerDiscovery{ServerName: conn.Name}
 
@@ -386,22 +388,22 @@ func discoverForServer(ctx context.Context, conn *ConnectedServer,
 
 // OnToolsChanged invalidates the tool cache for a server and re-fetches.
 // Source: useManageMCPConnections.ts:618-664 — ToolListChangedNotification handler
-func OnToolsChanged(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []DiscoveredTool]) ([]DiscoveredTool, error) {
-	cache.Delete(conn.Name)
+func OnToolsChanged(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []DiscoveredTool]) ([]DiscoveredTool, error) {
+	cache.Remove(conn.Name)
 	return FetchToolsForServer(ctx, conn, cache)
 }
 
 // OnResourcesChanged invalidates the resource cache for a server and re-fetches.
 // Source: useManageMCPConnections.ts:705-751 — ResourceListChangedNotification handler
-func OnResourcesChanged(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []ServerResource]) ([]ServerResource, error) {
-	cache.Delete(conn.Name)
+func OnResourcesChanged(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []ServerResource]) ([]ServerResource, error) {
+	cache.Remove(conn.Name)
 	return FetchResourcesForServer(ctx, conn, cache)
 }
 
 // OnCommandsChanged invalidates the command cache for a server and re-fetches.
 // Source: useManageMCPConnections.ts:667-703 — PromptListChangedNotification handler
-func OnCommandsChanged(ctx context.Context, conn *ConnectedServer, cache *LRUCache[string, []MCPCommand]) ([]MCPCommand, error) {
-	cache.Delete(conn.Name)
+func OnCommandsChanged(ctx context.Context, conn *ConnectedServer, cache *lru.Cache[string, []MCPCommand]) ([]MCPCommand, error) {
+	cache.Remove(conn.Name)
 	return FetchCommandsForServer(ctx, conn, cache)
 }
 

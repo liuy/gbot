@@ -61,7 +61,7 @@ func connectTestServer(t *testing.T, tools ...*mcp.Tool) (*ConnectedServer, func
 // ---------------------------------------------------------------------------
 
 func TestFetchToolsForServer_NilConnection(t *testing.T) {
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), nil, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -72,7 +72,7 @@ func TestFetchToolsForServer_NilConnection(t *testing.T) {
 }
 
 func TestFetchToolsForServer_NilSession(t *testing.T) {
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	conn := &ConnectedServer{Name: "test"}
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestFetchToolsForServer_LRUHitAndMiss(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 
 	// First call — cache miss, fetches from server
 	tools1, err := FetchToolsForServer(context.Background(), conn, cache)
@@ -137,7 +137,7 @@ func TestFetchToolsForServer_DescriptionTruncation(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -160,7 +160,7 @@ func TestFetchToolsForServer_NoCapabilities(t *testing.T) {
 	defer cleanup()
 	conn.Capabilities = nil // override to nil after setup
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -188,7 +188,7 @@ func TestFetchToolsForServer_ToolAnnotations(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -215,7 +215,7 @@ func TestFetchToolsForServer_InputSchema(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -240,7 +240,7 @@ func TestFetchToolsForServer_EmptyToolsNotCached(t *testing.T) {
 	conn, cleanup := connectTestServer(t) // no tools
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -265,7 +265,7 @@ func TestFetchToolsForServer_EmptyToolsNotCached(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFetchResourcesForServer_NilConnection(t *testing.T) {
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	resources, err := FetchResourcesForServer(context.Background(), nil, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -280,7 +280,7 @@ func TestFetchResourcesForServer_NoCapabilities(t *testing.T) {
 	defer cleanup()
 	conn.Capabilities = nil
 
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	resources, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -291,7 +291,7 @@ func TestFetchResourcesForServer_NoCapabilities(t *testing.T) {
 }
 
 func TestFetchResourcesForServer_NilSession(t *testing.T) {
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	conn := &ConnectedServer{Name: "test"}
 	resources, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err != nil {
@@ -306,10 +306,10 @@ func TestFetchResourcesForServer_CacheHit(t *testing.T) {
 	conn, cleanup := connectTestServer(t)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	// Pre-populate cache
 	cachedResources := []ServerResource{{URI: "cached://1", Server: "test-server"}}
-	cache.Put("test-server", cachedResources)
+	cache.Add("test-server", cachedResources)
 
 	resources, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err != nil {
@@ -350,7 +350,7 @@ func TestFetchResourcesForServer_SuccessfulFetch(t *testing.T) {
 		},
 	}
 
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	resources, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -385,7 +385,7 @@ func TestFetchResourcesForServer_EmptyResources(t *testing.T) {
 		},
 	}
 
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	resources, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -418,7 +418,7 @@ func TestFetchResourcesForServer_ListError(t *testing.T) {
 		Resources: &mcp.ResourceCapabilities{},
 	}
 
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	_, err := FetchResourcesForServer(context.Background(), conn, cache)
 	if err == nil {
 		t.Fatal("expected error from closed session")
@@ -433,7 +433,7 @@ func TestFetchResourcesForServer_ListError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFetchCommandsForServer_NilConnection(t *testing.T) {
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	commands, err := FetchCommandsForServer(context.Background(), nil, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -448,7 +448,7 @@ func TestFetchCommandsForServer_NoCapabilities(t *testing.T) {
 	defer cleanup()
 	conn.Capabilities = nil
 
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	commands, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -459,7 +459,7 @@ func TestFetchCommandsForServer_NoCapabilities(t *testing.T) {
 }
 
 func TestFetchCommandsForServer_NilSession(t *testing.T) {
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	conn := &ConnectedServer{Name: "test"}
 	commands, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err != nil {
@@ -474,10 +474,10 @@ func TestFetchCommandsForServer_CacheHit(t *testing.T) {
 	conn, cleanup := connectTestServer(t)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	// Pre-populate cache
 	cachedCommands := []MCPCommand{{Name: "mcp__test-server__cached", ServerName: "test-server"}}
-	cache.Put("test-server", cachedCommands)
+	cache.Add("test-server", cachedCommands)
 
 	commands, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err != nil {
@@ -520,7 +520,7 @@ func TestFetchCommandsForServer_SuccessfulFetch(t *testing.T) {
 		},
 	}
 
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	commands, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -567,7 +567,7 @@ func TestFetchCommandsForServer_EmptyPrompts(t *testing.T) {
 		},
 	}
 
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	commands, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -600,7 +600,7 @@ func TestFetchCommandsForServer_ListError(t *testing.T) {
 		Prompts: &mcp.PromptCapabilities{},
 	}
 
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	_, err := FetchCommandsForServer(context.Background(), conn, cache)
 	if err == nil {
 		t.Fatal("expected error from closed session")
@@ -615,9 +615,9 @@ func TestFetchCommandsForServer_ListError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBatchDiscovery_EmptyConnections(t *testing.T) {
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	results := BatchDiscovery(context.Background(), nil, toolCache, resourceCache, commandCache)
 	if len(results) != 0 {
@@ -657,9 +657,9 @@ func TestBatchDiscovery_OneFailsOthersSucceed(t *testing.T) {
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	})
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	results := BatchDiscovery(context.Background(), connections, toolCache, resourceCache, commandCache)
 	if len(results) != 3 {
@@ -706,9 +706,9 @@ func TestBatchDiscovery_ConcurrencyRespected(t *testing.T) {
 	}
 
 	connections := append(localConns, remoteConns...)
-	toolCache := NewLRUCache[string, []DiscoveredTool](20)
-	resourceCache := NewLRUCache[string, []ServerResource](20)
-	commandCache := NewLRUCache[string, []MCPCommand](20)
+	toolCache := mustLRU[string, []DiscoveredTool](20)
+	resourceCache := mustLRU[string, []ServerResource](20)
+	commandCache := mustLRU[string, []MCPCommand](20)
 
 	results := BatchDiscovery(context.Background(), connections, toolCache, resourceCache, commandCache)
 	if len(results) != 10 {
@@ -733,9 +733,9 @@ func TestBatchDiscovery_ContextCancellation(t *testing.T) {
 		{Name: "server-1", Config: ScopedMcpServerConfig{Config: &StdioConfig{Command: "test"}, Scope: ScopeUser}},
 	}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	results := BatchDiscovery(ctx, connections, toolCache, resourceCache, commandCache)
 	if len(results) != 1 {
@@ -759,7 +759,7 @@ func TestOnToolsChanged_ReFetch(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 
 	// Initial fetch to populate cache
 	tools1, err := FetchToolsForServer(context.Background(), conn, cache)
@@ -790,7 +790,7 @@ func TestOnToolsChanged_ReFetch(t *testing.T) {
 }
 
 func TestOnResourcesChanged_ReFetch(t *testing.T) {
-	cache := NewLRUCache[string, []ServerResource](10)
+	cache := mustLRU[string, []ServerResource](10)
 	conn := &ConnectedServer{Name: "test-server"}
 
 	resources, err := OnResourcesChanged(context.Background(), conn, cache)
@@ -803,7 +803,7 @@ func TestOnResourcesChanged_ReFetch(t *testing.T) {
 }
 
 func TestOnCommandsChanged_ReFetch(t *testing.T) {
-	cache := NewLRUCache[string, []MCPCommand](10)
+	cache := mustLRU[string, []MCPCommand](10)
 	conn := &ConnectedServer{Name: "test-server"}
 
 	commands, err := OnCommandsChanged(context.Background(), conn, cache)
@@ -1079,9 +1079,9 @@ func TestBatchDiscovery_ConcurrentAccess(t *testing.T) {
 		})
 	}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](30)
-	resourceCache := NewLRUCache[string, []ServerResource](30)
-	commandCache := NewLRUCache[string, []MCPCommand](30)
+	toolCache := mustLRU[string, []DiscoveredTool](30)
+	resourceCache := mustLRU[string, []ServerResource](30)
+	commandCache := mustLRU[string, []MCPCommand](30)
 
 	var wg sync.WaitGroup
 	var errors atomic.Int32
@@ -1111,9 +1111,9 @@ func TestDiscoverForServer_ToolErrorStopsResources(t *testing.T) {
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	d := discoverForServer(context.Background(), conn, toolCache, resourceCache, commandCache)
 	// Session nil → returns nil tools, nil error (not an error, just no tools)
@@ -1155,7 +1155,7 @@ func TestFetchToolsForServer_MetaFields(t *testing.T) {
 		},
 	}
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -1180,7 +1180,7 @@ func TestFetchToolsForServer_NilAnnotations(t *testing.T) {
 	)
 	defer cleanup()
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	tools, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -1212,9 +1212,9 @@ func TestDiscoverForServer_ResourceErrorStopsCommands(t *testing.T) {
 		},
 	}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	d := discoverForServer(context.Background(), conn, toolCache, resourceCache, commandCache)
 	// Session nil → tools returns nil, resources returns nil, commands returns nil
@@ -1249,7 +1249,7 @@ func TestFetchToolsForServer_ListToolsError(t *testing.T) {
 
 	conn.Capabilities = &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
 
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	_, err := FetchToolsForServer(context.Background(), conn, cache)
 	if err == nil {
 		t.Fatal("expected error from closed session")
@@ -1262,9 +1262,9 @@ func TestFetchToolsForServer_ListToolsError(t *testing.T) {
 // TestFetchToolsForServer_CacheHit tests that a cached result is returned
 // without calling ListTools.
 func TestFetchToolsForServer_CacheHit(t *testing.T) {
-	cache := NewLRUCache[string, []DiscoveredTool](10)
+	cache := mustLRU[string, []DiscoveredTool](10)
 	cached := []DiscoveredTool{{Name: "cached_tool", ServerName: "test-server"}}
-	cache.Put("test-server", cached)
+	cache.Add("test-server", cached)
 
 	conn := &ConnectedServer{
 		Name:    "test-server",
@@ -1314,9 +1314,9 @@ func TestBatchDiscovery_WithRealServers(t *testing.T) {
 		connections = append(connections, cs)
 	}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	results := BatchDiscovery(context.Background(), connections, toolCache, resourceCache, commandCache)
 	if len(results) != 3 {
@@ -1347,9 +1347,9 @@ func TestDiscoverForServer_ToolFetchErrorStops(t *testing.T) {
 	cleanup()
 	conn.Capabilities = &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
 
-	toolCache := NewLRUCache[string, []DiscoveredTool](10)
-	resourceCache := NewLRUCache[string, []ServerResource](10)
-	commandCache := NewLRUCache[string, []MCPCommand](10)
+	toolCache := mustLRU[string, []DiscoveredTool](10)
+	resourceCache := mustLRU[string, []ServerResource](10)
+	commandCache := mustLRU[string, []MCPCommand](10)
 
 	d := discoverForServer(context.Background(), conn, toolCache, resourceCache, commandCache)
 	if d.Error == nil {

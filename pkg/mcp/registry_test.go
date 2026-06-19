@@ -933,13 +933,13 @@ func TestRegistry_RebuildAggregatesLocked(t *testing.T) {
 	defer r.Close()
 
 	r.mu.Lock()
-	r.toolCache.Put("srv1", []DiscoveredTool{
+	r.toolCache.Add("srv1", []DiscoveredTool{
 		{Name: "tool1", ServerName: "srv1"},
 	})
-	r.commandCache.Put("srv1", []MCPCommand{
+	r.commandCache.Add("srv1", []MCPCommand{
 		{Name: "cmd1", ServerName: "srv1"},
 	})
-	r.resourceCache.Put("srv1", []ServerResource{
+	r.resourceCache.Add("srv1", []ServerResource{
 		{URI: "res://1", Server: "srv1"},
 	})
 	r.connections["srv1"] = &ConnectedServer{Name: "srv1"}
@@ -1351,9 +1351,9 @@ func TestRegistry_Close_TimedOutServer(t *testing.T) {
 		configs:         make(map[string]ScopedMcpServerConfig),
 		connections:     make(map[string]ServerConnection),
 		disabled:        make(map[string]bool),
-		toolCache:       NewLRUCache[string, []DiscoveredTool](fetchCacheCapacity),
-		resourceCache:   NewLRUCache[string, []ServerResource](fetchCacheCapacity),
-		commandCache:    NewLRUCache[string, []MCPCommand](fetchCacheCapacity),
+		toolCache:       mustLRU[string, []DiscoveredTool](fetchCacheCapacity),
+		resourceCache:   mustLRU[string, []ServerResource](fetchCacheCapacity),
+		commandCache:    mustLRU[string, []MCPCommand](fetchCacheCapacity),
 		reconnectTimers: make(map[string]*time.Timer),
 		ctx:             context.Background(),
 		cancel:          func() {},
@@ -1599,9 +1599,9 @@ func TestRegistry_Disconnect_CleansUpCaches(t *testing.T) {
 	r.mu.Lock()
 	r.configs["srv"] = cfg
 	r.connections["srv"] = &FailedServer{Name: "srv", Config: cfg}
-	r.toolCache.Put("srv", []DiscoveredTool{{Name: "tool1", ServerName: "srv"}})
-	r.resourceCache.Put("srv", []ServerResource{{URI: "res://1", Server: "srv"}})
-	r.commandCache.Put("srv", []MCPCommand{{Name: "cmd1", ServerName: "srv"}})
+	r.toolCache.Add("srv", []DiscoveredTool{{Name: "tool1", ServerName: "srv"}})
+	r.resourceCache.Add("srv", []ServerResource{{URI: "res://1", Server: "srv"}})
+	r.commandCache.Add("srv", []MCPCommand{{Name: "cmd1", ServerName: "srv"}})
 	r.mu.Unlock()
 
 	// Disconnect should clear caches

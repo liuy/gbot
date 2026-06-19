@@ -148,7 +148,7 @@ func TestIntegration_EchoTool(t *testing.T) {
 	ctx := context.Background()
 
 	// Discover tools
-	tools, err := FetchToolsForServer(ctx, cs, NewLRUCache[string, []DiscoveredTool](fetchCacheCapacity))
+	tools, err := FetchToolsForServer(ctx, cs, mustLRU[string, []DiscoveredTool](fetchCacheCapacity))
 	if err != nil {
 		t.Fatalf("FetchTools: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestIntegration_MultiToolWorkflow(t *testing.T) {
 	ctx := context.Background()
 
 	// Discover tools
-	tools, err := FetchToolsForServer(ctx, cs, NewLRUCache[string, []DiscoveredTool](fetchCacheCapacity))
+	tools, err := FetchToolsForServer(ctx, cs, mustLRU[string, []DiscoveredTool](fetchCacheCapacity))
 	if err != nil {
 		t.Fatalf("FetchTools: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestIntegration_SanitizesToolNames(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 
-	tools, err := FetchToolsForServer(context.Background(), cs, NewLRUCache[string, []DiscoveredTool](fetchCacheCapacity))
+	tools, err := FetchToolsForServer(context.Background(), cs, mustLRU[string, []DiscoveredTool](fetchCacheCapacity))
 	if err != nil {
 		t.Fatalf("FetchToolsForServer: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestIntegration_SanitizesResources(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 
-	resources, err := FetchResourcesForServer(context.Background(), cs, NewLRUCache[string, []ServerResource](fetchCacheCapacity))
+	resources, err := FetchResourcesForServer(context.Background(), cs, mustLRU[string, []ServerResource](fetchCacheCapacity))
 	if err != nil {
 		t.Fatalf("FetchResourcesForServer: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestIntegration_SanitizesCommands(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 
-	commands, err := FetchCommandsForServer(context.Background(), cs, NewLRUCache[string, []MCPCommand](fetchCacheCapacity))
+	commands, err := FetchCommandsForServer(context.Background(), cs, mustLRU[string, []MCPCommand](fetchCacheCapacity))
 	if err != nil {
 		t.Fatalf("FetchCommandsForServer: %v", err)
 	}
