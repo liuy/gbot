@@ -315,8 +315,9 @@ func main() {
 		smCfg := session.DefaultConfig()
 		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
 			editTool := fileedit.New()
+			readTool := fileread.New()
 			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				Tools:     map[string]tool.Tool{"Edit": editTool},
+				Tools:     map[string]tool.Tool{"Edit": editTool, "Read": readTool},
 				AgentType: "session_memory",
 			})
 			defer subEng.Close()
