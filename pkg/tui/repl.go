@@ -941,20 +941,20 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			outputTarget := max(a.responseCharCount/4, a.outputTokenTarget)
 			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
 
-			// Quota fetch piggybacks on the 100ms spinner tick: every 100
-			// ticks (~10s) fire one fetch. This replaces the turnStart
-			// per-3-turn approach — cleaner because it ties to wall time
-			// rather than turn count, and only runs while streaming.
-			var fetchCmd tea.Cmd
-			if a.toolBlinkTick%100 == 0 {
-				fetchCmd = a.fetchQuota()
-			}
+			// DISABLED 2026-06-19: status-bar quota fetch may trigger rate-limit
+			// on zhipu API. Keep /model dialog fetch intact.
+			// Re-enable when the quota endpoint adds explicit rate-limit headers
+			// or the provider is switched away from zhipu.
+			// var fetchCmd tea.Cmd
+			// if a.toolBlinkTick%100 == 0 {
+			// 	fetchCmd = a.fetchQuota()
+			// }
 
 			return true, tea.Batch(
 				tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 					return spinnerTickMsg{}
 				}),
-				fetchCmd,
+				// fetchCmd,
 			)
 		}
 		return true, nil
