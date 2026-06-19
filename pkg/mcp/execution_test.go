@@ -1994,17 +1994,19 @@ func TestDispatchProgress_MultipleTokens(t *testing.T) {
 func TestCallMCPTool_ProgressNotifications(t *testing.T) {
 	server, t2 := setupInMemoryServer(t)
 
+	// progressDelivered is closed by the OnProgress callback once the
+	// notification has been fully dispatched. The tool handler waits on
+	// it before returning, which closes the race between the SDK's
+	// asynchronous notification delivery and CallTool's deferred
+	// unregisterProgress(token). Without this gate the test is flaky:
+	// the token can be unregistered before dispatchProgress runs.
+	progressDelivered := make(chan struct{})
+
 	// Tool that sends progress notifications
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "progress_tool",
 		Description: "Sends progress",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input map[string]any) (*mcp.CallToolResult, any, error) {
-		// Single progress notification — multiple rapid notifications
-		// risk arriving after CallTool returns and the token is
-		// unregistered, which is both an artificial race (real tools
-		// space notifications over actual execution time) and
-		// semantically harmless (discarding a late progress update
-		// for a completed tool is correct).
 		if token := req.Params.GetProgressToken(); token != nil {
 			_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 				ProgressToken: token,
@@ -2012,6 +2014,16 @@ func TestCallMCPTool_ProgressNotifications(t *testing.T) {
 				Total:         1,
 				Message:       "step 1",
 			})
+		}
+		// Wait until the notification has propagated through the SDK's
+		// reader goroutine and been dispatched to the callback. This
+		// guarantees CallTool cannot return (and unregister the token)
+		// before dispatchProgress runs.
+		select {
+		case <-progressDelivered:
+		case <-time.After(2 * time.Second):
+			// Callback never fired — fall through and let the
+			// assertion below report the real failure.
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "done"}},
@@ -2060,6 +2072,10 @@ func TestCallMCPTool_ProgressNotifications(t *testing.T) {
 			mu.Lock()
 			progressCalls = append(progressCalls, msg)
 			mu.Unlock()
+			// Signal the tool handler that the notification has been
+			// delivered and dispatched, so it can safely return
+			// without racing the deferred unregisterProgress.
+			close(progressDelivered)
 			doneCh <- struct{}{}
 		},
 	})
@@ -2070,9 +2086,10 @@ func TestCallMCPTool_ProgressNotifications(t *testing.T) {
 		t.Fatalf("expected 1 content block, got %d", len(result.Content))
 	}
 
-	// The SDK delivers notifications asynchronously, so the third
-	// callback may not have fired by the time CallMCPTool returns.
-	// Block on doneCh (with a safety timeout) instead of polling.
+	// Callback fires before the tool handler returns (the handler waits
+	// on progressDelivered), so by the time CallMCPTool returns the
+	// notification is guaranteed delivered. Block on doneCh as a safety
+	// net with timeout.
 	select {
 	case <-doneCh:
 	case <-time.After(2 * time.Second):
