@@ -1009,26 +1009,33 @@ func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt
 // and RunForkedQuery (fork agent path).
 func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult {
 	var totalUsage types.Usage
+	// Per-phase wall-clock accumulators (milliseconds) for latency triage.
+	// Filled during the loop, logged in the deferred query_summary.
+	queryStart := time.Now()
+	var llmTotalMs, toolTotalMs, snapshotTotalMs int64
 	// Log query summary on every exit path.
 	defer func() {
-		if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
-			total := totalUsage.InputTokens + totalUsage.CacheReadInputTokens + totalUsage.CacheCreationInputTokens
-			cacheStatus := "miss"
-			if totalUsage.CacheReadInputTokens > 0 && total > 0 {
-				pct := totalUsage.CacheReadInputTokens * 100 / total
-				cacheStatus = fmt.Sprintf("hit %d%%", pct)
-			} else if totalUsage.CacheCreationInputTokens > 0 {
-				cacheStatus = "warm"
-			}
-			e.logger.Info("engine:query_summary",
-				"input", totalUsage.InputTokens,
-				"output", totalUsage.OutputTokens,
-				"cache_read", totalUsage.CacheReadInputTokens,
-				"cache_creation", totalUsage.CacheCreationInputTokens,
-				"turns", e.turnCount,
-				"cache", cacheStatus,
-			)
+		// Always log; even when tokens are 0 we want the latency breakdown.
+		total := totalUsage.InputTokens + totalUsage.CacheReadInputTokens + totalUsage.CacheCreationInputTokens
+		cacheStatus := "miss"
+		if totalUsage.CacheReadInputTokens > 0 && total > 0 {
+			pct := totalUsage.CacheReadInputTokens * 100 / total
+			cacheStatus = fmt.Sprintf("hit %d%%", pct)
+		} else if totalUsage.CacheCreationInputTokens > 0 {
+			cacheStatus = "warm"
 		}
+		e.logger.Info("engine:query_summary",
+			"input", totalUsage.InputTokens,
+			"output", totalUsage.OutputTokens,
+			"cache_read", totalUsage.CacheReadInputTokens,
+			"cache_creation", totalUsage.CacheCreationInputTokens,
+			"turns", e.turnCount,
+			"cache", cacheStatus,
+			"wall_ms", time.Since(queryStart).Milliseconds(),
+			"llm_ms", llmTotalMs,
+			"tools_ms", toolTotalMs,
+			"snapshot_ms", snapshotTotalMs,
+		)
 	}()
 
 	// MakeSnapshot BEFORE the tool loop — aligned with TS QueryEngine.ts:641-654.
@@ -1040,6 +1047,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.logger.Error("engine:make_snapshot_failed", "err", err)
 		} else {
 			snapDur := time.Since(snapStart)
+			snapshotTotalMs += snapDur.Milliseconds()
 			slog.Info("engine:make_snapshot", "msgID", e.currentTurnMsgID, "trackedFiles", len(e.fileHistory.State().TrackedFiles), "snapshots", len(e.fileHistory.State().Snapshots), "dur_ms", snapDur.Milliseconds())
 			if e.fileHistoryWriter != nil {
 				e.fileHistoryWriter(e.fileHistory.State())
@@ -1153,7 +1161,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Stage 14-15: API call streaming loop
 		e.emitEvent(types.QueryEvent{Type: types.EventTurnStart})
 
+		llmStart := time.Now()
 		resp, streamingExecutor, err := e.callLLMWithRetry(ctx, systemPrompt)
+		llmTotalMs += time.Since(llmStart).Milliseconds()
 		if err != nil {
 			// Abort check: if ctx was cancelled during callLLM, return *AbortError
 			// with inline interrupt message. This handles the common case where
@@ -1396,7 +1406,9 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 
 		// Stage 21: Wait for stream-started tools to complete, collect results.
 		// Source: query.ts:1381 — getRemainingResults().
+		toolStart := time.Now()
 		execResult := streamingExecutor.ExecuteAll(nil)
+		toolTotalMs += time.Since(toolStart).Milliseconds()
 
 		// ToolSearch: register any tools discovered by ToolSearch execution.
 		// Source: utils/toolSearch.ts — discovered tools are extracted from results
