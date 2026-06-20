@@ -186,6 +186,12 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	for _, m := range messages {
 		apiMsgs = append(apiMsgs, short.StoreMessageToEngine(m))
 	}
+	// Normalize + repair tool_use/tool_result pairing. The main callLLM
+	// path does this (engine.go ~line 2665-2670); without it here, an
+	// orphan tool_use reaches the provider and triggers errors like
+	// minimax 2013 "tool call result does not follow tool call".
+	apiMsgs = NormalizeMessagesForAPI(apiMsgs)
+	apiMsgs = EnsureToolResultPairing(apiMsgs)
 
 	// Compact prompt as the last user message (TS: compact.ts:441-443)
 	compactPromptUserMsg := types.Message{

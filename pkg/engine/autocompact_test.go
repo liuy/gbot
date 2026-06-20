@@ -1360,3 +1360,125 @@ func TestEngineToShort_PreservesFlagMeta(t *testing.T) {
 		t.Errorf("FlagMeta lost after round-trip: Flags=%v, want FlagMeta(%v)", restored.Flags, types.FlagMeta)
 	}
 }
+
+// compactCaptureProvider records the last Complete request for inspection.
+type compactCaptureProvider struct {
+	lastReq *llm.Request
+}
+
+func (p *compactCaptureProvider) Stream(context.Context, *llm.Request) (<-chan llm.StreamEvent, error) {
+	return nil, errors.New("compactCaptureProvider: Stream not used")
+}
+
+func (p *compactCaptureProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	p.lastReq = req
+	return &llm.Response{
+		ID:    "capture-resp",
+		Type:  "message",
+		Role:  "assistant",
+		Model: "test-model",
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "<summary>ok</summary>"},
+		},
+		StopReason: "end_turn",
+	}, nil
+}
+
+// TestAutoCompact_Summarize_EnsuresToolResultPairing verifies that
+// summarizeMessages repairs tool_use/tool_result pairing before calling
+// the LLM. Without EnsureToolResultPairing in the path, an orphan
+// tool_use (assistant with tool_use, following user message with no
+// matching tool_result) reaches the provider and triggers provider-side
+// validation errors (e.g. minimax 2013 "tool call result does not
+// follow tool call").
+func TestAutoCompact_Summarize_EnsuresToolResultPairing(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	session, err := store.CreateSession(tmpDir, "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Head messages with an orphan tool_use: assistant emits tool_use
+	// "toolu_orphan", but the following user message is plain text with
+	// no tool_result block. This is the exact shape that produces
+	// minimax error 2013 when sent unmodified.
+	engineMsgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("please list files")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_orphan", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
+		}},
+		// Following user has text only — no tool_result for toolu_orphan.
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("never mind, just chat")}},
+	}
+
+	storeMsgs := make([]*short.TranscriptMessage, len(engineMsgs))
+	for i, m := range engineMsgs {
+		contentBytes, _ := json.Marshal(m.Content)
+		storeMsgs[i] = &short.TranscriptMessage{
+			UUID:      fmt.Sprintf("msg-%d", i),
+			Type:      string(m.Role),
+			Content:   string(contentBytes),
+			CreatedAt: time.Now(), // REAL-TIME: needed for CreatedAt field in test
+		}
+	}
+
+	p := &compactCaptureProvider{}
+	compactor := NewAutoCompactor(store, session.SessionID, "test-model", p, 100000)
+
+	if _, err := compactor.summarizeMessages(context.Background(), storeMsgs); err != nil {
+		t.Fatalf("summarizeMessages error: %v", err)
+	}
+
+	req := p.lastReq
+	if req == nil {
+		t.Fatal("Complete was not called")
+	}
+
+	// Verify: every assistant tool_use must be followed by a user message
+	// whose tool_result blocks cover all tool_use IDs in that assistant.
+	for i, msg := range req.Messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		var toolUseIDs []string
+		for _, b := range msg.Content {
+			if b.Type == types.ContentTypeToolUse {
+				toolUseIDs = append(toolUseIDs, b.ID)
+			}
+		}
+		if len(toolUseIDs) == 0 {
+			continue
+		}
+		if i+1 >= len(req.Messages) {
+			t.Errorf("assistant at index %d has tool_use IDs %v but no following user message to carry tool_results",
+				i, toolUseIDs)
+			continue
+		}
+		next := req.Messages[i+1]
+		if next.Role != types.RoleUser {
+			t.Errorf("assistant at index %d followed by role=%s, want user", i, next.Role)
+			continue
+		}
+		covered := make(map[string]bool)
+		for _, b := range next.Content {
+			if b.Type == types.ContentTypeToolResult {
+				covered[b.ToolUseID] = true
+			}
+		}
+		for _, id := range toolUseIDs {
+			if !covered[id] {
+				t.Errorf("tool_use %q (assistant index %d) has no matching tool_result in the following user message — "+
+					"EnsureToolResultPairing was not applied", id, i)
+			}
+		}
+	}
+}
