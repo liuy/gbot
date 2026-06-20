@@ -953,7 +953,11 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
-		header += " " + styleDim.Render("running...")
+		if (tc.Name == "Write" || tc.Name == "Edit") && tc.Input != "" {
+			header += fmt.Sprintf(" (%s)", formatBytes(len(tc.Input)))
+		} else {
+			header += " " + styleDim.Render("running...")
+		}
 		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
@@ -1859,5 +1863,16 @@ func collapseSummary(output string, srk tool.SearchReadKind) string {
 			return output
 		}
 		return fmt.Sprintf("%d lines", lines)
+	}
+}
+
+func formatBytes(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1fMB", float64(n)/1024/1024)
 	}
 }

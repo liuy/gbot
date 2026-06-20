@@ -257,8 +257,10 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string, srk tool.SearchR
 	if summary != "" {
 		tcv.Summary = summary
 	}
-	inputStr := s.pendingInput[id]
-	tcv.Input = prettyJSON(json.RawMessage(inputStr))
+	// Keep raw input length for byte-count display. We don't prettyJSON
+	// the partial JSON because streaming partial JSON won't parse, and
+	// the running-state header only uses len() for the (1.2KB) indicator.
+	tcv.Input = s.pendingInput[id]
 
 	// Update SearchRead from engine recomputation (at content_block_start
 	// the input is empty, so isSearch is false; input_json_delta carries
