@@ -22,27 +22,33 @@ func TestAnthropicToolInput_TimeoutDisabled(t *testing.T) {
 		flusher := w.(http.Flusher)
 
 		// message_start
-		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n"))
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n"))
 		flusher.Flush()
 
 		// content_block_start (tool_use) — should trigger timeout disable
-		w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_test\",\"name\":\"Write\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_test\",\"name\":\"Write\"}}\n\n"))
 		flusher.Flush()
 
 		// 150ms delay — exceeds 50ms timeout. If disable works, stream survives.
-		time.Sleep(150 * time.Millisecond)
+		// Select on time.After so we abort cleanly if the client disconnects
+		// mid-delay instead of blocking a detached handler goroutine.
+		select {
+		case <-time.After(150 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
 
 		// content_block_delta (tool parameters)
-		w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/test.md\\\"}\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"file_path\\\":\\\"/tmp/test.md\\\"}\"}}\n\n"))
 		flusher.Flush()
 
 		// content_block_stop — re-enables timeout
-		w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"))
 		flusher.Flush()
 
 		// message end
-		w.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n"))
-		w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
 		flusher.Flush()
 	}))
 	defer srv.Close()
