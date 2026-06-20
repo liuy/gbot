@@ -9,7 +9,9 @@ import (
 
 // DefaultSSETimeout is the idle timeout for SSE event streams.
 // If no data arrives within this duration, Read returns an error.
-const DefaultSSETimeout = 60 * time.Second
+// 90s matches Anthropic's default (STREAM_IDLE_TIMEOUT_MS in claude.ts).
+// The tool input phase disables this timeout entirely.
+const DefaultSSETimeout = 90 * time.Second
 
 // timeoutReader wraps an io.Reader with per-read idle timeout.
 // Each Read() call has a deadline — if no data arrives within the
