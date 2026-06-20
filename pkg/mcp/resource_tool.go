@@ -18,6 +18,8 @@ import (
 	"time"
 
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,7 +168,7 @@ func getBinaryBlobSavedMessage(filepath, mimeType string, size int, sourceDescri
 	if mt == "" {
 		mt = "unknown type"
 	}
-	return fmt.Sprintf("%sBinary content (%s, %s) saved to %s", sourceDescription, mt, formatFileSize(size), filepath)
+	return fmt.Sprintf("%sBinary content (%s, %s) saved to %s", sourceDescription, mt, toolresult.FormatFileSize(size), filepath)
 }
 
 // ---------------------------------------------------------------------------
@@ -255,38 +257,6 @@ func extensionForMimeType(mimeType string) string {
 	default:
 		return "bin"
 	}
-}
-
-// ---------------------------------------------------------------------------
-// formatFileSize — Source: format.ts
-// ---------------------------------------------------------------------------
-
-// formatFileSize returns a human-readable file size string.
-// Source: format.ts
-//
-// Format: "N bytes" (<1KB), "N.NKB" (<1MB), "N.NMB" (<1GB), "N.NGB".
-// Trailing ".0" is stripped.
-func formatFileSize(bytes int) string {
-	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
-	)
-	switch {
-	case bytes < kb:
-		return fmt.Sprintf("%d bytes", bytes)
-	case bytes < mb:
-		return stripTrailingZero(fmt.Sprintf("%.1f", float64(bytes)/float64(kb))) + "KB"
-	case bytes < gb:
-		return stripTrailingZero(fmt.Sprintf("%.1f", float64(bytes)/float64(mb))) + "MB"
-	default:
-		return stripTrailingZero(fmt.Sprintf("%.1f", float64(bytes)/float64(gb))) + "GB"
-	}
-}
-
-// stripTrailingZero removes trailing ".0" from formatted size strings.
-func stripTrailingZero(s string) string {
-	return strings.TrimSuffix(s, ".0")
 }
 
 // ---------------------------------------------------------------------------

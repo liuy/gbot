@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/mholt/archives"
 )
 
@@ -208,7 +209,7 @@ func formatArchiveEntries(entries []fs.DirEntry) string {
 			continue
 		}
 		if info.Size() > 0 {
-			lines = append(lines, fmt.Sprintf("%s (%s)", e.Name(), formatFileSize(int(info.Size()))))
+			lines = append(lines, fmt.Sprintf("%s (%s)", e.Name(), toolresult.FormatFileSize(int(info.Size()))))
 			continue
 		}
 		lines = append(lines, e.Name())

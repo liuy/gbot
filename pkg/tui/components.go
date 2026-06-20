@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
 )
@@ -954,7 +955,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
 		if (tc.Name == "Write" || tc.Name == "Edit") && tc.Input != "" {
-			header += fmt.Sprintf(" (%s)", formatBytes(len(tc.Input)))
+			header += fmt.Sprintf(" (%s)", toolresult.FormatFileSize(len(tc.Input)))
 		} else {
 			header += " " + styleDim.Render("running...")
 		}
@@ -1863,16 +1864,5 @@ func collapseSummary(output string, srk tool.SearchReadKind) string {
 			return output
 		}
 		return fmt.Sprintf("%d lines", lines)
-	}
-}
-
-func formatBytes(n int) string {
-	switch {
-	case n < 1024:
-		return fmt.Sprintf("%dB", n)
-	case n < 1024*1024:
-		return fmt.Sprintf("%.1fKB", float64(n)/1024)
-	default:
-		return fmt.Sprintf("%.1fMB", float64(n)/1024/1024)
 	}
 }

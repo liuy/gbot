@@ -501,35 +501,6 @@ func TestExtensionForMimeType(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// formatFileSize tests
-// ---------------------------------------------------------------------------
-
-func TestFormatFileSize(t *testing.T) {
-	tests := []struct {
-		bytes int
-		want  string
-	}{
-		{0, "0 bytes"},
-		{1, "1 bytes"},
-		{42, "42 bytes"},
-		{1023, "1023 bytes"},
-		{1024, "1KB"},
-		{1536, "1.5KB"},
-		{1024 * 512, "512KB"},
-		{1024 * 1024, "1MB"},
-		{1024*1024 + 512*1024, "1.5MB"},
-		{1024 * 1024 * 1024, "1GB"},
-		{1024*1024*1024 + 512*1024*1024, "1.5GB"},
-	}
-	for _, tt := range tests {
-		got := formatFileSize(tt.bytes)
-		if got != tt.want {
-			t.Errorf("formatFileSize(%d) = %q, want %q", tt.bytes, got, tt.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // getBinaryBlobSavedMessage tests
 // ---------------------------------------------------------------------------
 
@@ -539,9 +510,7 @@ func TestGetBinaryBlobSavedMessage(t *testing.T) {
 	if !strings.HasPrefix(msg, "[Resource from test-server at test://x] ") {
 		t.Errorf("should start with sourceDescription, got: %q", msg)
 	}
-	if !strings.Contains(msg, "Binary content (application/pdf, 1KB)") ||
-		strings.Contains(msg, "1.0KB") {
-		t.Errorf("should contain mime and size without trailing .0, got: %q", msg)
+	if !strings.Contains(msg, "Binary content (application/pdf, 1.0KB)") {
 		t.Errorf("should contain mime and size, got: %q", msg)
 	}
 	if !strings.Contains(msg, "saved to /tmp/file.pdf") {

@@ -45,15 +45,6 @@ const (
 	MaxFileReadTokens = 25000      // TS: DEFAULT_MAX_OUTPUT_TOKENS
 )
 
-// formatFileSize returns a human-readable file size string (e.g. "256.0KB").
-func formatFileSize(bytes int) string {
-	const kb = 1024
-	if bytes < kb {
-		return fmt.Sprintf("%dB", bytes)
-	}
-	return fmt.Sprintf("%.1fKB", float64(bytes)/float64(kb))
-}
-
 // Source: FileReadTool.ts — apiLimits.ts IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHT
 const (
 	IMAGE_MAX_WIDTH  = 2000
@@ -841,7 +832,7 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 	// Skipped when user specifies offset/limit — they know what they're asking for.
 	if in.Limit == 0 && info.Size() > MaxFileReadBytes && (tctx == nil || !tctx.UncappedOutput) {
 		return nil, fmt.Errorf("file content (%s) exceeds maximum allowed size (%s). Use offset and limit parameters to read specific portions of the file",
-			formatFileSize(int(info.Size())), formatFileSize(MaxFileReadBytes))
+			toolresult.FormatFileSize(int(info.Size())), toolresult.FormatFileSize(MaxFileReadBytes))
 	}
 
 	// Use absolute path for ReadFileState key (deduplication)

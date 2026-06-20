@@ -1309,22 +1309,6 @@ func TestExtractPDFPages_ReadDirError(t *testing.T) {
 	}
 }
 
-func TestFormatFileSize_SmallBytes(t *testing.T) {
-	t.Parallel()
-	got := formatFileSize(512)
-	if got != "512B" {
-		t.Errorf("formatFileSize(512) = %q, want %q", got, "512B")
-	}
-}
-
-func TestFormatFileSize_LargeBytes(t *testing.T) {
-	t.Parallel()
-	got := formatFileSize(2048)
-	if got != "2.0KB" {
-		t.Errorf("formatFileSize(2048) = %q, want %q", got, "2.0KB")
-	}
-}
-
 // TestOutput_InterfaceConformance verifies all output types satisfy the
 // Output interface. This exercises the marker methods that are otherwise
 // never called directly (0% coverage otherwise).
