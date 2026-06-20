@@ -24,7 +24,7 @@ func collectEvents(ctx context.Context, provider *OpenAIProvider, body io.Reader
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
 	go func() {
-		provider.parseOpenAISSE(ctx, req, body, ch)
+		provider.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 	var events []StreamEvent
@@ -778,7 +778,7 @@ func TestOpenAISSE_IdleTimeout(t *testing.T) {
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	ch := make(chan StreamEvent, 128)
 	go func() {
-		p.parseOpenAISSE(ctx, req, body, ch)
+		p.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 
@@ -980,7 +980,7 @@ func TestOpenAISSE_ContextCancellation(t *testing.T) {
 
 	req := &Request{Model: "gpt-4", MaxTokens: 100}
 	go func() {
-		p.parseOpenAISSE(ctx, req, body, ch)
+		p.parseOpenAISSE(ctx, req, body, nil, ch)
 		close(ch)
 	}()
 

@@ -343,17 +343,26 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Strea
 		defer close(eventCh)
 		defer httpResp.Body.Close()
 		var body io.Reader = httpResp.Body
+		var td TimeoutDisabler
 		if p.idleTimeout > 0 {
-			body = &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+			tr := &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+			body = tr
+			td = tr
 		}
-		p.parseOpenAISSE(ctx, req, body, eventCh)
+		p.parseOpenAISSE(ctx, req, body, td, eventCh)
 	}()
 
 	return eventCh, nil
 }
 
 // parseOpenAISSE parses the OpenAI SSE stream and emits Anthropic-shaped StreamEvents.
-func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body io.Reader, eventCh chan<- StreamEvent) {
+// td, when non-nil, allows the parser to disable idle timeout during tool input phase.
+func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) {
+	// Safety net: if we return while still in tool input phase, re-enable timeout.
+	if td != nil {
+		defer td.SetTimeoutDisabled(false)
+	}
+
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
@@ -498,6 +507,11 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 					}
 					acc.name = tc.Function.Name
 					acc.started = true
+					// Disable idle timeout during tool input phase — the LLM may
+					// pause for extended periods while generating large parameters.
+					if td != nil {
+						td.SetTimeoutDisabled(true)
+					}
 					send(ctx, eventCh, StreamEvent{
 						Type:  "content_block_start",
 						Index: acc.contentIndex,
@@ -551,6 +565,13 @@ func (p *OpenAIProvider) parseOpenAISSE(ctx context.Context, req *Request, body 
 				if textBlockOpen && stopReason != "tool_use" {
 					send(ctx, eventCh, StreamEvent{Type: "content_block_stop", Index: textContentIndex})
 					textBlockOpen = false
+				}
+
+				// Tool input phase is over — re-enable idle timeout. This
+				// mirrors Anthropic's content_block_stop handling and keeps
+				// the timeout disabled only during tool parameter generation.
+				if td != nil && stopReason == "tool_use" {
+					td.SetTimeoutDisabled(false)
 				}
 
 				// Emit message_delta with stop_reason + usage

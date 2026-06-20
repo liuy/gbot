@@ -208,18 +208,39 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		// After streaming completes, accumulated tokens feed into CheckResponseForCacheBreak.
 		sseCh := make(chan StreamEvent, 64)
 		done := make(chan struct{})
+		// Create timeoutReader before the goroutine so we can toggle it
+		// from the event processing loop when tool_use blocks arrive.
+		var body io.Reader = httpResp.Body
+		var td TimeoutDisabler
+		if p.idleTimeout > 0 {
+			tr := &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
+			body = tr
+			td = tr
+			defer td.SetTimeoutDisabled(false)
+		}
 		go func() {
 			defer close(sseCh)
-			var body io.Reader = httpResp.Body
-			if p.idleTimeout > 0 {
-				body = &timeoutReader{reader: httpResp.Body, timeout: p.idleTimeout}
-			}
 			p.ParseSSE(ctx, body, sseCh)
 			close(done)
 		}()
 
 		var cacheRead, cacheCreation int
 		for evt := range sseCh {
+			// Detect tool_use content blocks to manage idle timeout.
+			// During tool input streaming, the LLM may pause for extended
+			// periods while generating large parameters (e.g., Write content).
+			// Disable timeout for this narrow window to avoid false positives.
+			if evt.ContentBlock != nil && evt.ContentBlock.Type == types.ContentTypeToolUse {
+				if td != nil {
+					td.SetTimeoutDisabled(true)
+				}
+			}
+			if evt.Delta != nil && evt.Delta.Type == "content_block_stop" {
+				if td != nil {
+					td.SetTimeoutDisabled(false)
+				}
+			}
+
 			// Accumulate cache tokens from message_start and message_delta events.
 			if evt.Message != nil {
 				cacheRead += evt.Message.Usage.CacheReadInputTokens
