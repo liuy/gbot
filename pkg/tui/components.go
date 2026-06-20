@@ -954,7 +954,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
-		if (tc.Name == "Write" || tc.Name == "Edit") && tc.Input != "" {
+		// content_block_start initializes input as "{}" (2B); non-streaming providers
+		// (e.g. MiMo) never send input_json_delta, so require >100B to confirm real streaming input.
+		if (tc.Name == "Write" || tc.Name == "Edit") && len(tc.Input) > 100 {
 			header += fmt.Sprintf(" (%s)", toolresult.FormatFileSize(len(tc.Input)))
 		} else {
 			header += " " + styleDim.Render("running...")
