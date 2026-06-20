@@ -16,9 +16,9 @@ import (
 func TestRenderViaTool_Found(t *testing.T) {
 	t.Parallel()
 	tools := map[string]tool.Tool{
-		"Grep": &mockRenderTool{},
+		"Glob": &mockRenderTool{},
 	}
-	got := renderViaTool("Grep", json.RawMessage(`{"filenames":["a.go"]}`), tools)
+	got := renderViaTool("Glob", json.RawMessage(`{"filenames":["a.go"]}`), tools)
 	if got != "a.go" {
 		t.Errorf("renderViaTool(Glob) = %q, want %q", got, "a.go")
 	}
@@ -427,7 +427,7 @@ func TestRenderAgentLogs_StatsWithContextSize(t *testing.T) {
 func TestRenderAgentLogs_StatsToolCount(t *testing.T) {
 	t.Parallel()
 	tcv := &ToolCallView{
-		AgentLogs: []AgentLogEntry{{ToolName: "Grep", Done: true}},
+		AgentLogs: []AgentLogEntry{{ToolName: "Glob", Done: true}},
 		ToolCount: 3,
 	}
 	out := stripANSI(renderAgentLogs(tcv, 80))
@@ -511,7 +511,7 @@ func TestRenderAgentLogs_LongSummaryTruncated(t *testing.T) {
 // mockRenderTool is a minimal tool.Tool implementation for render tests.
 type mockRenderTool struct{}
 
-func (m *mockRenderTool) Name() string                                { return "Grep" }
+func (m *mockRenderTool) Name() string                                { return "Glob" }
 func (m *mockRenderTool) Aliases() []string                           { return nil }
 func (m *mockRenderTool) Description(json.RawMessage) (string, error) { return "", nil }
 func (m *mockRenderTool) InputSchema() json.RawMessage                { return nil }

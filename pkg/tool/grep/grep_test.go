@@ -186,8 +186,8 @@ func TestGrepToolCall_EmptyPattern(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() should return error for empty pattern")
 	}
-	if !strings.Contains(err.Error(), "either pattern or glob must be set") {
-		t.Errorf("error = %q, want error containing 'either pattern or glob must be set'", err.Error())
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
 	}
 }
 
@@ -255,8 +255,8 @@ func TestNew_DescriptionWithInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Description() should not error on bad JSON: %v", err)
 	}
-	if desc != "Search file contents or file names" {
-		t.Errorf("Description fallback = %q, want %q", desc, "Search file contents or file names")
+	if desc != "Search file contents with regex" {
+		t.Errorf("Description fallback = %q, want %q", desc, "Search file contents with regex")
 	}
 }
 
@@ -632,8 +632,8 @@ func TestGrepToolCall_EmptyPatternDashDash(t *testing.T) {
 	if err == nil {
 		t.Fatal("Execute() should return error for empty pattern")
 	}
-	if !strings.Contains(err.Error(), "either pattern or glob must be set") {
-		t.Errorf("error = %q, want error containing 'either pattern or glob must be set'", err.Error())
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
 	}
 }
 

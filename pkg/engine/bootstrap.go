@@ -19,6 +19,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
+	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/tool/job"
 	lsptool "github.com/liuy/gbot/pkg/tool/lsp"
@@ -60,6 +61,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	reg.MustRegister(fileread.New())
 	reg.MustRegister(fileedit.New())
 	reg.MustRegister(filewrite.New())
+	reg.MustRegister(glob.New())
 	reg.MustRegister(grep.New())
 
 	at := agenttool.New()

@@ -68,10 +68,10 @@ const QuerySourceAutoDream = "auto_dream"
 // MAINTENANCE: When adding a new compactable tool, update this map and
 // add a test case in TestCompactableTools.
 var compactableTools = map[string]bool{
-	"Read": true, // pkg/tool/fileread/fileread.go:361
-	"Bash": true, // pkg/tool/bash/bash.go:93
-	"Grep": true, // pkg/tool/grep/grep.go:147)
-
+	"Read":  true, // pkg/tool/fileread/fileread.go:361
+	"Bash":  true, // pkg/tool/bash/bash.go:93
+	"Grep":  true, // pkg/tool/grep/grep.go:147)
+	"Glob":  true, // pkg/tool/glob/glob.go:61)
 	"Edit":  true, // pkg/tool/fileedit/fileedit.go:114
 	"Write": true, // pkg/tool/filewrite/filewrite.go:400
 	// WebSearch/WebFetch: gbot 未实现，不包含

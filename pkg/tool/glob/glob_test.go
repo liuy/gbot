@@ -1,0 +1,480 @@
+package glob_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/glob"
+)
+
+// ---------------------------------------------------------------------------
+// New — tool metadata
+// ---------------------------------------------------------------------------
+
+func TestNew(t *testing.T) {
+	t.Parallel()
+
+	tt := glob.New()
+
+	if tt.Name() != "Glob" {
+		t.Errorf("Name() = %q, want %q", tt.Name(), "Glob")
+	}
+	if !tt.IsReadOnly(nil) {
+		t.Error("IsReadOnly() = false, want true")
+	}
+	if !tt.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe() = false, want true")
+	}
+	if tt.InterruptBehavior() != tool.InterruptCancel {
+		t.Errorf("InterruptBehavior() = %d, want %d", tt.InterruptBehavior(), tool.InterruptCancel)
+	}
+	if tt.Prompt() == "" {
+		t.Error("Prompt() is empty")
+	}
+	if !tt.IsEnabled() {
+		t.Error("IsEnabled() = false, want true")
+	}
+}
+
+func TestNewInputSchema(t *testing.T) {
+	t.Parallel()
+
+	tt := glob.New()
+	schema := tt.InputSchema()
+	var obj map[string]any
+	if err := json.Unmarshal(schema, &obj); err != nil {
+		t.Fatalf("InputSchema() is not valid JSON: %v", err)
+	}
+}
+
+func TestDescription(t *testing.T) {
+	t.Parallel()
+
+	tt := glob.New()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"with pattern", `{"pattern":"**/*.go"}`, "**/*.go"},
+		{"invalid json", `{invalid`, "Find files matching a glob pattern"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			desc, err := tt.Description(json.RawMessage(tc.input))
+			if err != nil {
+				t.Fatalf("Description() error: %v", err)
+			}
+			if desc != tc.want {
+				t.Errorf("Description() = %q, want %q", desc, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Execute — happy paths
+// ---------------------------------------------------------------------------
+
+func TestExecute_MatchGoFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create test files
+	files := []string{"main.go", "util.go", "readme.md", "go.mod"}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", f, err)
+		}
+	}
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output, ok := result.Data.(*glob.Output)
+	if !ok {
+		t.Fatalf("Data type = %T, want *glob.Output", result.Data)
+	}
+	if output.Count != 2 {
+		t.Errorf("Count = %d, want 2", output.Count)
+	}
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
+	}
+	if output.Truncated {
+		t.Errorf("Truncated = true, want false for 2 files")
+	}
+
+	// Results should contain both .go files (order depends on mtime)
+	found := make(map[string]bool)
+	for _, f := range output.Files {
+		found[f] = true
+	}
+	if !found["main.go"] || !found["util.go"] {
+		t.Errorf("Files = %v, want main.go and util.go", output.Files)
+	}
+}
+
+func TestExecute_NestedDirs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "internal", "pkg")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create nested files
+	if err := os.WriteFile(filepath.Join(dir, "top.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "deep.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"**/*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if output.Count != 2 {
+		t.Errorf("Count = %d, want 2 (files: %v)", output.Count, output.Files)
+	}
+}
+
+func TestExecute_NoMatches(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if output.Count != 0 {
+		t.Errorf("Count = %d, want 0", output.Count)
+	}
+	if len(output.Files) != 0 {
+		t.Errorf("Files = %v, want empty", output.Files)
+	}
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
+	}
+}
+
+func TestExecute_WorkingDirFromContext(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "test.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tctx := &tool.ToolUseContext{WorkingDir: dir}
+	input := json.RawMessage(`{"pattern":"*.txt"}`)
+	result, err := glob.Execute(context.Background(), input, tctx)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if output.Count != 1 {
+		t.Errorf("Count = %d, want 1", output.Count)
+	}
+}
+
+func TestExecute_Truncated(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Create more than 100 files to trigger truncation
+	for i := range 150 {
+		fp := filepath.Join(dir, fmt.Sprintf("file%03d.go", i))
+		if err := os.WriteFile(fp, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if !output.Truncated {
+		t.Errorf("Truncated = false, want true for 150 files")
+	}
+	if output.Count != glob.MaxGlobResults {
+		t.Errorf("Count = %d, want %d (max)", output.Count, glob.MaxGlobResults)
+	}
+	if len(output.Files) != glob.MaxGlobResults {
+		t.Errorf("Files len = %d, want %d", len(output.Files), glob.MaxGlobResults)
+	}
+}
+
+func TestExecute_DurationMs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + dir + `"}`)
+	result, err := glob.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	output := result.Data.(*glob.Output)
+	if output.DurationMs < 0 {
+		t.Errorf("DurationMs = %d, want >= 0", output.DurationMs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Execute — error paths
+// ---------------------------------------------------------------------------
+
+func TestExecute_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := glob.Execute(context.Background(), json.RawMessage(`{invalid`), nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "parse input") {
+		t.Errorf("error = %q, want error containing 'parse input'", err.Error())
+	}
+}
+
+func TestExecute_EmptyPattern(t *testing.T) {
+	t.Parallel()
+
+	_, err := glob.Execute(context.Background(), json.RawMessage(`{"pattern":""}`), nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error = %q, want error containing 'pattern is required'", err.Error())
+	}
+}
+
+func TestExecute_PathNotFound(t *testing.T) {
+	t.Parallel()
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"/nonexistent/path"}`)
+	_, err := glob.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error for nonexistent path")
+	}
+	if !strings.Contains(err.Error(), "path does not exist") {
+		t.Errorf("error = %q, want error containing 'path does not exist'", err.Error())
+	}
+}
+
+func TestExecute_PathIsFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(fp, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	input := json.RawMessage(`{"pattern":"*.go","path":"` + fp + `"}`)
+	_, err := glob.Execute(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error when path is a file")
+	}
+	if !strings.Contains(err.Error(), "path is not a directory") {
+		t.Errorf("error = %q, want error containing 'path is not a directory'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Output JSON
+// ---------------------------------------------------------------------------
+
+func TestOutputJSON(t *testing.T) {
+	t.Parallel()
+
+	output := glob.Output{
+		Files:      []string{"a.go", "b.go"},
+		Count:      2,
+		DurationMs: 5,
+		Truncated:  false,
+	}
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got glob.Output
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if got.Count != 2 {
+		t.Errorf("Count = %d, want 2", got.Count)
+	}
+	if got.DurationMs != 5 {
+		t.Errorf("DurationMs = %d, want 5", got.DurationMs)
+	}
+	if got.Truncated {
+		t.Errorf("Truncated = true, want false")
+	}
+	if len(got.Files) != 2 {
+		t.Fatalf("Files length = %d, want 2", len(got.Files))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap: output JSON field names must match TS (filenames, numFiles)
+// ---------------------------------------------------------------------------
+
+func TestOutput_JSONFieldNames(t *testing.T) {
+	t.Parallel()
+	output := glob.Output{Files: []string{"a.go"}, Count: 1}
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := parsed["filenames"]; !ok {
+		t.Error("JSON output missing 'filenames' field (has 'files' instead — must match TS)")
+	}
+	if _, ok := parsed["numFiles"]; !ok {
+		t.Error("JSON output missing 'numFiles' field (has 'count' instead — must match TS)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenderResult — human-readable output for TUI
+// ---------------------------------------------------------------------------
+
+func TestRenderResult_Files(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	output := &glob.Output{
+		Files:      []string{"src/a.go", "src/b.go", "src/c.go"},
+		Count:      3,
+		DurationMs: 12,
+	}
+	result := tt.RenderResult(output)
+	if result != "src/a.go\nsrc/b.go\nsrc/c.go" {
+		t.Errorf("RenderResult(files) = %q, want %q", result, "src/a.go\nsrc/b.go\nsrc/c.go")
+	}
+}
+
+func TestRenderResult_NoMatches(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	output := &glob.Output{
+		Files: []string{},
+		Count: 0,
+	}
+	result := tt.RenderResult(output)
+	if result != "" {
+		t.Errorf("RenderResult(no matches) = %q, want %q", result, "")
+	}
+}
+
+// RenderResult with non-*Output data covers lines 82-85 in glob.go
+func TestRenderResult_NonOutputData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	// Pass a plain string instead of *glob.Output to trigger the !ok branch
+	result := tt.RenderResult("some random string")
+	// Should be the JSON-marshaled version of the string
+	want := `"some random string"`
+	if result != want {
+		t.Errorf("RenderResult(non-Output) = %q, want %q", result, want)
+	}
+}
+
+// RenderResult with nil data covers lines 82-85 in glob.go
+func TestRenderResult_NilData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	result := tt.RenderResult(nil)
+	if result != "null" {
+		t.Errorf("RenderResult(nil) = %q, want %q", result, "null")
+	}
+}
+
+// RenderResult with map data covers lines 82-85 in glob.go
+func TestGlobTool_IsSearchOrRead(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	srk := tt.(tool.ToolWithSearchOrRead).IsSearchOrRead(nil)
+	if !srk.IsSearch || srk.IsRead || srk.IsList {
+		t.Errorf("GlobTool.IsSearchOrRead() = %+v, want {IsSearch:true}", srk)
+	}
+}
+
+func TestRenderResult_MapData(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+	result := tt.RenderResult(map[string]int{"count": 42})
+	if !strings.Contains(result, `"count"`) || !strings.Contains(result, "42") {
+		t.Errorf("RenderResult(map) = %q, should contain JSON with count:42", result)
+	}
+}
+
+func TestRenderResult_JsonRawMessage(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Valid JSON RawMessage with output fields
+	raw := json.RawMessage(`{"filenames":["a.go","b.go"],"numFiles":2,"durationMs":5,"truncated":false}`)
+	result := tt.RenderResult(raw)
+	if result != "a.go\nb.go" {
+		t.Errorf("RenderResult(json.RawMessage) = %q, want %q", result, "a.go\nb.go")
+	}
+}
+
+func TestRenderResult_JsonRawMessage_Empty(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Empty files list
+	raw := json.RawMessage(`{"filenames":[],"numFiles":0,"durationMs":0,"truncated":false}`)
+	result := tt.RenderResult(raw)
+	if result != "" {
+		t.Errorf("RenderResult(json.RawMessage empty) = %q, want empty", result)
+	}
+}
+
+func TestRenderResult_JsonRawMessage_Invalid(t *testing.T) {
+	t.Parallel()
+	tt := glob.New()
+
+	// Invalid JSON within RawMessage — should return raw string
+	raw := json.RawMessage(`not valid json`)
+	result := tt.RenderResult(raw)
+	if result != "not valid json" {
+		t.Errorf("RenderResult(invalid json.RawMessage) = %q, want %q", result, "not valid json")
+	}
+}

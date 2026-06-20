@@ -13,6 +13,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/fileread"
+	"github.com/liuy/gbot/pkg/tool/glob"
 	"github.com/liuy/gbot/pkg/tool/grep"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
@@ -1241,13 +1242,13 @@ func TestMessageView_WithTool_DoneNoSummary(t *testing.T) {
 		Role: "assistant",
 		Blocks: []ContentBlock{
 			{Type: BlockTool, ToolCall: ToolCallView{
-				Name: "Grep",
+				Name: "Glob",
 				Done: true,
 			}},
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if !strings.Contains(v, "Grep") {
+	if !strings.Contains(v, "Glob") {
 		t.Errorf("should contain tool name, got: %q", v)
 	}
 }
@@ -3586,12 +3587,11 @@ func TestChain_GrepTool_FilesWithMatchesMode(t *testing.T) {
 func TestChain_GlobTool(t *testing.T) {
 	t.Parallel()
 
-	grepTool := grep.New()
+	globTool := glob.New()
 	fileList := "src/main.go\nsrc/util.go\nsrc/handler.go"
-	rendered := grepTool.RenderResult(&grep.Output{
-		Mode:      "files_with_matches",
-		Filenames: []string{"src/main.go", "src/util.go", "src/handler.go"},
-		NumFiles:  3,
+	rendered := globTool.RenderResult(&glob.Output{
+		Files: []string{"src/main.go", "src/util.go", "src/handler.go"},
+		Count: 3,
 	})
 
 	if rendered != fileList {
@@ -3611,7 +3611,7 @@ func TestChain_GlobTool(t *testing.T) {
 				Type: BlockTool,
 				ToolCall: ToolCallView{
 					ID:         "glob-1",
-					Name:       "Grep",
+					Name:       "Glob",
 					Summary:    "**/*.go",
 					Output:     rendered,
 					Done:       true,
