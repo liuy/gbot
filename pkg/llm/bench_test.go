@@ -21,7 +21,7 @@ func BenchmarkParseEvent_MessageStart(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("message_start", data)
+		_ = p.ParseEvent("message_start", data, nil)
 	}
 }
 
@@ -32,7 +32,7 @@ func BenchmarkParseEvent_ContentBlockStart(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("content_block_start", data)
+		_ = p.ParseEvent("content_block_start", data, nil)
 	}
 }
 
@@ -43,7 +43,7 @@ func BenchmarkParseEvent_ContentBlockStart_ToolUse(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("content_block_start", data)
+		_ = p.ParseEvent("content_block_start", data, nil)
 	}
 }
 
@@ -54,7 +54,7 @@ func BenchmarkParseEvent_ContentBlockDelta(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("content_block_delta", data)
+		_ = p.ParseEvent("content_block_delta", data, nil)
 	}
 }
 
@@ -65,7 +65,7 @@ func BenchmarkParseEvent_ContentBlockDelta_JSON(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("content_block_delta", data)
+		_ = p.ParseEvent("content_block_delta", data, nil)
 	}
 }
 
@@ -76,7 +76,7 @@ func BenchmarkParseEvent_MessageDelta(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("message_delta", data)
+		_ = p.ParseEvent("message_delta", data, nil)
 	}
 }
 
@@ -87,7 +87,7 @@ func BenchmarkParseEvent_Error(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = p.ParseEvent("error", data)
+		_ = p.ParseEvent("error", data, nil)
 	}
 }
 
@@ -146,7 +146,7 @@ func BenchmarkParseSSE_SmallStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -164,7 +164,7 @@ func BenchmarkParseSSE_MediumStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -182,7 +182,7 @@ func BenchmarkParseSSE_LargeStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 1024)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {
@@ -206,7 +206,7 @@ func BenchmarkParseSSE_ToolUseStream(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 64)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {

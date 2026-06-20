@@ -119,7 +119,7 @@ func TestParseEvent_MessageStart(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25}}}`
-	event := p.ParseEvent("message_start", data)
+	event := p.ParseEvent("message_start", data, nil)
 
 	if event.Type != "message_start" {
 		t.Errorf("expected type message_start, got %s", event.Type)
@@ -140,7 +140,7 @@ func TestParseEvent_ContentBlockStart(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":0,"content_block":{"type":"text","text":""}}`
-	event := p.ParseEvent("content_block_start", data)
+	event := p.ParseEvent("content_block_start", data, nil)
 
 	if event.Type != "content_block_start" {
 		t.Errorf("expected type content_block_start, got %s", event.Type)
@@ -161,7 +161,7 @@ func TestParseEvent_ContentBlockStart_ToolUse(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"read_file","input":{}}}`
-	event := p.ParseEvent("content_block_start", data)
+	event := p.ParseEvent("content_block_start", data, nil)
 
 	if event.ContentBlock == nil {
 		t.Fatal("expected non-nil ContentBlock")
@@ -179,7 +179,7 @@ func TestParseEvent_ContentBlockDelta_Text(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":0,"delta":{"type":"text_delta","text":"Hello"}}`
-	event := p.ParseEvent("content_block_delta", data)
+	event := p.ParseEvent("content_block_delta", data, nil)
 
 	if event.Delta == nil {
 		t.Fatal("expected non-nil Delta")
@@ -194,7 +194,7 @@ func TestParseEvent_ContentBlockDelta_JSON(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`
-	event := p.ParseEvent("content_block_delta", data)
+	event := p.ParseEvent("content_block_delta", data, nil)
 
 	if event.Delta == nil {
 		t.Fatal("expected non-nil Delta")
@@ -209,7 +209,7 @@ func TestParseEvent_ContentBlockStop(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":0}`
-	event := p.ParseEvent("content_block_stop", data)
+	event := p.ParseEvent("content_block_stop", data, nil)
 
 	if event.Index != 0 {
 		t.Errorf("expected index 0, got %d", event.Index)
@@ -221,7 +221,7 @@ func TestParseEvent_MessageDelta(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`
-	event := p.ParseEvent("message_delta", data)
+	event := p.ParseEvent("message_delta", data, nil)
 
 	if event.DeltaMsg == nil {
 		t.Fatal("expected non-nil DeltaMsg")
@@ -242,7 +242,7 @@ func TestParseEvent_MessageDelta_InputTokens(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":500,"output_tokens":42}}`
-	event := p.ParseEvent("message_delta", data)
+	event := p.ParseEvent("message_delta", data, nil)
 
 	if event.Usage == nil {
 		t.Fatal("expected non-nil Usage")
@@ -259,7 +259,7 @@ func TestParseEvent_MessageStop(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("message_stop", "{}")
+	event := p.ParseEvent("message_stop", "{}", nil)
 
 	if event.Type != "message_stop" {
 		t.Errorf("expected type message_stop, got %s", event.Type)
@@ -270,7 +270,7 @@ func TestParseEvent_Ping(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("ping", "")
+	event := p.ParseEvent("ping", "", nil)
 
 	if event.Type != "ping" {
 		t.Errorf("expected type ping, got %s", event.Type)
@@ -282,7 +282,7 @@ func TestParseEvent_Error(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"error":{"type":"overloaded_error","message":"Overloaded"}}`
-	event := p.ParseEvent("error", data)
+	event := p.ParseEvent("error", data, nil)
 
 	if event.Error == nil {
 		t.Fatal("expected non-nil Error")
@@ -299,7 +299,7 @@ func TestParseEvent_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("message_start", "not valid json")
+	event := p.ParseEvent("message_start", "not valid json", nil)
 
 	if event.Message != nil {
 		t.Error("expected nil Message for invalid JSON")
@@ -310,7 +310,7 @@ func TestParseEvent_UnknownEventType(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("custom_event", `{"data":"test"}`)
+	event := p.ParseEvent("custom_event", `{"data":"test"}`, nil)
 
 	if event.Type != "custom_event" {
 		t.Errorf("expected custom_event, got %s", event.Type)
@@ -953,7 +953,7 @@ func TestParseSSE_TrailingEventWithoutEmptyLine(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -980,7 +980,7 @@ func TestParseSSE_CommentsIgnored(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1004,7 +1004,7 @@ func TestParseSSE_MultipleDataLines(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1064,7 +1064,7 @@ func TestParseSSE_ContextCancellation(t *testing.T) {
 	eventCh := make(chan llm.StreamEvent, 16)
 
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1524,7 +1524,7 @@ func TestParseSSE_EmptyInput(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(""), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(""), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1548,7 +1548,7 @@ func TestParseSSE_OnlyEmptyLines(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader("\n\n\n"), eventCh)
+		p.ParseSSE(ctx, strings.NewReader("\n\n\n"), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1575,7 +1575,7 @@ func TestParseSSE_EventWithoutData(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1603,7 +1603,7 @@ func TestParseSSE_DataWithoutEventType(t *testing.T) {
 
 	eventCh := make(chan llm.StreamEvent, 16)
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(eventCh)
 	}()
 
@@ -1636,7 +1636,7 @@ func TestParseSSE_FullChannelCancellation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(done)
 	}()
 
@@ -1667,7 +1667,7 @@ func TestParseSSE_TrailingEventCancellation(t *testing.T) {
 
 	unblock := make(chan struct{})
 	go func() {
-		p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+		p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 		close(unblock)
 	}()
 
@@ -1840,7 +1840,7 @@ func TestParseEvent_InvalidJSON_ContentBlockStart(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("content_block_start", "not valid json")
+	event := p.ParseEvent("content_block_start", "not valid json", nil)
 
 	if event.ContentBlock != nil {
 		t.Error("expected nil ContentBlock for invalid JSON")
@@ -1851,7 +1851,7 @@ func TestParseEvent_InvalidJSON_ContentBlockDelta(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("content_block_delta", "not valid json")
+	event := p.ParseEvent("content_block_delta", "not valid json", nil)
 
 	if event.Delta != nil {
 		t.Error("expected nil Delta for invalid JSON")
@@ -1862,7 +1862,7 @@ func TestParseEvent_InvalidJSON_ContentBlockStop(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("content_block_stop", "not valid json")
+	event := p.ParseEvent("content_block_stop", "not valid json", nil)
 
 	// Index should be 0 (default) when JSON fails
 	if event.Index != 0 {
@@ -1874,7 +1874,7 @@ func TestParseEvent_InvalidJSON_MessageDelta(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("message_delta", "not valid json")
+	event := p.ParseEvent("message_delta", "not valid json", nil)
 
 	if event.DeltaMsg != nil {
 		t.Error("expected nil DeltaMsg for invalid JSON")
@@ -1888,7 +1888,7 @@ func TestParseEvent_InvalidJSON_Error(t *testing.T) {
 	t.Parallel()
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
-	event := p.ParseEvent("error", "not valid json")
+	event := p.ParseEvent("error", "not valid json", nil)
 
 	if event.Error != nil {
 		t.Error("expected nil Error for invalid JSON")
@@ -1900,7 +1900,7 @@ func TestParseEvent_ThinkingDelta(t *testing.T) {
 
 	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
 	data := `{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}`
-	event := p.ParseEvent("content_block_delta", data)
+	event := p.ParseEvent("content_block_delta", data, nil)
 
 	if event.Delta == nil {
 		t.Fatal("expected non-nil Delta")
@@ -2065,7 +2065,7 @@ func BenchmarkParseEvent(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		p.ParseEvent("message_start", data)
+		p.ParseEvent("message_start", data, nil)
 	}
 }
 
@@ -2083,7 +2083,7 @@ func BenchmarkParseSSE(b *testing.B) {
 		ctx := context.Background()
 		eventCh := make(chan llm.StreamEvent, 256)
 		go func() {
-			p.ParseSSE(ctx, strings.NewReader(sseInput), eventCh)
+			p.ParseSSE(ctx, strings.NewReader(sseInput), nil, eventCh)
 			close(eventCh)
 		}()
 		for range eventCh {

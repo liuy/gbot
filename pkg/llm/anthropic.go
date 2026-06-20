@@ -220,7 +220,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 		}
 		go func() {
 			defer close(sseCh)
-			p.ParseSSE(ctx, body, sseCh)
+			p.ParseSSE(ctx, body, td, sseCh)
 			close(done)
 		}()
 
@@ -272,7 +272,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan St
 
 // ParseSSE parses the SSE stream into events.
 // Source: Anthropic SSE protocol — event types match exactly.
-func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, eventCh chan<- StreamEvent) {
+// ParseSSE parses the Anthropic SSE stream. td, when non-nil, allows the
+// parser to disable idle timeout immediately when a tool_use block starts,
+// avoiding a race between the parser goroutine and the event processing goroutine.
+func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, td TimeoutDisabler, eventCh chan<- StreamEvent) {
 	scanner := bufio.NewScanner(body)
 	// Increase buffer for large responses
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
@@ -286,7 +289,7 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, eventC
 		// Empty line = end of event
 		if line == "" {
 			if eventType != "" && eventData.Len() > 0 {
-				event := p.ParseEvent(eventType, eventData.String())
+				event := p.ParseEvent(eventType, eventData.String(), td)
 				select {
 				case eventCh <- event:
 				case <-ctx.Done():
@@ -318,7 +321,7 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, eventC
 
 	// Handle last event if no trailing empty line
 	if eventType != "" && eventData.Len() > 0 {
-		event := p.ParseEvent(eventType, eventData.String())
+		event := p.ParseEvent(eventType, eventData.String(), td)
 		select {
 		case eventCh <- event:
 		case <-ctx.Done():
@@ -327,7 +330,9 @@ func (p *AnthropicProvider) ParseSSE(ctx context.Context, body io.Reader, eventC
 }
 
 // ParseEvent converts an SSE event type + data into a StreamEvent.
-func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
+// ParseEvent parses a single SSE event. td, when non-nil, allows the parser
+// to disable idle timeout immediately when a tool_use block starts.
+func (p *AnthropicProvider) ParseEvent(eventType, data string, td TimeoutDisabler) StreamEvent {
 	event := StreamEvent{
 		Type: eventType,
 		Raw:  json.RawMessage(data),
@@ -353,6 +358,11 @@ func (p *AnthropicProvider) ParseEvent(eventType, data string) StreamEvent {
 		if err := json.Unmarshal([]byte(data), &block); err == nil {
 			event.Index = block.Index
 			event.ContentBlock = &block.ContentBlock
+			// Disable timeout immediately when tool_use starts — don't wait
+			// for the event processing goroutine, which has a race window.
+			if td != nil && block.ContentBlock.Type == types.ContentTypeToolUse {
+				td.SetTimeoutDisabled(true)
+			}
 		} else {
 			slog.Warn("parse content_block_start failed", "error", err, "data", truncateForLog(data, 200))
 		}
