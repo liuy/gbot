@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,9 +28,15 @@ import (
 
 // ReplState holds the interactive REPL session state embedded in App.
 type ReplState struct {
-	messages    []MessageView
-	streaming   bool
-	pendingTool map[string]*ToolCallView
+	mu        sync.RWMutex
+	messages  []MessageView
+	streaming bool
+	// streamingStart records when StartQuery ran. switchEngine reads this
+	// to restore the progress line when switching back to a live-streaming
+	// engine — without it, the newly-active engine shows no elapsed time
+	// even though it's mid-query.
+	streamingStart time.Time
+	pendingTool    map[string]*ToolCallView
 
 	// Tracks partial input accumulation per tool ID for summary updates
 	pendingInput map[string]string
@@ -59,9 +66,11 @@ func NewReplState() *ReplState {
 	}
 }
 
-// updateToolBlock finds the tool block with the given ID across all messages
-// (not just lastMsg) and replaces its ToolCallView. Returns false if not found.
-func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
+// updateToolBlockLocked finds the tool block with the given ID across all
+// messages (not just lastMsg) and replaces its ToolCallView. Returns false if
+// not found. Caller MUST hold s.mu (Lock or RLock — write is required since
+// this mutates blocks in place via pointer writes).
+func (s *ReplState) updateToolBlockLocked(id string, tcv *ToolCallView) bool {
 	for i := len(s.messages) - 1; i >= 0; i-- {
 		if updateToolBlockInBlocks(&s.messages[i].Blocks, id, tcv) {
 			return true
@@ -89,10 +98,11 @@ func updateToolBlockInBlocks(blocks *[]ContentBlock, id string, tcv *ToolCallVie
 	return false
 }
 
-// findToolView returns the ToolCallView for the given tool ID.
+// findToolViewLocked returns the ToolCallView for the given tool ID.
 // Searches pendingTool first, then all messages backwards (most recent first).
-// Recursively searches nested Blocks within agent tool calls.
-func (s *ReplState) findToolView(id string) *ToolCallView {
+// Recursively searches nested Blocks within agent tool calls. Caller MUST hold
+// s.mu (either RLock or Lock — this is a read-only operation).
+func (s *ReplState) findToolViewLocked(id string) *ToolCallView {
 	// 1. Top-level pending tools
 	if tcv, ok := s.pendingTool[id]; ok {
 		return tcv
@@ -130,9 +140,9 @@ func findToolViewInBlocks(blocks []ContentBlock, id string) *ToolCallView {
 	return nil
 }
 
-// trimBlocks keeps the last 50 non-thinking blocks.
-// Thinking blocks do not count toward the limit.
-func (s *ReplState) trimBlocks(tcv *ToolCallView) {
+// trimBlocksLocked keeps the last 50 non-thinking blocks.
+// Thinking blocks do not count toward the limit. Caller MUST hold s.mu.
+func (s *ReplState) trimBlocksLocked(tcv *ToolCallView) {
 	const maxBlocks = 50
 	if len(tcv.Blocks) <= maxBlocks {
 		return
@@ -142,6 +152,8 @@ func (s *ReplState) trimBlocks(tcv *ToolCallView) {
 
 // AddUserMessage appends a user message to the session history.
 func (s *ReplState) AddUserMessage(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.messages = append(s.messages, MessageView{
 		Role:   "user",
 		Blocks: []ContentBlock{{Type: BlockText, Text: text}},
@@ -151,15 +163,42 @@ func (s *ReplState) AddUserMessage(text string) {
 // StartQuery begins a new streaming query, storing the result channel.
 // Creates the assistant message immediately so blocks grow during streaming.
 func (s *ReplState) StartQuery() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.streaming = true
+	s.streamingStart = time.Now()
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
 	s.toolCount = 0
 	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
 }
 
-// lastMsg returns a pointer to the last message, or nil.
-func (s *ReplState) lastMsg() *MessageView {
+// StreamingStart returns the wall-clock time when StartQuery ran, or zero
+// if not streaming. Read by switchEngine to restore the active engine's
+// progress line.
+func (s *ReplState) StreamingStart() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.streamingStart
+}
+
+// StartQueryAtForTest is a test-only variant of StartQuery that injects a
+// synthetic streamingStart so tests can verify switchEngine restores the
+// elapsed time correctly without sleeping.
+func (s *ReplState) StartQueryAtForTest(start time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streaming = true
+	s.streamingStart = start
+	s.pendingTool = make(map[string]*ToolCallView)
+	s.pendingInput = make(map[string]string)
+	s.toolCount = 0
+	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
+}
+
+// lastMsgLocked returns a pointer to the last message, or nil.
+// Caller MUST hold s.mu.
+func (s *ReplState) lastMsgLocked() *MessageView {
 	if len(s.messages) == 0 {
 		return nil
 	}
@@ -168,11 +207,12 @@ func (s *ReplState) lastMsg() *MessageView {
 
 // AppendChunk appends a streaming text delta to the last text block.
 func (s *ReplState) AppendChunk(text string) {
-	m := s.lastMsg()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
-	// Append to last text block if it exists, otherwise create one
 	if len(m.Blocks) > 0 && m.Blocks[len(m.Blocks)-1].Type == BlockText {
 		m.Blocks[len(m.Blocks)-1].Text += text
 	} else {
@@ -182,7 +222,9 @@ func (s *ReplState) AppendChunk(text string) {
 
 // AppendTextItem starts a new empty text block.
 func (s *ReplState) AppendTextItem() {
-	m := s.lastMsg()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
@@ -205,7 +247,9 @@ func formatToolDisplayName(name string) string {
 
 // PendingToolStarted records a new in-progress tool call.
 func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool.SearchReadKind) {
-	m := s.lastMsg()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
@@ -218,6 +262,8 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool
 
 // PendingToolDone updates a tool call with its result.
 func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration, srk tool.SearchReadKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[id]
 	if !ok {
 		return
@@ -240,12 +286,13 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 		s.toolCount += tcv.ToolCount
 	}
 
-	// Update the tool block in lastMsg
-	s.updateToolBlock(id, tcv)
+	s.updateToolBlockLocked(id, tcv)
 }
 
 // PendingToolDelta updates a pending tool's input and summary from engine.
 func (s *ReplState) PendingToolDelta(id, delta, summary string, srk tool.SearchReadKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.pendingInput[id] += delta
 
 	tcv, ok := s.pendingTool[id]
@@ -269,12 +316,13 @@ func (s *ReplState) PendingToolDelta(id, delta, summary string, srk tool.SearchR
 		tcv.SearchRead = srk
 	}
 
-	// Update the tool block in lastMsg
-	s.updateToolBlock(id, tcv)
+	s.updateToolBlockLocked(id, tcv)
 }
 
 // PendingToolOutput updates a streaming tool's output lines in real time.
 func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[id]
 	if !ok {
 		return
@@ -290,14 +338,15 @@ func (s *ReplState) PendingToolOutput(id, output string, timing time.Duration) {
 	// Accumulate output lines (each event carries all current lines)
 	tcv.Output = output
 
-	// Update the tool block in lastMsg
-	s.updateToolBlock(id, tcv)
+	s.updateToolBlockLocked(id, tcv)
 }
 
 // PendingThinkingStarted appends a new thinking block to the last message.
 func (s *ReplState) PendingThinkingStarted() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.activeThinkingIdx = -1
-	m := s.lastMsg()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
@@ -310,10 +359,12 @@ func (s *ReplState) PendingThinkingStarted() {
 
 // PendingThinkingDelta appends text to the active thinking block.
 func (s *ReplState) PendingThinkingDelta(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.activeThinkingIdx < 0 {
 		return
 	}
-	m := s.lastMsg()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
@@ -325,10 +376,12 @@ func (s *ReplState) PendingThinkingDelta(text string) {
 
 // PendingThinkingDone marks the active thinking block as done.
 func (s *ReplState) PendingThinkingDone(duration time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.activeThinkingIdx < 0 {
 		return
 	}
-	m := s.lastMsg()
+	m := s.lastMsgLocked()
 	if m == nil {
 		return
 	}
@@ -344,12 +397,14 @@ func (s *ReplState) PendingThinkingDone(duration time.Duration) {
 // SetAgentContextWindow sets the context window for a sub-agent tool call.
 // Called once at tool start so the TUI can display "8.7k/30.0k" usage ratios.
 func (s *ReplState) SetAgentContextWindow(parentID string, window int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[parentID]
 	if !ok {
 		return
 	}
 	tcv.ContextWindow = window
-	s.updateToolBlock(parentID, tcv)
+	s.updateToolBlockLocked(parentID, tcv)
 }
 
 // FinishStream finalizes the streaming session.
@@ -358,7 +413,10 @@ func (s *ReplState) FinishStream(err error) {
 	if pc, _, _, ok := runtime.Caller(1); ok {
 		slog.Info("tui:finish_stream", "caller", runtime.FuncForPC(pc).Name(), "err", err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.streaming = false
+	s.streamingStart = time.Time{}
 
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
@@ -369,10 +427,136 @@ func (s *ReplState) FinishStream(err error) {
 }
 
 // IsStreaming returns whether a query is in progress.
-func (s *ReplState) IsStreaming() bool { return s.streaming }
+func (s *ReplState) IsStreaming() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.streaming
+}
 
 // Messages returns the session message history.
-func (s *ReplState) Messages() []MessageView { return s.messages }
+//
+// Returns the underlying slice header under the read lock. Callers in the
+// bubbletea goroutine (updateRepl, View) only read it and are safe; callers
+// that may mutate the returned slice should copy under lock instead. For
+// rendering outside the bubbletea goroutine use MessagesSnapshot.
+func (s *ReplState) Messages() []MessageView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.messages
+}
+
+// MessagesSnapshot returns a copy of the message history. Use this when the
+// caller cannot guarantee the bubbletea goroutine's serial access (e.g.
+// background-drain goroutine reading a non-active engine's state).
+func (s *ReplState) MessagesSnapshot() []MessageView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]MessageView, len(s.messages))
+	copy(out, s.messages)
+	return out
+}
+
+// FindToolView returns the ToolCallView for the given tool ID, or nil if not
+// found. Safe to call from any goroutine. Read-only — uses RLock so it does
+// not starve writers.
+func (s *ReplState) FindToolView(id string) *ToolCallView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findToolViewLocked(id)
+}
+
+// LastMsg returns a pointer to the last message, or nil. Safe to call from
+// any goroutine. Returned pointer is into the live slice — caller may read
+// but must not mutate without holding the lock.
+func (s *ReplState) LastMsg() *MessageView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastMsgLocked()
+}
+
+// UpdateToolBlock replaces the tool block with the given ID across all
+// messages with the supplied ToolCallView. Safe for concurrent use.
+func (s *ReplState) UpdateToolBlock(id string, tcv *ToolCallView) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateToolBlockLocked(id, tcv)
+}
+
+// TrimBlocks caps the given ToolCallView's Blocks slice to the last 50
+// non-thinking blocks. Safe for concurrent use.
+func (s *ReplState) TrimBlocks(tcv *ToolCallView) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trimBlocksLocked(tcv)
+}
+
+// lastMsg, findToolView, updateToolBlock, trimBlocks are backward-compatibility
+// aliases that lock and delegate to their *Locked variants. They let existing
+// white-box tests (pkg tui) keep using the lowercase names. Production code
+// should migrate to the exported LastMsg / FindToolView / UpdateToolBlock /
+// TrimBlocks for consistency with the multi-engine locking model.
+func (s *ReplState) lastMsg() *MessageView { return s.LastMsg() }
+func (s *ReplState) findToolView(id string) *ToolCallView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findToolViewLocked(id)
+}
+func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
+	return s.UpdateToolBlock(id, tcv)
+}
+func (s *ReplState) trimBlocks(tcv *ToolCallView) { s.TrimBlocks(tcv) }
+
+// ToolCount returns the total tool-call counter for the current query.
+func (s *ReplState) ToolCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.toolCount
+}
+
+// PendingToolStart returns the perceived start time for a tool ID, or zero.
+// Used by sub-agent queryEndMsg handlers to compute elapsed time.
+func (s *ReplState) PendingToolStart(id string) (time.Time, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.pendingToolStart[id]
+	return t, ok
+}
+
+// CurrentToolName returns the name of the most recently started pending tool,
+// or "" when idle. Implements engine.ReplSnapshot for status bar rendering.
+// Uses RLock so concurrent render + background drain never deadlock.
+func (s *ReplState) CurrentToolName() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var name string
+	var latest time.Time
+	for id, start := range s.pendingToolStart {
+		if start.After(latest) {
+			if tcv, ok := s.pendingTool[id]; ok && tcv != nil && !tcv.Done {
+				name = tcv.Name
+				latest = start
+			}
+		}
+	}
+	return name
+}
+
+// Reset clears all state. Used by session switch / picker / rewind / error
+// recovery paths to blank the ReplState before re-populating messages from
+// the engine. Acquires the write lock so concurrent readers (background-drain
+// goroutines for non-active engines) never observe a half-reset state.
+func (s *ReplState) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = []MessageView{}
+	s.streaming = false
+	s.pendingTool = make(map[string]*ToolCallView)
+	s.pendingInput = make(map[string]string)
+	s.pendingToolStart = make(map[string]time.Time)
+	s.toolCount = 0
+	s.activeThinkingIdx = -1
+	s.cancelFunc = nil
+}
 
 // ---------------------------------------------------------------------------
 // REPL Update — handles all REPL-specific messages.
@@ -381,6 +565,20 @@ func (s *ReplState) Messages() []MessageView { return s.messages }
 
 // updateRepl handles REPL-related messages on the App.
 // Returns whether the message was handled, and any tea.Cmd to execute.
+//
+// Concurrency invariant for sub-agent messages (m.Agent != nil): the parent
+// tool view is read via findToolView (acquires+releases RLock), mutated
+// WITHOUT holding the lock (parent.Blocks = append(...)), then written back
+// via updateToolBlock (acquires+releases Lock). This is safe because
+// sub-agent events are NEVER routed through the background-drain path —
+// buildBackgroundDrainFn gates every mutation on `if m.Agent == nil`, so
+// sub-agent state is only touched from this single bubbletea-goroutine
+// entry point. Background engines can only mutate their own (non-sub-agent)
+// streaming state, which never races with these parent-card updates.
+//
+// If a future change routes sub-agent events through background drains
+// (e.g. background sub-engines), the read-mutate-write here MUST be collapsed
+// under a single critical section to avoid losing append-write races.
 func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 	switch m := msg.(type) {
 
@@ -919,7 +1117,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
 			errCommitCmd = tea.Println(rendered)
 		}
-		*a.repl = *NewReplState()
+		a.repl.Reset()
 		a.committedCount = 0
 		a.spinner.Stop()
 		a.input.Focus()
@@ -966,6 +1164,18 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+
+	// Dispatch before the streaming check — switching engines mid-stream
+	// is safe: the demoted engine's Hub + drain fn keep its ReplState
+	// updated in the background.
+	if cmd, ok := a.commands.LookupSlashCommand(text); ok && cmd.Name == "engine" {
+		a.history.Add(text)
+		a.input.Reset()
+		a.pasteStore = make(map[int]string)
+		a.nextPasteID = 1
+		return a.handleSlashCommand(cmd, nil)
+	}
+
 	if a.repl.IsStreaming() {
 		return a.handleEnqueueMessage(text)
 	}

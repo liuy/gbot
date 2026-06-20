@@ -11,13 +11,13 @@ func TestAllCommands(t *testing.T) {
 	t.Parallel()
 	r := NewCommandRegistry()
 	cmds := r.AllCommands()
-	if len(cmds) != 5 {
-		t.Fatalf("AllCommands() returned %d commands, want 5", len(cmds))
+	if len(cmds) != 6 {
+		t.Fatalf("AllCommands() returned %d commands, want 6", len(cmds))
 	}
 	if !slices.IsSorted(cmds) {
 		t.Errorf("AllCommands() not sorted: %v", cmds)
 	}
-	want := []string{"clear", "context", "model", "rewind", "session"}
+	want := []string{"clear", "context", "engine", "model", "rewind", "session"}
 	for _, w := range want {
 		if !slices.Contains(cmds, w) {
 			t.Errorf("AllCommands() missing %q", w)
@@ -50,8 +50,8 @@ func TestRegisterSkillCommands_AddsToAllCommands(t *testing.T) {
 	})
 
 	cmds := r.AllCommands()
-	if got := len(cmds); got != 7 {
-		t.Fatalf("AllCommands() returned %d, want 7 (5 builtin + 2 skill)", got)
+	if got := len(cmds); got != 8 {
+		t.Fatalf("AllCommands() returned %d, want 8 (6 builtin + 2 skill)", got)
 	}
 	for _, builtin := range []string{"session", "clear", "model"} {
 		if !slices.Contains(cmds, builtin) {

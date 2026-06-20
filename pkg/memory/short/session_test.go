@@ -1058,3 +1058,121 @@ func TestPruneEmptySessions(t *testing.T) {
 		t.Error("empty session should be pruned but still exists")
 	}
 }
+
+func TestCreateSessionWithEngine_PersistsEngineID(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	ses, err := store.CreateSessionWithEngine("/proj", "sonnet", "e2")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine: %v", err)
+	}
+	if ses.EngineID != "e2" {
+		t.Errorf("returned EngineID = %q, want e2", ses.EngineID)
+	}
+
+	got, err := store.GetSession(ses.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.EngineID != "e2" {
+		t.Errorf("persisted EngineID = %q, want e2", got.EngineID)
+	}
+}
+
+func TestCreateSessionWithEngine_EmptyEngineID_NormalizesToMain(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	ses, err := store.CreateSessionWithEngine("/proj", "sonnet", "")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine: %v", err)
+	}
+	if ses.EngineID != "main" {
+		t.Errorf("returned EngineID = %q, want main (normalized)", ses.EngineID)
+	}
+	got, err := store.GetSession(ses.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if got.EngineID != "main" {
+		t.Errorf("persisted EngineID = %q, want main", got.EngineID)
+	}
+}
+
+func TestCreateSession_DelegatesWithMain(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	ses, err := store.CreateSession("/proj", "sonnet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if ses.EngineID != "main" {
+		t.Errorf("EngineID = %q, want main (CreateSession delegates with main)", ses.EngineID)
+	}
+}
+
+func TestListSessionsByEngine_FiltersByEngineID(t *testing.T) {
+	store, cleanup := testStore(t)
+	defer cleanup()
+
+	// Create 3 sessions with engine IDs main, e2, main.
+	s1, err := store.CreateSessionWithEngine("/proj", "sonnet", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine s1: %v", err)
+	}
+	if _, err := store.CreateSessionWithEngine("/proj", "sonnet", "e2"); err != nil {
+		t.Fatalf("CreateSessionWithEngine s2: %v", err)
+	}
+	s3, err := store.CreateSessionWithEngine("/proj", "sonnet", "main")
+	if err != nil {
+		t.Fatalf("CreateSessionWithEngine s3: %v", err)
+	}
+
+	mainSessions, err := store.ListSessionsByEngine("/proj", "main", 100)
+	if err != nil {
+		t.Fatalf("ListSessionsByEngine(main): %v", err)
+	}
+	if len(mainSessions) != 2 {
+		t.Fatalf("main sessions count = %d, want 2", len(mainSessions))
+	}
+	// Verify exactly s1 and s3 are returned.
+	ids := map[string]bool{}
+	for _, s := range mainSessions {
+		ids[s.SessionID] = true
+	}
+	if !ids[s1.SessionID] || !ids[s3.SessionID] {
+		t.Errorf("main sessions = %v, want {%s, %s}", ids, s1.SessionID, s3.SessionID)
+	}
+
+	e2Sessions, err := store.ListSessionsByEngine("/proj", "e2", 100)
+	if err != nil {
+		t.Fatalf("ListSessionsByEngine(e2): %v", err)
+	}
+	if len(e2Sessions) != 1 {
+		t.Fatalf("e2 sessions count = %d, want 1", len(e2Sessions))
+	}
+
+	// Empty engine ID is normalized to "main".
+	mainEmpty, err := store.ListSessionsByEngine("/proj", "", 100)
+	if err != nil {
+		t.Fatalf("ListSessionsByEngine(empty): %v", err)
+	}
+	if len(mainEmpty) != 2 {
+		t.Errorf("empty normalized sessions count = %d, want 2 (main)", len(mainEmpty))
+	}
+
+	// Unfiltered ListSessions still returns all 3.
+	all, err := store.ListSessions("/proj", 100)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("ListSessions count = %d, want 3 (all engines)", len(all))
+	}
+}
+
+// Ensure time import is used (referenced indirectly above for tests using timestamps).
+var _ = time.Now
+var _ = filepath.Join

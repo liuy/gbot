@@ -8,10 +8,21 @@ import (
 	"time"
 )
 
+// EngineMeta is one entry in the engines array of WorkspaceMeta.
+// Each engine in an EngineManager maps to one EngineMeta.
+type EngineMeta struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ActiveSessionID string `json:"active_session_id"`
+	Model           string `json:"model"`
+}
+
 // WorkspaceMeta stores workspace-level session metadata in .gbot/meta.json.
 type WorkspaceMeta struct {
-	CurrentSessionID string    `json:"current_session_id,omitempty"`
-	LastActiveAt     time.Time `json:"last_active_at"`
+	CurrentSessionID string       `json:"current_session_id,omitempty"`
+	Engines          []EngineMeta `json:"engines,omitempty"`
+	ActiveEngineID   string       `json:"active_engine_id,omitempty"`
+	LastActiveAt     time.Time    `json:"last_active_at"`
 }
 
 // ReadWorkspaceMeta reads .gbot/meta.json from the given project directory.

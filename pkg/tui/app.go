@@ -78,6 +78,10 @@ type App struct {
 	spinner Spinner
 
 	// REPL session state (delegated to repl.go)
+	// Always points to the active engine's ReplState. Updated by switchEngine.
+	// Backed by engineMgr — a.engineMgr.Active().Repl.(replSnapshotAdapter).r
+	// is the same pointer, kept here as a cache so the existing call sites
+	// (a.repl.<method>) keep working without mass-rename.
 	repl *ReplState
 
 	// Commit-on-complete: messages[:committedCount] are committed to terminal
@@ -86,12 +90,24 @@ type App struct {
 	committedCount int
 
 	// Engine
+	// a.engine is the active engine; a.engineMgr owns the full set.
+	// engineMgr is the source of truth for multi-engine state; a.engine is
+	// kept as a cached pointer updated by switchEngine so existing call sites
+	// don't need mass-rename.
 	engine       *engine.Engine
+	engineMgr    *engine.EngineManager
 	systemPrompt string
 
+	// engineFactory builds a new *engine.Engine for /engine new. Set by
+	// main.go via SetEngineFactory. nil = /engine new disabled.
+	engineFactory EngineFactoryFn
+
 	// Persistence (short-term memory store)
+	// sessionID is the active engine's session ID. Kept as a cached mirror of
+	// engineMgr.Active().ActiveSessionID; updated by switchEngine and
+	// createNewSession/forkCurrentSession.
 	sessionID   string
-	projectDir  string // working directory for .gbot/meta.json
+	projectDir  string // working directory for .gbot/meta.json (shared across engines)
 	fileHistory *filehistory.Tracker
 
 	// Active dialog overlay (unified for list picking and permission asking)
@@ -208,8 +224,31 @@ type App struct {
 	cacheCreationTokens int
 }
 
-// NewApp creates a new App model.
+// NewApp creates a new App model wrapping a single engine in a default
+// EngineManager. Equivalent to NewAppWithManager(manager, systemPrompt, h)
+// after building a one-engine manager.
+//
+// Retained for backward compatibility with the many test callers. Production
+// code (main.go) should call NewAppWithManager directly.
 func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
+	mgr := engine.NewEngineManager()
+	if eng != nil {
+		mgr.Add(&engine.EngineViewState{
+			Engine:          eng,
+			Repl:            newReplAdapter(NewReplState()),
+			ID:              eng.EngineID(),
+			Name:            "main",
+			ActiveSessionID: eng.SessionID(),
+			Model:           eng.Model(),
+		})
+	}
+	return NewAppWithManager(mgr, systemPrompt, h)
+}
+
+// NewAppWithManager creates an App bound to an EngineManager that already
+// holds one or more engines. The active engine (mgr.Active()) becomes the
+// initial a.engine / a.repl / a.sessionID cache.
+func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hub) *App {
 	// Resolve history file path: ~/.gbot/history.jsonl
 	var historyPath string
 	if configDir, err := config.ConfigDir(); err == nil {
@@ -221,8 +260,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		status:           NewStatusBar(),
 		tokenRate:        NewTokenRate(),
 		spinner:          NewSpinner(),
-		repl:             NewReplState(),
-		engine:           eng,
+		engineMgr:        mgr,
 		systemPrompt:     systemPrompt,
 		hub:              h,
 		history:          NewHistory(historyPath),
@@ -235,14 +273,43 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		allToolsExpanded: false,
 		idleStop:         make(chan struct{}),
 	}
-	if h != nil {
+	if mgr != nil {
+		if vs := mgr.Active(); vs != nil {
+			a.engine = vs.Engine
+			if r, ok := vs.Repl.(replSnapshotAdapter); ok {
+				a.repl = r.r
+			} else {
+				// Fallback for adapters that don't unwrap cleanly OR
+				// view states registered without a Repl (e.g. restoreEngines
+				// in main.go, which adds view states with only Engine set).
+				// Without a fresh ReplState here, a.repl stays nil and
+				// SetStore panics on a.repl.messages dereference.
+				a.repl = NewReplState()
+			}
+			a.sessionID = vs.ActiveSessionID
+		}
+	}
+	// Bind to the active engine's Hub+handler pair. The factory in main.go
+	// builds one Hub per engine and stores its subscribed handler on
+	// EngineViewState.Handler. Creating a fresh TUIHandler here would bypass
+	// that pair — engine events would never reach the App (query appears
+	// to hang, token counter stays at 0). Fall back to the legacy Hub+fresh
+	// handler only when vs.Handler is nil (e.g. tests constructing App
+	// without a per-engine handler).
+	if vs := mgr.Active(); vs != nil && vs.Handler != nil {
+		if handler, ok := vs.Handler.(*TUIHandler); ok {
+			a.tuiHandler = handler
+		}
+		a.hub = h // only used by tests / legacy Subscribe path
+	}
+	if a.tuiHandler == nil && h != nil {
 		a.tuiHandler = NewTUIHandler()
 		h.Subscribe(a.tuiHandler)
 	}
-	if eng != nil {
-		a.status.SetToolCount(len(eng.AllTools()))
-		a.status.SetContext(0, eng.ContextWindow())
-		a.status.SetModel(eng.Model())
+	if a.engine != nil {
+		a.status.SetToolCount(len(a.engine.AllTools()))
+		a.status.SetContext(0, a.engine.ContextWindow())
+		a.status.SetModel(a.engine.Model())
 	}
 	return a
 }
@@ -335,6 +402,14 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	a.engine.SetStore(store, projectDir)
 	if sessionID != "" {
 		a.engine.SetSessionID(sessionID)
+	}
+
+	// Mirror session ID into the active EngineViewState so persistWorkspaceMeta
+	// (which reads from the manager) emits the correct CurrentSessionID.
+	if a.engineMgr != nil {
+		if vs := a.engineMgr.Active(); vs != nil {
+			vs.ActiveSessionID = sessionID
+		}
 	}
 
 	// Sync repl.messages from engine on resume.
@@ -721,6 +796,45 @@ func (a *App) resetDisplayState() {
 // tea.Model interface
 // ---------------------------------------------------------------------------
 
+// commitPendingMessagesCmd renders a.repl.messages into a string and returns
+// a tea.Println cmd that writes them to the terminal scrollback. Also bumps
+// committedCount so the rendered messages are not re-rendered by View().
+//
+// Returns nil when:
+//   - committedCount is already in sync (no pending work),
+//   - there are no messages to commit, or
+//   - the repl is streaming (mid-query messages must not be committed;
+//     committing them and then having the stream continue would blank the
+//     TUI on the next SIGWINCH).
+//
+// Called from the WindowSizeMsg handler (first resize after SetStore) and
+// from switchEngine (so engine switches redraw history immediately without
+// waiting for a WindowSizeMsg that never fires on switch).
+func (a *App) commitPendingMessagesCmd() tea.Cmd {
+	if a.committedCount != 0 || len(a.repl.messages) == 0 || a.repl.IsStreaming() {
+		return nil
+	}
+	const maxResumeMessages = 30
+	msgs := a.repl.messages
+	skipped := 0
+	if len(msgs) > maxResumeMessages {
+		skipped = len(msgs) - maxResumeMessages
+		msgs = msgs[len(msgs)-maxResumeMessages:]
+	}
+	var rendered string
+	if skipped > 0 {
+		skipNote := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render(
+			fmt.Sprintf("... (%d earlier messages skipped) ...", skipped))
+		rendered = skipNote + "\n" + renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+	} else {
+		rendered = renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+	}
+	a.committedCount = len(a.repl.messages)
+	a.contentCache = ""
+	a.contentDirty = false
+	return tea.Println(rendered + "\n")
+}
+
 // Init initializes the TUI.
 // No EnterAltScreen — terminal native scrollback handles scrolling,
 // matching TS behavior where Ink writes content and the terminal scrolls.
@@ -852,26 +966,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// committedCount=0 + messages>0 (user + assistant placeholder),
 		// but those are mid-stream and must NOT be committed — otherwise
 		// any SIGWINCH during stream blanks the TUI (blank render bug).
-		if a.committedCount == 0 && len(a.repl.messages) > 0 && !a.repl.IsStreaming() {
-			const maxResumeMessages = 30
-			msgs := a.repl.messages
-			skipped := 0
-			if len(msgs) > maxResumeMessages {
-				skipped = len(msgs) - maxResumeMessages
-				msgs = msgs[len(msgs)-maxResumeMessages:]
-			}
-			var rendered string
-			if skipped > 0 {
-				skipNote := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render(
-					fmt.Sprintf("... (%d earlier messages skipped) ...", skipped))
-				rendered = skipNote + "\n" + renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
-			} else {
-				rendered = renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
-			}
-			a.committedCount = len(a.repl.messages)
-			a.contentCache = ""
-			a.contentDirty = false
-			return a, tea.Println(rendered + "\n")
+		if cmd := a.commitPendingMessagesCmd(); cmd != nil {
+			return a, cmd
 		}
 		return a, nil
 
@@ -1167,6 +1263,11 @@ func (a *App) View() string {
 	sepStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	sb.WriteString(sepStyle.Render(strings.Repeat("─", max(a.width, 1))))
 	sb.WriteString("\n")
+	// Multi-engine indicator row (only rendered when >1 engine exists).
+	if engineBar := a.renderEngineStatusBar(); engineBar != "" {
+		sb.WriteString(engineBar)
+		sb.WriteString("\n")
+	}
 	sb.WriteString(a.status.View())
 
 	return sb.String()

@@ -224,28 +224,6 @@ func main() {
 		}
 	}
 
-	eng := engine.New(&engine.Params{
-		Provider:          provider,
-		ToolsProvider:     mainRefs.Reg.ToolMapFn(),
-		Model:             model,
-		MaxTokens:         maxTokens,
-		TokenBudget:       contextWindow,
-		Logger:            logger,
-		Dispatcher:        h,
-		MCPRegistry:       mcpRegistry,
-		Hooks:             hookSystem,
-		PermissionChecker: permCheckerIface,
-		WorkingDir:        workingDir,
-		TaskList:          taskList,
-		ModelThinking:     modelThinking,
-	})
-
-	eng.SetOnClose(func(sessionID string) {
-		mainRefs.REPL.CleanSession(sessionID)
-	})
-
-	engine.WireEngine(eng, mainRefs, deps)
-
 	// 5. Build system prompt using context builder
 	skillListing := skilltool.BuildSkillListing(skillReg.GetSkillToolSkills(), contextWindow)
 	var toolPrompts []string
@@ -256,12 +234,6 @@ func main() {
 	}
 	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg)
 
-	// Store system prompt on engine for fork agent access
-	eng.SetSystemPrompt(systemPrompt)
-	eng.SetSkillListing(skillListing)
-	eng.SetAgentDefs(agenttool.ListAgentDefinitions())
-	eng.SetSharedDeps(&deps)
-	eng.SetSkillRegistry(skillReg)
 	// 6. Initialize short-term memory store
 	configDir, _ = config.ConfigDir()
 	var store *short.Store
@@ -275,19 +247,121 @@ func main() {
 		}
 	}
 
-	// 7. Auto-resume: restore last session or create new
+	// 7. Engine factory: builds a fresh engine with its own Hub + TUIHandler.
+	// Used both for /engine new (runtime) and for bootstrap restoration
+	// (every engine in meta.json is rebuilt via this path on startup, so
+	// main is no longer special — it's just whichever engine meta marks
+	// active).
+	engineFactory := func(id, name, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
+		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
+		refs := engine.CreateTools(deps)
+		newEng := engine.New(&engine.Params{
+			Provider:          provider,
+			ToolsProvider:     refs.Reg.ToolMapFn(),
+			Model:             modelArg,
+			MaxTokens:         maxTokens,
+			TokenBudget:       contextWindow,
+			Logger:            logger,
+			Dispatcher:        engineHub,
+			MCPRegistry:       mcpRegistry,
+			Hooks:             hookSystem,
+			PermissionChecker: permCheckerIface,
+			WorkingDir:        workingDir,
+			TaskList:          taskList,
+			ModelThinking:     modelThinking,
+			EngineID:          id,
+		})
+		newEng.SetOnClose(func(sessionID string) {
+			refs.REPL.CleanSession(sessionID)
+		})
+		engine.WireEngine(newEng, refs, deps)
+		newEng.SetSystemPrompt(systemPrompt)
+		newEng.SetSkillListing(skillListing)
+		newEng.SetAgentDefs(agenttool.ListAgentDefinitions())
+		newEng.SetSharedDeps(&deps)
+		newEng.SetSkillRegistry(skillReg)
+
+		// Per-engine wiring: autocompactor, session memory, dream mode.
+		// Each engine gets its own because they reference newEng.Dispatcher()
+		// and newEng.NewSubEngine — closures capture newEng, not a shared ptr.
+		if store != nil && newEng.SessionID() != "" {
+			compactor := engine.NewAutoCompactor(store, newEng.SessionID(), modelArg, provider, contextWindow)
+			newEng.SetCompactor(compactor, engine.AutoCompactConfig{
+				ContextWindow:          contextWindow,
+				MaxConsecutiveFailures: 3,
+			})
+		}
+
+		if cfg.SessionNotes != "off" && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
+			smCfg := session.DefaultConfig()
+			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
+				editTool := fileedit.New()
+				readTool := fileread.New()
+				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
+					Tools:     map[string]tool.Tool{"Edit": editTool, "Read": readTool},
+					AgentType: "session_memory",
+				})
+				defer subEng.Close()
+				extractionUserMsg := types.Message{
+					ID:      uuid.New().String(),
+					Role:    types.RoleUser,
+					Content: []types.ContentBlock{types.NewTextBlock(prompt)},
+				}
+				forkMessages := append(slices.Clone(messages), extractionUserMsg)
+				result := subEng.RunForkedQuery(ctx, forkMessages, sysPrompt)
+				if err := session.SanitizeNotes(notesPath); err != nil {
+					slog.Warn("session memory: sanitize failed", "error", err)
+				}
+				return result.Error
+			}
+			sm := session.New(smCfg, workingDir, smExtractFn, slog.Default())
+			sm.SetSystemPromptFn(newEng.SystemPrompt)
+			newEng.SetSessionMemory(sm)
+		}
+
+		if dream.IsEnabled() && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
+			dreamCfg := dream.DefaultConfig()
+			dreamRunFn := func(ctx context.Context, prompt string) error {
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				dreamTools := map[string]tool.Tool{
+					"Read":  fileread.New(),
+					"Edit":  fileedit.New(),
+					"Write": filewrite.New(),
+					"Grep":  grep.New(),
+					"Glob":  glob.New(),
+				}
+				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
+					Tools:     dreamTools,
+					AgentType: "auto_dream",
+					MaxTurns:  30,
+				})
+				defer subEng.Close()
+				result := subEng.QuerySync(ctx, "", prompt)
+				return result.Error
+			}
+			memoryDir := long.GetMemoryPath(workingDir)
+			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, newEng.SessionID(),
+				store, dreamRunFn, newEng.Dispatcher(), slog.Default())
+			newEng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
+		}
+
+		return newEng, handler, nil
+	}
+
+	// 8. Restore engines from meta.json. On first run (no meta), synthesize
+	// a single main engine. Every engine — including main — goes through
+	// engineFactory, so all engines have identical wiring.
+	engineMgr := engine.NewEngineManager()
 	var sessionID string
 	if store != nil {
-		eng.SetStore(store, workingDir)
-		id, err := eng.ResumeOrInitSession(workingDir, model)
-		if err != nil {
-			slog.Warn("main: session init failed", "error", err)
-		} else {
-			sessionID = id
-			if err := tui.WriteWorkspaceMeta(workingDir, sessionID); err != nil {
-				slog.Warn("main: write workspace meta failed", "error", err)
-			}
-		}
+		sessionID = restoreEngines(restoreEnginesDeps{
+			mgr:        engineMgr,
+			factory:    engineFactory,
+			store:      store,
+			workingDir: workingDir,
+			model:      model,
+		})
 	}
 
 	// Initialize task list storage
@@ -301,87 +375,6 @@ func main() {
 		}
 	}
 
-	// Wire auto-compact
-	if store != nil && sessionID != "" {
-		compactor := engine.NewAutoCompactor(store, sessionID, model, provider, contextWindow)
-		eng.SetCompactor(compactor, engine.AutoCompactConfig{
-			ContextWindow:          contextWindow,
-			MaxConsecutiveFailures: 3,
-		})
-	}
-
-	// Wire session memory extraction
-	// TS source: services/SessionMemory/sessionMemory.ts
-	if cfg.SessionNotes != "off" && store != nil && sessionID != "" && contextWindow > 0 {
-		smCfg := session.DefaultConfig()
-		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
-			editTool := fileedit.New()
-			readTool := fileread.New()
-			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				Tools:     map[string]tool.Tool{"Edit": editTool, "Read": readTool},
-				AgentType: "session_memory",
-			})
-			defer subEng.Close()
-
-			// Build fork-style messages: parent conversation + extraction prompt as user message.
-			// TS: runForkedAgent passes forkContextMessages + promptMessages.
-			extractionUserMsg := types.Message{
-				ID:      uuid.New().String(),
-				Role:    types.RoleUser,
-				Content: []types.ContentBlock{types.NewTextBlock(prompt)},
-			}
-			forkMessages := append(slices.Clone(messages), extractionUserMsg)
-
-			// Use parent's system prompt for cache sharing (TS: cacheSafeParams).
-			result := subEng.RunForkedQuery(ctx, forkMessages, systemPrompt)
-
-			// Sanitize: enforce structural invariants on SESSION_NOTES.md
-			// after the agent has finished editing. This catches duplicate
-			// headers, stray sections, and other structural drift.
-			if err := session.SanitizeNotes(notesPath); err != nil {
-				slog.Warn("session memory: sanitize failed", "error", err)
-			}
-
-			return result.Error
-		}
-		sm := session.New(smCfg, workingDir, extractFn, slog.Default())
-		sm.SetSystemPromptFn(eng.SystemPrompt)
-		eng.SetSessionMemory(sm)
-	} else if cfg.SessionNotes == "off" {
-		slog.Info("sessionmemory: disabled via session_notes=off")
-	}
-
-	// Wire dream mode (auto memory consolidation)
-	// TS source: services/autoDream/autoDream.ts
-	if dream.IsEnabled() && store != nil && sessionID != "" && contextWindow > 0 {
-		dreamCfg := dream.DefaultConfig()
-		dreamRunFn := func(ctx context.Context, prompt string) error {
-			// 5min timeout to prevent runaway dream sub-agents
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			defer cancel()
-			dreamTools := map[string]tool.Tool{
-				"Read":  fileread.New(),
-				"Edit":  fileedit.New(),
-				"Write": filewrite.New(),
-				"Grep":  grep.New(),
-				"Glob":  glob.New(),
-			}
-			subEng := eng.NewSubEngine(engine.SubEngineOptions{
-				Tools:     dreamTools,
-				AgentType: "auto_dream",
-				MaxTurns:  30,
-			})
-			defer subEng.Close()
-			result := subEng.QuerySync(ctx, "", prompt)
-			return result.Error
-		}
-
-		memoryDir := long.GetMemoryPath(workingDir)
-		dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, sessionID,
-			store, dreamRunFn, eng.Dispatcher(), slog.Default())
-		eng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
-	}
-
 	// Fire SessionStart hook
 	if sessionID != "" {
 		hookSystem.SessionStart(context.Background(), &hooks.HookInput{
@@ -392,7 +385,7 @@ func main() {
 		})
 	}
 	// 8. Create TUI App
-	app := tui.NewApp(eng, systemPrompt, h)
+	app := tui.NewAppWithManager(engineMgr, systemPrompt, h)
 	app.SetProviders(providerMap, cfg)
 	if len(skillCmdsForTUI) > 0 {
 		slashCmds := make(map[string]tui.CommandDef, len(skillCmdsForTUI))
@@ -405,6 +398,7 @@ func main() {
 		app.RegisterSkillCommands(slashCmds)
 	}
 	app.SetStore(store, sessionID, workingDir)
+	app.SetEngineFactory(engineFactory)
 
 	// Estimate initial context usage
 	// CJK-aware estimation. Corrected after first API response.
@@ -479,13 +473,116 @@ func main() {
 	p := tea.NewProgram(app, tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
-		eng.Close()
+		for _, vs := range engineMgr.List() {
+			if vs.Engine != nil {
+				vs.Engine.Close()
+			}
+		}
 		os.Exit(1)
 	}
 
-	// Clean shutdown: close REPL sessions and MCP connections
+	// Clean shutdown: close REPL sessions, all engines (including lazily-built
+	// background ones), and MCP connections. Iterate the manager so any engine
+	// created via /engine new during the session is also torn down.
 	mainRefs.REPL.Close()
-	eng.Close()
+	for _, vs := range engineMgr.List() {
+		if vs.Engine != nil {
+			vs.Engine.Close()
+		}
+	}
+}
+
+// restoreEnginesDeps bundles everything restoreEngines needs. Explicit struct
+// beats a long parameter list and makes the function signature stable when
+// new wiring is added.
+type restoreEnginesDeps struct {
+	mgr        *engine.EngineManager
+	factory    tui.EngineFactoryFn
+	store      *short.Store
+	workingDir string
+	model      string
+}
+
+// restoreEngines reads meta.json, migrates legacy format if needed, then
+// rebuilds every engine listed there via the factory. Returns the active
+// engine's session ID (empty when no store was configured).
+//
+// First run (no meta) synthesizes a single main engine. Missing sessions
+// fall back to a fresh session via ResumeOrInitSession. Every engine —
+// including main — goes through the factory, so wiring stays uniform.
+func restoreEngines(d restoreEnginesDeps) string {
+	meta, _ := short.ReadWorkspaceMeta(d.workingDir)
+	enginesToRestore, activeID := planRestore(meta, d.model)
+
+	for _, em := range enginesToRestore {
+		eng, handler, err := d.factory(em.ID, em.Name, em.Model)
+		if err != nil {
+			slog.Error("restore: build engine failed", "id", em.ID, "error", err)
+			continue
+		}
+		eng.SetStore(d.store, d.workingDir)
+
+		// Resume the engine's last session; fall back to a new session if
+		// the recorded one is missing or unresumable (user deleted DB row,
+		// partial write, schema drift, etc.).
+		resumeID := em.ActiveSessionID
+		if resumeID != "" {
+			if _, err := eng.SwitchSession(resumeID); err != nil {
+				slog.Warn("restore: switch session failed, creating new", "id", em.ID, "error", err)
+				resumeID = ""
+			}
+		}
+		if resumeID == "" {
+			id, err := eng.ResumeOrInitSession(d.workingDir, em.Model)
+			if err != nil {
+				slog.Warn("restore: session init failed", "id", em.ID, "error", err)
+			} else {
+				resumeID = id
+			}
+		}
+
+		d.mgr.Add(&engine.EngineViewState{
+			Engine:          eng,
+			Handler:         handler,
+			ID:              em.ID,
+			Name:            em.Name,
+			ActiveSessionID: resumeID,
+			Model:           eng.Model(),
+		})
+	}
+
+	if err := d.mgr.SetActive(activeID); err != nil {
+		slog.Warn("restore: set active engine failed", "id", activeID, "error", err)
+	}
+	if err := d.mgr.PersistMeta(d.workingDir); err != nil {
+		slog.Warn("restore: write workspace meta failed", "error", err)
+	}
+	if vs := d.mgr.Active(); vs != nil {
+		return vs.ActiveSessionID
+	}
+	return ""
+}
+
+// planRestore decides which engines to rebuild on startup and which one is
+// active. Pure function over meta.json contents so it can be tested without
+// spinning up engines or a store.
+//
+// Two cases:
+//   - nil meta (first run or read error): synthesize a single main engine.
+//   - non-empty meta: restore every engine in Engines array, honor ActiveEngineID.
+func planRestore(meta *short.WorkspaceMeta, defaultModel string) ([]short.EngineMeta, string) {
+	if meta == nil || len(meta.Engines) == 0 {
+		return []short.EngineMeta{{
+			ID:    "main",
+			Name:  "main",
+			Model: defaultModel,
+		}}, "main"
+	}
+	activeID := "main"
+	if meta.ActiveEngineID != "" {
+		activeID = meta.ActiveEngineID
+	}
+	return meta.Engines, activeID
 }
 
 // loadConfig reads configuration from gbot's own settings files and env vars.

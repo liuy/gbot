@@ -17,7 +17,7 @@ var (
 
 // maxVisibleCompletions is the maximum number of rows shown in the dropdown.
 // Scrolling reveals additional items beyond this window.
-const maxVisibleCompletions = 5
+const maxVisibleCompletions = 8
 
 // Completion represents a single suggestion item.
 type Completion struct {

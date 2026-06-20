@@ -3,6 +3,7 @@ package tui
 import (
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,17 +22,70 @@ const (
 // Handle converts the event to a tea.Msg and writes to a buffered channel.
 // readEvents() Cmd reads from this channel on the bubbletea side.
 //
+// Two modes:
+//   - Active engine: drainFn == nil. Events are written to appCh; App.readEvents
+//     drains appCh on the bubbletea goroutine, producing tea.Msgs.
+//   - Background engine: drainFn != nil. Events bypass appCh and call drainFn
+//     synchronously on the engine goroutine. drainFn mutates the engine's own
+//     ReplState without producing tea.Msgs, so the TUI doesn't redraw for
+//     background activity (status bar polling reads it instead).
+//
 // Coalescing is done per-engine in Engine.emitEvent — this handler is a pure
 // pass-through.
 type TUIHandler struct {
-	appCh   chan tea.Msg
-	dropped atomic.Int64
+	appCh    chan tea.Msg
+	dropped  atomic.Int64
+	engineID string
+
+	// drainMu guards drainFn. switchEngine swaps the drain function under
+	// this mutex so the engine goroutine never observes a half-flipped state.
+	drainMu sync.RWMutex
+	drainFn func(tea.Msg)
 }
 
-// NewTUIHandler creates a TUIHandler with a 1024-buffered channel.
+// NewTUIHandler creates a TUIHandler with a 1024-buffered channel for the
+// active engine. Equivalent to NewTUIHandlerForEngine("", nil).
 func NewTUIHandler() *TUIHandler {
+	return NewTUIHandlerForEngine("", nil)
+}
+
+// NewTUIHandlerForEngine creates a TUIHandler tagged with an engine ID.
+// drainFn != nil switches the handler into background-drain mode (see TUIHandler
+// doc comment). Switching back to active mode happens via SetDrainFn(nil).
+func NewTUIHandlerForEngine(engineID string, drainFn func(tea.Msg)) *TUIHandler {
 	return &TUIHandler{
-		appCh: make(chan tea.Msg, handlerBufSize),
+		appCh:    make(chan tea.Msg, handlerBufSize),
+		engineID: engineID,
+		drainFn:  drainFn,
+	}
+}
+
+// EngineID returns the engine ID tag assigned at construction.
+func (h *TUIHandler) EngineID() string { return h.engineID }
+
+// SetDrainFn swaps the drain function. Called by switchEngine when the active
+// engine changes: the previously-active engine gets a background drainFn, and
+// the newly-active engine's drainFn is cleared so events flow to appCh again.
+func (h *TUIHandler) SetDrainFn(fn func(tea.Msg)) {
+	h.drainMu.Lock()
+	h.drainFn = fn
+	h.drainMu.Unlock()
+}
+
+// Drain backlog from appCh by passing each queued msg through fn. Used by
+// switchEngine to flush the newly-active engine's stale events through the
+// drain function before flipping it to nil (so no events are lost).
+func (h *TUIHandler) DrainBacklog(fn func(tea.Msg)) {
+	for {
+		select {
+		case m, ok := <-h.appCh:
+			if !ok {
+				return
+			}
+			fn(m)
+		default:
+			return
+		}
 	}
 }
 
@@ -45,6 +99,15 @@ func NewTUIHandler() *TUIHandler {
 func (h *TUIHandler) Handle(event hub.Event) {
 	msg := h.convertEventToMsg(event)
 	if msg == nil {
+		return
+	}
+
+	// Background engine: bypass appCh entirely, drain synchronously.
+	h.drainMu.RLock()
+	drain := h.drainFn
+	h.drainMu.RUnlock()
+	if drain != nil {
+		drain(msg)
 		return
 	}
 

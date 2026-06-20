@@ -26,6 +26,7 @@ var builtinCommandDefs = map[string]CommandDef{
 	"model":   {Description: "Switch model", HasArgs: true},
 	"rewind":  {Description: "Restore conversation to a previous point", HasArgs: false},
 	"context": {Description: "Visualize context window usage (args: dump)", HasArgs: true},
+	"engine":  {Description: "Switch or create engines", HasArgs: true},
 }
 
 // CommandRegistry holds the per-App slash command tables.

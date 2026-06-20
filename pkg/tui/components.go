@@ -533,6 +533,13 @@ func (s *StatusBar) SetStreaming(v bool) {
 	s.streaming = v
 }
 
+// IsStreaming reports whether the status bar is currently showing the
+// streaming indicator. Read by switchEngine when binding to a target
+// engine whose ReplState is already streaming.
+func (s *StatusBar) IsStreaming() bool {
+	return s.streaming
+}
+
 // SetUsage updates token counters.
 func (s *StatusBar) SetUsage(u types.Usage) {
 	s.usage = u

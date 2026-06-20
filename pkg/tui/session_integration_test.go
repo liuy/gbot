@@ -43,11 +43,13 @@ func newIntegrationApp(t *testing.T) (*App, *short.Store, string) {
 	}
 	eng.SetMessages(msgs)
 
-	a := &App{
-		engine:     eng,
-		sessionID:  session.SessionID,
-		projectDir: projectDir,
-		repl:       NewReplState(),
+	a := NewApp(eng, "", nil)
+	a.projectDir = projectDir
+	a.sessionID = session.SessionID
+	if a.engineMgr != nil {
+		if vs := a.engineMgr.Active(); vs != nil {
+			vs.ActiveSessionID = session.SessionID
+		}
 	}
 	return a, store, projectDir
 }

@@ -986,3 +986,85 @@ func TestQueryEndMsg_SubAgent_AlreadyDone_NoOp(t *testing.T) {
 		t.Errorf("Elapsed should be unchanged, got %v", got.Elapsed)
 	}
 }
+
+// TestReset_ClearsAllState verifies Reset() blanks every field that NewReplState
+// initializes. Regression check for the migration from `*s = *NewReplState()`
+// to `s.Reset()` — the two must produce identical observable state, otherwise
+// session switch / picker / rewind leave stale toolCount or pendingTool entries.
+func TestReset_ClearsAllState(t *testing.T) {
+	t.Parallel()
+	s := NewReplState()
+	// Populate every field Reset touches.
+	s.StartQuery()
+	s.PendingToolStarted("tid", "Bash", "ls", "{}", tool.SearchReadKind{})
+	s.AppendChunk("partial")
+	s.AddUserMessage("hi")
+	s.PendingThinkingStarted()
+	s.pendingInput["tid"] = "partial-input"
+	s.FinishStream(nil)
+
+	// Sanity: pre-reset, fields are populated.
+	if len(s.Messages()) == 0 {
+		t.Fatal("precondition: Messages should be non-empty before Reset")
+	}
+	if s.toolCount == 0 {
+		t.Fatal("precondition: toolCount should be > 0 before Reset")
+	}
+	if len(s.pendingTool) == 0 {
+		t.Fatal("precondition: pendingTool should be non-empty before Reset")
+	}
+
+	s.Reset()
+
+	// Post-reset: every observable field matches a fresh NewReplState.
+	fresh := NewReplState()
+	if s.IsStreaming() {
+		t.Error("Reset: streaming should be false")
+	}
+	if s.IsStreaming() != fresh.IsStreaming() {
+		t.Error("Reset: streaming mismatch vs NewReplState")
+	}
+	if len(s.Messages()) != 0 {
+		t.Errorf("Reset: Messages len = %d, want 0", len(s.Messages()))
+	}
+	if s.toolCount != 0 {
+		t.Errorf("Reset: toolCount = %d, want 0", s.toolCount)
+	}
+	// activeThinkingIdx must be -1 so the next PendingThinkingStarted appends
+	// a new block rather than indexing past the end of Blocks.
+	s.mu.RLock()
+	activeThinkingIdx := s.activeThinkingIdx
+	pendingToolLen := len(s.pendingTool)
+	pendingInputLen := len(s.pendingInput)
+	pendingToolStartLen := len(s.pendingToolStart)
+	cancelNil := s.cancelFunc == nil
+	s.mu.RUnlock()
+	if activeThinkingIdx != -1 {
+		t.Errorf("Reset: activeThinkingIdx = %d, want -1", activeThinkingIdx)
+	}
+	if pendingToolLen != 0 {
+		t.Errorf("Reset: pendingTool len = %d, want 0", pendingToolLen)
+	}
+	if pendingInputLen != 0 {
+		t.Errorf("Reset: pendingInput len = %d, want 0", pendingInputLen)
+	}
+	if pendingToolStartLen != 0 {
+		t.Errorf("Reset: pendingToolStart len = %d, want 0", pendingToolStartLen)
+	}
+	if !cancelNil {
+		t.Error("Reset: cancelFunc should be nil")
+	}
+
+	// Reset must leave the state usable: starting a new query after Reset
+	// should not panic or misbehave.
+	s.StartQuery()
+	s.AppendChunk("after reset")
+	msgs := s.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("post-Reset StartQuery did not create an assistant message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "assistant" {
+		t.Errorf("post-Reset StartQuery role = %q, want assistant", last.Role)
+	}
+}

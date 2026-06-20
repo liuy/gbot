@@ -253,6 +253,11 @@ type Engine struct {
 	lastPersistedIdx int    // messages[:lastPersistedIdx] already persisted to store
 	forkParentUUID   string // rewind sets this; next persist uses AppendMessagesWithForkPoint
 	projectDir       string // working directory for workspace meta
+
+	// engineID is the owning EngineManager ID. Default "main" for legacy single-engine
+	// use; SetEngineID by EngineManager.Add when the engine is registered. Used to
+	// bind sessions created via NewSession to their owning engine.
+	engineID string
 }
 
 // Params holds the constructor arguments for Engine.
@@ -278,6 +283,10 @@ type Params struct {
 	// keyed by model name. Models not in the map omit the field entirely.
 	// gbot does not translate between modes — values are passed through to the API.
 	ModelThinking map[string]llm.ThinkingMode
+
+	// EngineID is the owning EngineManager ID. Defaults to "main" when empty.
+	// Used to bind sessions created via NewSession to a specific engine.
+	EngineID string
 }
 
 // QueryResult is the final result of a query.
@@ -314,6 +323,11 @@ func New(p *Params) *Engine {
 	}
 	toolOrder := slices.Sorted(maps.Keys(toolMap))
 
+	engineID := p.EngineID
+	if engineID == "" {
+		engineID = "main"
+	}
+
 	return &Engine{
 		provider:                p.Provider,
 		tools:                   toolMap,
@@ -338,6 +352,7 @@ func New(p *Params) *Engine {
 		toolSearch:              newToolSearchState(),
 		taskList:                p.TaskList,
 		modelThinking:           p.ModelThinking,
+		engineID:                engineID,
 	}
 }
 
@@ -2893,11 +2908,12 @@ func (e *Engine) Reset() {
 }
 
 // NewSession creates a new empty session and resets engine state.
+// The session is bound to this engine's EngineID for ListSessionsByEngine filtering.
 func (e *Engine) NewSession(projectDir, title string) error {
 	if e.store == nil {
 		return fmt.Errorf("engine: no store")
 	}
-	session, err := e.store.CreateSession(projectDir, e.model)
+	session, err := e.store.CreateSessionWithEngine(projectDir, e.model, e.engineID)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
@@ -2992,7 +3008,7 @@ func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
 	}
 
 	// No resumable session — create new
-	session, err := e.store.CreateSession(workingDir, model)
+	session, err := e.store.CreateSessionWithEngine(workingDir, model, e.engineID)
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}
@@ -3187,6 +3203,15 @@ func (e *Engine) HasStore() bool {
 	return e.store != nil
 }
 
+// Store returns the engine's short-term memory store (nil if unset).
+// Callers that need to share the store across engines (e.g. App.createNewEngine
+// wiring a new engine to the same SQLite DB) use this accessor.
+func (e *Engine) Store() *short.Store {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.store
+}
+
 // LastPersistedIdx returns the count of messages that have been persisted.
 func (e *Engine) LastPersistedIdx() int {
 	e.mu.RLock()
@@ -3330,6 +3355,21 @@ func (e *Engine) SessionID() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.sessionID
+}
+
+// EngineID returns the owning EngineManager ID for this engine.
+func (e *Engine) EngineID() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.engineID
+}
+
+// SetEngineID overrides the owning EngineManager ID. Called by EngineManager.Add
+// to bind an engine to a specific ID (e.g. when loading from meta.json).
+func (e *Engine) SetEngineID(id string) {
+	e.mu.Lock()
+	e.engineID = id
+	e.mu.Unlock()
 }
 
 // SetModel sets the model name for subsequent API calls.

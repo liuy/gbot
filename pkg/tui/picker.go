@@ -121,8 +121,13 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	}
 
 	a.sessionID = selected.SessionID
+	if a.engineMgr != nil {
+		if vs := a.engineMgr.Active(); vs != nil {
+			vs.ActiveSessionID = a.sessionID
+		}
+	}
 
-	*a.repl = *NewReplState()
+	a.repl.Reset()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 	// committedCount=0 so WindowSizeMsg re-commits the resumed messages
 	a.committedCount = 0
@@ -131,7 +136,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	slog.Info("session: switched via picker", "sessionID", selected.SessionID, "messages", len(engineMsgs))
 
 	// Update workspace meta so restart resumes the correct session
-	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
+	if err := a.persistWorkspaceMeta(); err != nil {
 		slog.Warn("session picker: write workspace meta failed", "error", err)
 	}
 

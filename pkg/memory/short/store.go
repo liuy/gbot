@@ -183,5 +183,9 @@ func (s *Store) initSchema() error {
 	// Migrate: add metadata column if missing (pre-metadata databases).
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`)
 
+	// Migrate: add engine_id column to sessions (multi-engine support).
+	// Existing rows backfill to 'main' via DEFAULT.
+	_, _ = s.db.Exec(`ALTER TABLE sessions ADD COLUMN engine_id TEXT NOT NULL DEFAULT 'main'`)
+
 	return nil
 }

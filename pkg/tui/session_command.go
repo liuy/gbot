@@ -7,10 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"time"
-
 	"github.com/liuy/gbot/pkg/llm"
-	"github.com/liuy/gbot/pkg/memory/short"
 )
 
 // handleSession implements the /session command.
@@ -59,9 +56,14 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	a.sessionID = a.engine.SessionID()
+	if a.engineMgr != nil {
+		if vs := a.engineMgr.Active(); vs != nil {
+			vs.ActiveSessionID = a.sessionID
+		}
+	}
 
 	// Reset REPL state
-	*a.repl = *NewReplState()
+	a.repl.Reset()
 	a.committedCount = 0
 
 	// Reset prompt cache break detection (main thread only, preserve sub-agent state)
@@ -77,7 +79,7 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	a.idleStop = make(chan struct{})
 
 	// Update workspace meta
-	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
+	if err := a.persistWorkspaceMeta(); err != nil {
 		slog.Warn("session: write workspace meta failed", "error", err)
 	}
 
@@ -116,15 +118,20 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	parentID := a.sessionID
 	a.sessionID = a.engine.SessionID()
+	if a.engineMgr != nil {
+		if vs := a.engineMgr.Active(); vs != nil {
+			vs.ActiveSessionID = a.sessionID
+		}
+	}
 
-	*a.repl = *NewReplState()
+	a.repl.Reset()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 	// committedCount=0 so WindowSizeMsg re-commits the forked messages
 	a.committedCount = 0
 	a.resetDisplayState()
 
 	// Update workspace meta
-	if err := WriteWorkspaceMeta(a.projectDir, a.sessionID); err != nil {
+	if err := a.persistWorkspaceMeta(); err != nil {
 		slog.Warn("session: write workspace meta failed", "error", err)
 	}
 
@@ -140,15 +147,16 @@ func (a *App) showInfo(msg string) tea.Cmd {
 	}
 }
 
-// WriteWorkspaceMeta updates .gbot/meta.json with the current session ID.
-// If dir is empty, the write is skipped (e.g. in tests without a projectDir).
-func WriteWorkspaceMeta(dir, sessionID string) error {
-	if dir == "" {
+// persistWorkspaceMeta writes .gbot/meta.json reflecting the current state of
+// all engines. No-op when a.projectDir == "" (tests). Serialized via
+// EngineManager.mu — safe to call from App goroutine and from main.go during
+// bootstrap (manager has no background writers at that point).
+func (a *App) persistWorkspaceMeta() error {
+	if a.projectDir == "" {
 		return nil
 	}
-	meta := &short.WorkspaceMeta{
-		CurrentSessionID: sessionID,
-		LastActiveAt:     time.Now(),
+	if a.engineMgr == nil {
+		return nil
 	}
-	return short.WriteWorkspaceMeta(dir, meta)
+	return a.engineMgr.PersistMeta(a.projectDir)
 }

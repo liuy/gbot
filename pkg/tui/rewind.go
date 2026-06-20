@@ -339,7 +339,7 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 		// Fork point capture now happens inside engine.RewindToScoped
 		// Sync TUI lastPersistedIdx from engine after rewind
 		// Reset TUI messages — rewind changes engine messages, rebuild from scratch
-		*a.repl = *NewReplState()
+		a.repl.Reset()
 		a.repl.messages = engineMessagesToViews(a.engine.Messages(), a.engine.AllTools())
 		a.committedCount = 0
 		// Restore input text from the selected message for resubmission

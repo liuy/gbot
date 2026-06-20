@@ -372,10 +372,13 @@ func TestForkCurrentSession_NoActiveSession(t *testing.T) {
 	}
 }
 
-func TestWriteWorkspaceMeta_EmptyDir(t *testing.T) {
-	err := WriteWorkspaceMeta("", "session-123")
-	if err != nil {
-		t.Errorf("empty dir should skip write and return nil, got: %v", err)
+func TestPersistWorkspaceMeta_EmptyDir(t *testing.T) {
+	// App.persistWorkspaceMeta is a no-op when projectDir == "" — no error,
+	// no file created. Verifies the guard added when the tui.WriteWorkspaceMeta
+	// wrapper was removed (Step 2b).
+	app := newTestApp(&tuiMockProvider{})
+	if err := app.persistWorkspaceMeta(); err != nil {
+		t.Errorf("persistWorkspaceMeta on empty projectDir = %v, want nil", err)
 	}
 }
 

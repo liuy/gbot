@@ -149,6 +149,47 @@ func TestNewAppInputAndEngine(t *testing.T) {
 	}
 }
 
+// TestNewAppWithManager_ViewStateWithoutRepl_InitializesFreshRepl
+// verifies that NewAppWithManager produces a usable App even when the
+// active EngineViewState has Engine set but Repl == nil. This is the
+// shape restoreEngines produces in main.go (it adds view states with
+// only Engine/Handler/IDs, no Repl). Without a fresh ReplState, a.repl
+// stays nil and the next SetStore dereferences a.repl.messages → panic.
+func TestNewAppWithManager_ViewStateWithoutRepl_InitializesFreshRepl(t *testing.T) {
+	t.Parallel()
+
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider:   &tuiMockProvider{},
+		Model:      "test-model",
+		Dispatcher: h,
+	})
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine:          eng,
+		ID:              "main",
+		Name:            "main",
+		ActiveSessionID: "session-1",
+		Model:           eng.Model(),
+		// Repl intentionally nil — matches restoreEngines in main.go.
+	})
+
+	app := NewAppWithManager(mgr, "system prompt", h)
+	if app.repl == nil {
+		t.Fatal("a.repl must be non-nil when active view state has no Repl — " +
+			"SetStore dereferences a.repl.messages and panics otherwise")
+	}
+
+	// SetStore must not panic. With engine.Messages() empty (fresh engine),
+	// the dereference path is skipped; the test still guards the nil a.repl
+	// invariant because the assignment below would crash if app.repl were nil.
+	app.repl.messages = nil
+	if app.repl.messages != nil {
+		t.Errorf("sanity check: expected nil after reset, got %v", app.repl.messages)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -9002,5 +9043,47 @@ func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	}
 	if a.quotaFetcher != nil {
 		t.Fatalf("quotaFetcher = %T, want nil — zhipu disabled, must not get minimax fetcher from Providers[0]", a.quotaFetcher)
+	}
+}
+
+// TestNewAppWithManager_ActiveHandlerBindsToActiveEngine verifies that
+// NewAppWithManager wires a.tuiHandler to the active engine's handler
+// (vs.Handler) instead of creating a fresh TUIHandler on a legacy Hub.
+// The factory in main.go builds one Hub+handler per engine and stores
+// it on EngineViewState.Handler; the App must read events from THAT
+// handler, otherwise streaming events never reach the TUI (query
+// appears to hang, status counter stays at 0).
+func TestNewAppWithManager_ActiveHandlerBindsToActiveEngine(t *testing.T) {
+	t.Parallel()
+
+	engineHub, engineHandler := NewEngineHubWithHandler("main", nil)
+	eng := engine.New(&engine.Params{
+		Provider:   &tuiMockProvider{},
+		Model:      "test-model",
+		Dispatcher: engineHub,
+	})
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine:          eng,
+		Handler:         engineHandler,
+		ID:              "main",
+		Name:            "main",
+		ActiveSessionID: "session-1",
+		Model:           eng.Model(),
+	})
+
+	// Pass an unrelated legacy hub — production main.go still constructs
+	// one (~line 125). NewAppWithManager must ignore it for the per-engine
+	// isolation model.
+	legacyHub := hub.NewHub()
+	app := NewAppWithManager(mgr, "", legacyHub)
+
+	if app.tuiHandler == nil {
+		t.Fatal("a.tuiHandler is nil — App must bind to the active engine's handler")
+	}
+	if app.tuiHandler != engineHandler {
+		t.Errorf("a.tuiHandler = %p, want vs.Handler %p — NewAppWithManager must bind to the active engine's handler instead of creating a parallel TUIHandler",
+			app.tuiHandler, engineHandler)
 	}
 }

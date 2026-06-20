@@ -12,9 +12,22 @@ import (
 	"github.com/google/uuid"
 )
 
-// CreateSession creates a new session with a generated UUID.
-// TS aligned: bootstrap/state.ts getInitialState() + regenerateSessionId()
+// CreateSession creates a new session with a generated UUID bound to the
+// "main" engine. Equivalent to CreateSessionWithEngine(projectDir, model, "main").
+//
+// Retained for backward compatibility with the ~80 existing callers.
+// New multi-engine code should call CreateSessionWithEngine with an explicit
+// engine ID.
 func (s *Store) CreateSession(projectDir, model string) (*Session, error) {
+	return s.CreateSessionWithEngine(projectDir, model, "main")
+}
+
+// CreateSessionWithEngine creates a new session bound to a specific engine ID.
+// engineID="" is normalized to "main".
+func (s *Store) CreateSessionWithEngine(projectDir, model, engineID string) (*Session, error) {
+	if engineID == "" {
+		engineID = "main"
+	}
 
 	sessionID := uuid.New().String()
 	now := time.Now()
@@ -25,11 +38,11 @@ func (s *Store) CreateSession(projectDir, model string) (*Session, error) {
 		INSERT INTO sessions (
 			session_id, project_dir, model, title,
 			parent_session_id, fork_point_seq, agent_type, mode, settings,
-			context_tokens,
+			context_tokens, engine_id,
 			created_at, updated_at
-		) VALUES (?, ?, ?, '', '', 0, '', '', ?, 0, ?, ?)
+		) VALUES (?, ?, ?, '', '', 0, '', '', ?, 0, ?, ?, ?)
 	`
-	_, err := s.db.Exec(query, sessionID, projectDir, model, settingsJSON, now, now)
+	_, err := s.db.Exec(query, sessionID, projectDir, model, settingsJSON, engineID, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert session: %w", err)
 	}
@@ -39,6 +52,7 @@ func (s *Store) CreateSession(projectDir, model string) (*Session, error) {
 		ProjectDir: projectDir,
 		Model:      model,
 		Title:      "",
+		EngineID:   engineID,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		Settings:   map[string]string{},
@@ -50,19 +64,19 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 
 	var ses Session
 	var settingsJSON string
-	var parentSessionID, agentType, mode sql.NullString
+	var parentSessionID, agentType, mode, engineID sql.NullString
 	var forkPointSeq sql.NullInt64
 
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
-		       context_tokens,
+		       context_tokens, engine_id,
 		       created_at, updated_at
 		FROM sessions WHERE session_id = ?
 	`
 	err := s.db.QueryRow(query, sessionID).Scan(
 		&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
+		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens, &engineID,
 		&ses.CreatedAt, &ses.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -84,6 +98,9 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	if mode.Valid {
 		ses.Mode = mode.String
 	}
+	if engineID.Valid {
+		ses.EngineID = engineID.String
+	}
 	if settingsJSON != "" {
 		if err := json.Unmarshal([]byte(settingsJSON), &ses.Settings); err != nil {
 			return nil, fmt.Errorf("unmarshal settings: %w", err)
@@ -97,24 +114,47 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 
 // ListSessions returns sessions for a project directory, sorted by updated_at DESC.
 // TS aligned: fetchLogs() → getSessionFilesLite() → enrichLogs()
+//
+// Returns sessions for ALL engines. Use ListSessionsByEngine to filter.
 func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
+	return s.listSessionsFiltered(projectDir, "", limit)
+}
 
+// ListSessionsByEngine returns sessions for a project directory filtered by
+// engine ID, sorted by updated_at DESC. engineID="" matches legacy sessions
+// whose engine_id is the default "main".
+func (s *Store) ListSessionsByEngine(projectDir, engineID string, limit int) ([]*Session, error) {
+	if engineID == "" {
+		engineID = "main"
+	}
+	return s.listSessionsFiltered(projectDir, engineID, limit)
+}
+
+// listSessionsFiltered is the shared body for ListSessions / ListSessionsByEngine.
+// engineFilter="" returns sessions for all engines.
+func (s *Store) listSessionsFiltered(projectDir, engineFilter string, limit int) ([]*Session, error) {
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
-		       context_tokens,
+		       context_tokens, engine_id,
 		       created_at, updated_at
 		FROM sessions
-		WHERE project_dir = ?
+		WHERE project_dir = ?`
+	args := []any{projectDir}
+	if engineFilter != "" {
+		query += ` AND engine_id = ?`
+		args = append(args, engineFilter)
+	}
+	query += `
 		ORDER BY updated_at DESC
 	`
 
 	var rows *sql.Rows
 	var err error
 	if limit > 0 {
-		rows, err = s.db.Query(query+" LIMIT ?", projectDir, limit)
+		rows, err = s.db.Query(query+" LIMIT ?", append(args, limit)...)
 	} else {
-		rows, err = s.db.Query(query, projectDir)
+		rows, err = s.db.Query(query, args...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
@@ -125,12 +165,12 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 	for rows.Next() {
 		var ses Session
 		var settingsJSON string
-		var parentSessionID, agentType, mode sql.NullString
+		var parentSessionID, agentType, mode, engineID sql.NullString
 		var forkPointSeq sql.NullInt64
 
 		err := rows.Scan(
 			&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-			&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
+			&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens, &engineID,
 			&ses.CreatedAt, &ses.UpdatedAt,
 		)
 		if err != nil {
@@ -148,6 +188,9 @@ func (s *Store) ListSessions(projectDir string, limit int) ([]*Session, error) {
 		}
 		if mode.Valid {
 			ses.Mode = mode.String
+		}
+		if engineID.Valid {
+			ses.EngineID = engineID.String
 		}
 		if settingsJSON != "" {
 			if err := json.Unmarshal([]byte(settingsJSON), &ses.Settings); err != nil {
@@ -376,19 +419,19 @@ func extractTextBlocks(content any) []string {
 func (s *Store) getSession(sessionID string) (*Session, error) {
 	var ses Session
 	var settingsJSON string
-	var parentSessionID, agentType, mode sql.NullString
+	var parentSessionID, agentType, mode, engineID sql.NullString
 	var forkPointSeq sql.NullInt64
 
 	query := `
 		SELECT session_id, project_dir, model, title,
 		       parent_session_id, fork_point_seq, agent_type, mode, settings,
-		       context_tokens,
+		       context_tokens, engine_id,
 		       created_at, updated_at
 		FROM sessions WHERE session_id = ?
 	`
 	err := s.db.QueryRow(query, sessionID).Scan(
 		&ses.SessionID, &ses.ProjectDir, &ses.Model, &ses.Title,
-		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens,
+		&parentSessionID, &forkPointSeq, &agentType, &mode, &settingsJSON, &ses.ContextTokens, &engineID,
 		&ses.CreatedAt, &ses.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -410,6 +453,9 @@ func (s *Store) getSession(sessionID string) (*Session, error) {
 	if mode.Valid {
 		ses.Mode = mode.String
 	}
+	if engineID.Valid {
+		ses.EngineID = engineID.String
+	}
 	if settingsJSON != "" {
 		if err := json.Unmarshal([]byte(settingsJSON), &ses.Settings); err != nil {
 			slog.Warn("session: failed to parse settings", "error", err)
@@ -425,19 +471,23 @@ func (s *Store) getSession(sessionID string) (*Session, error) {
 // insertSession inserts a session without acquiring the lock (caller must hold lock).
 func (s *Store) insertSession(sess *Session) error {
 	settingsJSON, _ := json.Marshal(sess.Settings)
+	engineID := sess.EngineID
+	if engineID == "" {
+		engineID = "main"
+	}
 
 	query := `
 		INSERT INTO sessions (
 			session_id, project_dir, model, title,
 			parent_session_id, fork_point_seq, agent_type, mode, settings,
-			context_tokens,
+			context_tokens, engine_id,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := s.db.Exec(query,
 		sess.SessionID, sess.ProjectDir, sess.Model, sess.Title,
 		sess.ParentSessionID, sess.ForkPointSeq, sess.AgentType, sess.Mode, string(settingsJSON),
-		sess.ContextTokens,
+		sess.ContextTokens, engineID,
 		sess.CreatedAt, sess.UpdatedAt,
 	)
 	return err

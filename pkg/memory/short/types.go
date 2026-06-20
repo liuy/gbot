@@ -42,6 +42,7 @@ type Session struct {
 	Mode            string            // Current mode (TS: separate metadata message)
 	Settings        map[string]string // JSON: agent/mode settings (TS: agent-setting messages)
 	ContextTokens   int               // persisted context token count from last API response
+	EngineID        string            // owning EngineManager ID; "" or "main" for legacy
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
