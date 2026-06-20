@@ -1288,3 +1288,132 @@ func TestOpenAISSE_ThinkingThenTextStillWorks(t *testing.T) {
 		"message_stop",
 	)
 }
+
+// ---------------------------------------------------------------------------
+// TimeoutDisabler spy — verifies td toggle sequence during tool input phase
+// ---------------------------------------------------------------------------
+
+// tdSpy records every SetTimeoutDisabled call.
+type tdSpy struct {
+	calls []bool
+}
+
+func (s *tdSpy) SetTimeoutDisabled(disabled bool) {
+	s.calls = append(s.calls, disabled)
+}
+
+// TestOpenAISSE_TimeoutDisablerToggle_MultipleToolCalls verifies that the
+// idle timeout is disabled when tool_use starts and re-enabled when
+// finish_reason=tool_calls arrives, even with multiple tool calls in one
+// response. The disable window should span all tool parameters.
+func TestOpenAISSE_TimeoutDisablerToggle_MultipleToolCalls(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		// Tool call 0: bash
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bash","type":"function","function":{"name":"bash","arguments":"ls"}}]},"finish_reason":null}]}`,
+		"",
+		// Tool call 1: read
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"x\"}"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	spy := &tdSpy{}
+	req := &Request{Model: "gpt-4", MaxTokens: 100}
+	ch := make(chan StreamEvent, 128)
+	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	close(ch)
+
+	// Expected toggle sequence:
+	//   true  — bash tool_use start
+	//   true  — read_file tool_use start (no-op, still disabled)
+	//   false — finish_reason=tool_calls re-enables
+	//   false — defer safety net at function return
+	want := []bool{true, true, false, false}
+	if len(spy.calls) != len(want) {
+		t.Fatalf("td calls = %v, want %v", spy.calls, want)
+	}
+	for i, w := range want {
+		if spy.calls[i] != w {
+			t.Errorf("td call[%d] = %v, want %v (full seq: %v)", i, spy.calls[i], w, spy.calls)
+		}
+	}
+}
+
+// TestOpenAISSE_TimeoutDisablerToggle_SingleToolCall verifies the basic
+// single-tool case: disable on start, enable on finish_reason.
+func TestOpenAISSE_TimeoutDisablerToggle_SingleToolCall(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"pwd"}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	spy := &tdSpy{}
+	req := &Request{Model: "gpt-4", MaxTokens: 100}
+	ch := make(chan StreamEvent, 128)
+	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	close(ch)
+
+	want := []bool{true, false, false}
+	if len(spy.calls) != len(want) {
+		t.Fatalf("td calls = %v, want %v", spy.calls, want)
+	}
+	for i, w := range want {
+		if spy.calls[i] != w {
+			t.Errorf("td call[%d] = %v, want %v (full seq: %v)", i, spy.calls[i], w, spy.calls)
+		}
+	}
+}
+
+// TestOpenAISSE_TimeoutDisablerToggle_NoToolCall verifies td is never
+// toggled when the response contains only text (no tool_use).
+func TestOpenAISSE_TimeoutDisablerToggle_NoToolCall(t *testing.T) {
+	t.Parallel()
+
+	p := newTestProvider()
+	ctx := context.Background()
+
+	body := sseBody(
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+		"",
+		`data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		"",
+		`data: [DONE]`,
+		"",
+	)
+
+	spy := &tdSpy{}
+	req := &Request{Model: "gpt-4", MaxTokens: 100}
+	ch := make(chan StreamEvent, 128)
+	p.parseOpenAISSE(ctx, req, body, spy, ch)
+	close(ch)
+
+	// No tool_use in this response, so td should never be set to true.
+	// The defer safety net still calls SetTimeoutDisabled(false) once at
+	// function exit — that's expected and harmless.
+	for _, c := range spy.calls {
+		if c {
+			t.Errorf("td should never be set to true for text-only response, got calls: %v", spy.calls)
+		}
+	}
+}
