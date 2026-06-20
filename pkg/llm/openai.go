@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,17 +30,19 @@ import (
 // OpenAIProvider implements Provider for the OpenAI Chat Completions API.
 type OpenAIProvider struct {
 	BaseProvider
-	apiKey  string
-	baseURL string
-	model   string
+	apiKey      string
+	baseURL     string
+	model       string
+	extraParams map[string]any
 }
 
 // OpenAIConfig configures the OpenAI provider.
 type OpenAIConfig struct {
-	APIKey  string
-	BaseURL string // defaults to https://api.openai.com/v1
-	Model   string
-	Timeout time.Duration
+	APIKey      string
+	BaseURL     string // defaults to https://api.openai.com/v1
+	Model       string
+	Timeout     time.Duration
+	ExtraParams map[string]any // Provider-specific params merged into request body (e.g. {"tool_stream": true} for Zhipu GLM)
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -59,9 +62,10 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 			retryConfig: DefaultRetryConfig(),
 			idleTimeout: 60 * time.Second,
 		},
-		apiKey:  cfg.APIKey,
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		model:   cfg.Model,
+		apiKey:      cfg.APIKey,
+		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		model:       cfg.Model,
+		extraParams: cfg.ExtraParams,
 	}
 }
 
@@ -649,6 +653,12 @@ func (p *OpenAIProvider) translateRequest(req *Request, stream bool) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	if len(p.extraParams) > 0 {
+		body, err = mergeJSON(body, p.extraParams)
+		if err != nil {
+			return nil, fmt.Errorf("merge extra params: %w", err)
+		}
+	}
 	return body, nil
 }
 
@@ -914,4 +924,13 @@ func fastrand() uint32 {
 			return uint32(x)
 		}
 	}
+}
+
+func mergeJSON(base []byte, extra map[string]any) ([]byte, error) {
+	var m map[string]any
+	if err := json.Unmarshal(base, &m); err != nil {
+		return nil, err
+	}
+	maps.Copy(m, extra)
+	return json.Marshal(m)
 }

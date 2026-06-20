@@ -67,12 +67,13 @@ type ModelConfig struct {
 
 // Provider holds configuration for a single LLM provider.
 type Provider struct {
-	Name   string   `json:"name"`           // display name, e.g. "zhipu", "minimax"
-	URL    string   `json:"url"`            // e.g. "https://api.anthropic.com"
-	Keys   []string `json:"keys"`           // API keys or "$ENV_VAR" references
-	Models Models   `json:"models"`         // model name → metadata. Ordered (see Models type).
-	Type   string   `json:"type,omitempty"` // "auto" (default) | "openai" | "anthropic"
-	Free   bool     `json:"free,omitempty"` // if true, fetch free models from /api/v1/models at startup (OpenRouter)
+	Name        string         `json:"name"`                   // display name, e.g. "zhipu", "minimax"
+	URL         string         `json:"url"`                    // e.g. "https://api.anthropic.com"
+	Keys        []string       `json:"keys"`                   // API keys or "$ENV_VAR" references
+	Models      Models         `json:"models"`                 // model name → metadata. Ordered (see Models type).
+	Type        string         `json:"type,omitempty"`         // "auto" (default) | "openai" | "anthropic"
+	Free        bool           `json:"free,omitempty"`         // if true, fetch free models from /api/v1/models at startup (OpenRouter)
+	ExtraParams map[string]any `json:"extra_params,omitempty"` // Provider-specific params merged into request body
 }
 
 const (
