@@ -121,6 +121,7 @@ var OneShotAgentTypes = map[string]bool{
 	"Explore": true,
 	"Plan":    true,
 	"Planner": true,
+	"Critic":  true,
 }
 
 // IsOneShotAgent returns true if the agent type is a one-shot agent.

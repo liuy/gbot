@@ -1410,10 +1410,10 @@ func TestLoad_PreservesBundledAgents(t *testing.T) {
 	l := NewLoader(t.TempDir())
 	l.Load()
 
-	// Executor, Planner, Reviewer ship as bundled markdown and must be
+	// Executor, Planner, Critic, Reviewer ship as bundled markdown and must be
 	// discoverable after Load(). Without the bundled loader wiring, only
 	// hardcoded General/Explore would exist.
-	for _, agentType := range []string{"Executor", "Planner", "Reviewer"} {
+	for _, agentType := range []string{"Executor", "Planner", "Critic", "Reviewer"} {
 		def := l.Get(agentType)
 		if def == nil {
 			t.Errorf("Get(%q) returned nil after Load() — bundled agent not registered", agentType)
