@@ -312,7 +312,7 @@ func main() {
 
 	// Wire session memory extraction
 	// TS source: services/SessionMemory/sessionMemory.ts
-	if store != nil && sessionID != "" && contextWindow > 0 {
+	if cfg.SessionNotes != "off" && store != nil && sessionID != "" && contextWindow > 0 {
 		smCfg := session.DefaultConfig()
 		extractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, systemPrompt string) error {
 			editTool := fileedit.New()
@@ -347,6 +347,8 @@ func main() {
 		sm := session.New(smCfg, workingDir, extractFn, slog.Default())
 		sm.SetSystemPromptFn(eng.SystemPrompt)
 		eng.SetSessionMemory(sm)
+	} else if cfg.SessionNotes == "off" {
+		slog.Info("sessionmemory: disabled via session_notes=off")
 	}
 
 	// Wire dream mode (auto memory consolidation)

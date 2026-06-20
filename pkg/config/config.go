@@ -49,6 +49,12 @@ type Config struct {
 	PprofAddr string `json:"pprof_addr,omitempty"`
 
 	Hooks json.RawMessage `json:"hooks,omitempty"`
+
+	// SessionNotes controls the background session memory agent that
+	// extracts SESSION_NOTES.md.
+	//   "" (default) or "on": SM agent runs.
+	//   "off": SM agent is skipped entirely.
+	SessionNotes string `json:"session_notes,omitempty"`
 }
 
 // ModelConfig holds per-model metadata.
