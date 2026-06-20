@@ -752,6 +752,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if a.activeInput.done {
 				a.activeInput = nil
+				if a.repl.IsStreaming() {
+					return a, tea.Batch(
+						a.readEvents(),
+						tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+							return spinnerTickMsg{}
+						}),
+					)
+				}
 				return a, a.readEvents()
 			}
 			return a, cmd

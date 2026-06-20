@@ -6714,6 +6714,76 @@ func TestApp_InputAskMsg_OverwriteAbortsExisting(t *testing.T) {
 // History Up/Down integration
 // ---------------------------------------------------------------------------
 
+// TestApp_InputAskMsg_DoneResumesSpinnerTick verifies that when the InputDialog
+// closes (user submits password) while streaming, the returned cmd includes a
+// spinnerTickMsg to keep the progress line ticker alive.
+func TestApp_InputAskMsg_DoneResumesSpinnerTick(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app.repl.StartQuery()
+
+	// Simulate an active password dialog via inputAskMsg
+	ch := make(chan types.AskResponse, 1)
+	app.Update(inputAskMsg{
+		event: &types.AskEvent{
+			Kind:       types.AskInput,
+			Prompt:     "Password:",
+			Masked:     true,
+			Deadline:   testFutureDeadline,
+			ResponseCh: ch,
+		},
+	})
+	if app.activeInput == nil {
+		t.Fatal("activeInput should be set after inputAskMsg")
+	}
+
+	// Close appCh so readEvents() returns queryEndMsg{} immediately
+	// instead of blocking. This lets us inspect the returned cmd.
+	close(app.tuiHandler.appCh)
+
+	// Simulate user pressing Enter — the Update call routes the KeyMsg to
+	// activeInput.Update which calls submit(), setting done=true. Then
+	// App.Update checks done and returns the recovery cmd.
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// activeInput should be cleared
+	if app.activeInput != nil {
+		t.Fatal("activeInput should be nil after dialog completion")
+	}
+
+	if cmd == nil {
+		t.Fatal("App.Update should return a non-nil cmd when input dialog completes")
+	}
+
+	// Execute the cmd — with appCh closed, readEvents returns queryEndMsg{}
+	// immediately. If the fix is present, the cmd is a BatchMsg containing
+	// both readEvents and a spinnerTickMsg tick.
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("cmd returned nil msg")
+	}
+
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected BatchMsg from completed input dialog, got %T", msg)
+	}
+
+	foundTick := false
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		m := sub()
+		if _, ok := m.(spinnerTickMsg); ok {
+			foundTick = true
+		}
+	}
+	if !foundTick {
+		t.Error("no spinnerTickMsg in cmd after input dialog completion — progress line will freeze")
+	}
+}
+
 // TestApp_HistoryDown_NoOpOutsideNav verifies that pressing Down without
 // prior Up does NOT clear the current input.
 func TestApp_HistoryDown_NoOpOutsideNav(t *testing.T) {
