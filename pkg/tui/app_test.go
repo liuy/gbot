@@ -8905,9 +8905,6 @@ func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
 // SetProviders: quota fetcher must match the resolved provider, not Providers[0]
 // ---------------------------------------------------------------------------
 
-// RED-LIGHT: SetProviders builds quotaFetcher from cfg.Providers[0] regardless
-// of the resolved model. If the resolved model (zhipu) differs from Providers[0]
-// (minimax), the fetcher should be zhipu's, not minimax's.
 func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5"},
@@ -8933,9 +8930,7 @@ func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	if a.currentProvider != "zhipu" {
 		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "zhipu")
 	}
-	// With the bug, quotaFetcher is minimax's (from cfg.Providers[0]).
-	// After fix, it should be zhipu's.
-	if _, ok := a.quotaFetcher.(*quota.ZhipuFetcher); !ok {
-		t.Errorf("quotaFetcher = %T, want *quota.ZhipuFetcher (resolved provider zhipu), got minimax's fetcher (from Providers[0])", a.quotaFetcher)
+	if a.quotaFetcher != nil {
+		t.Fatalf("quotaFetcher = %T, want nil — zhipu disabled, must not get minimax fetcher from Providers[0]", a.quotaFetcher)
 	}
 }

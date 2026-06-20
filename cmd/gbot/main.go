@@ -265,7 +265,7 @@ func main() {
 	configDir, _ = config.ConfigDir()
 	var store *short.Store
 	if configDir != "" {
-		dbPath := filepath.Join(configDir, "memory", "short-term.db")
+		dbPath := filepath.Join(configDir, "memory", "memory.db")
 		s, err := short.NewStore(dbPath)
 		if err != nil {
 			slog.Warn("main: failed to open short-term store, persistence disabled", "error", err)
