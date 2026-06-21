@@ -81,7 +81,9 @@ func (a *App) renderEngineStatusBar() string {
 		parts = append(parts, styled)
 	}
 	sep := lipgloss.NewStyle().Faint(true).Render(" · ")
-	return strings.Join(parts, sep)
+	// Leading and trailing spaces match StatusBar.View() so the engine row
+	// lines up with the model/token row beneath the separator.
+	return " " + strings.Join(parts, sep) + " "
 }
 
 // buildBackgroundDrainFn returns a drain function that applies engine events
@@ -151,7 +153,9 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 			}
 		case queryEndMsg:
 			if m.Agent == nil {
+				streamStart := repl.StreamingStart()
 				repl.FinishStream(m.Err)
+				repl.AppendStatsLine(streamStart, m.TotalUsage)
 			}
 		case attachmentMsg:
 			// Background attachment: TUI-initiated only. Ignore.

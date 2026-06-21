@@ -713,6 +713,63 @@ func (s *ReplState) findToolView(id string) *ToolCallView {
 func (s *ReplState) updateToolBlock(id string, tcv *ToolCallView) bool {
 	return s.UpdateToolBlock(id, tcv)
 }
+
+// AppendStatsLine generates the "↑X ↓Y tokens · rate · tools · elapsed" line
+// for a finished query and appends it as a BlockStats entry to the last
+// assistant message. Shared between the active path (updateRepl's queryEndMsg
+// branch) and the background drain (buildBackgroundDrainFn's queryEndMsg) so
+// switching to a previously-background engine shows the same stats the user
+// would have seen live.
+//
+// streamStart must be captured BEFORE FinishStream clears it.
+func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usage) {
+	if streamStart.IsZero() {
+		return
+	}
+	elapsedStr := formatElapsed(streamStart)
+	tokensStr := fmt.Sprintf("↑%s ↓%s tokens",
+		types.FormatTokenCount(queryUsage.TotalInputTokens()),
+		types.FormatTokenCount(queryUsage.OutputTokens))
+
+	var cachePart string
+	if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
+		total := queryUsage.CacheReadInputTokens + queryUsage.CacheCreationInputTokens + queryUsage.InputTokens
+		if total > 0 {
+			if queryUsage.CacheReadInputTokens > 0 {
+				pct := queryUsage.CacheReadInputTokens * 100 / total
+				cachePart = fmt.Sprintf(" · %d%% cached", pct)
+			} else {
+				cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
+			}
+		}
+	} else {
+		cachePart = " · cache missed"
+	}
+
+	s.mu.RLock()
+	tc := s.toolCount
+	s.mu.RUnlock()
+	var toolsPart string
+	if tc > 0 {
+		if tc == 1 {
+			toolsPart = " · 1 tool"
+		} else {
+			toolsPart = fmt.Sprintf(" · %d tools", tc)
+		}
+	}
+
+	var ratePart string
+	if streamDur := s.TokenRate().StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
+		ratePart = fmt.Sprintf(" · %.1f t/s", float64(queryUsage.OutputTokens)/streamDur.Seconds())
+	}
+
+	statsLine := styleDim.Render(tokensStr + ratePart + cachePart + toolsPart + " · " + elapsedStr)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msg := s.lastMsgLocked(); msg != nil {
+		msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
+	}
+}
 func (s *ReplState) trimBlocks(tcv *ToolCallView) { s.TrimBlocks(tcv) }
 
 // ToolCount returns the total tool-call counter for the current query.
@@ -1030,41 +1087,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			if queryUsage.InputTokens == 0 && queryUsage.OutputTokens == 0 {
 				queryUsage = a.status.usage
 			}
-			elapsedStr := formatElapsed(streamStart)
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(queryUsage.TotalInputTokens()), types.FormatTokenCount(queryUsage.OutputTokens))
-			var cachePart string
-			if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
-				total := queryUsage.CacheReadInputTokens + queryUsage.CacheCreationInputTokens + queryUsage.InputTokens
-				if total > 0 {
-					if queryUsage.CacheReadInputTokens > 0 {
-						pct := queryUsage.CacheReadInputTokens * 100 / total
-						cachePart = fmt.Sprintf(" · %d%% cached", pct)
-					} else {
-						cachePart = fmt.Sprintf(" · %s warmed", types.FormatTokenCount(queryUsage.CacheCreationInputTokens))
-					}
-				}
-			} else {
-				cachePart = " · cache missed"
-			}
-			var toolsPart string
-			if tc := a.repl.toolCount; tc > 0 {
-				if tc == 1 {
-					toolsPart = " · 1 tool"
-				} else {
-					toolsPart = fmt.Sprintf(" · %d tools", tc)
-				}
-			}
-			var ratePart string
-			if streamDur := a.repl.TokenRate().StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
-				ratePart = fmt.Sprintf(" · %.1f t/s", float64(queryUsage.OutputTokens)/streamDur.Seconds())
-			}
-			statsLine := styleDim.Render(tokensStr + ratePart + cachePart + toolsPart + " · " + elapsedStr)
-			// Embed stats as a block in the last assistant message.
-			// This is TUI-only — messages are not sent to the LLM.
-			if msg := a.repl.lastMsg(); msg != nil {
-				msg.Blocks = append(msg.Blocks, ContentBlock{Type: BlockStats, Text: statsLine})
-				slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
-			}
+			a.repl.AppendStatsLine(streamStart, queryUsage)
+			slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 		}
 
 		// Don't commit yet — keep current turn in Bubble Tea view so
