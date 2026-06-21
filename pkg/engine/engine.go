@@ -1028,6 +1028,14 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 	// Filled during the loop, logged in the deferred query_summary.
 	queryStart := time.Now()
 	var llmTotalMs, toolTotalMs, snapshotTotalMs int64
+	// Persist messages on every exit path (success, abort, error).
+	// Prevents message loss when the user aborts mid-query — successful
+	// turns must survive a restart.
+	defer func() {
+		if !e.isSubagent {
+			e.PersistNewMessages()
+		}
+	}()
 	// Log query summary on every exit path.
 	defer func() {
 		// Always log; even when tokens are 0 we want the latency breakdown.
@@ -1402,10 +1410,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 			e.emitEvent(types.QueryEvent{Type: types.EventTurnEnd})
 			e.turnCount++
 			e.firePostTurnHooks(ctx)
-			// Persist messages after successful query (main engine only)
-			if !e.isSubagent {
-				e.PersistNewMessages()
-			}
 			e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{
 				InputTokens:              totalUsage.InputTokens,
 				OutputTokens:             totalUsage.OutputTokens,
@@ -1525,11 +1529,6 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 		// Post-turn hooks (session memory extraction, etc.)
 		// TS: executePostSamplingHooks in query.ts after each sampling step.
 		e.firePostTurnHooks(ctx)
-	}
-
-	// Persist messages after successful query (main engine only)
-	if !e.isSubagent {
-		e.PersistNewMessages()
 	}
 
 	e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Usage: &types.UsageEvent{

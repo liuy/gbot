@@ -849,3 +849,67 @@ func TestResumeOrInitSession_ResumesExisting(t *testing.T) {
 		t.Errorf("resumed messages count = %d, want 1", msgCount)
 	}
 }
+
+// TestPersistNewMessages_MultiTurnWithToolUse verifies that multi-turn
+// messages including tool_use/tool_result pairs survive persist+reload.
+// This is the critical path for abort scenarios: when the user ESCs during
+// the last turn, all successful prior turns must be persisted so they
+// survive a restart.
+func TestPersistNewMessages_MultiTurnWithToolUse(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.CreateSession("", "test-model")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	eng := New(&Params{Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+	eng.SetStore(store, "")
+	eng.SetSessionID(session.SessionID)
+
+	// Simulate a multi-turn query: user → assistant(tool_call) → user(tool_result) → assistant(partial)
+	// The last assistant message has a tool_use that was interrupted (abort).
+	eng.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("read the config")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "toolu_1", Name: "Read", Input: json.RawMessage(`{"file_path":"/etc/config"}`)},
+		}, Timestamp: time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "toolu_1", Content: json.RawMessage(`[{"type":"text","text":"key=value"}]`)},
+		}, Timestamp: time.Date(2026, 1, 1, 0, 0, 2, 0, time.UTC)},
+
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("[Request interrupted by user]")}, Timestamp: time.Date(2026, 1, 1, 0, 0, 3, 0, time.UTC)},
+	})
+	eng.mu.Lock()
+	eng.lastPersistedIdx = 0
+	eng.mu.Unlock()
+
+	eng.PersistNewMessages()
+
+	// Reload from store — simulates restart.
+	msgs, err := store.LoadMessages(session.SessionID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages in store after persist, got %d", len(msgs))
+	}
+
+	// Verify tool_use content survived the round-trip.
+	engMsgs, err := short.StoreMessagesToEngine(msgs)
+	if err != nil {
+		t.Fatalf("StoreMessagesToEngine: %v", err)
+	}
+	if engMsgs[1].Role != types.RoleAssistant {
+		t.Errorf("msg[1].Role = %q, want assistant", engMsgs[1].Role)
+	}
+	foundToolUse := false
+	for _, block := range engMsgs[1].Content {
+		if block.Type == types.ContentTypeToolUse && block.Name == "Read" {
+			foundToolUse = true
+		}
+	}
+	if !foundToolUse {
+		t.Error("tool_use block lost after persist+reload — abort query content not preserved")
+	}
+}
