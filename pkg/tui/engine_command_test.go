@@ -10,7 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -971,5 +973,49 @@ func TestSwitchEngine_ReturnsReadEvents(t *testing.T) {
 		t.Error("switchEngine batch does not include readEvents() — " +
 			"no cmd in the batch reads from appCh, so events pile up " +
 			"and streaming state stays true forever after switch")
+	}
+}
+
+// TestSwitchEngine_UpdatesContextWindow verifies that switching to an engine
+// sets its context window via updateEngineCapabilities. Without this, a
+// freshly-created or restored engine has ContextWindow()=0 until the user
+// manually runs /model — the status bar shows "0" as the context total.
+func TestSwitchEngine_UpdatesContextWindow(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "glm-5"},
+		{"e2", "agent-2", "glm-5"},
+	})
+
+	// Wire up providers so updateEngineCapabilities can resolve context window.
+	cfg := &config.Config{
+		Providers: []config.Provider{
+			{
+				Name:   "openai",
+				Keys:   []string{"k"},
+				Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5": {Context: config.IntOrHuman(200000)}}),
+			},
+		},
+	}
+	a.SetProviders(map[string]llm.Provider{"openai": &mockLLMProvider{}}, cfg)
+
+	// Before switch: e2's context window is 0 (never had /model called).
+	e2Eng := a.engineMgr.Get("e2").Engine
+	if e2Eng == nil {
+		t.Fatal("e2 engine is nil")
+	}
+	if cw := e2Eng.ContextWindow(); cw != 0 {
+		t.Fatalf("precondition: e2 ContextWindow = %d, want 0 (fresh engine)", cw)
+	}
+
+	// Switch to e2.
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine returned nil cmd")
+	}
+
+	// After switch: e2's context window should be non-zero (set by
+	// updateEngineCapabilities from provider config).
+	if cw := e2Eng.ContextWindow(); cw == 0 {
+		t.Error("e2 ContextWindow = 0 after switch — switchEngine did not call updateEngineCapabilities")
 	}
 }

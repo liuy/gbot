@@ -293,6 +293,12 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Update engine capabilities (context window, max tokens) for the
+		// target engine. Without this, a freshly-created or restored engine
+		// has ContextWindow()=0 until the user manually runs /model.
+		if a.currentProvider != "" {
+			a.updateEngineCapabilities(a.currentProvider, a.currentModel)
+		}
 	}
 
 	// Persist meta so restart resumes the right engine.
