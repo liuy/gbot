@@ -3223,11 +3223,12 @@ func (e *Engine) ListSessions(limit int) ([]*short.Session, error) {
 	e.mu.RLock()
 	store := e.store
 	projectDir := e.projectDir
+	engineID := e.engineID
 	e.mu.RUnlock()
 	if store == nil {
 		return nil, fmt.Errorf("engine: no store")
 	}
-	return store.ListSessions(projectDir, limit)
+	return store.ListSessionsByEngine(projectDir, engineID, limit)
 }
 
 // PruneEmptySessions deletes orphan sessions (no messages, no title) in the

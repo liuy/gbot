@@ -913,3 +913,56 @@ func TestPersistNewMessages_MultiTurnWithToolUse(t *testing.T) {
 		t.Error("tool_use block lost after persist+reload — abort query content not preserved")
 	}
 }
+
+// TestListSessions_FilteredByEngineID verifies that Engine.ListSessions
+// only returns sessions created by the same engine. Without the engine_id
+// filter, agent-2 sees agent-1's sessions in the /session picker — which
+// breaks the per-agent isolation contract.
+func TestListSessions_FilteredByEngineID(t *testing.T) {
+	store := newTestStore(t)
+
+	// Engine 1 (main): creates 2 sessions.
+	eng1 := New(&Params{Logger: slog.Default(), EngineID: "main"})
+	t.Cleanup(func() { eng1.Close() })
+	eng1.SetStore(store, "/tmp/project")
+	if _, err := store.CreateSessionWithEngine("/tmp/project", "m1", "main"); err != nil {
+		t.Fatalf("CreateSession main 1: %v", err)
+	}
+	if _, err := store.CreateSessionWithEngine("/tmp/project", "m1", "main"); err != nil {
+		t.Fatalf("CreateSession main 2: %v", err)
+	}
+
+	// Engine 2 (e2): creates 1 session.
+	eng2 := New(&Params{Logger: slog.Default(), EngineID: "e2"})
+	t.Cleanup(func() { eng2.Close() })
+	eng2.SetStore(store, "/tmp/project")
+	if _, err := store.CreateSessionWithEngine("/tmp/project", "m2", "e2"); err != nil {
+		t.Fatalf("CreateSession e2: %v", err)
+	}
+
+	// Engine 1 should only see its own 2 sessions.
+	sessions1, err := eng1.ListSessions(100)
+	if err != nil {
+		t.Fatalf("eng1 ListSessions: %v", err)
+	}
+	if len(sessions1) != 2 {
+		t.Errorf("eng1 ListSessions = %d sessions, want 2 (should not see e2's sessions)", len(sessions1))
+	}
+	for _, s := range sessions1 {
+		if s.EngineID != "main" {
+			t.Errorf("eng1 ListSessions returned session with EngineID=%q, want main", s.EngineID)
+		}
+	}
+
+	// Engine 2 should only see its own 1 session.
+	sessions2, err := eng2.ListSessions(100)
+	if err != nil {
+		t.Fatalf("eng2 ListSessions: %v", err)
+	}
+	if len(sessions2) != 1 {
+		t.Errorf("eng2 ListSessions = %d sessions, want 1 (should not see main's sessions)", len(sessions2))
+	}
+	if len(sessions2) > 0 && sessions2[0].EngineID != "e2" {
+		t.Errorf("eng2 ListSessions returned session with EngineID=%q, want e2", sessions2[0].EngineID)
+	}
+}
