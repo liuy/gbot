@@ -262,6 +262,10 @@ func main() {
 			Model:             modelArg,
 			MaxTokens:         maxTokens,
 			TokenBudget:       contextWindow,
+			AutoCompact: engine.AutoCompactConfig{
+				ContextWindow:          contextWindow,
+				MaxConsecutiveFailures: 3,
+			},
 			Logger:            logger,
 			Dispatcher:        engineHub,
 			MCPRegistry:       mcpRegistry,

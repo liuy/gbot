@@ -304,8 +304,8 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 		MaxConsecutiveFailures: 3,
 	})
 	// Prefer engine's runtime ContextTokens (last API usage). Falls back to
-	// re-estimating from system prompt + tools on cold start (no turn yet
-	// completed), matching the pattern in repl.go's send path.
+	// re-estimating from system prompt + tools + messages on cold start
+	// (no turn yet completed).
 	used := a.engine.GetContextTokens()
 	if used == 0 {
 		used = types.EstimateTokens(a.systemPrompt)
@@ -314,6 +314,7 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 				used += types.EstimateTokens(string(b))
 			}
 		}
+		used += engine.EstimateMessagesTokens(a.engine.Messages())
 	}
 	a.status.SetContext(used, cw)
 }

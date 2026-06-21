@@ -17,6 +17,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // mockLLMProvider is a minimal mock for testing model switching.
@@ -879,5 +880,39 @@ func TestPersistModelSelection_WritesPerEngineMeta(t *testing.T) {
 	}
 	if gotModel != "openai/glm-max" {
 		t.Errorf("meta.json main.Model = %q, want openai/glm-max", gotModel)
+	}
+}
+
+// TestUpdateEngineCapabilities_EstimatesFromMessages verifies that when an
+// engine has message history but no runtime ContextTokens (cold start /
+// restore), updateEngineCapabilities estimates used tokens from messages
+// — not just system prompt + tools. Without this, the status bar shows
+// a tiny context size (e.g. "6.8k") that ignores hundreds of KB of
+// conversation history.
+func TestUpdateEngineCapabilities_EstimatesFromMessages(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Seed the engine with a substantial conversation history.
+	a.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello world ", 500))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("response text ", 500))}},
+	})
+	// ContextTokens is 0 (cold start, no API call yet).
+	if a.engine.GetContextTokens() != 0 {
+		t.Fatalf("precondition: ContextTokens = %d, want 0", a.engine.GetContextTokens())
+	}
+
+	a.updateEngineCapabilities("openai", "glm-5")
+
+	// status.contextUsed must reflect message history. With ~1200 words
+	// across the two messages, the estimate should be well above the
+	// system-prompt-only baseline.
+	view := a.status.View()
+	if !strings.Contains(view, "k/") {
+		t.Errorf("status bar = %q, want to contain 'k/' (context should reflect message history)", view)
+	}
+	// Sanity: contextUsed should be > 1000 (messages alone are ~1000+ tokens).
+	if a.status.contextUsed < 1000 {
+		t.Errorf("status.contextUsed = %d, want > 1000 (messages not counted)", a.status.contextUsed)
 	}
 }
