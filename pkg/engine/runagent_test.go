@@ -284,9 +284,12 @@ func TestEngine_RunAgent_ParentToolUseID_DispatchesSubAgentEvents(t *testing.T) 
 
 	ec := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Model:      "test",
-		Tools:      []tool.Tool{&echoBashStub{}},
+		Provider: mp,
+		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			eb := &echoBashStub{}
+			return map[string]tool.Tool{eb.Name(): eb}
+		},
 		Dispatcher: ec,
 	})
 	eng.SetSharedDeps(&deps)
@@ -413,9 +416,11 @@ func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
 	// wires the parent engine so AgentTool.Call can reach RunAgent.
 	agentTool := agenttool.New()
 	eng := New(&Params{
-		Provider:   mp,
-		Model:      "test",
-		Tools:      []tool.Tool{agentTool},
+		Provider: mp,
+		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{agentTool.Name(): agentTool}
+		},
 		Dispatcher: newEventCollector(),
 	})
 	eng.SetSharedDeps(&deps)

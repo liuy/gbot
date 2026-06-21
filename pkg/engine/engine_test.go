@@ -314,8 +314,10 @@ func TestNew_WithTools(t *testing.T) {
 	mt := &mockTool{name: "my_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model: "test-model",
 	})
 	t.Cleanup(func() { eng.Close() })
 	if eng == nil {
@@ -389,9 +391,11 @@ func TestQuery_ToolUseThenText(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -449,9 +453,11 @@ func TestQuery_ToolResultContentIsString(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -537,8 +543,10 @@ func TestQuery_EventQueryEndCarriesErrorOnCancel(t *testing.T) {
 
 	ec := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test-model",
 		Dispatcher: ec,
 		Logger:     slog.Default(),
@@ -644,9 +652,11 @@ func TestQuery_ToolExecutionError(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -759,9 +769,11 @@ func TestQuery_DisabledToolSkipped(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1085,9 +1097,14 @@ func TestQuery_MultipleToolCalls(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{toolA, toolB},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				toolA.Name(): toolA,
+				toolB.Name(): toolB,
+			}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1121,9 +1138,11 @@ func TestQuery_ToolUseStartEvent(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1318,9 +1337,11 @@ func TestQuery_MaxTurns(t *testing.T) {
 	mt := &mockTool{name: "my_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1351,9 +1372,11 @@ func TestQuery_TurnCountMatchesAPICalls(t *testing.T) {
 	mt := &mockTool{name: "my_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1387,9 +1410,11 @@ func TestQuery_DescriptionError(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1591,9 +1616,11 @@ func TestQuery_DescriptionErrorFallback(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1675,9 +1702,11 @@ func TestQuery_ExecuteToolsSkipsNonToolBlocks(t *testing.T) {
 	mt := &mockTool{name: "my_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -1730,8 +1759,10 @@ func TestQuery_HubReceivesAllEvents(t *testing.T) {
 	h.Subscribe(handler)
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test-model",
 		Logger:     slog.Default(),
 		Dispatcher: h,
@@ -1812,8 +1843,10 @@ func TestQuery_TurnEndAfterToolEnd(t *testing.T) {
 	h.Subscribe(handler)
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test-model",
 		Logger:     slog.Default(),
 		Dispatcher: h,
@@ -2030,9 +2063,11 @@ func TestQuery_AttachmentDrainedAfterToolResult(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -2240,8 +2275,10 @@ func TestEnqueueAttachment_AutoProcess_NoFireDuringQuery(t *testing.T) {
 	mt := &mockTool{name: "my_tool", enabled: true}
 	ec := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test-model",
 		Logger:     slog.Default(),
 		Dispatcher: ec,
@@ -2916,9 +2953,11 @@ func TestQuery_EventToolRunEmitted(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -3002,9 +3041,11 @@ func TestQuery_EventOrderingMultiBlock(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{mt},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -3138,9 +3179,14 @@ func TestCallLLM_InterleavedToolCallDeltas(t *testing.T) {
 	eng := New(&Params{
 		Provider:   mp,
 		Dispatcher: ec,
-		Tools:      []tool.Tool{toolRead, toolBash},
-		Model:      "test-model",
-		Logger:     slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				toolRead.Name(): toolRead,
+				toolBash.Name(): toolBash,
+			}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -3239,9 +3285,15 @@ func TestCallLLM_ParallelToolCalls_WithRealInput(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{toolRead, toolBash, toolGrep},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				toolRead.Name(): toolRead,
+				toolBash.Name(): toolBash,
+				toolGrep.Name(): toolGrep,
+			}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -3341,9 +3393,11 @@ func TestQuery_NewMessagesAfterToolResult(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -3856,8 +3910,10 @@ func TestChain_BashBackupViaQuery(t *testing.T) {
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{bashTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bashTool.Name(): bashTool}
+		},
 		Model:      "test",
 		Dispatcher: dispatcher,
 		WorkingDir: tmp,
@@ -3932,8 +3988,10 @@ func TestChain_SubEngineBashBackup(t *testing.T) {
 	// Create parent engine with WorkingDir and fileHistory
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 	parentEng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{bashTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bashTool.Name(): bashTool}
+		},
 		Model:      "test",
 		WorkingDir: tmp,
 	})
@@ -4026,8 +4084,10 @@ func TestChain_SubEngineEditBackup_QueryWithExisting(t *testing.T) {
 
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 	parentEng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{editTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{editTool.Name(): editTool}
+		},
 		Model:      "test",
 		WorkingDir: tmp,
 	})
@@ -4214,8 +4274,10 @@ func TestE2E_WriteTool_RewindAll_RestoresFile(t *testing.T) {
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{writeTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{writeTool.Name(): writeTool}
+		},
 		Model:      "test",
 		Dispatcher: dispatcher,
 		WorkingDir: tmp,
@@ -4305,8 +4367,10 @@ func TestE2E_WriteTool_RewindIntermediate(t *testing.T) {
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{writeTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{writeTool.Name(): writeTool}
+		},
 		Model:      "test",
 		Dispatcher: dispatcher,
 		WorkingDir: tmp,
@@ -4436,8 +4500,10 @@ func TestE2E_SingleQueryMultiTool_Rewind(t *testing.T) {
 	tracker := filehistory.NewTracker(filepath.Join(tmp, ".backups"))
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{writeTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{writeTool.Name(): writeTool}
+		},
 		Model:      "test",
 		Dispatcher: dispatcher,
 		WorkingDir: tmp,
@@ -4624,8 +4690,10 @@ func TestE2E_Interrupt_DuringToolExecution_MessagePairing(t *testing.T) {
 
 	ec := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test-model",
 		Dispatcher: ec,
 		Logger:     slog.Default(),

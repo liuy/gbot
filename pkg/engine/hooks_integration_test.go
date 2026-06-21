@@ -105,10 +105,12 @@ func TestIntegration_PreToolUse_BlockPreventsExecution(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
-		Hooks:    hookSystem,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+		Hooks:  hookSystem,
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -174,10 +176,12 @@ func TestIntegration_PreToolUse_ApproveAllowsExecution(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
-		Hooks:    hookSystem,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+		Hooks:  hookSystem,
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -234,10 +238,12 @@ func TestIntegration_PostToolUse_FiresAfterSuccess(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
-		Hooks:    hookSystem,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+		Hooks:  hookSystem,
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -297,10 +303,12 @@ func TestIntegration_PostToolUseFailure_FiresOnError(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
-		Hooks:    hookSystem,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
+		Hooks:  hookSystem,
 	})
 	t.Cleanup(func() { eng.Close() })
 

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -356,6 +357,8 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		Name:            name,
 		ActiveSessionID: eng.SessionID(),
 		Model:           eng.Model(),
+		CreatedAt:       time.Now(),
+		LastActiveAt:    time.Now(),
 	}
 	a.engineMgr.Add(vs)
 	// Handler is already subscribed to the engine's own Hub inside the

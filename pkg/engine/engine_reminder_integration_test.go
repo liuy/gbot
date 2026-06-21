@@ -76,7 +76,9 @@ func TestReminder_FullChain_TurnLoopInjection(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -139,7 +141,9 @@ func TestReminder_NotPrepended_PreservesCache(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -200,7 +204,9 @@ func TestReminder_Subagent_NeverFires(t *testing.T) {
 	// Use NewSubEngine to create a subagent engine.
 	parent := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -260,7 +266,9 @@ func TestReminder_RecoveryAfterRestart(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tlB,
@@ -329,7 +337,12 @@ func TestReminder_TaskToolUse_ResetsCounter(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{dummyTool, taskTool},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{
+				dummyTool.Name(): dummyTool,
+				taskTool.Name():  taskTool,
+			}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -382,7 +395,9 @@ func TestReminder_FiresAgain_AfterSufficientTurns(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -429,7 +444,9 @@ func TestReminder_NoReminder_WhenNoTasks(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -479,7 +496,9 @@ func TestReminder_NoReminder_WhenAllTasksCompleted(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,
@@ -516,9 +535,11 @@ func TestReminder_NilTaskList_NoReminder(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model:  "test-model",
+		Logger: slog.Default(),
 		// TaskList is nil (default)
 	})
 	t.Cleanup(func() { eng.Close() })
@@ -565,7 +586,9 @@ func TestReminder_MessageHasFlagMeta(t *testing.T) {
 	mt := &mockTool{name: "dummy_tool", enabled: true}
 	eng := New(&Params{
 		Provider: mp,
-		Tools:    []tool.Tool{mt},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:    "test-model",
 		Logger:   slog.Default(),
 		TaskList: tl,

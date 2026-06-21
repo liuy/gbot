@@ -344,8 +344,11 @@ func TestContextWindowExceeded_WithToolUse(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{&minimalTool{}},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			mt := &minimalTool{}
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})

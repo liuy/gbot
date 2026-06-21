@@ -12,7 +12,6 @@ import (
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/mcp"
 	"github.com/liuy/gbot/pkg/memory/short"
-	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -423,7 +422,6 @@ func newAppWithEngineState(t *testing.T) *App {
 		WorkingDir:  tmpDir,
 		Logger:      slog.Default(),
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
-		Tools:       []tool.Tool{},
 	})
 	eng.SetSystemPrompt("You are a test assistant.")
 	eng.SetSkillListing("commit: create a commit")
@@ -554,7 +552,6 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 		WorkingDir:  tmpDir,
 		Logger:      slog.Default(),
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
-		Tools:       []tool.Tool{},
 	})
 	eng1.SetSystemPrompt("You are a test assistant.")
 	eng1.SetStore(store, tmpDir)
@@ -584,7 +581,6 @@ func TestHandleContext_PersistRestoreRoundTrip(t *testing.T) {
 		WorkingDir:  tmpDir,
 		Logger:      slog.Default(),
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
-		Tools:       []tool.Tool{},
 	})
 	eng2.SetSystemPrompt("You are a test assistant.")
 	eng2.SetContextTokens(60_000)

@@ -257,15 +257,17 @@ func main() {
 		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
 		refs := engine.CreateTools(deps)
 		newEng := engine.New(&engine.Params{
-			Provider:          provider,
-			ToolsProvider:     refs.Reg.ToolMapFn(),
-			Model:             modelArg,
-			MaxTokens:         maxTokens,
-			TokenBudget:       contextWindow,
+			Provider:      provider,
+			ToolsProvider: refs.Reg.ToolMapFn(),
+			Model:         modelArg,
+			MaxTokens:     maxTokens,
+			MaxTurns:      0, // unlimited
+			TokenBudget:   contextWindow,
 			AutoCompact: engine.AutoCompactConfig{
 				ContextWindow:          contextWindow,
 				MaxConsecutiveFailures: 3,
 			},
+			Compactor:         nil, // set via SetCompactor below when store+session exist
 			Logger:            logger,
 			Dispatcher:        engineHub,
 			MCPRegistry:       mcpRegistry,
@@ -303,8 +305,12 @@ func main() {
 				editTool := fileedit.New()
 				readTool := fileread.New()
 				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
-					Tools:     map[string]tool.Tool{"Edit": editTool, "Read": readTool},
-					AgentType: "session_memory",
+					SystemPrompt:    sysPrompt,
+					Tools:           map[string]tool.Tool{"Edit": editTool, "Read": readTool},
+					MaxTurns:        0,  // unlimited
+					Model:           "", // inherit from parent
+					ParentToolUseID: "",
+					AgentType:       "session_memory",
 				})
 				defer subEng.Close()
 				extractionUserMsg := types.Message{
@@ -337,9 +343,12 @@ func main() {
 					"Glob":  glob.New(),
 				}
 				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
-					Tools:     dreamTools,
-					AgentType: "auto_dream",
-					MaxTurns:  30,
+					SystemPrompt:    "",
+					Tools:           dreamTools,
+					Model:           "", // inherit from parent
+					ParentToolUseID: "",
+					AgentType:       "auto_dream",
+					MaxTurns:        30,
 				})
 				defer subEng.Close()
 				result := subEng.QuerySync(ctx, "", prompt)
@@ -558,11 +567,14 @@ func restoreEngines(d restoreEnginesDeps) string {
 
 		d.mgr.Add(&engine.EngineViewState{
 			Engine:          eng,
+			Repl:            nil, // set by tui on first switch
 			Handler:         handler,
 			ID:              em.ID,
 			Name:            em.Name,
 			ActiveSessionID: resumeID,
 			Model:           eng.Model(),
+			CreatedAt:       time.Now(),
+			LastActiveAt:    time.Now(),
 		})
 	}
 

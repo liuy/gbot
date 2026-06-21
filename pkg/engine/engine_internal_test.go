@@ -360,8 +360,10 @@ func TestTools_ReturnsPopulatedMap(t *testing.T) {
 	mt := &testTool{name: "my_tool"}
 	eng := New(&Params{
 		Provider: &testProvider{},
-		Tools:    []tool.Tool{mt},
-		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
+		Model: "test",
 	})
 	t.Cleanup(func() { eng.Close() })
 	tools := eng.Tools()
@@ -436,13 +438,10 @@ func TestToolsProvider_NilProviderGivesEmpty(t *testing.T) {
 func TestToolsProvider_PreferOverToolsSlice(t *testing.T) {
 	t.Parallel()
 
-	// If both Tools and ToolsProvider are set, ToolsProvider wins
-	staticTool := &testTool{name: "static"}
 	dynamicTool := &testTool{name: "dynamic"}
 
 	eng := New(&Params{
 		Provider: &testProvider{},
-		Tools:    []tool.Tool{staticTool},
 		ToolsProvider: func() map[string]tool.Tool {
 			return map[string]tool.Tool{"dynamic": dynamicTool}
 		},
@@ -453,9 +452,6 @@ func TestToolsProvider_PreferOverToolsSlice(t *testing.T) {
 	tools := eng.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool (dynamic), got %d", len(tools))
-	}
-	if _, ok := tools["static"]; ok {
-		t.Error("static tool should not appear when ToolsProvider is set")
 	}
 	if _, ok := tools["dynamic"]; !ok {
 		t.Error("dynamic tool should appear")
@@ -495,8 +491,10 @@ func TestQueryLoop_MaxTurnsReached(t *testing.T) {
 	mt := &testTool{name: "tool"}
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:    mp,
-		Tools:       []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:       "test",
 		TokenBudget: 999999,
 		MaxTurns:    50,
@@ -1041,8 +1039,10 @@ func TestCallLLM_DiscardsExecutorOnStreamError(t *testing.T) {
 	p := &midStreamErrorProvider{}
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   p,
-		Tools:      []tool.Tool{dt},
+		Provider: p,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{dt.Name(): dt}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})
@@ -1428,8 +1428,10 @@ func TestNewSubEngineFieldIndependence(t *testing.T) {
 	mp := &testProvider{}
 	mt := &testTool{name: "test_tool"}
 	parent := New(&Params{
-		Provider:    mp,
-		Tools:       []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:       "parent-model",
 		TokenBudget: 100000,
 	})
@@ -1634,8 +1636,10 @@ func TestSubEngineBudgetBypass(t *testing.T) {
 
 	// Create parent with tiny budget
 	parent := New(&Params{
-		Provider:    mp,
-		Tools:       []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:       "test",
 		TokenBudget: 100,
 	})
@@ -3446,8 +3450,10 @@ func TestRunTurns_PostStreamingAbort_SyntheticToolResults(t *testing.T) {
 	mt := &testTool{name: "Read"}
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})
@@ -3540,8 +3546,10 @@ func TestRunTurns_PostToolAbort(t *testing.T) {
 
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{ct},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{ct.Name(): ct}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})
@@ -3584,8 +3592,10 @@ func TestCallLLM_PostLoopAbort_ToolUse(t *testing.T) {
 	mt := &testTool{name: "Read"}
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})
@@ -3754,8 +3764,10 @@ func TestCallLLM_MidStreamAbort_ToolUseOnly(t *testing.T) {
 	mt := &testTool{name: "Read"}
 	tc := newEventCollector()
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{mt},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{mt.Name(): mt}
+		},
 		Model:      "test",
 		Dispatcher: tc,
 	})
@@ -3950,7 +3962,9 @@ func TestInlineInterrupt_PostStreamingAbort_ToolUse(t *testing.T) {
 
 	mt := &testTool{name: "test_tool"}
 	tc := newEventCollector()
-	eng := New(&Params{Provider: mp, Tools: []tool.Tool{mt}, Model: "test", Dispatcher: tc})
+	eng := New(&Params{Provider: mp, ToolsProvider: func() map[string]tool.Tool {
+		return map[string]tool.Tool{mt.Name(): mt}
+	}, Model: "test", Dispatcher: tc})
 	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -4003,7 +4017,9 @@ func TestInlineInterrupt_PostToolAbort(t *testing.T) {
 	}
 
 	tc := newEventCollector()
-	eng := New(&Params{Provider: mp, Tools: []tool.Tool{ct}, Model: "test", Dispatcher: tc})
+	eng := New(&Params{Provider: mp, ToolsProvider: func() map[string]tool.Tool {
+		return map[string]tool.Tool{ct.Name(): ct}
+	}, Model: "test", Dispatcher: tc})
 	t.Cleanup(func() { eng.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	ctxCancel = cancel
@@ -5740,8 +5756,10 @@ func TestAbort_DuringTool_AttachmentProcessedByProcessAttachments(t *testing.T) 
 	}, nil)
 
 	eng := New(&Params{
-		Provider:   mp,
-		Tools:      []tool.Tool{bashTool},
+		Provider: mp,
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{bashTool.Name(): bashTool}
+		},
 		Model:      "test",
 		Dispatcher: dispatcher,
 	})
@@ -5800,8 +5818,11 @@ func TestExecuteTool_ReturnsRenderResult(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: &testProvider{},
-		Tools:    []tool.Tool{&renderResultTool{name: "list_files"}},
-		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			rrt := &renderResultTool{name: "list_files"}
+			return map[string]tool.Tool{rrt.Name(): rrt}
+		},
+		Model: "test",
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -5836,8 +5857,11 @@ func TestExecuteTool_REPLUncappedOutput(t *testing.T) {
 
 	eng := New(&Params{
 		Provider: &testProvider{},
-		Tools:    []tool.Tool{bash.New(nil)},
-		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			bt := bash.New(nil)
+			return map[string]tool.Tool{bt.Name(): bt}
+		},
+		Model: "test",
 	})
 	t.Cleanup(func() { eng.Close() })
 

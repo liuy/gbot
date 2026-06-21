@@ -29,7 +29,6 @@ func newTestEngineForBreakdown(t *testing.T) *Engine {
 		WorkingDir:  tmpDir,
 		Logger:      slog.Default(),
 		MCPRegistry: mcp.NewRegistry(mcp.NewClientManager(nil, false, ""), mcp.ChangeCallbacks{}),
-		Tools:       []tool.Tool{},
 	})
 	t.Cleanup(func() { eng.Close() })
 	return eng

@@ -780,7 +780,9 @@ func TestToolUseContext_ReceivesConversationHistory(t *testing.T) {
 	eng := New(&Params{
 		Provider: prov,
 		Model:    "test",
-		Tools:    []tool.Tool{probe},
+		ToolsProvider: func() map[string]tool.Tool {
+			return map[string]tool.Tool{probe.Name(): probe}
+		},
 	})
 	t.Cleanup(func() { eng.Close() })
 

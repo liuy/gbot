@@ -217,10 +217,13 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		mgr.Add(&engine.EngineViewState{
 			Engine:          eng,
 			Repl:            newReplAdapter(NewReplState()),
+			Handler:         nil, // set by NewAppWithManager from hub
 			ID:              eng.EngineID(),
 			Name:            "main",
 			ActiveSessionID: eng.SessionID(),
 			Model:           eng.Model(),
+			CreatedAt:       time.Now(),
+			LastActiveAt:    time.Now(),
 		})
 	}
 	return NewAppWithManager(mgr, systemPrompt, h)

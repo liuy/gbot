@@ -1,6 +1,21 @@
 version: "2"
 
 linters:
+  enable:
+    - exhaustruct
+  settings:
+    exhaustruct:
+      # Only check key structs that have caused bugs from missing field init.
+      include:
+        - 'github\.com/liuy/gbot/pkg/engine\.Params'
+        - 'github\.com/liuy/gbot/pkg/engine\.AutoCompactConfig'
+        - 'github\.com/liuy/gbot/pkg/engine\.EngineViewState'
+        - 'github\.com/liuy/gbot/pkg/engine\.SubEngineOptions'
+        - 'github\.com/liuy/gbot/pkg/engine\.SharedDeps'
+      # Allow empty structs in return statements and declarations.
+      allow-empty: true
+      allow-empty-returns: true
+      allow-empty-declarations: true
   exclusions:
     paths:
       - pkg/markitdown
@@ -8,3 +23,7 @@ linters:
       # Deferred Close is best-effort — not checking its error is standard Go practice.
       - linters: [errcheck]
         source: "defer .+\\.Close\\(\\)"
+      # Tests legitimately use partial struct literals — only checking fields
+      # relevant to each test is the point, not exhaustiveness.
+      - linters: [exhaustruct]
+        path: _test\.go

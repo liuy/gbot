@@ -263,7 +263,6 @@ type Engine struct {
 // Params holds the constructor arguments for Engine.
 type Params struct {
 	Provider          llm.Provider
-	Tools             []tool.Tool                 // static tool list (ignored if ToolsProvider is set)
 	ToolsProvider     func() map[string]tool.Tool // dynamic tool resolution — called each turn
 	Model             string
 	MaxTokens         int
@@ -310,16 +309,10 @@ func New(p *Params) *Engine {
 	}
 
 	// Resolve initial tools: prefer dynamic provider, fall back to static slice.
-	var toolMap map[string]tool.Tool
-	var toolsProvider func() map[string]tool.Tool
-	if p.ToolsProvider != nil {
-		toolsProvider = p.ToolsProvider
-		toolMap = p.ToolsProvider()
-	} else {
-		toolMap = make(map[string]tool.Tool)
-		for _, t := range p.Tools {
-			toolMap[t.Name()] = t
-		}
+	toolsProvider := p.ToolsProvider
+	toolMap := map[string]tool.Tool{}
+	if toolsProvider != nil {
+		toolMap = toolsProvider()
 	}
 	toolOrder := slices.Sorted(maps.Keys(toolMap))
 
