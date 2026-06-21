@@ -127,8 +127,8 @@ func TestHandleEngine_New_NoName_AutoNames(t *testing.T) {
 			newName = vs.Name
 		}
 	}
-	if newName != "engine-2" {
-		t.Errorf("new engine name = %q, want 'engine-2'", newName)
+	if newName != "agent-2" {
+		t.Errorf("new engine name = %q, want 'agent-2'", newName)
 	}
 	if a.engineMgr.ActiveID() != "e2" {
 		t.Errorf("ActiveID after /engine new = %q, want e2 (auto-switch)", a.engineMgr.ActiveID())
@@ -687,7 +687,7 @@ func TestHandleEngine_SubmitDuringStreaming_SwitchesAnyway(t *testing.T) {
 	a.repl.streaming = true
 
 	before := a.engine
-	_ = a.handleSubmitRepl("/engine e2")
+	_ = a.handleSubmitRepl("/agent e2")
 
 	if a.engine == before {
 		t.Fatalf("a.engine unchanged after /engine e2 during streaming — " +

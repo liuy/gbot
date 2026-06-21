@@ -99,30 +99,30 @@ func TestEngineManager_NewEngineName_Sequence(t *testing.T) {
 		t.Errorf("first NewEngineName = %q, want main", got)
 	}
 	m.Add(newTestView("main", "main"))
-	if got := m.NewEngineName(); got != "engine-2" {
-		t.Errorf("second NewEngineName = %q, want engine-2", got)
+	if got := m.NewEngineName(); got != "agent-2" {
+		t.Errorf("second NewEngineName = %q, want agent-2", got)
 	}
-	m.Add(newTestView("e2", "engine-2"))
-	if got := m.NewEngineName(); got != "engine-3" {
-		t.Errorf("third NewEngineName = %q, want engine-3", got)
+	m.Add(newTestView("e2", "agent-2"))
+	if got := m.NewEngineName(); got != "agent-3" {
+		t.Errorf("third NewEngineName = %q, want agent-3", got)
 	}
 }
 
 func TestEngineManager_NewEngineName_AvoidsCollision(t *testing.T) {
 	m := NewEngineManager()
 	m.Add(newTestView("main", "main"))
-	m.Add(newTestView("e2", "engine-2")) // name conflict at len+1=3? engine-3 still free
+	m.Add(newTestView("e2", "agent-2")) // name conflict at len+1=3? agent-3 still free
 	got := m.NewEngineName()
-	// len(engines)=2 → candidate engine-3, free → return engine-3
-	if got != "engine-3" {
-		t.Errorf("NewEngineName after collision = %q, want engine-3", got)
+	// len(engines)=2 → candidate agent-3, free → return agent-3
+	if got != "agent-3" {
+		t.Errorf("NewEngineName after collision = %q, want agent-3", got)
 	}
 
-	// Force a real collision: manually register "engine-3" then ask again.
-	m.Add(newTestView("e3", "engine-3"))
+	// Force a real collision: manually register "agent-3" then ask again.
+	m.Add(newTestView("e3", "agent-3"))
 	got2 := m.NewEngineName()
-	if got2 != "engine-4" {
-		t.Errorf("NewEngineName after second collision = %q, want engine-4", got2)
+	if got2 != "agent-4" {
+		t.Errorf("NewEngineName after second collision = %q, want agent-4", got2)
 	}
 }
 

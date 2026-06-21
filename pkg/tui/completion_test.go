@@ -34,15 +34,15 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 	if len(items) != 6 {
 		t.Fatalf("expected 6 items, got %d", len(items))
 	}
-	// Must be alphabetical: clear, context, engine, model, rewind, session
-	if items[0].Name != "clear" {
-		t.Errorf("first item = %q, want %q", items[0].Name, "clear")
+	// Must be alphabetical: agent, clear, context, model, rewind, session
+	if items[0].Name != "agent" {
+		t.Errorf("first item = %q, want %q", items[0].Name, "agent")
 	}
-	if items[1].Name != "context" {
-		t.Errorf("second item = %q, want %q", items[1].Name, "context")
+	if items[1].Name != "clear" {
+		t.Errorf("second item = %q, want %q", items[1].Name, "clear")
 	}
-	if items[2].Name != "engine" {
-		t.Errorf("third item = %q, want %q", items[2].Name, "engine")
+	if items[2].Name != "context" {
+		t.Errorf("third item = %q, want %q", items[2].Name, "context")
 	}
 	if items[3].Name != "model" {
 		t.Errorf("fourth item = %q, want %q", items[3].Name, "model")
@@ -327,13 +327,13 @@ func TestCompletions_Render_SelectedHighlight(t *testing.T) {
 	r := NewCommandRegistry()
 	c := NewCompletions()
 	c.Update("/", true, r)
-	// Select second item (context)
+	// Select second item (clear)
 	c.SelectNext()
 	view := c.Render(80, 5)
 	lines := strings.Split(view, "\n")
-	// Second line should contain "context"
-	if !strings.Contains(lines[1], "context") {
-		t.Errorf("second line should contain 'context', got %q", lines[1])
+	// Second line should contain "clear"
+	if !strings.Contains(lines[1], "clear") {
+		t.Errorf("second line should contain 'clear', got %q", lines[1])
 	}
 }
 
@@ -458,11 +458,11 @@ func TestCompletions_Accept_NonZeroIndex(t *testing.T) {
 	r := NewCommandRegistry()
 	c := NewCompletions()
 	c.Update("/", true, r)
-	// Move to index 1 (context)
+	// Move to index 1 (clear)
 	c.SelectNext()
 	fillText, _ := c.Accept()
-	if fillText != "/context " {
-		t.Errorf("fillText at index 1 = %q, want %q", fillText, "/context ")
+	if fillText != "/clear " {
+		t.Errorf("fillText at index 1 = %q, want %q", fillText, "/clear ")
 	}
 }
 

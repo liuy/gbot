@@ -1402,7 +1402,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// Dispatch before the streaming check — switching engines mid-stream
 	// is safe: the demoted engine's Hub + drain fn keep its ReplState
 	// updated in the background.
-	if cmd, ok := a.commands.LookupSlashCommand(text); ok && cmd.Name == "engine" {
+	if cmd, ok := a.commands.LookupSlashCommand(text); ok && cmd.Name == "agent" {
 		a.history.Add(text)
 		a.input.Reset()
 		a.pasteStore = make(map[int]string)

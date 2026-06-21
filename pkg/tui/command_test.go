@@ -17,7 +17,7 @@ func TestAllCommands(t *testing.T) {
 	if !slices.IsSorted(cmds) {
 		t.Errorf("AllCommands() not sorted: %v", cmds)
 	}
-	want := []string{"clear", "context", "engine", "model", "rewind", "session"}
+	want := []string{"agent", "clear", "context", "model", "rewind", "session"}
 	for _, w := range want {
 		if !slices.Contains(cmds, w) {
 			t.Errorf("AllCommands() missing %q", w)

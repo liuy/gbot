@@ -107,7 +107,7 @@ func (m *EngineManager) NewEngineID() string {
 	}
 }
 
-// NewEngineName returns "main" if no engines exist, else "engine-N" where
+// NewEngineName returns "main" if no engines exist, else "agent-N" where
 // N=len+1, skipping any name already in use.
 func (m *EngineManager) NewEngineName() string {
 	m.mu.Lock()
@@ -116,7 +116,7 @@ func (m *EngineManager) NewEngineName() string {
 		return "main"
 	}
 	for n := len(m.engines) + 1; ; n++ {
-		candidate := fmt.Sprintf("engine-%d", n)
+		candidate := fmt.Sprintf("agent-%d", n)
 		if !m.nameExistsLocked(candidate) {
 			return candidate
 		}
