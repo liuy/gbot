@@ -7,113 +7,113 @@ import (
 	"testing"
 )
 
-func TestFindModel_ExactMatch(t *testing.T) {
+func TestFindClosestMatch_ExactMatch(t *testing.T) {
 	t.Parallel()
 
 	candidates := []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1"}
-	got := FindModel("gpt-4o", candidates)
+	got := FindClosestMatch("gpt-4o", candidates)
 	if got != "gpt-4o" {
 		t.Errorf("exact match = %q, want %q", got, "gpt-4o")
 	}
 }
 
-func TestFindModel_FuzzyMatch(t *testing.T) {
+func TestFindClosestMatch_FuzzyMatch(t *testing.T) {
 	t.Parallel()
 
 	// "max3" fuzzy-matches "MiniMax-M3" via character-order subsequence.
-	got := FindModel("max3", []string{"MiniMax-M3", "glm-5.2"})
+	got := FindClosestMatch("max3", []string{"MiniMax-M3", "glm-5.2"})
 	if got != "MiniMax-M3" {
 		t.Errorf("fuzzy match = %q, want %q", got, "MiniMax-M3")
 	}
 }
 
-func TestFindModel_NoMatch(t *testing.T) {
+func TestFindClosestMatch_NoMatch(t *testing.T) {
 	t.Parallel()
 
-	got := FindModel("zzzzz", []string{"MiniMax-M3", "glm-5.2"})
+	got := FindClosestMatch("zzzzz", []string{"MiniMax-M3", "glm-5.2"})
 	if got != "" {
 		t.Errorf("no-match = %q, want empty", got)
 	}
 }
 
-func TestFindModel_EmptyInput(t *testing.T) {
+func TestFindClosestMatch_EmptyInput(t *testing.T) {
 	t.Parallel()
 
-	got := FindModel("", []string{"glm-5"})
+	got := FindClosestMatch("", []string{"glm-5"})
 	if got != "" {
 		t.Errorf("empty input = %q, want empty", got)
 	}
 }
 
-func TestFindModel_EmptyCandidates(t *testing.T) {
+func TestFindClosestMatch_EmptyCandidates(t *testing.T) {
 	t.Parallel()
 
-	got := FindModel("glm-5", nil)
+	got := FindClosestMatch("glm-5", nil)
 	if got != "" {
 		t.Errorf("empty candidates = %q, want empty", got)
 	}
 }
 
-func TestFindModel_ClosestNotFirst(t *testing.T) {
+func TestFindClosestMatch_ClosestNotFirst(t *testing.T) {
 	t.Parallel()
 
-	// When the closest match is NOT the first candidate, FindModel must
+	// When the closest match is NOT the first candidate, FindClosestMatch must
 	// still return it. "mimo2.5" → "mimo-v2.5" (distance 1) beats
 	// "mimo-v2.5-pro" (distance 4) even though pro appears first.
 	candidates := []string{"mimo-v2.5-pro", "mimo-v2.5"}
-	got := FindModel("mimo2.5", candidates)
+	got := FindClosestMatch("mimo2.5", candidates)
 	if got != "mimo-v2.5" {
-		t.Errorf("FindModel(\"mimo2.5\") = %q, want %q", got, "mimo-v2.5")
+		t.Errorf("FindClosestMatch(\"mimo2.5\") = %q, want %q", got, "mimo-v2.5")
 	}
 }
 
-func TestFindModel_ClosestNotFirst_Rank(t *testing.T) {
+func TestFindClosestMatch_ClosestNotFirst_Rank(t *testing.T) {
 	t.Parallel()
 
 	candidates := []string{"mimo-v2.5-pro", "mimo-v2.5"}
-	got, dist := FindModelRank("mimo2.5", candidates)
+	got, dist := FindClosestMatchRank("mimo2.5", candidates)
 	if got != "mimo-v2.5" {
-		t.Errorf("FindModelRank = %q, want %q", got, "mimo-v2.5")
+		t.Errorf("FindClosestMatchRank = %q, want %q", got, "mimo-v2.5")
 	}
 	if dist != 1 {
 		t.Errorf("distance = %d, want 1", dist)
 	}
 }
 
-func TestFindModel_PrefixCompromised(t *testing.T) {
+func TestFindClosestMatch_PrefixCompromised(t *testing.T) {
 	t.Parallel()
 
 	// "glm5" still matches "glm-5.2" (normalized "glm52" starts with "glm5").
-	got := FindModel("glm5", []string{"glm-5.2"})
+	got := FindClosestMatch("glm5", []string{"glm-5.2"})
 	if got != "glm-5.2" {
 		t.Errorf("prefix-like match = %q, want %q", got, "glm-5.2")
 	}
 }
 
-func TestFindModel_CrossProviderPrefix(t *testing.T) {
+func TestFindClosestMatch_CrossProviderPrefix(t *testing.T) {
 	t.Parallel()
 
 	// "gpt5" fuzzy-matches "gpt-4o" (via g-p-t-5 characters... actually
 	// "gpt5" doesn't match "gpt4o" because 5 ≠ 4o. Let's use a valid case.)
-	got := FindModel("gpt4", []string{"gpt-4o", "gpt-4o-mini"})
+	got := FindClosestMatch("gpt4", []string{"gpt-4o", "gpt-4o-mini"})
 	if got == "" {
 		t.Error("gpt4 should match at least one gpt-4 model")
 	}
 }
 
-func TestFindModel_CaseInsensitive(t *testing.T) {
+func TestFindClosestMatch_CaseInsensitive(t *testing.T) {
 	t.Parallel()
 
-	got := FindModel("MINIMAX", []string{"MiniMax-M3"})
+	got := FindClosestMatch("MINIMAX", []string{"MiniMax-M3"})
 	if got != "MiniMax-M3" {
 		t.Errorf("case-insensitive = %q, want %q", got, "MiniMax-M3")
 	}
 }
 
-func TestFindModel_SeparatorAgnostic(t *testing.T) {
+func TestFindClosestMatch_SeparatorAgnostic(t *testing.T) {
 	t.Parallel()
 
-	got := FindModel("glm_5", []string{"glm-5.2"})
+	got := FindClosestMatch("glm_5", []string{"glm-5.2"})
 	if got != "glm-5.2" {
 		t.Errorf("separator agnostic = %q, want %q", got, "glm-5.2")
 	}

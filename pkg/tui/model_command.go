@@ -181,7 +181,7 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 	}
 
 	// Fuzzy match model name within provider
-	matched := config.FindModel(modelName, cfgProvider.ModelNames())
+	matched := config.FindClosestMatch(modelName, cfgProvider.ModelNames())
 	if matched == "" {
 		return a.showInfo(fmt.Sprintf("model %q not found in provider %s", modelName, providerName))
 	}
@@ -208,7 +208,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 		return a.showInfo(fmt.Sprintf("no config for provider %s", a.currentProvider))
 	}
 
-	if matched := config.FindModel(modelName, cfgProvider.ModelNames()); matched != "" {
+	if matched := config.FindClosestMatch(modelName, cfgProvider.ModelNames()); matched != "" {
 		a.engine.SetModel(matched)
 		a.currentModel = matched
 		a.updateEngineCapabilities(a.currentProvider, matched)
@@ -232,7 +232,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 		if cfg == nil {
 			continue
 		}
-		matched, distance := config.FindModelRank(modelName, cfg.ModelNames())
+		matched, distance := config.FindClosestMatchRank(modelName, cfg.ModelNames())
 		if distance < 0 {
 			continue
 		}

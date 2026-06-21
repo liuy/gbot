@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/quota"
@@ -51,9 +52,11 @@ func (a *App) handleEngine(args string, commitCmd tea.Cmd) tea.Cmd {
 		return a.createNewEngine(name, commitCmd)
 	}
 	// Otherwise treat args as engine Name or ID and switch directly.
+	// Supports fuzzy match: exact name/ID first, then Levenshtein closest.
 	if a.engineMgr == nil {
 		return a.showInfo("Engine manager not initialized")
 	}
+	// Exact match first.
 	for _, vs := range a.engineMgr.List() {
 		if vs.Name == args || vs.ID == args {
 			if vs.ID == a.engineMgr.ActiveID() {
@@ -62,6 +65,24 @@ func (a *App) handleEngine(args string, commitCmd tea.Cmd) tea.Cmd {
 			_, cmd := a.switchEngine(vs.ID)
 			return cmd
 		}
+	}
+	// Fuzzy match by name using the same mechanism as /model.
+	nameToID := make(map[string]string)
+	var names []string
+	for _, vs := range a.engineMgr.List() {
+		if vs.Name == "" {
+			continue
+		}
+		nameToID[vs.Name] = vs.ID
+		names = append(names, vs.Name)
+	}
+	if matched := config.FindClosestMatch(args, names); matched != "" {
+		bestID := nameToID[matched]
+		if bestID == a.engineMgr.ActiveID() {
+			return a.showInfo(fmt.Sprintf("Already on engine: %s", matched))
+		}
+		_, cmd := a.switchEngine(bestID)
+		return cmd
 	}
 	return a.showInfo(fmt.Sprintf("Engine not found: %s (use /engine to list)", args))
 }

@@ -263,7 +263,7 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 		if p == nil {
 			return nil, "", fmt.Errorf("provider %q not found", providerName)
 		}
-		matched := FindModel(modelName, p.ModelNames())
+		matched := FindClosestMatch(modelName, p.ModelNames())
 		if matched == "" {
 			return nil, "", fmt.Errorf("model %q not found in provider %q", modelName, p.Name)
 		}
@@ -273,7 +273,7 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 	// No provider → cross-provider fuzzy search.
 	for i := range c.Providers {
 		p := &c.Providers[i]
-		matched := FindModel(modelName, p.ModelNames())
+		matched := FindClosestMatch(modelName, p.ModelNames())
 		if matched != "" {
 			return p, matched, nil
 		}
@@ -317,11 +317,11 @@ func normalizeModelName(s string) string {
 	return strings.ToLower(b.String())
 }
 
-// FindModel finds the closest model name from candidates using fuzzy search
-// (character-order subsequence matching, case-insensitive, separator-agnostic).
-// Catches "max3" → "MiniMax-M3", "glm5" → "glm-5.2", etc.
-// Returns empty string if no candidate has any matching characters.
-func FindModel(input string, candidates []string) string {
+// FindClosestMatch finds the closest string from candidates using fuzzy
+// search (character-order subsequence matching, case-insensitive,
+// separator-agnostic). Used by /model (model name fuzzy match) and /engine
+// (engine name fuzzy match). Returns empty string if no candidate matches.
+func FindClosestMatch(input string, candidates []string) string {
 	if input == "" || len(candidates) == 0 {
 		return ""
 	}
@@ -352,10 +352,10 @@ func FindModel(input string, candidates []string) string {
 	return entries[ranks[0].OriginalIndex].original
 }
 
-// FindModelRank finds the best fuzzy match and returns its distance.
+// FindClosestMatchRank finds the best fuzzy match and returns its distance.
 // Returns -1 if no candidate matches. Used for cross-provider selection
 // where the globally closest match (across providers) wins.
-func FindModelRank(input string, candidates []string) (model string, distance int) {
+func FindClosestMatchRank(input string, candidates []string) (model string, distance int) {
 	if input == "" || len(candidates) == 0 {
 		return "", -1
 	}
