@@ -903,3 +903,73 @@ func TestSwitchEngine_ToStreamingEngine_RestoresThinkingState(t *testing.T) {
 			got, startedAt)
 	}
 }
+
+// TestSwitchEngine_ReturnsReadEvents verifies that switchEngine's returned
+// batch includes a cmd that reads from appCh. Without this, any event that
+// arrives in appCh after the switch sits unread forever: IsStreaming stays
+// true → tick never stops → UI appears frozen.
+//
+// tea.Batch does NOT execute cmds — it wraps them into a BatchMsg ([]Cmd)
+// for the bubbletea runtime to execute concurrently. So we call cmd() to
+// get the BatchMsg, then call each cmd in it. The readEvents closure will
+// block on appCh and return the pre-loaded queryEndMsg. Without readEvents
+// in the batch, none of the cmds touch appCh.
+func TestSwitchEngine_ReturnsReadEvents(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+
+	_, switchCmd := a.switchEngine("e2")
+	if switchCmd == nil {
+		t.Fatal("switchEngine returned nil cmd")
+	}
+
+	// Push a queryEndMsg into the new active handler's appCh AFTER the
+	// switch (DrainBacklog already ran inside switchEngine, so this msg
+	// stays in the channel until something reads it).
+	e2Handler, _ := a.engineMgr.Get("e2").Handler.(*TUIHandler)
+	e2Handler.appCh <- queryEndMsg{}
+
+	// tea.Batch returns func() BatchMsg — it collects cmds but doesn't
+	// execute them. The bubbletea runtime executes each cmd concurrently.
+	batchMsg := switchCmd()
+	batch, ok := batchMsg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("switchCmd() returned %T, want tea.BatchMsg", batchMsg)
+	}
+
+	// Execute each cmd in the batch concurrently. The readEvents closure
+	// will block on appCh and return the queryEndMsg we pre-loaded.
+	type result struct {
+		msg tea.Msg
+	}
+	results := make(chan result, len(batch))
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		go func(cmd tea.Cmd) { results <- result{cmd()} }(c)
+	}
+
+	// Wait for all cmds to finish, with timeout.
+	timer := time.After(5 * time.Second)
+	var gotQueryEnd bool
+	for range batch {
+		select {
+		case r := <-results:
+			if _, ok := r.msg.(queryEndMsg); ok {
+				gotQueryEnd = true
+			}
+		case <-timer:
+			t.Fatal("batch cmd did not complete in 5s — possible hang")
+		}
+	}
+
+	if !gotQueryEnd {
+		t.Error("switchEngine batch does not include readEvents() — " +
+			"no cmd in the batch reads from appCh, so events pile up " +
+			"and streaming state stays true forever after switch")
+	}
+}

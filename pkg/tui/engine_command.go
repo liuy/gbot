@@ -271,7 +271,7 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	}
 
 	slog.Info("engine: switched", "from", oldID, "to", id)
-	cmds = append(cmds, tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to engine: %s", target.Name)))
+	cmds = append(cmds, tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to engine: %s", target.Name)), a.readEvents())
 	// Commit the new engine's history to scrollback immediately so the
 	// screen shows it after the clear — without this, switched-to engines
 	// with non-empty history render blank until the next WindowSizeMsg
