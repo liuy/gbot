@@ -1831,7 +1831,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 			}
 		} else {
 			cacheControl = &types.CacheControlConfig{Type: "ephemeral", TTL: "1h"}
-			promptStateKey = &llm.PromptStateKey{QuerySource: e.querySource()}
+			promptStateKey = &llm.PromptStateKey{
+				QuerySource: e.querySource(),
+				AgentID:     e.engineID,
+			}
 		}
 	}
 

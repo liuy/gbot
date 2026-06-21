@@ -14,6 +14,13 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
+func init() {
+	// Redirect ALL cache-break diffs to a temp dir so tests never
+	// pollute the real ~/.gbot/cache-break. Individual tests that
+	// need their own isolated dir can override via cacheBreakDirOverride.
+	cacheBreakDirOverride = filepath.Join(os.TempDir(), "gbot-test-cache-break")
+}
+
 // --- djb2Hash tests ---
 
 func TestDjb2Hash_Consistency(t *testing.T) {
@@ -330,14 +337,18 @@ func TestBuildDiffableContent_ToolsSorted(t *testing.T) {
 // --- getCacheBreakDir tests ---
 
 func TestGetCacheBreakDir(t *testing.T) {
+	prev := cacheBreakDirOverride
+	tmpDir := t.TempDir()
+	cacheBreakDirOverride = tmpDir
+	t.Cleanup(func() { cacheBreakDirOverride = prev })
+
 	dir, err := getCacheBreakDir()
 	if err != nil {
 		t.Fatalf("getCacheBreakDir failed: %v", err)
 	}
-	if !strings.HasSuffix(dir, filepath.Join("gbot-cache-break")) {
-		t.Errorf("unexpected dir: %s", dir)
+	if !strings.HasPrefix(dir, tmpDir) {
+		t.Errorf("expected dir under %s, got %s", tmpDir, dir)
 	}
-	// Verify directory exists
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("directory should exist: %v", err)
@@ -350,13 +361,18 @@ func TestGetCacheBreakDir(t *testing.T) {
 // --- writeCacheBreakDiff tests ---
 
 func TestWriteCacheBreakDiff(t *testing.T) {
+	prevDir := cacheBreakDirOverride
+	tmpDir := t.TempDir()
+	cacheBreakDirOverride = tmpDir
+	t.Cleanup(func() { cacheBreakDirOverride = prevDir })
+
 	prev := "Model: v1\n\nHello world"
 	curr := "Model: v2\n\nHello world 2"
 	diffPath := writeCacheBreakDiff(prev, curr)
 	if diffPath == "" {
 		t.Fatal("writeCacheBreakDiff should return a path")
 	}
-	if !strings.HasPrefix(diffPath, filepath.Join(os.TempDir(), "gbot-cache-break")) {
+	if !strings.HasPrefix(diffPath, tmpDir) {
 		t.Errorf("diff path should be in cache-break dir, got %s", diffPath)
 	}
 	// Verify file exists

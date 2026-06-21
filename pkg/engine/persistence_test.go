@@ -960,9 +960,9 @@ func TestListSessions_FilteredByEngineID(t *testing.T) {
 		t.Fatalf("eng2 ListSessions: %v", err)
 	}
 	if len(sessions2) != 1 {
-		t.Errorf("eng2 ListSessions = %d sessions, want 1 (should not see main's sessions)", len(sessions2))
+		t.Fatalf("eng2 ListSessions = %d sessions, want 1 (should not see main's sessions)", len(sessions2))
 	}
-	if len(sessions2) > 0 && sessions2[0].EngineID != "e2" {
+	if sessions2[0].EngineID != "e2" {
 		t.Errorf("eng2 ListSessions returned session with EngineID=%q, want e2", sessions2[0].EngineID)
 	}
 }

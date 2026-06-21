@@ -238,9 +238,21 @@ func buildDiffableContent(system []map[string]any, tools []map[string]any, model
 		model, systemText, len(tools), strings.Join(toolLines, "\n\n"))
 }
 
+// cacheBreakDirOverride allows tests to redirect cache break diffs to a
+// temp directory without polluting the real ~/.gbot.
+var cacheBreakDirOverride string
+
 // getCacheBreakDir returns the directory for cache break diff files.
+// Lives under ~/.gbot so diffs survive /tmp cleanup.
 func getCacheBreakDir() (string, error) {
-	dir := filepath.Join(os.TempDir(), "gbot-cache-break")
+	dir := cacheBreakDirOverride
+	if dir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(homeDir, ".gbot", "cache-break")
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
