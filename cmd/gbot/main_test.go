@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tui"
 )
 
 // freePort returns a TCP port that is free at call time.
@@ -122,4 +127,92 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// TestRestoreEngines_StripsProviderPrefix verifies that the engine factory
+// receives the bare model registration name (e.g. "glm-5.2"), not the
+// "provider/model" form stored in meta.json (e.g. "zhipu/glm-5.2").
+//
+// Without this strip, Engine.Model() returns the prefixed form, the status
+// bar shows "zhipu/glm-5.2" instead of "glm-5.2", and the provider API may
+// reject the prefixed model name.
+func TestRestoreEngines_StripsProviderPrefix(t *testing.T) {
+	projectDir := t.TempDir()
+
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "zhipu/glm-5.2"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	var gotModel string
+	deps := restoreEnginesDeps{
+		mgr:        engine.NewEngineManager(),
+		workingDir: projectDir,
+		factory: func(id, name, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			gotModel = model
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Logger:     slog.Default(),
+				Model:      model,
+				EngineID:   id,
+				Dispatcher: hub,
+			})
+			return eng, handler, nil
+		},
+	}
+
+	_ = restoreEngines(deps)
+
+	if gotModel != "glm-5.2" {
+		t.Errorf("factory received model = %q, want %q (provider prefix stripped)",
+			gotModel, "glm-5.2")
+	}
+}
+
+// TestRestoreEngines_StripsOpenRouterNestedPrefix verifies the strip works
+// for providers whose model name itself contains a slash. OpenRouter's
+// models are registered as "openrouter/owl-alpha" — when stored in meta.json
+// as "openrouter/openrouter/owl-alpha", the factory must receive
+// "openrouter/owl-alpha" (the full registration name), not just "owl-alpha".
+func TestRestoreEngines_StripsOpenRouterNestedPrefix(t *testing.T) {
+	projectDir := t.TempDir()
+
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "openrouter/openrouter/owl-alpha"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	var gotModel string
+	deps := restoreEnginesDeps{
+		mgr:        engine.NewEngineManager(),
+		workingDir: projectDir,
+		factory: func(id, name, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			gotModel = model
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Logger:     slog.Default(),
+				Model:      model,
+				EngineID:   id,
+				Dispatcher: hub,
+			})
+			return eng, handler, nil
+		},
+	}
+
+	_ = restoreEngines(deps)
+
+	if gotModel != "openrouter/owl-alpha" {
+		t.Errorf("factory received model = %q, want %q (only gbot provider prefix stripped, model's own prefix preserved)",
+			gotModel, "openrouter/owl-alpha")
+	}
 }

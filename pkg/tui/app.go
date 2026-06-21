@@ -369,14 +369,27 @@ func (a *App) SetKillAllFn(fn func()) {
 	a.killAllFn = fn
 }
 
-// persistModelSelection writes the current provider/tier back to settings.json.
+// persistModelSelection writes the current provider/model to:
+//   - settings.json (cfg.Model — the default for new engines)
+//   - meta.json (vs.Model — the active engine's authoritative model,
+//     survives restart)
+//
+// Both store the "provider/model" form. restoreEngines splits on the first
+// "/" to recover the bare registration name that the provider API expects.
 func (a *App) persistModelSelection() {
 	if a.cfg == nil {
 		return
 	}
-	a.cfg.Model = config.ModelSpec{"default": a.currentProvider + "/" + a.currentModel}
+	fullModel := a.currentProvider + "/" + a.currentModel
+	a.cfg.Model = config.ModelSpec{"default": fullModel}
 	if err := a.cfg.Save(); err != nil {
 		slog.Warn("model: failed to persist selection", "error", err)
+	}
+	if a.engineMgr != nil {
+		a.engineMgr.SetActiveModel(fullModel)
+		if err := a.engineMgr.PersistMeta(a.projectDir); err != nil {
+			slog.Warn("model: failed to persist per-engine meta", "error", err)
+		}
 	}
 }
 

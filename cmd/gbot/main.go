@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -515,7 +516,17 @@ func restoreEngines(d restoreEnginesDeps) string {
 	enginesToRestore, activeID := planRestore(meta, d.model)
 
 	for _, em := range enginesToRestore {
-		eng, handler, err := d.factory(em.ID, em.Name, em.Model)
+		// em.Model is "provider/model" (e.g. "zhipu/glm-5.2"). The engine's
+		// own model field needs the bare registration name (e.g. "glm-5.2")
+		// — that's what the provider API accepts and what status bar shows.
+		// Split on the FIRST "/" only so providers whose model name itself
+		// contains a slash (e.g. openrouter's "openrouter/owl-alpha") keep
+		// their internal prefix intact.
+		engineModel := em.Model
+		if _, after, ok := strings.Cut(em.Model, "/"); ok {
+			engineModel = after
+		}
+		eng, handler, err := d.factory(em.ID, em.Name, engineModel)
 		if err != nil {
 			slog.Error("restore: build engine failed", "id", em.ID, "error", err)
 			continue
@@ -533,7 +544,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			}
 		}
 		if resumeID == "" {
-			id, err := eng.ResumeOrInitSession(d.workingDir, em.Model)
+			id, err := eng.ResumeOrInitSession(d.workingDir, engineModel)
 			if err != nil {
 				slog.Warn("restore: session init failed", "id", em.ID, "error", err)
 			} else {

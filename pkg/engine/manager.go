@@ -139,6 +139,17 @@ func (m *EngineManager) Get(id string) *EngineViewState {
 	return m.engines[id]
 }
 
+// SetActiveModel updates the active engine's Model field. Per-engine model
+// is authoritative at runtime; settings.json is only the default for
+// newly-created engines.
+func (m *EngineManager) SetActiveModel(model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if vs, ok := m.engines[m.activeID]; ok {
+		vs.Model = model
+	}
+}
+
 // Active returns the currently active view state, or nil if the manager is empty.
 func (m *EngineManager) Active() *EngineViewState {
 	m.mu.RLock()

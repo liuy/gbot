@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
+	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
 )
 
@@ -813,5 +815,69 @@ func TestOpenModelPicker_AlreadyOpen(t *testing.T) {
 	}
 	if !strings.Contains(string(info), "picker is already open") {
 		t.Errorf("expected already-open message, got %q", info)
+	}
+}
+
+// TestPersistModelSelection_WritesPerEngineMeta verifies that /model
+// switching persists the new model to the active engine's vs.Model and
+// writes it through to meta.json on disk. Without this, switching model
+// on engine A and restarting loses the change (engine reverts to whatever
+// meta.json had before).
+func TestPersistModelSelection_WritesPerEngineMeta(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{},
+		Model:    "glm-5",
+		Logger:   slog.Default(),
+	})
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { eng.Close() })
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine: eng,
+		ID:     "main",
+		Name:   "main",
+		Model:  "openai/glm-5", // initial model
+	})
+
+	a := newTestAppWithProviders(t)
+	a.engine = eng
+	a.engineMgr = mgr
+	a.projectDir = projectDir
+
+	// Switch from glm-5 to glm-max.
+	_ = a.handleModel("glm-max", nil)
+
+	// Assert: vs.Model updated in memory.
+	vs := mgr.Get("main")
+	if vs.Model != "openai/glm-max" {
+		t.Errorf("vs.Model = %q, want openai/glm-max", vs.Model)
+	}
+	// Assert: meta.json on disk has the new model.
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("meta.json not written — persistModelSelection did not call PersistMeta")
+	}
+	var gotModel string
+	for _, em := range meta.Engines {
+		if em.ID == "main" {
+			gotModel = em.Model
+		}
+	}
+	if gotModel != "openai/glm-max" {
+		t.Errorf("meta.json main.Model = %q, want openai/glm-max", gotModel)
 	}
 }
