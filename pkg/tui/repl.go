@@ -788,6 +788,28 @@ func (s *ReplState) PendingToolStart(id string) (time.Time, bool) {
 	return t, ok
 }
 
+// UpdateRunningToolElapsed sets Elapsed on running tool calls in the
+// last message to time.Since(start). Called once per second on spinner
+// tick so the UI can show a live timer for long-running tools.
+func (s *ReplState) UpdateRunningToolElapsed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.messages) == 0 || len(s.pendingToolStart) == 0 {
+		return
+	}
+	now := time.Now()
+	last := &s.messages[len(s.messages)-1]
+	for j := range last.Blocks {
+		blk := &last.Blocks[j]
+		if blk.Type != BlockTool || blk.ToolCall.Done {
+			continue
+		}
+		if start, ok := s.pendingToolStart[blk.ToolCall.ID]; ok {
+			blk.ToolCall.Elapsed = now.Sub(start)
+		}
+	}
+}
+
 // CurrentToolName returns the name of the most recently started pending tool,
 // or "" when idle. Implements engine.ReplSnapshot for status bar rendering.
 // Uses RLock so concurrent render + background drain never deadlock.
@@ -1359,6 +1381,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.spinner.Tick()
 			}
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
+			// Update running tool elapsed once per second (every 10 ticks).
+			if a.toolBlinkTick%10 == 0 {
+				a.repl.UpdateRunningToolElapsed()
+			}
 			// Animate displayed tokens toward actual values
 			target := max(a.status.usage.TotalInputTokens(), a.repl.inputTokenTarget)
 			a.repl.displayedInputTokens = animateTokenValue(a.repl.displayedInputTokens, target)

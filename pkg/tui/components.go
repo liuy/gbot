@@ -965,6 +965,8 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		// (e.g. MiMo) never send input_json_delta, so require >100B to confirm real streaming input.
 		if (tc.Name == "Write" || tc.Name == "Edit") && len(tc.Input) > 100 {
 			header += fmt.Sprintf(" (%s)", toolresult.FormatFileSize(len(tc.Input)))
+		} else if tc.Elapsed >= 10*time.Second {
+			header += " " + styleDim.Render("("+formatDuration(tc.Elapsed)+")")
 		} else {
 			header += " " + styleDim.Render("running...")
 		}

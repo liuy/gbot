@@ -1068,3 +1068,49 @@ func TestReset_ClearsAllState(t *testing.T) {
 		t.Errorf("post-Reset StartQuery role = %q, want assistant", last.Role)
 	}
 }
+
+func TestUpdateRunningToolElapsed_UpdatesRunningBlocks(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery()
+	s.AppendTextItem()
+	s.PendingToolStarted("tool-1", "Bash", "make check", "", tool.SearchReadKind{})
+	s.PendingToolStarted("tool-2", "Read", "read.go", "", tool.SearchReadKind{})
+	// Mark tool-2 as done.
+	s.PendingToolDone("tool-2", "done", false, 5*time.Millisecond, tool.SearchReadKind{})
+
+	s.UpdateRunningToolElapsed()
+
+	msgs := s.Messages()
+	var running, done ToolCallView
+	for _, blk := range msgs[len(msgs)-1].Blocks {
+		if blk.Type != BlockTool {
+			continue
+		}
+		if blk.ToolCall.ID == "tool-1" {
+			running = blk.ToolCall
+		}
+		if blk.ToolCall.ID == "tool-2" {
+			done = blk.ToolCall
+		}
+	}
+	if running.Elapsed == 0 {
+		t.Error("running tool Elapsed = 0, want non-zero after UpdateRunningToolElapsed")
+	}
+	if done.Elapsed < 5*time.Millisecond {
+		t.Errorf("done tool Elapsed = %v, want >= 5ms (should not be reset)", done.Elapsed)
+	}
+}
+
+func TestUpdateRunningToolElapsed_NoPendingStart_NoOp(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery()
+	s.AppendTextItem()
+	// No PendingToolStarted — should be a no-op, no panic.
+	s.UpdateRunningToolElapsed()
+}
+
+func TestUpdateRunningToolElapsed_NoMessages_NoOp(t *testing.T) {
+	s := NewReplState()
+	// No messages at all — should be a no-op, no panic.
+	s.UpdateRunningToolElapsed()
+}
