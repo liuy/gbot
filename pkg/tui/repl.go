@@ -27,6 +27,11 @@ import (
 // ---------------------------------------------------------------------------
 
 // ReplState holds the interactive REPL session state embedded in App.
+//
+// All streaming UI state lives here — not on App — so it travels with the
+// engine it belongs to. App reads via accessors (StreamingStart, IsThinking,
+// ResponseCharCount, TokenRate, etc.) on the active engine's ReplState.
+// switchEngine just rebinds a.repl; no per-field restoration needed.
 type ReplState struct {
 	mu        sync.RWMutex
 	messages  []MessageView
@@ -36,7 +41,27 @@ type ReplState struct {
 	// engine — without it, the newly-active engine shows no elapsed time
 	// even though it's mid-query.
 	streamingStart time.Time
-	pendingTool    map[string]*ToolCallView
+	// thinkingActive tracks whether the query is currently in the model's
+	// reasoning phase (before any visible output). thinkingStart anchors
+	// the elapsed counter for the indicator. drain fn flips these on
+	// thinkingStart/thinkingEnd events; switchEngine restores them from
+	// here when binding a streaming engine.
+	thinkingActive   bool
+	thinkingStart    time.Time
+	thinkingDuration time.Duration
+	pendingTool      map[string]*ToolCallView
+
+	// Streaming progress metrics. Maintained by the active path on
+	// text/usage events; drain fn maintains them on the same events for
+	// background engines so switchEngine needs no restoration.
+	responseCharCount     int
+	tokenRate             *TokenRate
+	outputTokenTarget     int
+	inputTokenTarget      int
+	displayedInputTokens  int
+	displayedOutputTokens int
+	cacheReadTokens       int
+	cacheCreationTokens   int
 
 	// Tracks partial input accumulation per tool ID for summary updates
 	pendingInput map[string]string
@@ -62,6 +87,7 @@ func NewReplState() *ReplState {
 		pendingTool:       make(map[string]*ToolCallView),
 		pendingInput:      make(map[string]string),
 		pendingToolStart:  make(map[string]time.Time),
+		tokenRate:         NewTokenRate(),
 		activeThinkingIdx: -1,
 	}
 }
@@ -167,6 +193,19 @@ func (s *ReplState) StartQuery() {
 	defer s.mu.Unlock()
 	s.streaming = true
 	s.streamingStart = time.Now()
+	s.thinkingActive = false
+	s.thinkingStart = time.Time{}
+	s.thinkingDuration = 0
+	s.responseCharCount = 0
+	if s.tokenRate != nil {
+		s.tokenRate.Reset()
+	}
+	s.outputTokenTarget = 0
+	s.inputTokenTarget = 0
+	s.displayedInputTokens = 0
+	s.displayedOutputTokens = 0
+	s.cacheReadTokens = 0
+	s.cacheCreationTokens = 0
 	s.pendingTool = make(map[string]*ToolCallView)
 	s.pendingInput = make(map[string]string)
 	s.toolCount = 0
@@ -194,6 +233,37 @@ func (s *ReplState) StartQueryAtForTest(start time.Time) {
 	s.pendingInput = make(map[string]string)
 	s.toolCount = 0
 	s.messages = append(s.messages, MessageView{Role: "assistant", Blocks: nil})
+}
+
+// ResetStreamingUIState clears the per-query streaming UI fields without
+// touching messages. Called from resetDisplayState (App-level clear path).
+func (s *ReplState) ResetStreamingUIState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streaming = false
+	s.streamingStart = time.Time{}
+	s.thinkingActive = false
+	s.thinkingStart = time.Time{}
+	s.responseCharCount = 0
+	if s.tokenRate != nil {
+		s.tokenRate.Reset()
+	}
+	s.outputTokenTarget = 0
+	s.inputTokenTarget = 0
+	s.displayedInputTokens = 0
+	s.displayedOutputTokens = 0
+	s.cacheReadTokens = 0
+	s.cacheCreationTokens = 0
+}
+
+// StartStreamingForTest flips streaming=true and sets streamingStart without
+// appending an assistant message. Used by tests that need to drive the
+// render path's "is streaming" branch without going through StartQuery.
+func (s *ReplState) StartStreamingForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.streaming = true
+	s.streamingStart = time.Now()
 }
 
 // lastMsgLocked returns a pointer to the last message, or nil.
@@ -346,6 +416,8 @@ func (s *ReplState) PendingThinkingStarted() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeThinkingIdx = -1
+	s.thinkingActive = true
+	s.thinkingStart = time.Now()
 	m := s.lastMsgLocked()
 	if m == nil {
 		return
@@ -378,6 +450,9 @@ func (s *ReplState) PendingThinkingDelta(text string) {
 func (s *ReplState) PendingThinkingDone(duration time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.thinkingActive = false
+	s.thinkingStart = time.Time{}
+	s.thinkingDuration += duration
 	if s.activeThinkingIdx < 0 {
 		return
 	}
@@ -392,6 +467,138 @@ func (s *ReplState) PendingThinkingDone(duration time.Duration) {
 	blk.Done = true
 	blk.Duration = duration
 	s.activeThinkingIdx = -1
+}
+
+// IsThinking reports whether the engine is currently in the model's
+// reasoning phase. Read by switchEngine to restore a.thinkingActive.
+func (s *ReplState) IsThinking() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.thinkingActive
+}
+
+// ThinkingStart returns the wall-clock time when the current thinking
+// phase began, or zero when not thinking.
+func (s *ReplState) ThinkingStart() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.thinkingStart
+}
+
+// StartThinkingAtForTest is a test-only setter for thinkingActive +
+// thinkingStart so tests can inject a synthetic start without driving
+// the full event sequence.
+func (s *ReplState) StartThinkingAtForTest(start time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.thinkingActive = true
+	s.thinkingStart = start
+}
+
+// ThinkingDuration returns accumulated thinking time across the query.
+func (s *ReplState) ThinkingDuration() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.thinkingDuration
+}
+
+// ResponseCharCount returns the count of streamed output characters in
+// the current query. Drives the "X chars" progress display.
+func (s *ReplState) ResponseCharCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.responseCharCount
+}
+
+// AddResponseChars adds n to the response character counter and the
+// token rate tracker. Called on text/tool-param deltas.
+func (s *ReplState) AddResponseChars(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responseCharCount += len(text)
+	if s.tokenRate != nil {
+		s.tokenRate.Add(text)
+	}
+}
+
+// SetResponseCharCount replaces the response character counter. Used by
+// tests that need to inject a known value for animation logic.
+func (s *ReplState) SetResponseCharCount(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responseCharCount = n
+}
+
+// TokenRate returns the underlying *TokenRate for direct method calls
+// (Rate, StreamDuration, Reset). Caller must not mutate state outside
+// the methods — but AddResponseChars is the preferred write path.
+func (s *ReplState) TokenRate() *TokenRate {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tokenRate
+}
+
+// OutputTokenTarget returns the target output tokens used for the
+// "X / target" progress indicator.
+func (s *ReplState) OutputTokenTarget() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.outputTokenTarget
+}
+
+// SetOutputTokenTarget sets the target output tokens.
+func (s *ReplState) SetOutputTokenTarget(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outputTokenTarget = n
+}
+
+// InputTokenTarget returns the target input tokens.
+func (s *ReplState) InputTokenTarget() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inputTokenTarget
+}
+
+// SetInputTokenTarget sets the target input tokens.
+func (s *ReplState) SetInputTokenTarget(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inputTokenTarget = n
+}
+
+// DisplayedTokens returns the input/output/cache counters used in the
+// status bar context display.
+func (s *ReplState) DisplayedTokens() (in, out, cacheRead, cacheCreation int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.displayedInputTokens, s.displayedOutputTokens, s.cacheReadTokens, s.cacheCreationTokens
+}
+
+// SetDisplayedTokens sets the input/output/cache counters. Called on
+// usageMsg events.
+func (s *ReplState) SetDisplayedTokens(in, out, cacheRead, cacheCreation int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.displayedInputTokens = in
+	s.displayedOutputTokens = out
+	s.cacheReadTokens = cacheRead
+	s.cacheCreationTokens = cacheCreation
+}
+
+// SetDisplayedInputTokens replaces just the animated input counter.
+// Called by the spinner tick to incrementally approach the target.
+func (s *ReplState) SetDisplayedInputTokens(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.displayedInputTokens = n
+}
+
+// SetDisplayedOutputTokens replaces just the animated output counter.
+func (s *ReplState) SetDisplayedOutputTokens(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.displayedOutputTokens = n
 }
 
 // SetAgentContextWindow sets the context window for a sub-agent tool call.
@@ -417,6 +624,8 @@ func (s *ReplState) FinishStream(err error) {
 	defer s.mu.Unlock()
 	s.streaming = false
 	s.streamingStart = time.Time{}
+	s.thinkingActive = false
+	s.thinkingStart = time.Time{}
 
 	if err != nil {
 		s.messages = append(s.messages, MessageView{
@@ -601,8 +810,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.AppendChunk(m.Text)
 		}
-		a.responseCharCount += len(m.Text)
-		a.tokenRate.Add(m.Text)
+		a.repl.AddResponseChars(m.Text)
 		return true, a.readEvents()
 
 	case textStartMsg:
@@ -633,9 +841,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.repl.StartQuery()
 			a.status.SetStreaming(true)
 			a.spinner.Start()
-			a.progressStart = time.Now()
-			a.thinkingActive = false
-			a.thinkingDuration = 0
 			a.status.SetUsage(types.Usage{})
 		}
 		a.markViewportDirty()
@@ -713,8 +918,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList}
 			a.repl.PendingToolDelta(m.ID, m.Delta, m.Summary, srk)
 		}
-		a.responseCharCount += len(m.Delta)
-		a.tokenRate.Add(m.Delta)
+		a.repl.AddResponseChars(m.Delta)
 		return true, a.readEvents()
 
 	case toolOutputDeltaMsg:
@@ -804,18 +1008,21 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		}
 		slog.Info("tui:queryEnd", "err", displayErr, "agent", m.Agent != nil)
+		// Capture stream start before FinishStream clears it — needed for
+		// the stats block below.
+		streamStart := a.repl.StreamingStart()
 		a.repl.FinishStream(displayErr)
 
 		// Sync status bar with engine's final ContextTokens (post-compact).
 		// During streaming the bar showed the API-reported value; compact may
 		// have reduced the context after that.
 		if ct := a.engine.GetContextTokens(); ct > 0 {
-			a.displayedInputTokens = ct
-			a.inputTokenTarget = ct
+			a.repl.displayedInputTokens = ct
+			a.repl.inputTokenTarget = ct
 			a.status.SetContext(ct, a.engine.ContextWindow())
 		}
 
-		if !a.progressStart.IsZero() {
+		if !streamStart.IsZero() {
 			// Use engine's accumulated TotalUsage for stats line (correct
 			// across multi-turn queries). Fall back to streaming usage if
 			// engine didn't provide accumulated data.
@@ -823,7 +1030,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			if queryUsage.InputTokens == 0 && queryUsage.OutputTokens == 0 {
 				queryUsage = a.status.usage
 			}
-			elapsedStr := formatElapsed(a.progressStart)
+			elapsedStr := formatElapsed(streamStart)
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(queryUsage.TotalInputTokens()), types.FormatTokenCount(queryUsage.OutputTokens))
 			var cachePart string
 			if queryUsage.CacheReadInputTokens > 0 || queryUsage.CacheCreationInputTokens > 0 {
@@ -848,7 +1055,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				}
 			}
 			var ratePart string
-			if streamDur := a.tokenRate.StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
+			if streamDur := a.repl.TokenRate().StreamDuration(); streamDur > 0 && queryUsage.OutputTokens > 0 {
 				ratePart = fmt.Sprintf(" · %.1f t/s", float64(queryUsage.OutputTokens)/streamDur.Seconds())
 			}
 			statsLine := styleDim.Render(tokensStr + ratePart + cachePart + toolsPart + " · " + elapsedStr)
@@ -859,9 +1066,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
 			}
 		}
-		a.progressStart = time.Time{}
-		a.thinkingActive = false
-		a.thinkingDuration = 0
 
 		// Don't commit yet — keep current turn in Bubble Tea view so
 		// Ctrl+O (expand/collapse tool output) remains interactive.
@@ -881,9 +1085,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
 		// Input tokens arrive all at once — snap immediately
 		totalIn := a.status.usage.TotalInputTokens()
-		a.displayedInputTokens = totalIn
-		a.inputTokenTarget = totalIn
-		a.outputTokenTarget = a.status.usage.OutputTokens
+		a.repl.displayedInputTokens = totalIn
+		a.repl.inputTokenTarget = totalIn
+		a.repl.outputTokenTarget = a.status.usage.OutputTokens
 		contextSize := m.InputTokens + m.CacheReadInputTokens + m.CacheCreationInputTokens + m.OutputTokens
 		a.status.SetContext(contextSize, a.engine.ContextWindow())
 		slog.Info("tui:usage", "delta_in", m.InputTokens, "delta_out", m.OutputTokens, "context_size", contextSize, "total_in", a.status.usage.TotalInputTokens(), "total_out", a.status.usage.OutputTokens, "cache_read", a.status.usage.CacheReadInputTokens, "cache_creation", a.status.usage.CacheCreationInputTokens)
@@ -954,8 +1158,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.thinkingActive = true
-			a.thinkingStart = time.Now()
 			a.markViewportDirty()
 			a.repl.PendingThinkingStarted()
 		}
@@ -977,7 +1179,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		} else {
 			a.repl.PendingThinkingDelta(m.Text)
 		}
-		a.tokenRate.Add(m.Text)
+		a.repl.TokenRate().Add(m.Text)
 		return true, a.readEvents()
 
 	case thinkingEndMsg:
@@ -994,8 +1196,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.repl.updateToolBlock(m.Agent.ParentToolUseID, parent)
 			}
 		} else {
-			a.thinkingActive = false
-			a.thinkingDuration = m.Duration
 			a.markViewportDirty()
 			a.repl.PendingThinkingDone(m.Duration)
 		}
@@ -1136,10 +1336,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			a.toolBlink = (a.toolBlinkTick/5)%2 == 0
 			// Animate displayed tokens toward actual values
-			target := max(a.status.usage.TotalInputTokens(), a.inputTokenTarget)
-			a.displayedInputTokens = animateTokenValue(a.displayedInputTokens, target)
-			outputTarget := max(a.responseCharCount/4, a.outputTokenTarget)
-			a.displayedOutputTokens = animateTokenValue(a.displayedOutputTokens, outputTarget)
+			target := max(a.status.usage.TotalInputTokens(), a.repl.inputTokenTarget)
+			a.repl.displayedInputTokens = animateTokenValue(a.repl.displayedInputTokens, target)
+			outputTarget := max(a.repl.ResponseCharCount()/4, a.repl.outputTokenTarget)
+			a.repl.displayedOutputTokens = animateTokenValue(a.repl.displayedOutputTokens, outputTarget)
 
 			// Quota fetch piggybacks on the 100ms spinner tick: every 100
 			// ticks (~10s) fire one fetch.
@@ -1229,17 +1429,10 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 		a.repl.StartQuery()
 		a.status.SetStreaming(true)
 		a.spinner.Start()
-		a.progressStart = time.Now()
-		a.thinkingActive = false
-		a.thinkingDuration = 0
 		a.status.SetUsage(types.Usage{})
-		a.responseCharCount = 0
-		a.tokenRate.Reset()
-		a.displayedInputTokens = 0
-		a.displayedOutputTokens = 0
-		a.cacheReadTokens = 0
-		a.cacheCreationTokens = 0
-		a.inputTokenTarget = types.EstimateTokens(a.systemPrompt) + types.EstimateTokens(displayText)
+		a.repl.displayedInputTokens = 0
+		a.repl.displayedOutputTokens = 0
+		a.repl.inputTokenTarget = types.EstimateTokens(a.systemPrompt) + types.EstimateTokens(displayText)
 		return tea.Batch(
 			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
@@ -1274,16 +1467,9 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.repl.StartQuery()
 	a.status.SetStreaming(true)
 	a.spinner.Start()
-	a.progressStart = time.Now()
-	a.thinkingActive = false
-	a.thinkingDuration = 0
 	a.status.SetUsage(types.Usage{})
-	a.responseCharCount = 0
-	a.tokenRate.Reset()
-	a.displayedInputTokens = 0
-	a.displayedOutputTokens = 0
-	a.cacheReadTokens = 0
-	a.cacheCreationTokens = 0
+	a.repl.displayedInputTokens = 0
+	a.repl.displayedOutputTokens = 0
 	// Estimate input tokens: use engine's precise ContextTokens (from last
 	// API usage) as the base, only estimate the new user message text.
 	// Falls back to system prompt estimation on the first turn (cold start).
@@ -1291,7 +1477,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	if base == 0 {
 		base = types.EstimateTokens(a.systemPrompt)
 	}
-	a.inputTokenTarget = base + types.EstimateTokens(text)
+	a.repl.inputTokenTarget = base + types.EstimateTokens(text)
 
 	return tea.Batch(
 		commitCmd,

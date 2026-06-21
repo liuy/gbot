@@ -273,7 +273,7 @@ func TestApp_Update_WindowSize(t *testing.T) {
 func TestApp_Update_ErrorMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	model, cmd := app.Update(errMsg{Err: errors.New("test error")})
@@ -388,7 +388,7 @@ func TestApp_Update_StreamComplete(t *testing.T) {
 func TestApp_Update_StreamComplete_WithError(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	model, _ := app.Update(queryEndMsg{Err: errors.New("stream failed")})
@@ -439,7 +439,6 @@ func TestApp_Attachment_PathA_ThenPathB(t *testing.T) {
 	app := newTestApp(mp)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for progress bar elapsed time during streaming simulation
 
 	// Step 1: attachment arrives while streaming (Path A — ignored)
 	model, cmd := app.Update(attachmentMsg{})
@@ -564,7 +563,6 @@ func TestApp_Attachment_AfterQueryEnd_AutoProcessed(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	// Step 1: query ends -> TUI goes idle
 	model, _ := app.Update(queryEndMsg{})
@@ -597,7 +595,7 @@ func TestApp_Attachment_AfterQueryEnd_AutoProcessed(t *testing.T) {
 func TestApp_Update_SpinnerTick(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	// Spinner only advances every 5th tick
@@ -694,7 +692,7 @@ func TestApp_HandleKey_CtrlC_FirstPress(t *testing.T) {
 func TestApp_HandleKey_CtrlC_CancelStream(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -1111,27 +1109,11 @@ func TestApp_View_StreamingWithProgress(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for elapsed time display in streaming progress line
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
 	v := app.View()
 	if !strings.Contains(v, "↓") || !strings.Contains(v, "tokens") {
 		t.Errorf("streaming view should show token count with ↓, got: %s", v)
-	}
-}
-
-func TestApp_View_StreamingNoProgressStart(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(&tuiMockProvider{})
-	app.width = 80
-	app.height = 24
-	app.repl.streaming = true
-	app.spinner.Start()
-	// progressStart is zero → no progress line (no elapsed time shown)
-	v := app.View()
-	// No status bar — check that elapsed time is not shown
-	if strings.Contains(v, "0.0s") {
-		t.Error("should not show elapsed time when progressStart is zero")
 	}
 }
 
@@ -1165,8 +1147,8 @@ func TestApp_Update_StreamToolDelta_CountsChars(t *testing.T) {
 	delta := `{"content":"package main\nfunc main() {}"}`
 	app.Update(toolParamDeltaMsg{ID: "t1", Delta: delta, Summary: "main.go"})
 
-	if app.responseCharCount != len(delta) {
-		t.Errorf("responseCharCount = %d, want %d (tool delta chars not counted)", app.responseCharCount, len(delta))
+	if app.repl.ResponseCharCount() != len(delta) {
+		t.Errorf("responseCharCount = %d, want %d (tool delta chars not counted)", app.repl.ResponseCharCount(), len(delta))
 	}
 }
 
@@ -1214,7 +1196,7 @@ func TestApp_QuotaFetch_PiggybacksOnSpinnerTick(t *testing.T) {
 	})
 	t.Run("tickTrigger", func(t *testing.T) {
 		app := newTestApp(&tuiMockProvider{})
-		app.repl.streaming = true
+		app.repl.StartStreamingForTest()
 		app.spinner.Start()
 		fetcher := &countingFetcher{}
 		app.quotaFetcher = fetcher
@@ -1590,8 +1572,8 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 
 	// Main model usage — snaps displayedInputTokens
 	app.updateRepl(usageMsg{InputTokens: 500, OutputTokens: 100})
-	if app.displayedInputTokens != 500 {
-		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 300", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 500 {
+		t.Fatalf("after usageMsg, displayedInputTokens = %d, want 300", app.repl.displayedInputTokens)
 	}
 
 	// Agent usage — should snap displayedInputTokens (includes cache in total)
@@ -1603,11 +1585,11 @@ func TestApp_AgentUsageMsg_UpdatesInputTokens(t *testing.T) {
 		Agent:                agent,
 	})
 	// TotalInputTokens = (500+300) InputTokens + (0+200) CacheRead = 1000
-	if app.displayedInputTokens != 1000 {
-		t.Errorf("after agent usageMsg, displayedInputTokens = %d, want 1000", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 1000 {
+		t.Errorf("after agent usageMsg, displayedInputTokens = %d, want 1000", app.repl.displayedInputTokens)
 	}
-	if app.inputTokenTarget != 1000 {
-		t.Errorf("inputTokenTarget = %d, want 1000", app.inputTokenTarget)
+	if app.repl.inputTokenTarget != 1000 {
+		t.Errorf("inputTokenTarget = %d, want 1000", app.repl.inputTokenTarget)
 	}
 	// Verify per-agent TokensIn includes cache: handler computes 300+200=500
 	blk := app.repl.Messages()[0].Blocks[0]
@@ -1642,12 +1624,12 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 		t.Errorf("outTokens = %d, want 30", app.status.usage.OutputTokens)
 	}
 	// Input tokens should snap immediately to actual value
-	if app.displayedInputTokens != 100 {
-		t.Errorf("displayedInputTokens = %d, want 100 (snap)", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 100 {
+		t.Errorf("displayedInputTokens = %d, want 100 (snap)", app.repl.displayedInputTokens)
 	}
 	// Output tokens should NOT snap — they animate via spinner tick
-	if app.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0 (not yet animated)", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 (not yet animated)", app.repl.displayedOutputTokens)
 	}
 }
 
@@ -1667,7 +1649,7 @@ func TestApp_UpdateRepl_ThinkingStart(t *testing.T) {
 	if cmd == nil {
 		t.Error("thinkingStartMsg should return a readEvents cmd")
 	}
-	if !app.thinkingActive {
+	if !app.repl.IsThinking() {
 		t.Error("thinkingActive should be true")
 	}
 }
@@ -1676,7 +1658,7 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.thinkingActive = true
+	app.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 
 	handled, cmd := app.updateRepl(thinkingEndMsg{Duration: 3 * time.Second})
 	if !handled {
@@ -1685,11 +1667,11 @@ func TestApp_UpdateRepl_ThinkingEnd(t *testing.T) {
 	if cmd == nil {
 		t.Error("thinkingEndMsg should return a readEvents cmd")
 	}
-	if app.thinkingActive {
+	if app.repl.IsThinking() {
 		t.Error("thinkingActive should be false after end")
 	}
-	if app.thinkingDuration != 3*time.Second {
-		t.Errorf("thinkingDuration = %v, want 3s", app.thinkingDuration)
+	if app.repl.ThinkingDuration() != 3*time.Second {
+		t.Errorf("thinkingDuration = %v, want 3s", app.repl.ThinkingDuration())
 	}
 }
 
@@ -1880,7 +1862,7 @@ func TestApp_UpdateRepl_ThinkingEndMarksDone(t *testing.T) {
 func TestApp_UpdateRepl_ErrMsg(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	handled, cmd := app.updateRepl(errMsg{Err: errors.New("boom")})
@@ -1905,7 +1887,7 @@ func TestApp_UpdateRepl_ErrMsg(t *testing.T) {
 func TestApp_HandleSubmitRepl_AlreadyStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	cmd := app.handleSubmitRepl("test")
 	if cmd != nil {
 		t.Error("handleSubmitRepl while streaming should return nil")
@@ -1919,7 +1901,7 @@ func TestApp_HandleSubmitRepl_AlreadyStreaming(t *testing.T) {
 func TestApp_HandleKey_CtrlC_CancelStream_NoCancelFunc(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	// cancelFunc is nil by default
 
@@ -1946,7 +1928,7 @@ func TestApp_HandleKey_EnterWhileStreaming(t *testing.T) {
 	app := newTestApp(mp)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.input.SetValue("hello")
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -2011,7 +1993,7 @@ func TestPrettyJSON_NullValue(t *testing.T) {
 func TestApp_HandleKey_RunesWhileStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.input.SetValue("abc")
 	// Keys still work while streaming (no special handling for most keys)
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
@@ -2027,7 +2009,7 @@ func TestApp_HandleKey_RunesWhileStreaming(t *testing.T) {
 func TestApp_HandleKey_BackspaceWhileStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.input.SetValue("abc")
 	app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	if app.input.Value() != "ab" {
@@ -2042,7 +2024,7 @@ func TestApp_HandleKey_BackspaceWhileStreaming(t *testing.T) {
 func TestApp_HandleKey_SpaceWhileStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.Update(tea.KeyMsg{Type: tea.KeySpace})
 	if app.input.Value() != " " {
 		t.Errorf("space while streaming should work, got %q", app.input.Value())
@@ -2056,7 +2038,7 @@ func TestApp_HandleKey_SpaceWhileStreaming(t *testing.T) {
 func TestApp_HandleKey_LeftRightWhileStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.input.SetValue("abc")
 	app.Update(tea.KeyMsg{Type: tea.KeyLeft})
 	app.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -2073,7 +2055,7 @@ func TestApp_HandleKey_LeftRightWhileStreaming(t *testing.T) {
 func TestApp_HandleKey_HomeEndWhileStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.input.SetValue("abc")
 	// Home/End now move input cursor (Ctrl+A/Ctrl+E)
 	// Use Ctrl+A/Ctrl+E for input cursor movement
@@ -2171,7 +2153,7 @@ func TestApp_FinishStream(t *testing.T) {
 
 func TestApp_FinishStream_Empty(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	// No text, no tools
 
@@ -2235,7 +2217,7 @@ func TestApp_FinishStream_WithError(t *testing.T) {
 func TestApp_FinishStream_PreservesCancelFunc(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.cancelFunc = app.engine.Abort
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	app.repl.FinishStream(nil)
@@ -2510,7 +2492,7 @@ func TestApp_ReadEvents_EventReceived(t *testing.T) {
 func TestApp_HandleSubmit_AlreadyStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 
 	model, cmd := app.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
@@ -2629,7 +2611,7 @@ func TestApp_View_SmallHeight(t *testing.T) {
 func TestApp_HandleKey_CtrlC_CancelWithFunc(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	ctx, cancel := context.WithCancel(context.Background())
 	app.repl.cancelFunc = cancel
@@ -2657,7 +2639,7 @@ func TestApp_HandleKey_CtrlC_CancelWithFunc(t *testing.T) {
 func TestApp_HandleSubmit_Direct_AlreadyStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 
 	cmd := app.handleSubmitRepl("test")
 	if cmd != nil {
@@ -2683,44 +2665,44 @@ func TestSpinnerE2E_InputEstimateToSnap(t *testing.T) {
 	// 1. Submit query
 	app.handleSubmitRepl("hello, this is a test message")
 	// Estimate should be set from systemPrompt + user text
-	if app.inputTokenTarget <= 0 {
-		t.Fatalf("inputTokenTarget = %d, want > 0 after submit", app.inputTokenTarget)
+	if app.repl.inputTokenTarget <= 0 {
+		t.Fatalf("inputTokenTarget = %d, want > 0 after submit", app.repl.inputTokenTarget)
 	}
-	if app.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0 right after submit", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 right after submit", app.repl.displayedInputTokens)
 	}
 
 	// 2. Spinner ticks — displayedInputTokens animates toward estimate
 	app.Update(spinnerTickMsg{})
-	if app.displayedInputTokens == 0 {
+	if app.repl.displayedInputTokens == 0 {
 		t.Error("displayedInputTokens should increment on first tick")
 	}
-	estimate := app.inputTokenTarget
-	if app.displayedInputTokens > estimate {
-		t.Errorf("displayedInputTokens = %d, should not exceed estimate %d", app.displayedInputTokens, estimate)
+	estimate := app.repl.inputTokenTarget
+	if app.repl.displayedInputTokens > estimate {
+		t.Errorf("displayedInputTokens = %d, should not exceed estimate %d", app.repl.displayedInputTokens, estimate)
 	}
 
 	// 3. More ticks — continues animating
-	prev := app.displayedInputTokens
+	prev := app.repl.displayedInputTokens
 	app.Update(spinnerTickMsg{})
-	if app.displayedInputTokens <= prev {
-		t.Errorf("displayedInputTokens = %d, should increase from %d", app.displayedInputTokens, prev)
+	if app.repl.displayedInputTokens <= prev {
+		t.Errorf("displayedInputTokens = %d, should increase from %d", app.repl.displayedInputTokens, prev)
 	}
 
 	// 4. API responds with actual input tokens — snap
 	actualInput := 500
 	app.Update(usageMsg{InputTokens: actualInput, OutputTokens: 0})
-	if app.displayedInputTokens != actualInput {
-		t.Errorf("displayedInputTokens = %d, want %d after snap", app.displayedInputTokens, actualInput)
+	if app.repl.displayedInputTokens != actualInput {
+		t.Errorf("displayedInputTokens = %d, want %d after snap", app.repl.displayedInputTokens, actualInput)
 	}
-	if app.inputTokenTarget != actualInput {
-		t.Errorf("inputTokenTarget = %d, want %d after snap", app.inputTokenTarget, actualInput)
+	if app.repl.inputTokenTarget != actualInput {
+		t.Errorf("inputTokenTarget = %d, want %d after snap", app.repl.inputTokenTarget, actualInput)
 	}
 
 	// 5. Subsequent ticks don't change input (already at target)
 	app.Update(spinnerTickMsg{})
-	if app.displayedInputTokens != actualInput {
-		t.Errorf("displayedInputTokens = %d, should stay at %d after snap", app.displayedInputTokens, actualInput)
+	if app.repl.displayedInputTokens != actualInput {
+		t.Errorf("displayedInputTokens = %d, should stay at %d after snap", app.repl.displayedInputTokens, actualInput)
 	}
 }
 
@@ -2732,33 +2714,32 @@ func TestSpinnerE2E_OutputAnimatesDuringStream(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for spinner animation timing during stream
 
 	// Receive text chunks
 	app.Update(textDeltaMsg{Text: "Hello "})
 	app.Update(textDeltaMsg{Text: "world, this is a long response with many tokens"})
 	// responseCharCount = len("Hello ") + len("world, this is a long response with many tokens")
-	expectedEstimate := app.responseCharCount / 4
+	expectedEstimate := app.repl.ResponseCharCount() / 4
 
 	// Before any tick, displayedOutputTokens is still 0
-	if app.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0 before first tick", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 before first tick", app.repl.displayedOutputTokens)
 	}
 
 	// After tick, starts animating toward estimate
 	app.Update(spinnerTickMsg{})
-	if app.displayedOutputTokens == 0 {
+	if app.repl.displayedOutputTokens == 0 {
 		t.Error("displayedOutputTokens should increment on tick")
 	}
-	if app.displayedOutputTokens > expectedEstimate {
-		t.Errorf("displayedOutputTokens = %d, should not exceed estimate %d", app.displayedOutputTokens, expectedEstimate)
+	if app.repl.displayedOutputTokens > expectedEstimate {
+		t.Errorf("displayedOutputTokens = %d, should not exceed estimate %d", app.repl.displayedOutputTokens, expectedEstimate)
 	}
 
 	// More chunks + ticks → keeps growing
 	app.Update(textDeltaMsg{Text: " and even more text to stream"})
 	app.Update(spinnerTickMsg{})
-	if app.displayedOutputTokens < 2 {
-		t.Errorf("displayedOutputTokens = %d, should keep growing", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens < 2 {
+		t.Errorf("displayedOutputTokens = %d, should keep growing", app.repl.displayedOutputTokens)
 	}
 }
 
@@ -2770,7 +2751,6 @@ func TestSpinnerE2E_CompletedStatsAfterStream(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-2 * time.Second) // REAL-TIME: needed for elapsed time in completed stats line
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("response text")
 
@@ -2806,11 +2786,10 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for thinking state timing display
 
 	// Thinking starts
 	app.Update(thinkingStartMsg{})
-	if !app.thinkingActive {
+	if !app.repl.IsThinking() {
 		t.Error("thinkingActive should be true")
 	}
 	v := app.View()
@@ -2820,7 +2799,7 @@ func TestSpinnerE2E_ThinkingState(t *testing.T) {
 
 	// Thinking ends
 	app.Update(thinkingEndMsg{Duration: 3 * time.Second})
-	if app.thinkingActive {
+	if app.repl.IsThinking() {
 		t.Error("thinkingActive should be false after end")
 	}
 	v = app.View()
@@ -2843,32 +2822,32 @@ func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 	app.repl.StartQuery()
 	app.status.usage.InputTokens = 100
 	app.status.usage.OutputTokens = 50
-	app.displayedInputTokens = 100
-	app.displayedOutputTokens = 50
-	app.responseCharCount = 200
+	app.repl.displayedInputTokens = 100
+	app.repl.displayedOutputTokens = 50
+	app.repl.SetResponseCharCount(200)
 	app.repl.FinishStream(nil)
 
 	// Verify first query left state
-	if app.displayedInputTokens != 100 {
-		t.Errorf("after first query, displayedInputTokens = %d, want 100", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 100 {
+		t.Errorf("after first query, displayedInputTokens = %d, want 100", app.repl.displayedInputTokens)
 	}
-	if app.responseCharCount == 0 {
+	if app.repl.ResponseCharCount() == 0 {
 		t.Error("responseCharCount should be non-zero after first query")
 	}
 
 	// Second query — should reset all counters
 	app.handleSubmitRepl("second query")
-	if app.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0 after second submit", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 after second submit", app.repl.displayedInputTokens)
 	}
-	if app.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0 after second submit", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0 after second submit", app.repl.displayedOutputTokens)
 	}
-	if app.responseCharCount != 0 {
-		t.Errorf("responseCharCount = %d, want 0 after second submit", app.responseCharCount)
+	if app.repl.ResponseCharCount() != 0 {
+		t.Errorf("responseCharCount = %d, want 0 after second submit", app.repl.ResponseCharCount())
 	}
-	if app.inputTokenTarget <= 0 {
-		t.Errorf("inputTokenTarget = %d, want > 0 after second submit", app.inputTokenTarget)
+	if app.repl.inputTokenTarget <= 0 {
+		t.Errorf("inputTokenTarget = %d, want > 0 after second submit", app.repl.inputTokenTarget)
 	}
 }
 
@@ -2879,7 +2858,7 @@ func TestSpinnerE2E_SecondQueryResetsCounters(t *testing.T) {
 func TestApp_Update_SpinnerTick_ReturnsCmd(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	_, cmd := app.Update(spinnerTickMsg{})
@@ -3220,28 +3199,28 @@ func TestAnimateTokenValue_ZeroTarget(t *testing.T) {
 func TestApp_Update_SpinnerTick_AnimatesTokens(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	app.status.usage.InputTokens = 100
-	app.responseCharCount = 800 // estimate = 200 output tokens
+	app.repl.SetResponseCharCount(800) // estimate = 200 output tokens
 
 	app.Update(spinnerTickMsg{})
-	if app.displayedInputTokens != 1 {
-		t.Errorf("displayedInputTokens = %d, want 1", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 1 {
+		t.Errorf("displayedInputTokens = %d, want 1", app.repl.displayedInputTokens)
 	}
-	if app.displayedOutputTokens != 1 {
-		t.Errorf("displayedOutputTokens = %d, want 1", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 1 {
+		t.Errorf("displayedOutputTokens = %d, want 1", app.repl.displayedOutputTokens)
 	}
 
 	// Tick several times — should keep incrementing
 	for range 5 {
 		app.Update(spinnerTickMsg{})
 	}
-	if app.displayedInputTokens != 6 {
-		t.Errorf("after 6 ticks, displayedInputTokens = %d, want 6", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 6 {
+		t.Errorf("after 6 ticks, displayedInputTokens = %d, want 6", app.repl.displayedInputTokens)
 	}
-	if app.displayedOutputTokens != 6 {
-		t.Errorf("after 6 ticks, displayedOutputTokens = %d, want 6", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 6 {
+		t.Errorf("after 6 ticks, displayedOutputTokens = %d, want 6", app.repl.displayedOutputTokens)
 	}
 }
 
@@ -3254,23 +3233,23 @@ func TestApp_HandleSubmitRepl_ResetsDisplayedTokens(t *testing.T) {
 	app := newTestApp(mp)
 	app.width = 80
 	app.height = 24
-	app.displayedInputTokens = 500
-	app.displayedOutputTokens = 500
-	app.responseCharCount = 999
+	app.repl.displayedInputTokens = 500
+	app.repl.displayedOutputTokens = 500
+	app.repl.SetResponseCharCount(999)
 
 	app.handleSubmitRepl("test")
-	if app.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0", app.repl.displayedInputTokens)
 	}
-	if app.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0", app.displayedOutputTokens)
+	if app.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0", app.repl.displayedOutputTokens)
 	}
-	if app.responseCharCount != 0 {
-		t.Errorf("responseCharCount = %d, want 0", app.responseCharCount)
+	if app.repl.ResponseCharCount() != 0 {
+		t.Errorf("responseCharCount = %d, want 0", app.repl.ResponseCharCount())
 	}
 	// Should have set an input token target estimate
-	if app.inputTokenTarget <= 0 {
-		t.Errorf("inputTokenTarget = %d, want > 0", app.inputTokenTarget)
+	if app.repl.inputTokenTarget <= 0 {
+		t.Errorf("inputTokenTarget = %d, want > 0", app.repl.inputTokenTarget)
 	}
 }
 
@@ -3325,7 +3304,6 @@ func TestApp_View_StreamingToolBlink(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for tool blink progress display
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("thinking...")
 	app.toolBlink = true
@@ -3513,7 +3491,6 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	// Simulate: user submits first query
 	app.repl.AddUserMessage("first query")
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-2 * time.Second) // REAL-TIME: needed for stats scroll timing
 
 	// Streaming: assistant response
 	app.repl.AppendTextItem()
@@ -3580,7 +3557,6 @@ func TestApp_StatsBlockInMessage(t *testing.T) {
 
 	app.repl.AddUserMessage("hi")
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for stats block timing in message
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello back")
 	app.status.usage.InputTokens = 50
@@ -3621,7 +3597,6 @@ func TestStreamComplete_StatsLineContainsActualTokenValues(t *testing.T) {
 	app.height = 24
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for stats line timing after stream complete
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("hello")
 
@@ -3670,7 +3645,6 @@ func TestView_ExpandedToolVisibleWithHeightLimit(t *testing.T) {
 	app.height = 20 // small height to trigger scrolling (maxLines = 17)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for expanded tool view timing
 
 	// Tool with long output
 	app.repl.PendingToolStarted("t1", "Bash", "awk command", `{"command":"awk ..."}`, tool.SearchReadKind{})
@@ -3782,7 +3756,6 @@ func TestApp_View_ToolOutputCollapsedAfterCommit(t *testing.T) {
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for commit timing in tool collapse state
 	app.status.usage.InputTokens = 10
 	app.status.usage.OutputTokens = 5
 
@@ -3878,7 +3851,6 @@ func TestApp_View_TruncationPreservesAssistantText(t *testing.T) {
 	app.height = 15 // small height → maxLines = 12
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for truncation timing in assistant text preservation
 
 	// Tool with long output (takes many lines)
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
@@ -3920,7 +3892,6 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 	app.repl.PendingToolDone("t1", longOutput, false, time.Second, tool.SearchReadKind{})
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("done")
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for commit preserves collapse state timing
 	app.status.usage.InputTokens = 10
 	app.status.usage.OutputTokens = 5
 
@@ -3960,7 +3931,6 @@ func TestApp_Scroll_WindowLimitsContent(t *testing.T) {
 	// Add 20 lines of plain text (not tool output, to avoid per-tool truncation)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for scroll window content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
 	app.markViewportDirty()
 
@@ -3994,7 +3964,6 @@ func TestApp_Scroll_AutoScrollToBottom(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for auto-scroll elapsed time display
 	app.repl.AppendChunk(strings.Repeat("line\n", 20))
 	app.markViewportDirty()
 
@@ -4021,7 +3990,6 @@ func TestApp_Scroll_PageUpPageDown(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for scroll page up/down content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -4056,7 +4024,6 @@ func TestApp_Scroll_MouseWheel(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for mouse wheel scroll content timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 	_ = app.View()
@@ -4086,7 +4053,6 @@ func TestApp_Scroll_ResetOnSubmit(t *testing.T) {
 	// Add long content and scroll up
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for scroll reset on submit timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 	_ = app.View()
@@ -4130,7 +4096,6 @@ func TestApp_Scroll_IndicatorPosition(t *testing.T) {
 	// Add long content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for scroll indicator position timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -4169,7 +4134,6 @@ func TestApp_Scroll_PageNumberChanges(t *testing.T) {
 	// Create content where scrollTotal is just over maxContentLines.
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for scroll page number calculation timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 10))
 	app.markViewportDirty()
 
@@ -4201,7 +4165,6 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	// At bottom (offset=13): midLine=16, old formula 16/6+1=3 (wrong, should be 4)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for last page number correctness timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 19))
 	app.markViewportDirty()
 
@@ -4217,7 +4180,6 @@ func TestApp_Scroll_LastPageNumberCorrect(t *testing.T) {
 	app2.height = 12
 	app2.repl.StartQuery()
 	app2.spinner.Start()
-	app2.progressStart = time.Now() // REAL-TIME: needed for second app instance page number timing
 	app2.repl.AppendChunk(strings.Repeat("line\n", 13))
 	app2.markViewportDirty()
 
@@ -4241,7 +4203,6 @@ func TestApp_Scroll_HalfPageScroll(t *testing.T) {
 	// 30 lines → 5 pages (viewLines=6)
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for half-page scroll timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 30))
 	app.markViewportDirty()
 
@@ -4294,7 +4255,6 @@ func TestApp_Scroll_ShortContentNoScrolling(t *testing.T) {
 	// Add short content
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for short content scroll state timing
 	app.repl.AppendChunk("short response")
 	app.markViewportDirty()
 
@@ -4325,7 +4285,6 @@ func TestApp_Scroll_PgUpOvershootSetsUserScrolled(t *testing.T) {
 	// userScrolled = 0>0 = false → View() auto-scrolls back.
 	app.repl.StartQuery()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for PgUp overshoot userScrolled detection timing
 	app.repl.AppendChunk(strings.Repeat("line\n", 9))
 	app.markViewportDirty()
 	_ = app.View() // populate scrollTotal
@@ -4361,9 +4320,8 @@ func TestApp_ProgressLine_NoTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for progress line with no tools
 
 	v := app.View()
 	if strings.Contains(v, "tool") && strings.Contains(v, "tokens") {
@@ -4377,9 +4335,8 @@ func TestApp_ProgressLine_OneTool(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for progress line with one tool
 
 	// Simulate one tool started
 	app.repl.toolCount = 1
@@ -4398,9 +4355,8 @@ func TestApp_ProgressLine_ThreeTools(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC) // REAL-TIME: needed for progress line with three tools
 
 	// Simulate three tools started
 	app.repl.toolCount = 3
@@ -4491,8 +4447,8 @@ func TestApp_UsageMsg_AccumulateAllFields(t *testing.T) {
 
 	// Verify displayed values
 	totalInput := app.status.usage.TotalInputTokens()
-	if app.displayedInputTokens != totalInput {
-		t.Errorf("displayedInputTokens = %d, want %d", app.displayedInputTokens, totalInput)
+	if app.repl.displayedInputTokens != totalInput {
+		t.Errorf("displayedInputTokens = %d, want %d", app.repl.displayedInputTokens, totalInput)
 	}
 }
 
@@ -4545,8 +4501,8 @@ func TestApp_UsageMsg_CacheCreationAccumulates(t *testing.T) {
 	if totalIn != 1550 {
 		t.Errorf("after second call, TotalInputTokens = %d, want 1550 (250+1100+200)", totalIn)
 	}
-	if app.displayedInputTokens != totalIn {
-		t.Errorf("displayedInputTokens = %d, want %d", app.displayedInputTokens, totalIn)
+	if app.repl.displayedInputTokens != totalIn {
+		t.Errorf("displayedInputTokens = %d, want %d", app.repl.displayedInputTokens, totalIn)
 	}
 }
 
@@ -4557,12 +4513,11 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for query end context update elapsed time
 
 	// Simulate API response with 26000 tokens
 	app.updateRepl(usageMsg{InputTokens: 26000, OutputTokens: 100})
-	if app.displayedInputTokens != 26000 {
-		t.Fatalf("before compact, displayedInputTokens = %d, want 26000", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 26000 {
+		t.Fatalf("before compact, displayedInputTokens = %d, want 26000", app.repl.displayedInputTokens)
 	}
 
 	// Simulate compact reducing context to 15000
@@ -4571,8 +4526,8 @@ func TestApp_QueryEnd_UpdatesContextFromEngine(t *testing.T) {
 	// Query ends — status bar should now show engine's post-compact value
 	app.updateRepl(queryEndMsg{})
 
-	if app.displayedInputTokens != 15000 {
-		t.Errorf("after queryEnd, displayedInputTokens = %d, want 15000 (post-compact engine.ContextTokens)", app.displayedInputTokens)
+	if app.repl.displayedInputTokens != 15000 {
+		t.Errorf("after queryEnd, displayedInputTokens = %d, want 15000 (post-compact engine.ContextTokens)", app.repl.displayedInputTokens)
 	}
 }
 
@@ -5408,7 +5363,6 @@ func TestApp_QueryEnd_ErrorFromBlockingLimit(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for blocking limit error timing
 
 	// Simulate blocking limit error from engine
 	app.updateRepl(queryEndMsg{
@@ -5443,7 +5397,6 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for engine total usage stats timing
 
 	// Simulate streaming: TUI sees per-turn values (overwritten each turn).
 	// Turn 1: 10k input, 500 output
@@ -5501,7 +5454,7 @@ func TestApp_QueryEnd_UsesEngineTotalUsage(t *testing.T) {
 func TestApp_HandleEscape_DuringStreaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	cancelled := false
@@ -5530,7 +5483,7 @@ func TestApp_HandleEscape_DuringStreaming(t *testing.T) {
 func TestApp_HandleEscape_DuringStreaming_NoCancelFunc(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	// cancelFunc is nil — should not panic
 
@@ -5547,7 +5500,7 @@ func TestApp_HandleEscape_DuringStreaming_NoCancelFunc(t *testing.T) {
 func TestApp_HandleEscape_DoublePress_KillAll(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	cancelled := false
@@ -5579,7 +5532,7 @@ func TestApp_HandleEscape_DoublePress_KillAll(t *testing.T) {
 func TestApp_HandleEscape_SinglePress_NoKillAll(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 
 	cancelled := false
@@ -5628,7 +5581,7 @@ func TestApp_HandleEscape_DoublePress_NotStreaming_StillKillsAll(t *testing.T) {
 func TestApp_HandleEscape_KillAllFnNil_NoPanic(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
 	app.repl.cancelFunc = func() {}
 	app.killAllFn = nil // no killAllFn set
@@ -5642,7 +5595,6 @@ func TestApp_QueryEnd_AbortError_Streaming(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for streaming abort error timing
 
 	// Simulate query end with streaming-phase AbortError
 	abortErr := &engine.AbortError{Phase: "streaming", Err: context.Canceled}
@@ -5672,7 +5624,6 @@ func TestApp_QueryEnd_AbortError_Tools(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	app.repl.StartQuery()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Add(-1 * time.Second) // REAL-TIME: needed for tools abort error timing
 
 	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
 	app.updateRepl(queryEndMsg{Err: abortErr})
@@ -6599,7 +6550,6 @@ func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
 	app.repl.StartQuery()
 	app.repl.AppendTextItem()
 	app.repl.AppendChunk("partial response")
-	app.progressStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // deterministic time for stats
 
 	// Simulate queryEnd with AbortError — this triggers tryAutoRewind
 	abortErr := &engine.AbortError{Phase: "tools", Err: context.Canceled}
@@ -7018,8 +6968,7 @@ func TestRetryView_HiddenBelowAttempt4(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 3
 	app.retryMax = 10
@@ -7037,8 +6986,7 @@ func TestRetryView_VisibleAtAttempt4(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 4
 	app.retryMax = 10
@@ -7078,16 +7026,17 @@ func TestRetryView_AutoHideWhenStreaming(t *testing.T) {
 			app := newTestApp(nil)
 			app.width = 80
 			app.height = 24
-			app.repl.streaming = true
-			app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
+			app.repl.StartStreamingForTest()
 			app.retryActive = true
 			app.retryAttempt = 4
 			app.retryMax = 10
 			app.retryRemaining = 5 * time.Second
 			app.retryStart = time.Now() // REAL-TIME: retry countdown
 			app.retryErrorType = string(types.RetryErrorStreamInterrupted)
-			app.responseCharCount = tt.responseChars
-			app.thinkingActive = tt.thinkingActive
+			app.repl.SetResponseCharCount(tt.responseChars)
+			if tt.thinkingActive {
+				app.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
+			}
 
 			view := app.View()
 			hasRetry := strings.Contains(view, "Retrying in") || strings.Contains(view, "Connecting")
@@ -7102,8 +7051,7 @@ func TestRetryView_NoRawErrorShown(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 4
 	app.retryMax = 10
@@ -7123,9 +7071,8 @@ func TestRetryView_NoRawErrorShown(t *testing.T) {
 func TestRetryAttemptMsg_ContinuesEventChain(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(nil)
-	app.repl.streaming = true
+	app.repl.StartStreamingForTest()
 	app.spinner.Start()
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	// Send retryAttemptMsg
 	msg := retryAttemptMsg{
@@ -7172,8 +7119,7 @@ func TestRetryView_CountdownAccuracy(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 4
 	app.retryMax = 10
@@ -7208,8 +7154,7 @@ func TestStreamMessageMsg_ResetsRetryActive(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Now().Add(-5 * time.Second) // REAL-TIME: progress timer
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 5
 	app.retryMax = 10
@@ -7237,8 +7182,7 @@ func TestRetryView_ShowsConnectingWhenCountdownReachesZero(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Now().Add(-60 * time.Second) // REAL-TIME: progress timer
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 5
 	app.retryMax = 10
@@ -8961,8 +8905,7 @@ func TestTextDelta_ClearsRetryActiveAfterRetry(t *testing.T) {
 	app := newTestApp(nil)
 	app.width = 80
 	app.height = 24
-	app.repl.streaming = true
-	app.progressStart = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	app.repl.StartStreamingForTest()
 	app.retryActive = true
 	app.retryAttempt = 5
 	app.retryMax = 10

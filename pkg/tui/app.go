@@ -162,21 +162,11 @@ type App struct {
 	nextPasteID int
 
 	// Spinner progress state
-	progressStart    time.Time
 	allToolsExpanded bool
 
-	// Thinking state
-	thinkingActive   bool
-	thinkingStart    time.Time
-	thinkingDuration time.Duration // set after thinking ends
-
-	// Dynamic token estimation (source: TS uses responseLength / 4)
-	responseCharCount int
-
-	// Real-time token rate tracking for streaming t/s display
-	tokenRate       *TokenRate
-	rateDisplayVal  float64   // cached for 1s to avoid jitter
-	rateDisplayTime time.Time // last time rateDisplayVal was refreshed
+	// Real-time token rate cached for 1s to avoid jitter
+	rateDisplayVal  float64
+	rateDisplayTime time.Time
 
 	// Tool execution blink state
 	toolBlink     bool
@@ -202,12 +192,6 @@ type App struct {
 	scrollTotal  int  // total lines in rendered content
 	userScrolled bool // true when user manually scrolled up; reset on new content
 
-	// Smoothly animated token counters for spinner display
-	displayedInputTokens  int
-	displayedOutputTokens int
-	outputTokenTarget     int
-	inputTokenTarget      int // estimate set at submit; replaced by actual on first usage event
-
 	// Task list panel (auto-shows when tasks exist)
 	taskListFn    taskListFn  // set from main.go to read tasks for display
 	autoCleanupFn func() bool // checked every render; cleans tasks and jobs, returns true if reset happened
@@ -218,10 +202,6 @@ type App struct {
 	pendingQueue []pendingQueueItem // user messages queued during streaming
 
 	stashed *stashedPrompt // Ctrl+S stashed input (survives /clear and Ctrl+C)
-
-	// Cache token tracking for spinner display
-	cacheReadTokens     int
-	cacheCreationTokens int
 }
 
 // NewApp creates a new App model wrapping a single engine in a default
@@ -258,7 +238,6 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 	a := &App{
 		input:            NewInput(),
 		status:           NewStatusBar(),
-		tokenRate:        NewTokenRate(),
 		spinner:          NewSpinner(),
 		engineMgr:        mgr,
 		systemPrompt:     systemPrompt,
@@ -284,7 +263,15 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 				// in main.go, which adds view states with only Engine set).
 				// Without a fresh ReplState here, a.repl stays nil and
 				// SetStore panics on a.repl.messages dereference.
-				a.repl = NewReplState()
+				// Cache back on vs.Repl so switchEngine reuses this state
+				// instead of building another fresh one (which would lose
+				// streaming state accumulated while this engine was active).
+				fresh := NewReplState()
+				if vs.Engine != nil {
+					fresh.messages = engineMessagesToViews(vs.Engine.Messages(), vs.Engine.AllTools())
+				}
+				a.repl = fresh
+				vs.Repl = newReplAdapter(fresh)
 			}
 			a.sessionID = vs.ActiveSessionID
 		}
@@ -766,20 +753,15 @@ func (a *App) resetDisplayState() {
 	a.contentCache = ""
 	a.contentDirty = false
 	a.allToolsExpanded = false
-	a.thinkingActive = false
-	a.thinkingStart = time.Time{}
-	a.thinkingDuration = 0
-	a.progressStart = time.Time{}
-	a.responseCharCount = 0
-	a.tokenRate.Reset()
-	a.displayedInputTokens = 0
-	a.displayedOutputTokens = 0
-	a.outputTokenTarget = 0
-	a.inputTokenTarget = 0
+	a.repl.displayedInputTokens = 0
+	a.repl.displayedOutputTokens = 0
+	a.repl.outputTokenTarget = 0
+	a.repl.inputTokenTarget = 0
+	if a.repl != nil {
+		a.repl.ResetStreamingUIState()
+	}
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1
-	a.cacheReadTokens = 0
-	a.cacheCreationTokens = 0
 	a.toolBlink = false
 	a.toolBlinkTick = 0
 	a.retryActive = false
@@ -795,6 +777,28 @@ func (a *App) resetDisplayState() {
 // ---------------------------------------------------------------------------
 // tea.Model interface
 // ---------------------------------------------------------------------------
+
+// activateStreamingUI syncs App-level streaming indicators (status bar
+// flag, spinner animation) with a.repl's streaming state and returns a
+// tea.Cmd that bootstraps the spinner tick chain if the engine is
+// mid-stream.
+//
+// Call this whenever a.repl is rebound to a different engine (switchEngine,
+// NewAppWithManager, createNewEngine). Centralizing the setup here prevents
+// the recurring bug where a new activation path forgets one of: status
+// flag, spinner.Start(), or the tick bootstrap cmd.
+func (a *App) activateStreamingUI() tea.Cmd {
+	if a.repl == nil || !a.repl.IsStreaming() {
+		a.status.SetStreaming(false)
+		a.spinner.Stop()
+		return nil
+	}
+	a.status.SetStreaming(true)
+	a.spinner.Start()
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return spinnerTickMsg{}
+	})
+}
 
 // commitPendingMessagesCmd renders a.repl.messages into a string and returns
 // a tea.Println cmd that writes them to the terminal scrollback. Also bumps
@@ -1177,10 +1181,10 @@ func (a *App) View() string {
 	}
 
 	// Progress line: spinner + elapsed + tokens + thinking when streaming
-	if a.repl.IsStreaming() && !a.progressStart.IsZero() {
+	if a.repl.IsStreaming() && !a.repl.StreamingStart().IsZero() {
 		// Retry display: show user-friendly error + countdown for attempts >= 4
 		// Source: TS SystemAPIErrorMessage.tsx — hidden for attempts < 4
-		if a.retryActive && a.retryAttempt >= 4 && !a.thinkingActive {
+		if a.retryActive && a.retryAttempt >= 4 && !a.repl.IsThinking() {
 			secs := max(int((a.retryRemaining-time.Since(a.retryStart)).Seconds())+1, 0)
 			errLine := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(formatRetryError(a.retryErrorType))
 			var countdownLine string
@@ -1194,13 +1198,13 @@ func (a *App) View() string {
 			sb.WriteString(errLine + "\n" + countdownLine + "\n")
 		} else {
 			spinnerFrame := a.spinner.View()
-			elapsedStr := formatElapsed(a.progressStart)
-			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.displayedInputTokens), types.FormatTokenCount(a.displayedOutputTokens))
+			elapsedStr := formatElapsed(a.repl.StreamingStart())
+			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.repl.displayedInputTokens), types.FormatTokenCount(a.repl.displayedOutputTokens))
 			var thinkingStr string
-			if a.thinkingActive {
+			if a.repl.IsThinking() {
 				thinkingStr = " · thinking"
-			} else if a.thinkingDuration > 0 {
-				thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.thinkingDuration.Seconds())
+			} else if a.repl.ThinkingDuration() > 0 {
+				thinkingStr = fmt.Sprintf(" · thought for %.1fs", a.repl.ThinkingDuration().Seconds())
 			}
 			var toolsStr string
 			if tc := a.repl.toolCount; tc > 0 {
@@ -1212,7 +1216,7 @@ func (a *App) View() string {
 			}
 			// Throttle rate display to 1 refresh/sec to avoid jitter.
 			if time.Since(a.rateDisplayTime) >= 500*time.Millisecond {
-				a.rateDisplayVal = a.tokenRate.Rate()
+				a.rateDisplayVal = a.repl.TokenRate().Rate()
 				a.rateDisplayTime = time.Now()
 			}
 			rateStr := fmt.Sprintf(" · %.1f t/s", a.rateDisplayVal)

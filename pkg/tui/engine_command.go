@@ -209,20 +209,36 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	}
 	a.sessionID = target.ActiveSessionID
 
-	// Reset display state so the new engine's render starts fresh.
-	a.resetDisplayState()
+	// Reset App-level display state for the new engine's render. Do NOT
+	// call resetDisplayState here — that would also clear the target
+	// engine's ReplState streaming state, which we just bound and want
+	// to keep (the user is switching INTO a possibly mid-stream engine).
+	a.scrollOffset = 0
+	a.scrollTotal = 0
+	a.userScrolled = false
+	a.allToolsExpanded = false
+	a.repl.displayedInputTokens = 0
+	a.repl.displayedOutputTokens = 0
+	a.repl.outputTokenTarget = 0
+	a.repl.inputTokenTarget = 0
+	a.pasteStore = make(map[int]string)
+	a.nextPasteID = 1
+	a.toolBlink = false
+	a.toolBlinkTick = 0
+	a.retryActive = false
 	a.committedCount = 0
 	a.contentCache = ""
 	a.contentDirty = true
 
-	// If the target engine is mid-stream, restore the streaming UI state
-	// (progress line + status bar streaming flag). Otherwise the user
-	// sees a frozen view: messages present but no elapsed counter, no
-	// spinner — looks dead even though events still arrive via the drain
-	// fn that just got cleared.
-	if a.repl != nil && a.repl.IsStreaming() {
-		a.progressStart = a.repl.StreamingStart()
-		a.status.SetStreaming(true)
+	// All streaming UI state (progressStart, thinkingActive, etc.) lives
+	// on ReplState. Switching just rebinds a.repl — no field-by-field
+	// restoration needed: the new engine's drain fn kept its ReplState
+	// current while it was in background. activateStreamingUI centralizes
+	// the App-level side effects (status flag, spinner, tick bootstrap)
+	// that every activation path must call.
+	cmds := []tea.Cmd{}
+	if tickCmd := a.activateStreamingUI(); tickCmd != nil {
+		cmds = append(cmds, tickCmd)
 	}
 
 	// Status bar reflects new active engine's model.
@@ -255,7 +271,7 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	}
 
 	slog.Info("engine: switched", "from", oldID, "to", id)
-	cmds := []tea.Cmd{tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to engine: %s", target.Name))}
+	cmds = append(cmds, tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to engine: %s", target.Name)))
 	// Commit the new engine's history to scrollback immediately so the
 	// screen shows it after the clear — without this, switched-to engines
 	// with non-empty history render blank until the next WindowSizeMsg

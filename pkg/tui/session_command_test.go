@@ -224,9 +224,9 @@ func TestHandleClear_Success(t *testing.T) {
 	a.engine.SetMessages([]types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
 	})
-	a.displayedInputTokens = 500
-	a.displayedOutputTokens = 100
-	a.thinkingActive = true
+	a.repl.displayedInputTokens = 500
+	a.repl.displayedOutputTokens = 100
+	a.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 	a.scrollOffset = 42
 	a.committedCount = 1
 
@@ -249,13 +249,13 @@ func TestHandleClear_Success(t *testing.T) {
 	}
 
 	// Display state should be reset
-	if a.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0", a.displayedInputTokens)
+	if a.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0", a.repl.displayedInputTokens)
 	}
-	if a.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0", a.displayedOutputTokens)
+	if a.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0", a.repl.displayedOutputTokens)
 	}
-	if a.thinkingActive {
+	if a.repl.IsThinking() {
 		t.Error("thinkingActive should be false")
 	}
 	if a.scrollOffset != 0 {
@@ -265,26 +265,21 @@ func TestHandleClear_Success(t *testing.T) {
 
 func TestResetDisplayState(t *testing.T) {
 	a := &App{
-		scrollOffset:          10,
-		scrollTotal:           20,
-		userScrolled:          true,
-		contentCache:          "old content",
-		contentDirty:          true,
-		allToolsExpanded:      true,
-		thinkingActive:        true,
-		thinkingStart:         parseTime("2026-01-01T00:00:00Z"),
-		thinkingDuration:      5 * time.Second,
-		progressStart:         parseTime("2026-01-01T00:00:00Z"),
-		responseCharCount:     100,
-		displayedInputTokens:  1000,
-		displayedOutputTokens: 200,
-		outputTokenTarget:     300,
-		inputTokenTarget:      1100,
-		cacheReadTokens:       5000,
-		cacheCreationTokens:   2000,
-		toolBlink:             true,
-		toolBlinkTick:         7,
+		repl:             NewReplState(),
+		scrollOffset:     10,
+		scrollTotal:      20,
+		userScrolled:     true,
+		contentCache:     "old content",
+		contentDirty:     true,
+		allToolsExpanded: true,
+		toolBlink:        true,
+		toolBlinkTick:    7,
 	}
+	a.repl.StartThinkingAtForTest(parseTime("2026-01-01T00:00:00Z"))
+	a.repl.displayedInputTokens = 1000
+	a.repl.displayedOutputTokens = 200
+	a.repl.outputTokenTarget = 300
+	a.repl.inputTokenTarget = 1100
 
 	a.resetDisplayState()
 
@@ -306,38 +301,29 @@ func TestResetDisplayState(t *testing.T) {
 	if a.allToolsExpanded {
 		t.Error("allToolsExpanded should be false")
 	}
-	if a.thinkingActive {
+	if a.repl.IsThinking() {
 		t.Error("thinkingActive should be false")
 	}
-	if a.thinkingStart != (time.Time{}) {
-		t.Errorf("thinkingStart = %v, want zero", a.thinkingStart)
+	if a.repl.ThinkingStart() != (time.Time{}) {
+		t.Errorf("thinkingStart = %v, want zero", a.repl.ThinkingStart())
 	}
-	if a.thinkingDuration != 0 {
-		t.Errorf("thinkingDuration = %v, want 0", a.thinkingDuration)
+	if a.repl.StreamingStart() != (time.Time{}) {
+		t.Errorf("progressStart = %v, want zero", a.repl.StreamingStart())
 	}
-	if a.progressStart != (time.Time{}) {
-		t.Errorf("progressStart = %v, want zero", a.progressStart)
+	if a.repl.ResponseCharCount() != 0 {
+		t.Errorf("responseCharCount = %d, want 0", a.repl.ResponseCharCount())
 	}
-	if a.responseCharCount != 0 {
-		t.Errorf("responseCharCount = %d, want 0", a.responseCharCount)
+	if a.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0", a.repl.displayedInputTokens)
 	}
-	if a.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0", a.displayedInputTokens)
+	if a.repl.displayedOutputTokens != 0 {
+		t.Errorf("displayedOutputTokens = %d, want 0", a.repl.displayedOutputTokens)
 	}
-	if a.displayedOutputTokens != 0 {
-		t.Errorf("displayedOutputTokens = %d, want 0", a.displayedOutputTokens)
+	if a.repl.outputTokenTarget != 0 {
+		t.Errorf("outputTokenTarget = %d, want 0", a.repl.outputTokenTarget)
 	}
-	if a.outputTokenTarget != 0 {
-		t.Errorf("outputTokenTarget = %d, want 0", a.outputTokenTarget)
-	}
-	if a.inputTokenTarget != 0 {
-		t.Errorf("inputTokenTarget = %d, want 0", a.inputTokenTarget)
-	}
-	if a.cacheReadTokens != 0 {
-		t.Errorf("cacheReadTokens = %d, want 0", a.cacheReadTokens)
-	}
-	if a.cacheCreationTokens != 0 {
-		t.Errorf("cacheCreationTokens = %d, want 0", a.cacheCreationTokens)
+	if a.repl.inputTokenTarget != 0 {
+		t.Errorf("inputTokenTarget = %d, want 0", a.repl.inputTokenTarget)
 	}
 	if a.toolBlink {
 		t.Error("toolBlink should be false")
@@ -464,10 +450,10 @@ func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	a, store := newSessionTestApp(t)
 
 	a.committedCount = 3
-	a.displayedInputTokens = 999
-	a.displayedOutputTokens = 888
+	a.repl.displayedInputTokens = 999
+	a.repl.displayedOutputTokens = 888
 	a.scrollOffset = 15
-	a.thinkingActive = true
+	a.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 
 	session2, err := store.CreateSession(a.projectDir, "test-model")
 	if err != nil {
@@ -482,10 +468,10 @@ func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	items := []SessionItem{{SessionID: session2.SessionID, Title: "session2"}}
 	_, cmd := a.handleSessionPickerDone(newSelectedDialog(0), items)
 
-	if a.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0 (resetDisplayState not called on resume)", a.displayedInputTokens)
+	if a.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 (resetDisplayState not called on resume)", a.repl.displayedInputTokens)
 	}
-	if a.thinkingActive {
+	if a.repl.IsThinking() {
 		t.Error("thinkingActive should be false after resume (resetDisplayState not called)")
 	}
 	if a.scrollOffset != 0 {
@@ -505,8 +491,8 @@ func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	a, _ := newSessionTestApp(t)
 
 	a.committedCount = 2
-	a.displayedInputTokens = 777
-	a.thinkingActive = true
+	a.repl.displayedInputTokens = 777
+	a.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 	a.scrollOffset = 10
 
 	a.engine.SetMessages([]types.Message{
@@ -517,10 +503,10 @@ func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 
 	cmd := a.forkCurrentSession("fork-test", nil)
 
-	if a.displayedInputTokens != 0 {
-		t.Errorf("displayedInputTokens = %d, want 0 after fork", a.displayedInputTokens)
+	if a.repl.displayedInputTokens != 0 {
+		t.Errorf("displayedInputTokens = %d, want 0 after fork", a.repl.displayedInputTokens)
 	}
-	if a.thinkingActive {
+	if a.repl.IsThinking() {
 		t.Error("thinkingActive should be false after fork")
 	}
 	if a.scrollOffset != 0 {

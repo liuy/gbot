@@ -734,12 +734,172 @@ func TestSwitchEngine_ToStreamingEngine_RestoresProgressLine(t *testing.T) {
 
 	// progressStart must be restored from e2's streamingStart so the
 	// elapsed counter shows ~30s, not 0.
-	if a.progressStart.IsZero() {
+	if a.repl.StreamingStart().IsZero() {
 		t.Error("a.progressStart is zero after switch to streaming e2 — " +
 			"progress line won't show elapsed time")
 	}
-	if got := a.progressStart; got.Sub(startedAt) > 5*time.Second {
+	if got := a.repl.StreamingStart(); got.Sub(startedAt) > 5*time.Second {
 		t.Errorf("a.progressStart = %v, want close to %v (e2's streamingStart)",
+			got, startedAt)
+	}
+}
+
+// TestSwitchEngine_ToStreamingEngine_BootstrapsSpinnerTick verifies that
+// switching INTO a streaming engine bootstraps the spinner animation:
+// (1) a.spinner.Start() is called so the spinner renders frames, and
+// (2) the returned cmd includes a tea.Tick that produces spinnerTickMsg
+// so the animation chain (spinnerTickMsg → tea.Tick → spinnerTickMsg ...)
+// actually starts. Without this, the user switches back to a streaming
+// engine and sees a frozen frame even though status.IsStreaming() is true.
+func TestSwitchEngine_ToStreamingEngine_BootstrapsSpinnerTick(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+
+	e2VS := a.engineMgr.Get("e2")
+	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
+	e2Repl.StartStreamingForTest()
+	if !e2Repl.IsStreaming() {
+		t.Fatal("precondition: e2 must be streaming")
+	}
+
+	// Snapshot spinner state, then switch.
+	a.spinner.Stop()
+	before := a.spinner.View()
+	_, cmd := a.switchEngine("e2")
+	if cmd == nil {
+		t.Fatal("switchEngine returned nil cmd")
+	}
+	after := a.spinner.View()
+	if before == after {
+		// Spinner should have been Start()'d so View reflects an active frame.
+		t.Errorf("spinner.View unchanged after switch to streaming e2 — spinner.Start() not called")
+	}
+
+	// The returned cmd must include a tea.Tick that produces spinnerTickMsg.
+	// Inspect by executing the cmd (or its batched children) and checking
+	// the resulting msg type.
+	if !cmdChainProducesSpinnerTick(cmd) {
+		t.Errorf("switchEngine cmd does not produce spinnerTickMsg — " +
+			"animation chain won't start, spinner stays frozen")
+	}
+}
+
+// cmdChainProducesSpinnerTick walks a tea.Cmd (and its batched children)
+// looking for any spinnerTickMsg result.
+func cmdChainProducesSpinnerTick(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if batched, ok := msg.(tea.BatchMsg); ok {
+		return slices.ContainsFunc(batched, cmdChainProducesSpinnerTick)
+	}
+	_, ok := msg.(spinnerTickMsg)
+	return ok
+}
+
+// TestNewAppWithManager_StoresFreshReplOnViewState verifies that
+// NewAppWithManager builds a fresh ReplState (because the active view
+// state has no Repl, e.g. after restoreEngines), it stores that ReplState
+// back on vs.Repl. Without this, switchEngine rebinds a.repl to ANOTHER
+// fresh ReplState on the next switch, losing all streaming state
+// (streaming flag, streamingStart, accumulated tokens) — the user sees
+// no progress line after switching back to a streaming engine.
+func TestNewAppWithManager_StoresFreshReplOnViewState(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	hubMain, handlerMain := NewEngineHubWithHandler("main", nil)
+	mainEng := engine.New(&engine.Params{Logger: slog.Default(), Model: "sonnet", EngineID: "main", Dispatcher: hubMain})
+	mainEng.SetStore(store, dir)
+	t.Cleanup(func() { mainEng.Close() })
+
+	hubE2, handlerE2 := NewEngineHubWithHandler("e2", nil)
+	e2Eng := engine.New(&engine.Params{Logger: slog.Default(), Model: "opus", EngineID: "e2", Dispatcher: hubE2})
+	e2Eng.SetStore(store, dir)
+	t.Cleanup(func() { e2Eng.Close() })
+
+	mgr := engine.NewEngineManager()
+	mainVS := &engine.EngineViewState{
+		Engine: mainEng, Handler: handlerMain,
+		ID: "main", Name: "main", Model: "sonnet",
+		ActiveSessionID: "main-session",
+	}
+	e2VS := &engine.EngineViewState{
+		Engine: e2Eng, Handler: handlerE2,
+		ID: "e2", Name: "engine-2", Model: "opus",
+		ActiveSessionID: "e2-session",
+	}
+	mgr.Add(mainVS)
+	mgr.Add(e2VS)
+	_ = mgr.SetActive("e2")
+
+	a := NewAppWithManager(mgr, "", nil)
+	a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a.projectDir = dir
+
+	a.repl.StartQuery()
+	if !a.repl.IsStreaming() {
+		t.Fatal("precondition: a.repl should be streaming after StartQuery")
+	}
+
+	_, _ = a.switchEngine("main")
+	_, _ = a.switchEngine("e2")
+
+	if !a.repl.IsStreaming() {
+		t.Fatal("a.repl.IsStreaming() = false after switching back to e2 — " +
+			"NewAppWithManager didn't cache the fresh ReplState on vs.Repl, " +
+			"so switchEngine built a new empty one and lost streaming state")
+	}
+	if a.repl.StreamingStart().IsZero() {
+		t.Fatal("a.repl.StreamingStart() is zero after switching back — " +
+			"fresh ReplState was rebuilt on switch, losing the original start time")
+	}
+}
+
+// TestSwitchEngine_ToStreamingEngine_RestoresThinkingState verifies that
+// switching into a live-streaming engine mid-thinking restores the active
+// thinking indicator. Without this, the user sees "no output yet" with no
+// hint that the model is in reasoning phase — confusing for thinking-mode
+// providers like minimax-3 or Claude with thinking enabled.
+func TestSwitchEngine_ToStreamingEngine_RestoresThinkingState(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+
+	e2VS := a.engineMgr.Get("e2")
+	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
+	startedAt := time.Now().Add(-15 * time.Second) // REAL-TIME: anchors thinkingStart assertion; relative offset only
+	e2Repl.StartQueryAtForTest(startedAt)
+	// Mark e2 as currently in thinking phase (no tool call yet, just thinking).
+	e2Repl.StartThinkingAtForTest(startedAt)
+	if !e2Repl.IsThinking() {
+		t.Fatal("precondition: e2 must be thinking")
+	}
+
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine(main→e2) returned nil cmd")
+	}
+	if !a.repl.IsThinking() {
+		t.Error("a.repl.IsThinking() = false after switch to e2 that's mid-thinking — " +
+			"TUI won't show 'Thinking...' indicator")
+	}
+	if a.repl.ThinkingStart().IsZero() {
+		t.Error("a.repl.ThinkingStart() is zero after switch to mid-thinking e2 — " +
+			"elapsed thinking time won't render")
+	}
+	if got := a.repl.ThinkingStart(); got.Sub(startedAt) > 5*time.Second {
+		t.Errorf("a.repl.ThinkingStart() = %v, want close to %v (e2's thinkingStart)",
 			got, startedAt)
 	}
 }
