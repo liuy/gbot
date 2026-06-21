@@ -1428,6 +1428,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.handleKillWord()
 		return a, nil
 
+	case tea.KeyCtrlJ:
+		a.input.InsertNewline()
+		return a, nil
+
 	case tea.KeyCtrlS:
 		return a.handleStash()
 
