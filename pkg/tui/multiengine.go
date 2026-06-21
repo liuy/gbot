@@ -39,9 +39,9 @@ func newReplAdapter(r *ReplState) engine.ReplSnapshot {
 // renderEngineStatusBar renders a single line summarizing all engines.
 // Output format:
 //
-//	● main · ◐ engine-2 (Edit) · ○ engine-3 (idle)
+//	● main · ● engine-2 (Edit) · ○ engine-3 (idle)
 //
-// Indicators: ● active, ◐ streaming with current tool, ○ idle.
+// Indicators: ● active (bold white), ● streaming (faint, label changes with tool), ○ idle (faint).
 // Hidden when only one engine is registered (no useful information to show).
 func (a *App) renderEngineStatusBar() string {
 	views, activeID := a.engineMgr.Snapshot()
@@ -56,13 +56,14 @@ func (a *App) renderEngineStatusBar() string {
 			indicator = "●"
 			label = vs.Name
 		case vs.IsStreaming:
-			indicator = "◐"
+			if a.bgBlinkTick%2 == 0 {
+				indicator = "●"
+			} else {
+				indicator = " "
+			}
 			if vs.CurrentToolName != "" {
 				label = vs.Name + " (" + vs.CurrentToolName + ")"
 			} else {
-				// Streaming but no tool running yet — covers text/thinking
-				// phases. ReplState doesn't track thinking per-engine yet;
-				// when it does, this can branch into "(thinking)".
 				label = vs.Name + " (streaming)"
 			}
 		default:
@@ -70,11 +71,9 @@ func (a *App) renderEngineStatusBar() string {
 			label = vs.Name + " (idle)"
 		}
 		var styled string
-		switch indicator {
-		case "●":
+		switch vs.ID {
+		case activeID:
 			styled = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Render(indicator + " " + label)
-		case "◐":
-			styled = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(indicator + " " + label)
 		default:
 			styled = lipgloss.NewStyle().Faint(true).Render(indicator + " " + label)
 		}

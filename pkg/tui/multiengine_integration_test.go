@@ -551,11 +551,11 @@ func TestMultiEngine_BackgroundStreaming_StatusAndAccumulatedOutput(t *testing.T
 
 	// (1) Status bar must still show e2 as streaming while in background.
 	bar := a.renderEngineStatusBar()
-	if !strings.Contains(bar, "◐") {
-		t.Errorf("status bar missing ◐ for background-streaming e2: %q", bar)
-	}
-	if strings.Contains(bar, "e2 (idle)") {
+	if strings.Contains(bar, "engine-2 (idle)") {
 		t.Errorf("status bar shows e2 as idle while it's streaming in background: %q", bar)
+	}
+	if !strings.Contains(bar, "engine-2 (streaming)") && !strings.Contains(bar, "engine-2 (") {
+		t.Errorf("status bar missing streaming indicator for background e2: %q", bar)
 	}
 
 	// (2) Simulate make check producing cumulative output snapshots while

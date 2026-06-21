@@ -1381,6 +1381,16 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, nil
 
+	case bgTickMsg:
+		if a.bgEngineStreaming() {
+			a.bgBlinkTick++
+			a.markViewportDirty()
+			return true, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+				return bgTickMsg{}
+			})
+		}
+		return true, nil
+
 	}
 	return false, nil
 }

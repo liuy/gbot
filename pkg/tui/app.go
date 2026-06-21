@@ -73,9 +73,10 @@ type App struct {
 	height int
 
 	// Components
-	input   *Input
-	status  StatusBar
-	spinner Spinner
+	input       *Input
+	status      StatusBar
+	spinner     Spinner
+	bgBlinkTick int // advanced by bgTickMsg, drives background engine dot blink
 
 	// REPL session state (delegated to repl.go)
 	// Always points to the active engine's ReplState. Updated by switchEngine.
@@ -800,6 +801,25 @@ func (a *App) activateStreamingUI() tea.Cmd {
 	})
 }
 
+// bgEngineStreaming reports whether any non-active engine is currently
+// streaming. Used by the bgTickMsg handler to decide whether to keep
+// the background dot blink chain alive.
+func (a *App) bgEngineStreaming() bool {
+	if a.engineMgr == nil {
+		return false
+	}
+	activeID := a.engineMgr.ActiveID()
+	for _, vs := range a.engineMgr.List() {
+		if vs.ID == activeID {
+			continue
+		}
+		if vs.Repl != nil && vs.Repl.IsStreaming() {
+			return true
+		}
+	}
+	return false
+}
+
 // commitPendingMessagesCmd renders a.repl.messages into a string and returns
 // a tea.Println cmd that writes them to the terminal scrollback. Also bumps
 // committedCount so the rendered messages are not re-rendered by View().
@@ -986,7 +1006,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		queryEndMsg, turnStartMsg, streamMessageMsg, usageMsg,
 		thinkingStartMsg, thinkingDeltaMsg, thinkingEndMsg,
 		attachmentMsg, idleAbortedMsg,
-		infoMsg, errMsg, submitMsg, spinnerTickMsg,
+		infoMsg, errMsg, submitMsg, spinnerTickMsg, bgTickMsg,
 		permissionAskMsg, inputAskMsg, retryAttemptMsg,
 		quotaUpdatedMsg, modelQuotaFetchedMsg:
 		handled, cmd := a.updateRepl(msg)

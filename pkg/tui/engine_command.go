@@ -174,6 +174,15 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	if oldVS := a.engineMgr.Get(oldID); oldVS != nil {
 		if h, ok := oldVS.Handler.(*TUIHandler); ok && h != nil {
 			h.SetDrainFn(a.buildBackgroundDrainFn(oldVS))
+			// If the demoted engine is mid-stream, kick off the bg dot
+			// blink chain — its turnStartMsg already passed before the
+			// switch, so the drain fn won't send bgTickMsg for it.
+			if oldVS.Repl != nil && oldVS.Repl.IsStreaming() {
+				select {
+				case a.tuiHandler.appCh <- bgTickMsg{}:
+				default:
+				}
+			}
 		}
 	}
 

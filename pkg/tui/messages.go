@@ -144,6 +144,12 @@ type infoMsg string
 
 type spinnerTickMsg struct{}
 
+// bgTickMsg drives the background engine streaming dot animation in the
+// status bar. Self-perpetuating while any background engine is streaming;
+// stops when none are. Independent of spinnerTickMsg to avoid affecting
+// the active engine's progress line.
+type bgTickMsg struct{}
+
 // textStartMsg signals that a text content block has started streaming.
 type textStartMsg struct {
 	Agent *types.AgentMeta // non-nil when from a sub-agent
