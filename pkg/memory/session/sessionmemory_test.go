@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -27,7 +26,7 @@ func setTempHome(t *testing.T) {
 
 func TestShouldExtract_BelowInitThreshold(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
@@ -38,7 +37,7 @@ func TestShouldExtract_BelowInitThreshold(t *testing.T) {
 
 func TestShouldExtract_InitAtThreshold_NaturalBreak(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	// No tool calls in last assistant turn → natural break
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -52,7 +51,7 @@ func TestShouldExtract_InitAtThreshold_NaturalBreak(t *testing.T) {
 
 func TestShouldExtract_InitAtThreshold_HasToolCalls_NoToolCallThreshold(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	// Last assistant has tool_use → NOT a natural break
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -69,7 +68,7 @@ func TestShouldExtract_InitAtThreshold_HasToolCalls_NoToolCallThreshold(t *testi
 
 func TestShouldExtract_InitAtThreshold_ToolCallThresholdMet(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -86,7 +85,7 @@ func TestShouldExtract_InitAtThreshold_ToolCallThresholdMet(t *testing.T) {
 
 func TestShouldExtract_AfterInit_TokenGrowthInsufficient(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
@@ -106,7 +105,7 @@ func TestShouldExtract_AfterInit_TokenGrowthInsufficient(t *testing.T) {
 
 func TestShouldExtract_AfterInit_TokenGrowthSufficient_NaturalBreak(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("response")}},
@@ -127,7 +126,7 @@ func TestShouldExtract_AfterInit_TokenGrowthSufficient_NaturalBreak(t *testing.T
 
 func TestShouldExtract_AfterInit_TokenGrowthSufficient_HasToolCalls_NoThreshold(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{
@@ -162,7 +161,7 @@ func TestExtract_CreatesFileAndCallsExtractFn(t *testing.T) {
 		return nil
 	}
 
-	sm := New(DefaultConfig(), tmpDir, extractFn, slog.Default())
+	sm := New(DefaultConfig(), tmpDir, "main", extractFn, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
@@ -196,7 +195,7 @@ func TestExtract_ExtractFnFailure(t *testing.T) {
 		return os.ErrPermission
 	}
 
-	sm := New(DefaultConfig(), tmpDir, extractFn, slog.Default())
+	sm := New(DefaultConfig(), tmpDir, "main", extractFn, slog.Default())
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
@@ -223,7 +222,7 @@ func TestExtract_ContextCancellation(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -258,7 +257,7 @@ func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -289,7 +288,7 @@ func TestExtract_SkipsWhenAlreadyExtracting(t *testing.T) {
 
 func TestWaitForExtraction_NotExtracting(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	// Not extracting → returns immediately
 	if err := sm.WaitForExtraction(); err != nil {
 		t.Errorf("expected nil when not extracting, got: %v", err)
@@ -311,7 +310,7 @@ func TestWaitForExtraction_WaitsForCompletion(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -352,7 +351,7 @@ func TestWaitForExtraction_StaleRecovery(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      100, // 100ms stale threshold
-	}, tmpDir, nil, nil)
+	}, tmpDir, "main", nil, nil)
 
 	// Simulate stale extraction state
 	sm.mu.Lock()
@@ -381,7 +380,7 @@ func TestWaitForExtraction_Timeout(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    200, // 200ms timeout
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -414,7 +413,7 @@ func TestWaitForExtraction_Timeout(t *testing.T) {
 
 func TestIsEmpty_NoFile(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 	if !sm.IsEmpty() {
 		t.Error("should be empty when file doesn't exist")
 	}
@@ -423,16 +422,15 @@ func TestIsEmpty_NoFile(t *testing.T) {
 func TestIsEmpty_TemplateOnly(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	notesPath := filepath.Join(tmpDir, ".gbot", "session_notes", "main.md")
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	notesPath := filepath.Join(memDir, SessionMemoryFileName)
 	if err := os.WriteFile(notesPath, []byte(DefaultTemplate), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	sm := New(DefaultConfig(), tmpDir, nil, nil)
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
 	if !sm.IsEmpty() {
 		t.Error("template-only content should be empty")
 	}
@@ -441,17 +439,16 @@ func TestIsEmpty_TemplateOnly(t *testing.T) {
 func TestIsEmpty_RealContent(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	notesPath := filepath.Join(memDir, SessionMemoryFileName)
 	content := "# Session Notes\n\n## Session Title\nReal work happened\n"
 	if err := os.WriteFile(notesPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	sm := New(DefaultConfig(), tmpDir, nil, nil)
 	if sm.IsEmpty() {
 		t.Error("real content should NOT be empty")
 	}
@@ -461,7 +458,7 @@ func TestIsEmpty_RealContent(t *testing.T) {
 
 func TestRecordToolCalls(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 
 	sm.RecordToolCalls(3)
 	sm.RecordToolCalls(2)
@@ -479,7 +476,7 @@ func TestRecordToolCalls(t *testing.T) {
 
 func TestReset(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), t.TempDir(), nil, slog.Default())
+	sm := New(DefaultConfig(), t.TempDir(), "main", nil, slog.Default())
 
 	// Set some state
 	sm.mu.Lock()
@@ -517,13 +514,52 @@ func TestReset(t *testing.T) {
 
 func TestNotesPath(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), "/tmp/workdir", nil, nil)
+	sm := New(DefaultConfig(), "/tmp/workdir", "main", nil, nil)
 	path := sm.NotesPath()
 
-	memDir := long.GetMemoryPath("/tmp/workdir")
-	expected := filepath.Join(memDir, SessionMemoryFileName)
+	homeDir, _ := os.UserHomeDir()
+	expected := filepath.Join(homeDir, ".gbot", "memory", "session_notes", "main.md")
 	if path != expected {
 		t.Errorf("NotesPath = %q, want %q", path, expected)
+	}
+}
+
+func TestNotesPath_PerEngine(t *testing.T) {
+	setTempHome(t)
+	smMain := New(DefaultConfig(), "/tmp/workdir", "main", nil, nil)
+	smE2 := New(DefaultConfig(), "/tmp/workdir", "e2", nil, nil)
+
+	mainPath := smMain.NotesPath()
+	e2Path := smE2.NotesPath()
+
+	if mainPath == e2Path {
+		t.Fatalf("expected distinct paths per engine, both = %q", mainPath)
+	}
+	if filepath.Base(mainPath) != "main.md" {
+		t.Errorf("main engine path = %q, want leaf \"main.md\"", mainPath)
+	}
+	if filepath.Base(e2Path) != "e2.md" {
+		t.Errorf("e2 engine path = %q, want leaf \"e2.md\"", e2Path)
+	}
+	if filepath.Dir(mainPath) != filepath.Dir(e2Path) {
+		t.Errorf("expected same parent dir, got main=%q e2=%q",
+			filepath.Dir(mainPath), filepath.Dir(e2Path))
+	}
+	homeDir, _ := os.UserHomeDir()
+	wantDir := filepath.Join(homeDir, ".gbot", "memory", "session_notes")
+	if filepath.Dir(mainPath) != wantDir {
+		t.Errorf("parent dir = %q, want %q", filepath.Dir(mainPath), wantDir)
+	}
+}
+
+func TestNotesPath_EmptyEngineIDDefaultsToMain(t *testing.T) {
+	setTempHome(t)
+	sm := New(DefaultConfig(), "/tmp/workdir", "", nil, nil)
+	path := sm.NotesPath()
+	homeDir, _ := os.UserHomeDir()
+	expected := filepath.Join(homeDir, ".gbot", "memory", "session_notes", "main.md")
+	if path != expected {
+		t.Errorf("NotesPath with empty engineID = %q, want %q", path, expected)
 	}
 }
 
@@ -531,7 +567,7 @@ func TestNotesPath(t *testing.T) {
 
 func TestLoadSessionMemoryContent_NoFile(t *testing.T) {
 	setTempHome(t)
-	content := LoadSessionMemoryContent(t.TempDir())
+	content := LoadSessionMemoryContent(t.TempDir(), "main")
 	if content != "" {
 		t.Errorf("expected empty string for missing file, got %q", content)
 	}
@@ -540,17 +576,16 @@ func TestLoadSessionMemoryContent_NoFile(t *testing.T) {
 func TestLoadSessionMemoryContent_WithFile(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	notesPath := filepath.Join(tmpDir, ".gbot", "session_notes", "main.md")
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
-	notesPath := filepath.Join(memDir, SessionMemoryFileName)
 	expected := "session title: testing"
 	if err := os.WriteFile(notesPath, []byte(expected), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	content := LoadSessionMemoryContent(tmpDir)
+	content := LoadSessionMemoryContent(tmpDir, "main")
 	if content != expected {
 		t.Errorf("got %q, want %q", content, expected)
 	}
@@ -561,7 +596,7 @@ func TestLoadSessionMemoryContent_WithFile(t *testing.T) {
 func TestEnsureFile_CreatesFromTemplate(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	sm := New(DefaultConfig(), tmpDir, nil, nil)
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
 
 	if err := sm.ensureFile(); err != nil {
 		t.Fatalf("ensureFile failed: %v", err)
@@ -579,7 +614,7 @@ func TestEnsureFile_CreatesFromTemplate(t *testing.T) {
 func TestEnsureFile_Idempotent(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	sm := New(DefaultConfig(), tmpDir, nil, nil)
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
 
 	// Create twice — second should be a no-op
 	if err := sm.ensureFile(); err != nil {
@@ -656,7 +691,7 @@ func TestExtract_StaleRecovery(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      100,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -680,16 +715,16 @@ func TestExtract_StaleRecovery(t *testing.T) {
 func TestExtract_ReadFileError(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	sm := New(DefaultConfig(), tmpDir, nil, slog.Default())
+	sm := New(DefaultConfig(), tmpDir, "main", nil, slog.Default())
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
 	}
 
-	// Create file then replace with directory to cause read error
-	memDir := long.GetMemoryPath(tmpDir)
-	notesPath := filepath.Join(memDir, SessionMemoryFileName)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+	// Create file then replace with directory to cause read error at the new
+	// per-engine path (must match what sm.NotesPath() returns).
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(notesPath, []byte("test"), 0644); err != nil {
@@ -714,7 +749,7 @@ func TestExtract_ReadFileError(t *testing.T) {
 func TestEnsureFile_MkdirAllError(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	sm := New(DefaultConfig(), tmpDir, nil, nil)
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
 
 	// Compute the exact directory path that ensureFile will try to MkdirAll
 	notesPath := sm.NotesPath()
@@ -733,8 +768,8 @@ func TestEnsureFile_MkdirAllError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when MkdirAll fails (file blocks directory)")
 	}
-	if !strings.Contains(err.Error(), "memory") {
-		t.Errorf("error should reference memory path, got: %v", err)
+	if !strings.Contains(err.Error(), "session_notes") {
+		t.Errorf("error should reference session_notes path, got: %v", err)
 	}
 }
 
@@ -746,7 +781,7 @@ func TestWaitForExtraction_StaleRecovery_WithChannel(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      100,
-	}, tmpDir, nil, nil)
+	}, tmpDir, "main", nil, nil)
 
 	// Simulate stale extraction with an active channel
 	sm.mu.Lock()
@@ -774,7 +809,7 @@ func TestWaitForExtraction_StaleRecovery_WithChannel(t *testing.T) {
 func TestExtract_EnsureFileFailure(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	sm := New(DefaultConfig(), tmpDir, nil, slog.Default())
+	sm := New(DefaultConfig(), tmpDir, "main", nil, slog.Default())
 
 	// Block ensureFile by placing a file where the directory should be
 	notesPath := sm.NotesPath()

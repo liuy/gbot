@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tool"
@@ -61,15 +60,6 @@ func TestTrySMCompact_NilSessionMemory(t *testing.T) {
 func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	// Write template-only content (empty)
-	if err := os.WriteFile(notesPath, []byte(session.DefaultTemplate), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	store, err := short.NewStore(t.TempDir() + "/test.db")
 	if err != nil {
@@ -77,7 +67,15 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte(session.DefaultTemplate), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	msgs := makeLargeMessages(25, 500)
@@ -93,11 +91,18 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 func TestTrySMCompact_WithRealContent(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
+
+	store, err := short.NewStore(t.TempDir() + "/test2.db")
+	if err != nil {
 		t.Fatal(err)
 	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
+	defer store.Close()
+
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write real session memory content
 	content := `# Session Notes
@@ -116,13 +121,6 @@ smcompact_test.go — test file
 		t.Fatal(err)
 	}
 
-	store, err := short.NewStore(t.TempDir() + "/test2.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 500)
 
 	// Create enough messages for PartialCompact to work
@@ -169,15 +167,6 @@ smcompact_test.go — test file
 func TestTrySMCompact_TooFewMessages(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	content := "## Session Title\nReal work\n"
-	if err := os.WriteFile(notesPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	store, err := short.NewStore(t.TempDir() + "/test.db")
 	if err != nil {
@@ -185,7 +174,16 @@ func TestTrySMCompact_TooFewMessages(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "## Session Title\nReal work\n"
+	if err := os.WriteFile(notesPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	// Only 2 messages — too few for PartialCompact to find a valid boundary
@@ -212,7 +210,7 @@ func TestTrySMCompact_NoFile(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	msgs := makeLargeMessages(25, 500)
@@ -322,7 +320,7 @@ func TestSetSessionMemory_RegistersHook(t *testing.T) {
 		hookCount++
 	})
 
-	sm := session.New(session.DefaultConfig(), t.TempDir(), nil, nil)
+	sm := session.New(session.DefaultConfig(), t.TempDir(), "main", nil, nil)
 	eng.SetSessionMemory(sm)
 
 	// SetSessionMemory should register another hook
@@ -422,15 +420,6 @@ func extractFirstTextBlock(msg types.Message) (string, bool) {
 func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	smContent := "## Session Title\nReal work\n"
-	if err := os.WriteFile(notesPath, []byte(smContent), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	store, err := short.NewStore(t.TempDir() + "/test.db")
 	if err != nil {
@@ -449,7 +438,16 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 		MinTokensBetweenUpdate: 50,
 		ExtractionTimeoutMs:    100,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
+
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	smContent := "## Session Title\nReal work\n"
+	if err := os.WriteFile(notesPath, []byte(smContent), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
@@ -474,15 +472,6 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 func TestTrySMCompact_EmptyMessages(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	content := "## Session Title\nReal work\n"
-	if err := os.WriteFile(notesPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	store, err := short.NewStore(t.TempDir() + "/test.db")
 	if err != nil {
@@ -490,7 +479,16 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 	}
 	defer store.Close()
 
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, nil)
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "## Session Title\nReal work\n"
+	if err := os.WriteFile(notesPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	ac := NewAutoCompactor(store, "test-session", "test-model", nil, 40000)
 
 	result, err := ac.TrySMCompact([]types.Message{}, sm)

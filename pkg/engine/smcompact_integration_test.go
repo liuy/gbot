@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/types"
@@ -48,12 +47,6 @@ func TestSMCompact_Integration_ExtractThenCompact(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
 	// Create a mock extraction function that writes real content to the file
 	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ string) error {
 		content := `# Session Notes
@@ -75,7 +68,8 @@ smcompact_integration_test.go — chain tests
 		MinTokensBetweenUpdate: 25,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
+	notesPath := sm.NotesPath()
 
 	// Set up engine with real Store + real AutoCompactor
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -194,7 +188,7 @@ File was created from template and now has real content
 		MinTokensBetweenUpdate: 25,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
 
 	ctx := context.Background()
 
@@ -224,7 +218,7 @@ File was created from template and now has real content
 	}
 
 	// Verify file was created
-	notesPath := filepath.Join(long.GetMemoryPath(tmpDir), session.SessionMemoryFileName)
+	notesPath := sm.NotesPath()
 	data, err := os.ReadFile(notesPath)
 	if err != nil {
 		t.Fatalf("session memory file not created: %v", err)
@@ -255,11 +249,6 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
 
 	blockCh := make(chan struct{})
 	firstCall := true
@@ -276,7 +265,8 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 		MinTokensBetweenUpdate: 25,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      100, // very short stale threshold
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
+	notesPath := sm.NotesPath()
 
 	ctx := context.Background()
 	msgs := []types.Message{
@@ -337,17 +327,6 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-
-	// Write initial content
-	initialContent := "## Session Title\nHot path test\n## Current State\nInitial state\n"
-	if err := os.WriteFile(notesPath, []byte(initialContent), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	// Set up compactor
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -364,7 +343,17 @@ func TestSessionMemory_Integration_HotPath(t *testing.T) {
 
 	p := &integrationProvider{}
 	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 500)
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, slog.Default())
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write initial content
+	initialContent := "## Session Title\nHot path test\n## Current State\nInitial state\n"
+	if err := os.WriteFile(notesPath, []byte(initialContent), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	msgs := makeLargeMessages(25, 500)
 
@@ -421,16 +410,6 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-
-	// Write template-only content (empty)
-	if err := os.WriteFile(notesPath, []byte(session.DefaultTemplate), 0644); err != nil {
-		t.Fatal(err)
-	}
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	store, err := short.NewStore(dbPath)
@@ -448,7 +427,16 @@ func TestSMCompact_Integration_FallbackToLLM(t *testing.T) {
 	p.addStream(textStreamEvents("test-model", "Response after LLM compact."), nil)
 
 	compactor := NewAutoCompactor(store, sess.SessionID, "test-model", p, 500)
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, slog.Default())
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write template-only content (empty)
+	if err := os.WriteFile(notesPath, []byte(session.DefaultTemplate), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	eng := New(&Params{
 		Provider:  p,
@@ -500,10 +488,6 @@ func TestExtraction_ReceivesConversationContext(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
 
 	var captured struct {
 		mu              sync.Mutex
@@ -526,7 +510,11 @@ func TestExtraction_ReceivesConversationContext(t *testing.T) {
 		MinTokensBetweenUpdate: 25,
 		ExtractionTimeoutMs:    5000,
 		ExtractionStaleMs:      60000,
-	}, tmpDir, extractFn, slog.Default())
+	}, tmpDir, "main", extractFn, slog.Default())
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create messages to pass to extraction
 	messages := []types.Message{
@@ -572,27 +560,6 @@ func TestSMCompact_WritesBoundaryToDB(t *testing.T) {
 	setTempHome(t)
 
 	tmpDir := t.TempDir()
-	memDir := long.GetMemoryPath(tmpDir)
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write real session memory content so TrySMCompact succeeds
-	notesPath := filepath.Join(memDir, session.SessionMemoryFileName)
-	notesContent := `# Session Notes
-
-## Session Title
-Boundary persistence test
-
-## Current State
-Verifying SM-compact writes boundary to DB
-
-## Files and Functions
-smcompact_integration_test.go — boundary test
-`
-	if err := os.WriteFile(notesPath, []byte(notesContent), 0644); err != nil {
-		t.Fatalf("write notes: %v", err)
-	}
 
 	// Set up store + session
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -636,8 +603,28 @@ smcompact_integration_test.go — boundary test
 	eng.SetMessages(msgs)
 
 	// Set up session memory (already extracted — file exists on disk)
-	sm := session.New(session.DefaultConfig(), tmpDir, nil, slog.Default())
+	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, slog.Default())
 	eng.SetSessionMemory(sm)
+
+	// Write real session memory content at the resolved NotesPath so TrySMCompact succeeds
+	notesPath := sm.NotesPath()
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
+		t.Fatalf("mkdir notes dir: %v", err)
+	}
+	notesContent := `# Session Notes
+
+## Session Title
+Boundary persistence test
+
+## Current State
+Verifying SM-compact writes boundary to DB
+
+## Files and Functions
+smcompact_integration_test.go — boundary test
+`
+	if err := os.WriteFile(notesPath, []byte(notesContent), 0644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

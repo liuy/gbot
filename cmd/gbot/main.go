@@ -337,7 +337,7 @@ func main() {
 				}
 				return result.Error
 			}
-			sm := session.New(smCfg, workingDir, smExtractFn, slog.Default())
+			sm := session.New(smCfg, workingDir, id, smExtractFn, slog.Default())
 			sm.SetSystemPromptFn(newEng.SystemPrompt)
 			newEng.SetSessionMemory(sm)
 		}
