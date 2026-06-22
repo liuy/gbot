@@ -1058,6 +1058,12 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		} else {
 			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
+			// Bash shortcut: FinishStream to stop streaming/spinner.
+			if strings.HasPrefix(m.ToolUseID, "bash-shortcut-") {
+				a.repl.FinishStream(nil)
+				a.status.SetStreaming(false)
+				a.spinner.Stop()
+			}
 		}
 		a.taskListDirty = true
 		if m.IsError {
@@ -1433,7 +1439,6 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			})
 		}
 		return true, nil
-
 	}
 	return false, nil
 }
@@ -1455,6 +1460,33 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 
 	if a.repl.IsStreaming() {
 		return a.handleEnqueueMessage(text)
+	}
+
+	// Bash shortcut: !command runs directly via pkg/tool/bash.Execute with
+	// streaming output rendered as a virtual tool call. Must be AFTER the
+	// streaming check.
+	if isBashShortcut(text) {
+		// Commit previous turn's messages to scrollback first.
+		var commitCmd tea.Cmd
+		uncommitted := a.repl.messages[a.repl.committedCount:]
+		if len(uncommitted) > 0 {
+			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
+			a.repl.committedCount = len(a.repl.messages)
+			commitCmd = tea.Println(rendered)
+		}
+		a.history.Add(text)
+		a.input.Reset()
+		a.pasteStore = make(map[int]string)
+		a.nextPasteID = 1
+		a.restoreStash()
+		a.scrollOffset = 0
+		a.scrollTotal = 0
+		a.userScrolled = false
+		return tea.Batch(commitCmd, a.runBashShortcut(stripBangPrefix(text)),
+			tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+				return spinnerTickMsg{}
+			}),
+		)
 	}
 
 	// Commit previous turn's messages to scrollback before starting new turn.
