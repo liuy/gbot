@@ -352,7 +352,7 @@ func New(p *Params) *Engine {
 	// engine state (model/sessionID/contextWindow) at compact time.
 	// Only auto-create when AutoCompact is explicitly configured (ContextWindow > 0).
 	if e.compactor == nil && p.Provider != nil && p.AutoCompact.ContextWindow > 0 {
-		e.compactor = NewAutoCompactor(nil, e, p.Provider)
+		e.compactor = NewAutoCompactor(nil, e)
 	}
 
 	return e
@@ -3387,6 +3387,13 @@ func (e *Engine) SetModel(model string) {
 	e.mu.Lock()
 	e.model = model
 	e.mu.Unlock()
+}
+
+// Provider returns the LLM provider used for API calls.
+func (e *Engine) Provider() llm.Provider {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.provider
 }
 
 // SetProvider replaces the LLM provider for subsequent API calls.

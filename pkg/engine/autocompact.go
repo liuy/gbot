@@ -34,6 +34,7 @@ func formatCompactOutput(result *short.CompactResult) string {
 // circular dependency (Engine creates AutoCompactor, AutoCompactor reads Engine).
 type EngineCompactorMeta interface {
 	Model() string
+	Provider() llm.Provider
 	SessionID() string
 	ContextWindow() int
 }
@@ -42,19 +43,17 @@ type EngineCompactorMeta interface {
 // functions and using the LLM provider to generate a summary.
 // TS align: compact.ts:compactConversation + partialCompactConversation
 type AutoCompactor struct {
-	store    *short.Store
-	engine   EngineCompactorMeta // live engine state (model/sessionID may change)
-	provider llm.Provider
-	logger   *slog.Logger
+	store  *short.Store
+	engine EngineCompactorMeta // live engine state (model/provider/sessionID may change)
+	logger *slog.Logger
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
-func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta, provider llm.Provider) *AutoCompactor {
+func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompactor {
 	return &AutoCompactor{
-		store:    store,
-		engine:   engine,
-		provider: provider,
-		logger:   slog.Default(),
+		store:  store,
+		engine: engine,
+		logger: slog.Default(),
 	}
 }
 
@@ -222,7 +221,7 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 		Stream:    false,
 	}
 
-	resp, err := c.provider.Complete(ctx, req)
+	resp, err := c.engine.Provider().Complete(ctx, req)
 	if err != nil {
 		c.logger.Error("compact:summarize_failed",
 			"headMessages", len(messages),

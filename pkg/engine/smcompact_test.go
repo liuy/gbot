@@ -45,7 +45,7 @@ func TestTrySMCompact_NilSessionMemory(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 	msgs := makeLargeMessages(10, 100)
 
 	result, err := ac.TrySMCompact(msgs, nil)
@@ -76,7 +76,7 @@ func TestTrySMCompact_EmptySessionMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -121,7 +121,7 @@ smcompact_test.go — test file
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 500}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 500, provider: nil})
 
 	// Create enough messages for PartialCompact to work
 	// Need at least keepFrom > 1 and keepFrom < len(messages)
@@ -184,7 +184,7 @@ func TestTrySMCompact_TooFewMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Only 2 messages — too few for PartialCompact to find a valid boundary
 	msgs := makeLargeMessages(2, 100)
@@ -211,7 +211,7 @@ func TestTrySMCompact_NoFile(t *testing.T) {
 	defer store.Close()
 
 	sm := session.New(session.DefaultConfig(), tmpDir, "main", nil, nil)
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	msgs := makeLargeMessages(25, 500)
 	result, err := ac.TrySMCompact(msgs, sm)
@@ -232,7 +232,7 @@ func TestBuildSMResultMessages_BasicAssembly(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Create a minimal CompactResult with messages to keep
 	shortMsgs := makeLargeMessages(10, 100)
@@ -282,7 +282,7 @@ func TestBuildSMResultMessages_EmptyBoundary(t *testing.T) {
 	}
 	defer store.Close()
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	// Create a CompactResult with nil boundary marker
 	shortMsgs := makeLargeMessages(10, 100)
@@ -456,7 +456,7 @@ func TestTrySMCompact_WaitForExtractionError(t *testing.T) {
 	go func() { _ = sm.Extract(context.Background(), msgs, 100) }()
 	time.Sleep(50 * time.Millisecond) // REAL-TIME: wait for extraction to start
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	largeMsgs := makeLargeMessages(20, 500)
 	result, err := ac.TrySMCompact(largeMsgs, sm)
@@ -489,7 +489,7 @@ func TestTrySMCompact_EmptyMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, nil)
+	ac := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: nil})
 
 	result, err := ac.TrySMCompact([]types.Message{}, sm)
 	if err != nil {

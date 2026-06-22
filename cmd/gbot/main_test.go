@@ -131,8 +131,8 @@ func TestStartPprofServer_HeapProfile(t *testing.T) {
 type spyProvider struct {
 	mu            sync.Mutex
 	models        []string
-	streamCalls   int   // Stream calls (main query)
-	completeCalls int   // Complete calls (compact - uses Complete path)
+	streamCalls   int // Stream calls (main query)
+	completeCalls int // Complete calls (compact - uses Complete path)
 }
 
 func (s *spyProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {

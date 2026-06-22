@@ -22,11 +22,13 @@ type testEngineMeta struct {
 	model         string
 	sessionID     string
 	contextWindow int
+	provider      llm.Provider
 }
 
-func (t *testEngineMeta) Model() string      { return t.model }
-func (t *testEngineMeta) SessionID() string  { return t.sessionID }
-func (t *testEngineMeta) ContextWindow() int { return t.contextWindow }
+func (t *testEngineMeta) Model() string          { return t.model }
+func (t *testEngineMeta) SessionID() string      { return t.sessionID }
+func (t *testEngineMeta) ContextWindow() int     { return t.contextWindow }
+func (t *testEngineMeta) Provider() llm.Provider { return t.provider }
 
 // ---------------------------------------------------------------------------
 // Mock Compactor (for engine-level auto-compact tests)
@@ -518,7 +520,7 @@ func TestCompactor_Compact_EmptyMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	_, err = sc.Compact(context.Background(), []types.Message{})
 	if err == nil {
@@ -538,7 +540,7 @@ func TestCompactor_Compact_FewMessages_CompactAll(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
@@ -571,7 +573,7 @@ func TestCompactor_Compact_SummarizesOldMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 40000, provider: mp})
 
 	msgs := makeMessages(10, 5000)
 
@@ -620,7 +622,7 @@ func TestCompactor_Compact_EmptyHeadText_ReturnsError(t *testing.T) {
 	}
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 10000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 10000, provider: mp})
 
 	// All messages have only thinking blocks - no extractable text.
 	msgs := []types.Message{}
@@ -659,7 +661,7 @@ func TestCompactor_Compact_LLMErrors_ReturnsError(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{compactErr: errors.New("LLM unavailable")}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 
 	msgs := makeMessages(10, 5000)
 	result, err := sc.Compact(context.Background(), msgs)
@@ -692,7 +694,7 @@ func TestCompactor_Compact_PreservesRecentMessages(t *testing.T) {
 	defer store.Close()
 
 	mp := &compactMockProvider{}
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 8000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 8000, provider: mp})
 
 	msgs := makeMessages(10, 3000)
 
@@ -737,7 +739,7 @@ func TestCompactor_EngineIntegration_ReactiveCompact(t *testing.T) {
 	})
 	mp.addResponse(textStreamEvents("test-model", "Success after compact"), nil)
 
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000}, mp)
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: 200000, provider: mp})
 	eng := New(&Params{
 		Provider:  mp,
 		Model:     "test-model",
@@ -851,7 +853,7 @@ func TestAutoCompactor_SummarizeMessages_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
-	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000}, &compactMockProvider{})
+	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
 	got, err := sc.summarizeMessages(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("summarizeMessages(nil) error: %v", err)
@@ -866,7 +868,7 @@ func TestAutoCompactor_SummarizeMessages_NoText(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
-	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000}, &compactMockProvider{})
+	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
 	// Message with no text content (empty JSON array)
 	msgs := []*short.TranscriptMessage{{Type: "user", Content: "[]"}}
 	got, err := sc.summarizeMessages(context.Background(), msgs)
@@ -886,7 +888,7 @@ func TestAutoCompactor_SummarizeMessages_LLMError(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{compactErr: fmt.Errorf("LLM unavailable")}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000}, mp)
+	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
 
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
@@ -906,7 +908,7 @@ func TestAutoCompactor_SummarizeMessages_EmptyResponse(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir2, "test.db"))
 	defer db.Close()
 	mp := &emptyResponseProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000}, mp)
+	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: mp})
 
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
@@ -936,7 +938,7 @@ func TestAutoCompactor_BuildResultMessages_NoBoundary(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir3, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000}, mp)
+	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
 
 	pcr := &short.CompactResult{
 		BoundaryMarker: nil,
@@ -958,7 +960,7 @@ func TestAutoCompactor_BuildResultMessages_WithSummary(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir4, "test.db"))
 	defer db.Close()
 	mp := &compactMockProvider{}
-	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000}, mp)
+	c := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 50000, provider: mp})
 
 	pcr := &short.CompactResult{
 		BoundaryMarker: &short.TranscriptMessage{
@@ -1145,7 +1147,7 @@ func newFindKeepFromHelper(t *testing.T, contextWindow int, msgs []types.Message
 		t.Fatalf("NewStore: %v", err)
 	}
 	defer store.Close()
-	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: contextWindow}, &compactMockProvider{})
+	sc := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: "test-session", contextWindow: contextWindow, provider: &compactMockProvider{}})
 	shortMsgs, err := short.EngineMessagesToStore(msgs)
 	if err != nil {
 		return 0
@@ -1443,7 +1445,7 @@ func TestAutoCompact_Summarize_EnsuresToolResultPairing(t *testing.T) {
 	}
 
 	p := &compactCaptureProvider{}
-	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 100000}, p)
+	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 100000, provider: p})
 
 	if _, err := compactor.summarizeMessages(context.Background(), storeMsgs); err != nil {
 		t.Fatalf("summarizeMessages error: %v", err)
