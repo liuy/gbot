@@ -3505,6 +3505,13 @@ func (e *Engine) SetSessionMemory(sm *session.SessionMemory) {
 	}
 }
 
+// SessionMemory returns the wired session memory (nil if not configured).
+func (e *Engine) SessionMemory() *session.SessionMemory {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sessionMemory
+}
+
 // ContextWindow returns the configured context window size in tokens.
 func (e *Engine) ContextWindow() int {
 	e.mu.Lock()

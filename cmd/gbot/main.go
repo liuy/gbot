@@ -303,9 +303,11 @@ func main() {
 		// Per-engine wiring: autocompactor, session memory, dream mode.
 		// Each engine gets its own because they reference newEng.Dispatcher()
 		// and newEng.NewSubEngine — closures capture newEng, not a shared ptr.
-		// NOTE: compactor and session notes are set after session resume
-		// (in restoreEngines / createNewEngine) because they need SessionID().
-		if cfg.SessionNotes != "off" && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
+		// SM and dream wires here unconditionally; model/provider are read
+		// live from engine at extract time (NewSubEngine copies parent state).
+		// Dream needs SessionID() for NewManager — empty on fresh engines,
+		// filled after SwitchSession on restore.
+		if cfg.SessionNotes != "off" && store != nil && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
 			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
 				editTool := fileedit.New()
@@ -334,6 +336,7 @@ func main() {
 			sm := session.New(smCfg, workingDir, id, smExtractFn, slog.Default())
 			sm.SetSystemPromptFn(newEng.SystemPrompt)
 			newEng.SetSessionMemory(sm)
+			slog.Info("session memory: wired", "engine_id", id)
 		}
 
 		if dream.IsEnabled() && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
