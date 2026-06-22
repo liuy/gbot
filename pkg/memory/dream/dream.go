@@ -23,13 +23,20 @@ type SessionLister interface {
 	SessionsTouchedSince(projectDir string, since time.Time, excludeSID string) ([]string, error)
 }
 
+// DreamEngineMeta is the interface Manager needs from Engine to read live
+// sessionID at dream time. sessionID may be empty at construction time
+// (session created post-factory) but filled by the time ShouldDream runs.
+type DreamEngineMeta interface {
+	SessionID() string
+}
+
 // Manager manages auto-dream state and gate logic.
 // TS source: autoDream.ts — initAutoDream closure.
 type Manager struct {
 	config     Config
 	memoryDir  string
 	projectDir string
-	currentSID string
+	engine     DreamEngineMeta // live engine state (sessionID may change)
 	store      SessionLister
 	runFn      DreamRunFunc
 	dispatcher types.EventDispatcher
@@ -41,14 +48,14 @@ type Manager struct {
 }
 
 // NewManager creates a new dream Manager.
-func NewManager(cfg Config, memoryDir, projectDir, currentSID string,
+func NewManager(cfg Config, memoryDir, projectDir string, engine DreamEngineMeta,
 	store SessionLister, runFn DreamRunFunc,
 	dispatcher types.EventDispatcher, logger *slog.Logger) *Manager {
 	return &Manager{
 		config:     cfg,
 		memoryDir:  memoryDir,
 		projectDir: projectDir,
-		currentSID: currentSID,
+		engine:     engine,
 		store:      store,
 		runFn:      runFn,
 		dispatcher: dispatcher,
@@ -97,7 +104,8 @@ func (m *Manager) ShouldDream(ctx context.Context) (shouldRun bool, sessionIDs [
 
 	// Gate 4: Session gate — enough sessions touched since last consolidation
 	sinceTime := time.UnixMilli(lastAt)
-	ids, err := m.store.SessionsTouchedSince(m.projectDir, sinceTime, m.currentSID)
+	currentSID := m.engine.SessionID()
+	ids, err := m.store.SessionsTouchedSince(m.projectDir, sinceTime, currentSID)
 	if err != nil {
 		m.logger.Warn("dream: SessionsTouchedSince failed", "error", err)
 		return false, nil, 0, nil

@@ -339,7 +339,7 @@ func main() {
 			slog.Info("session memory: wired", "engine_id", id)
 		}
 
-		if dream.IsEnabled() && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
+		if dream.IsEnabled() && store != nil && contextWindow > 0 {
 			dreamCfg := dream.DefaultConfig()
 			dreamRunFn := func(ctx context.Context, prompt string) error {
 				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -364,9 +364,10 @@ func main() {
 				return result.Error
 			}
 			memoryDir := long.GetMemoryPath(workingDir)
-			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, newEng.SessionID(),
+			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, newEng,
 				store, dreamRunFn, newEng.Dispatcher(), slog.Default())
 			newEng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
+			slog.Info("dream: wired", "engine_id", id)
 		}
 
 		return newEng, handler, nil

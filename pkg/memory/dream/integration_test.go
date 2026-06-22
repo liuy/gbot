@@ -81,7 +81,7 @@ func TestIntegration_ColdStart_EmptyDB(t *testing.T) {
 	}
 
 	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, "/project", "current-sid",
+		memoryDir, "/project", &fakeEngine{sid: "current-sid"},
 		store, runFn, dispatcher, slog.Default())
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
@@ -122,7 +122,7 @@ func TestIntegration_HotPath_FullCycle(t *testing.T) {
 	}
 
 	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, currentSID,
+		memoryDir, projectDir, &fakeEngine{sid: currentSID},
 		store, runFn, dispatcher, slog.Default())
 
 	// Fire
@@ -170,7 +170,7 @@ func TestIntegration_HotPath_FullCycle(t *testing.T) {
 	// 4. Second run should skip — 24h not elapsed since consolidation
 	dispatcher2 := &mockDispatcher{}
 	mgr2 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, currentSID,
+		memoryDir, projectDir, &fakeEngine{sid: currentSID},
 		store, runFn, dispatcher2, slog.Default())
 	mgr2.RunPostTurn(context.Background(), nil, 0, "")
 
@@ -212,7 +212,7 @@ func TestIntegration_Recovery_StaleLock(t *testing.T) {
 	}
 
 	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, "current-sid",
+		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
 		store, runFn, dispatcher, slog.Default())
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
@@ -243,7 +243,7 @@ func TestIntegration_Recovery_FailedConsolidation(t *testing.T) {
 	}
 
 	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, "current-sid",
+		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
 		store, runFn, dispatcher, slog.Default())
 
 	mgr.RunPostTurn(context.Background(), nil, 0, "")
@@ -285,7 +285,7 @@ func TestIntegration_Recovery_ProcessRestart(t *testing.T) {
 	// Process 1: run dream successfully
 	dispatcher1 := &mockDispatcher{}
 	mgr1 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, "current-sid",
+		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
 		store, func(ctx context.Context, prompt string) error { return nil },
 		dispatcher1, slog.Default())
 	mgr1.RunPostTurn(context.Background(), nil, 0, "")
@@ -295,7 +295,7 @@ func TestIntegration_Recovery_ProcessRestart(t *testing.T) {
 	dispatcher2 := &mockDispatcher{}
 	var runCalled bool
 	mgr2 := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, "current-sid",
+		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
 		store, func(ctx context.Context, prompt string) error {
 			runCalled = true
 			return nil
@@ -328,7 +328,7 @@ func TestIntegration_CtxCancellation(t *testing.T) {
 	}
 
 	mgr := NewManager(Config{MinHours: 24, MinSessions: 5},
-		memoryDir, projectDir, "current-sid",
+		memoryDir, projectDir, &fakeEngine{sid: "current-sid"},
 		store, runFn, dispatcher, slog.Default())
 
 	// Cancel context before calling RunPostTurn

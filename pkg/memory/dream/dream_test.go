@@ -56,13 +56,20 @@ func (m *mockDispatcher) Events() []types.QueryEvent {
 	return append([]types.QueryEvent(nil), m.events...)
 }
 
+// fakeEngine implements DreamEngineMeta for tests.
+type fakeEngine struct {
+	sid string
+}
+
+func (f *fakeEngine) SessionID() string { return f.sid }
+
 // --- ShouldDream gate tests ---
 
 func TestShouldDream_Disabled(t *testing.T) {
 	t.Setenv("GBOT_AUTO_DREAM", "false")
 
 	tmpDir := t.TempDir()
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
 	should, _, _, _ := m.ShouldDream(context.Background())
 	if should {
@@ -83,7 +90,7 @@ func TestShouldDream_TimeGateNotElapsed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
 	should, _, _, _ := m.ShouldDream(context.Background())
 	if should {
@@ -95,7 +102,7 @@ func TestShouldDream_ScanThrottle(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// No lock file → time gate passes (0 mtime = very old)
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
 
 	// First call sets lastScanAt
@@ -112,7 +119,7 @@ func TestShouldDream_SessionGateTooFew(t *testing.T) {
 	// No lock file → time gate passes
 
 	lister := &mockSessionLister{ids: []string{"s1", "s2"}} // only 2, need 5
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		lister, nil, &mockDispatcher{}, slog.Default())
 
 	// Set lastScanAt far enough back
@@ -129,7 +136,7 @@ func TestShouldDream_AllGatesPass(t *testing.T) {
 	// No lock file → time gate passes (lastConsolidatedAt = 0 = epoch)
 
 	lister := &mockSessionLister{ids: []string{"s1", "s2", "s3", "s4", "s5", "s6"}}
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		lister, nil, &mockDispatcher{}, slog.Default())
 
 	// Set lastScanAt far enough back
@@ -155,7 +162,7 @@ func TestShouldDream_LockHeldByLivePID(t *testing.T) {
 
 	// Manager A acquires the lock first (MinHours=0, MinSessions=0 bypass gates 2-4)
 	listerA := &mockSessionLister{ids: []string{"s1"}}
-	mgrA := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", "sid-a",
+	mgrA := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", &fakeEngine{sid: "sid-a"},
 		listerA, nil, &mockDispatcher{}, slog.Default())
 	mgrA.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
@@ -169,7 +176,7 @@ func TestShouldDream_LockHeldByLivePID(t *testing.T) {
 
 	// Manager B tries — should fail because A holds the lock with our live PID
 	listerB := &mockSessionLister{ids: []string{"s1", "s2", "s3", "s4", "s5"}}
-	mgrB := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", "sid-b",
+	mgrB := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", &fakeEngine{sid: "sid-b"},
 		listerB, nil, &mockDispatcher{}, slog.Default())
 	mgrB.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
@@ -196,7 +203,7 @@ func TestExecute_EmitsVirtualToolEvents(t *testing.T) {
 	}
 	dispatcher := &mockDispatcher{}
 
-	m := NewManager(DefaultConfig(), tmpDir, "/project", "sid",
+	m := NewManager(DefaultConfig(), tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, runFn, dispatcher, slog.Default())
 
 	m.Execute(context.Background(), []string{"s1", "s2"}, 0)
@@ -248,7 +255,7 @@ func TestExecute_RollbackOnFailure(t *testing.T) {
 	}
 	dispatcher := &mockDispatcher{}
 
-	m := NewManager(DefaultConfig(), tmpDir, "/project", "sid",
+	m := NewManager(DefaultConfig(), tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, runFn, dispatcher, slog.Default())
 
 	m.Execute(context.Background(), []string{"s1"}, priorMtime)
@@ -276,7 +283,7 @@ func TestExecute_RollbackOnFailure(t *testing.T) {
 // --- RunPostTurn tests ---
 
 func TestRunPostTurn_OnlyMainThread(t *testing.T) {
-	m := NewManager(DefaultConfig(), t.TempDir(), "/project", "sid",
+	m := NewManager(DefaultConfig(), t.TempDir(), "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, nil, &mockDispatcher{}, nil)
 
 	// ShouldDream should not be called for non-main thread
@@ -295,7 +302,7 @@ func TestRunPostTurn_ConcurrentGuard(t *testing.T) {
 	tmpDir := t.TempDir()
 	dispatcher := &mockDispatcher{}
 
-	m := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 0, MinSessions: 0}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{ids: []string{"s1"}}, nil, dispatcher, slog.Default())
 
 	// Simulate already running
@@ -322,7 +329,7 @@ func TestRunPostTurn_SetsRunningOnExecute(t *testing.T) {
 	}
 
 	// No lock file → time passes, sessions enough, lock acquires
-	m := NewManager(Config{MinHours: 0, MinSessions: 1}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 0, MinSessions: 1}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{ids: []string{"s1"}}, runFn, dispatcher, slog.Default())
 	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
@@ -360,7 +367,7 @@ func TestChain_FullPipeline(t *testing.T) {
 	}
 
 	lister := &mockSessionLister{ids: []string{"s1", "s2", "s3", "s4", "s5"}}
-	m := NewManager(Config{MinHours: 0, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 0, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		lister, runFn, dispatcher, slog.Default())
 
 	// Run the full pipeline via RunPostTurn (main thread)
@@ -430,7 +437,7 @@ func TestShouldDream_ReadLastConsolidatedAtError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, memDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, memDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, nil, &mockDispatcher{}, slog.Default())
 	should, _, _, err := m.ShouldDream(context.Background())
 	if should {
@@ -446,7 +453,7 @@ func TestShouldDream_SessionsTouchedSinceError(t *testing.T) {
 	// No lock file → time gate passes (lastConsolidatedAt = 0 = epoch)
 
 	lister := &mockSessionLister{err: errors.New("db connection lost")}
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		lister, nil, &mockDispatcher{}, slog.Default())
 	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
@@ -478,7 +485,7 @@ func TestShouldDream_LockAcquireError(t *testing.T) {
 		ids:    []string{"s1", "s2", "s3", "s4", "s5", "s6"},
 		memDir: tmpDir,
 	}
-	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", "sid",
+	m := NewManager(Config{MinHours: 24, MinSessions: 5}, tmpDir, "/project", &fakeEngine{sid: "sid"},
 		lister, nil, &mockDispatcher{}, slog.Default())
 	m.lastScanAt = time.Now().Add(-15 * time.Minute) // REAL-TIME: testing scan throttle bypass
 
@@ -512,7 +519,7 @@ func TestExecute_PanicRecovery(t *testing.T) {
 	}
 	dispatcher := &mockDispatcher{}
 
-	m := NewManager(DefaultConfig(), tmpDir, "/project", "sid",
+	m := NewManager(DefaultConfig(), tmpDir, "/project", &fakeEngine{sid: "sid"},
 		&mockSessionLister{}, runFn, dispatcher, slog.Default())
 
 	// Should not crash — deferred recovery catches the panic
