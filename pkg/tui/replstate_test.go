@@ -1114,3 +1114,47 @@ func TestUpdateRunningToolElapsed_NoMessages_NoOp(t *testing.T) {
 	// No messages at all — should be a no-op, no panic.
 	s.UpdateRunningToolElapsed()
 }
+
+// TestUpdateRunningToolElapsed_SyncsPendingToolMap verifies that the spinner
+// tick also updates the pendingTool map, not just s.messages blocks.
+//
+// Without this, sub-agent events (toolStartMsg) read Elapsed from pendingTool
+// (which stays 0) and write it back to messages, causing the agent tool's
+// header to flicker between "running..." and "(52s)" every time the sub-agent
+// calls a tool.
+func TestUpdateRunningToolElapsed_SyncsPendingToolMap(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery()
+	s.AppendTextItem()
+	s.PendingToolStarted("agent-1", "Agent", "Explore codebase", "", tool.SearchReadKind{})
+
+	// Simulate time passage: rewind start so Elapsed computes large.
+	s.mu.Lock()
+	s.pendingToolStart["agent-1"] = time.Now().Add(-52 * time.Second) // REAL-TIME: needed for elapsed computation
+	s.mu.Unlock()
+
+	s.UpdateRunningToolElapsed()
+
+	// s.messages block should have Elapsed updated (existing behavior).
+	msgs := s.Messages()
+	var msgElapsed time.Duration
+	for _, blk := range msgs[len(msgs)-1].Blocks {
+		if blk.Type == BlockTool && blk.ToolCall.ID == "agent-1" {
+			msgElapsed = blk.ToolCall.Elapsed
+		}
+	}
+	if msgElapsed < 10*time.Second {
+		t.Errorf("messages block Elapsed = %v, want >= 10s", msgElapsed)
+	}
+
+	// pendingTool map should ALSO have Elapsed updated.
+	// Without sync, pendingTool[agent-1].Elapsed stays 0, so sub-agent events
+	// that write parent back via updateToolBlock clobber the correct value.
+	s.mu.RLock()
+	pendingElapsed := s.pendingTool["agent-1"].Elapsed
+	s.mu.RUnlock()
+	if pendingElapsed < 10*time.Second {
+		t.Errorf("pendingTool Elapsed = %v, want >= 10s (must stay in sync "+
+			"with messages to prevent agent spinner flicker)", pendingElapsed)
+	}
+}

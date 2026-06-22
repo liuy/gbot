@@ -820,7 +820,14 @@ func (s *ReplState) UpdateRunningToolElapsed() {
 			continue
 		}
 		if start, ok := s.pendingToolStart[blk.ToolCall.ID]; ok {
-			blk.ToolCall.Elapsed = now.Sub(start)
+			elapsed := now.Sub(start)
+			blk.ToolCall.Elapsed = elapsed
+			// Sync pendingTool map so sub-agent events (toolStartMsg) that
+			// read Elapsed from pendingTool and write it back via
+			// updateToolBlock don't clobber the correct value with 0.
+			if tcv, ok := s.pendingTool[blk.ToolCall.ID]; ok {
+				tcv.Elapsed = elapsed
+			}
 		}
 	}
 }
