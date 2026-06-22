@@ -260,6 +260,10 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	a.committedCount = 0
 	a.contentCache = ""
 	a.contentDirty = true
+	// Switch to target engine's input history.
+	if h, ok := target.History.(*History); ok {
+		a.history = h
+	}
 
 	// All streaming UI state (progressStart, thinkingActive, etc.) lives
 	// on ReplState. Switching just rebinds a.repl — no field-by-field
@@ -353,6 +357,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		Engine:          eng,
 		Handler:         handler,
 		Repl:            newReplAdapter(NewReplState()),
+		History:         NewHistory(historyPathFor(id)),
 		ID:              id,
 		Name:            name,
 		ActiveSessionID: eng.SessionID(),

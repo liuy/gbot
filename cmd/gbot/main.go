@@ -569,6 +569,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			Engine:          eng,
 			Repl:            nil, // set by tui on first switch
 			Handler:         handler,
+			History:         nil, // set by tui.NewAppWithManager
 			ID:              em.ID,
 			Name:            em.Name,
 			ActiveSessionID: resumeID,

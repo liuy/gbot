@@ -27,6 +27,7 @@ type EngineViewState struct {
 	Engine          *Engine
 	Repl            ReplSnapshot // adapter supplied by tui package
 	Handler         any          // *tui.TUIHandler; opaque to avoid tui→engine cycle
+	History         any          // *tui.History; opaque to avoid tui→engine cycle
 	ID              string
 	Name            string
 	ActiveSessionID string

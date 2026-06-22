@@ -327,9 +327,9 @@ func TestHistory_Load_EmptyDisplay(t *testing.T) {
 func TestHistory_Load_CapAtMaxSize(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "history.jsonl")
-	// Write 110 entries
+	// Write 210 entries
 	var lines []string
-	for i := range 110 {
+	for i := range 210 {
 		entry := fmt.Sprintf("{\"display\":\"entry%d\",\"timestamp\":%d}", i, i)
 		lines = append(lines, entry)
 	}
@@ -337,8 +337,8 @@ func TestHistory_Load_CapAtMaxSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := NewHistory(path)
-	if len(h.items) != 100 {
-		t.Errorf("should cap at 100, got Len() = %d", len(h.items))
+	if len(h.items) != 200 {
+		t.Errorf("should cap at 200, got Len() = %d", len(h.items))
 	}
 }
 

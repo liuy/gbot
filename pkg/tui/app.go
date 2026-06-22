@@ -217,7 +217,8 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		mgr.Add(&engine.EngineViewState{
 			Engine:          eng,
 			Repl:            newReplAdapter(NewReplState()),
-			Handler:         nil, // set by NewAppWithManager from hub
+			Handler:         nil,    // set by NewAppWithManager from hub
+			History:         nil,    // set by NewAppWithManager loop below
 			ID:              eng.EngineID(),
 			Name:            "main",
 			ActiveSessionID: eng.SessionID(),
@@ -232,13 +233,17 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 // NewAppWithManager creates an App bound to an EngineManager that already
 // holds one or more engines. The active engine (mgr.Active()) becomes the
 // initial a.engine / a.repl / a.sessionID cache.
-func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hub) *App {
-	// Resolve history file path: ~/.gbot/history.jsonl
-	var historyPath string
-	if configDir, err := config.ConfigDir(); err == nil {
-		historyPath = filepath.Join(configDir, "history.jsonl")
+// historyPathFor returns the per-engine history file path:
+// ~/.gbot/history/{engineID}.jsonl. Returns "" if config dir is unavailable.
+func historyPathFor(engineID string) string {
+	configDir, err := config.ConfigDir()
+	if err != nil {
+		return ""
 	}
+	return filepath.Join(configDir, "history", engineID+".jsonl")
+}
 
+func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hub) *App {
 	a := &App{
 		input:            NewInput(),
 		status:           NewStatusBar(),
@@ -246,7 +251,6 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 		engineMgr:        mgr,
 		systemPrompt:     systemPrompt,
 		hub:              h,
-		history:          NewHistory(historyPath),
 		killRing:         NewKillRing(),
 		doublePress:      NewDoublePress(),
 		completions:      NewCompletions(),
@@ -279,6 +283,20 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 			}
 			a.sessionID = vs.ActiveSessionID
 		}
+		// Initialize per-engine History for all registered view states.
+		for _, vs := range mgr.List() {
+			if vs.History == nil {
+				vs.History = NewHistory(historyPathFor(vs.ID))
+			}
+		}
+		if vs := mgr.Active(); vs != nil {
+			if h, ok := vs.History.(*History); ok {
+				a.history = h
+			}
+		}
+	}
+	if a.history == nil {
+		a.history = NewHistory("")
 	}
 	// Bind to the active engine's Hub+handler pair. The factory in main.go
 	// builds one Hub per engine and stores its subscribed handler on
