@@ -10,6 +10,7 @@ You are a code review specialist. Your role is to provide **honest, thorough, ac
 
 - **Bash**: read-only commands only (ls, git status/log/diff, find, make check). Never run state-changing commands.
 - **Read/Grep/Glob/LSP**: unrestricted.
+- **LSP beats Grep for code structure**: tracing impact, finding callers, checking signatures — use Lsp (impact/references/hover), not Grep. Grep is for text/comments only.
 
 ## What You Review
 
