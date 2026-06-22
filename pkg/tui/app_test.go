@@ -3522,8 +3522,8 @@ func TestApp_StatsScrollsWithContent(t *testing.T) {
 	}
 
 	// Verify: committedCount is still 0 (deferred)
-	if app.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0 (deferred commit)", app.committedCount)
+	if app.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (deferred commit)", app.repl.committedCount)
 	}
 
 	// --- Second query: submitting commits previous turn ---
@@ -3900,7 +3900,7 @@ func TestApp_CommitPreservesCollapseState(t *testing.T) {
 
 	// Simulate commit (renderMessagesFull with noHint=true but NOT forced expand)
 	// The commit should use expand=false (user's state), not expand=true
-	uncommitted := app.repl.messages[app.committedCount:]
+	uncommitted := app.repl.messages[app.repl.committedCount:]
 	rendered := renderMessagesFull(uncommitted, app.width, app.allToolsExpanded, "", false, true, 0)
 
 	// Should NOT show all lines — tools are collapsed
@@ -6523,7 +6523,7 @@ func TestApp_ToolEndMsg_BackgroundToolNotFound_LogsWarn(t *testing.T) {
 // tool_use, causing API 2013 "tool call result does not follow tool call".
 func TestAutoRewind_Skipped_WhenToolUsePresent(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
-	app.committedCount = 1
+	app.repl.committedCount = 1
 
 	// Set up engine messages simulating: user query → tool_use → tool_result + interrupt
 	app.engine.SetMessages([]types.Message{
@@ -8456,8 +8456,8 @@ func TestResume_WindowSizeMsg_CommitsToScrollback(t *testing.T) {
 	app.SetStore(store, "session-resume", "/project")
 
 	// SetStore should NOT commit (committedCount stays 0)
-	if app.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0 after SetStore", app.committedCount)
+	if app.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 after SetStore", app.repl.committedCount)
 	}
 	if len(app.repl.messages) != 2 {
 		t.Fatalf("repl.messages = %d, want 2", len(app.repl.messages))
@@ -8472,8 +8472,8 @@ func TestResume_WindowSizeMsg_CommitsToScrollback(t *testing.T) {
 	// Send WindowSizeMsg — should commit history to scrollback
 	model, cmd := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	a := model.(*App)
-	if a.committedCount != 2 {
-		t.Errorf("committedCount after WindowSizeMsg = %d, want 2", a.committedCount)
+	if a.repl.committedCount != 2 {
+		t.Errorf("committedCount after WindowSizeMsg = %d, want 2", a.repl.committedCount)
 	}
 	if cmd == nil {
 		t.Error("expected tea.Println cmd for resumed messages, got nil")
@@ -8501,15 +8501,15 @@ func TestResume_SecondResize_NoDoubleCommit(t *testing.T) {
 	// First WindowSizeMsg — commit
 	model, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	a := model.(*App)
-	if a.committedCount != 2 {
-		t.Fatalf("first resize: committedCount = %d, want 2", a.committedCount)
+	if a.repl.committedCount != 2 {
+		t.Fatalf("first resize: committedCount = %d, want 2", a.repl.committedCount)
 	}
 
 	// Second WindowSizeMsg — should NOT re-commit
 	model2, cmd2 := a.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	a2 := model2.(*App)
-	if a2.committedCount != 2 {
-		t.Errorf("second resize: committedCount = %d, want 2 (unchanged)", a2.committedCount)
+	if a2.repl.committedCount != 2 {
+		t.Errorf("second resize: committedCount = %d, want 2 (unchanged)", a2.repl.committedCount)
 	}
 	if cmd2 != nil {
 		t.Error("second resize should not produce tea.Println cmd")
@@ -8537,8 +8537,8 @@ func TestFreshSession_Resize_NoCommit(t *testing.T) {
 	if cmd != nil {
 		t.Error("fresh session resize should not produce tea.Println cmd")
 	}
-	if a.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0", a.committedCount)
+	if a.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0", a.repl.committedCount)
 	}
 }
 

@@ -78,6 +78,11 @@ type ReplState struct {
 	// Tracks the index of the current thinking block in lastMsg().Blocks
 	// so deltas can append to it. -1 when no thinking block is active.
 	activeThinkingIdx int
+
+	// Commit-on-complete: messages[:committedCount] are committed to terminal
+	// scrollback via tea.Println and never re-rendered by Bubble Tea.
+	// Only messages[committedCount:] are managed by View().
+	committedCount int
 }
 
 // NewReplState creates a fresh REPL state.
@@ -1110,7 +1115,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				queryUsage = a.status.usage
 			}
 			a.repl.AppendStatsLine(streamStart, queryUsage)
-			slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+			slog.Info("tui:query_end", "total_in", queryUsage.TotalInputTokens(), "total_out", queryUsage.OutputTokens, "cache_read", queryUsage.CacheReadInputTokens, "cache_creation", queryUsage.CacheCreationInputTokens, "committedCount", a.repl.committedCount, "totalMessages", len(a.repl.messages))
 		}
 
 		// Don't commit yet — keep current turn in Bubble Tea view so
@@ -1356,7 +1361,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		// Commit uncommitted messages before resetting so error context
 		// is preserved in terminal scrollback.
 		var errCommitCmd tea.Cmd
-		uncommitted := a.repl.messages[a.committedCount:]
+		uncommitted := a.repl.messages[a.repl.committedCount:]
 		if len(uncommitted) > 0 {
 			// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 			// user's expand/collapse state.
@@ -1364,7 +1369,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			errCommitCmd = tea.Println(rendered)
 		}
 		a.repl.Reset()
-		a.committedCount = 0
+		a.repl.committedCount = 0
 		a.spinner.Stop()
 		a.input.Focus()
 		return true, errCommitCmd
@@ -1423,7 +1428,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
-	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.committedCount, "totalMessages", len(a.repl.messages))
+	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.repl.committedCount, "totalMessages", len(a.repl.messages))
 
 	// Dispatch before the streaming check — switching engines mid-stream
 	// is safe: the demoted engine's Hub + drain fn keep its ReplState
@@ -1444,12 +1449,12 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	// This defers the commit so Ctrl+O stays interactive during the
 	// completed turn, and scrolls up when user submits next query.
 	var commitCmd tea.Cmd
-	uncommitted := a.repl.messages[a.committedCount:]
+	uncommitted := a.repl.messages[a.repl.committedCount:]
 	if len(uncommitted) > 0 {
 		// Suppress ctrl+o hints in scrollback (noHint=true) — preserve
 		// user's expand/collapse state.
 		rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, true, 0)
-		a.committedCount = len(a.repl.messages)
+		a.repl.committedCount = len(a.repl.messages)
 		commitCmd = tea.Println(rendered)
 	}
 	// Check for slash commands before adding user message to engine.

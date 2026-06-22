@@ -570,13 +570,13 @@ func TestSwitchEngine_CommitsHistoryToScrollback(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("switchEngine(e2→main) returned nil cmd")
 	}
-	if a.committedCount == 0 {
+	if a.repl.committedCount == 0 {
 		t.Error("committedCount == 0 after switchEngine to main with non-empty history — " +
 			"messages will not be written to scrollback until next WindowSizeMsg (which never fires on switch)")
 	}
-	if a.committedCount != len(a.repl.messages) {
+	if a.repl.committedCount != len(a.repl.messages) {
 		t.Errorf("committedCount = %d, want %d (must equal len(repl.messages) after commit)",
-			a.committedCount, len(a.repl.messages))
+			a.repl.committedCount, len(a.repl.messages))
 	}
 }
 

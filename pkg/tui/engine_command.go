@@ -248,16 +248,14 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	a.scrollTotal = 0
 	a.userScrolled = false
 	a.allToolsExpanded = false
-	a.repl.displayedInputTokens = 0
-	a.repl.displayedOutputTokens = 0
-	a.repl.outputTokenTarget = 0
-	a.repl.inputTokenTarget = 0
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1
 	a.toolBlink = false
 	a.toolBlinkTick = 0
 	a.retryActive = false
-	a.committedCount = 0
+	// committedCount, displayedInputTokens, etc. live on ReplState and
+	// travel with a.repl automatically when switchEngine rebinds it —
+	// no manual reset here.
 	a.contentCache = ""
 	a.contentDirty = true
 	// Switch to target engine's input history.
@@ -317,8 +315,12 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	// screen shows it after the clear — without this, switched-to engines
 	// with non-empty history render blank until the next WindowSizeMsg
 	// (which never fires on switch).
-	if commitCmd := a.commitPendingMessagesCmd(); commitCmd != nil {
-		cmds = append(cmds, commitCmd)
+	// ClearScreen wipes terminal scrollback. Re-commit the new engine's
+	// already-committed messages (messages[:committedCount]) so the user
+	// sees the same history as before the switch. The uncommitted tail
+	// (current query) stays in the viewport for interactive rendering.
+	if recommitCmd := a.recommitHistoryCmd(); recommitCmd != nil {
+		cmds = append(cmds, recommitCmd)
 	}
 	return a, tea.Batch(cmds...)
 }

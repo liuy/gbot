@@ -92,7 +92,7 @@ func TestIntegration_AutoRewind_FullChain(t *testing.T) {
 	})
 
 	// Simulate: user message was committed, TUI has messages
-	a.committedCount = 0 // no prior messages committed
+	a.repl.committedCount = 0 // no prior messages committed
 	a.repl.messages = []MessageView{
 		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "hello world"}}},
 	}
@@ -129,8 +129,8 @@ func TestIntegration_AutoRewind_FullChain(t *testing.T) {
 	}
 
 	// committedCount should be valid
-	if a.committedCount > len(a.repl.messages) {
-		t.Errorf("committedCount %d > repl.messages len %d", a.committedCount, len(a.repl.messages))
+	if a.repl.committedCount > len(a.repl.messages) {
+		t.Errorf("committedCount %d > repl.messages len %d", a.repl.committedCount, len(a.repl.messages))
 	}
 }
 
@@ -1039,7 +1039,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	}
 	app.width = 80
 	app.repl.messages = engineMessagesToViews(engineMsgs, nil)
-	app.committedCount = len(app.repl.messages)
+	app.repl.committedCount = len(app.repl.messages)
 
 	// === Simulate post-resume edit: user asks to edit file again (v2 → v3) ===
 	//
@@ -1063,7 +1063,7 @@ func TestIntegration_Rewind_ScopeDialogAfterResume(t *testing.T) {
 	}...)
 	eng2.SetMessages(newMsgs)
 	app.repl.messages = engineMessagesToViews(newMsgs, nil)
-	app.committedCount = len(app.repl.messages)
+	app.repl.committedCount = len(app.repl.messages)
 
 	// Verify current disk state is v3 before rewind
 	current, _ := os.ReadFile(testFile)

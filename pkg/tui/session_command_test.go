@@ -228,7 +228,7 @@ func TestHandleClear_Success(t *testing.T) {
 	a.repl.displayedOutputTokens = 100
 	a.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 	a.scrollOffset = 42
-	a.committedCount = 1
+	a.repl.committedCount = 1
 
 	_ = a.handleClear(nil)
 
@@ -449,7 +449,7 @@ func msgContainsPrintln(t *testing.T, msg tea.Msg) bool {
 func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	a, store := newSessionTestApp(t)
 
-	a.committedCount = 3
+	a.repl.committedCount = 3
 	a.repl.displayedInputTokens = 999
 	a.repl.displayedOutputTokens = 888
 	a.scrollOffset = 15
@@ -479,8 +479,8 @@ func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	}
 	// committedCount=0 lets WindowSizeMsg re-commit the resumed messages; setting
 	// it to len(messages) would hide them from View() since uncommitted is empty.
-	if a.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0 (must be 0 so WindowSizeMsg commits resumed messages)", a.committedCount)
+	if a.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (must be 0 so WindowSizeMsg commits resumed messages)", a.repl.committedCount)
 	}
 	if !containsClearScreen(t, cmd) {
 		t.Error("resume should emit tea.ClearScreen to wipe old session content")
@@ -490,7 +490,7 @@ func TestResumePicker_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	a, _ := newSessionTestApp(t)
 
-	a.committedCount = 2
+	a.repl.committedCount = 2
 	a.repl.displayedInputTokens = 777
 	a.repl.StartThinkingAtForTest(time.Now()) // REAL-TIME: anchors thinkingStart assertion
 	a.scrollOffset = 10
@@ -512,8 +512,8 @@ func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	if a.scrollOffset != 0 {
 		t.Errorf("scrollOffset = %d, want 0 after fork", a.scrollOffset)
 	}
-	if a.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0 (forked messages must be re-committed via WindowSizeMsg)", a.committedCount)
+	if a.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (forked messages must be re-committed via WindowSizeMsg)", a.repl.committedCount)
 	}
 	if !containsClearScreen(t, cmd) {
 		t.Error("fork should emit tea.ClearScreen to wipe old session content")

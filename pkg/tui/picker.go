@@ -130,7 +130,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	a.repl.Reset()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 	// committedCount=0 so WindowSizeMsg re-commits the resumed messages
-	a.committedCount = 0
+	a.repl.committedCount = 0
 	a.resetDisplayState()
 
 	slog.Info("session: switched via picker", "sessionID", selected.SessionID, "messages", len(engineMsgs))

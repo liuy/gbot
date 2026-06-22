@@ -85,11 +85,6 @@ type App struct {
 	// (a.repl.<method>) keep working without mass-rename.
 	repl *ReplState
 
-	// Commit-on-complete: messages[:committedCount] are committed to terminal
-	// scrollback via tea.Println and never re-rendered by Bubble Tea.
-	// Only messages[committedCount:] are managed by View().
-	committedCount int
-
 	// Engine
 	// a.engine is the active engine; a.engineMgr owns the full set.
 	// engineMgr is the source of truth for multi-engine state; a.engine is
@@ -217,8 +212,8 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 		mgr.Add(&engine.EngineViewState{
 			Engine:          eng,
 			Repl:            newReplAdapter(NewReplState()),
-			Handler:         nil,    // set by NewAppWithManager from hub
-			History:         nil,    // set by NewAppWithManager loop below
+			Handler:         nil, // set by NewAppWithManager from hub
+			History:         nil, // set by NewAppWithManager loop below
 			ID:              eng.EngineID(),
 			Name:            "main",
 			ActiveSessionID: eng.SessionID(),
@@ -859,8 +854,35 @@ func (a *App) bgEngineStreaming() bool {
 // Called from the WindowSizeMsg handler (first resize after SetStore) and
 // from switchEngine (so engine switches redraw history immediately without
 // waiting for a WindowSizeMsg that never fires on switch).
+// recommitHistoryCmd re-writes already-committed messages to terminal
+// scrollback after a ClearScreen (engine switch). Unlike
+// commitPendingMessagesCmd, this does NOT change committedCount — it
+// writes messages[:committedCount] to scrollback to restore the visual
+// state the user had before the switch.
+func (a *App) recommitHistoryCmd() tea.Cmd {
+	if a.repl.committedCount == 0 || len(a.repl.messages) == 0 {
+		return nil
+	}
+	msgs := a.repl.messages[:a.repl.committedCount]
+	const maxResumeMessages = 30
+	skipped := 0
+	if len(msgs) > maxResumeMessages {
+		skipped = len(msgs) - maxResumeMessages
+		msgs = msgs[len(msgs)-maxResumeMessages:]
+	}
+	var rendered string
+	if skipped > 0 {
+		skipNote := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Render(
+			fmt.Sprintf("... (%d earlier messages skipped) ...", skipped))
+		rendered = skipNote + "\n" + renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+	} else {
+		rendered = renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
+	}
+	return tea.Println(rendered + "\n")
+}
+
 func (a *App) commitPendingMessagesCmd() tea.Cmd {
-	if a.committedCount != 0 || len(a.repl.messages) == 0 || a.repl.IsStreaming() {
+	if a.repl.committedCount != 0 || len(a.repl.messages) == 0 || a.repl.IsStreaming() {
 		return nil
 	}
 	const maxResumeMessages = 30
@@ -878,7 +900,7 @@ func (a *App) commitPendingMessagesCmd() tea.Cmd {
 	} else {
 		rendered = renderMessagesFull(msgs, a.width, a.allToolsExpanded, "", false, false, 0)
 	}
-	a.committedCount = len(a.repl.messages)
+	a.repl.committedCount = len(a.repl.messages)
 	a.contentCache = ""
 	a.contentDirty = false
 	return tea.Println(rendered + "\n")
@@ -1098,7 +1120,7 @@ func (a *App) View() string {
 		return a.renderInputOverlay()
 	}
 
-	uncommitted := a.repl.messages[a.committedCount:]
+	uncommitted := a.repl.messages[a.repl.committedCount:]
 
 	var contentStr string
 	if len(uncommitted) > 0 {
@@ -1119,7 +1141,7 @@ func (a *App) View() string {
 		a.scrollOffset = 0
 		a.scrollTotal = 0
 		a.userScrolled = false
-		if a.committedCount == 0 {
+		if a.repl.committedCount == 0 {
 			// Initial state — show welcome
 			welcomeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("246")).Italic(true)
 			contentStr = welcomeStyle.Render("Welcome to gbot. Type a message to get started.")
@@ -1572,10 +1594,10 @@ func (a *App) handleCtrlC() (tea.Model, tea.Cmd) {
 		a.repl.FinishStream(nil)
 		// Commit uncommitted messages to scrollback
 		var cmd tea.Cmd
-		uncommitted := a.repl.messages[a.committedCount:]
+		uncommitted := a.repl.messages[a.repl.committedCount:]
 		if len(uncommitted) > 0 {
 			rendered := renderMessagesFull(uncommitted, a.width, a.allToolsExpanded, "", false, false, 0)
-			a.committedCount = len(a.repl.messages)
+			a.repl.committedCount = len(a.repl.messages)
 			cmd = tea.Println(rendered)
 		}
 		a.contentCache = ""
@@ -1898,7 +1920,7 @@ func (a *App) countPeekLines(s string) int {
 
 // getRenderedContent returns cached or freshly built rendered content.
 func (a *App) getRenderedContent() string {
-	uncommitted := a.repl.messages[a.committedCount:]
+	uncommitted := a.repl.messages[a.repl.committedCount:]
 	if len(uncommitted) == 0 {
 		return ""
 	}

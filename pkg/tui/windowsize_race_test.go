@@ -49,8 +49,8 @@ func TestApp_WindowSizeMsg_DuringStream_NoCommitRegress(t *testing.T) {
 	if got := len(app.repl.messages); got != 2 {
 		t.Fatalf("expected 2 messages (user + assistant), got %d", got)
 	}
-	if app.committedCount != 0 {
-		t.Fatalf("committedCount must be 0 after fresh submit, got %d", app.committedCount)
+	if app.repl.committedCount != 0 {
+		t.Fatalf("committedCount must be 0 after fresh submit, got %d", app.repl.committedCount)
 	}
 
 	// Terminal resize arrives mid-stream (tmux split, window drag, etc).
@@ -59,11 +59,11 @@ func TestApp_WindowSizeMsg_DuringStream_NoCommitRegress(t *testing.T) {
 	// Regression assertion: WindowSizeMsg must NOT commit streaming messages.
 	// If committedCount advanced to len(messages), the next View() will
 	// render an empty uncommitted slice — the blank render bug.
-	if app.committedCount >= len(app.repl.messages) {
+	if app.repl.committedCount >= len(app.repl.messages) {
 		t.Errorf("WindowSizeMsg during stream committed messages: "+
 			"committedCount=%d, totalMessages=%d. View() would render blank. "+
 			"This is the /clear → /goal → resize → blank bug.",
-			app.committedCount, len(app.repl.messages))
+			app.repl.committedCount, len(app.repl.messages))
 	}
 
 	// Sanity: streaming flag must remain set; the resize is informational.

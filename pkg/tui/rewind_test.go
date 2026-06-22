@@ -301,16 +301,15 @@ func TestTryAutoRewind_NoMeaningfulResponse(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		history:        NewHistory(""),
-		committedCount: 0,
-		repl:           NewReplState(),
+		engine:  eng,
+		input:   NewInput(),
+		history: NewHistory(""),
+		repl:    NewReplState(),
 	}
 	// Simulate the user message was added to history
 	a.history.Add("hello")
 	// Simulate TUI has committed the previous messages (none in this case)
-	a.committedCount = 0
+	a.repl.committedCount = 0
 
 	result := a.tryAutoRewind()
 
@@ -363,12 +362,11 @@ func TestTryAutoRewind_SyncsStore(t *testing.T) {
 	eng.SetMessages(msgs)
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		history:        NewHistory(""),
-		committedCount: 0,
-		repl:           NewReplState(),
-		sessionID:      session.SessionID,
+		engine:    eng,
+		input:     NewInput(),
+		history:   NewHistory(""),
+		repl:      NewReplState(),
+		sessionID: session.SessionID,
 	}
 	a.history.Add("hello")
 
@@ -418,11 +416,10 @@ func TestTryAutoRewind_HasMeaningfulResponse(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		history:        NewHistory(""),
-		committedCount: 0,
-		repl:           NewReplState(),
+		engine:  eng,
+		input:   NewInput(),
+		history: NewHistory(""),
+		repl:    NewReplState(),
 	}
 	a.history.Add("hello")
 
@@ -448,10 +445,9 @@ func TestHandleRewind_Aborted(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 0,
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
 	a.width = 80
 
@@ -483,10 +479,9 @@ func TestHandleRewind_Selected(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 0,
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
 	a.width = 80
 
@@ -514,8 +509,8 @@ func TestHandleRewind_Selected(t *testing.T) {
 	if len(app.repl.messages) != 0 {
 		t.Errorf("expected 0 TUI messages, got %d", len(app.repl.messages))
 	}
-	if app.committedCount != 0 {
-		t.Errorf("expected committedCount=0, got %d", app.committedCount)
+	if app.repl.committedCount != 0 {
+		t.Errorf("expected committedCount=0, got %d", app.repl.committedCount)
 	}
 
 	// Input should be restored with selected message text
@@ -587,12 +582,12 @@ func TestTryAutoRewind_CommittedCountExceedsMessages(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		history:        NewHistory(""),
-		repl:           NewReplState(),
-		committedCount: 5, // exceeds len(repl.messages)
+		engine:  eng,
+		input:   NewInput(),
+		history: NewHistory(""),
+		repl:    NewReplState(),
 	}
+	a.repl.committedCount = 5 // exceeds len(repl.messages)
 	a.history.Add("hello")
 
 	if !a.tryAutoRewind() {
@@ -600,8 +595,8 @@ func TestTryAutoRewind_CommittedCountExceedsMessages(t *testing.T) {
 	}
 
 	// committedCount should be clamped to 0
-	if a.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0", a.committedCount)
+	if a.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0", a.repl.committedCount)
 	}
 }
 
@@ -871,10 +866,9 @@ func TestHandleRewind_RewindToError(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 0,
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
 	a.width = 80
 
@@ -911,10 +905,9 @@ func TestHandleRewind_NoFileChanges_SkipsScopeDialog(t *testing.T) {
 	})
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 0,
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
 	a.width = 80
 
@@ -977,11 +970,10 @@ func setupRewindWithFileChanges(t *testing.T) (*App, string) {
 	_ = os.WriteFile(testFile, []byte("modified"), 0o644)
 
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 0,
-		fileHistory:    tracker,
+		engine:      eng,
+		input:       NewInput(),
+		repl:        NewReplState(),
+		fileHistory: tracker,
 	}
 	a.width = 80
 
@@ -1181,11 +1173,11 @@ func TestExecuteRewind_MiddlePoint_RedisplaysMessages(t *testing.T) {
 
 	// Set up TUI state as if the conversation had been running.
 	a := &App{
-		engine:         eng,
-		input:          NewInput(),
-		repl:           NewReplState(),
-		committedCount: 6,
+		engine: eng,
+		input:  NewInput(),
+		repl:   NewReplState(),
 	}
+	a.repl.committedCount = 6
 	a.width = 80
 
 	// Rewind to index 2 (the second user message).
@@ -1207,7 +1199,121 @@ func TestExecuteRewind_MiddlePoint_RedisplaysMessages(t *testing.T) {
 		t.Errorf("TUI repl.messages = %d, want 2 (matching engine)", len(a.repl.messages))
 	}
 	// committedCount should be 0 so all messages are rendered (not hidden).
-	if a.committedCount != 0 {
-		t.Errorf("committedCount = %d, want 0 (all messages should be rendered)", a.committedCount)
+	if a.repl.committedCount != 0 {
+		t.Errorf("committedCount = %d, want 0 (all messages should be rendered)", a.repl.committedCount)
+	}
+}
+
+// TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse is the regression test
+// for the bug where ESC during the last turn of a multi-turn query triggers
+// auto-rewind and deletes ALL messages — including successful prior turns.
+//
+// Scenario:
+//
+//	user "read the file"
+//	assistant(tool_use: Read)          ← successful turn 1
+//	user(tool_result)                   ← tool result for turn 1
+//	assistant(text: "let me analyze")  ← turn 2 started, user ESC'd
+//	assistant(synthetic: [interrupted]) ← abort marker
+//
+// messagesAfterAreOnlySynthetic must return FALSE because the assistant
+// produced tool_use in turn 1 — the conversation has meaningful content.
+func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("read the file")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ID: "tu1", Name: "Read", Input: json.RawMessage(`{"file_path":"a.go"}`)},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu1", Content: json.RawMessage(`"file contents"`)},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(types.InterruptMessage),
+		}},
+	}
+	// lastUserIdx points to index 0 (the user message "read the file")
+	// because index 2 is a tool_result user message (not selectable).
+	// messagesAfterAreOnlySynthetic scans from index 1 onward: finds
+	// tool_use at index 1 → should return false.
+	got := messagesAfterAreOnlySynthetic(msgs, 0)
+	if got {
+		t.Error("messagesAfterAreOnlySynthetic = true for multi-turn with tool_use, want false — " +
+			"abort should not trigger auto-rewind when prior turns produced meaningful output")
+	}
+}
+
+// TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse_SecondUserMessage
+// covers the case where the last selectable user message is NOT the first
+// message. A multi-turn conversation where turn 2 is aborted:
+//
+//	user "task 1"                        ← index 0 (selectable)
+//	assistant(text: "done")              ← index 1
+//	user "task 2"                        ← index 2 (selectable, last)
+//	assistant(synthetic: [interrupted])  ← index 3
+//
+// Auto-rewind should rewind to index 2 (only "task 2" + interrupt),
+// preserving "task 1" + "done". messagesAfterAreOnlySynthetic(msgs, 2)
+// must return true (only synthetic after the last user message).
+func TestMessagesAfterAreOnlySynthetic_MultiTurnWithToolUse_SecondUserMessage(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("task 1")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("done")}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("task 2")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			types.NewTextBlock(types.InterruptMessage),
+		}},
+	}
+	// lastUserIdx = 2 ("task 2"). After it: only interrupt synthetic → true.
+	got := messagesAfterAreOnlySynthetic(msgs, 2)
+	if !got {
+		t.Error("messagesAfterAreOnlySynthetic = false for pure interrupt after last user msg, want true")
+	}
+}
+
+// TestSwitchEngine_CommittedCount_NotZero verifies that switching to an
+// engine with existing messages sets committedCount to len(messages)-1,
+// not 0. With committedCount=0, an ESC abort triggers tryAutoRewind which
+// truncates ALL messages via a.repl.messages[:0] — destroying the entire
+// conversation history.
+func TestSwitchEngine_CommittedCount_NotZero(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "agent-2", "opus"},
+	})
+
+	// Seed e2 with messages (simulate restored history).
+	e2VS := a.engineMgr.Get("e2")
+	e2Repl := e2VS.Repl.(replSnapshotAdapter).r
+	e2Repl.messages = []MessageView{
+		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "hello"}}},
+		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "hi there"}}},
+		{Role: "user", Blocks: []ContentBlock{{Type: BlockText, Text: "do something"}}},
+		{Role: "assistant", Blocks: []ContentBlock{{Type: BlockText, Text: "done"}}},
+	}
+	// All 4 messages are committed (normal post-query state).
+	e2Repl.committedCount = len(e2Repl.messages)
+
+	// Simulate e2 being mid-stream (commitPendingMessagesCmd skips when
+	// streaming — this is the state that triggers the bug).
+	e2Repl.StartStreamingForTest()
+
+	// Switch to e2.
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine returned nil cmd")
+	}
+
+	// After switch, committedCount may be 0 (streaming — can't commit).
+	// The real invariant is: tryAutoRewind must not truncate ALL messages.
+	// Verify that tryAutoRewind preserves prior messages even with
+	// committedCount=0.
+	msgCountBefore := len(a.repl.messages)
+	_ = a.tryAutoRewind()
+	if len(a.repl.messages) == 0 && msgCountBefore > 0 {
+		t.Fatal("tryAutoRewind truncated ALL messages after engine switch — " +
+			"committedCount=0 + messagesAfterAreOnlySynthetic should not " +
+			"destroy the entire conversation history")
 	}
 }

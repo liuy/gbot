@@ -206,11 +206,11 @@ func (a *App) tryAutoRewind() bool {
 
 	// Sync TUI persistence state from engine (fork point captured inside RewindTo)
 
-	if a.committedCount <= len(a.repl.messages) {
-		a.repl.messages = a.repl.messages[:a.committedCount]
+	if a.repl.committedCount <= len(a.repl.messages) {
+		a.repl.messages = a.repl.messages[:a.repl.committedCount]
 	}
-	if a.committedCount > len(a.repl.messages) {
-		a.committedCount = len(a.repl.messages)
+	if a.repl.committedCount > len(a.repl.messages) {
+		a.repl.committedCount = len(a.repl.messages)
 	}
 
 	// Restore input text so user can edit and resubmit
@@ -341,7 +341,7 @@ func (a *App) executeRewind(idx int, scope engine.RewindScope, originalMsgs []ty
 		// Reset TUI messages — rewind changes engine messages, rebuild from scratch
 		a.repl.Reset()
 		a.repl.messages = engineMessagesToViews(a.engine.Messages(), a.engine.AllTools())
-		a.committedCount = 0
+		a.repl.committedCount = 0
 		// Restore input text from the selected message for resubmission
 		selectedText := firstTextBlockContent(originalMsgs[idx])
 		a.input.SetValue(selectedText)

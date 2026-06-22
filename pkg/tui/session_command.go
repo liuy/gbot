@@ -64,7 +64,7 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 
 	// Reset REPL state
 	a.repl.Reset()
-	a.committedCount = 0
+	a.repl.committedCount = 0
 
 	// Reset prompt cache break detection (main thread only, preserve sub-agent state)
 	llm.ResetMainThreadCacheBreakDetection()
@@ -127,7 +127,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 	a.repl.Reset()
 	a.repl.messages = engineMessagesToViews(engineMsgs, a.engine.AllTools())
 	// committedCount=0 so WindowSizeMsg re-commits the forked messages
-	a.committedCount = 0
+	a.repl.committedCount = 0
 	a.resetDisplayState()
 
 	// Update workspace meta
