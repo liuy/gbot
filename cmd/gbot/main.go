@@ -587,7 +587,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			ID:              em.ID,
 			Name:            em.Name,
 			ActiveSessionID: resumeID,
-			Model:           eng.Model(),
+			Model:           em.Model,
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
 		})

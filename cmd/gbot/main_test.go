@@ -216,3 +216,45 @@ func TestRestoreEngines_StripsOpenRouterNestedPrefix(t *testing.T) {
 			gotModel, "openrouter/owl-alpha")
 	}
 }
+
+// TestRestoreEngines_VSModelMatchesMetaJson verifies that the EngineViewState
+// created by restoreEngines stores the full "provider/model" from meta.json
+// (not the bare registration name from engine.Model()). Without this,
+// switchEngine's persistWorkspaceMeta overwrites the correct "provider/model"
+// with a bare name, breaking restart.
+func TestRestoreEngines_VSModelMatchesMetaJson(t *testing.T) {
+	projectDir := t.TempDir()
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "openrouter/openrouter/owl-alpha"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	mgr := engine.NewEngineManager()
+	deps := restoreEnginesDeps{
+		mgr:        mgr,
+		workingDir: projectDir,
+		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Logger: slog.Default(), Model: model, EngineID: id, Dispatcher: hub,
+			})
+			return eng, handler, nil
+		},
+	}
+
+	_ = restoreEngines(deps)
+
+	vs := mgr.Get("main")
+	if vs == nil {
+		t.Fatal("main not registered")
+	}
+	if vs.Model != "openrouter/openrouter/owl-alpha" {
+		t.Errorf("vs.Model = %q, want openrouter/openrouter/owl-alpha (full provider/model from meta.json, not bare %q)",
+			vs.Model, vs.Engine.Model())
+	}
+}
