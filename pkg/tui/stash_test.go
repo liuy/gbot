@@ -443,11 +443,11 @@ func TestStash_WithPendingQueue(t *testing.T) {
 	if app.stashed != nil {
 		t.Error("stash should be cleared after restore")
 	}
-	if len(app.pendingQueue) == 0 {
+	if len(app.repl.pendingQueue) == 0 {
 		t.Error("pendingQueue should have the enqueued message")
 	}
-	if app.pendingQueue[0].Text != "queued msg" {
-		t.Errorf("expected queued msg text 'queued msg', got %q", app.pendingQueue[0].Text)
+	if app.repl.pendingQueue[0].Text != "queued msg" {
+		t.Errorf("expected queued msg text 'queued msg', got %q", app.repl.pendingQueue[0].Text)
 	}
 	// Input should have the stashed text restored
 	if app.input.Value() != "stashed text" {

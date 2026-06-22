@@ -195,8 +195,6 @@ type App struct {
 	taskListDirty bool
 	killAllFn     func() // set from main.go to kill all background jobs
 
-	pendingQueue []pendingQueueItem // user messages queued during streaming
-
 	stashed *stashedPrompt // Ctrl+S stashed input (survives /clear and Ctrl+C)
 }
 
@@ -791,7 +789,7 @@ func (a *App) resetDisplayState() {
 	a.retryRemaining = 0
 	a.retryStart = time.Time{}
 	a.retryErrorType = ""
-	a.pendingQueue = nil
+	a.repl.pendingQueue = nil
 	a.status.SetUsage(types.Usage{})
 }
 
@@ -1074,14 +1072,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the active (uncommitted) content + progress + input.
 // renderQueueBox renders dim ❯-prefixed queued messages between progress and input.
 func (a *App) renderQueueBox() string {
-	if len(a.pendingQueue) == 0 {
+	if len(a.repl.pendingQueue) == 0 {
 		return ""
 	}
 	maxWidth := max(a.width-renderedPromptWidth, 10)
 	var sb strings.Builder
 	prefix := styleDim.Render("❯ ")
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
-	for _, item := range a.pendingQueue {
+	for _, item := range a.repl.pendingQueue {
 		wrapped := wordWrap(item.Text, maxWidth)
 		lines := strings.Split(wrapped, "\n")
 		for li, line := range lines {

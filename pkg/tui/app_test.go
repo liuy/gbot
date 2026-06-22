@@ -7844,7 +7844,7 @@ func TestRenderQueueBox_SingleItem(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.pendingQueue = []pendingQueueItem{{ID: "id-1", Text: "run tests"}}
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "id-1", Text: "run tests"}}
 	result := app.renderQueueBox()
 	if result == "" {
 		t.Fatal("renderQueueBox with 1 item returned empty string")
@@ -7861,7 +7861,7 @@ func TestRenderQueueBox_MultipleItems(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 80
 	app.height = 24
-	app.pendingQueue = []pendingQueueItem{
+	app.repl.pendingQueue = []pendingQueueItem{
 		{ID: "id-1", Text: "first message"},
 		{ID: "id-2", Text: "second message"},
 		{ID: "id-3", Text: "third message"},
@@ -7881,7 +7881,7 @@ func TestRenderQueueBox_MultilineIndent(t *testing.T) {
 	app := newTestApp(&tuiMockProvider{})
 	app.width = 40
 	app.height = 24
-	app.pendingQueue = []pendingQueueItem{{ID: "id-1", Text: "this is a very long message that should wrap to multiple lines when rendered in the queue box"}}
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "id-1", Text: "this is a very long message that should wrap to multiple lines when rendered in the queue box"}}
 	result := app.renderQueueBox()
 	if result == "" {
 		t.Fatal("renderQueueBox with long text returned empty string")
@@ -7913,13 +7913,13 @@ func TestAttachmentMsg_UserPrompt_QueueRemoval(t *testing.T) {
 	app.repl.FinishStream(nil) // processAttachments path: streaming=false
 
 	uuid := "test-uuid-abc"
-	app.pendingQueue = []pendingQueueItem{{ID: uuid, Text: "original queued text"}}
+	app.repl.pendingQueue = []pendingQueueItem{{ID: uuid, Text: "original queued text"}}
 
 	model, _ := app.Update(attachmentMsg{UserText: "hello", SourceUUID: uuid})
 	a := model.(*App)
 
-	if len(a.pendingQueue) != 0 {
-		t.Errorf("pendingQueue should be empty after UUID match, got %d items", len(a.pendingQueue))
+	if len(a.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be empty after UUID match, got %d items", len(a.repl.pendingQueue))
 	}
 
 	lastMsg := a.repl.messages[len(a.repl.messages)-1]
@@ -7937,16 +7937,16 @@ func TestAttachmentMsg_UserPrompt_UUIDMismatch(t *testing.T) {
 	app.status.SetStreaming(true)
 	app.repl.FinishStream(nil) // processAttachments path: streaming=false
 
-	app.pendingQueue = []pendingQueueItem{{ID: "abc", Text: "queued"}}
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "abc", Text: "queued"}}
 
 	model, _ := app.Update(attachmentMsg{UserText: "hello", SourceUUID: "xyz"})
 	a := model.(*App)
 
-	if len(a.pendingQueue) != 1 {
-		t.Fatalf("pendingQueue should still have 1 item after UUID mismatch, got %d", len(a.pendingQueue))
+	if len(a.repl.pendingQueue) != 1 {
+		t.Fatalf("pendingQueue should still have 1 item after UUID mismatch, got %d", len(a.repl.pendingQueue))
 	}
-	if a.pendingQueue[0].ID != "abc" {
-		t.Errorf("pendingQueue[0].ID = %q, want %q", a.pendingQueue[0].ID, "abc")
+	if a.repl.pendingQueue[0].ID != "abc" {
+		t.Errorf("pendingQueue[0].ID = %q, want %q", a.repl.pendingQueue[0].ID, "abc")
 	}
 
 	lastMsg := a.repl.messages[len(a.repl.messages)-1]
@@ -7972,13 +7972,13 @@ func TestHandleEnqueueMessage_PlainText(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("handleEnqueueMessage should return nil, got %T", cmd)
 	}
-	if len(app.pendingQueue) != 1 {
-		t.Fatalf("pendingQueue should have 1 entry, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 1 {
+		t.Fatalf("pendingQueue should have 1 entry, got %d", len(app.repl.pendingQueue))
 	}
-	if app.pendingQueue[0].Text != "test message" {
-		t.Errorf("pendingQueue[0].Text = %q, want %q", app.pendingQueue[0].Text, "test message")
+	if app.repl.pendingQueue[0].Text != "test message" {
+		t.Errorf("pendingQueue[0].Text = %q, want %q", app.repl.pendingQueue[0].Text, "test message")
 	}
-	if app.pendingQueue[0].ID == "" {
+	if app.repl.pendingQueue[0].ID == "" {
 		t.Error("pendingQueue[0].ID should not be empty")
 	}
 	if app.input.Value() != "" {
@@ -7995,8 +7995,8 @@ func TestHandleEnqueueMessage_SlashCommand(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("handleEnqueueMessage for slash command should return nil, got %T", cmd)
 	}
-	if len(app.pendingQueue) != 0 {
-		t.Errorf("pendingQueue should be empty for slash commands, got %d items", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be empty for slash commands, got %d items", len(app.repl.pendingQueue))
 	}
 }
 
@@ -8009,8 +8009,8 @@ func TestHandleEnqueueMessage_EmptyText(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("handleEnqueueMessage for whitespace should return nil, got %T", cmd)
 	}
-	if len(app.pendingQueue) != 0 {
-		t.Errorf("pendingQueue should be empty for whitespace input, got %d items", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be empty for whitespace input, got %d items", len(app.repl.pendingQueue))
 	}
 }
 
@@ -8039,14 +8039,14 @@ func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	app.repl.FinishStream(nil)
 
 	// Step 2: verify pendingQueue has both entries
-	if len(app.pendingQueue) != 2 {
-		t.Fatalf("pendingQueue should have 2 entries, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 2 {
+		t.Fatalf("pendingQueue should have 2 entries, got %d", len(app.repl.pendingQueue))
 	}
-	if app.pendingQueue[0].Text != "first queued msg" {
-		t.Errorf("pendingQueue[0].Text = %q, want %q", app.pendingQueue[0].Text, "first queued msg")
+	if app.repl.pendingQueue[0].Text != "first queued msg" {
+		t.Errorf("pendingQueue[0].Text = %q, want %q", app.repl.pendingQueue[0].Text, "first queued msg")
 	}
-	if app.pendingQueue[1].Text != "second queued msg" {
-		t.Errorf("pendingQueue[1].Text = %q, want %q", app.pendingQueue[1].Text, "second queued msg")
+	if app.repl.pendingQueue[1].Text != "second queued msg" {
+		t.Errorf("pendingQueue[1].Text = %q, want %q", app.repl.pendingQueue[1].Text, "second queued msg")
 	}
 
 	// Step 2b: queue box renders both items
@@ -8062,16 +8062,16 @@ func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	}
 
 	// Step 3: first attachmentMsg drain — match first UUID
-	uuid1 := app.pendingQueue[0].ID
+	uuid1 := app.repl.pendingQueue[0].ID
 	model, _ := app.Update(attachmentMsg{UserText: "first queued msg", SourceUUID: uuid1})
 	app = model.(*App)
 
 	// Step 4: first entry removed, one remains
-	if len(app.pendingQueue) != 1 {
-		t.Fatalf("pendingQueue should have 1 entry after first drain, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 1 {
+		t.Fatalf("pendingQueue should have 1 entry after first drain, got %d", len(app.repl.pendingQueue))
 	}
-	if app.pendingQueue[0].Text != "second queued msg" {
-		t.Errorf("remaining entry should be 'second queued msg', got %q", app.pendingQueue[0].Text)
+	if app.repl.pendingQueue[0].Text != "second queued msg" {
+		t.Errorf("remaining entry should be 'second queued msg', got %q", app.repl.pendingQueue[0].Text)
 	}
 
 	// Verify conversation has the drained message as user message
@@ -8094,12 +8094,12 @@ func TestQueueMessage_CallChain_EnqueueDrainRender(t *testing.T) {
 	}
 
 	// Step 5: second drain
-	uuid2 := app.pendingQueue[0].ID
+	uuid2 := app.repl.pendingQueue[0].ID
 	model, _ = app.Update(attachmentMsg{UserText: "second queued msg", SourceUUID: uuid2})
 	app = model.(*App)
 
-	if len(app.pendingQueue) != 0 {
-		t.Errorf("pendingQueue should be empty after second drain, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be empty after second drain, got %d", len(app.repl.pendingQueue))
 	}
 
 	// Queue box should be empty now
@@ -8133,15 +8133,15 @@ func TestQueueMessage_CallChain_ResetOnQueryEnd(t *testing.T) {
 	// Enqueue messages
 	app.handleEnqueueMessage("stale msg 1")
 	app.handleEnqueueMessage("stale msg 2")
-	if len(app.pendingQueue) != 2 {
-		t.Fatalf("setup: pendingQueue should have 2, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 2 {
+		t.Fatalf("setup: pendingQueue should have 2, got %d", len(app.repl.pendingQueue))
 	}
 
 	// Simulate session reset
 	app.resetDisplayState()
 
-	if len(app.pendingQueue) != 0 {
-		t.Errorf("pendingQueue should be empty after resetDisplayState, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be empty after resetDisplayState, got %d", len(app.repl.pendingQueue))
 	}
 
 	// Queue box should be empty
@@ -8160,8 +8160,8 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 	app.status.SetStreaming(true)
 
 	app.handleEnqueueMessage("my message")
-	if len(app.pendingQueue) != 1 {
-		t.Fatalf("setup: pendingQueue should have 1, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 1 {
+		t.Fatalf("setup: pendingQueue should have 1, got %d", len(app.repl.pendingQueue))
 	}
 
 	// Query ends — processAttachments path (streaming=false)
@@ -8172,8 +8172,8 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 	app = model.(*App)
 
 	// Entry should still be there
-	if len(app.pendingQueue) != 1 {
-		t.Errorf("pendingQueue should still have 1 entry after UUID mismatch, got %d", len(app.pendingQueue))
+	if len(app.repl.pendingQueue) != 1 {
+		t.Errorf("pendingQueue should still have 1 entry after UUID mismatch, got %d", len(app.repl.pendingQueue))
 	}
 
 	// User message was appended (engine drained something, just not our item)

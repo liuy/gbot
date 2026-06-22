@@ -88,6 +88,11 @@ type ReplState struct {
 	// only — switching engines rebinds a.repl, so usage naturally
 	// follows. StatusBar reads this via a.status.SetUsage on each update.
 	usage types.Usage
+
+	// Per-engine pending queue. User messages queued during streaming
+	// belong to this engine only — switching engines should not show
+	// another engine's queued messages.
+	pendingQueue []pendingQueueItem
 }
 
 // NewReplState creates a fresh REPL state.
@@ -1300,9 +1305,9 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 					a.markViewportDirty()
 				}
 			} else {
-				for i, item := range a.pendingQueue {
+				for i, item := range a.repl.pendingQueue {
 					if item.ID == m.SourceUUID {
-						a.pendingQueue = append(a.pendingQueue[:i], a.pendingQueue[i+1:]...)
+						a.repl.pendingQueue = append(a.repl.pendingQueue[:i], a.repl.pendingQueue[i+1:]...)
 						break
 					}
 				}
@@ -1577,7 +1582,7 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 		Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
 		Timestamp: time.Now(),
 	})
-	a.pendingQueue = append(a.pendingQueue, pendingQueueItem{ID: id, Text: text})
+	a.repl.pendingQueue = append(a.repl.pendingQueue, pendingQueueItem{ID: id, Text: text})
 	a.input.Reset()
 	a.pasteStore = make(map[int]string)
 	a.nextPasteID = 1
