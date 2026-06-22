@@ -29,29 +29,32 @@ func formatCompactOutput(result *short.CompactResult) string {
 	return output
 }
 
+// EngineCompactorMeta is the interface AutoCompactor needs from Engine to
+// read live state at compact time. Decouples the two types to avoid a
+// circular dependency (Engine creates AutoCompactor, AutoCompactor reads Engine).
+type EngineCompactorMeta interface {
+	Model() string
+	SessionID() string
+	ContextWindow() int
+}
+
 // Compactor implements Compactor by delegating to the short.Store's compact
 // functions and using the LLM provider to generate a summary.
 // TS align: compact.ts:compactConversation + partialCompactConversation
 type AutoCompactor struct {
-	store         *short.Store
-	sessionID     string
-	model         string
-	provider      llm.Provider
-	contextWindow int // model's context window, used for dynamic keep target
-	maxTokens     int // maxTokens for summary LLM call
-	logger        *slog.Logger
+	store    *short.Store
+	engine   EngineCompactorMeta // live engine state (model/sessionID may change)
+	provider llm.Provider
+	logger   *slog.Logger
 }
 
 // NewAutoCompactor creates a Compactor for compacting the given session.
-func NewAutoCompactor(store *short.Store, sessionID, model string, provider llm.Provider, contextWindow int) *AutoCompactor {
+func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta, provider llm.Provider) *AutoCompactor {
 	return &AutoCompactor{
-		store:         store,
-		sessionID:     sessionID,
-		model:         model,
-		provider:      provider,
-		contextWindow: contextWindow,
-		maxTokens:     16000,
-		logger:        slog.Default(),
+		store:    store,
+		engine:   engine,
+		provider: provider,
+		logger:   slog.Default(),
 	}
 }
 
@@ -86,7 +89,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 
 	if keepFrom < len(shortMsgs) {
 		// Normal compact: call PartialCompact to split head/tail.
-		pcr, err := c.store.PartialCompact(c.sessionID, shortMsgs, keepFrom)
+		pcr, err := c.store.PartialCompact(c.engine.SessionID(), shortMsgs, keepFrom)
 		if err != nil {
 			c.logger.Error("PartialCompact failed", "error", err)
 			return nil, err
@@ -129,7 +132,7 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 		return 0
 	}
 
-	targetKeepTokens := max(min(c.contextWindow/5, 60000), 2000)
+	targetKeepTokens := max(min(c.engine.ContextWindow()/5, 60000), 2000)
 
 	totalTokens := 0
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -175,8 +178,8 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	// Build the summarization request
 	// TS align: compact.ts:1292-1304 — system prompt is short, compact prompt is a user message,
 	// conversation messages are included as individual messages.
-	model := c.model
-	maxTokens := c.maxTokens
+	model := c.engine.Model()
+	maxTokens := 16000
 	if maxTokens <= 0 {
 		maxTokens = 16000
 	}
@@ -206,7 +209,7 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 		"apiMessages", len(apiMsgs),
 		"estimatedTokens", estimatedTokens,
 		"maxTokens", maxTokens,
-		"contextWindow", c.contextWindow,
+		"contextWindow", c.engine.ContextWindow(),
 		"model", model,
 	)
 
@@ -226,7 +229,7 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 			"apiMessages", len(apiMsgs),
 			"estimatedTokens", estimatedTokens,
 			"maxTokens", maxTokens,
-			"contextWindow", c.contextWindow,
+			"contextWindow", c.engine.ContextWindow(),
 			"model", model,
 			"error", err,
 		)

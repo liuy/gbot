@@ -6,13 +6,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/tui"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // freePort returns a TCP port that is free at call time.
@@ -119,6 +124,138 @@ func TestStartPprofServer_HeapProfile(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	if len(data) == 0 {
 		t.Error("heap profile body is empty")
+	}
+}
+
+// spyProvider captures the model name from LLM calls for assertion.
+type spyProvider struct {
+	mu            sync.Mutex
+	models        []string
+	streamCalls   int   // Stream calls (main query)
+	completeCalls int   // Complete calls (compact - uses Complete path)
+}
+
+func (s *spyProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.StreamEvent, error) {
+	s.mu.Lock()
+	s.streamCalls++
+	s.models = append(s.models, req.Model)
+	s.mu.Unlock()
+	ch := make(chan llm.StreamEvent, 10)
+	go func() {
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText, Text: ""}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "OK"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", Usage: &types.Usage{InputTokens: 100, OutputTokens: 10}, DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (s *spyProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completeCalls++
+	s.models = append(s.models, req.Model)
+	return &llm.Response{
+		ID:         "spy-resp",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      req.Model,
+		Content:    []types.ContentBlock{types.NewTextBlock("Summary of conversation.")},
+		StopReason: "end_turn",
+		Usage:      types.Usage{InputTokens: 100, OutputTokens: 10},
+	}, nil
+}
+
+// TestRestoreEngines_CompactorUsesCorrectModel verifies that after restore,
+// when a compaction is triggered, the compactor sends the correct model
+// to the LLM provider — not the config default. This is the red light for
+// the bug where compactor was nil after restart (factory didn't set it
+// because SessionID was empty), so compaction never triggered.
+func TestRestoreEngines_CompactorUsesCorrectModel(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Create store + session for the engine.
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	sess, err := store.CreateSessionWithEngine(projectDir, "glm-5", "main")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Seed meta.json with provider/model format.
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "zhipu/glm-5", ActiveSessionID: sess.SessionID},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	spy := &spyProvider{}
+	mgr := engine.NewEngineManager()
+	deps := restoreEnginesDeps{
+		mgr:        mgr,
+		workingDir: projectDir,
+		store:      store,
+		model:      "zhipu/glm-5",
+		factory: func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Provider:    spy,
+				Logger:      slog.Default(),
+				Model:       model,
+				EngineID:    id,
+				Dispatcher:  hub,
+				TokenBudget: 5000,
+				AutoCompact: engine.AutoCompactConfig{
+					ContextWindow: 5000,
+				},
+			})
+			return eng, handler, nil
+		},
+	}
+
+	_ = restoreEngines(deps)
+
+	// Get the restored engine, seed messages, and verify compaction.
+	eng := mgr.Get("main").Engine
+	if eng == nil {
+		t.Fatal("main engine is nil")
+	}
+	// Seed many messages to trigger compaction (20 messages × ~100 tokens each).
+	msgs := make([]types.Message, 0, 20)
+	for range 20 {
+		msgs = append(msgs, types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("task content ", 100))},
+		})
+	}
+	eng.SetMessages(msgs)
+
+	// Verify compactor is set (not nil — this is the red light).
+	// Without compactor, compaction never triggers → provider never called.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = eng.QuerySync(ctx, "continue", "")
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if spy.completeCalls == 0 {
+		t.Fatal("compactor never called Complete() — compactor was not set after restore " +
+			"(factory created engine without compactor because SessionID was empty)")
+	}
+	// Verify correct model was used for compaction.
+	if len(spy.models) == 0 || !slices.Contains(spy.models, "glm-5") {
+		t.Errorf("compactor used models = %v, want to contain glm-5", spy.models)
 	}
 }
 

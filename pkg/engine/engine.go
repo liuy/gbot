@@ -321,7 +321,7 @@ func New(p *Params) *Engine {
 		engineID = "main"
 	}
 
-	return &Engine{
+	e := &Engine{
 		provider:                p.Provider,
 		tools:                   toolMap,
 		toolOrder:               toolOrder,
@@ -347,6 +347,15 @@ func New(p *Params) *Engine {
 		modelThinking:           p.ModelThinking,
 		engineID:                engineID,
 	}
+
+	// Auto-create compactor from provider if not set. Compactor reads live
+	// engine state (model/sessionID/contextWindow) at compact time.
+	// Only auto-create when AutoCompact is explicitly configured (ContextWindow > 0).
+	if e.compactor == nil && p.Provider != nil && p.AutoCompact.ContextWindow > 0 {
+		e.compactor = NewAutoCompactor(nil, e, p.Provider)
+	}
+
+	return e
 }
 
 // EnqueueAttachment adds an item to the attachment queue.
@@ -3151,11 +3160,16 @@ func (e *Engine) markAllPersisted() {
 // AutoCompactor receives the same *short.Store pointer at creation time (main.go:446).
 func (e *Engine) SetStore(store *short.Store, projectDir string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.store = store
 	e.projectDir = projectDir
 	e.markAllPersisted()
 	e.forkParentUUID = ""
+	e.mu.Unlock()
+
+	// Wire store into compactor if it was auto-created without one.
+	if c, ok := e.compactor.(*AutoCompactor); ok && c.store == nil {
+		c.store = store
+	}
 }
 
 // persistContextTokens saves the current ContextTokens to the session store.

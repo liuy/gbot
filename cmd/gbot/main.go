@@ -303,14 +303,8 @@ func main() {
 		// Per-engine wiring: autocompactor, session memory, dream mode.
 		// Each engine gets its own because they reference newEng.Dispatcher()
 		// and newEng.NewSubEngine — closures capture newEng, not a shared ptr.
-		if store != nil && newEng.SessionID() != "" {
-			compactor := engine.NewAutoCompactor(store, newEng.SessionID(), modelArg, provider, contextWindow)
-			newEng.SetCompactor(compactor, engine.AutoCompactConfig{
-				ContextWindow:          contextWindow,
-				MaxConsecutiveFailures: 3,
-			})
-		}
-
+		// NOTE: compactor and session notes are set after session resume
+		// (in restoreEngines / createNewEngine) because they need SessionID().
 		if cfg.SessionNotes != "off" && store != nil && newEng.SessionID() != "" && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
 			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
