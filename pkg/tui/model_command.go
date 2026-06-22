@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -15,7 +14,6 @@ import (
 	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/quota"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // handleModel implements the /model command.
@@ -303,18 +301,10 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 		ContextWindow:          cw,
 		MaxConsecutiveFailures: 3,
 	})
-	// Prefer engine's runtime ContextTokens (last API usage). Falls back to
-	// re-estimating from system prompt + tools + messages on cold start
-	// (no turn yet completed).
-	used := a.engine.GetContextTokens()
-	if used == 0 {
-		used = types.EstimateTokens(a.systemPrompt)
-		for _, t := range a.engine.AllTools() {
-			if b, err := json.Marshal(t.InputSchema()); err == nil {
-				used += types.EstimateTokens(string(b))
-			}
-		}
-		used += engine.EstimateMessagesTokens(a.engine.Messages())
-	}
-	a.status.SetContext(used, cw)
+	// Only update the context window (denominator). The used value
+	// (numerator) comes exclusively from API responses via usageMsg —
+	// estimating it here produces wrong values that exceed the window.
+	a.status.SetContextWindow(cw)
+	slog.Info("ui:setContext", "used", a.status.contextUsed, "window", cw, "source", "engineCapabilities",
+		"provider", providerName, "model", model)
 }

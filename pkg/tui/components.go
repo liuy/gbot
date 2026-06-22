@@ -566,6 +566,14 @@ func (s *StatusBar) SetContext(used, total int) {
 	s.contextTotal = total
 }
 
+// SetContextWindow updates only the context window size (denominator),
+// preserving the current used value. Used by updateEngineCapabilities
+// when switching engines — the window comes from provider config, but
+// the used value comes from API responses.
+func (s *StatusBar) SetContextWindow(total int) {
+	s.contextTotal = total
+}
+
 // SetToolCount sets the number of registered tools.
 func (s *StatusBar) SetToolCount(n int) {
 	s.toolCount = n

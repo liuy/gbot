@@ -17,7 +17,6 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/quota"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // mockLLMProvider is a minimal mock for testing model switching.
@@ -767,23 +766,28 @@ func TestUpdateEngineCapabilities_PreservesContextTokens(t *testing.T) {
 
 	// Simulate that the engine has accumulated context tokens from prior turns.
 	a.engine.SetContextTokens(42000)
+	a.status.contextUsed = 42000
 
-	// Switch model — the status bar should reflect the existing token count,
-	// not reset to zero.
+	// Switch model — the status bar used should be preserved (not reset to
+	// zero, not re-estimated from messages). Only the window (denominator)
+	// changes.
 	a.updateEngineCapabilities("openai", "glm-max")
 
 	if a.status.contextUsed != 42000 {
-		t.Errorf("contextUsed = %d, want 42000 (preserved from engine)", a.status.contextUsed)
+		t.Errorf("contextUsed = %d, want 42000 (should be preserved by updateEngineCapabilities)", a.status.contextUsed)
+	}
+	if a.status.contextTotal == 0 {
+		t.Error("contextTotal = 0, want non-zero from provider config")
 	}
 }
 
 // Cold-start path: no API response yet, so engine.ContextTokens == 0. The
 // status bar must still reflect the system prompt + tools estimate, not 0.
 // (Regression for: /model switch showed "0/200.0k" before any turn completed.)
-func TestUpdateEngineCapabilities_ColdStart_EstimatesFromPrompt(t *testing.T) {
+func TestUpdateEngineCapabilities_ColdStart_KeepsWindowZero(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
-	// Set a non-trivial system prompt so EstimateTokens yields a non-zero value.
+	// Set a non-trivial system prompt.
 	a.systemPrompt = "You are a helpful assistant. " + strings.Repeat("context assembly. ", 200)
 
 	if a.engine.GetContextTokens() != 0 {
@@ -792,12 +796,15 @@ func TestUpdateEngineCapabilities_ColdStart_EstimatesFromPrompt(t *testing.T) {
 
 	a.updateEngineCapabilities("openai", "glm-max")
 
-	if a.status.contextUsed == 0 {
-		t.Errorf("contextUsed = 0 on cold-start switch; want >0 from systemPrompt estimate")
+	// updateEngineCapabilities should only update the context window,
+	// NOT estimate context used. Used comes from API responses.
+	if a.status.contextUsed != 0 {
+		t.Errorf("contextUsed = %d on cold-start; want 0 (should not estimate — used comes from API responses)",
+			a.status.contextUsed)
 	}
-	if a.status.contextUsed < len(a.systemPrompt)/8 {
-		t.Errorf("contextUsed = %d; want at least ~len/4 of systemPrompt (%d chars)",
-			a.status.contextUsed, len(a.systemPrompt))
+	// Window must be set from provider config.
+	if a.status.contextTotal == 0 {
+		t.Error("contextTotal = 0; want non-zero from provider config")
 	}
 }
 
@@ -880,39 +887,5 @@ func TestPersistModelSelection_WritesPerEngineMeta(t *testing.T) {
 	}
 	if gotModel != "openai/glm-max" {
 		t.Errorf("meta.json main.Model = %q, want openai/glm-max", gotModel)
-	}
-}
-
-// TestUpdateEngineCapabilities_EstimatesFromMessages verifies that when an
-// engine has message history but no runtime ContextTokens (cold start /
-// restore), updateEngineCapabilities estimates used tokens from messages
-// — not just system prompt + tools. Without this, the status bar shows
-// a tiny context size (e.g. "6.8k") that ignores hundreds of KB of
-// conversation history.
-func TestUpdateEngineCapabilities_EstimatesFromMessages(t *testing.T) {
-	a := newTestAppWithProviders(t)
-
-	// Seed the engine with a substantial conversation history.
-	a.engine.SetMessages([]types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("hello world ", 500))}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("response text ", 500))}},
-	})
-	// ContextTokens is 0 (cold start, no API call yet).
-	if a.engine.GetContextTokens() != 0 {
-		t.Fatalf("precondition: ContextTokens = %d, want 0", a.engine.GetContextTokens())
-	}
-
-	a.updateEngineCapabilities("openai", "glm-5")
-
-	// status.contextUsed must reflect message history. With ~1200 words
-	// across the two messages, the estimate should be well above the
-	// system-prompt-only baseline.
-	view := a.status.View()
-	if !strings.Contains(view, "k/") {
-		t.Errorf("status bar = %q, want to contain 'k/' (context should reflect message history)", view)
-	}
-	// Sanity: contextUsed should be > 1000 (messages alone are ~1000+ tokens).
-	if a.status.contextUsed < 1000 {
-		t.Errorf("status.contextUsed = %d, want > 1000 (messages not counted)", a.status.contextUsed)
 	}
 }

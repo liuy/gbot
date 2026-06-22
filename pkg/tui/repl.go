@@ -83,6 +83,11 @@ type ReplState struct {
 	// scrollback via tea.Println and never re-rendered by Bubble Tea.
 	// Only messages[committedCount:] are managed by View().
 	committedCount int
+
+	// Per-engine usage accumulator. Tracks token counts for this engine
+	// only — switching engines rebinds a.repl, so usage naturally
+	// follows. StatusBar reads this via a.status.SetUsage on each update.
+	usage types.Usage
 }
 
 // NewReplState creates a fresh REPL state.
@@ -1129,11 +1134,13 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
-		// Accumulate billing cost from each turn's message_delta.
-		a.status.usage.InputTokens += m.InputTokens
-		a.status.usage.OutputTokens += m.OutputTokens
-		a.status.usage.CacheReadInputTokens += m.CacheReadInputTokens
-		a.status.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
+		// Accumulate per-engine usage on ReplState (not StatusBar).
+		a.repl.usage.InputTokens += m.InputTokens
+		a.repl.usage.OutputTokens += m.OutputTokens
+		a.repl.usage.CacheReadInputTokens += m.CacheReadInputTokens
+		a.repl.usage.CacheCreationInputTokens += m.CacheCreationInputTokens
+		// Sync to StatusBar for rendering.
+		a.status.SetUsage(a.repl.usage)
 		// Input tokens arrive all at once — snap immediately
 		totalIn := a.status.usage.TotalInputTokens()
 		a.repl.displayedInputTokens = totalIn

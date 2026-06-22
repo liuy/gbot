@@ -9030,3 +9030,52 @@ func TestNewAppWithManager_ActiveHandlerBindsToActiveEngine(t *testing.T) {
 			app.tuiHandler, engineHandler)
 	}
 }
+
+// TestSwitchEngine_UsageIsPerEngine verifies that usage (token counts)
+// does not leak across engines. Without per-engine usage, switching
+// between two engines accumulates both engines' token deltas into the
+// global status.usage — context size balloons past the window (e.g.
+// 2.1M/1.0M).
+func TestSwitchEngine_UsageIsPerEngine(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "agent-2", "opus"},
+	})
+
+	// Main engine: send usage with input=10000, output=100.
+	a.repl.StartQuery()
+	a.updateRepl(usageMsg{InputTokens: 10000, OutputTokens: 100})
+	mainUsage := a.status.usage
+	if mainUsage.InputTokens != 10000 {
+		t.Fatalf("main usage InputTokens = %d, want 10000", mainUsage.InputTokens)
+	}
+
+	// Switch to e2.
+	if _, cmd := a.switchEngine("e2"); cmd == nil {
+		t.Fatal("switchEngine returned nil cmd")
+	}
+
+	// After switch, status.usage must NOT carry over main's tokens.
+	// e2 hasn't received any usage yet — it should be zero.
+	if a.status.usage.InputTokens != 0 {
+		t.Errorf("after switch, status.usage.InputTokens = %d, want 0 (e2 has no usage yet, should not inherit main's %d)",
+			a.status.usage.InputTokens, mainUsage.InputTokens)
+	}
+
+	// e2 sends its own usage.
+	a.repl.StartQuery()
+	a.updateRepl(usageMsg{InputTokens: 5000, OutputTokens: 50})
+	if a.status.usage.InputTokens != 5000 {
+		t.Errorf("e2 usage InputTokens = %d, want 5000", a.status.usage.InputTokens)
+	}
+
+	// Switch back to main — should restore main's usage, not carry e2's.
+	if _, cmd := a.switchEngine("main"); cmd == nil {
+		t.Fatal("switchEngine back to main returned nil cmd")
+	}
+	if a.status.usage.InputTokens != 10000 {
+		t.Errorf("main usage InputTokens after switch back = %d, want 10000 (should restore main's per-engine usage, not carry e2's)",
+			a.status.usage.InputTokens)
+	}
+}

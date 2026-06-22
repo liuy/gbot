@@ -258,6 +258,8 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	// no manual reset here.
 	a.contentCache = ""
 	a.contentDirty = true
+	// Sync per-engine usage to StatusBar.
+	a.status.SetUsage(a.repl.usage)
 	// Switch to target engine's input history.
 	if h, ok := target.History.(*History); ok {
 		a.history = h
@@ -278,6 +280,12 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	if target.Engine != nil {
 		a.status.SetModel(target.Engine.Model())
 		a.status.SetContext(target.Engine.GetContextTokens(), target.Engine.ContextWindow())
+		slog.Info("ui:switchEngine_setContext",
+			"engine", id,
+			"contextTokens", target.Engine.GetContextTokens(),
+			"contextWindow", target.Engine.ContextWindow(),
+			"usage", a.repl.usage.InputTokens,
+		)
 	}
 
 	// Sync currentProvider/currentModel to the new engine so /model picker
@@ -296,10 +304,12 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Update engine capabilities (context window, max tokens) for the
-		// target engine. Without this, a freshly-created or restored engine
-		// has ContextWindow()=0 until the user manually runs /model.
-		if a.currentProvider != "" {
+		// Only call updateEngineCapabilities when the engine has no context
+		// window set (fresh create or restored from meta.json with
+		// ContextWindow=0). When ContextWindow is already set (engine has
+		// been used before), SetContext above already provides the correct
+		// window from the engine's own state.
+		if a.currentProvider != "" && target.Engine.ContextWindow() == 0 {
 			a.updateEngineCapabilities(a.currentProvider, a.currentModel)
 		}
 	}
