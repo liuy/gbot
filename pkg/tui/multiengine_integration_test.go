@@ -362,7 +362,7 @@ func TestMultiEngine_SwitchRendersCorrectHistory(t *testing.T) {
 	a.projectDir = projectDir
 
 	// Factory mirrors main.go: per-engine Hub+handler, store wiring, new session.
-	a.SetEngineFactory(func(id, name, model string) (*engine.Engine, *TUIHandler, error) {
+	a.SetEngineFactory(func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error) {
 		eh, handler := NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{Logger: slog.Default(), Model: model, EngineID: id, Dispatcher: eh})
 		eng.SetStore(store, projectDir)

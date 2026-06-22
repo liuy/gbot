@@ -99,7 +99,7 @@ func TestHandleEngine_New_NoName_AutoNames(t *testing.T) {
 	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
 		{"main", "main", "sonnet"},
 	})
-	a.SetEngineFactory(func(id, name, model string) (*engine.Engine, *TUIHandler, error) {
+	a.SetEngineFactory(func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error) {
 		engineHub, handler := NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{
 			Logger:     slog.Default(),
@@ -142,7 +142,7 @@ func TestHandleEngine_New_WithCustomName(t *testing.T) {
 	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
 		{"main", "main", "sonnet"},
 	})
-	a.SetEngineFactory(func(id, name, model string) (*engine.Engine, *TUIHandler, error) {
+	a.SetEngineFactory(func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error) {
 		engineHub, handler := NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{
 			Logger: slog.Default(), Model: model, EngineID: id,
@@ -358,7 +358,7 @@ func TestCreateNewEngine_ClearsScreen(t *testing.T) {
 	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
 		{"main", "main", "sonnet"},
 	})
-	a.SetEngineFactory(func(id, name, model string) (*engine.Engine, *TUIHandler, error) {
+	a.SetEngineFactory(func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error) {
 		engineHub, handler := NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{
 			Logger: slog.Default(), Model: model, EngineID: id,

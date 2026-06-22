@@ -253,11 +253,23 @@ func main() {
 	// (every engine in meta.json is rebuilt via this path on startup, so
 	// main is no longer special — it's just whichever engine meta marks
 	// active).
-	engineFactory := func(id, name, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
+	engineFactory := func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
+		engineProvider := provider
+		if providerName != "" {
+			if p, found := providerMap[providerName]; found {
+				engineProvider = p
+			} else {
+				slog.Warn("restore: provider not found, falling back to default",
+					"provider", providerName, "model", modelArg, "engine_id", id)
+			}
+		} else {
+			slog.Warn("restore: no provider prefix in model, falling back to default",
+				"model", modelArg, "engine_id", id)
+		}
 		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
 		refs := engine.CreateTools(deps)
 		newEng := engine.New(&engine.Params{
-			Provider:      provider,
+			Provider:      engineProvider,
 			ToolsProvider: refs.Reg.ToolMapFn(),
 			Model:         modelArg,
 			MaxTokens:     maxTokens,
@@ -536,10 +548,12 @@ func restoreEngines(d restoreEnginesDeps) string {
 		// contains a slash (e.g. openrouter's "openrouter/owl-alpha") keep
 		// their internal prefix intact.
 		engineModel := em.Model
-		if _, after, ok := strings.Cut(em.Model, "/"); ok {
+		engineProviderName := ""
+		if before, after, ok := strings.Cut(em.Model, "/"); ok {
+			engineProviderName = before
 			engineModel = after
 		}
-		eng, handler, err := d.factory(em.ID, em.Name, engineModel)
+		eng, handler, err := d.factory(em.ID, em.Name, engineProviderName, engineModel)
 		if err != nil {
 			slog.Error("restore: build engine failed", "id", em.ID, "error", err)
 			continue

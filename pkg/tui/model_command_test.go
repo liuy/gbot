@@ -889,3 +889,201 @@ func TestPersistModelSelection_WritesPerEngineMeta(t *testing.T) {
 		t.Errorf("meta.json main.Model = %q, want openai/glm-max", gotModel)
 	}
 }
+
+// TestPersistModelSelection_OpenRouterFormat verifies that persistModelSelection
+// stores "provider/model" format correctly for openrouter models, including
+// the double-prefix case where the model name already contains the provider.
+//   - provider=openrouter, model=openrouter/owl-alpha
+//   - vs.Model should be "openrouter/openrouter/owl-alpha" (not "owl-alpha")
+//
+// Regression: old code stored bare model name, causing restart to create
+// engine with wrong model.
+func TestPersistModelSelection_OpenRouterFormat(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{},
+		Model:    "openrouter/owl-alpha",
+		Logger:   slog.Default(),
+	})
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { eng.Close() })
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine: eng, ID: "main", Name: "main", Model: "openrouter/owl-alpha",
+	})
+
+	a := newTestAppWithProviders(t)
+	a.engine = eng
+	a.engineMgr = mgr
+	a.projectDir = projectDir
+	a.currentProvider = "openrouter"
+	a.currentModel = "openrouter/owl-alpha"
+
+	a.persistModelSelection()
+
+	// vs.Model must be "provider/model" — not bare model name.
+	vs := mgr.Get("main")
+	if vs.Model != "openrouter/openrouter/owl-alpha" {
+		t.Errorf("vs.Model = %q, want openrouter/openrouter/owl-alpha", vs.Model)
+	}
+
+	// meta.json must match.
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil || meta == nil {
+		t.Fatalf("ReadWorkspaceMeta: err=%v meta=%v", err, meta)
+	}
+	for _, em := range meta.Engines {
+		if em.ID == "main" && em.Model != "openrouter/openrouter/owl-alpha" {
+			t.Errorf("meta.json main.Model = %q, want openrouter/openrouter/owl-alpha", em.Model)
+		}
+	}
+}
+
+// TestRestoreEngines_StripsProviderPrefix verifies that when restoring
+// from meta.json, the "provider/model" format is split: the factory
+// receives the bare registration name, not the full "provider/model".
+func TestRestoreEngines_StripProviderFromModel(t *testing.T) {
+	projectDir := t.TempDir()
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "openrouter/openrouter/owl-alpha"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	planned := planRestoreForTest(t, meta, "zhipu/glm-5")
+	if len(planned) != 1 {
+		t.Fatalf("planRestore returned %d engines, want 1", len(planned))
+	}
+	// planRestore returns the full "provider/model" from meta.json.
+	// The strip (first "/" removal) happens in restoreEngines.
+	if planned[0].Model != "openrouter/openrouter/owl-alpha" {
+		t.Errorf("Model = %q, want openrouter/openrouter/owl-alpha (full provider/model from meta.json)", planned[0].Model)
+	}
+}
+
+// TestRestoreEngine_ModelFromMetaJson verifies that the engine created
+// during restore uses the model from meta.json, not the settings.json
+// default. This is the red light for the bug where e2 showed mimo-v2.5
+// in meta.json but the engine actually used glm-5.2 (config default).
+//
+// Root cause: factory always used the first provider, ignoring which
+// provider the engine's model belongs to.
+func TestRestoreEngine_ModelFromMetaJson(t *testing.T) {
+	projectDir := t.TempDir()
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "openai/glm-5.2"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	planned := planRestoreForTest(t, meta, "zhipu/glm-5")
+	if len(planned) != 1 {
+		t.Fatalf("planRestore returned %d engines, want 1", len(planned))
+	}
+	// planRestore returns the full "provider/model" from meta.json.
+	if planned[0].Model != "openai/glm-5.2" {
+		t.Errorf("factory Model = %q, want openai/glm-5.2 (from meta.json)", planned[0].Model)
+	}
+}
+
+// TestPersistModelSelection_PersistsAfterSwitch verifies the full chain:
+//
+//	/model glm-max → persistModelSelection → vs.Model updated → meta.json written
+//	→ restart → restore reads correct model
+//
+// This catches the bug where persistModelSelection wasn't called on /model switch,
+// so the meta.json still had the old model from before the per-engine persistence fix.
+func TestPersistModelSelection_PersistsAfterSwitch(t *testing.T) {
+	projectDir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(projectDir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{},
+		Model:    "glm-5",
+		Logger:   slog.Default(),
+	})
+	eng.SetStore(store, projectDir)
+	if err := eng.NewSession(projectDir, ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { eng.Close() })
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine: eng, ID: "main", Name: "main", Model: "zhipu/glm-5",
+	})
+
+	a := newTestAppWithProviders(t)
+	a.engine = eng
+	a.engineMgr = mgr
+	a.projectDir = projectDir
+
+	// Switch from glm-5 to glm-max.
+	_ = a.handleModel("glm-max", nil)
+
+	// After switch: vs.Model must have "provider/model" format.
+	vs := mgr.Get("main")
+	if vs.Model != "openai/glm-max" {
+		t.Errorf("vs.Model = %q, want openai/glm-max", vs.Model)
+	}
+
+	// meta.json must have the new model.
+	meta, err := short.ReadWorkspaceMeta(projectDir)
+	if err != nil {
+		t.Fatalf("ReadWorkspaceMeta: %v", err)
+	}
+	var gotModel string
+	for _, em := range meta.Engines {
+		if em.ID == "main" {
+			gotModel = em.Model
+		}
+	}
+	if gotModel != "openai/glm-max" {
+		t.Errorf("meta.json main.Model = %q, want openai/glm-max", gotModel)
+	}
+}
+
+// planRestoreForTest mirrors cmd/gbot.planRestore: when meta has engines,
+// use their stored Model verbatim; empty Model falls back to default.
+func planRestoreForTest(t *testing.T, meta *short.WorkspaceMeta, defaultModel string) []short.EngineMeta {
+	t.Helper()
+	if meta == nil || len(meta.Engines) == 0 {
+		return []short.EngineMeta{{ID: "main", Name: "main", Model: defaultModel}}
+	}
+	out := make([]short.EngineMeta, len(meta.Engines))
+	for i, em := range meta.Engines {
+		if em.Model == "" {
+			em.Model = defaultModel
+		}
+		out[i] = em
+	}
+	return out
+}

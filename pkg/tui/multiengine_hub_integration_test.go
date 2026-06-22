@@ -69,7 +69,7 @@ func TestMultiEngine_HubRouting_Isolation(t *testing.T) {
 	// to vs.Handler. No extra wiring needed.
 
 	// Factory captures real per-engine Hub construction (mirrors main.go).
-	a.SetEngineFactory(func(id, name, modelArg string) (*engine.Engine, *TUIHandler, error) {
+	a.SetEngineFactory(func(id, name, provider, modelArg string) (*engine.Engine, *TUIHandler, error) {
 		engineHub, handler := NewEngineHubWithHandler(id, nil)
 		eng := engine.New(&engine.Params{
 			Logger: slog.Default(), Model: modelArg, EngineID: id,

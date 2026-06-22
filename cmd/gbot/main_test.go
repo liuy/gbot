@@ -153,7 +153,7 @@ func TestRestoreEngines_StripsProviderPrefix(t *testing.T) {
 	deps := restoreEnginesDeps{
 		mgr:        engine.NewEngineManager(),
 		workingDir: projectDir,
-		factory: func(id, name, model string) (*engine.Engine, *tui.TUIHandler, error) {
+		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
 			gotModel = model
 			hub, handler := tui.NewEngineHubWithHandler(id, nil)
 			eng := engine.New(&engine.Params{
@@ -196,7 +196,7 @@ func TestRestoreEngines_StripsOpenRouterNestedPrefix(t *testing.T) {
 	deps := restoreEnginesDeps{
 		mgr:        engine.NewEngineManager(),
 		workingDir: projectDir,
-		factory: func(id, name, model string) (*engine.Engine, *tui.TUIHandler, error) {
+		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
 			gotModel = model
 			hub, handler := tui.NewEngineHubWithHandler(id, nil)
 			eng := engine.New(&engine.Params{

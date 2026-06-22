@@ -29,7 +29,7 @@ import (
 //
 // Returning the handler lets createNewEngine store it on EngineViewState.Handler
 // so switchEngine can flip drain roles later.
-type EngineFactoryFn func(id, name, model string) (*engine.Engine, *TUIHandler, error)
+type EngineFactoryFn func(id, name, provider, model string) (*engine.Engine, *TUIHandler, error)
 
 // handleEngine implements the /engine command.
 //
@@ -353,7 +353,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 	if a.engine != nil {
 		model = a.engine.Model()
 	}
-	eng, handler, err := a.engineFactory(id, name, model)
+	eng, handler, err := a.engineFactory(id, name, a.currentProvider, model)
 	if err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to create engine: %v", err))
 	}
