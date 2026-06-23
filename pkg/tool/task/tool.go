@@ -45,6 +45,47 @@ type TasksInput struct {
 	Get     *string      `json:"get,omitempty"`
 }
 
+// UnmarshalJSON tolerates task IDs sent as numbers in deletes and get — LLMs
+// occasionally emit numeric IDs even though the schema declares "type":"string".
+// UpdateItem handles its own taskId via a separate UnmarshalJSON.
+func (t *TasksInput) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Creates []CreateItem    `json:"creates,omitempty"`
+		Updates []UpdateItem    `json:"updates,omitempty"`
+		Deletes []json.Number   `json:"deletes,omitempty"`
+		List    *bool           `json:"list,omitempty"`
+		Get     json.RawMessage `json:"get,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	t.Creates = r.Creates
+	t.Updates = r.Updates
+	t.List = r.List
+
+	// deletes: accept numbers or strings
+	for _, d := range r.Deletes {
+		t.Deletes = append(t.Deletes, d.String())
+	}
+
+	// get: accept quoted string or number
+	if len(r.Get) > 0 {
+		trimmed := bytes.TrimSpace(r.Get)
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err == nil {
+			t.Get = &s
+		} else {
+			var n json.Number
+			if err := json.Unmarshal(trimmed, &n); err == nil {
+				str := n.String()
+				t.Get = &str
+			}
+		}
+	}
+	return nil
+}
+
 type CreateItem struct {
 	Subject     string         `json:"subject"`
 	Description string         `json:"description"`

@@ -14,9 +14,6 @@ import (
 // maxRestarts caps how many times Registry will re-spawn a crashed server per session.
 const maxRestarts = 2
 
-// ErrNoServerForFile is returned by ForFile when no known server handles the extension.
-var ErrNoServerForFile = errors.New("no lsp server for file extension")
-
 // Registry owns all live LSP clients, indexed by file extension.
 type Registry struct {
 	rootDir string
@@ -133,14 +130,14 @@ func (r *Registry) SpecForFile(path string) (ServerSpec, bool) {
 func (r *Registry) ForFile(ctx context.Context, path string) (*Client, error) {
 	ext := filepath.Ext(path)
 	if ext == "" {
-		return nil, ErrNoServerForFile
+		return nil, fmt.Errorf("lsp needs a file path with extension (e.g. .go), got: %s", path)
 	}
 
 	r.mu.RLock()
 	spec, ok := r.extToSpec[ext]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, ErrNoServerForFile
+		return nil, fmt.Errorf("no lsp server for file extension %q (path: %s)", ext, path)
 	}
 
 	return r.clientFor(ctx, spec)

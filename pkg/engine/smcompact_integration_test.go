@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,10 +252,9 @@ func TestSessionMemory_Integration_StaleRecovery(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	blockCh := make(chan struct{})
-	firstCall := true
+	var firstCall atomic.Bool
 	extractFn := func(ctx context.Context, prompt string, targetPath string, _ []types.Message, _ string) error {
-		if firstCall {
-			firstCall = false
+		if !firstCall.Swap(false) {
 			<-blockCh // block forever (simulates crash)
 		}
 		return os.WriteFile(targetPath, []byte("## Session Title\nRecovered content\n"), 0644)

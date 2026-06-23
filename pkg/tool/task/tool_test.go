@@ -1480,3 +1480,65 @@ func TestUpdateItem_UnmarshalJSON_BatchPreservesOtherFields(t *testing.T) {
 		t.Errorf("updates[1].Subject lost; got %v", updates[1].Subject)
 	}
 }
+
+func TestTasksInput_UnmarshalJSON_DeletesAsStringOrNumber(t *testing.T) {
+	t.Parallel()
+
+	// LLMs sometimes send deletes as [104] instead of ["104"]. Both must work.
+	tests := []struct {
+		name string
+		json string
+		want []string
+	}{
+		{"string ids", `{"deletes":["104","105"]}`, []string{"104", "105"}},
+		{"number ids", `{"deletes":[104,105]}`, []string{"104", "105"}},
+		{"mixed", `{"deletes":["104",105]}`, []string{"104", "105"}},
+		{"large number", `{"deletes":[1234567890]}`, []string{"1234567890"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var in TasksInput
+			if err := json.Unmarshal([]byte(tt.json), &in); err != nil {
+				t.Fatalf("UnmarshalJSON failed: %v", err)
+			}
+			if len(in.Deletes) != len(tt.want) {
+				t.Fatalf("got %d deletes, want %d", len(in.Deletes), len(tt.want))
+			}
+			for i, wantID := range tt.want {
+				if in.Deletes[i] != wantID {
+					t.Errorf("deletes[%d] = %q, want %q", i, in.Deletes[i], wantID)
+				}
+			}
+		})
+	}
+}
+
+func TestTasksInput_UnmarshalJSON_GetAsStringOrNumber(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"string form", `{"get":"42"}`, "42"},
+		{"number form", `{"get":42}`, "42"},
+		{"large number", `{"get":9999999}`, "9999999"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var in TasksInput
+			if err := json.Unmarshal([]byte(tt.json), &in); err != nil {
+				t.Fatalf("UnmarshalJSON failed: %v", err)
+			}
+			if in.Get == nil {
+				t.Fatal("Get is nil")
+			}
+			if *in.Get != tt.want {
+				t.Errorf("Get = %q, want %q", *in.Get, tt.want)
+			}
+		})
+	}
+}
