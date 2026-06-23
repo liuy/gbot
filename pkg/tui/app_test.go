@@ -131,6 +131,34 @@ func TestSetInitialContext(t *testing.T) {
 			t.Errorf("status view should contain 42 (from param), got:\n%s", view)
 		}
 	})
+
+	// Regression: on restart, session messages are loaded into the engine
+	// but SetInitialContext only counted systemPrompt + tools — ignoring
+	// the loaded messages. The status bar showed ~6k (system prompt only)
+	// instead of the real context size. SetInitialContext must add
+	// engine.EstimateMessagesTokens(engine.Messages()) to usedTokens.
+	t.Run("adds tokens from loaded engine messages", func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.engine.ContextTokens = 0
+		// Simulate a resumed session: engine holds 3 messages worth ~10k
+		// tokens of conversation history.
+		app.engine.SetMessages([]types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("word ", 2000))}},
+			{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("reply ", 1500))}},
+			{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("more ", 1000))}},
+		})
+		// System prompt + tools estimate passed in by main.go.
+		const sysPromptTokens = 6000
+		app.SetInitialContext(sysPromptTokens, 200000)
+
+		msgTokens := engine.EstimateMessagesTokens(app.engine.Messages())
+		want := sysPromptTokens + msgTokens
+		got := app.status.contextUsed
+		if got != want {
+			t.Errorf("after resume, contextUsed = %d, want %d (sysPrompt %d + messages %d) — status bar must reflect loaded session history, not just the system prompt",
+				got, want, sysPromptTokens, msgTokens)
+		}
+	})
 }
 
 func TestNewAppInputAndEngine(t *testing.T) {

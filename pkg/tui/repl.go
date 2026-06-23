@@ -1073,6 +1073,18 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 				a.status.SetStreaming(false)
 				a.spinner.Stop()
 			}
+			// /compact: ManualCompact updated engine.ContextTokens to the
+			// post-compact precise value (result.AfterTokens). Sync it to
+			// the status bar so "used context" reflects the compacted size,
+			// not the pre-compact value. Passive compact gets this via
+			// queryEndMsg; /compact's virtual tool path bypasses queryEnd.
+			if strings.HasPrefix(m.ToolUseID, "compact-manual-") && !m.IsError {
+				if ct := a.engine.GetContextTokens(); ct > 0 {
+					a.repl.displayedInputTokens = ct
+					a.repl.inputTokenTarget = ct
+					a.status.SetContext(ct, a.engine.ContextWindow())
+				}
+			}
 		}
 		a.taskListDirty = true
 		if m.IsError {

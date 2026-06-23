@@ -803,7 +803,41 @@ func cmdChainProducesSpinnerTick(cmd tea.Cmd) bool {
 	return ok
 }
 
-// TestNewAppWithManager_StoresFreshReplOnViewState verifies that
+// TestSwitchEngine_ContextUsedReflectsTargetMessages verifies that after
+// switching to a target engine whose ContextTokens is 0 (no API response
+// yet) but whose message list has content, the status bar's "used context"
+// reflects the estimated message tokens — not 0. Same root cause as the
+// restart bug in SetInitialContext: GetContextTokens() returns 0 and the
+// handler takes the value at face value instead of falling back to a
+// message-based estimate.
+func TestSwitchEngine_ContextUsedReflectsTargetMessages(t *testing.T) {
+	t.Parallel()
+	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{
+		{"main", "main", "sonnet"},
+		{"e2", "engine-2", "opus"},
+	})
+
+	// Target engine e2: ContextTokens=0 (fresh, no API response) but holds
+	// conversation history from a prior session.
+	e2 := a.engineMgr.Get("e2")
+	e2.Engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("word ", 2000))}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock(strings.Repeat("reply ", 1500))}},
+	})
+	if e2.Engine.GetContextTokens() != 0 {
+		t.Fatalf("precondition: e2.ContextTokens should be 0, got %d", e2.Engine.GetContextTokens())
+	}
+
+	wantMsgTokens := engine.EstimateMessagesTokens(e2.Engine.Messages())
+
+	a.switchEngine("e2")
+
+	if got := a.status.contextUsed; got != wantMsgTokens {
+		t.Errorf("after switch to e2, contextUsed = %d, want %d (estimated message tokens) — switching to an engine with no API response yet must estimate from messages, not show 0",
+			got, wantMsgTokens)
+	}
+}
+
 // NewAppWithManager builds a fresh ReplState (because the active view
 // state has no Repl, e.g. after restoreEngines), it stores that ReplState
 // back on vs.Repl. Without this, switchEngine rebinds a.repl to ANOTHER

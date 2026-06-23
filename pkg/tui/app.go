@@ -361,8 +361,25 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 func (a *App) SetInitialContext(usedTokens, contextWindow int) {
 	if ct := a.engine.GetContextTokens(); ct > 0 {
 		usedTokens = ct
+	} else {
+		// On restart/session-resume, the engine holds loaded messages but
+		// ContextTokens is 0 (no API response yet). Add the messages'
+		// estimated tokens so the status bar reflects actual history size,
+		// not just the system prompt + tools estimate from main.go.
+		usedTokens += a.estimateContextFromMessages()
 	}
 	a.status.SetContext(usedTokens, contextWindow)
+}
+
+// estimateContextFromMessages returns a token estimate for the active
+// engine's message history. Used when GetContextTokens() is 0 (no API
+// response yet — restart, fresh engine switch) so the status bar reflects
+// actual history size instead of showing 0.
+func (a *App) estimateContextFromMessages() int {
+	if a.engine == nil {
+		return 0
+	}
+	return engine.EstimateMessagesTokens(a.engine.Messages())
 }
 
 // SetTaskListFn sets the function used to read tasks for the task list panel.

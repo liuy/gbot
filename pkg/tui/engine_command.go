@@ -279,10 +279,18 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	// Status bar reflects new active engine's model.
 	if target.Engine != nil {
 		a.status.SetModel(target.Engine.Model())
-		a.status.SetContext(target.Engine.GetContextTokens(), target.Engine.ContextWindow())
+		ct := target.Engine.GetContextTokens()
+		if ct == 0 {
+			// Target engine has no API response yet (fresh switch). Estimate
+			// from its message history so the status bar shows actual context
+			// size, not 0. Same root cause as SetInitialContext on restart.
+			ct = engine.EstimateMessagesTokens(target.Engine.Messages())
+		}
+		a.status.SetContext(ct, target.Engine.ContextWindow())
 		slog.Info("ui:switchEngine_setContext",
 			"engine", id,
 			"contextTokens", target.Engine.GetContextTokens(),
+			"estimatedFromMessages", target.Engine.GetContextTokens() == 0,
 			"contextWindow", target.Engine.ContextWindow(),
 			"usage", a.repl.usage.InputTokens,
 		)

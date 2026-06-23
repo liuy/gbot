@@ -212,3 +212,33 @@ func TestHandleCompact_NilEngine_Rejects(t *testing.T) {
 		t.Error("reject path must NOT create a tool block")
 	}
 }
+
+// TestApp_CompactToolEndMsg_SyncsContextUsed verifies that after /compact's
+// toolEndMsg, the status bar reflects the engine's post-compact ContextTokens.
+// ManualCompact sets engine.ContextTokens = result.AfterTokens (a precise
+// value from the summarization API response). Without syncing it to the
+// status bar in the toolEndMsg handler, the "used context" display stays
+// stuck at the pre-compact value after /compact.
+func TestApp_CompactToolEndMsg_SyncsContextUsed(t *testing.T) {
+	t.Parallel()
+	a := newCompactTestApp(t)
+
+	// Pre-compact state: status bar shows a large context.
+	a.status.SetContext(80000, 200000)
+	// Simulate ManualCompact's effect: engine.ContextTokens updated to the
+	// post-compact precise value.
+	a.engine.ContextTokens = 15000
+
+	// Build the toolEndMsg that handleCompact's async cmd produces.
+	tem := toolEndMsg{
+		ToolUseID: "compact-manual-abc12345",
+		Output:    "Compacted: 80k → 15k tokens",
+	}
+	model, _ := a.Update(tem)
+	updated := model.(*App)
+
+	if got := updated.status.contextUsed; got != 15000 {
+		t.Errorf("after compact toolEndMsg, contextUsed = %d, want 15000 (engine's post-compact ContextTokens) — status bar must reflect the compacted size, not the pre-compact value",
+			got)
+	}
+}
