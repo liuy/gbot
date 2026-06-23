@@ -487,9 +487,9 @@ func TestMessageView_WithToolCalls_Running(t *testing.T) {
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	// "running..." suffix for running state
-	if !strings.Contains(v, "running...") {
-		t.Errorf("View() = %q, should contain 'running...' for running state", v)
+	// Running state shows elapsed timer
+	if !strings.Contains(v, "(0.0s)") {
+		t.Errorf("View() = %q, should contain '(0.0s)' timer for running state", v)
 	}
 	if !strings.Contains(v, "Read") {
 		t.Errorf("View() = %q, should contain tool name 'Read'", v)
@@ -1998,8 +1998,8 @@ func TestRenderToolCall_RunningState(t *testing.T) {
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if !strings.Contains(v, "running...") {
-		t.Errorf("running tool should show 'running...', got: %q", v)
+	if !strings.Contains(v, "(0.0s)") {
+		t.Errorf("running tool should show elapsed timer, got: %q", v)
 	}
 }
 
@@ -2026,8 +2026,8 @@ func TestRenderToolCall_RunningWithToolDot(t *testing.T) {
 	if !strings.Contains(v, "make test") {
 		t.Errorf("should contain summary, got: %q", v)
 	}
-	if !strings.Contains(v, "running...") {
-		t.Errorf("should show running, got: %q", v)
+	if !strings.Contains(v, "(0.0s)") {
+		t.Errorf("should show elapsed timer, got: %q", v)
 	}
 }
 
@@ -2827,8 +2827,8 @@ func TestRenderToolCall_RunningLabel(t *testing.T) {
 		},
 	}
 	v := m.View(80, false, "", false, false, 0)
-	if !strings.Contains(v, "running...") {
-		t.Errorf("running tool should show 'running...', got: %q", v)
+	if !strings.Contains(v, "(0.0s)") {
+		t.Errorf("running tool should show elapsed timer, got: %q", v)
 	}
 }
 

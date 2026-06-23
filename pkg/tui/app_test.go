@@ -2613,8 +2613,8 @@ func TestApp_View_PendingToolCalls(t *testing.T) {
 	app.repl.PendingToolStarted("t1", "Bash", "ls", `{"command":"ls"}`, tool.SearchReadKind{})
 	v := app.View()
 	// Running state shows dim tool name + & suffix (no summary)
-	if !strings.Contains(v, "Bash") || !strings.Contains(v, "running...") {
-		t.Errorf("View should show 'Bash ... running...' for running state, got: %s", v)
+	if !strings.Contains(v, "Bash") || !strings.Contains(v, "(0.0s)") {
+		t.Errorf("View should show 'Bash ... (0.0s)' for running state, got: %s", v)
 	}
 }
 

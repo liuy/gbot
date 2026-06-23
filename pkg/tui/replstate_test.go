@@ -1120,7 +1120,7 @@ func TestUpdateRunningToolElapsed_NoMessages_NoOp(t *testing.T) {
 //
 // Without this, sub-agent events (toolStartMsg) read Elapsed from pendingTool
 // (which stays 0) and write it back to messages, causing the agent tool's
-// header to flicker between "running..." and "(52s)" every time the sub-agent
+// header to flicker between "(0.0s)" and "(52s)" every time the sub-agent
 // calls a tool.
 func TestUpdateRunningToolElapsed_SyncsPendingToolMap(t *testing.T) {
 	s := NewReplState()

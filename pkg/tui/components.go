@@ -954,7 +954,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	}
 
 	if !tc.Done {
-		// Running state: spinner dot + bold name + summary + "running..."
+		// Running state: spinner dot + bold name + summary + elapsed timer
 		var runningDot string
 		if toolDot != "" {
 			runningDot = toolDot
@@ -973,10 +973,8 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		// (e.g. MiMo) never send input_json_delta, so require >100B to confirm real streaming input.
 		if (tc.Name == "Write" || tc.Name == "Edit") && len(tc.Input) > 100 {
 			header += fmt.Sprintf(" (%s)", toolresult.FormatFileSize(len(tc.Input)))
-		} else if tc.Elapsed >= 10*time.Second {
-			header += " " + styleDim.Render("("+formatDuration(tc.Elapsed)+")")
 		} else {
-			header += " " + styleDim.Render("running...")
+			header += " " + styleDim.Render("("+formatDuration(tc.Elapsed)+")")
 		}
 		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
 		// Render running sub-blocks if present
