@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"math"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -66,25 +65,28 @@ func TestCompactableTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEstimateTokens(t *testing.T) {
-	// Verify against actual ported tokenx algorithm output.
-	// Run `go run -tags calc` if values drift.
+	// Default provider (unknown): CJK=0.65, non-CJK=0.20
 	tests := []struct {
 		input string
 		want  int
 	}{
 		{"", 0},
-		{"a", 1},          // 1 char short segment
-		{"abcd", 1},       // len=4, ceil(4/6)=1
-		{"abcdefgh", 2},   // len=8, ceil(8/6)=2
-		{"abcdefghij", 2}, // len=10, ceil(10/6)=2
-		// CJK: 1 token/char
-		{"你好", 2},
-		{"你好世界", 4},
-		// Mixed: "Hello"(1) " "(0) "你好"(2) = 3
-		{"Hello 你好", 3},
-		{"こんにちは", 1}, // hiragana not in tokenx CJK → ceil(5/6)=1
-		{"안녕하세요", 5},
-		{"abc你好def", 8},
+		{"a", 0},          // 1 non-CJK * 0.20 = 0.2 → 0
+		{"abcd", 0},       // 4 * 0.20 = 0.8 → 0
+		{"abcdefgh", 1},   // 8 * 0.20 = 1.6 → 1
+		{"abcdefghij", 2}, // 10 * 0.20 = 2.0 → 2
+		// CJK (default 0.65): 2 * 0.65 = 1.3 → 1
+		{"你好", 1},
+		// 4 * 0.65 = 2.6 → 2
+		{"你好世界", 2},
+		// Mixed: 6 non-CJK * 0.20 + 2 CJK * 0.65 = 1.2 + 1.3 = 2.5 → 2
+		{"Hello 你好", 2},
+		// hiragana NOT in isCJKRune → 5 non-CJK * 0.20 = 1.0 → 1
+		{"こんにちは", 1},
+		// hangul IS CJK: 5 * 0.65 = 3.25 → 3
+		{"안녕하세요", 3},
+		// 6 * 0.20 + 2 * 0.65 = 1.2 + 1.3 = 2.5 → 2
+		{"abc你好def", 2},
 	}
 	for _, tt := range tests {
 		got := types.EstimateTokens(tt.input)
@@ -245,12 +247,9 @@ func TestEstimateMessagesTokens_Basic(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	raw := types.EstimateTokens(text)
-	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
+	want := raw + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(basic) = %d, want %d", got, want)
-	}
-	if got <= raw {
-		t.Errorf("EstimateMessagesTokens should pad by 4/3, got %d <= raw %d", got, raw)
 	}
 }
 
@@ -262,8 +261,7 @@ func TestEstimateMessagesTokens_ToolResult(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	// text="tool output here" (16 chars) → EstimateTokens=4 → padded=ceil(4*4/3)=6
-	want := int(math.Ceil(float64(types.EstimateTokens(text)) * 4.0 / 3.0))
+	want := types.EstimateTokens(text) + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_result) = %d, want %d", got, want)
 	}
@@ -277,7 +275,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(types.EstimateTokens(thinkingText)) * 4.0 / 3.0))
+	want := types.EstimateTokens(thinkingText) + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(thinking) = %d, want %d", got, want)
 	}
@@ -291,7 +289,7 @@ func TestEstimateMessagesTokens_RedactedThinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := int(math.Ceil(float64(types.EstimateTokens(data)) * 4.0 / 3.0))
+	want := types.EstimateTokens(data) + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(redacted_thinking) = %d, want %d", got, want)
 	}
@@ -306,7 +304,7 @@ func TestEstimateMessagesTokens_ToolUse(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	combined := "Read" + string(input)
-	want := int(math.Ceil(float64(types.EstimateTokens(combined)) * 4.0 / 3.0))
+	want := types.EstimateTokens(combined) + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_use) = %d, want %d", got, want)
 	}
@@ -319,9 +317,9 @@ func TestEstimateMessagesTokens_UnknownBlockType(t *testing.T) {
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{block}},
 	}
 	got := EstimateMessagesTokens(messages)
-	// Compute expected the same way the function does: JSON marshal → EstimateTokens → pad
+	// Compute expected the same way the function does: JSON marshal → EstimateTokens → envelope
 	raw, _ := json.Marshal(block)
-	want := int(math.Ceil(float64(types.EstimateTokens(string(raw))) * 4.0 / 3.0))
+	want := types.EstimateTokens(string(raw)) + messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(unknown block) = %d, want %d", got, want)
 	}
@@ -340,7 +338,7 @@ func TestEstimateMessagesTokens_SkipsNonUserAssistant(t *testing.T) {
 }
 
 func TestEstimateMessagesTokens_Padding(t *testing.T) {
-	// Verify 4/3 padding is applied
+	// Verify per-message envelope overhead is applied
 	text := "short"
 	messages := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -348,10 +346,10 @@ func TestEstimateMessagesTokens_Padding(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	raw := len(text) / 4 // = 1
-	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
+	raw := types.EstimateTokens(text) // "short" = 5 non-CJK chars * 0.20 = 1
+	want := raw + messageEnvelopeTokens
 	if got != want {
-		t.Errorf("padding: got %d, want %d (raw=%d)", got, want, raw)
+		t.Errorf("envelope: got %d, want %d (raw=%d + envelope=%d)", got, want, raw, messageEnvelopeTokens)
 	}
 }
 
@@ -670,8 +668,8 @@ func TestMaybeTimeBasedMicrocompact_Logs(t *testing.T) {
 				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
 			}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
-				types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
+				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"data content two"`), false),
 			}},
 		}
 
@@ -700,8 +698,8 @@ func TestMaybeTimeBasedMicrocompact_CallsNotifyCacheDeletion(t *testing.T) {
 				types.NewToolUseBlock("t2", "Read", json.RawMessage(`{}`)),
 			}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
-				types.NewToolResultBlock("t2", json.RawMessage(`"data"`), false),
+				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"data content two"`), false),
 			}},
 		}
 
@@ -738,7 +736,7 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 		types.EstimateTokens("thinking text") +
 		types.EstimateTokens("assistant text") +
 		types.EstimateTokens("Read"+`{"path":"/x"}`)
-	want := int(math.Ceil(float64(raw) * 4.0 / 3.0))
+	want := raw + 2*messageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(multiple) = %d, want %d", got, want)
 	}
@@ -758,9 +756,9 @@ func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
 				types.NewToolUseBlock("t2", "Bash", json.RawMessage(`{}`)),
 			}},
 			{Role: types.RoleUser, Content: []types.ContentBlock{
-				types.NewToolResultBlock("t1", json.RawMessage(`"data"`), false),
+				types.NewToolResultBlock("t1", json.RawMessage(`"data content one"`), false),
 				types.NewTextBlock("keep this text"),
-				types.NewToolResultBlock("t2", json.RawMessage(`"bash output"`), false),
+				types.NewToolResultBlock("t2", json.RawMessage(`"bash output here"`), false),
 			}},
 			{Role: types.RoleAssistant, Content: []types.ContentBlock{
 				types.NewTextBlock("response"),
@@ -782,7 +780,7 @@ func TestMaybeTimeBasedMicrocompact_PreservesMessageOrder(t *testing.T) {
 		if string(result.Messages[1].Content[0].Content) != `"[Old tool result content cleared]"` {
 			t.Error("tool result t1 should be cleared")
 		}
-		if string(result.Messages[1].Content[2].Content) != `"bash output"` {
+		if string(result.Messages[1].Content[2].Content) != `"bash output here"` {
 			t.Error("tool result t2 should be kept")
 		}
 	})

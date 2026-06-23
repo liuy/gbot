@@ -191,6 +191,10 @@ func clearCompactWarningSuppression() { compactWarningSuppressed.Store(false) }
 // calculateToolResultTokens estimates tokens in a tool_result content block.
 // Content is json.RawMessage which can be a JSON string ("...") or array ([...]).
 func calculateToolResultTokens(content json.RawMessage) int {
+	return calculateToolResultTokensForProvider(content, "")
+}
+
+func calculateToolResultTokensForProvider(content json.RawMessage, provider string) int {
 	if len(content) == 0 {
 		return 0
 	}
@@ -198,7 +202,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 	// Try to parse as string first (TS: typeof content === 'string')
 	var str string
 	if err := json.Unmarshal(content, &str); err == nil {
-		return types.EstimateTokens(str)
+		return types.EstimateTokensForProvider(str, provider)
 	}
 
 	// Try to parse as array of blocks (TS: Array<TextBlock | ImageBlock | DocumentBlock>)
@@ -213,7 +217,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 			case "text":
 				var text string
 				if err := json.Unmarshal(block["text"], &text); err == nil {
-					total += types.EstimateTokens(text)
+					total += types.EstimateTokensForProvider(text, provider)
 				}
 			case "image", "document":
 				// Images/documents ≈ 2000 tokens regardless of format.
@@ -225,7 +229,7 @@ func calculateToolResultTokens(content json.RawMessage) int {
 	}
 
 	// Fallback: estimate from raw bytes
-	return types.EstimateTokens(string(content))
+	return types.EstimateTokensForProvider(string(content), provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,45 +269,49 @@ func isMainThreadSource(querySource string) bool {
 // ---------------------------------------------------------------------------
 
 // EstimateMessagesTokens estimates token count for messages.
-// Pads by 4/3 to be conservative. Source: microCompact.ts:164-205
+// Each message has ~5 tokens of ChatML envelope overhead (role tag + structure).
+const messageEnvelopeTokens = 5
+
 func EstimateMessagesTokens(messages []types.Message) int {
+	return EstimateMessagesTokensForProvider(messages, "")
+}
+
+func EstimateMessagesTokensForProvider(messages []types.Message, provider string) int {
 	totalTokens := 0
+	msgCount := 0
 
 	for i := range messages {
 		if messages[i].Role != types.RoleUser && messages[i].Role != types.RoleAssistant {
 			continue
 		}
+		msgCount++
 
 		for _, block := range messages[i].Content {
 			switch block.Type {
 			case types.ContentTypeText:
-				totalTokens += types.EstimateTokens(block.Text)
+				totalTokens += types.EstimateTokensForProvider(block.Text, provider)
 
 			case types.ContentTypeToolResult:
-				totalTokens += calculateToolResultTokens(block.Content)
+				totalTokens += calculateToolResultTokensForProvider(block.Content, provider)
 
 			case types.ContentTypeThinking:
-				totalTokens += types.EstimateTokens(block.Thinking)
+				totalTokens += types.EstimateTokensForProvider(block.Thinking, provider)
 
 			case types.ContentTypeRedacted:
-				totalTokens += types.EstimateTokens(block.Data)
+				totalTokens += types.EstimateTokensForProvider(block.Data, provider)
 
 			case types.ContentTypeToolUse:
-				// Source: microCompact.ts:190-195 — count name + input
-				totalTokens += types.EstimateTokens(block.Name + string(block.Input))
+				totalTokens += types.EstimateTokensForProvider(block.Name+string(block.Input), provider)
 
 			default:
-				// server_tool_use, web_search_tool_result, etc.
-				// Source: microCompact.ts:197-199
 				raw, _ := json.Marshal(block)
-				totalTokens += types.EstimateTokens(string(raw))
+				totalTokens += types.EstimateTokensForProvider(string(raw), provider)
 			}
 		}
 	}
 
-	// Pad estimate by 4/3 to be conservative.
-	// Source: microCompact.ts:203-204
-	return int(math.Ceil(float64(totalTokens) * 4.0 / 3.0))
+	totalTokens += msgCount * messageEnvelopeTokens
+	return totalTokens
 }
 
 // ---------------------------------------------------------------------------

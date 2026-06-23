@@ -379,7 +379,7 @@ func (a *App) estimateContextFromMessages() int {
 	if a.engine == nil {
 		return 0
 	}
-	return engine.EstimateMessagesTokens(a.engine.Messages())
+	return engine.EstimateMessagesTokensForProvider(a.engine.Messages(), a.currentProvider)
 }
 
 // SetTaskListFn sets the function used to read tasks for the task list panel.

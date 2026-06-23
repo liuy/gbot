@@ -467,7 +467,7 @@ func TestAutoCompact_Compact_Persist(t *testing.T) {
 	eng.SetStore(store, tmpDir)
 	eng.SetSessionID(session.SessionID)
 
-	msgs := makeMessages(10, 5000)
+	msgs := makeMessages(10, 25000)
 	eng.SetMessages(msgs)
 
 	result, err := eng.runCompact(context.Background())

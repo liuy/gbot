@@ -3,161 +3,62 @@ package types
 
 import (
 	"fmt"
-	"math"
 )
 
-// Token estimation ported 1:1 from johannschopplich/tokenx.
+// Token estimation calibrated against real tokenizer APIs.
+//
+// CJK ratio differs by provider (calibrated via /paas/v4/tokenizer for GLM,
+// and via prompt_tokens for DeepSeek/MiMo):
+//
+//	GLM (zhipu):   CJK 0.85 tokens/char
+//	DeepSeek:      CJK 0.50 tokens/char
+//	MiMo (xiaomi): CJK 0.50 tokens/char
+//
+// non-CJK is stable at ~0.20 across all providers.
+// Average error: <10% per provider when using the correct ratio.
 
 const (
-	defaultCharsPerToken = 6
-	shortTokenThreshold  = 3
+	defaultCJKTokensPerChar    = 0.65 // fallback for unknown providers
+	defaultNonCJKTokensPerChar = 0.20
 )
 
-// EstimateTokens returns a heuristic token count. Not for billing.
+// CJKTokensPerChar returns the CJK token ratio for a given provider.
+// Calibrated against real tokenizer APIs. Returns a conservative default
+// for unknown providers.
+func CJKTokensPerChar(provider string) float64 {
+	switch provider {
+	case "zhipu":
+		return 0.85
+	case "deepseek":
+		return 0.50
+	case "xiaomi":
+		return 0.50
+	default:
+		return defaultCJKTokensPerChar
+	}
+}
+
+// EstimateTokens returns a heuristic token count using the default CJK ratio.
+// Prefer EstimateTokensForProvider when the provider is known.
 func EstimateTokens(text string) int {
+	return EstimateTokensForProvider(text, "")
+}
+
+// EstimateTokensForProvider returns a heuristic token count calibrated for
+// the given provider's tokenizer.
+func EstimateTokensForProvider(text string, provider string) int {
 	if text == "" {
 		return 0
 	}
-
-	total := 0
-	for _, seg := range splitSegments(text) {
-		total += estimateSegmentTokens(seg)
-	}
-	return total
-}
-
-// splitSegments splits text into word runs and separator runs (whitespace
-// or punctuation), mirroring JS String.prototype.split with a capturing group.
-func splitSegments(text string) []string {
-	runes := []rune(text)
-	var segs []string
-	i := 0
-	for i < len(runes) {
-		r := runes[i]
-		if isWS(r) || isPunctRune(r) {
-			wp := isWS(r)
-			j := i + 1
-			for j < len(runes) {
-				r2 := runes[j]
-				if wp && !isWS(r2) {
-					break
-				}
-				if !wp && !isPunctRune(r2) {
-					break
-				}
-				j++
-			}
-			segs = append(segs, string(runes[i:j]))
-			i = j
-		} else {
-			j := i + 1
-			for j < len(runes) {
-				r2 := runes[j]
-				if isWS(r2) || isPunctRune(r2) {
-					break
-				}
-				j++
-			}
-			segs = append(segs, string(runes[i:j]))
-			i = j
-		}
-	}
-	return segs
-}
-
-func estimateSegmentTokens(seg string) int {
-	if seg == "" {
-		return 0
-	}
-
-	runeCount := 0
-	allWhitespace := true
-	allNumeric := true
-	allAlpha := true
-	hasCJK := false
-	allPunct := true
-
-	for _, r := range seg {
-		runeCount++
-		if isWS(r) {
-			allAlpha = false
-			allNumeric = false
-			allPunct = false
-			continue
-		}
-		allWhitespace = false
+	cjkRatio := CJKTokensPerChar(provider)
+	cjk := 0
+	for _, r := range text {
 		if isCJKRune(r) {
-			hasCJK = true
-			allAlpha = false
-			allNumeric = false
-			allPunct = false
-			continue
-		}
-		if r >= '0' && r <= '9' {
-			allAlpha = false
-			allPunct = false
-			continue
-		}
-		if r == '.' || r == ',' {
-			allAlpha = false
-			allPunct = false
-			continue
-		}
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '\u00C0' && r <= '\u00D6') || (r >= '\u00D8' && r <= '\u00F6') ||
-			(r >= '\u00F8' && r <= '\u00FF') {
-			allNumeric = false
-			allPunct = false
-			continue
-		}
-		allNumeric = false
-		allAlpha = false
-		if !isPunctRune(r) {
-			allPunct = false
+			cjk++
 		}
 	}
-
-	if allWhitespace && runeCount > 0 {
-		return 0
-	}
-	if hasCJK {
-		return runeCount
-	}
-	if allNumeric && runeCount > 0 {
-		return 1
-	}
-	if runeCount <= shortTokenThreshold {
-		return 1
-	}
-	if allPunct {
-		return (runeCount + 1) / 2
-	}
-	if allAlpha {
-		cpt := getLanguageSpecificCharsPerToken(seg)
-		if cpt == 0 {
-			cpt = float64(defaultCharsPerToken)
-		}
-		return int(math.Ceil(float64(runeCount) / cpt))
-	}
-	return int(math.Ceil(float64(runeCount) / defaultCharsPerToken))
-}
-
-func isWS(r rune) bool {
-	return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' ||
-		r == '\u00a0' || r == '\u3000' || r == '\uFEFF' ||
-		(r >= '\u2000' && r <= '\u200a') ||
-		r == '\u2028' || r == '\u2029' ||
-		r == '\u1680' || r == '\u205f' || r == '\u0085'
-}
-
-func isPunctRune(r rune) bool {
-	switch r {
-	case '.', ',', '!', '?', ';', '(', ')', '{', '}', '[', ']',
-		'<', '>', '/', '\\', '|', '@', '#', '$', '%', '^',
-		'&', '*', '+', '=', '`', '~', '-', '_', ':':
-		return true
-	}
-	return false
+	nonCJK := len([]rune(text)) - cjk
+	return int(float64(cjk)*cjkRatio + float64(nonCJK)*defaultNonCJKTokensPerChar)
 }
 
 func isCJKRune(r rune) bool {
@@ -175,20 +76,6 @@ func isCJKRune(r rune) bool {
 		(r >= 0x3130 && r <= 0x318F) ||
 		(r >= 0xA960 && r <= 0xA97F) ||
 		(r >= 0xD7B0 && r <= 0xD7FF)
-}
-
-func getLanguageSpecificCharsPerToken(seg string) float64 {
-	for _, r := range seg {
-		switch r {
-		case 'ä', 'ö', 'ü', 'ß', 'Ä', 'Ö', 'Ü', 'ẞ':
-			return 3
-		case 'é', 'è', 'ê', 'ë', 'à', 'â', 'î', 'ï', 'ô', 'û', 'ù', 'ÿ', 'ç', 'œ', 'æ', 'á', 'í', 'ó', 'ú', 'ñ':
-			return 3
-		case 'ą', 'ć', 'ę', 'ł', 'ń', 'ś', 'ź', 'ż', 'ě', 'š', 'č', 'ř', 'ž', 'ý', 'ů', 'ď', 'ť', 'ň':
-			return 3.5
-		}
-	}
-	return 0
 }
 
 // FormatTokenCount formats a token count with K/M/G suffixes.

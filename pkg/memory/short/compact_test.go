@@ -798,25 +798,26 @@ func TestSegIsLive_SegmentStale(t *testing.T) {
 }
 
 func TestEstimateTokens_Message(t *testing.T) {
-	// 10 numeric chars: EstimateTokens allNumeric → 1 token
+	// GLM-calibrated: non-CJK ~0.20 tokens/char, CJK ~0.85 tokens/char.
+	// 10 non-CJK chars → 2 tokens
 	msg := &TranscriptMessage{Content: "1234567890"}
 	count := types.EstimateTokens(msg.Content)
-	if count != 1 {
-		t.Errorf("EstimateTokens(1234567890) = %d, want 1", count)
+	if count != 2 {
+		t.Errorf("EstimateTokens(1234567890) = %d, want 2", count)
 	}
 
-	// CJK: EstimateTokens = 1 token/rune
-	cjkMsg := &TranscriptMessage{Content: "你好世界"} // 4 CJK chars
+	// 4 CJK chars → int(4*0.65) = 2 tokens (default provider)
+	cjkMsg := &TranscriptMessage{Content: "你好世界"}
 	got := types.EstimateTokens(cjkMsg.Content)
-	if got != 4 {
-		t.Errorf("EstimateTokens(CJK 你好世界) = %d, want 4", got)
+	if got != 2 {
+		t.Errorf("EstimateTokens(CJK 你好世界) = %d, want 2", got)
 	}
 
-	// Mixed: "Hello" (~1 token) + "你好" (2 tokens)
+	// Mixed: "Hello " (6 non-CJK) → int(1.2)=1 + "你好" (2 CJK) → int(1.3)=1 = 2 tokens
 	mixedMsg := &TranscriptMessage{Content: "Hello 你好"}
 	got = types.EstimateTokens(mixedMsg.Content)
-	if got != 3 {
-		t.Errorf("EstimateTokens(mixed) = %d, want 3", got)
+	if got != 2 {
+		t.Errorf("EstimateTokens(mixed) = %d, want 2", got)
 	}
 }
 
@@ -1463,9 +1464,11 @@ func TestShouldExcludeFromPostCompactRestore_Transient(t *testing.T) {
 }
 
 func TestRoughTokenCount(t *testing.T) {
+	// GLM-calibrated: non-CJK ~0.20 tokens/char, CJK ~0.85 tokens/char.
+	// 5 non-CJK chars → 1 token; 4 CJK chars → 3 tokens.
 	messages := []*TranscriptMessage{
-		{Content: "1234"},     // allNumeric → 1 token
-		{Content: "12345678"}, // allNumeric → 1 token
+		{Content: "12345"}, // 5 non-CJK → 1 token
+		{Content: "67890"}, // 5 non-CJK → 1 token
 	}
 
 	count := roughTokenCount(messages)
@@ -1474,10 +1477,10 @@ func TestRoughTokenCount(t *testing.T) {
 		t.Errorf("roughTokenCount = %d, want 2", count)
 	}
 
-	// CJK messages
+	// CJK + non-CJK mix: 4 CJK → 3 tokens, 5 non-CJK → 1 token = 4 total
 	cjkMessages := []*TranscriptMessage{
-		{Content: "你好"},    // 2 CJK → 2 tokens
-		{Content: "world"}, // 5 nonCJK → 1 token
+		{Content: "你好世界"},  // 4 CJK → int(4*0.65) = 2 tokens
+		{Content: "world"}, // 5 non-CJK → 1 token
 	}
 	got := roughTokenCount(cjkMessages)
 	if got != 3 { // 2 + 1 = 3
