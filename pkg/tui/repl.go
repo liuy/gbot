@@ -1065,8 +1065,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			}
 		} else {
 			a.repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing, tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
-			// Bash shortcut: FinishStream to stop streaming/spinner.
-			if strings.HasPrefix(m.ToolUseID, "bash-shortcut-") {
+			// Virtual tools (bash shortcut, /compact) drive their own stream
+			// lifecycle — no engine queryEndMsg follows — so FinishStream to
+			// stop streaming/spinner here, detected by ID prefix.
+			if strings.HasPrefix(m.ToolUseID, "bash-shortcut-") || strings.HasPrefix(m.ToolUseID, "compact-manual-") {
 				a.repl.FinishStream(nil)
 				a.status.SetStreaming(false)
 				a.spinner.Stop()

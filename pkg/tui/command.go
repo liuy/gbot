@@ -26,6 +26,8 @@ func (a *App) handleSlashCommand(cmd SlashCommand, commitCmd tea.Cmd) tea.Cmd {
 		resultCmd = a.handleContext(cmd.Args, commitCmd)
 	case "agent":
 		resultCmd = a.handleEngine(cmd.Args, commitCmd)
+	case "compact":
+		resultCmd = a.handleCompact(cmd.Args, commitCmd)
 	default:
 		slog.Warn("tui:unknown slash command", "name", cmd.Name)
 		resultCmd = commitCmd

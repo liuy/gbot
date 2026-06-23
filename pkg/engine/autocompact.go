@@ -17,9 +17,9 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// formatCompactOutput builds the display text for a successful compact result.
+// FormatCompactOutput builds the display text for a successful compact result.
 // Structure: stats line first (fills collapse preview), then summary content.
-func formatCompactOutput(result *short.CompactResult) string {
+func FormatCompactOutput(result *short.CompactResult) string {
 	output := fmt.Sprintf("Conversation compacted (msg: %d → %d, token: %s → %s)",
 		result.BeforeMessages, len(result.Messages),
 		types.FormatTokenCount(result.BeforeTokens), types.FormatTokenCount(result.AfterTokens))
@@ -61,7 +61,23 @@ func NewAutoCompactor(store *short.Store, engine EngineCompactorMeta) *AutoCompa
 //  1. Keeping the most recent messages (enough for recent context)
 //  2. Summarizing the older messages via LLM
 //  3. Returning CompactResult with summary, token stats, and post-compact messages.
+//
+// Custom instructions are NOT supported here; use CompactWithInstructions for
+// the manual /compact entry point. Keeping the Compactor interface (which uses
+// this method) unchanged avoids touching every mock implementation.
 func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (*short.CompactResult, error) {
+	return c.compact(ctx, messages, "")
+}
+
+// CompactWithInstructions is the manual /compact entry point. Identical to
+// Compact but threads custom summarization instructions into the LLM prompt.
+// TS align: compact.ts:compactConversation(messages, ..., customInstructions, false)
+func (c *AutoCompactor) CompactWithInstructions(ctx context.Context, messages []types.Message, customInstructions string) (*short.CompactResult, error) {
+	return c.compact(ctx, messages, customInstructions)
+}
+
+// compact is the shared body of Compact and CompactWithInstructions.
+func (c *AutoCompactor) compact(ctx context.Context, messages []types.Message, customInstructions string) (*short.CompactResult, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to compact: no messages")
 	}
@@ -81,7 +97,7 @@ func (c *AutoCompactor) Compact(ctx context.Context, messages []types.Message) (
 
 	// Generate summary for the head messages via LLM
 	headMsgs := shortMsgs[:keepFrom]
-	summaryText, err := c.summarizeMessages(ctx, headMsgs)
+	summaryText, err := c.summarizeMessages(ctx, headMsgs, customInstructions)
 	if err != nil {
 		return nil, fmt.Errorf("summarize failed: %w", err)
 	}
@@ -147,7 +163,9 @@ func (c *AutoCompactor) findKeepFrom(messages []*short.TranscriptMessage) int {
 
 // summarizeMessages calls the LLM to generate a summary of the given messages.
 // Uses the full compact prompt template from short.GetCompactPrompt.
-func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short.TranscriptMessage) (string, error) {
+// customInstructions, when non-empty, is appended to the compact prompt via
+// GetCompactPrompt — TS align: compact.ts:compactConversation(customInstructions).
+func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short.TranscriptMessage, customInstructions string) (string, error) {
 	if len(messages) == 0 {
 		return "", nil
 	}
@@ -198,7 +216,7 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	// Compact prompt as the last user message (TS: compact.ts:441-443)
 	compactPromptUserMsg := types.Message{
 		Role:    types.RoleUser,
-		Content: []types.ContentBlock{types.NewTextBlock(short.GetCompactPrompt(""))},
+		Content: []types.ContentBlock{types.NewTextBlock(short.GetCompactPrompt(customInstructions))},
 	}
 	apiMsgs = append(apiMsgs, compactPromptUserMsg)
 

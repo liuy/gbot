@@ -31,27 +31,30 @@ func TestCompletions_Update_SlashShowsAll(t *testing.T) {
 		t.Fatal("expected completions visible after typing '/'")
 	}
 	items := c.Items()
-	if len(items) != 6 {
-		t.Fatalf("expected 6 items, got %d", len(items))
+	if len(items) != 7 {
+		t.Fatalf("expected 7 items, got %d", len(items))
 	}
-	// Must be alphabetical: agent, clear, context, model, rewind, session
+	// Must be alphabetical: agent, clear, compact, context, model, rewind, session
 	if items[0].Name != "agent" {
 		t.Errorf("first item = %q, want %q", items[0].Name, "agent")
 	}
 	if items[1].Name != "clear" {
 		t.Errorf("second item = %q, want %q", items[1].Name, "clear")
 	}
-	if items[2].Name != "context" {
-		t.Errorf("third item = %q, want %q", items[2].Name, "context")
+	if items[2].Name != "compact" {
+		t.Errorf("third item = %q, want %q", items[2].Name, "compact")
 	}
-	if items[3].Name != "model" {
-		t.Errorf("fourth item = %q, want %q", items[3].Name, "model")
+	if items[3].Name != "context" {
+		t.Errorf("fourth item = %q, want %q", items[3].Name, "context")
 	}
-	if items[4].Name != "rewind" {
-		t.Errorf("fifth item = %q, want %q", items[4].Name, "rewind")
+	if items[4].Name != "model" {
+		t.Errorf("fifth item = %q, want %q", items[4].Name, "model")
 	}
-	if items[5].Name != "session" {
-		t.Errorf("sixth item = %q, want %q", items[5].Name, "session")
+	if items[5].Name != "rewind" {
+		t.Errorf("sixth item = %q, want %q", items[5].Name, "rewind")
+	}
+	if items[6].Name != "session" {
+		t.Errorf("seventh item = %q, want %q", items[6].Name, "session")
 	}
 }
 
@@ -83,11 +86,11 @@ func TestCompletions_Update_PrefixClear(t *testing.T) {
 		t.Fatal("expected completions visible")
 	}
 	items := c.Items()
-	// /c matches "clear" and "context"
-	if len(items) != 2 {
-		t.Fatalf("expected 2 items (clear, context), got %d: %v", len(items), items)
+	// /c matches "clear", "compact", and "context"
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items (clear, compact, context), got %d: %v", len(items), items)
 	}
-	want := map[string]bool{"clear": true, "context": true}
+	want := map[string]bool{"clear": true, "compact": true, "context": true}
 	for _, item := range items {
 		if !want[item.Name] {
 			t.Errorf("unexpected item %q", item.Name)

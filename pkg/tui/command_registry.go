@@ -27,6 +27,7 @@ var builtinCommandDefs = map[string]CommandDef{
 	"rewind":  {Description: "Restore conversation to a previous point", HasArgs: false},
 	"context": {Description: "Visualize context window usage (args: dump)", HasArgs: true},
 	"agent":   {Description: "Switch or create agents", HasArgs: true},
+	"compact": {Description: "Compact conversation (optional: instructions)", HasArgs: true},
 }
 
 // CommandRegistry holds the per-App slash command tables.

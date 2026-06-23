@@ -854,7 +854,7 @@ func TestAutoCompactor_SummarizeMessages_Empty(t *testing.T) {
 	db, _ := short.NewStore(filepath.Join(tmpDir, "test.db"))
 	defer db.Close()
 	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
-	got, err := sc.summarizeMessages(context.Background(), nil)
+	got, err := sc.summarizeMessages(context.Background(), nil, "")
 	if err != nil {
 		t.Fatalf("summarizeMessages(nil) error: %v", err)
 	}
@@ -871,7 +871,7 @@ func TestAutoCompactor_SummarizeMessages_NoText(t *testing.T) {
 	sc := NewAutoCompactor(db, &testEngineMeta{model: "model", sessionID: "sess", contextWindow: 1000, provider: &compactMockProvider{}})
 	// Message with no text content (empty JSON array)
 	msgs := []*short.TranscriptMessage{{Type: "user", Content: "[]"}}
-	got, err := sc.summarizeMessages(context.Background(), msgs)
+	got, err := sc.summarizeMessages(context.Background(), msgs, "")
 	if err == nil {
 		t.Fatal("expected error for no extractable text in head messages")
 	}
@@ -893,7 +893,7 @@ func TestAutoCompactor_SummarizeMessages_LLMError(t *testing.T) {
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
-	_, err := c.summarizeMessages(context.Background(), msgs)
+	_, err := c.summarizeMessages(context.Background(), msgs, "")
 	if err == nil {
 		t.Fatal("expected error from LLM failure")
 	}
@@ -913,7 +913,7 @@ func TestAutoCompactor_SummarizeMessages_EmptyResponse(t *testing.T) {
 	msgs := []*short.TranscriptMessage{
 		{Type: "user", Content: `[{"type":"text","text":"hello"}]`},
 	}
-	_, err := c.summarizeMessages(context.Background(), msgs)
+	_, err := c.summarizeMessages(context.Background(), msgs, "")
 	if err == nil {
 		t.Fatal("expected error for empty response")
 	}
@@ -1447,7 +1447,7 @@ func TestAutoCompact_Summarize_EnsuresToolResultPairing(t *testing.T) {
 	p := &compactCaptureProvider{}
 	compactor := NewAutoCompactor(store, &testEngineMeta{model: "test-model", sessionID: session.SessionID, contextWindow: 100000, provider: p})
 
-	if _, err := compactor.summarizeMessages(context.Background(), storeMsgs); err != nil {
+	if _, err := compactor.summarizeMessages(context.Background(), storeMsgs, ""); err != nil {
 		t.Fatalf("summarizeMessages error: %v", err)
 	}
 
@@ -1493,5 +1493,117 @@ func TestAutoCompact_Summarize_EnsuresToolResultPairing(t *testing.T) {
 					"EnsureToolResultPairing was not applied", id, i)
 			}
 		}
+	}
+}
+
+// TestAutoCompactor_CompactWithInstructions verifies that custom instructions
+// are threaded into the compact prompt sent to the LLM. GetCompactPrompt
+// appends "\n\nAdditional Instructions:\n<custom text>" when non-empty
+// (prompt.go), so the captured request's last user message must contain that
+// marker. Mirrors TS compact.ts:compactConversation(messages, ..., customInstructions, false).
+func TestAutoCompactor_CompactWithInstructions(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	custom := "focus on API design decisions"
+	p := &compactCaptureProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{
+		model:         "test-model",
+		sessionID:     "test-session",
+		contextWindow: 200000,
+		provider:      p,
+	})
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello, please count")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("1 2 3")}},
+	}
+
+	if _, err := sc.CompactWithInstructions(context.Background(), msgs, custom); err != nil {
+		t.Fatalf("CompactWithInstructions error: %v", err)
+	}
+
+	req := p.lastReq
+	if req == nil {
+		t.Fatal("Complete was not called")
+	}
+	if len(req.Messages) == 0 {
+		t.Fatal("request has no messages")
+	}
+	// Compact prompt is appended as the last user message.
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != types.RoleUser {
+		t.Fatalf("last message role = %s, want user", last.Role)
+	}
+	var lastText string
+	for _, b := range last.Content {
+		if b.Type == types.ContentTypeText {
+			lastText = b.Text
+			break
+		}
+	}
+	if lastText == "" {
+		t.Fatal("last user message has no text block")
+	}
+	if !strings.Contains(lastText, "Additional Instructions:\n"+custom) {
+		t.Errorf("compact prompt does not contain custom instructions.\nwant substring: %q\n got prompt tail: %q",
+			"Additional Instructions:\n"+custom, lastText[max(0, len(lastText)-300):])
+	}
+}
+
+// TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker verifies
+// the inverse: when customInstructions is empty, the prompt must NOT contain
+// the "Additional Instructions:" marker. Guards against accidentally injecting
+// it unconditionally.
+func TestAutoCompactor_CompactWithInstructions_NoInstructions_OmitsMarker(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	store, err := short.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	p := &compactCaptureProvider{}
+	sc := NewAutoCompactor(store, &testEngineMeta{
+		model:         "test-model",
+		sessionID:     "test-session",
+		contextWindow: 200000,
+		provider:      p,
+	})
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{types.NewTextBlock("hi")}},
+	}
+
+	if _, err := sc.CompactWithInstructions(context.Background(), msgs, ""); err != nil {
+		t.Fatalf("CompactWithInstructions error: %v", err)
+	}
+
+	req := p.lastReq
+	if req == nil {
+		t.Fatal("Complete was not called")
+	}
+	last := req.Messages[len(req.Messages)-1]
+	var lastText string
+	for _, b := range last.Content {
+		if b.Type == types.ContentTypeText {
+			lastText = b.Text
+			break
+		}
+	}
+	if strings.Contains(lastText, "Additional Instructions:") {
+		t.Errorf("empty customInstructions must not inject Additional Instructions marker; got prompt tail: %q",
+			lastText[max(0, len(lastText)-300):])
 	}
 }

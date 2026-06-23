@@ -1157,7 +1157,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 					Type: types.EventToolEnd,
 					ToolResult: &types.ToolResultEvent{
 						ToolUseID:     compactID,
-						DisplayOutput: formatCompactOutput(result),
+						DisplayOutput: FormatCompactOutput(result),
 					},
 				})
 				e.logger.Info("pre-turn auto-compact succeeded",
@@ -1236,7 +1236,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 							Type: types.EventToolEnd,
 							ToolResult: &types.ToolResultEvent{
 								ToolUseID:     compactID,
-								DisplayOutput: formatCompactOutput(result),
+								DisplayOutput: FormatCompactOutput(result),
 							},
 						})
 						reactiveCompactDone = true
@@ -1370,7 +1370,7 @@ func (e *Engine) runTurns(ctx context.Context, systemPrompt string) QueryResult 
 								Type: types.EventToolEnd,
 								ToolResult: &types.ToolResultEvent{
 									ToolUseID:     compactID,
-									DisplayOutput: formatCompactOutput(result),
+									DisplayOutput: FormatCompactOutput(result),
 								},
 							})
 							contextWindowRecoveryDone = true
@@ -2435,6 +2435,71 @@ func (e *Engine) runCompact(ctx context.Context) (*short.CompactResult, error) {
 	e.markAllPersisted()
 	e.mu.Unlock()
 	e.persistContextTokens()
+	return result, nil
+}
+
+// ManualCompact compacts the conversation on user request (/compact command).
+// Unlike runCompact (auto-compact), it fires PreCompact/PostCompact hooks with
+// trigger="manual", passes custom instructions to the summarizer, and suppresses
+// the "context left until auto-compact" warning.
+// TS align: commands/compact/compact.ts:call — manual path
+func (e *Engine) ManualCompact(ctx context.Context, customInstructions string) (*short.CompactResult, error) {
+	e.mu.RLock()
+	comp := e.compactor
+	e.mu.RUnlock()
+
+	if comp == nil {
+		return nil, fmt.Errorf("compaction not configured")
+	}
+
+	e.fireCompactHooks(ctx, "manual", "pre")
+
+	var result *short.CompactResult
+
+	// TS: sessionMemoryCompact.ts — trySessionMemoryCompaction runs first, but
+	// ONLY when no custom instructions (session memory compaction ignores
+	// custom instructions). Mirrors compact.ts:55-57.
+	if customInstructions == "" {
+		e.mu.RLock()
+		sm := e.sessionMemory
+		e.mu.RUnlock()
+		if sm != nil {
+			if ac, ok := comp.(*AutoCompactor); ok {
+				if smResult, _ := ac.TrySMCompact(e.Messages(), sm); smResult != nil {
+					result = smResult
+				}
+			}
+		}
+	}
+
+	if result == nil {
+		var err error
+		if ac, ok := comp.(*AutoCompactor); ok {
+			result, err = ac.CompactWithInstructions(ctx, e.Messages(), customInstructions)
+		} else {
+			result, err = comp.Compact(ctx, e.Messages())
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Persist boundary to DB — same as runCompact
+	if result.BoundaryMarker != nil && e.store != nil {
+		if err := e.store.RecordCompact(e.sessionID, result); err != nil {
+			e.logger.Warn("RecordCompact failed", "error", err)
+		}
+	}
+
+	e.mu.Lock()
+	e.messages = result.Messages
+	e.ContextTokens = result.AfterTokens
+	e.markAllPersisted()
+	e.mu.Unlock()
+	e.persistContextTokens()
+
+	suppressCompactWarning()
+	e.fireCompactHooks(ctx, "manual", "post")
 	return result, nil
 }
 
