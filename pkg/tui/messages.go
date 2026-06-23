@@ -42,6 +42,7 @@ type toolStartMsg struct {
 	IsSearch bool
 	IsRead   bool
 	IsList   bool
+	IsLsp    bool
 }
 
 // toolParamDeltaMsg carries incremental input updates for a pending tool.
@@ -54,6 +55,7 @@ type toolParamDeltaMsg struct {
 	IsSearch bool
 	IsRead   bool
 	IsList   bool
+	IsLsp    bool
 }
 
 // toolOutputDeltaMsg carries streaming output lines from a tool in progress.
@@ -76,6 +78,7 @@ type toolEndMsg struct {
 	IsSearch  bool             // search/read/list classification
 	IsRead    bool
 	IsList    bool
+	IsLsp     bool
 }
 
 // queryEndMsg signals that the engine has finished processing.

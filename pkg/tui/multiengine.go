@@ -122,12 +122,12 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 		case toolStartMsg:
 			if m.Agent == nil {
 				repl.PendingToolStarted(m.ID, m.Name, m.Summary, m.Input,
-					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
+					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
 			}
 		case toolParamDeltaMsg:
 			if m.Agent == nil {
 				repl.PendingToolDelta(m.ID, m.Delta, m.Summary,
-					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
+					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
 			}
 		case toolOutputDeltaMsg:
 			if m.Agent == nil {
@@ -136,7 +136,7 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 		case toolEndMsg:
 			if m.Agent == nil {
 				repl.PendingToolDone(m.ToolUseID, m.Output, m.IsError, m.Timing,
-					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList})
+					tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp})
 			}
 		case thinkingStartMsg:
 			if m.Agent == nil {

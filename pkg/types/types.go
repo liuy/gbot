@@ -422,6 +422,7 @@ type PartialInputEvent struct {
 	IsSearch bool   `json:"is_search,omitempty"`
 	IsRead   bool   `json:"is_read,omitempty"`
 	IsList   bool   `json:"is_list,omitempty"`
+	IsLsp    bool   `json:"is_lsp,omitempty"`
 }
 
 // ToolUseEvent represents a tool invocation event.
@@ -433,6 +434,7 @@ type ToolUseEvent struct {
 	IsSearch bool            `json:"is_search,omitempty"` // tool is a search operation (Grep, Glob, find)
 	IsRead   bool            `json:"is_read,omitempty"`   // tool is a read operation (Read, cat)
 	IsList   bool            `json:"is_list,omitempty"`   // tool is a list operation (ls, tree)
+	IsLsp    bool            `json:"is_lsp,omitempty"`    // tool is an LSP operation
 }
 
 // ToolResultEvent represents a tool execution result event.
@@ -446,6 +448,7 @@ type ToolResultEvent struct {
 	IsSearch      bool            `json:"is_search,omitempty"`     // search/read/list classification for TUI
 	IsRead        bool            `json:"is_read,omitempty"`
 	IsList        bool            `json:"is_list,omitempty"`
+	IsLsp         bool            `json:"is_lsp,omitempty"`
 }
 
 // ContinueReason indicates why the loop continues to another iteration.

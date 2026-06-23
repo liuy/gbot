@@ -1992,6 +1992,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							IsSearch: srk.IsSearch,
 							IsRead:   srk.IsRead,
 							IsList:   srk.IsList,
+							IsLsp:    srk.IsLsp,
 						},
 					})
 				case types.ContentTypeThinking:
@@ -2032,6 +2033,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 								IsSearch: srk.IsSearch,
 								IsRead:   srk.IsRead,
 								IsList:   srk.IsList,
+								IsLsp:    srk.IsLsp,
 							},
 						})
 					}

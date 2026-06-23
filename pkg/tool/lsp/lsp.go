@@ -124,6 +124,9 @@ func New(reg *lsp.Registry) tool.Tool {
 			}
 			return readonlyActions[in.Action]
 		},
+		IsSearchOrRead_: func(json.RawMessage) tool.SearchReadKind {
+			return tool.SearchReadKind{IsLsp: true}
+		},
 		Prompt_:            LSPPrompt(),
 		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
 		InterruptBehavior_: tool.InterruptCancel,

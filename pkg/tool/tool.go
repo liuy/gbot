@@ -84,11 +84,12 @@ type SearchReadKind struct {
 	IsSearch bool
 	IsRead   bool
 	IsList   bool
+	IsLsp    bool
 }
 
 // IsCollapsible returns true if the tool call should be collapsed in the TUI.
 func (s SearchReadKind) IsCollapsible() bool {
-	return s.IsSearch || s.IsRead || s.IsList
+	return s.IsSearch || s.IsRead || s.IsList || s.IsLsp
 }
 
 // ---------------------------------------------------------------------------

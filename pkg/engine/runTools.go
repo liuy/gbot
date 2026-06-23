@@ -918,6 +918,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 			IsSearch:      srk.IsSearch,
 			IsRead:        srk.IsRead,
 			IsList:        srk.IsList,
+			IsLsp:         srk.IsLsp,
 		},
 	})
 	tt.Result = result

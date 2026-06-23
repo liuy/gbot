@@ -757,6 +757,8 @@ func classifyToolName(name string, input json.RawMessage) tool.SearchReadKind {
 		return tool.SearchReadKind{IsRead: true}
 	case "Grep", "Glob":
 		return tool.SearchReadKind{IsSearch: true}
+	case "Lsp":
+		return tool.SearchReadKind{IsLsp: true}
 	case "Bash":
 		var in struct {
 			Command string `json:"command"`

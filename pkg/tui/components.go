@@ -1741,6 +1741,7 @@ type toolGroup struct {
 	searchCount int
 	readCount   int // operation count (unique file paths deferred)
 	listCount   int
+	lspCount    int
 	anyRunning  bool // true if any tool in group has Done==false
 }
 
@@ -1773,6 +1774,9 @@ func detectToolGroups(blocks []ContentBlock) []toolGroup {
 				}
 				if tc.SearchRead.IsList {
 					current.listCount++
+				}
+				if tc.SearchRead.IsLsp {
+					current.lspCount++
 				}
 				if !tc.Done {
 					current.anyRunning = true
@@ -1843,6 +1847,17 @@ func groupSummaryText(g toolGroup, isActive bool) string {
 			add("listing", fmt.Sprintf("%d %s", g.listCount, d))
 		} else {
 			add("listed", fmt.Sprintf("%d %s", g.listCount, d))
+		}
+	}
+	if g.lspCount > 0 {
+		c := "call"
+		if g.lspCount != 1 {
+			c = "calls"
+		}
+		if isActive {
+			add("LSPing", fmt.Sprintf("%d %s", g.lspCount, c))
+		} else {
+			add("LSPed", fmt.Sprintf("%d %s", g.lspCount, c))
 		}
 	}
 
