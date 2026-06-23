@@ -1078,7 +1078,12 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 				sub.renderToolCall(sb, availWidth, expand, toolDot, noHint, maxOutputLines, depth+1, streaming)
 			case BlockText:
 				if sub.Text != "" {
-					sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, expand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
+					// Agent result: always fully expanded — it's the final
+					// answer the user cares about. Streaming intermediate
+					// text is already collapsed by formatToolContent when
+					// expand=false during the running phase.
+					textExpand := expand || tc.ToolCount > 0
+					sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, subIndent, formatToolContent(Render(sub.Text), false, textExpand, availWidth-len(subIndent), noHint, maxOutputLines, lipgloss.NewStyle())))
 				}
 			case BlockThinking:
 				sb.WriteString("\n")
@@ -1095,7 +1100,9 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 				sb.WriteString(renderAgentLogs(&tc, availWidth))
 			}
 			if tc.Output != "" {
-				output := formatToolOutput(tc.Output, tc.IsError, toolExpand, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
+				// Agent result: always fully expanded — it's the final
+				// answer the user cares about, not intermediate noise.
+				output := formatToolOutput(tc.Output, tc.IsError, true, availWidth-resultPrefixWidth, noHint, maxOutputLines, lipgloss.NewStyle())
 				sb.WriteString("\n" + lipgloss.JoinHorizontal(lipgloss.Top, indent, output))
 			}
 		} else if tc.Output != "" {
