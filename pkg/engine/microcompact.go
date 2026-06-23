@@ -269,8 +269,21 @@ func isMainThreadSource(querySource string) bool {
 // ---------------------------------------------------------------------------
 
 // EstimateMessagesTokens estimates token count for messages.
-// Each message has ~5 tokens of ChatML envelope overhead (role tag + structure).
-const messageEnvelopeTokens = 5
+// Per-message envelope overhead varies by provider (calibrated via real APIs).
+const defaultMessageEnvelopeTokens = 5
+
+func messageEnvelopeTokens(provider string) int {
+	switch provider {
+	case "zhipu":
+		return 12
+	case "deepseek":
+		return 4
+	case "xiaomi":
+		return 4
+	default:
+		return defaultMessageEnvelopeTokens
+	}
+}
 
 func EstimateMessagesTokens(messages []types.Message) int {
 	return EstimateMessagesTokensForProvider(messages, "")
@@ -310,7 +323,7 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 		}
 	}
 
-	totalTokens += msgCount * messageEnvelopeTokens
+	totalTokens += msgCount * messageEnvelopeTokens(provider)
 	return totalTokens
 }
 

@@ -247,7 +247,7 @@ func TestEstimateMessagesTokens_Basic(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	raw := types.EstimateTokens(text)
-	want := raw + messageEnvelopeTokens
+	want := raw + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(basic) = %d, want %d", got, want)
 	}
@@ -261,7 +261,7 @@ func TestEstimateMessagesTokens_ToolResult(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(text) + messageEnvelopeTokens
+	want := types.EstimateTokens(text) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_result) = %d, want %d", got, want)
 	}
@@ -275,7 +275,7 @@ func TestEstimateMessagesTokens_Thinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(thinkingText) + messageEnvelopeTokens
+	want := types.EstimateTokens(thinkingText) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(thinking) = %d, want %d", got, want)
 	}
@@ -289,7 +289,7 @@ func TestEstimateMessagesTokens_RedactedThinking(t *testing.T) {
 		}},
 	}
 	got := EstimateMessagesTokens(messages)
-	want := types.EstimateTokens(data) + messageEnvelopeTokens
+	want := types.EstimateTokens(data) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(redacted_thinking) = %d, want %d", got, want)
 	}
@@ -304,7 +304,7 @@ func TestEstimateMessagesTokens_ToolUse(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	combined := "Read" + string(input)
-	want := types.EstimateTokens(combined) + messageEnvelopeTokens
+	want := types.EstimateTokens(combined) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(tool_use) = %d, want %d", got, want)
 	}
@@ -319,7 +319,7 @@ func TestEstimateMessagesTokens_UnknownBlockType(t *testing.T) {
 	got := EstimateMessagesTokens(messages)
 	// Compute expected the same way the function does: JSON marshal → EstimateTokens → envelope
 	raw, _ := json.Marshal(block)
-	want := types.EstimateTokens(string(raw)) + messageEnvelopeTokens
+	want := types.EstimateTokens(string(raw)) + defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(unknown block) = %d, want %d", got, want)
 	}
@@ -347,9 +347,9 @@ func TestEstimateMessagesTokens_Padding(t *testing.T) {
 	}
 	got := EstimateMessagesTokens(messages)
 	raw := types.EstimateTokens(text) // "short" = 5 non-CJK chars * 0.20 = 1
-	want := raw + messageEnvelopeTokens
+	want := raw + defaultMessageEnvelopeTokens
 	if got != want {
-		t.Errorf("envelope: got %d, want %d (raw=%d + envelope=%d)", got, want, raw, messageEnvelopeTokens)
+		t.Errorf("envelope: got %d, want %d (raw=%d + envelope=%d)", got, want, raw, defaultMessageEnvelopeTokens)
 	}
 }
 
@@ -736,7 +736,7 @@ func TestEstimateMessagesTokens_MultipleMessageTypes(t *testing.T) {
 		types.EstimateTokens("thinking text") +
 		types.EstimateTokens("assistant text") +
 		types.EstimateTokens("Read"+`{"path":"/x"}`)
-	want := raw + 2*messageEnvelopeTokens
+	want := raw + 2*defaultMessageEnvelopeTokens
 	if got != want {
 		t.Errorf("EstimateMessagesTokens(multiple) = %d, want %d", got, want)
 	}
