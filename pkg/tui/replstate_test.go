@@ -1158,3 +1158,59 @@ func TestUpdateRunningToolElapsed_SyncsPendingToolMap(t *testing.T) {
 			"with messages to prevent agent spinner flicker)", pendingElapsed)
 	}
 }
+
+// TestUpdateRunningToolElapsed_UpdatesNestedAgentBlocks verifies that
+// spinner tick also updates Elapsed on nested tool blocks (sub-agent tools
+// appended to a parent Agent tool's Blocks). Without this, sub-agent tool
+// cards show a frozen "(0.0s)" timer.
+func TestUpdateRunningToolElapsed_UpdatesNestedAgentBlocks(t *testing.T) {
+	s := NewReplState()
+	s.StartQuery()
+	s.AppendTextItem()
+	// Parent Agent tool.
+	s.PendingToolStarted("agent-1", "Agent", "explore codebase", "", tool.SearchReadKind{})
+
+	// Simulate a sub-agent tool_start that appends a nested Block.
+	parent := s.findToolView("agent-1")
+	if parent == nil {
+		t.Fatal("findToolView(agent-1) = nil")
+	}
+	parent.Blocks = append(parent.Blocks, ContentBlock{
+		Type: BlockTool,
+		ToolCall: ToolCallView{
+			ID:      "sub-tool-1",
+			Name:    "Bash",
+			Summary: "ls -la",
+			Done:    false,
+		},
+	})
+	s.updateToolBlock("agent-1", parent)
+
+	// Rewind the nested block's start time to simulate 3s elapsed.
+	s.mu.Lock()
+	for i := range parent.Blocks {
+		if parent.Blocks[i].Type == BlockTool && parent.Blocks[i].ToolCall.ID == "sub-tool-1" {
+			parent.Blocks[i].ToolCall.startedAt = time.Now().Add(-3 * time.Second) // REAL-TIME: needed for elapsed computation
+		}
+	}
+	s.mu.Unlock()
+
+	s.UpdateRunningToolElapsed()
+
+	// The nested block should have Elapsed updated.
+	msgs := s.Messages()
+	var nestedElapsed time.Duration
+	for _, blk := range msgs[len(msgs)-1].Blocks {
+		if blk.Type != BlockTool || blk.ToolCall.ID != "agent-1" {
+			continue
+		}
+		for _, sub := range blk.ToolCall.Blocks {
+			if sub.Type == BlockTool && sub.ToolCall.ID == "sub-tool-1" {
+				nestedElapsed = sub.ToolCall.Elapsed
+			}
+		}
+	}
+	if nestedElapsed < 1*time.Second {
+		t.Errorf("nested block Elapsed = %v, want >= 1s (sub-agent tool timer must update on spinner tick)", nestedElapsed)
+	}
+}

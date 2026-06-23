@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
-	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/mattn/go-runewidth"
 )
@@ -753,6 +752,7 @@ type AgentLogEntry struct {
 	Summary   string // tool summary text
 	IsError   bool   // true if tool_end reported error
 	Done      bool   // false = running, true = completed
+	Elapsed   time.Duration
 }
 
 // ToolCallView renders a tool invocation within a message.
@@ -765,6 +765,7 @@ type ToolCallView struct {
 	IsError       bool
 	Done          bool
 	Elapsed       time.Duration
+	startedAt     time.Time           // creation timestamp for Elapsed computation (nested agent blocks)
 	AgentLogs     []AgentLogEntry     // sub-agent tool call progress (nil for non-Agent tools)
 	ToolCount     int                 // total sub-agent tool calls (for summary line when done)
 	TokensIn      int                 // sub-agent input tokens (for summary line when done)
@@ -969,13 +970,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
-		// content_block_start initializes input as "{}" (2B); non-streaming providers
-		// (e.g. MiMo) never send input_json_delta, so require >100B to confirm real streaming input.
-		if (tc.Name == "Write" || tc.Name == "Edit") && len(tc.Input) > 100 {
-			header += fmt.Sprintf(" (%s)", toolresult.FormatFileSize(len(tc.Input)))
-		} else {
-			header += " " + styleDim.Render("("+formatDuration(tc.Elapsed)+")")
-		}
+		header += formatToolSuffix(tc.Name, len(tc.Input), tc.Elapsed)
 		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
@@ -1116,6 +1111,12 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 	}
 }
 
+// formatToolSuffix returns the dim elapsed-timer suffix shown after a tool
+// name+summary. Shared between main tool card header and sub-agent log entries.
+func formatToolSuffix(name string, inputLen int, elapsed time.Duration) string {
+	return " " + styleDim.Render("("+formatDuration(elapsed)+")")
+}
+
 // renderAgentLogs renders sub-agent tool call progress using formatToolOutput.
 // Shows last 5 entries + overflow + stats, all with "| " prefix.
 func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
@@ -1141,7 +1142,7 @@ func renderAgentLogs(tcv *ToolCallView, availWidth int) string {
 				text += styleDim.Render(fmt.Sprintf("(%s)", truncateSummary(e.Summary, 30)))
 			}
 			if !e.Done {
-				text += styleDim.Italic(true).Render("...")
+				text += formatToolSuffix(e.ToolName, 0, e.Elapsed)
 			}
 			lines = append(lines, text)
 		}

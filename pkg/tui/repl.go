@@ -809,24 +809,37 @@ func (s *ReplState) PendingToolStart(id string) (time.Time, bool) {
 func (s *ReplState) UpdateRunningToolElapsed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.messages) == 0 || len(s.pendingToolStart) == 0 {
+	if len(s.messages) == 0 {
 		return
 	}
 	now := time.Now()
 	last := &s.messages[len(s.messages)-1]
 	for j := range last.Blocks {
 		blk := &last.Blocks[j]
-		if blk.Type != BlockTool || blk.ToolCall.Done {
+		if blk.Type != BlockTool {
 			continue
 		}
-		if start, ok := s.pendingToolStart[blk.ToolCall.ID]; ok {
-			elapsed := now.Sub(start)
-			blk.ToolCall.Elapsed = elapsed
-			// Sync pendingTool map so sub-agent events (toolStartMsg) that
-			// read Elapsed from pendingTool and write it back via
-			// updateToolBlock don't clobber the correct value with 0.
-			if tcv, ok := s.pendingTool[blk.ToolCall.ID]; ok {
-				tcv.Elapsed = elapsed
+		// Update top-level running tools via pendingToolStart.
+		if !blk.ToolCall.Done {
+			if start, ok := s.pendingToolStart[blk.ToolCall.ID]; ok {
+				elapsed := now.Sub(start)
+				blk.ToolCall.Elapsed = elapsed
+				// Sync pendingTool map so sub-agent events (toolStartMsg) that
+				// read Elapsed from pendingTool and write it back via
+				// updateToolBlock don't clobber the correct value with 0.
+				if tcv, ok := s.pendingTool[blk.ToolCall.ID]; ok {
+					tcv.Elapsed = elapsed
+				}
+			}
+		}
+		// Update nested running blocks (sub-agent tools) via startedAt.
+		for k := range blk.ToolCall.Blocks {
+			sub := &blk.ToolCall.Blocks[k]
+			if sub.Type != BlockTool || sub.ToolCall.Done {
+				continue
+			}
+			if !sub.ToolCall.startedAt.IsZero() {
+				sub.ToolCall.Elapsed = now.Sub(sub.ToolCall.startedAt)
 			}
 		}
 	}
@@ -983,6 +996,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 					ToolCall: ToolCallView{
 						ID: m.ID, Name: m.Name, Summary: m.Summary,
 						Input: m.Input, Done: false, SearchRead: srk,
+						startedAt: time.Now(),
 					},
 				})
 				parent.ToolCount++

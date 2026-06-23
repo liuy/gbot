@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
@@ -310,19 +311,19 @@ func TestRenderAgentLogs_ThinkingEntry(t *testing.T) {
 	}
 }
 
-func TestRenderAgentLogs_RunningTool_HasEllipsis(t *testing.T) {
+func TestRenderAgentLogs_RunningTool_HasTimer(t *testing.T) {
 	t.Parallel()
 	tcv := &ToolCallView{
 		AgentLogs: []AgentLogEntry{
-			{ToolName: "Bash", Summary: "npm test", Done: false},
+			{ToolName: "Bash", Summary: "npm test", Done: false, Elapsed: 3 * time.Second},
 		},
 	}
 	out := stripANSI(renderAgentLogs(tcv, 80))
 	if !strings.Contains(out, "Bash") {
 		t.Errorf("renderAgentLogs should contain 'Bash', got %q", out)
 	}
-	if !strings.Contains(out, "...") {
-		t.Errorf("running tool should have '...' indicator, got %q", out)
+	if !strings.Contains(out, "(3s)") {
+		t.Errorf("running tool should have elapsed timer '(3s)', got %q", out)
 	}
 	if !strings.Contains(out, "npm test") {
 		t.Errorf("running tool should show summary, got %q", out)
