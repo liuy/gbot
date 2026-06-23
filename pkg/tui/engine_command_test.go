@@ -14,6 +14,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
+	"github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -1051,5 +1052,265 @@ func TestSwitchEngine_UpdatesContextWindow(t *testing.T) {
 	// updateEngineCapabilities from provider config).
 	if cw := e2Eng.ContextWindow(); cw == 0 {
 		t.Error("e2 ContextWindow = 0 after switch — switchEngine did not call updateEngineCapabilities")
+	}
+}
+
+func TestSwitchEngine_InvalidatesTaskPanel(t *testing.T) {
+	t.Parallel()
+
+	// Build a 2-engine app inline, each engine with its own TaskList.
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	tl1 := task.NewList("")
+	tl2 := task.NewList("")
+
+	eng1 := engine.New(&engine.Params{
+		Logger:   slog.Default(),
+		Model:    "model-a",
+		EngineID: "e1",
+		TaskList: tl1,
+	})
+	eng1.SetStore(store, dir)
+	t.Cleanup(func() { eng1.Close() })
+
+	eng2 := engine.New(&engine.Params{
+		Logger:   slog.Default(),
+		Model:    "model-b",
+		EngineID: "e2",
+		TaskList: tl2,
+	})
+	eng2.SetStore(store, dir)
+	t.Cleanup(func() { eng2.Close() })
+
+	// Create sessions so setTaskDirForSession has a dir to resolve.
+	if err := eng1.NewSession(dir, ""); err != nil {
+		t.Fatalf("eng1.NewSession: %v", err)
+	}
+	if err := eng2.NewSession(dir, ""); err != nil {
+		t.Fatalf("eng2.NewSession: %v", err)
+	}
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine:  eng1,
+		Handler: NewTUIHandlerForEngine("e1", nil),
+		Repl:    newReplAdapter(NewReplState()),
+		ID:      "e1",
+		Name:    "engine-1",
+		Model:   "model-a",
+	})
+	mgr.Add(&engine.EngineViewState{
+		Engine:  eng2,
+		Handler: NewTUIHandlerForEngine("e2", nil),
+		Repl:    newReplAdapter(NewReplState()),
+		ID:      "e2",
+		Name:    "engine-2",
+		Model:   "model-b",
+	})
+	if err := mgr.SetActive("e1"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+
+	a := NewAppWithManager(mgr, "", nil)
+	a.projectDir = dir
+	a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// Wire taskListFn to read from active engine's task list.
+	a.SetTaskListFn(func() []TaskSummary {
+		eng := a.ActiveEngine()
+		if eng == nil {
+			return nil
+		}
+		tl := eng.TaskList()
+		if tl == nil || tl.Dir() == "" {
+			return nil
+		}
+		tasks, err := tl.ListTasks()
+		if err != nil {
+			return nil
+		}
+		var result []TaskSummary
+		for _, t := range tasks {
+			result = append(result, TaskSummary{
+				ID:      t.ID,
+				Subject: t.Subject,
+				Status:  string(t.Status),
+			})
+		}
+		return result
+	})
+
+	// Seed engine-1's task list with one task.
+	if _, err := tl1.CreateTask("task-e1", "description", "", nil); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	// Force render: populate cache for engine-1.
+	a.taskListDirty = true
+	a.taskListCache = a.renderTaskList()
+
+	if a.taskListCache == "" {
+		t.Fatal("task panel should not be empty after seeding engine-1 task")
+	}
+	if !strings.Contains(a.taskListCache, "task-e1") {
+		t.Errorf("task panel should contain 'task-e1', got:\n%s", a.taskListCache)
+	}
+
+	// Switch to engine-2.
+	a.switchEngine("e2")
+
+	if !a.taskListDirty {
+		t.Error("taskListDirty should be true after switchEngine")
+	}
+
+	// Force render: populate cache for engine-2.
+	a.taskListCache = a.renderTaskList()
+	a.taskListDirty = false
+
+	if a.taskListCache != "" {
+		t.Errorf("task panel should be empty for engine-2 (no tasks), got:\n%s", a.taskListCache)
+	}
+
+	// Switch back to engine-1 — tasks should return.
+	a.switchEngine("e1")
+	a.taskListDirty = true
+	a.taskListCache = a.renderTaskList()
+
+	if a.taskListCache == "" {
+		t.Fatal("task panel should not be empty after switching back to engine-1")
+	}
+	if !strings.Contains(a.taskListCache, "task-e1") {
+		t.Errorf("task panel should contain 'task-e1' after round-trip, got:\n%s", a.taskListCache)
+	}
+}
+
+// TestTaskBoard_Isolation integrates two scenarios that the current code
+// fails: (1) switching engines must show different tasks per engine, and
+// (2) switching sessions within the same engine must also show different
+// tasks. Both regressions happened because the task panel cache
+// (taskListDirty) was not invalidated on switchEngine or
+// handleSessionPickerDone.
+func TestTaskBoard_Isolation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := short.NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Helper: create engine + session in one shot.
+	makeEngine := func(id, model string) *engine.Engine {
+		eng := engine.New(&engine.Params{Logger: slog.Default(), Model: model, EngineID: id})
+		eng.SetStore(store, dir)
+		sess, err := store.CreateSession(dir, model)
+		if err != nil {
+			t.Fatalf("CreateSession %s: %v", id, err)
+		}
+		eng.SetSessionID(sess.SessionID)
+		if err := eng.NewSession(dir, model); err != nil {
+			t.Fatalf("NewSession %s: %v", id, err)
+		}
+		t.Cleanup(func() { eng.Close() })
+		return eng
+	}
+
+	eng1 := makeEngine("eng1", "sonnet")
+	eng2 := makeEngine("eng2", "opus")
+
+	// Seed tasks: one per engine.
+	if _, err := eng1.TaskList().CreateTask("eng1-task", "task in engine 1", "", nil); err != nil {
+		t.Fatalf("CreateTask eng1: %v", err)
+	}
+	if _, err := eng2.TaskList().CreateTask("eng2-task", "task in engine 2", "", nil); err != nil {
+		t.Fatalf("CreateTask eng2: %v", err)
+	}
+
+	// Build app with two engines.
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{Engine: eng1, Handler: NewTUIHandlerForEngine("eng1", nil), Repl: newReplAdapter(NewReplState()), ID: "eng1", Name: "engine-1", Model: "sonnet"})
+	mgr.Add(&engine.EngineViewState{Engine: eng2, Handler: NewTUIHandlerForEngine("eng2", nil), Repl: newReplAdapter(NewReplState()), ID: "eng2", Name: "engine-2", Model: "opus"})
+	a := NewAppWithManager(mgr, "", nil)
+	a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	a.projectDir = dir
+
+	// taskListFn: reads from the active engine's task list.
+	a.taskListFn = func() []TaskSummary {
+		if a.engine == nil {
+			return nil
+		}
+		tl := a.engine.TaskList()
+		if tl == nil || tl.Dir() == "" {
+			return nil
+		}
+		allTasks, _ := tl.ListTasks()
+		var result []TaskSummary
+		for _, t := range allTasks {
+			result = append(result, TaskSummary{ID: t.ID, Subject: t.Subject, Status: string(t.Status)})
+		}
+		return result
+	}
+
+	// --- Scenario 1: switching engines shows different tasks ---
+
+	a.switchEngine("eng1")
+	a.taskListDirty = true
+	tasks := a.taskListFn()
+	if len(tasks) != 1 {
+		t.Fatalf("eng1: expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Subject != "eng1-task" {
+		t.Errorf("eng1: task subject = %q, want 'eng1-task'", tasks[0].Subject)
+	}
+
+	a.switchEngine("eng2")
+	a.taskListDirty = true
+	tasks = a.taskListFn()
+	if len(tasks) != 1 {
+		t.Fatalf("eng2: expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Subject != "eng2-task" {
+		t.Errorf("eng2: task subject = %q, want 'eng2-task'", tasks[0].Subject)
+	}
+
+	// --- Scenario 2: switching sessions within same engine ---
+
+	// Save session 1's ID before switching.
+	sess1ID := eng1.SessionID()
+
+	// Create a second session on eng1 and seed a task there.
+	sess2, err := store.CreateSession(dir, "eng1-sess2")
+	if err != nil {
+		t.Fatalf("CreateSession eng1-sess2: %v", err)
+	}
+	if _, err := eng1.SwitchSession(sess2.SessionID); err != nil {
+		t.Fatalf("SwitchSession: %v", err)
+	}
+	if _, err := eng1.TaskList().CreateTask("eng1-sess2-task", "task in eng1 session 2", "", nil); err != nil {
+		t.Fatalf("CreateTask sess2: %v", err)
+	}
+
+	// Switch back to first session via picker.
+	a.engine = eng1
+	a.sessionID = ""
+	items := []SessionItem{{SessionID: sess1ID, Title: "session1"}}
+	a.handleSessionPickerDone(newSelectedDialog(0), items)
+
+	// Panel should show first session's task, NOT session-2's task.
+	tasks = a.taskListFn()
+	if len(tasks) != 1 {
+		t.Fatalf("eng1-session1: expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Subject != "eng1-task" {
+		t.Errorf("eng1-session1: task subject = %q, want 'eng1-task' (must not leak from session-2)", tasks[0].Subject)
+	}
+
+	if !a.taskListDirty {
+		t.Error("taskListDirty should be true after session switch")
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
-	taskpkg "github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -23,7 +22,6 @@ func TestEngine_RunAgent_General(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -66,7 +64,6 @@ func TestEngine_RunAgent_EmptyAgentType_DefaultsToGeneral(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -100,7 +97,6 @@ func TestEngine_RunAgent_ForkType_ResolvesToGeneral(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -131,7 +127,6 @@ func TestEngine_RunAgent_UnknownAgentType_Errors(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -162,7 +157,6 @@ func TestEngine_RunAgent_MaxTurnsOverride(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -222,7 +216,6 @@ func TestEngine_RunAgent_HookFires(t *testing.T) {
 	// and the hooks-present path both exercise the hook iteration code.
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -264,7 +257,6 @@ func TestEngine_RunAgent_ParentToolUseID_DispatchesSubAgentEvents(t *testing.T) 
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -397,7 +389,6 @@ func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
 
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}

@@ -321,6 +321,14 @@ func New(p *Params) *Engine {
 		engineID = "main"
 	}
 
+	// Each engine gets its own task list. Callers that inject via Params.TaskList
+	// (the factory, tests) supply their own; engines built without a list (test
+	// helpers) get a fresh one whose dir is resolved by setTaskDirForSession.
+	taskList := p.TaskList
+	if taskList == nil {
+		taskList = task.NewList("")
+	}
+
 	e := &Engine{
 		provider:                p.Provider,
 		tools:                   toolMap,
@@ -343,7 +351,7 @@ func New(p *Params) *Engine {
 		contentReplacementState: toolresult.NewContentReplacementState(),
 		agentMetaDepth:          0,
 		toolSearch:              newToolSearchState(),
-		taskList:                p.TaskList,
+		taskList:                taskList,
 		modelThinking:           p.ModelThinking,
 		engineID:                engineID,
 	}
@@ -552,7 +560,7 @@ func (e *Engine) RunAgent(ctx context.Context, opts agenttool.AgentOpts) (*types
 
 	// ---- Sub-engine creation ----
 
-	subRefs := CreateTools(*e.sharedDeps)
+	subRefs := CreateTools(*e.sharedDeps, e.taskList)
 
 	if e.sharedDeps.McpReg != nil {
 		for _, dt := range e.sharedDeps.McpReg.GetTools() {
@@ -2995,6 +3003,7 @@ func (e *Engine) NewSession(projectDir, title string) error {
 	e.mu.Lock()
 	e.sessionID = session.SessionID
 	e.projectDir = projectDir
+	e.setTaskDirForSession(session.SessionID)
 	e.mu.Unlock()
 	return nil
 }
@@ -3020,6 +3029,7 @@ func (e *Engine) ForkSession(title string) ([]types.Message, error) {
 	e.sessionID = forked.SessionID
 	e.markAllPersisted()
 	e.forkParentUUID = ""
+	e.setTaskDirForSession(forked.SessionID)
 	e.mu.Unlock()
 	return engineMsgs, nil
 }
@@ -3036,6 +3046,7 @@ func (e *Engine) SwitchSession(sessionID string) ([]types.Message, error) {
 	e.sessionID = sessionID
 	e.markAllPersisted()
 	e.forkParentUUID = ""
+	e.setTaskDirForSession(sessionID)
 	e.mu.Unlock()
 	return engineMsgs, nil
 }
@@ -3061,6 +3072,7 @@ func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
 					e.sessionID = meta.CurrentSessionID
 					e.projectDir = workingDir
 					e.markAllPersisted()
+					e.setTaskDirForSession(meta.CurrentSessionID)
 					e.mu.Unlock()
 					slog.Info("ResumeOrInitSession: resumed session", "sessionID", meta.CurrentSessionID, "messages", len(engineMsgs))
 					if ses, err := e.store.GetSession(meta.CurrentSessionID); err == nil && ses.ContextTokens > 0 {
@@ -3086,6 +3098,7 @@ func (e *Engine) ResumeOrInitSession(workingDir, model string) (string, error) {
 	e.projectDir = workingDir
 	e.lastPersistedIdx = 0
 	e.forkParentUUID = ""
+	e.setTaskDirForSession(session.SessionID)
 	e.mu.Unlock()
 	slog.Info("ResumeOrInitSession: created new session", "sessionID", session.SessionID)
 	return session.SessionID, nil
@@ -3422,6 +3435,7 @@ func (e *Engine) RewindToScoped(idx int, scope RewindScope) (*RewindResult, erro
 func (e *Engine) SetSessionID(id string) {
 	e.mu.Lock()
 	e.sessionID = id
+	e.setTaskDirForSession(id)
 	e.mu.Unlock()
 }
 
@@ -3430,6 +3444,35 @@ func (e *Engine) SessionID() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.sessionID
+}
+
+// TaskList returns this engine's task list. Returns nil on sub-engines
+// (NewSubEngine does not populate taskList). e.taskList is write-once
+// (assigned once in New, never reassigned); *task.List guards its own
+// fields with its internal mutex. The RLock here only protects the
+// struct field read itself.
+func (e *Engine) TaskList() *task.List {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.taskList
+}
+
+// setTaskDirForSession resolves ~/.gbot/tasks/<sanitized sessionID> and points
+// this engine's taskList at it. Called from every session lifecycle method so
+// /new, /switch, /resume, /rewind, /fork, and restart all pick up the right
+// task directory. No-op for sub-engines (nil taskList) and empty sessionID.
+func (e *Engine) setTaskDirForSession(sessionID string) {
+	if e.taskList == nil || sessionID == "" {
+		return
+	}
+	dir, err := task.TasksDir(sessionID)
+	if err != nil {
+		slog.Warn("engine: tasks dir resolve failed", "sessionID", sessionID, "error", err)
+		return
+	}
+	if err := e.taskList.SetDir(dir); err != nil {
+		slog.Warn("engine: tasks init failed", "sessionID", sessionID, "error", err)
+	}
 }
 
 // EngineID returns the owning EngineManager ID for this engine.

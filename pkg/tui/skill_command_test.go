@@ -11,7 +11,6 @@ import (
 	"github.com/liuy/gbot/pkg/hooks"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/skills"
-	taskpkg "github.com/liuy/gbot/pkg/tool/task"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -61,7 +60,6 @@ func TestHandleSubmitRepl_SkillCommand_Inline(t *testing.T) {
 
 	deps := engine.SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -142,7 +140,6 @@ func TestHandleSubmitRepl_SkillCommand_Fork_VisibleInMessages(t *testing.T) {
 
 	deps := engine.SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -245,7 +242,6 @@ func TestHandleSubmitRepl_SkillCommand_StartsSpinnerTick(t *testing.T) {
 
 	deps := engine.SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}

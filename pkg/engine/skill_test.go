@@ -28,9 +28,9 @@ func TestRunSkill_Fork_EmitsQueryEvents(t *testing.T) {
 		Content:   "Review the code.",
 	})
 
+	tl := taskpkg.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -42,6 +42,7 @@ func TestRunSkill_Fork_EmitsQueryEvents(t *testing.T) {
 	eng := New(&Params{
 		Provider: mp,
 		Model:    "test",
+		TaskList: tl,
 	})
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -127,9 +128,9 @@ func TestRunSkill_New_EmitsSubAgentEvents(t *testing.T) {
 		Content:   "Review the code.",
 	})
 
+	tl := taskpkg.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -144,6 +145,7 @@ func TestRunSkill_New_EmitsSubAgentEvents(t *testing.T) {
 	eng := New(&Params{
 		Provider: mp,
 		Model:    "test",
+		TaskList: tl,
 	})
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -190,9 +192,9 @@ func TestRunSkill_Inline_EmitsQueryEvents(t *testing.T) {
 		Content: "Do the thing.",
 	})
 
+	tl := taskpkg.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -203,6 +205,7 @@ func TestRunSkill_Inline_EmitsQueryEvents(t *testing.T) {
 	eng := New(&Params{
 		Provider: mp,
 		Model:    "test",
+		TaskList: tl,
 	})
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -234,9 +237,9 @@ func TestRunSkill_UnknownSkill_EmitsError(t *testing.T) {
 
 	reg := skills.NewRegistry(t.TempDir())
 
+	tl := taskpkg.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
@@ -244,6 +247,7 @@ func TestRunSkill_UnknownSkill_EmitsError(t *testing.T) {
 	eng := New(&Params{
 		Provider: &mockProvider{},
 		Model:    "test",
+		TaskList: tl,
 	})
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
@@ -286,16 +290,16 @@ func TestRunSkill_Fork_PassesGitStatus(t *testing.T) {
 	})
 
 	gs := &ctxbuild.GitStatusInfo{IsGit: true, Branch: "master", IsDirty: false}
+	tl := taskpkg.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
 		GitStatus:  gs,
-		TaskList:   taskpkg.NewList(t.TempDir()),
 		SkillReg:   reg,
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
 	cp := &captureProvider{events: textStreamEvents("test", "ok")}
-	eng := New(&Params{Provider: cp, Model: "test"})
+	eng := New(&Params{Provider: cp, Model: "test", TaskList: tl})
 	eng.SetSharedDeps(&deps)
 	eng.SetSkillRegistry(reg)
 	defer eng.Close()

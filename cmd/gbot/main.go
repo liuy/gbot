@@ -115,8 +115,6 @@ func main() {
 		slog.Warn("main: plugin loading failed", "error", pluginErr)
 	}
 
-	taskList := task.NewList("")
-
 	// Create engine
 	logger := slog.Default()
 	if cfg.Verbose {
@@ -203,15 +201,18 @@ func main() {
 		WorkingDir: workingDir,
 		GitStatus:  gitStatus,
 		SkillReg:   skillReg,
-		TaskList:   taskList,
 		McpReg:     mcpRegistry,
 		Hooks:      hookSystem,
 		Cfg:        cfg,
 		LSPReg:     lspReg,
 	}
 
-	// Create per-engine tool instances for the main engine
-	mainRefs := engine.CreateTools(deps)
+	// mainRefs is only used for tool enumeration and closures (JobReg, REPL),
+	// not for a real engine. Give it its own throwaway list so CreateTools
+	// succeeds and the Task tool schema is included in system-prompt token
+	// estimation.
+	mainTaskList := task.NewList("")
+	mainRefs := engine.CreateTools(deps, mainTaskList)
 
 	// Collect per-model Anthropic `thinking` overrides from every provider's
 	// Models config. Models not present in any provider omit the field entirely.
@@ -267,7 +268,8 @@ func main() {
 				"model", modelArg, "engine_id", id)
 		}
 		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
-		refs := engine.CreateTools(deps)
+		engTaskList := task.NewList("")
+		refs := engine.CreateTools(deps, engTaskList)
 		newEng := engine.New(&engine.Params{
 			Provider:      engineProvider,
 			ToolsProvider: refs.Reg.ToolMapFn(),
@@ -286,7 +288,7 @@ func main() {
 			Hooks:             hookSystem,
 			PermissionChecker: permCheckerIface,
 			WorkingDir:        workingDir,
-			TaskList:          taskList,
+			TaskList:          engTaskList,
 			ModelThinking:     modelThinking,
 			EngineID:          id,
 		})
@@ -388,17 +390,6 @@ func main() {
 		})
 	}
 
-	// Initialize task list storage
-	if sessionID != "" {
-		if dir, err := task.TasksDir(sessionID); err == nil {
-			if err := taskList.SetDir(dir); err != nil {
-				slog.Warn("main: tasks init failed", "error", err)
-			}
-		} else {
-			slog.Warn("main: tasks dir resolve failed", "error", err)
-		}
-	}
-
 	// Fire SessionStart hook
 	if sessionID != "" {
 		hookSystem.SessionStart(context.Background(), &hooks.HookInput{
@@ -434,22 +425,29 @@ func main() {
 	}
 	app.SetInitialContext(initialTokens, contextWindow)
 
-	// Wire task list panel reader
+	// Wire task list panel reader — closures read from the active engine
+	// dynamically so switching engines updates the panel immediately.
 	app.SetAutoCleanupFn(func() bool {
 		// Clean up terminal jobs from bash and fork agent registries.
 		mainRefs.JobReg.CleanupCompleted()
-		// Clean up completed tasks if 5s has elapsed (or session resume).
-		if taskList.ShouldCleanupCompleted(5 * time.Second) {
-			_ = taskList.CleanupCompleted()
-			return true
+		if a := app.ActiveEngine(); a != nil {
+			if tl := a.TaskList(); tl != nil && tl.ShouldCleanupCompleted(5*time.Second) {
+				_ = tl.CleanupCompleted()
+				return true
+			}
 		}
 		return false
 	})
 	app.SetTaskListFn(func() []tui.TaskSummary {
-		if taskList.Dir() == "" {
+		a := app.ActiveEngine()
+		if a == nil {
 			return nil
 		}
-		allTasks, err := taskList.ListTasks()
+		tl := a.TaskList()
+		if tl == nil || tl.Dir() == "" {
+			return nil
+		}
+		allTasks, err := tl.ListTasks()
 		if err != nil {
 			return nil
 		}

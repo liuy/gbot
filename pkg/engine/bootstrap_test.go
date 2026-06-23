@@ -26,14 +26,14 @@ import (
 
 func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	expectedTools := []string{
 		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
@@ -51,14 +51,14 @@ func TestCreateTools_RegistersAllBuiltinTools(t *testing.T) {
 
 func TestCreateTools_ReturnsNonNullInstances(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	if refs.Reg == nil {
 		t.Fatal("Reg must not be nil")
@@ -79,15 +79,15 @@ func TestCreateTools_ReturnsNonNullInstances(t *testing.T) {
 
 func TestCreateTools_IndependentInstancesPerCall(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs1 := CreateTools(deps)
-	refs2 := CreateTools(deps)
+	refs1 := CreateTools(deps, tl)
+	refs2 := CreateTools(deps, tl)
 
 	if refs1.Reg == refs2.Reg {
 		t.Error("two CreateTools calls should return independent registries")
@@ -102,14 +102,14 @@ func TestCreateTools_IndependentInstancesPerCall(t *testing.T) {
 
 func TestCreateTools_ToolMapFnReturnsCurrentTools(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	fn := refs.Reg.ToolMapFn()
 	m := fn()
 
@@ -123,14 +123,14 @@ func TestCreateTools_ToolMapFnReturnsCurrentTools(t *testing.T) {
 
 func TestCreateTools_AgentToolConfigured(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	// Verify Agent tool is the right type and registered under "Agent"
 	at, ok := refs.Reg.ToolMap()["Agent"]
@@ -149,14 +149,14 @@ func TestCreateTools_AgentToolConfigured(t *testing.T) {
 
 func TestCreateTools_BashToolRegistered(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
 
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	if refs.Reg.Size() < 11 {
 		t.Errorf("expected at least 11 tools registered, got %d", refs.Reg.Size())
 	}
@@ -168,13 +168,13 @@ func TestCreateTools_BashToolRegistered(t *testing.T) {
 
 func newTestDepsAndRefs(t *testing.T) (SharedDeps, ToolRefs, *Engine) {
 	t.Helper()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	eng := New(&Params{
 		Provider:   &mockProvider{},
 		Model:      "test",
@@ -252,14 +252,14 @@ func TestWireEngine_REPLExecutorWired(t *testing.T) {
 
 func TestWireEngine_NilMcpReg_NoPanic(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 		McpReg:     nil, // explicitly nil
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	eng := New(&Params{
 		Provider:   &mockProvider{},
 		Model:      "test",
@@ -274,13 +274,13 @@ func TestWireEngine_NilMcpReg_NoPanic(t *testing.T) {
 
 func TestWireEngine_NilHooks_NoPanic(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      nil, // explicitly nil
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	eng := New(&Params{
 		Provider:   &mockProvider{},
 		Model:      "test",
@@ -308,9 +308,6 @@ func TestSharedDeps_ZeroValues(t *testing.T) {
 	}
 	if deps.SkillReg != nil {
 		t.Error("default SkillReg should be nil")
-	}
-	if deps.TaskList != nil {
-		t.Error("default TaskList should be nil")
 	}
 	if deps.McpReg != nil {
 		t.Error("default McpReg should be nil")
@@ -365,13 +362,13 @@ func TestWireEngine_AgentNotifyCallbackEnqueues(t *testing.T) {
 
 func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "sub-agent reply"), nil)
@@ -412,13 +409,13 @@ func TestWireEngine_AgentFactory_SimplePrompt(t *testing.T) {
 
 func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "fork reply"), nil)
@@ -489,13 +486,13 @@ func TestWireEngine_AgentFactory_ForkMessages(t *testing.T) {
 
 func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	// Return an error to trigger the error path
@@ -540,13 +537,13 @@ func TestWireEngine_AgentFactory_CancelledContext(t *testing.T) {
 
 func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "filtered tools reply"), nil)
@@ -586,13 +583,13 @@ func TestWireEngine_AgentFactory_ToolFiltering(t *testing.T) {
 
 func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	eng := New(&Params{
@@ -637,13 +634,13 @@ func TestWireEngine_REPLExecutorCallsEngine(t *testing.T) {
 
 func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "context reply"), nil)
@@ -687,13 +684,13 @@ func TestWireEngine_AgentFactory_WithUserContextMessages(t *testing.T) {
 
 func TestWireEngine_AgentFactory_QueryError(t *testing.T) {
 	t.Parallel()
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 
 	mp := &mockProvider{}
 	// Return a non-cancellation error
@@ -743,14 +740,14 @@ func TestWireEngine_McpConnectCallbackExecutes(t *testing.T) {
 			AlwaysLoad:  true,
 		},
 	})
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 		McpReg:     mcpReg,
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	WireEngine(nil, refs, deps) // nil eng — only SetMcpConnect side effect (SetEngine accepts nil)
 
 	// Verify mcpConnect was set, then invoke it to exercise the closure body.
@@ -779,14 +776,14 @@ func TestWireEngine_McpReg_SetsMcpConnect(t *testing.T) {
 			AlwaysLoad:  true,
 		},
 	})
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
 		McpReg:     mcpReg,
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "mcp agent reply"), nil)
 	eng := New(&Params{
@@ -847,13 +844,13 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 			}},
 		},
 	}
+	tl := task.NewList(t.TempDir())
 	deps := SharedDeps{
 		WorkingDir: t.TempDir(),
-		TaskList:   task.NewList(t.TempDir()),
 		SkillReg:   skills.NewRegistry(t.TempDir()),
 		Hooks:      hooks.NewHooks(config, &hooks.CommandExecutor{}),
 	}
-	refs := CreateTools(deps)
+	refs := CreateTools(deps, tl)
 	mp := &mockProvider{}
 	mp.addResponse(textStreamEvents("test-model", "hook context reply"), nil)
 	eng := New(&Params{
@@ -883,5 +880,90 @@ func TestWireEngine_HooksAdditionalContext(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("Agent.Call returned nil result")
+	}
+}
+
+func TestCreateTools_PerEngineTaskList(t *testing.T) {
+	t.Parallel()
+
+	tl1 := task.NewList(t.TempDir())
+	tl2 := task.NewList(t.TempDir())
+	deps1 := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+	deps2 := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	refs1 := CreateTools(deps1, tl1)
+	refs2 := CreateTools(deps2, tl2)
+
+	if refs1.Reg == refs2.Reg {
+		t.Error("two CreateTools calls should return independent registries")
+	}
+
+	// Invoke Task tool from refs1 — should bind to tl1, not tl2.
+	taskTool1, ok := refs1.Reg.ToolMap()["Task"]
+	if !ok {
+		t.Fatal("Task tool not found in refs1")
+	}
+	createInput := json.RawMessage(`{"creates":[{"subject":"s1","description":"d1"}]}`)
+	_, err := taskTool1.Call(context.Background(), createInput, nil)
+	if err != nil {
+		t.Fatalf("Task tool call on refs1 failed: %v", err)
+	}
+
+	tl1Tasks, err := tl1.ListTasks()
+	if err != nil {
+		t.Fatalf("tl1.ListTasks: %v", err)
+	}
+	if len(tl1Tasks) != 1 {
+		t.Fatalf("tl1 should have 1 task after refs1 tool call, got %d", len(tl1Tasks))
+	}
+	if tl1Tasks[0].Subject != "s1" {
+		t.Errorf("tl1 task subject = %q, want %q", tl1Tasks[0].Subject, "s1")
+	}
+
+	tl2Tasks, err := tl2.ListTasks()
+	if err != nil {
+		t.Fatalf("tl2.ListTasks: %v", err)
+	}
+	if len(tl2Tasks) != 0 {
+		t.Errorf("tl2 should have 0 tasks (mutual exclusion), got %d", len(tl2Tasks))
+	}
+
+	// Invoke Task tool from refs2 — should bind to tl2 only.
+	taskTool2, ok := refs2.Reg.ToolMap()["Task"]
+	if !ok {
+		t.Fatal("Task tool not found in refs2")
+	}
+	createInput2 := json.RawMessage(`{"creates":[{"subject":"s2","description":"d2"}]}`)
+	_, err = taskTool2.Call(context.Background(), createInput2, nil)
+	if err != nil {
+		t.Fatalf("Task tool call on refs2 failed: %v", err)
+	}
+
+	tl2Tasks, err = tl2.ListTasks()
+	if err != nil {
+		t.Fatalf("tl2.ListTasks: %v", err)
+	}
+	if len(tl2Tasks) != 1 {
+		t.Fatalf("tl2 should have 1 task after refs2 tool call, got %d", len(tl2Tasks))
+	}
+	if tl2Tasks[0].Subject != "s2" {
+		t.Errorf("tl2 task subject = %q, want %q", tl2Tasks[0].Subject, "s2")
+	}
+
+	// tl1 should still have exactly 1 task (the one from refs1).
+	tl1Tasks, err = tl1.ListTasks()
+	if err != nil {
+		t.Fatalf("tl1.ListTasks: %v", err)
+	}
+	if len(tl1Tasks) != 1 {
+		t.Errorf("tl1 should still have 1 task, got %d", len(tl1Tasks))
 	}
 }

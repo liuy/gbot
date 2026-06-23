@@ -258,6 +258,7 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 	// no manual reset here.
 	a.contentCache = ""
 	a.contentDirty = true
+	a.taskListDirty = true
 	// Sync per-engine usage to StatusBar.
 	a.status.SetUsage(a.repl.usage)
 	// Switch to target engine's input history.

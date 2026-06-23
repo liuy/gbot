@@ -35,7 +35,6 @@ type SharedDeps struct {
 	WorkingDir string
 	GitStatus  *ctxbuild.GitStatusInfo
 	SkillReg   *skills.Registry
-	TaskList   *task.List
 	McpReg     *mcp.Registry
 	Hooks      *hooks.Hooks
 	Cfg        *config.Config
@@ -53,7 +52,8 @@ type ToolRefs struct {
 
 // CreateTools creates a fresh, complete set of tool instances for one engine.
 // Engine wiring (SetEngine, OnNotify) is done separately by WireEngine.
-func CreateTools(deps SharedDeps) ToolRefs {
+// taskList is passed explicitly rather than via SharedDeps because SharedDeps is shared across all engines and sub-engines.
+func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	bashReg := bash.NewBackgroundJobRegistry()
 
 	reg := tool.NewRegistry()
@@ -79,7 +79,7 @@ func CreateTools(deps SharedDeps) ToolRefs {
 	jobReg := job.NewMultiRegistry(bash.NewJobInfoAdapter(bashReg), at.JobAdapter())
 	reg.MustRegister(job.NewJob(jobReg))
 
-	reg.MustRegister(task.New(deps.TaskList))
+	reg.MustRegister(task.New(taskList))
 
 	reg.MustRegister(skilltool.New(deps.SkillReg, at))
 

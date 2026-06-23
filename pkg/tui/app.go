@@ -400,6 +400,11 @@ func (a *App) SetKillAllFn(fn func()) {
 	a.killAllFn = fn
 }
 
+// ActiveEngine returns the currently active engine, or nil.
+func (a *App) ActiveEngine() *engine.Engine {
+	return a.engine
+}
+
 // persistModelSelection writes the active engine's model to meta.json so
 // it survives restart. settings.json's model.default is left alone — it's
 // a seed value used only when meta.json doesn't exist yet (first launch
@@ -788,6 +793,7 @@ func (a *App) resetDisplayState() {
 	a.userScrolled = false
 	a.contentCache = ""
 	a.contentDirty = false
+	a.taskListDirty = true
 	a.allToolsExpanded = false
 	a.repl.displayedInputTokens = 0
 	a.repl.displayedOutputTokens = 0
