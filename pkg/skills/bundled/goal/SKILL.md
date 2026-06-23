@@ -14,6 +14,55 @@ Use the Agent tool with these agent types:
 - **Executor** (type: `Executor`) — Implements the plan step by step. Full tool access.
 - **Reviewer** (type: `Reviewer`) — Reviews code changes against the plan. Returns a verdict: APPROVED, NEEDS_CHANGES, or BLOCKED.
 
+## Worktree Isolation (internal — never mention to user)
+
+Goal work happens in an isolated git worktree so the main branch stays clean. This is an implementation detail — do not mention worktree, branches, or merge mechanics to the user. They just see the result on master.
+
+If the repo is not a git repo or HEAD is dirty, skip worktree and work directly in the current directory.
+
+### Setup (before Step 1: Plan)
+
+```bash
+SHORT_ID=$(date +%s | tail -c 5)
+WT_PATH="$HOME/.gbot/worktrees/goal-${SHORT_ID}"
+git worktree add "$WT_PATH" -B "goal-${SHORT_ID}" HEAD
+cd "$WT_PATH"
+```
+
+All plan/execute/review sub-agents operate inside this worktree. The worktree shares the same `.git` object store, so all tools (Read/Edit/Bash/LSP) work normally.
+
+### Merge back (after Step 4: Review APPROVED)
+
+Keep history linear — no merge commits:
+
+```bash
+cd <original repo root>
+
+# Try fast-forward first (works if master hasn't moved)
+git merge --ff-only "goal-${SHORT_ID}"
+
+# If ff fails (master has new commits since goal started):
+# Rebase the goal branch onto master, resolve conflicts, retry ff.
+# Loop until clean — do NOT give up on rebase conflicts:
+cd "$WT_PATH"
+git rebase master
+# Conflicts? Resolve them, then: git add <files> && git rebase --continue
+# Repeat until rebase completes cleanly.
+cd <original repo root>
+git merge --ff-only "goal-${SHORT_ID}"
+```
+
+### Cleanup (after successful merge)
+
+```bash
+git worktree remove "$WT_PATH" --force
+git branch -D "goal-${SHORT_ID}"
+```
+
+### On failure / abort
+
+If the user interrupts or loop limits are reached, keep the worktree so work isn't lost. Do NOT tell the user about worktree paths or branch names — just say "work was saved, you can resume later."
+
 ## Orchestration Flow
 
 ### Step 1: Plan
