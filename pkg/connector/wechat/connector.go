@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/google/uuid"
-
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 )
@@ -45,7 +43,9 @@ type WeChatConnector struct {
 
 	// Override in tests to inject errors / record sends.
 	sendToUserFn func(ctx context.Context, userID, text string) error
-	querySyncFn  func(ctx context.Context, userMsg, sysPrompt string) *engine.QueryResult
+	sendMsgFn    func(ctx context.Context, client *http.Client, baseURL, token,
+		fromUser, toUser, text, contextToken, clientID string) error
+	querySyncFn func(ctx context.Context, userMsg, sysPrompt string) *engine.QueryResult
 }
 
 // New creates a WeChatConnector from loaded state.
@@ -60,6 +60,7 @@ func New(eng *engine.Engine) *WeChatConnector {
 		typingCache: newTypingTicketCache(typingTTL),
 	}
 	c.sendToUserFn = c.sendToUser
+	c.sendMsgFn = SendMessage
 	c.querySyncFn = func(ctx context.Context, userMsg, _ string) *engine.QueryResult {
 		r := eng.QuerySync(ctx, userMsg, eng.SystemPrompt())
 		return &r
@@ -150,12 +151,9 @@ func (c *WeChatConnector) restoreContextTokens() {
 	}
 }
 
-// Send delivers a message to a specific WeChat user.
+// Send delivers a message to a specific WeChat user, with retry.
 func (c *WeChatConnector) Send(userID, text string) error {
-	ctxToken := c.getContextToken(userID)
-	clientID := fmt.Sprintf("gbot-weixin-%s", uuid.New().String())
-	return SendMessage(context.Background(), c.client,
-		c.state.BaseURL, c.state.Token, c.state.AccountID, userID, text, ctxToken, clientID)
+	return c.sendToUserFn(context.Background(), userID, text)
 }
 
 // safeID truncates an ID for safe logging.
