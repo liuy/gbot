@@ -369,6 +369,7 @@ type AgentMeta struct {
 type QueryEvent struct {
 	Type         QueryEventType     `json:"type"`
 	Text         string             `json:"text,omitempty"`
+	SessionID    string             `json:"session_id,omitempty"`
 	ToolUse      *ToolUseEvent      `json:"tool_use,omitempty"`
 	ToolResult   *ToolResultEvent   `json:"tool_result,omitempty"`
 	Message      *Message           `json:"message,omitempty"`

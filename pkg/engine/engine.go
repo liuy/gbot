@@ -958,6 +958,8 @@ func (e *Engine) emitEvent(event types.QueryEvent) {
 		return
 	}
 
+	event.SessionID = e.sessionID
+
 	switch event.Type {
 	case types.EventTextDelta:
 		e.textCoalesce.write(event.Text, e.effectiveWindow(), e.flushTextBuf)
