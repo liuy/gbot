@@ -23,6 +23,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/liuy/gbot/pkg/config"
+	"github.com/liuy/gbot/pkg/connector/wechat"
 	ctxbuild "github.com/liuy/gbot/pkg/context"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hooks"
@@ -64,6 +65,23 @@ func main() {
 	}
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
 		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	}
+
+	// WeChat login subcommand: `gbot wechat login`
+	if len(os.Args) >= 3 && os.Args[1] == "wechat" && os.Args[2] == "login" {
+		cfg, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+		client := cfg.ProxyHTTPClient()
+		accountID, err := wechat.Login(context.Background(), client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WeChat login failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("WeChat login successful. Account: %s\n", accountID)
+		os.Exit(0)
 	}
 
 	// 1. Load config from ~/.gbot/settings.json, ~/.claude/settings.minimax.json, or env vars
@@ -388,6 +406,73 @@ func main() {
 			workingDir: workingDir,
 			model:      model,
 		})
+	}
+
+	// WeChat connector: start if state exists
+	if state, _ := wechat.LoadState(); state != nil {
+		engineID := "wechat-" + state.AccountID
+		engineName := "WeChat " + state.AccountID
+
+		// Check if engine already exists (restored from meta.json)
+		if engineMgr.Get(engineID) == nil {
+			wcTaskList := task.NewList("")
+			refs := engine.CreateTools(deps, wcTaskList)
+			wcEng := engine.New(&engine.Params{
+				Provider:          provider,
+				Model:             model,
+				MaxTokens:         maxTokens,
+				TokenBudget:       contextWindow,
+				MaxTurns:          0,
+				Logger:            logger,
+				Compactor:         nil,
+				AutoCompact:       engine.AutoCompactConfig{},
+				MCPRegistry:       mcpRegistry,
+				Hooks:             hookSystem,
+				PermissionChecker: nil,
+				WorkingDir:        workingDir,
+				TaskList:          wcTaskList,
+				ModelThinking:     modelThinking,
+				EngineID:          engineID,
+				Dispatcher:        hub.NewHub(),
+				ToolsProvider:     refs.Reg.ToolMapFn(),
+			})
+			engine.WireEngine(wcEng, refs, deps)
+			wcEng.SetStore(store, workingDir)
+
+			// Create fresh session — ResumeOrInitSession would resume
+			// meta.CurrentSessionID which is shared with other engines.
+			if err := wcEng.NewSession(workingDir, "WeChat"); err != nil {
+				slog.Warn("wechat: new session failed", "error", err)
+			}
+
+			engineMgr.Add(&engine.EngineViewState{
+				Engine:          wcEng,
+				Repl:            nil,
+				Handler:         nil,
+				History:         nil,
+				ID:              engineID,
+				Name:            engineName,
+				ActiveSessionID: wcEng.SessionID(),
+				Model:           primaryProviderCfg.Name + "/" + model,
+				CreatedAt:       time.Now(),
+				LastActiveAt:    time.Now(),
+			})
+		}
+
+		wcEng := engineMgr.Get(engineID).Engine
+		if wcEng == nil {
+			slog.Warn("wechat: engine not found after creation", "id", engineID)
+		} else {
+			wc := wechat.New(wcEng)
+			go func() {
+				if err := wc.Start(context.Background()); err != nil {
+					slog.Warn("wechat: start failed", "error", err)
+				}
+			}()
+		}
+		if err := engineMgr.PersistMeta(workingDir); err != nil {
+			slog.Warn("wechat: persist meta failed", "error", err)
+		}
 	}
 
 	// Fire SessionStart hook
