@@ -533,7 +533,10 @@ type restoreEnginesDeps struct {
 // fall back to a fresh session via ResumeOrInitSession. Every engine —
 // including main — goes through the factory, so wiring stays uniform.
 func restoreEngines(d restoreEnginesDeps) string {
-	meta, _ := short.ReadWorkspaceMeta(d.workingDir)
+	meta, err := short.ReadWorkspaceMeta(d.workingDir)
+	if err != nil {
+		slog.Warn("restore: read workspace meta failed, will synthesize default", "error", err)
+	}
 	enginesToRestore, activeID := planRestore(meta, d.model)
 
 	for _, em := range enginesToRestore {

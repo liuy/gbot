@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // EngineMeta is one entry in the engines array of WorkspaceMeta.
@@ -64,9 +66,8 @@ func WriteWorkspaceMeta(projectDir string, meta *WorkspaceMeta) error {
 	}
 
 	path := filepath.Join(gbotDir, "meta.json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := utils.AtomicWriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write workspace meta: %w", err)
 	}
-
 	return nil
 }
