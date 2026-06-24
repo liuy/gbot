@@ -123,6 +123,71 @@ func wrapCopyFriendlyLines(content string) string {
 	return strings.TrimSpace(strings.Join(wrapped, "\n"))
 }
 
+// wechatMaxMessageLen is the maximum message length WeChat accepts per send.
+// iLink silently truncates or drops messages beyond this; we split proactively.
+const wechatMaxMessageLen = 2000
+
+// splitForWeChat splits a long formatted message into chunks that each fit
+// within WeChat's per-message limit. Splits at paragraph boundaries (blank
+// lines) when possible; falls back to line boundaries; if a single line
+// exceeds the limit (no break points), hard-splits at the rune boundary.
+// Never splits inside a fenced code block unless the block itself exceeds
+// the limit.
+func splitForWeChat(text string) []string {
+	if text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	if len(runes) <= wechatMaxMessageLen {
+		return []string{text}
+	}
+
+	var chunks []string
+	var current []string
+	currentLen := 0
+	inCodeBlock := false
+
+	flush := func() {
+		if len(current) > 0 {
+			chunk := strings.TrimSpace(strings.Join(current, "\n"))
+			if chunk != "" {
+				chunks = append(chunks, chunk)
+			}
+			current = nil
+			currentLen = 0
+		}
+	}
+
+	for line := range strings.SplitSeq(text, "\n") {
+		if fenceRe.MatchString(strings.TrimSpace(line)) {
+			inCodeBlock = !inCodeBlock
+		}
+
+		lineRunes := []rune(line)
+		lineLen := len(lineRunes) + 1 // +1 for newline
+
+		// Hard-split lines with no break points that exceed the limit.
+		if lineLen > wechatMaxMessageLen {
+			flush()
+			for start := 0; start < len(lineRunes); start += wechatMaxMessageLen {
+				end := min(start+wechatMaxMessageLen, len(lineRunes))
+				chunks = append(chunks, string(lineRunes[start:end]))
+			}
+			continue
+		}
+
+		if currentLen+lineLen > wechatMaxMessageLen && !inCodeBlock && len(current) > 0 {
+			flush()
+		}
+
+		current = append(current, line)
+		currentLen += lineLen
+	}
+	flush()
+
+	return chunks
+}
+
 // formatMessage combines both normalization and wrapping for outbound messages.
 func formatMessage(content string) string {
 	if content == "" {

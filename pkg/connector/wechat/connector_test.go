@@ -605,6 +605,74 @@ func TestHandleInbound_EmptyReply_DoesNotSend(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// splitForWeChat — split long replies into multiple WeChat messages
+// ---------------------------------------------------------------------------
+
+func TestSplitForWeChat_ShortMessage_SingleChunk(t *testing.T) {
+	chunks := splitForWeChat("短消息")
+	if len(chunks) != 1 {
+		t.Fatalf("short message: got %d chunks, want 1", len(chunks))
+	}
+	if chunks[0] != "短消息" {
+		t.Errorf("chunk content = %q, want %q", chunks[0], "短消息")
+	}
+}
+
+func TestSplitForWeChat_LongMessage_MultipleChunks(t *testing.T) {
+	long := strings.Repeat("这是一段长文本。", 300) // ~3000 chars, exceeds 2000 limit
+	chunks := splitForWeChat(long)
+	if len(chunks) < 2 {
+		t.Fatalf("long message: got %d chunks, want >= 2", len(chunks))
+	}
+	for i, c := range chunks {
+		if len([]rune(c)) > 2000 {
+			t.Errorf("chunk %d length = %d runes, want <= 2000", i, len([]rune(c)))
+		}
+	}
+}
+
+func TestSplitForWeChat_PreservesCodeBlock(t *testing.T) {
+	// Code block should stay together in one chunk when possible.
+	code := "```go\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n```"
+	chunks := splitForWeChat(code)
+	if len(chunks) != 1 {
+		t.Fatalf("code block: got %d chunks, want 1 (should not split small code block)", len(chunks))
+	}
+	if !strings.Contains(chunks[0], "```go") {
+		t.Errorf("chunk should contain code fence, got: %q", chunks[0])
+	}
+}
+
+// Chain test: long reply → handleInbound → multiple sendToUserFn calls.
+// This catches the real production issue: WeChat silently truncates or drops
+// messages over ~2000 chars, so the user never sees the full reply.
+func TestHandleInbound_LongReply_SendsMultipleMessages(t *testing.T) {
+	var sentTexts []string
+	c := &WeChatConnector{
+		inboundCh: make(chan inboundMessage, 10),
+	}
+	longReply := strings.Repeat("这是回复内容。", 300) // ~2100 chars
+	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
+		return &engine.QueryResult{Reply: longReply}
+	}
+	c.sendToUserFn = func(_ context.Context, _, text string) error {
+		sentTexts = append(sentTexts, text)
+		return nil
+	}
+
+	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "长文"})
+
+	if len(sentTexts) < 2 {
+		t.Fatalf("long reply should send multiple messages, got %d", len(sentTexts))
+	}
+	for i, text := range sentTexts {
+		if len([]rune(text)) > 2000 {
+			t.Errorf("message %d: %d runes, want <= 2000 (WeChat truncates)", i, len([]rune(text)))
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Message JSON decoding — iLink returns message_id as number, not string
 // ---------------------------------------------------------------------------
 

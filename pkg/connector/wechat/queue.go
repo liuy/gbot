@@ -40,9 +40,11 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	slog.Info("wechat: query done", "user", safeID(msg.userID),
 		"msgCount", len(result.Messages), "replyLen", len(reply))
 	if reply != "" {
-		formatted := formatMessage(reply)
-		if err := c.sendToUserFn(ctx, msg.userID, formatted); err != nil {
-			slog.Error("wechat: send reply failed", "user", safeID(msg.userID), "error", err)
+		for _, chunk := range splitForWeChat(formatMessage(reply)) {
+			if err := c.sendToUserFn(ctx, msg.userID, chunk); err != nil {
+				slog.Error("wechat: send reply failed", "user", safeID(msg.userID), "error", err)
+				return
+			}
 		}
 	}
 }
