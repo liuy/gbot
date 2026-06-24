@@ -41,7 +41,7 @@ type WeChatConnector struct {
 
 	// Override in tests to inject errors / record sends.
 	sendToUserFn func(ctx context.Context, userID, text string) error
-	querySyncFn   func(ctx context.Context, userMsg, sysPrompt string) *engine.QueryResult
+	querySyncFn  func(ctx context.Context, userMsg, sysPrompt string) *engine.QueryResult
 }
 
 // New creates a WeChatConnector from loaded state.

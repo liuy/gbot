@@ -288,15 +288,34 @@ func main() {
 		engineHub, handler := tui.NewEngineHubWithHandler(id, nil)
 		engTaskList := task.NewList("")
 		refs := engine.CreateTools(deps, engTaskList)
+		// Resolve the provider config and recompute context window.
+		// The outer contextWindow/maxTokens are from the primary provider
+		// and may be wrong after /model switch.
+		var providerCfg *config.Provider
+		if providerName == "" {
+			providerCfg = primaryProviderCfg
+		} else {
+			for i := range cfg.Providers {
+				if cfg.Providers[i].Name == providerName {
+					providerCfg = &cfg.Providers[i]
+					break
+				}
+			}
+			if providerCfg == nil {
+				providerCfg = primaryProviderCfg
+			}
+		}
+		engCtxWindow := providerCfg.ResolveContext(modelArg)
+		engMaxTokens := providerCfg.ResolveMaxTokens(modelArg)
 		newEng := engine.New(&engine.Params{
 			Provider:      engineProvider,
 			ToolsProvider: refs.Reg.ToolMapFn(),
 			Model:         modelArg,
-			MaxTokens:     maxTokens,
+			MaxTokens:     engMaxTokens,
 			MaxTurns:      0, // unlimited
-			TokenBudget:   contextWindow,
+			TokenBudget:   engCtxWindow,
 			AutoCompact: engine.AutoCompactConfig{
-				ContextWindow:          contextWindow,
+				ContextWindow:          engCtxWindow,
 				MaxConsecutiveFailures: 3,
 			},
 			Compactor:         nil, // set via SetCompactor below when store+session exist
@@ -501,14 +520,18 @@ func main() {
 	app.SetEngineFactory(engineFactory)
 
 	// Estimate initial context usage
-	// CJK-aware estimation. Corrected after first API response.
 	initialTokens := types.EstimateTokens(systemPrompt)
 	for _, t := range mainRefs.Reg.EnabledTools() {
 		if b, err := json.Marshal(t.InputSchema()); err == nil {
 			initialTokens += types.EstimateTokens(string(b))
 		}
 	}
-	app.SetInitialContext(initialTokens, contextWindow)
+	if ct := app.Engine().GetContextTokens(); ct > 0 {
+		initialTokens = ct
+	} else {
+		initialTokens += engine.EstimateMessagesTokensForProvider(app.Engine().Messages(), app.CurrentProvider())
+	}
+	app.SetContextUsed(initialTokens)
 
 	// Wire task list panel reader — closures read from the active engine
 	// dynamically so switching engines updates the panel immediately.

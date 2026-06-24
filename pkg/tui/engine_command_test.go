@@ -808,9 +808,8 @@ func cmdChainProducesSpinnerTick(cmd tea.Cmd) bool {
 // switching to a target engine whose ContextTokens is 0 (no API response
 // yet) but whose message list has content, the status bar's "used context"
 // reflects the estimated message tokens — not 0. Same root cause as the
-// restart bug in SetInitialContext: GetContextTokens() returns 0 and the
-// handler takes the value at face value instead of falling back to a
-// message-based estimate.
+// restart gap: GetContextTokens() returns 0 and the handler takes the value
+// at face value instead of falling back to a message-based estimate.
 func TestSwitchEngine_ContextUsedReflectsTargetMessages(t *testing.T) {
 	t.Parallel()
 	a := newEngineTestApp(t, []struct{ ID, Name, Model string }{

@@ -284,7 +284,7 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 		if ct == 0 {
 			// Target engine has no API response yet (fresh switch). Estimate
 			// from its message history so the status bar shows actual context
-			// size, not 0. Same root cause as SetInitialContext on restart.
+			// size, not 0.
 			ct = engine.EstimateMessagesTokens(target.Engine.Messages())
 		}
 		a.status.SetContext(ct, target.Engine.ContextWindow())

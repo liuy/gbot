@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/memory/short"
@@ -264,6 +265,87 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// TestRestoreEngines_UsesModelContextWindow verifies that the engine factory
+// uses the context window matching the RESTORED engine's model config, not
+// the default model's context window.
+//
+// Setup: providers have zhipu/glm-5.2 (1M), deepseek/deepseek-v4-flash (500K).
+// Factory looks up providerCfg and calls ResolveContext, same as production.
+func TestRestoreEngines_UsesModelContextWindow(t *testing.T) {
+	projectDir := t.TempDir()
+
+	seed := &short.WorkspaceMeta{
+		Engines: []short.EngineMeta{
+			{ID: "main", Name: "main", Model: "deepseek/deepseek-v4-flash"},
+		},
+		ActiveEngineID: "main",
+	}
+	if err := short.WriteWorkspaceMeta(projectDir, seed); err != nil {
+		t.Fatalf("WriteWorkspaceMeta: %v", err)
+	}
+
+	// Replicate what main() does: load providers, build factory that
+	// resolves context from the engine's actual provider+model.
+	providers := []config.Provider{
+		{
+			Name: "zhipu",
+			Models: config.NewModelsFromMap(map[string]config.ModelConfig{
+				"glm-5.2": {Context: 1048576},
+			}),
+		},
+		{
+			Name: "deepseek",
+			Models: config.NewModelsFromMap(map[string]config.ModelConfig{
+				"deepseek-v4-flash": {Context: 512000},
+			}),
+		},
+	}
+
+	mgr := engine.NewEngineManager()
+	deps := restoreEnginesDeps{
+		mgr:        mgr,
+		workingDir: projectDir,
+		model:      "zhipu/glm-5.2",
+		factory: func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
+			var providerCfg *config.Provider
+			if providerName == "" {
+				providerCfg = &providers[0] // fallback to zhipu
+			} else {
+				for i := range providers {
+					if providers[i].Name == providerName {
+						providerCfg = &providers[i]
+						break
+					}
+				}
+				if providerCfg == nil {
+					providerCfg = &providers[0]
+				}
+			}
+			// SAME logic as production engineFactory
+			engCtxWindow := providerCfg.ResolveContext(modelArg)
+			t.Logf("provider=%q model=%q resolved context=%d", providerName, modelArg, engCtxWindow)
+
+			hub, handler := tui.NewEngineHubWithHandler(id, nil)
+			eng := engine.New(&engine.Params{
+				Logger:      slog.Default(),
+				Model:       modelArg,
+				EngineID:    id,
+				Dispatcher:  hub,
+				TokenBudget: engCtxWindow,
+				MaxTokens:   4096,
+				AutoCompact: engine.AutoCompactConfig{ContextWindow: engCtxWindow},
+			})
+			return eng, handler, nil
+		},
+	}
+
+	_ = restoreEngines(deps)
+	eng := mgr.Get("main").Engine
+	if got := eng.TokenBudget(); got != 512000 {
+		t.Errorf("TokenBudget = %d, want 512000 (500K for deepseek-v4-flash)", got)
+	}
 }
 
 // TestRestoreEngines_StripsProviderPrefix verifies that the engine factory

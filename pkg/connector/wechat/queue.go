@@ -33,7 +33,9 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 
 	if result.Error != nil {
 		slog.Warn("wechat: query error", "user", safeID(msg.userID), "error", result.Error)
-		c.sendToUserFn(ctx, msg.userID, fmt.Sprintf("⚠️ Error: %v", result.Error))
+		if err := c.sendToUserFn(ctx, msg.userID, fmt.Sprintf("⚠️ Error: %v", result.Error)); err != nil {
+			slog.Error("wechat: send error message failed", "user", safeID(msg.userID), "error", err)
+		}
 		return
 	}
 

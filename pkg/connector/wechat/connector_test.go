@@ -538,9 +538,9 @@ func TestSaveState_CreatesDir(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractAssistantReply_ReturnsLastOnly(t *testing.T) {
-	// Simulates the bug: first query succeeded (assistant replied),
+	// Simulates failed query: last message is user, so reply should be empty.
 	// second query FAILED (no new assistant appended, last is user).
-	// Buggy code would find the OLD assistant reply instead of returning empty.
+	// Without this, code would find the OLD assistant reply instead of returning empty.
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
@@ -601,7 +601,6 @@ func TestHandleInbound_QueryError_SendsErrorToUser(t *testing.T) {
 		t.Errorf("handleInbound: error message should mention the error, got: %q", sentText)
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // Message JSON decoding — iLink returns message_id as number, not string
