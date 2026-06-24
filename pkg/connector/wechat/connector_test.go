@@ -643,6 +643,49 @@ func TestSplitForWeChat_PreservesCodeBlock(t *testing.T) {
 	}
 }
 
+func TestSplitForWeChat_LargeCodeBlock_SplitsWithFenceReopen(t *testing.T) {
+	// Code block exceeds 2000 runes — must split, reopening fences so
+	// each chunk is valid markdown.
+	codeBody := strings.Repeat("x", 2500)
+	code := "```go\n" + codeBody + "\n```"
+	chunks := splitForWeChat(code)
+	if len(chunks) < 2 {
+		t.Fatalf("large code block: got %d chunks, want >= 2", len(chunks))
+	}
+	for i, c := range chunks {
+		if len([]rune(c)) > 2000 {
+			t.Errorf("chunk %d: %d runes, want <= 2000", i, len([]rune(c)))
+		}
+		// Every chunk must have balanced fences — valid standalone markdown.
+		if strings.Count(c, "```")%2 != 0 {
+			t.Errorf("chunk %d has unbalanced fences (not valid markdown): %q", i, firstChars(c, 50))
+		}
+	}
+}
+
+func TestSplitForWeChat_LargeCodeBlock_NoLanguageTag(t *testing.T) {
+	// Plain code fence (no language) — reopen should use bare ```.
+	codeBody := strings.Repeat("x", 2500)
+	code := "```\n" + codeBody + "\n```"
+	chunks := splitForWeChat(code)
+	if len(chunks) < 2 {
+		t.Fatalf("plain code block: got %d chunks, want >= 2", len(chunks))
+	}
+	for i, c := range chunks {
+		if strings.Count(c, "```")%2 != 0 {
+			t.Errorf("chunk %d has unbalanced fences: %q", i, firstChars(c, 50))
+		}
+	}
+}
+
+func firstChars(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
 // Chain test: long reply → handleInbound → multiple sendToUserFn calls.
 // This catches the real production issue: WeChat silently truncates or drops
 // messages over ~2000 chars, so the user never sees the full reply.

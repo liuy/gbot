@@ -127,12 +127,12 @@ func wrapCopyFriendlyLines(content string) string {
 // iLink silently truncates or drops messages beyond this; we split proactively.
 const wechatMaxMessageLen = 2000
 
-// splitForWeChat splits a long formatted message into chunks that each fit
-// within WeChat's per-message limit. Splits at paragraph boundaries (blank
-// lines) when possible; falls back to line boundaries; if a single line
-// exceeds the limit (no break points), hard-splits at the rune boundary.
-// Never splits inside a fenced code block unless the block itself exceeds
-// the limit.
+// splitForWeChat splits a long formatted message into chunks, each fitting
+// within WeChat's per-message limit. Split order: paragraph boundary → line
+// boundary → hard rune split. Code blocks are kept together when possible;
+// when a code block exceeds the limit, the fence is closed at chunk end and
+// reopened (with the original language tag) at the next chunk start so each
+// chunk renders as valid markdown.
 func splitForWeChat(text string) []string {
 	if text == "" {
 		return nil
@@ -146,11 +146,17 @@ func splitForWeChat(text string) []string {
 	var current []string
 	currentLen := 0
 	inCodeBlock := false
+	codeLang := "" // language tag of the current open code block
 
 	flush := func() {
 		if len(current) > 0 {
 			chunk := strings.TrimSpace(strings.Join(current, "\n"))
 			if chunk != "" {
+				// If we're mid-code-block, close the fence so this chunk
+				// renders standalone.
+				if inCodeBlock {
+					chunk += "\n```"
+				}
 				chunks = append(chunks, chunk)
 			}
 			current = nil
@@ -159,8 +165,20 @@ func splitForWeChat(text string) []string {
 	}
 
 	for line := range strings.SplitSeq(text, "\n") {
-		if fenceRe.MatchString(strings.TrimSpace(line)) {
+		trimmed := strings.TrimSpace(line)
+		isFence := fenceRe.MatchString(trimmed)
+		if isFence {
+			if !inCodeBlock {
+				// Opening fence — capture language tag for reopen.
+				codeLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+			}
 			inCodeBlock = !inCodeBlock
+			// If we just closed a code block that was hard-split (current is
+			// empty because flush ran in the hard-split path), skip emitting
+			// a lone closing-fence chunk.
+			if !inCodeBlock && len(current) == 0 && len(chunks) > 0 {
+				continue
+			}
 		}
 
 		lineRunes := []rune(line)
@@ -169,15 +187,32 @@ func splitForWeChat(text string) []string {
 		// Hard-split lines with no break points that exceed the limit.
 		if lineLen > wechatMaxMessageLen {
 			flush()
-			for start := 0; start < len(lineRunes); start += wechatMaxMessageLen {
-				end := min(start+wechatMaxMessageLen, len(lineRunes))
-				chunks = append(chunks, string(lineRunes[start:end]))
+			reopenPrefix := ""
+			closeSuffix := ""
+			if inCodeBlock {
+				reopenPrefix = "```" + codeLang + "\n"
+				closeSuffix = "\n```"
+			}
+			overhead := len([]rune(reopenPrefix)) + len([]rune(closeSuffix))
+			budget := wechatMaxMessageLen - overhead
+			if budget < 1 {
+				budget = wechatMaxMessageLen / 2
+			}
+			for start := 0; start < len(lineRunes); start += budget {
+				end := min(start+budget, len(lineRunes))
+				chunks = append(chunks, reopenPrefix+string(lineRunes[start:end])+closeSuffix)
 			}
 			continue
 		}
 
-		if currentLen+lineLen > wechatMaxMessageLen && !inCodeBlock && len(current) > 0 {
+		if currentLen+lineLen > wechatMaxMessageLen && len(current) > 0 {
 			flush()
+			// Reopen code fence in the new chunk if we were mid-block.
+			if inCodeBlock {
+				reopen := "```" + codeLang
+				current = append(current, reopen)
+				currentLen = len([]rune(reopen)) + 1
+			}
 		}
 
 		current = append(current, line)

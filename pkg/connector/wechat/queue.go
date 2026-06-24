@@ -26,6 +26,9 @@ func (c *WeChatConnector) processLoop(ctx context.Context) {
 func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage) {
 	slog.Info("wechat: process inbound", "user", safeID(msg.userID))
 
+	c.startTyping(ctx, msg.userID)
+	defer c.stopTyping(ctx, msg.userID)
+
 	result := c.querySyncFn(ctx, msg.text, "")
 
 	if result.Error != nil {

@@ -39,6 +39,10 @@ type WeChatConnector struct {
 
 	dedup *dedupSet
 
+	// Typing indicator support.
+	typingCache *typingTicketCache
+	typingAPI   typingAPI
+
 	// Override in tests to inject errors / record sends.
 	sendToUserFn func(ctx context.Context, userID, text string) error
 	querySyncFn  func(ctx context.Context, userMsg, sysPrompt string) *engine.QueryResult
@@ -48,11 +52,12 @@ type WeChatConnector struct {
 func New(eng *engine.Engine) *WeChatConnector {
 	h := hub.NewHub()
 	c := &WeChatConnector{
-		engine:    eng,
-		hub:       h,
-		client:    &http.Client{},
-		inboundCh: make(chan inboundMessage, 100),
-		dedup:     newDedupSet(MessageDedupTTLSeconds),
+		engine:      eng,
+		hub:         h,
+		client:      &http.Client{},
+		inboundCh:   make(chan inboundMessage, 100),
+		dedup:       newDedupSet(MessageDedupTTLSeconds),
+		typingCache: newTypingTicketCache(typingTTL),
 	}
 	c.sendToUserFn = c.sendToUser
 	c.querySyncFn = func(ctx context.Context, userMsg, _ string) *engine.QueryResult {
@@ -74,6 +79,12 @@ func (c *WeChatConnector) Start(ctx context.Context) error {
 	}
 	c.state = state
 	c.restoreContextTokens()
+
+	c.typingAPI = &iLinkTypingAPI{
+		client:  c.client,
+		baseURL: c.state.BaseURL,
+		token:   c.state.Token,
+	}
 
 	c.engine.SetDispatcher(c.hub)
 
