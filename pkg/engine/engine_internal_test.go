@@ -3893,22 +3893,6 @@ func (c *blockingCompactor) Compact(ctx context.Context, _ []types.Message) (*sh
 // appear for loop-top abort.
 // ---------------------------------------------------------------------------
 
-// lastAssistantText returns the text content of the last assistant message.
-func lastAssistantText(msgs []types.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == types.RoleAssistant {
-			var parts []string
-			for _, cb := range msgs[i].Content {
-				if cb.Type == types.ContentTypeText {
-					parts = append(parts, cb.Text)
-				}
-			}
-			return strings.Join(parts, "")
-		}
-	}
-	return ""
-}
-
 // hasInterruptMessage checks if any assistant message contains InterruptMessage.
 func hasInterruptMessage(msgs []types.Message) bool {
 	for _, msg := range msgs {

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -534,47 +533,7 @@ func TestSaveState_CreatesDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractAssistantReply — returns only LAST assistant message
-// ---------------------------------------------------------------------------
-
-func TestExtractAssistantReply_ReturnsLastOnly(t *testing.T) {
-	// Simulates failed query: last message is user, so reply should be empty.
-	// second query FAILED (no new assistant appended, last is user).
-	// Without this, code would find the OLD assistant reply instead of returning empty.
-	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "新消息"}}},
-	}
-	got := extractAssistantReply(msgs)
-	if got != "" {
-		t.Errorf("after failed query (last=user), extractAssistantReply = %q, want empty (stale reply: %q)", got, got)
-	}
-}
-
-func TestExtractAssistantReply_ReturnsEmptyOnUserMessage(t *testing.T) {
-	msgs := []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
-		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
-		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "再问"}}},
-	}
-	got := extractAssistantReply(msgs)
-	if got != "" {
-		t.Errorf("extractAssistantReply(last=user) = %q, want empty", got)
-	}
-}
-
-func TestExtractAssistantReply_EmptyMessages(t *testing.T) {
-	if got := extractAssistantReply(nil); got != "" {
-		t.Errorf("extractAssistantReply(nil) = %q, want empty", got)
-	}
-	if got := extractAssistantReply([]types.Message{}); got != "" {
-		t.Errorf("extractAssistantReply(empty) = %q, want empty", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleInbound — error sends error message to user
+// handleInbound — uses QueryResult.Reply
 // ---------------------------------------------------------------------------
 
 func TestHandleInbound_QueryError_SendsErrorToUser(t *testing.T) {
@@ -599,6 +558,49 @@ func TestHandleInbound_QueryError_SendsErrorToUser(t *testing.T) {
 	}
 	if !strings.Contains(sentText, "Error") || !strings.Contains(sentText, "rate limit") {
 		t.Errorf("handleInbound: error message should mention the error, got: %q", sentText)
+	}
+}
+
+func TestHandleInbound_Success_SendsReply(t *testing.T) {
+	var sentText string
+	c := &WeChatConnector{
+		inboundCh: make(chan inboundMessage, 10),
+	}
+	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
+		return &engine.QueryResult{Reply: "你好！有什么可以帮你的？"}
+	}
+	c.sendToUserFn = func(_ context.Context, _, text string) error {
+		sentText = text
+		return nil
+	}
+
+	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
+
+	if sentText == "" {
+		t.Fatal("handleInbound: success should send reply, but sendToUser was not called")
+	}
+	if !strings.Contains(sentText, "你好") {
+		t.Errorf("handleInbound: sent text should contain the reply, got: %q", sentText)
+	}
+}
+
+func TestHandleInbound_EmptyReply_DoesNotSend(t *testing.T) {
+	sent := false
+	c := &WeChatConnector{
+		inboundCh: make(chan inboundMessage, 10),
+	}
+	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
+		return &engine.QueryResult{Reply: ""}
+	}
+	c.sendToUserFn = func(_ context.Context, _, _ string) error {
+		sent = true
+		return nil
+	}
+
+	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
+
+	if sent {
+		t.Error("handleInbound: empty reply should not trigger sendToUser")
 	}
 }
 

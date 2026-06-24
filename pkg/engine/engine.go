@@ -291,9 +291,28 @@ type Params struct {
 // QueryResult is the final result of a query.
 type QueryResult struct {
 	Messages   []types.Message
+	Reply      string // text of the last assistant message, if any
 	TurnCount  int
 	TotalUsage types.Usage
 	Error      error
+}
+
+// lastAssistantText returns the text content of the last assistant message
+// in msgs, or empty string if there is none.
+func lastAssistantText(msgs []types.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != types.RoleAssistant {
+			continue
+		}
+		var sb strings.Builder
+		for _, block := range msgs[i].Content {
+			if block.Type == types.ContentTypeText {
+				sb.WriteString(block.Text)
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // New creates a new Engine.
@@ -3863,7 +3882,9 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 		atomic.StoreInt32(&e.queryActive, 0)
 		e.startProcessAttachmentsIfIdle()
 	}()
-	return e.queryLoop(ctx, userMessage, systemPrompt)
+	result := e.queryLoop(ctx, userMessage, systemPrompt)
+	result.Reply = lastAssistantText(result.Messages)
+	return result
 }
 
 // RunForkedQuery executes the agentic turn loop starting from
@@ -3885,7 +3906,9 @@ func (e *Engine) RunForkedQuery(ctx context.Context, messages []types.Message, s
 			break
 		}
 	}
-	return e.runTurns(ctx, systemPrompt)
+	result := e.runTurns(ctx, systemPrompt)
+	result.Reply = lastAssistantText(result.Messages)
+	return result
 }
 
 // Model returns the engine's model name.

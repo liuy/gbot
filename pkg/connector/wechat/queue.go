@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
-
-	"github.com/liuy/gbot/pkg/types"
 )
 
 // processLoop is the serial message processing loop.
@@ -39,7 +36,7 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 		return
 	}
 
-	reply := extractAssistantReply(result.Messages)
+	reply := result.Reply
 	slog.Info("wechat: query done", "user", safeID(msg.userID),
 		"msgCount", len(result.Messages), "replyLen", len(reply))
 	if reply != "" {
@@ -48,24 +45,6 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 			slog.Error("wechat: send reply failed", "user", safeID(msg.userID), "error", err)
 		}
 	}
-}
-
-// extractAssistantReply returns the last message's text if it's from the assistant.
-func extractAssistantReply(msgs []types.Message) string {
-	if len(msgs) == 0 {
-		return ""
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != types.RoleAssistant {
-		return ""
-	}
-	var sb strings.Builder
-	for _, block := range last.Content {
-		if block.Type == types.ContentTypeText {
-			sb.WriteString(block.Text)
-		}
-	}
-	return sb.String()
 }
 
 // sendToUser sends text to a WeChat user via iLink sendmessage.
