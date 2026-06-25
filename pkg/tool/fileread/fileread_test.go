@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"image"
 	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -726,6 +728,106 @@ func TestExecute_ImageNotResizedWhenWithinLimits(t *testing.T) {
 	imgOut := result.Data.(fileread.ImageOutput)
 	if imgOut.DisplayWidth != 100 || imgOut.DisplayHeight != 100 {
 		t.Errorf("Display dimensions = %dx%d, want 100x100 (no resize needed)", imgOut.DisplayWidth, imgOut.DisplayHeight)
+	}
+}
+
+func TestExecute_ImageEmitsNewMessagesWithImageBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// 100x100 PNG (within limits, no resize). Decoded format is "png".
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(dir, "pic.png")
+	if err := os.WriteFile(fp, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if len(result.NewMessages) != 1 {
+		t.Fatalf("NewMessages len = %d, want 1", len(result.NewMessages))
+	}
+	m := result.NewMessages[0]
+	if m.Role != types.RoleUser {
+		t.Errorf("role = %q, want user", m.Role)
+	}
+	if len(m.Content) != 1 {
+		t.Fatalf("content blocks = %d, want 1", len(m.Content))
+	}
+	block := m.Content[0]
+	if block.Type != types.ContentTypeImage {
+		t.Fatalf("block type = %q, want image", block.Type)
+	}
+	if block.Source == nil {
+		t.Fatal("Source = nil, want non-nil")
+	}
+	// PNG decodes/re-encodes as png -> MediaType must be image/png.
+	if block.Source.Type != "base64" {
+		t.Errorf("Source.Type = %q, want base64", block.Source.Type)
+	}
+	if block.Source.MediaType != "image/png" {
+		t.Errorf("Source.MediaType = %q, want image/png (re-encoded format)", block.Source.MediaType)
+	}
+	// Data must equal the ImageOutput Base64 payload.
+	imgOut := result.Data.(fileread.ImageOutput)
+	if block.Source.Data != imgOut.Base64 {
+		t.Errorf("Source.Data != ImageOutput.Base64 (mismatch)")
+	}
+}
+
+func TestExecute_JPEGEmitsJPEGMediaType(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// 100x100 JPEG decodes as "jpeg" -> MediaType must be image/jpeg.
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(dir, "pic.jpg")
+	if err := os.WriteFile(fp, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	block := result.NewMessages[0].Content[0]
+	if block.Source.MediaType != "image/jpeg" {
+		t.Errorf("MediaType = %q, want image/jpeg", block.Source.MediaType)
+	}
+}
+
+func TestExecute_GIFEmitsGIFMediaType(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Create a small 1x1 GIF (within limits, no resize).
+	// decoded format is "gif" → MediaType must be "image/gif".
+	var buf bytes.Buffer
+	if err := gif.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(dir, "small.gif")
+	if err := os.WriteFile(fp, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
+	result, err := fileread.Execute(context.Background(), input, nil)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	block := result.NewMessages[0].Content[0]
+	if block.Source.MediaType != "image/gif" {
+		t.Errorf("MediaType = %q, want image/gif (non-resized format)", block.Source.MediaType)
 	}
 }
 

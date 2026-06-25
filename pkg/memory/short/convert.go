@@ -10,7 +10,7 @@ import (
 
 // EngineBlockToStore converts a types.ContentBlock to a ContentBlock.
 func EngineBlockToStore(eb types.ContentBlock) ContentBlock {
-	return ContentBlock{
+	sb := ContentBlock{
 		Type:      string(eb.Type),
 		Text:      eb.Text,
 		Thinking:  eb.Thinking,
@@ -22,11 +22,19 @@ func EngineBlockToStore(eb types.ContentBlock) ContentBlock {
 		IsError:   eb.IsError,
 		Data:      eb.Data,
 	}
+	if eb.Source != nil {
+		sb.Source = &ImageSource{
+			Type:      eb.Source.Type,
+			MediaType: eb.Source.MediaType,
+			Data:      eb.Source.Data,
+		}
+	}
+	return sb
 }
 
 // StoreBlockToEngine converts a ContentBlock to a types.ContentBlock.
 func StoreBlockToEngine(sb ContentBlock) types.ContentBlock {
-	return types.ContentBlock{
+	eb := types.ContentBlock{
 		Type:      types.ContentType(sb.Type),
 		Text:      sb.Text,
 		Thinking:  sb.Thinking,
@@ -38,6 +46,14 @@ func StoreBlockToEngine(sb ContentBlock) types.ContentBlock {
 		IsError:   sb.IsError,
 		Data:      sb.Data,
 	}
+	if sb.Source != nil {
+		eb.Source = &types.ImageSource{
+			Type:      sb.Source.Type,
+			MediaType: sb.Source.MediaType,
+			Data:      sb.Source.Data,
+		}
+	}
+	return eb
 }
 
 // EngineMessagesToStore converts engine messages to store TranscriptMessages.

@@ -120,6 +120,51 @@ func TestEngineMessagesToStore(t *testing.T) {
 	})
 }
 
+func TestStoreMessageToEngine_ImageSourceRoundTrip(t *testing.T) {
+	t.Parallel()
+	// Regression: image content block lost its Source field through
+	// store round-trip because short.ContentBlock had no Source field.
+	// Manifestation: API error "source is required when type=image".
+	srcBlock := types.NewImageBlock(types.ImageSource{
+		Type:      "base64",
+		MediaType: "image/png",
+		Data:      "iVBORw0KGgo=",
+	})
+	engineMsg := types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{srcBlock},
+	}
+
+	storeMsgs, err := EngineMessagesToStore([]types.Message{engineMsg})
+	if err != nil {
+		t.Fatalf("EngineMessagesToStore error: %v", err)
+	}
+	if len(storeMsgs) != 1 {
+		t.Fatalf("expected 1 store message, got %d", len(storeMsgs))
+	}
+
+	back := StoreMessageToEngine(storeMsgs[0])
+	if len(back.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(back.Content))
+	}
+	got := back.Content[0]
+	if got.Type != types.ContentTypeImage {
+		t.Fatalf("Type = %q, want image", got.Type)
+	}
+	if got.Source == nil {
+		t.Fatal("Source = nil, want non-nil (source is required when type=image)")
+	}
+	if got.Source.Type != "base64" {
+		t.Errorf("Source.Type = %q, want base64", got.Source.Type)
+	}
+	if got.Source.MediaType != "image/png" {
+		t.Errorf("Source.MediaType = %q, want image/png", got.Source.MediaType)
+	}
+	if got.Source.Data != "iVBORw0KGgo=" {
+		t.Errorf("Source.Data = %q, want iVBORw0KGgo=", got.Source.Data)
+	}
+}
+
 func TestStoreMessageToEngine(t *testing.T) {
 	t.Parallel()
 

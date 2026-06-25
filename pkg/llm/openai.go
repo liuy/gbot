@@ -86,9 +86,25 @@ type openaiChatRequest struct {
 
 type openaiMessage struct {
 	Role       string           `json:"role"`
-	Content    any              `json:"content,omitempty"` // string, nil, or omitted
+	Content    any              `json:"content,omitempty"` // string, nil, []any (vision content array), or omitted
 	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+// openaiTextContent is a text entry inside a vision content array.
+type openaiTextContent struct {
+	Type string `json:"type"` // "text"
+	Text string `json:"text"`
+}
+
+// openaiImageURL is an image entry inside a vision content array.
+type openaiImageURL struct {
+	Type     string             `json:"type"` // "image_url"
+	ImageURL openaiImageURLData `json:"image_url"`
+}
+
+type openaiImageURLData struct {
+	URL string `json:"url"` // "data:image/png;base64,..."
 }
 
 type openaiToolCall struct {
@@ -189,6 +205,10 @@ type toolCallAccumulator struct {
 // ---------------------------------------------------------------------------
 
 func (p *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
+	if err := ValidateImagesForAPI(req.Messages); err != nil {
+		return nil, err
+	}
+
 	body, err := p.translateRequest(req, false)
 	if err != nil {
 		return nil, err
@@ -278,6 +298,10 @@ var maxToolArgumentsSize = 10 * 1024 * 1024
 // ---------------------------------------------------------------------------
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
+	if err := ValidateImagesForAPI(req.Messages); err != nil {
+		return nil, err
+	}
+
 	body, err := p.translateRequest(req, true)
 	if err != nil {
 		return nil, err
@@ -670,7 +694,12 @@ func translateMessages(messages []types.Message) []openaiMessage {
 		var assistantToolCalls []openaiToolCall
 		var assistantText strings.Builder
 		var toolResults []openaiMessage
-		var userTexts []openaiMessage
+		// For user messages: collect text and image content. If the message has
+		// any image blocks, OpenAI vision requires ONE message whose content is
+		// an array of {type:"text"} and {type:"image_url"} blocks rather than a
+		// plain string.
+		var userTextStrings []string
+		var userImages []openaiImageURL
 
 		for _, cb := range msg.Content {
 			switch cb.Type {
@@ -678,9 +707,16 @@ func translateMessages(messages []types.Message) []openaiMessage {
 				if msg.Role == types.RoleAssistant {
 					assistantText.WriteString(cb.Text)
 				} else {
-					userTexts = append(userTexts, openaiMessage{
-						Role:    string(msg.Role),
-						Content: cb.Text,
+					userTextStrings = append(userTextStrings, cb.Text)
+				}
+
+			case types.ContentTypeImage:
+				if msg.Role == types.RoleUser && cb.Source != nil {
+					userImages = append(userImages, openaiImageURL{
+						Type: "image_url",
+						ImageURL: openaiImageURLData{
+							URL: "data:" + cb.Source.MediaType + ";base64," + cb.Source.Data,
+						},
 					})
 				}
 
@@ -723,10 +759,28 @@ func translateMessages(messages []types.Message) []openaiMessage {
 
 		// OpenAI requires tool results immediately after the assistant message
 		// that made the tool call, before any subsequent user text.
-		// For user messages with mixed tool_result + text (e.g. fork agents),
-		// emit tool results first, then user text.
 		result = append(result, toolResults...)
-		result = append(result, userTexts...)
+
+		// Emit user content. With images present, build a single array-content
+		// message (text blocks first, then image blocks); without images, emit
+		// one string-content message per text block to preserve prior behavior.
+		if msg.Role == types.RoleUser {
+			switch {
+			case len(userImages) > 0:
+				contentArray := make([]any, 0, len(userTextStrings)+len(userImages))
+				for _, t := range userTextStrings {
+					contentArray = append(contentArray, openaiTextContent{Type: "text", Text: t})
+				}
+				for _, img := range userImages {
+					contentArray = append(contentArray, img)
+				}
+				result = append(result, openaiMessage{Role: "user", Content: contentArray})
+			default:
+				for _, t := range userTextStrings {
+					result = append(result, openaiMessage{Role: "user", Content: t})
+				}
+			}
+		}
 	}
 
 	return result

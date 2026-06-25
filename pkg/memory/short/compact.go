@@ -299,8 +299,11 @@ func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage
 				modified = true
 				newBlocks = append(newBlocks, ContentBlock{Type: "text", Text: "[document]"})
 			} else if block.Type == "tool_result" && len(block.Content) > 0 {
-				// Check for nested images in tool_result content
-				// (Simplified - full implementation would parse nested content)
+				stripped, toolHasMedia := stripNestedMediaShort(block.Content)
+				if toolHasMedia {
+					modified = true
+					block.Content = stripped
+				}
 				newBlocks = append(newBlocks, block)
 			} else {
 				newBlocks = append(newBlocks, block)
@@ -320,6 +323,35 @@ func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage
 	}
 
 	return result
+}
+
+// stripNestedMediaShort replaces image/document blocks inside a tool_result
+// content JSON array ONE level deep. Source: compact.ts:166-176. Returns the
+// (possibly rewritten) raw JSON and whether any media was replaced.
+func stripNestedMediaShort(raw json.RawMessage) (json.RawMessage, bool) {
+	var blocks []ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return raw, false
+	}
+	hasMedia := false
+	for i, b := range blocks {
+		switch b.Type {
+		case "image":
+			hasMedia = true
+			blocks[i] = ContentBlock{Type: "text", Text: "[image]"}
+		case "document":
+			hasMedia = true
+			blocks[i] = ContentBlock{Type: "text", Text: "[document]"}
+		}
+	}
+	if !hasMedia {
+		return raw, false
+	}
+	out, err := json.Marshal(blocks)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }
 
 // StripReinjectedAttachments removes attachment types that will be re-injected.

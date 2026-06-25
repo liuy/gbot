@@ -2637,6 +2637,87 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 	return result
 }
 
+// ContentTypeDocumentLiteral matches the Anthropic "document" content block
+// type string. gbot does not yet define a typed constant for it; the strip
+// path future-proofs by replacing any such block with [document].
+const ContentTypeDocumentLiteral types.ContentType = "document"
+
+// StripImagesFromMessages replaces image/document content blocks with [image]/
+// [document] text placeholders so the summarizer does not feed media payloads to
+// the model. Source: services/compact/compact.ts:145-200.
+//
+// Only user messages carry media (directly attached or nested inside
+// tool_result content). Nested replacement is ONE level deep inside
+// tool_result.content, matching the TS implementation exactly — no recursion.
+// The input slice is not mutated; a new slice is returned.
+func StripImagesFromMessages(messages []types.Message) []types.Message {
+	result := make([]types.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != types.RoleUser {
+			result = append(result, msg)
+			continue
+		}
+
+		hasMediaBlock := false
+		newContent := make([]types.ContentBlock, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			switch {
+			case block.Type == types.ContentTypeImage:
+				hasMediaBlock = true
+				newContent = append(newContent, types.NewTextBlock("[image]"))
+			case block.Type == ContentTypeDocumentLiteral:
+				hasMediaBlock = true
+				newContent = append(newContent, types.NewTextBlock("[document]"))
+			case block.Type == types.ContentTypeToolResult && len(block.Content) > 0:
+				stripped, toolHasMedia := stripNestedMedia(block.Content)
+				if toolHasMedia {
+					hasMediaBlock = true
+					block.Content = stripped
+				}
+				newContent = append(newContent, block)
+			default:
+				newContent = append(newContent, block)
+			}
+		}
+
+		if !hasMediaBlock {
+			result = append(result, msg)
+			continue
+		}
+		msg.Content = newContent
+		result = append(result, msg)
+	}
+	return result
+}
+
+// stripNestedMedia replaces image/document blocks inside a tool_result content
+// JSON array ONE level deep. Source: compact.ts:166-176.
+func stripNestedMedia(raw json.RawMessage) (json.RawMessage, bool) {
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return raw, false
+	}
+	hasMedia := false
+	for i, b := range blocks {
+		switch b.Type {
+		case types.ContentTypeImage:
+			hasMedia = true
+			blocks[i] = types.NewTextBlock("[image]")
+		case ContentTypeDocumentLiteral:
+			hasMedia = true
+			blocks[i] = types.NewTextBlock("[document]")
+		}
+	}
+	if !hasMedia {
+		return raw, false
+	}
+	out, err := json.Marshal(blocks)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
+}
+
 // applyBudget applies the per-message tool result budget to API messages.
 // Converts types.Message → toolresult.BudgetMessage, runs the budget algorithm,
 // then copies modified tool_result content back to the types.Message slice.

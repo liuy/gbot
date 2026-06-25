@@ -1734,6 +1734,76 @@ func TestParseAPIError_NonOverflowKeepsErrorCodeEmpty(t *testing.T) {
 	}
 }
 
+func TestParseAPIError_ImageExceedsMaximum(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes"}}`
+	apiErr := p.ParseAPIError([]byte(body), 400)
+
+	if apiErr.ErrorCode != "image_too_large" {
+		t.Errorf("ErrorCode = %q, want %q", apiErr.ErrorCode, "image_too_large")
+	}
+	if !strings.Contains(apiErr.Message, "image exceeds") {
+		t.Errorf("Message = %q, want original image-exceeds message preserved", apiErr.Message)
+	}
+}
+
+func TestParseAPIError_ImageDimensionsManyImage(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"image dimensions exceed many-image limit"}}`
+	apiErr := p.ParseAPIError([]byte(body), 400)
+
+	if apiErr.ErrorCode != "image_too_large" {
+		t.Errorf("ErrorCode = %q, want %q", apiErr.ErrorCode, "image_too_large")
+	}
+}
+
+func TestParseAPIError_NonImageKeepsErrorCodeEmpty(t *testing.T) {
+	t.Parallel()
+
+	p := llm.NewAnthropicProvider(&llm.AnthropicConfig{APIKey: "key", Model: "m"})
+	// Contains "image" and "maximum" but NOT the exact "image exceeds" + "maximum" pairing.
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"some unrelated image problem maximum"}}`
+	apiErr := p.ParseAPIError([]byte(body), 400)
+
+	if apiErr.ErrorCode != "" {
+		t.Errorf("ErrorCode = %q, want empty (no image_too_large match)", apiErr.ErrorCode)
+	}
+}
+
+// TestRequestMarshal_ImageBlockPassthrough verifies the Anthropic provider
+// marshals image content blocks natively (no translation layer) into the
+// {type:"image", source:{...}} API shape.
+func TestRequestMarshal_ImageBlockPassthrough(t *testing.T) {
+	t.Parallel()
+
+	req := &llm.Request{
+		Model: "claude-sonnet",
+		Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewTextBlock("describe"),
+				types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
+			},
+		}},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, `"type":"image"`) {
+		t.Errorf("body missing native image block type: %s", s)
+	}
+	want := `"source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}`
+	if !strings.Contains(s, want) {
+		t.Errorf("body missing native image source payload\nwant substring: %s\ngot: %s", want, s)
+	}
+}
+
 func TestParseAPIError_EmptyBody(t *testing.T) {
 	t.Parallel()
 

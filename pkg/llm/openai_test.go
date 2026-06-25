@@ -459,6 +459,100 @@ func TestTranslateMessages_Empty(t *testing.T) {
 	}
 }
 
+func TestTranslateMessages_ImageBecomesContentArray(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("what is this?"),
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
+		},
+	}}
+
+	result := translateMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1 (text+image merged into ONE message)", len(result))
+	}
+	if result[0].Role != "user" {
+		t.Fatalf("role = %q, want user", result[0].Role)
+	}
+	arr, ok := result[0].Content.([]any)
+	if !ok {
+		t.Fatalf("Content type = %T, want []any (vision content array)", result[0].Content)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("content array len = %d, want 2 (text + image)", len(arr))
+	}
+	tc, ok := arr[0].(openaiTextContent)
+	if !ok {
+		t.Fatalf("arr[0] type = %T, want openaiTextContent", arr[0])
+	}
+	if tc.Type != "text" || tc.Text != "what is this?" {
+		t.Errorf("arr[0] = %+v, want {text what is this?}", tc)
+	}
+	iu, ok := arr[1].(openaiImageURL)
+	if !ok {
+		t.Fatalf("arr[1] type = %T, want openaiImageURL", arr[1])
+	}
+	if iu.Type != "image_url" {
+		t.Errorf("arr[1].Type = %q, want image_url", iu.Type)
+	}
+	wantURL := "data:image/png;base64,iVBORw0KGgo="
+	if iu.ImageURL.URL != wantURL {
+		t.Errorf("arr[1].URL = %q, want %q", iu.ImageURL.URL, wantURL)
+	}
+}
+
+func TestTranslateMessages_ImageOnlyProducesArrayWithImage(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "/9j/4AAQ"}),
+		},
+	}}
+
+	result := translateMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	arr, ok := result[0].Content.([]any)
+	if !ok {
+		t.Fatalf("Content type = %T, want []any", result[0].Content)
+	}
+	if len(arr) != 1 {
+		t.Fatalf("content array len = %d, want 1 (image only)", len(arr))
+	}
+	iu := arr[0].(openaiImageURL)
+	if want := "data:image/jpeg;base64,/9j/4AAQ"; iu.ImageURL.URL != want {
+		t.Errorf("URL = %q, want %q", iu.ImageURL.URL, want)
+	}
+}
+
+func TestTranslateMessages_TextOnlyStaysString(t *testing.T) {
+	t.Parallel()
+
+	// Regression: text-only user messages must keep string content, not an array.
+	msgs := []types.Message{{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("plain text")},
+	}}
+
+	result := translateMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	s, ok := result[0].Content.(string)
+	if !ok {
+		t.Fatalf("Content type = %T, want string for text-only message", result[0].Content)
+	}
+	if s != "plain text" {
+		t.Errorf("Content = %q, want %q", s, "plain text")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // translateTools tests
 // ---------------------------------------------------------------------------

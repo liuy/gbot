@@ -350,3 +350,107 @@ func TestEnsureToolResultPairing(t *testing.T) {
 		}
 	})
 }
+
+func TestStripImagesFromMessages_TopLevelImage(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("look"),
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}),
+		},
+	}}
+
+	result := StripImagesFromMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len = %d, want 1", len(result))
+	}
+	blocks := result[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2", len(blocks))
+	}
+	if blocks[0].Type != types.ContentTypeText || blocks[0].Text != "look" {
+		t.Errorf("blocks[0] = %+v, want text 'look'", blocks[0])
+	}
+	if blocks[1].Type != types.ContentTypeText || blocks[1].Text != "[image]" {
+		t.Errorf("blocks[1] = %+v, want text '[image]'", blocks[1])
+	}
+	// Input must not be mutated.
+	if msgs[0].Content[1].Type != types.ContentTypeImage {
+		t.Error("original message was mutated")
+	}
+}
+
+func TestStripImagesFromMessages_AssistantUntouched(t *testing.T) {
+	t.Parallel()
+
+	// Assistant messages are not processed even if they somehow hold an image.
+	msgs := []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}),
+		},
+	}}
+	result := StripImagesFromMessages(msgs)
+	if len(result) != 1 || len(result[0].Content) != 1 {
+		t.Fatalf("assistant message should be untouched, got %+v", result)
+	}
+	if result[0].Content[0].Type != types.ContentTypeImage {
+		t.Errorf("assistant image block type = %q, want image (untouched)", result[0].Content[0].Type)
+	}
+}
+
+func TestStripImagesFromMessages_NestedToolResultImage(t *testing.T) {
+	t.Parallel()
+
+	// tool_result.content is a JSON array containing a nested image block.
+	nested, _ := json.Marshal([]types.ContentBlock{
+		types.NewTextBlock("desc"),
+		types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}),
+	})
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "tu_1", Content: nested},
+		},
+	}}
+
+	result := StripImagesFromMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len = %d, want 1", len(result))
+	}
+	tr := result[0].Content[0]
+	if tr.Type != types.ContentTypeToolResult {
+		t.Fatalf("block type = %q, want tool_result", tr.Type)
+	}
+	var inner []types.ContentBlock
+	if err := json.Unmarshal(tr.Content, &inner); err != nil {
+		t.Fatalf("unmarshal nested: %v", err)
+	}
+	if len(inner) != 2 {
+		t.Fatalf("nested len = %d, want 2", len(inner))
+	}
+	if inner[0].Type != types.ContentTypeText || inner[0].Text != "desc" {
+		t.Errorf("nested[0] = %+v, want text 'desc'", inner[0])
+	}
+	if inner[1].Type != types.ContentTypeText || inner[1].Text != "[image]" {
+		t.Errorf("nested[1] = %+v, want text '[image]'", inner[1])
+	}
+}
+
+func TestStripImagesFromMessages_NoMutatesWhenNoMedia(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{types.NewTextBlock("just text")},
+	}}
+	result := StripImagesFromMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len = %d, want 1", len(result))
+	}
+	if result[0].Content[0].Text != "just text" {
+		t.Errorf("text = %q, want 'just text'", result[0].Content[0].Text)
+	}
+}

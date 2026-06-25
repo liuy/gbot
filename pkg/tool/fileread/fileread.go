@@ -623,8 +623,10 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 	displayWidth := origWidth
 	displayHeight := origHeight
 	outputData := data
+	wasResized := false
 
 	if origWidth > IMAGE_MAX_WIDTH || origHeight > IMAGE_MAX_HEIGHT {
+		wasResized = true
 		ratio := math.Min(float64(IMAGE_MAX_WIDTH)/float64(origWidth), float64(IMAGE_MAX_HEIGHT)/float64(origHeight))
 		displayWidth = int(float64(origWidth) * ratio)
 		displayHeight = int(float64(origHeight) * ratio)
@@ -659,7 +661,37 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 		DisplayHeight:  displayHeight,
 	}
 
-	return &tool.ToolResult{Data: output}, nil
+	// Emit the image as a native content block so it reaches the LLM.
+	// MediaType must reflect the true byte format of the base64 payload:
+	// - Non-resized: payload is the original bytes, so the type follows the
+	//   decoded `format` (e.g. "image/gif" for a small GIF passed through as-is).
+	// - Resized: the encode step re-encodes jpeg->jpeg and everything else
+	//   (gif/webp/...) as png, so the type follows that re-encoding.
+	var mediaType string
+	if wasResized {
+		if format == "jpeg" {
+			mediaType = "image/jpeg"
+		} else {
+			mediaType = "image/png"
+		}
+	} else {
+		mediaType = "image/" + format
+	}
+
+	return &tool.ToolResult{
+		Data: output,
+		NewMessages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewImageBlock(types.ImageSource{
+					Type:      "base64",
+					MediaType: mediaType,
+					Data:      output.Base64,
+				}),
+			},
+			Flags: types.FlagMeta,
+		}},
+	}, nil
 }
 
 // executePDF handles PDF file reading.

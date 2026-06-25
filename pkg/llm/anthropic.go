@@ -60,6 +60,10 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 	// Source: claude.ts:358-374
 	applyCacheControlToSystem(req)
 
+	if err := ValidateImagesForAPI(req.Messages); err != nil {
+		return nil, err
+	}
+
 	req.Stream = false
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -121,6 +125,10 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *Request) (*Respon
 func (p *AnthropicProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
 	// Apply cache control to system blocks if configured.
 	applyCacheControlToSystem(req)
+
+	if err := ValidateImagesForAPI(req.Messages); err != nil {
+		return nil, err
+	}
 
 	req.Stream = true
 	body, err := json.Marshal(req)
@@ -487,6 +495,14 @@ func (p *AnthropicProvider) ParseAPIError(body []byte, statusCode int) *APIError
 	// Source: TS errors.ts:560 — same approach.
 	if strings.Contains(strings.ToLower(apiErr.Message), "prompt is too long") {
 		apiErr.ErrorCode = "prompt_too_long"
+	}
+
+	// Image size / dimension rejections. Source: TS errors.ts:929-946 classifyAPIError.
+	if strings.Contains(apiErr.Message, "image exceeds") && strings.Contains(apiErr.Message, "maximum") {
+		apiErr.ErrorCode = "image_too_large"
+	}
+	if strings.Contains(apiErr.Message, "image dimensions exceed") && strings.Contains(apiErr.Message, "many-image") {
+		apiErr.ErrorCode = "image_too_large"
 	}
 
 	return apiErr

@@ -316,6 +316,9 @@ func EstimateMessagesTokensForProvider(messages []types.Message, provider string
 			case types.ContentTypeToolUse:
 				totalTokens += types.EstimateTokensForProvider(block.Name+string(block.Input), provider)
 
+			case types.ContentTypeImage:
+				totalTokens += ImageMaxTokenSize
+
 			default:
 				raw, _ := json.Marshal(block)
 				totalTokens += types.EstimateTokensForProvider(string(raw), provider)

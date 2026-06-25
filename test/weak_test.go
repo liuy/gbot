@@ -224,7 +224,10 @@ var checkPatterns = []checkPattern{
 			}
 			// Exempt: fields that hold complex/multi-line content
 			// (Command strings, multi-line output, rendered content)
-			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr", ".SystemPrompt"} {
+			// .Message is exempted because API error messages are free-form
+			// strings where substring matching is the correct classification
+			// approach (see anthropic.go ParseAPIError), not a weak assertion.
+			for _, field := range []string{".Command", ".Content", ".Output", ".Path", ".Text", ".stderr", ".SystemPrompt", ".Message"} {
 				if strings.Contains(match, field) {
 					return true
 				}

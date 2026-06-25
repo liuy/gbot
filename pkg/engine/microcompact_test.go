@@ -1153,3 +1153,33 @@ func TestTokenCountWithEstimation_ZeroUsageThenRealUsage(t *testing.T) {
 		t.Errorf("TokenCountWithEstimation = %d, want %d (50000 base + %d delta)", got, want, delta)
 	}
 }
+
+func TestEstimateMessagesTokensForProvider_ImageBlock(t *testing.T) {
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("cat"),
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
+		},
+	}}
+
+	got := EstimateMessagesTokensForProvider(msgs, "anthropic")
+	// "cat" tokens + ImageMaxTokenSize + one message envelope.
+	catTokens := types.EstimateTokensForProvider("cat", "anthropic")
+	want := catTokens + ImageMaxTokenSize + messageEnvelopeTokens("anthropic")
+	if got != want {
+		t.Errorf("EstimateMessagesTokensForProvider = %d, want %d (cat %d + image %d + envelope %d)",
+			got, want, catTokens, ImageMaxTokenSize, messageEnvelopeTokens("anthropic"))
+	}
+	// Sanity: image must contribute exactly ImageMaxTokenSize, not raw JSON size.
+	rawJSONOnly := EstimateMessagesTokensForProvider([]types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}),
+		},
+	}}, "anthropic")
+	if rawJSONOnly != ImageMaxTokenSize+messageEnvelopeTokens("anthropic") {
+		t.Errorf("image-only estimate = %d, want %d (ImageMaxTokenSize + envelope), not raw-JSON overcount",
+			rawJSONOnly, ImageMaxTokenSize+messageEnvelopeTokens("anthropic"))
+	}
+}

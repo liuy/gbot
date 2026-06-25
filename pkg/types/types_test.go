@@ -52,6 +52,7 @@ func TestContentTypeConstants(t *testing.T) {
 		{"tool_use", types.ContentTypeToolUse, "tool_use"},
 		{"tool_result", types.ContentTypeToolResult, "tool_result"},
 		{"thinking", types.ContentTypeThinking, "thinking"},
+		{"image", types.ContentTypeImage, "image"},
 	}
 
 	for _, tc := range tests {
@@ -117,6 +118,57 @@ func TestNewToolResultBlock(t *testing.T) {
 	errBlock := types.NewToolResultBlock("use-2", content, true)
 	if !errBlock.IsError {
 		t.Error("IsError = false, want true")
+	}
+}
+
+func TestNewImageBlock(t *testing.T) {
+	t.Parallel()
+
+	src := types.ImageSource{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgo="}
+	block := types.NewImageBlock(src)
+	if block.Type != types.ContentTypeImage {
+		t.Fatalf("Type = %q, want %q", block.Type, types.ContentTypeImage)
+	}
+	if block.Source == nil {
+		t.Fatal("Source = nil, want non-nil")
+	}
+	if block.Source.Type != "base64" {
+		t.Errorf("Source.Type = %q, want %q", block.Source.Type, "base64")
+	}
+	if block.Source.MediaType != "image/png" {
+		t.Errorf("Source.MediaType = %q, want %q", block.Source.MediaType, "image/png")
+	}
+	if block.Source.Data != "iVBORw0KGgo=" {
+		t.Errorf("Source.Data = %q, want %q", block.Source.Data, "iVBORw0KGgo=")
+	}
+}
+
+func TestImageBlockJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := types.ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "/9j/4AAQ"}
+	block := types.NewImageBlock(src)
+
+	data, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	// Anthropic API shape: {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"..."}}
+	want := `{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"/9j/4AAQ"}}`
+	if got != want {
+		t.Fatalf("JSON = %s\nwant  %s", got, want)
+	}
+
+	var back types.ContentBlock
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Type != types.ContentTypeImage {
+		t.Fatalf("round-trip Type = %q, want %q", back.Type, types.ContentTypeImage)
+	}
+	if back.Source == nil || back.Source.MediaType != "image/jpeg" || back.Source.Data != "/9j/4AAQ" {
+		t.Fatalf("round-trip Source = %+v, want media_type=image/jpeg data=/9j/4AAQ", back.Source)
 	}
 }
 

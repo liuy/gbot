@@ -141,6 +141,7 @@ const (
 	ContentTypeToolResult ContentType = "tool_result"
 	ContentTypeThinking   ContentType = "thinking"
 	ContentTypeRedacted   ContentType = "redacted_thinking"
+	ContentTypeImage      ContentType = "image"
 )
 
 // CacheControlConfig carries cache control settings for Anthropic API.
@@ -177,6 +178,10 @@ type ContentBlock struct {
 	// Must be preserved verbatim and replayed to the API.
 	Data string `json:"data,omitempty"`
 
+	// Image content (type == "image")
+	// Source: Anthropic API image content block — {type:"image", source:{type:"base64", media_type, data}}.
+	Source *ImageSource `json:"source,omitempty"`
+
 	// Cache control for incremental caching on the last block.
 	// Source: claude.ts:3089-3106 — addCacheBreakpoints adds cache_control
 	// only to the last block of the last message.
@@ -201,6 +206,19 @@ func NewToolResultBlock(toolUseID string, content json.RawMessage, isError bool)
 		Content:   content,
 		IsError:   isError,
 	}
+}
+
+// ImageSource is the source payload of an image content block.
+// Source: Anthropic API image block source — {type:"base64", media_type, data}.
+type ImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // "image/png", "image/jpeg", etc.
+	Data      string `json:"data"`       // base64-encoded bytes
+}
+
+// NewImageBlock creates an image content block carrying base64-encoded image data.
+func NewImageBlock(source ImageSource) ContentBlock {
+	return ContentBlock{Type: ContentTypeImage, Source: &source}
 }
 
 // ---------------------------------------------------------------------------

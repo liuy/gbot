@@ -1412,6 +1412,54 @@ func TestStripImagesFromMessages_EmptyBlocks(t *testing.T) {
 	}
 }
 
+func TestStripImagesFromMessages_NestedToolResultImage(t *testing.T) {
+	// tool_result.content is a JSON array with a nested image block.
+	msgNested := &TranscriptMessage{
+		Type: "user",
+		Content: `[{"type":"tool_result","tool_use_id":"tu_1","content":[` +
+			`{"type":"text","text":"desc"},` +
+			`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}}` +
+			`]}]`,
+	}
+
+	result := StripImagesFromMessages([]*TranscriptMessage{msgNested})
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1", len(result))
+	}
+	blocks := ParseContentBlocks(result[0].Content)
+	if len(blocks) != 1 {
+		t.Fatalf("blocks len = %d, want 1", len(blocks))
+	}
+	if blocks[0].Type != "tool_result" {
+		t.Fatalf("block type = %q, want tool_result", blocks[0].Type)
+	}
+	nested := ParseContentBlocks(string(blocks[0].Content))
+	if len(nested) != 2 {
+		t.Fatalf("nested len = %d, want 2", len(nested))
+	}
+	if nested[0].Type != "text" || nested[0].Text != "desc" {
+		t.Errorf("nested[0] = %+v, want text 'desc'", nested[0])
+	}
+	if nested[1].Type != "text" || nested[1].Text != "[image]" {
+		t.Errorf("nested[1] = %+v, want text '[image]'", nested[1])
+	}
+}
+
+func TestStripImagesFromMessages_ToolResultNoImageUnchanged(t *testing.T) {
+	// tool_result with text-only nested content must be left byte-for-byte
+	// unchanged (no re-marshal) when it contains no media.
+	original := `[{"type":"tool_result","tool_use_id":"tu_1","content":[{"type":"text","text":"desc"}]}]`
+	msg := &TranscriptMessage{Type: "user", Content: original}
+
+	result := StripImagesFromMessages([]*TranscriptMessage{msg})
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1", len(result))
+	}
+	if result[0].Content != original {
+		t.Errorf("content changed:\n got %s\nwant %s", result[0].Content, original)
+	}
+}
+
 func TestTruncateToTokens_ZeroBudget(t *testing.T) {
 	messages := []*TranscriptMessage{
 		{UUID: "a", Content: `[{"type":"text","text":"message"}]`},
