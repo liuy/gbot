@@ -3,16 +3,9 @@ package wechat
 import (
 	"regexp"
 	"strings"
-	"unicode/utf8"
 )
 
-// WeChat copy-friendly line width.
-const weixinCopyLineWidth = 120
-
-var (
-	fenceRe     = regexp.MustCompile("^```([^\n`]*)\\s*$")
-	tableRuleRe = regexp.MustCompile(`^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$`)
-)
+var fenceRe = regexp.MustCompile("^```([^\n`]*)\\s*$")
 
 // normalizeMarkdownBlocks deduplicates blank lines in markdown.
 // Code blocks are preserved as-is; outside code blocks, multiple consecutive
@@ -57,86 +50,9 @@ func normalizeMarkdownBlocks(content string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
-func wrapLine(line string, width int) []string {
-	trimmed := strings.TrimLeft(line, " \t")
-	prefix := line[:len(line)-len(trimmed)]
-	indent := len(prefix)
-
-	if len(line) <= width || len(trimmed) == 0 {
-		return []string{line}
-	}
-
-	var result []string
-	current := trimmed
-	for len(current)+indent > width {
-		maxContent := width - indent
-		breakAt := strings.LastIndex(current[:maxContent], " ")
-		if breakAt <= 0 {
-			breakAt = runeBoundary(current, maxContent)
-		}
-		if breakAt <= 0 {
-			breakAt = 1
-		}
-		result = append(result, prefix+current[:breakAt])
-		current = strings.TrimLeft(current[breakAt:], " ")
-	}
-	if current != "" {
-		result = append(result, prefix+current)
-	}
-	return result
-}
-
-func runeBoundary(s string, maxBytes int) int {
-	if maxBytes >= len(s) {
-		return len(s)
-	}
-	for i := maxBytes; i > 0; i-- {
-		if utf8.RuneStart(s[i]) {
-			return i
-		}
-	}
-	return 0
-}
-
-// wrapCopyFriendlyLines wraps long display lines that are hard to copy in
-// WeChat clients. Code blocks and table rows are preserved as-is.
-func wrapCopyFriendlyLines(content string) string {
-	if content == "" {
-		return content
-	}
-
-	wrapped := make([]string, 0, len(strings.Split(content, "\n")))
-	inCodeBlock := false
-
-	for rawLine := range strings.SplitSeq(content, "\n") {
-		line := strings.TrimRight(rawLine, " \t\r")
-		stripped := strings.TrimSpace(line)
-
-		if fenceRe.MatchString(stripped) {
-			inCodeBlock = !inCodeBlock
-			wrapped = append(wrapped, line)
-			continue
-		}
-
-		if inCodeBlock ||
-			len(line) <= weixinCopyLineWidth ||
-			stripped == "" ||
-			strings.HasPrefix(stripped, "|") ||
-			tableRuleRe.MatchString(stripped) {
-			wrapped = append(wrapped, line)
-			continue
-		}
-
-		wrappedLines := wrapLine(line, weixinCopyLineWidth)
-		wrapped = append(wrapped, wrappedLines...)
-	}
-
-	return strings.TrimSpace(strings.Join(wrapped, "\n"))
-}
-
 // wechatMaxMessageLen is the maximum message length WeChat accepts per send.
-// iLink silently truncates or drops messages beyond this; we split proactively.
-const wechatMaxMessageLen = 2000
+// Aligned with official @tencent-weixin/openclaw-weixin textChunkLimit: 4000.
+const wechatMaxMessageLen = 4000
 
 // splitForWeChat splits a long formatted message into chunks, each fitting
 // within WeChat's per-message limit. Split order: paragraph boundary → line
@@ -239,5 +155,5 @@ func formatMessage(content string) string {
 	if content == "" {
 		return content
 	}
-	return wrapCopyFriendlyLines(normalizeMarkdownBlocks(content))
+	return normalizeMarkdownBlocks(content)
 }

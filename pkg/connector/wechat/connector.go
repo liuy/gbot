@@ -12,6 +12,7 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // inboundMessage represents a message from WeChat to be processed by the engine.
@@ -50,13 +51,14 @@ type WeChatConnector struct {
 	queryFn func(ctx context.Context, userMessage, systemPrompt string)
 
 	activeUserID string // set in handleInbound, cleared in QueryEnd
-	thinkingSecs int
+	thinkingSecs float64
 	searchCount  int
 	fileCount    int
 	cmdCount     int
 	agentCount   int
 	textBuffer   strings.Builder
 	toolNames    map[string]string // toolUseID→name: ToolEnd only carries ToolUseID, so we capture name at ToolStart
+	lastFlush    time.Time
 
 	// processLoop is serial only if handleInbound blocks until the query
 	// finishes. Without this, async Query() would let two queries overlap.
@@ -130,10 +132,16 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 		return
 
 	case types.EventQueryStart:
+		c.lastFlush = time.Now()
+		c.resetStatCounters()
 
 	case types.EventThinkingEnd:
 		if event.Thinking != nil {
-			c.thinkingSecs += int(event.Thinking.Duration.Round(time.Second).Seconds())
+			secs := event.Thinking.Duration.Seconds()
+			if secs < 0.1 {
+				secs = 0.1
+			}
+			c.thinkingSecs += secs
 		}
 
 	case types.EventToolStart:
@@ -164,18 +172,13 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 		c.textBuffer.WriteString(event.Text)
 
 	case types.EventTextEnd:
-		text := c.textBuffer.String()
-		c.textBuffer.Reset()
-		header := c.buildStatHeader()
-		c.resetStatCounters()
-		if c.activeUserID == "" {
-			return
+		if c.textBuffer.Len() > 0 {
+			c.textBuffer.WriteString("\n\n")
 		}
-		body := text
-		if header != "" {
-			body = header + "\n\n" + text
+		if c.activeUserID != "" && !c.lastFlush.IsZero() &&
+			time.Since(c.lastFlush) >= 5*time.Second {
+			c.flushBuffer()
 		}
-		c.sendWeChatReply(context.Background(), c.activeUserID, body)
 
 	case types.EventQueryEnd:
 		// Engine delivers ALL failures as EventQueryEnd{Error} — never EventError.
@@ -184,18 +187,15 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 				slog.Error("wechat: send error message failed", "user", safeID(c.activeUserID), "error", err)
 			}
 		}
-		if c.activeUserID != "" {
-			header := c.buildStatHeader()
-			if header != "" {
-				c.sendWeChatReply(context.Background(), c.activeUserID, header)
-			}
-			c.stopTyping(context.Background(), c.activeUserID)
+		// Force flush regardless of 5s window.
+		c.flushBuffer()
+		userID := c.activeUserID
+		if userID != "" {
+			c.stopTyping(context.Background(), userID)
 		}
 		c.activeUserID = ""
-		c.resetStatCounters()
-		c.textBuffer.Reset()
 		c.toolNames = nil
-		slog.Info("wechat: query done", "user", safeID(c.activeUserID), "error", event.Error)
+		slog.Info("wechat: query done", "user", safeID(userID), "error", event.Error)
 		if c.queryDone != nil {
 			close(c.queryDone)
 			c.queryDone = nil
@@ -203,10 +203,42 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 	}
 }
 
+// flushBuffer sends accumulated stat + text as a single message, then resets.
+// If sending fails (e.g. rate limited), content stays in buffer for next flush.
+func (c *WeChatConnector) flushBuffer() {
+	if c.activeUserID == "" {
+		c.resetStatCounters()
+		c.textBuffer.Reset()
+		return
+	}
+	text := strings.TrimRight(c.textBuffer.String(), "\n")
+	header := c.buildStatHeader()
+	if header == "" && text == "" {
+		return
+	}
+	body := text
+	if header != "" {
+		if text != "" {
+			body = header + "\n\n" + text
+		} else {
+			body = header
+		}
+	}
+	if err := c.sendWeChatReplyErr(context.Background(), c.activeUserID, body); err != nil {
+		// Rate limited or send failed — keep stats and text in buffer for next flush.
+		// lastFlush unchanged: next flush window counts from the last *successful* flush.
+		slog.Warn("wechat: flush failed, retaining buffer", "user", safeID(c.activeUserID), "error", err)
+		return
+	}
+	c.lastFlush = time.Now()
+	c.resetStatCounters()
+	c.textBuffer.Reset()
+}
+
 func (c *WeChatConnector) buildStatHeader() string {
 	var parts []string
 	if c.thinkingSecs > 0 {
-		parts = append(parts, fmt.Sprintf("思考 %d秒", c.thinkingSecs))
+		parts = append(parts, "思考 "+utils.FormatDuration(time.Duration(c.thinkingSecs*float64(time.Second))))
 	}
 	if c.searchCount > 0 {
 		parts = append(parts, fmt.Sprintf("搜索 %d次", c.searchCount))
@@ -220,7 +252,10 @@ func (c *WeChatConnector) buildStatHeader() string {
 	if c.agentCount > 0 {
 		parts = append(parts, fmt.Sprintf("代理 %d次", c.agentCount))
 	}
-	return strings.Join(parts, " · ")
+	if len(parts) == 0 {
+		return ""
+	}
+	return "⬡ " + strings.Join(parts, " · ")
 }
 
 func (c *WeChatConnector) resetStatCounters() {
@@ -232,16 +267,22 @@ func (c *WeChatConnector) resetStatCounters() {
 }
 
 func (c *WeChatConnector) sendWeChatReply(ctx context.Context, userID, text string) {
+	if err := c.sendWeChatReplyErr(ctx, userID, text); err != nil {
+		slog.Error("wechat: send reply failed", "user", safeID(userID), "error", err)
+	}
+}
+
+func (c *WeChatConnector) sendWeChatReplyErr(ctx context.Context, userID, text string) error {
 	formatted := formatMessage(text)
 	if formatted == "" {
-		return
+		return nil
 	}
 	for _, chunk := range splitForWeChat(formatted) {
 		if err := c.sendToUserFn(ctx, userID, chunk); err != nil {
-			slog.Error("wechat: send reply failed", "user", safeID(userID), "error", err)
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 // SaveState persists the connector state to disk.

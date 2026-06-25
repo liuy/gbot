@@ -20,6 +20,7 @@ import (
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -741,7 +742,7 @@ func (s *ReplState) AppendStatsLine(streamStart time.Time, queryUsage types.Usag
 	if streamStart.IsZero() {
 		return
 	}
-	elapsedStr := formatElapsed(streamStart)
+	elapsedStr := utils.FormatDuration(time.Since(streamStart))
 	tokensStr := fmt.Sprintf("↑%s ↓%s tokens",
 		types.FormatTokenCount(queryUsage.TotalInputTokens()),
 		types.FormatTokenCount(queryUsage.OutputTokens))

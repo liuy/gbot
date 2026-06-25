@@ -37,6 +37,7 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.activeUserID = msg.userID
 	c.queryDone = make(chan struct{})
 	done := c.queryDone
+	c.lastFlush = time.Now()
 	c.startTyping(ctx, msg.userID)
 
 	c.hub.Dispatch(types.QueryEvent{
@@ -98,20 +99,14 @@ func (c *WeChatConnector) sendToUser(ctx context.Context, userID, text string) e
 }
 
 // isRetriable returns true for transient errors worth retrying: network
-// failures (timeouts, connection refused) and rate limit. Stale-session
-// (ret=-2 with "unknown error", mapped to ErrSessionExpired) and real
-// session expiry (ret=-14) are not retriable — retrying won't help.
+// failures (timeouts, connection refused). Rate limit is NOT retried —
+// the flushBuffer cache logic handles it by retaining content for next flush.
 func isRetriable(err error) bool {
 	if errors.Is(err, ErrRateLimited) {
-		return true
+		return false
 	}
-	// ErrSessionExpired and typed API errors are not retriable.
 	if errors.Is(err, ErrSessionExpired) {
 		return false
 	}
-	// Network errors (timeouts, connection failures) don't wrap a sentinel,
-	// so we treat them as retriable by default — they're the most common
-	// transient failures. iLink ret/errcode errors are sentinel-typed and
-	// caught above.
 	return true
 }

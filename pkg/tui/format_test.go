@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -14,65 +15,65 @@ import (
 
 func TestFormatDuration_Milliseconds(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(300 * time.Millisecond)
+	v := utils.FormatDuration(300 * time.Millisecond)
 	if v != "0.3s" {
-		t.Errorf("formatDuration(300ms) = %q, want %q", v, "0.3s")
+		t.Errorf("utils.FormatDuration(300ms) = %q, want %q", v, "0.3s")
 	}
 }
 
 func TestFormatDuration_SubSecond(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(50 * time.Millisecond)
+	v := utils.FormatDuration(50 * time.Millisecond)
 	if v != "0.1s" {
-		t.Errorf("formatDuration(50ms) = %q, want %q", v, "0.1s")
+		t.Errorf("utils.FormatDuration(50ms) = %q, want %q", v, "0.1s")
 	}
 }
 
 func TestFormatDuration_OneSecond(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(1 * time.Second)
+	v := utils.FormatDuration(1 * time.Second)
 	if v != "1s" {
-		t.Errorf("formatDuration(1s) = %q, want %q", v, "1s")
+		t.Errorf("utils.FormatDuration(1s) = %q, want %q", v, "1s")
 	}
 }
 
 func TestFormatDuration_Seconds(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(42 * time.Second)
+	v := utils.FormatDuration(42 * time.Second)
 	if v != "42s" {
-		t.Errorf("formatDuration(42s) = %q, want %q", v, "42s")
+		t.Errorf("utils.FormatDuration(42s) = %q, want %q", v, "42s")
 	}
 }
 
 func TestFormatDuration_Minutes(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(90 * time.Second)
+	v := utils.FormatDuration(90 * time.Second)
 	if v != "1m 30s" {
-		t.Errorf("formatDuration(90s) = %q, want %q", v, "1m 30s")
+		t.Errorf("utils.FormatDuration(90s) = %q, want %q", v, "1m 30s")
 	}
 }
 
 func TestFormatDuration_MinutesNoSeconds(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(60 * time.Second)
+	v := utils.FormatDuration(60 * time.Second)
 	if v != "1m 0s" {
-		t.Errorf("formatDuration(60s) = %q, want %q", v, "1m 0s")
+		t.Errorf("utils.FormatDuration(60s) = %q, want %q", v, "1m 0s")
 	}
 }
 
 func TestFormatDuration_Hours(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(3723 * time.Second) // 1h 2m 3s
+	v := utils.FormatDuration(3723 * time.Second) // 1h 2m 3s
 	if v != "1h 2m 3s" {
-		t.Errorf("formatDuration(3723s) = %q, want %q", v, "1h 2m 3s")
+		t.Errorf("utils.FormatDuration(3723s) = %q, want %q", v, "1h 2m 3s")
 	}
 }
 
 func TestFormatDuration_Zero(t *testing.T) {
 	t.Parallel()
-	v := formatDuration(0)
+	v := utils.FormatDuration(0)
 	if v != "0.0s" {
-		t.Errorf("formatDuration(0) = %q, want %q", v, "0.0s")
+		t.Errorf("utils.FormatDuration(0) = %q, want %q", v, "0.0s")
 	}
 }
 
@@ -82,20 +83,20 @@ func TestFormatDuration_Zero(t *testing.T) {
 
 func TestFormatElapsed(t *testing.T) {
 	start := time.Now().Add(-2 * time.Second) // REAL-TIME: formatElapsed duration
-	v := formatElapsed(start)
+	v := utils.FormatDuration(time.Since(start))
 	if !strings.HasPrefix(v, "2") || !strings.HasSuffix(v, "s") {
-		t.Errorf("formatElapsed(2s ago) = %q, want prefix '2' and suffix 's'", v)
+		t.Errorf("utils.FormatDuration(time.Since(2s ago)) = %q, want prefix '2' and suffix 's'", v)
 	}
 }
 
 func TestFormatElapsed_Milliseconds(t *testing.T) {
 	start := time.Now().Add(-100 * time.Millisecond) // REAL-TIME: formatElapsed duration
-	v := formatElapsed(start)
+	v := utils.FormatDuration(time.Since(start))
 	if !strings.HasSuffix(v, "s") {
-		t.Errorf("formatElapsed(100ms ago) = %q, want s suffix", v)
+		t.Errorf("utils.FormatDuration(time.Since(100ms ago)) = %q, want s suffix", v)
 	}
 	if !strings.Contains(v, "0.") {
-		t.Errorf("formatElapsed(100ms ago) = %q, want sub-second format (0.Xs)", v)
+		t.Errorf("utils.FormatDuration(time.Since(100ms ago)) = %q, want sub-second format (0.Xs)", v)
 	}
 }
 

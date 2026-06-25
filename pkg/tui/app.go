@@ -28,6 +28,7 @@ import (
 	"github.com/liuy/gbot/pkg/tool/bash"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -1284,7 +1285,7 @@ func (a *App) View() string {
 			sb.WriteString(errLine + "\n" + countdownLine + "\n")
 		} else {
 			spinnerFrame := a.spinner.View()
-			elapsedStr := formatElapsed(a.repl.StreamingStart())
+			elapsedStr := utils.FormatDuration(time.Since(a.repl.StreamingStart()))
 			tokensStr := fmt.Sprintf("↑%s ↓%s tokens", types.FormatTokenCount(a.repl.displayedInputTokens), types.FormatTokenCount(a.repl.displayedOutputTokens))
 			var thinkingStr string
 			if a.repl.IsThinking() {

@@ -70,26 +70,22 @@ func TestSendToUser_ExhaustsRetries(t *testing.T) {
 	})
 }
 
-// TestSendToUser_RetriesOnRateLimit — ret=-2 IS retriable per best practice.
-func TestSendToUser_RetriesOnRateLimit(t *testing.T) {
+// TestSendToUser_NoRetryOnRateLimit — rate limit is NOT retried; flushBuffer
+// cache logic handles it by retaining content for next flush.
+func TestSendToUser_NoRetryOnRateLimit(t *testing.T) {
 	var calls atomic.Int32
 	c := newTestConnector(func() error {
-		n := calls.Add(1)
-		if n < 3 {
-			return ErrRateLimited
-		}
-		return nil
+		calls.Add(1)
+		return ErrRateLimited
 	})
 
-	synctest.Test(t, func(t *testing.T) {
-		err := c.sendToUser(context.Background(), "user1", "hello")
-		if err != nil {
-			t.Fatalf("expected nil after retry on rate limit, got %v", err)
-		}
-		if got := calls.Load(); got != 3 {
-			t.Errorf("expected 3 calls (rate limit retriable), got %d", got)
-		}
-	})
+	err := c.sendToUser(context.Background(), "user1", "hello")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("expected 1 call (rate limit not retried), got %d", got)
+	}
 }
 
 // TestSendToUser_NoRetryOnSessionExpired — ret=-14 is NOT retriable.
@@ -169,9 +165,9 @@ func TestIsRetriable(t *testing.T) {
 		{"nil", nil, false},
 		{"network timeout", errors.New("i/o timeout"), true},
 		{"connection refused", errors.New("connection refused"), true},
-		{"rate limit", ErrRateLimited, true},
+		{"rate limit", ErrRateLimited, false},
 		{"session expired", ErrSessionExpired, false},
-		{"wrapped rate limit", fmt.Errorf("send failed: %w", ErrRateLimited), true},
+		{"wrapped rate limit", fmt.Errorf("send failed: %w", ErrRateLimited), false},
 		{"wrapped session expired", fmt.Errorf("send failed: %w", ErrSessionExpired), false},
 		{"generic error", errors.New("something went wrong"), true},
 	}

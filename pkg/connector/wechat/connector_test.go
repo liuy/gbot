@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
@@ -240,59 +239,6 @@ func TestNormalizeMarkdownBlocks_TrimTrailingNewlines(t *testing.T) {
 	}
 }
 
-func TestWrapCopyFriendlyLines_ShortLine(t *testing.T) {
-	input := "short line"
-	if got := wrapCopyFriendlyLines(input); got != input {
-		t.Fatalf("short line should not be wrapped, got %q", got)
-	}
-}
-
-func TestWrapCopyFriendlyLines_LongLine(t *testing.T) {
-	input := strings.Repeat("hello ", 30) // ~180 chars
-	got := wrapCopyFriendlyLines(input)
-	lines := strings.Split(got, "\n")
-	if len(lines) == 1 {
-		t.Fatal("expected long line to be wrapped")
-	}
-	for _, l := range lines {
-		if len(l) > weixinCopyLineWidth+5 { // allow small fudge
-			t.Fatalf("line too long: %d chars", len(l))
-		}
-	}
-}
-
-func TestWrapLine_ChineseNotCorrupted(t *testing.T) {
-	input := strings.Repeat("瑞", 100)
-	lines := wrapLine(input, 121)
-	for i, l := range lines {
-		if !utf8.ValidString(l) {
-			t.Errorf("line %d is not valid UTF-8: %q", i, l)
-		}
-	}
-}
-
-func TestWrapCopyFriendlyLines_CodeBlock(t *testing.T) {
-	input := "before\n```\nlong line inside code block that should not be wrapped even if it exceeds 120 characters which it definitely does\n```\nafter"
-	got := wrapCopyFriendlyLines(input)
-	if !strings.Contains(got, input[strings.Index(input, "long"):strings.Index(input, "after")-3]) {
-		t.Fatal("code block content should be preserved verbatim")
-	}
-}
-
-func TestWrapCopyFriendlyLines_TableRow(t *testing.T) {
-	input := "| col1 | col2 | col3 |"
-	if got := wrapCopyFriendlyLines(input); got != input {
-		t.Fatalf("table row should not be wrapped, got %q", got)
-	}
-}
-
-func TestWrapCopyFriendlyLines_TableRule(t *testing.T) {
-	input := "| --- | --- |"
-	if got := wrapCopyFriendlyLines(input); got != input {
-		t.Fatalf("table rule should not be wrapped, got %q", got)
-	}
-}
-
 func TestFormatMessage_Empty(t *testing.T) {
 	if got := formatMessage(""); got != "" {
 		t.Fatalf("formatMessage empty = %q", got)
@@ -477,36 +423,6 @@ func TestCheckSendMessageResponse(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// wrapLine
-// ---------------------------------------------------------------------------
-
-func TestWrapLine_Short(t *testing.T) {
-	got := wrapLine("short", 120)
-	if len(got) != 1 || got[0] != "short" {
-		t.Fatalf("wrapLine short = %v, want [short]", got)
-	}
-}
-
-func TestWrapLine_Empty(t *testing.T) {
-	got := wrapLine("", 120)
-	if len(got) != 1 || got[0] != "" {
-		t.Fatalf("wrapLine empty = %v, want [\"\"]", got)
-	}
-}
-
-func TestWrapLine_WithPrefix(t *testing.T) {
-	got := wrapLine("  hello world this is a very long line that should get wrapped properly at a word boundary", 20)
-	if len(got) < 2 {
-		t.Fatal("expected multiple wrapped lines")
-	}
-	for _, l := range got {
-		if len(l) > 25 {
-			t.Fatalf("line too long: %d chars in %q", len(l), l)
-		}
 	}
 }
 
@@ -723,14 +639,14 @@ func TestSplitForWeChat_ShortMessage_SingleChunk(t *testing.T) {
 }
 
 func TestSplitForWeChat_LongMessage_MultipleChunks(t *testing.T) {
-	long := strings.Repeat("这是一段长文本。", 300) // ~3000 chars, exceeds 2000 limit
+	long := strings.Repeat("这是一段长文本。", 700) // ~5600 chars, exceeds 4000 limit
 	chunks := splitForWeChat(long)
 	if len(chunks) < 2 {
 		t.Fatalf("long message: got %d chunks, want >= 2", len(chunks))
 	}
 	for i, c := range chunks {
-		if len([]rune(c)) > 2000 {
-			t.Errorf("chunk %d length = %d runes, want <= 2000", i, len([]rune(c)))
+		if len([]rune(c)) > 4000 {
+			t.Errorf("chunk %d length = %d runes, want <= 4000", i, len([]rune(c)))
 		}
 	}
 }
@@ -748,17 +664,17 @@ func TestSplitForWeChat_PreservesCodeBlock(t *testing.T) {
 }
 
 func TestSplitForWeChat_LargeCodeBlock_SplitsWithFenceReopen(t *testing.T) {
-	// Code block exceeds 2000 runes — must split, reopening fences so
+	// Code block exceeds 4000 runes — must split, reopening fences so
 	// each chunk is valid markdown.
-	codeBody := strings.Repeat("x", 2500)
+	codeBody := strings.Repeat("x", 5000)
 	code := "```go\n" + codeBody + "\n```"
 	chunks := splitForWeChat(code)
 	if len(chunks) < 2 {
 		t.Fatalf("large code block: got %d chunks, want >= 2", len(chunks))
 	}
 	for i, c := range chunks {
-		if len([]rune(c)) > 2000 {
-			t.Errorf("chunk %d: %d runes, want <= 2000", i, len([]rune(c)))
+		if len([]rune(c)) > 4000 {
+			t.Errorf("chunk %d: %d runes, want <= 4000", i, len([]rune(c)))
 		}
 		// Every chunk must have balanced fences — valid standalone markdown.
 		if strings.Count(c, "```")%2 != 0 {
@@ -769,7 +685,7 @@ func TestSplitForWeChat_LargeCodeBlock_SplitsWithFenceReopen(t *testing.T) {
 
 func TestSplitForWeChat_LargeCodeBlock_NoLanguageTag(t *testing.T) {
 	// Plain code fence (no language) — reopen should use bare ```.
-	codeBody := strings.Repeat("x", 2500)
+	codeBody := strings.Repeat("x", 5000)
 	code := "```\n" + codeBody + "\n```"
 	chunks := splitForWeChat(code)
 	if len(chunks) < 2 {
@@ -792,7 +708,7 @@ func firstChars(s string, n int) string {
 
 // sendWeChatReply splits long replies into multiple WeChat messages.
 // This catches the real production issue: WeChat silently truncates or drops
-// messages over ~2000 chars, so the user never sees the full reply.
+// messages over ~4000 chars, so the user never sees the full reply.
 func TestSendWeChatReply_LongReply_SendsMultipleMessages(t *testing.T) {
 	var sentTexts []string
 	c := &WeChatConnector{
@@ -801,7 +717,7 @@ func TestSendWeChatReply_LongReply_SendsMultipleMessages(t *testing.T) {
 			return nil
 		},
 	}
-	longReply := strings.Repeat("这是回复内容。", 300) // ~2100 chars
+	longReply := strings.Repeat("这是回复内容。", 700) // ~4900 chars
 
 	c.sendWeChatReply(context.Background(), "user1", longReply)
 
@@ -809,8 +725,8 @@ func TestSendWeChatReply_LongReply_SendsMultipleMessages(t *testing.T) {
 		t.Fatalf("long reply should send multiple messages, got %d", len(sentTexts))
 	}
 	for i, text := range sentTexts {
-		if len([]rune(text)) > 2000 {
-			t.Errorf("message %d: %d runes, want <= 2000 (WeChat truncates)", i, len([]rune(text)))
+		if len([]rune(text)) > 4000 {
+			t.Errorf("message %d: %d runes, want <= 4000 (WeChat truncates)", i, len([]rune(text)))
 		}
 	}
 }

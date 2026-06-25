@@ -11,6 +11,7 @@ import (
 	"github.com/liuy/gbot/pkg/quota"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/utils"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -1054,7 +1055,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		fmt.Fprintf(&hdr, "(%s)", highlightSummary(tc.Name, tc.Summary))
 	}
 	if tc.Elapsed > 0 {
-		hdr.WriteString(styleTimeDim.Render(" (" + formatDuration(tc.Elapsed) + ")"))
+		hdr.WriteString(styleTimeDim.Render(" (" + utils.FormatDuration(tc.Elapsed) + ")"))
 	}
 	sb.WriteString(indent + wordWrapIndent(hdr.String(), availWidth, indent+strings.Repeat(" ", 2)))
 
@@ -1127,7 +1128,7 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 // formatToolSuffix returns the dim elapsed-timer suffix shown after a tool
 // name+summary. Shared between main tool card header and sub-agent log entries.
 func formatToolSuffix(name string, inputLen int, elapsed time.Duration) string {
-	return " " + styleDim.Render("("+formatDuration(elapsed)+")")
+	return " " + styleDim.Render("("+utils.FormatDuration(elapsed)+")")
 }
 
 // renderAgentLogs renders sub-agent tool call progress using formatToolOutput.
@@ -1324,7 +1325,7 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 	hdr.WriteString(styleNameBold.Render("Thought"))
 	if tv.Duration > 0 {
 		hdr.WriteString(styleNameBold.Render(" for "))
-		hdr.WriteString(styleDim.Render(formatDuration(tv.Duration)))
+		hdr.WriteString(styleDim.Render(utils.FormatDuration(tv.Duration)))
 	}
 	sb.WriteString(indent + wordWrapIndent(hdr.String(), availWidth, indent+strings.Repeat(" ", 2)))
 

@@ -17,6 +17,7 @@ func newStatConnector() (*WeChatConnector, *[]string) {
 	var sent []string
 	c := &WeChatConnector{
 		activeUserID: "user1",
+		lastFlush:    time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC), // far future → 5s threshold never fires
 		sendToUserFn: func(_ context.Context, _, text string) error {
 			sent = append(sent, text)
 			return nil
@@ -38,8 +39,8 @@ func TestBuildStatHeader_AllZero(t *testing.T) {
 
 func TestBuildStatHeader_OnlyThinking(t *testing.T) {
 	c := &WeChatConnector{thinkingSecs: 5}
-	if got := c.buildStatHeader(); got != "思考 5秒" {
-		t.Fatalf("only thinking = %q, want %q", got, "思考 5秒")
+	if got := c.buildStatHeader(); got != "⬡ 思考 5s" {
+		t.Fatalf("only thinking = %q, want %q", got, "⬡ 思考 5s")
 	}
 }
 
@@ -51,9 +52,22 @@ func TestBuildStatHeader_AllCategories(t *testing.T) {
 		cmdCount:     1,
 		agentCount:   1,
 	}
-	want := "思考 5秒 · 搜索 2次 · 文件 3次 · 命令 1次 · 代理 1次"
+	want := "⬡ 思考 5s · 搜索 2次 · 文件 3次 · 命令 1次 · 代理 1次"
 	if got := c.buildStatHeader(); got != want {
 		t.Fatalf("all categories = %q, want %q", got, want)
+	}
+}
+
+func TestBuildStatHeader_SubSecondThinking(t *testing.T) {
+	// Sub-second thinking must show actual duration, not round to 0 or 1.
+	c, sent := newStatConnector()
+	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 395 * time.Millisecond}})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	if len(*sent) == 0 {
+		t.Fatal("expected stat message for sub-second thinking")
+	}
+	if (*sent)[0] != "⬡ 思考 0.4s" {
+		t.Fatalf("sub-second thinking = %q, want %q", (*sent)[0], "⬡ 思考 0.4s")
 	}
 }
 
@@ -68,7 +82,7 @@ func TestBuildStatHeader_Ordering(t *testing.T) {
 		thinkingSecs: 1,
 	}
 	got := c.buildStatHeader()
-	want := "思考 1秒 · 搜索 1次 · 文件 1次 · 命令 1次 · 代理 1次"
+	want := "⬡ 思考 1s · 搜索 1次 · 文件 1次 · 命令 1次 · 代理 1次"
 	if got != want {
 		t.Fatalf("ordering = %q, want %q", got, want)
 	}
@@ -77,6 +91,72 @@ func TestBuildStatHeader_Ordering(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Handle — stat state machine
 // ---------------------------------------------------------------------------
+
+func TestHandle_IdleFlush_TriggersAfter5s(t *testing.T) {
+	// >5s since lastFlush: next stage boundary (TextEnd) flushes mid-query.
+	c, sent := newStatConnector()
+	c.lastFlush = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) // distant past: idle flush fires
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "partial"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd}) // TextEnd triggers idle flush
+	if len(*sent) != 1 {
+		t.Fatalf("after >5s idle + TextEnd: sent = %d, want 1 (idle flush)", len(*sent))
+	}
+	if (*sent)[0] != "partial" {
+		t.Fatalf("idle flush sent = %q, want %q", (*sent)[0], "partial")
+	}
+}
+
+func TestHandle_IdleFlush_HeldUnder5s(t *testing.T) {
+	// <5s since lastFlush: no flush until QueryEnd.
+	c, sent := newStatConnector()
+	c.lastFlush = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC) // far future: <5s, no idle flush
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "hello"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	if len(*sent) != 0 {
+		t.Fatalf("under 5s: sent = %d, want 0 (coalesced)", len(*sent))
+	}
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+	if len(*sent) != 1 {
+		t.Fatalf("after QueryEnd: sent = %d, want 1 (coalesced)", len(*sent))
+	}
+	if (*sent)[0] != "hello" {
+		t.Fatalf("coalesced = %q, want %q", (*sent)[0], "hello")
+	}
+}
+
+func TestHandle_FlushFailed_RetainsBuffer(t *testing.T) {
+	// Rate limit on flush → buffer retained → resent on next flush.
+	var sendErr error
+	var sent []string
+	c := &WeChatConnector{
+		activeUserID: "user1",
+		lastFlush:    time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sent = append(sent, text)
+			return sendErr
+		},
+	}
+	// First flush fails (rate limited).
+	sendErr = errors.New("iLink rate limited")
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "msg1"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	if len(sent) != 1 {
+		t.Fatalf("first flush: sent = %d, want 1 (attempted)", len(sent))
+	}
+	// Buffer retained: textBuffer still has "msg1", stats still present.
+	// Next flush succeeds — buffer should be sent.
+	sendErr = nil
+	c.lastFlush = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) // distant past: force idle flush again
+	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "msg2"})
+	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	if len(sent) != 2 {
+		t.Fatalf("second flush: sent = %d, want 2", len(sent))
+	}
+	// Both messages coalesced in buffer.
+	if !strings.Contains(sent[1], "msg1") || !strings.Contains(sent[1], "msg2") {
+		t.Fatalf("retained buffer = %q, want both msg1 and msg2", sent[1])
+	}
+}
 
 func TestHandle_TextEnd_BuildsHeaderAndSends(t *testing.T) {
 	c, sent := newStatConnector()
@@ -87,13 +167,15 @@ func TestHandle_TextEnd_BuildsHeaderAndSends(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t2"}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "reply"})
 	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
+	// Coalesced: stat header + body merged into one message at QueryEnd.
 	if len(*sent) != 1 {
-		t.Fatalf("sent count = %d, want 1", len(*sent))
+		t.Fatalf("sent count = %d, want 1 (coalesced stat+text)", len(*sent))
 	}
-	want := "思考 5秒 · 搜索 1次 · 文件 1次\n\nreply"
+	want := "⬡ 思考 5s · 搜索 1次 · 文件 1次\n\nreply"
 	if (*sent)[0] != want {
-		t.Fatalf("sent = %q, want %q", (*sent)[0], want)
+		t.Fatalf("coalesced message = %q, want %q", (*sent)[0], want)
 	}
 }
 
@@ -101,6 +183,7 @@ func TestHandle_TextEnd_NoStats_NoHeader(t *testing.T) {
 	c, sent := newStatConnector()
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "just text"})
 	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent count = %d, want 1", len(*sent))
@@ -120,8 +203,8 @@ func TestHandle_QueryEnd_TrailingTools_SendsStatOnly(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("sent count = %d, want 1 (stat-only summary)", len(*sent))
 	}
-	if (*sent)[0] != "搜索 1次" {
-		t.Fatalf("stat-only = %q, want %q", (*sent)[0], "搜索 1次")
+	if (*sent)[0] != "⬡ 搜索 1次" {
+		t.Fatalf("stat-only = %q, want %q", (*sent)[0], "⬡ 搜索 1次")
 	}
 }
 
@@ -156,23 +239,21 @@ func TestHandle_ResetCountersAfterTextEnd(t *testing.T) {
 	c.Handle(types.QueryEvent{Type: types.EventThinkingEnd, Thinking: &types.ThinkingEvent{Duration: 5 * time.Second}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "first"})
 	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
-	// Second segment: only a file op, NO thinking. The header must reflect
-	// only post-first-TextEnd activity (counters reset on TextEnd).
+	// Second segment: only a file op, NO thinking.
 	c.Handle(types.QueryEvent{Type: types.EventToolStart, ToolUse: &types.ToolUseEvent{ID: "t1", Name: "Read"}})
 	c.Handle(types.QueryEvent{Type: types.EventToolEnd, ToolResult: &types.ToolResultEvent{ToolUseID: "t1"}})
 	c.Handle(types.QueryEvent{Type: types.EventTextDelta, Text: "second"})
 	c.Handle(types.QueryEvent{Type: types.EventTextEnd})
+	c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
 
-	if len(*sent) != 2 {
-		t.Fatalf("sent count = %d, want 2", len(*sent))
+	// Coalesced into one message: stats accumulate across segments, text
+	// segments joined with \n\n.
+	if len(*sent) != 1 {
+		t.Fatalf("sent count = %d, want 1 (coalesced)", len(*sent))
 	}
-	// First reply: 5s thinking, no tools.
-	if (*sent)[0] != "思考 5秒\n\nfirst" {
-		t.Fatalf("first sent = %q, want %q", (*sent)[0], "思考 5秒\n\nfirst")
-	}
-	// Second reply: 1 file op, no thinking (reset).
-	if (*sent)[1] != "文件 1次\n\nsecond" {
-		t.Fatalf("second sent = %q, want %q", (*sent)[1], "文件 1次\n\nsecond")
+	want := "⬡ 思考 5s · 文件 1次\n\nfirst\n\nsecond"
+	if (*sent)[0] != want {
+		t.Fatalf("coalesced = %q, want %q", (*sent)[0], want)
 	}
 }
 
@@ -203,15 +284,15 @@ func TestHandle_ToolNameClassification(t *testing.T) {
 		toolName   string
 		wantHeader string
 	}{
-		{"Web is search", "Web", "搜索 1次"},
-		{"Read is file", "Read", "文件 1次"},
-		{"Grep is file", "Grep", "文件 1次"},
-		{"Glob is file", "Glob", "文件 1次"},
-		{"Edit is file", "Edit", "文件 1次"},
-		{"Write is file", "Write", "文件 1次"},
-		{"Lsp is file", "Lsp", "文件 1次"},
-		{"Bash is cmd", "Bash", "命令 1次"},
-		{"Agent is agent", "Agent", "代理 1次"},
+		{"Web is search", "Web", "⬡ 搜索 1次"},
+		{"Read is file", "Read", "⬡ 文件 1次"},
+		{"Grep is file", "Grep", "⬡ 文件 1次"},
+		{"Glob is file", "Glob", "⬡ 文件 1次"},
+		{"Edit is file", "Edit", "⬡ 文件 1次"},
+		{"Write is file", "Write", "⬡ 文件 1次"},
+		{"Lsp is file", "Lsp", "⬡ 文件 1次"},
+		{"Bash is cmd", "Bash", "⬡ 命令 1次"},
+		{"Agent is agent", "Agent", "⬡ 代理 1次"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
