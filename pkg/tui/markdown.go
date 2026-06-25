@@ -26,27 +26,30 @@ var mdExtensions = func() parser.Extensions {
 // Render converts markdown text to ANSI-styled terminal output.
 // Source: utils/markdown.ts applyMarkdown → Go port
 func Render(text string) string {
-	// Strip redundant VS16 from default-colorful emoji before rendering.
-	// LLM agents often emit emoji+VS16 (e.g., "🏞️") but VS16 is redundant
-	// for Emoji_Presentation=Yes codepoints and causes visible artifacts
-	// on some terminals, breaking table alignment.
+	return RenderWidth(text, 0)
+}
+
+// RenderWidth converts markdown to ANSI output, constraining tables to at
+// most width columns. Cells that would overflow are truncated with … so
+// box-drawing alignment is never broken by wrapping. width <= 0 means
+// unlimited (same as Render).
+func RenderWidth(text string, width int) string {
 	text = stripRedundantVS16(text)
 
 	p := parser.NewWithExtensions(mdExtensions)
-
 	doc := p.Parse([]byte(text))
 
 	var buf strings.Builder
 	r := &ansiRenderer{
 		w:         &buf,
 		listStack: []listCtx{},
+		maxWidth:  width,
 	}
 
 	ast.WalkFunc(doc, func(node ast.Node, entering bool) ast.WalkStatus {
 		return r.renderNode(node, entering)
 	})
 
-	// TS: applyMarkdown does .join('').trim()
 	return strings.TrimSpace(buf.String())
 }
 
@@ -70,6 +73,7 @@ type ansiRenderer struct {
 	listStack   []listCtx
 	table       *tableCollector // non-nil when inside a table
 	savedWriter []io.Writer     // stack for writer-swap during inline styling / blockquote
+	maxWidth    int             // table width budget; 0 = unlimited
 }
 
 // ---- ANSI SGR codes for inline styling (matches TS chalk output) ----
@@ -475,6 +479,76 @@ func (r *ansiRenderer) renderTable() {
 		}
 	}
 
+	// If a width budget is set and the table exceeds it, shrink columns
+	// proportionally and truncate cell content. Borders add numCols+1
+	// columns; each cell has 2 spaces of padding.
+	if r.maxWidth > 0 {
+		const minWidth = 3
+		borderCols := numCols + 1
+		paddingCols := 2 * numCols
+		available := r.maxWidth - borderCols - paddingCols
+		if available < numCols*minWidth {
+			available = numCols * minWidth
+		}
+		totalContent := 0
+		for _, w := range colWidths {
+			totalContent += w
+		}
+		if totalContent > available {
+			// Scale each column down proportionally, floor to minWidth.
+			scale := float64(available) / float64(totalContent)
+			scaled := make([]int, numCols)
+			remaining := available
+			for i := range colWidths {
+				w := int(float64(colWidths[i]) * scale)
+				if w < minWidth {
+					w = minWidth
+				}
+				if w > remaining {
+					w = remaining
+				}
+				if w < minWidth {
+					w = minWidth
+				}
+				scaled[i] = w
+				remaining -= w
+			}
+			// If remaining > 0, distribute to columns that were scaled down
+			// the most (biggest gap between original and scaled).
+			for remaining > 0 {
+				bestIdx := -1
+				bestGap := 0
+				for i := range colWidths {
+					gap := colWidths[i] - scaled[i]
+					if gap > bestGap {
+						bestGap = gap
+						bestIdx = i
+					}
+				}
+				if bestIdx < 0 {
+					break
+				}
+				scaled[bestIdx]++
+				remaining--
+			}
+			colWidths = scaled
+			// Truncate cell content in all rows to fit the new widths.
+			for ri := range allRows {
+				for ci := range allRows[ri] {
+					if ci < numCols {
+						allRows[ri][ci] = truncateCell(allRows[ri][ci], colWidths[ci])
+					}
+				}
+			}
+			if len(t.header) > 0 {
+				t.header = allRows[0]
+				t.rows = allRows[1:]
+			} else {
+				t.rows = allRows
+			}
+		}
+	}
+
 	// Render top border: ┌ ... ┬ ... ┐
 	r.write("┌")
 	for i := range numCols {
@@ -661,4 +735,23 @@ var stripANSI = tool.StripANSI
 // Uses go-runewidth for accurate terminal column width including emoji.
 func stringWidth(s string) int {
 	return runewidth.StringWidth(stripANSI(s))
+}
+
+// truncateCell truncates cell content to maxDisplay display columns,
+// appending … if truncation occurred. Preserves ANSI escape codes by
+// stripping them first, truncating the visible text, then the result is
+// plain text (inline styles in table cells are rare and the trade-off
+// is acceptable for width-constrained rendering).
+func truncateCell(cell string, maxDisplay int) string {
+	plain := stripANSI(cell)
+	w := runewidth.StringWidth(plain)
+	if w <= maxDisplay {
+		return cell
+	}
+	if maxDisplay <= 1 {
+		return "…"
+	}
+	// Truncate to maxDisplay-1, then append ….
+	trunced := runewidth.Truncate(plain, maxDisplay-1, "")
+	return trunced + "…"
 }

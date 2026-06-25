@@ -855,12 +855,26 @@ func (m MessageView) View(width int, expand bool, toolDot string, streaming bool
 			switch blk.Type {
 			case BlockText:
 				if blk.Text != "" {
-					wrapped := wordWrap(Render(blk.Text), availWidth)
-					if isUser {
-						wrapped = prefixUserLine(wrapped)
+					// Detect markdown table syntax in the source: a line
+					// starting with | and a separator row (|---|). This is
+					// more reliable than detecting box-drawing chars in
+					// rendered output (which can appear in code blocks).
+					if hasMarkdownTable(blk.Text) {
+						rendered := RenderWidth(blk.Text, availWidth)
+						wrapped := rendered
+						if isUser {
+							wrapped = prefixUserLine(wrapped)
+						}
+						sb.WriteString(wrapped)
+						sb.WriteString("\n\n")
+					} else {
+						wrapped := wordWrap(Render(blk.Text), availWidth)
+						if isUser {
+							wrapped = prefixUserLine(wrapped)
+						}
+						sb.WriteString(wrapped)
+						sb.WriteString("\n\n")
 					}
-					sb.WriteString(wrapped)
-					sb.WriteString("\n\n")
 				}
 			case BlockTool:
 				blk.renderToolCall(&sb, availWidth, expand, toolDot, noHint, maxOutputLines, 0, isStreaming)
@@ -1340,6 +1354,39 @@ func (blk ContentBlock) renderThinkingBlock(sb *strings.Builder, availWidth int,
 // Tabs are expanded to 4 spaces so runewidth correctly accounts for their
 // display width (runewidth.RuneWidth('\t') returns 0, which would cause
 // under-wrapping and ghost content on re-render).
+// markdownTableSepRe matches a markdown table separator row. GFM requires
+// at least one | and dashes, but in practice most tables use 3+ dashes.
+// The pattern matches: optional leading |, dashes/colons/spaces, then |.
+var markdownTableSepRe = regexp.MustCompile(`(?m)^\s*\|?[\s:]*-+[\s:|-]*\|`)
+
+// hasMarkdownTable reports whether text contains a markdown table, detected
+// by the separator row (|---|---|). Code blocks are stripped first so
+// ```-fenced content with pipe chars doesn't false-positive.
+func hasMarkdownTable(text string) bool {
+	// Remove fenced code blocks before checking — a |---| inside ``` is
+	// code, not a table separator.
+	stripped := stripFencedCode(text)
+	return markdownTableSepRe.MatchString(stripped)
+}
+
+// stripFencedCode removes ``` or ~~~ fenced code blocks from text.
+func stripFencedCode(text string) string {
+	var b strings.Builder
+	inFence := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 func wordWrap(text string, width int) string {
 	return wordWrapIndent(text, width, "")
 }

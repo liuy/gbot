@@ -1284,3 +1284,57 @@ func TestNeedsBlockSeparator_NonBlockParent(t *testing.T) {
 		t.Error("child of ListItem should not need block separator")
 	}
 }
+
+// TestRender_Table_FitsWidth verifies that a table rendered with a width
+// constraint never exceeds that width. Cells that don't fit are truncated
+// with … rather than wrapping and breaking box-drawing alignment.
+func TestRender_Table_FitsWidth(t *testing.T) {
+	t.Parallel()
+	input := "| 问题 | 根因 | 修复 |\n|------|------|------|\n| e2 engine 丢失 | meta.json 写入非原子 | AtomicWriteFile |\n| /model 切换后请求发错 provider | TUI 缓存不同步 | switchModel 补 SetProvider |"
+
+	// Width=40 — table must fit within 40 columns.
+	result := RenderWidth(input, 40)
+
+	for _, line := range strings.Split(result, "\n") {
+		w := stringWidth(line)
+		if w > 40 {
+			t.Errorf("line width %d > 40: %q", w, line)
+		}
+	}
+}
+
+// TestRender_Table_NoWidth_Unchanged verifies that Render (no width) still
+// produces full-width tables — the width-constraint path is opt-in only.
+func TestRender_Table_NoWidth_Unchanged(t *testing.T) {
+	t.Parallel()
+	input := "| A | B |\n|---|---|\n| short | also short |"
+	result := Render(input)
+	// No truncation marker when width is unlimited.
+	if strings.Contains(result, "…") {
+		t.Errorf("unlimited width should not truncate, but got: %q", result)
+	}
+}
+
+func TestHasMarkdownTable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"standard table", "| A | B |\n|---|---|\n| 1 | 2 |", true},
+		{"table with alignment", "| A | B |\n|:--:|--:|\n| 1 | 2 |", true},
+		{"plain text", "This is just a paragraph.", false},
+		{"code block with pipes", "```\n| code |\n|------|\n```\nNot a table.", false},
+		{"pipe in text", "Use cmd | grep to filter.", false},
+		{"no separator", "| A | B |\n| 1 | 2 |", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasMarkdownTable(tc.text)
+			if got != tc.want {
+				t.Errorf("hasMarkdownTable(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
