@@ -126,6 +126,12 @@ func (c *WeChatConnector) processInbound(ctx context.Context, msg Message) {
 	// block followed by the caption text block.
 	text := extractText(msg.ItemList)
 
+	// When there's a document but no caption, add a default prompt so the LLM
+	// has an instruction. Images don't need this — the LLM can see them directly.
+	if text == "" && hasFileItem(msg.ItemList) {
+		text = "Tell the user you received a document about [one-sentence summary], then ask what the user wants to do with it, in the user's language."
+	}
+
 	var content []types.ContentBlock
 	if c.mediaCache != nil && hasMedia(msg.ItemList) {
 		if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {

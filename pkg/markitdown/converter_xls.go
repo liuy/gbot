@@ -91,7 +91,7 @@ func (c *XlsConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Document
 		}
 
 		fmt.Fprintf(&md, "## %s\n", sheetName)
-		md.WriteString(renderMarkdownTable(rows))
+		md.WriteString(renderMarkdownTable(rows, false))
 		md.WriteString("\n")
 	}
 

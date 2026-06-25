@@ -297,7 +297,7 @@ func TestHTMLConvertStringWithKeepDataURIs(t *testing.T) {
 // --- CSV helpers ---
 
 func TestRenderMarkdownTableEmpty(t *testing.T) {
-	got := renderMarkdownTable(nil)
+	got := renderMarkdownTable(nil, false)
 	if got != "" {
 		t.Errorf("renderMarkdownTable(nil) = %q, want empty", got)
 	}
@@ -310,7 +310,7 @@ func TestRenderMarkdownTableRaggedRows(t *testing.T) {
 		{"1", "2"},
 		{"x"},
 	}
-	got := renderMarkdownTable(records)
+	got := renderMarkdownTable(records, false)
 	// Should still render all rows with 3 columns
 	if !strings.Contains(got, "| a | b | c |") {
 		t.Errorf("header row missing: %q", got)
@@ -351,6 +351,53 @@ func TestCSVEmptyInput(t *testing.T) {
 	}
 	if result.Markdown != "" {
 		t.Errorf("Markdown = %q, want empty for empty CSV", result.Markdown)
+	}
+}
+
+func TestRenderMarkdownTableLeadingEmptyRow(t *testing.T) {
+	// Reproduces the WeChat spreadsheet shape: row 0 is empty (no cells), data
+	// starts in column B. truncate=false (xlsx/xls/pptx mode) must derive the
+	// column count from the widest row, not the empty header.
+	records := [][]string{
+		{},
+		{"", "B1", "C1", "D1"},
+		{"", "B2", "C2", "D2"},
+	}
+	got := renderMarkdownTable(records, false)
+	if !strings.Contains(got, "|  | B1 | C1 | D1 |") {
+		t.Errorf("header row should keep the leading empty cell, got: %q", got)
+	}
+	if !strings.Contains(got, "|  | B2 | C2 | D2 |") {
+		t.Errorf("data row should keep the leading empty cell, got: %q", got)
+	}
+	if !strings.Contains(got, "| --- | --- | --- | --- |") {
+		t.Errorf("separator should be 4 columns (data width), got: %q", got)
+	}
+}
+
+func TestRenderMarkdownTableTruncateCSVStyle(t *testing.T) {
+	// truncate=true mirrors Python markitdown's _csv_converter.py: the header
+	// row fixes the column count and wider data rows are truncated to it.
+	records := [][]string{
+		{"a", "b"},
+		{"1", "2", "3", "4"},
+		{"x"},
+	}
+	got := renderMarkdownTable(records, true)
+	if !strings.Contains(got, "| a | b |") {
+		t.Errorf("header should be 2 columns, got: %q", got)
+	}
+	if !strings.Contains(got, "| --- | --- |") {
+		t.Errorf("separator should be exactly 2 columns, got: %q", got)
+	}
+	if !strings.Contains(got, "| 1 | 2 |") {
+		t.Errorf("data row should be truncated to 2 columns, got: %q", got)
+	}
+	if strings.Contains(got, "| 3 |") {
+		t.Errorf("overflow cell 3 must be truncated under CSV mode, got: %q", got)
+	}
+	if strings.Contains(got, "| 4 |") {
+		t.Errorf("overflow cell 4 must be truncated under CSV mode, got: %q", got)
 	}
 }
 

@@ -557,6 +557,66 @@ func TestProcessInbound_EmptyDropped(t *testing.T) {
 	}
 }
 
+// TestProcessInbound_MediaNoCaption_AddsDefaultPrompt verifies that when a
+// document arrives without a caption, a default prompt is added as a second
+// content block so the LLM has an instruction to act on. Without the fix the
+// default caption was assigned AFTER content was built, so it never made it
+// into the content blocks sent to QueryWithContent.
+func TestProcessInbound_MediaNoCaption_AddsDefaultPrompt(t *testing.T) {
+	t.Parallel()
+	// Use a real xlsx so fileread produces non-empty TextOutput.
+	xlsxData, err := os.ReadFile("/tmp/test_inline.xlsx")
+	if err != nil {
+		t.Skipf("test xlsx not available: %v", err)
+	}
+	key := []byte("0123456789abcdef")
+	ciphertext := encryptAesEcbForMediaTest(xlsxData, key)
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(ciphertext)
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+
+	msg := Message{
+		FromUserID: "user1",
+		MessageID:  FlexString("msg-prompt"),
+		ItemList: []Item{
+			{Type: ItemFile, FileItem: &FileItem{
+				FileName: "data.xlsx",
+				Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+			}},
+		},
+	}
+	c.processInbound(context.Background(), msg)
+
+	select {
+	case im := <-c.inboundCh:
+		// Must have 2 blocks: [document text block, default prompt text block].
+		if len(im.content) != 2 {
+			t.Fatalf("content length = %d, want 2 (document + default prompt)", len(im.content))
+		}
+		if im.content[0].Type != types.ContentTypeText {
+			t.Errorf("content[0].Type = %q, want text (document)", im.content[0].Type)
+		}
+		if im.content[1].Type != types.ContentTypeText {
+			t.Errorf("content[1].Type = %q, want text (prompt)", im.content[1].Type)
+		}
+		if !strings.Contains(im.content[1].Text, "one-sentence summary") {
+			t.Errorf("content[1].Text = %q, want default prompt containing 'one-sentence summary'", im.content[1].Text)
+		}
+		// im.text should also be set for TUI display.
+		if im.text == "" {
+			t.Error("im.text is empty, should carry the default prompt for TUI display")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("processInbound did not enqueue within 2s")
+	}
+}
+
 func TestHandleInbound_WithContentCallsQueryWithContent(t *testing.T) {
 	// Not parallel: uses a spy that records the dispatched content.
 	var captured []types.ContentBlock

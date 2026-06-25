@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -40,11 +41,7 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.lastFlush = time.Now()
 	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
 
-	// Build the display text for the TUI render. The TUI does not render image
-	// blocks arriving via the connector path (it renders its own input), so an
-	// image-only message would otherwise render blank — append a human-readable
-	// placeholder so the attachment is visible. Document-attachment text blocks
-	// already carry their own "[Document attachment: ...]" marker.
+	// Image-only messages would render blank in the TUI (it renders its own input, not connector image blocks); append a placeholder.
 	displayText := msg.text
 	for _, cb := range msg.content {
 		switch cb.Type {
@@ -53,6 +50,17 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 				displayText += " "
 			}
 			displayText += "[image]"
+		case types.ContentTypeText:
+			// Document blocks carry "[Document: xxx saved at /path]..." —
+			// show the first line in TUI so the attachment is visible.
+			if displayText != "" {
+				displayText += " "
+			}
+			if idx := strings.IndexByte(cb.Text, '\n'); idx > 0 {
+				displayText += cb.Text[:idx]
+			} else {
+				displayText += cb.Text
+			}
 		}
 	}
 	c.hub.Dispatch(types.QueryEvent{

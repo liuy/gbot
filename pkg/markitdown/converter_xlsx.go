@@ -58,7 +58,7 @@ func (c *XlsxConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Documen
 		fmt.Fprintf(&md, "## %s\n", sheet)
 
 		// Render as markdown table
-		table := renderMarkdownTable(rows)
+		table := renderMarkdownTable(rows, false)
 		md.WriteString(table)
 		md.WriteString("\n")
 	}

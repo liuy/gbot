@@ -68,7 +68,7 @@ func (c *CsvConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Document
 	}
 
 	// Render as markdown table
-	md := renderMarkdownTable(records)
+	md := renderMarkdownTable(records, true)
 
 	return &DocumentConverterResult{
 		Markdown: md,
@@ -76,13 +76,26 @@ func (c *CsvConverter) Convert(reader io.ReadSeeker, info StreamInfo) (*Document
 }
 
 // renderMarkdownTable renders a 2D string slice as a markdown table.
-func renderMarkdownTable(records [][]string) string {
+// truncate=true aligns with Python markitdown's CsvConverter: the header
+// row (records[0]) fixes the column count and every other row is padded or
+// truncated to that width. truncate=false uses the widest row's cell count
+// so xlsx/xls/pptx never drop columns when the first row is empty or short
+// (Python markitdown achieves the same by round-tripping through pandas
+// to_html, which emits a <td></td> for every cell).
+func renderMarkdownTable(records [][]string, truncate bool) string {
 	if len(records) == 0 {
 		return ""
 	}
 
 	// Determine the number of columns from the header
 	numCols := len(records[0])
+	if !truncate {
+		for _, row := range records {
+			if len(row) > numCols {
+				numCols = len(row)
+			}
+		}
+	}
 
 	var b strings.Builder
 

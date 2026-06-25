@@ -20,15 +20,12 @@ import (
 	"github.com/liuy/gbot/pkg/utils"
 )
 
-// inboundMessage represents a message from WeChat to be processed by the engine.
 type inboundMessage struct {
 	userID  string
 	text    string               // caption / voice transcription, used for TUI render + stat headers
 	content []types.ContentBlock // text + optional image block; nil → text-only fallback
 }
 
-// WeChatConnector manages the WeChat connection lifecycle.
-// One WeChat account = one connector = one engine = one session.
 type WeChatConnector struct {
 	engine *engine.Engine
 	hub    *hub.Hub
@@ -46,10 +43,7 @@ type WeChatConnector struct {
 
 	dedup *dedupSet
 
-	// mediaCache stores downloaded WeChat media (images, documents). nil when
-	// the cache could not be initialized — downloadMedia nil-checks and falls
-	// back to text-only. Cleanup is owned by the cache package (New starts the
-	// goroutine); main.go captures MediaCache() and calls Close() at shutdown.
+	// nil when cache init failed; downloadMedia nil-checks.
 	mediaCache *media.Store
 
 	// Typing indicator support.
@@ -79,9 +73,6 @@ type WeChatConnector struct {
 	queryDone chan struct{}
 }
 
-// New creates a WeChatConnector. h must be the same Hub the TUI handler
-// subscribes to — the connector subscribes itself so it receives the
-// engine's event stream alongside the TUI.
 func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	c := &WeChatConnector{
 		engine:      eng,
@@ -99,9 +90,7 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	c.queryWithContentFn = func(ctx context.Context, content []types.ContentBlock, _ string) {
 		eng.QueryWithContent(ctx, content, eng.SystemPrompt())
 	}
-	// mediaCache init failure is non-fatal — downloadMedia nil-checks and the
-	// connector degrades to text-only. Do NOT swallow the error silently
-	// (CLAUDE.md): log it so the operator knows media support is disabled.
+	// Init failure is non-fatal; log so the operator knows media is disabled.
 	if store, err := media.New(); err != nil {
 		slog.Warn("wechat: media cache init failed, media attachments disabled", "error", err)
 		c.mediaCache = nil
@@ -112,8 +101,6 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	return c
 }
 
-// MediaCache returns the media cache store so main.go can call Close() on it
-// at shutdown (the cache owns its cleanup goroutine).
 func (c *WeChatConnector) MediaCache() *media.Store { return c.mediaCache }
 
 // Start begins the poll and processing loops.
@@ -374,7 +361,6 @@ func safeID(value string) string {
 	return value[:8]
 }
 
-// hasMedia checks if an item list contains media items.
 func hasMedia(items []Item) bool {
 	for _, item := range items {
 		switch item.Type {
@@ -385,9 +371,16 @@ func hasMedia(items []Item) bool {
 	return false
 }
 
-// downloadableMedia reports whether a media reference carries either a full URL
-// or an encrypted query param — the two signals that the bytes are retrievable.
-// Mirrors openclaw process-message.ts:hasDownloadableMedia.
+func hasFileItem(items []Item) bool {
+	for _, item := range items {
+		if item.Type == ItemFile {
+			return true
+		}
+	}
+	return false
+}
+
+// reports the two retrievable-bytes signals: a full URL or encrypt query param.
 func downloadableMedia(m *MediaRef) bool {
 	if m == nil {
 		return false
@@ -395,7 +388,6 @@ func downloadableMedia(m *MediaRef) bool {
 	return m.FullURL != "" || m.EncryptQueryParam != ""
 }
 
-// pickMediaItem selects the first downloadable media item.
 // Priority IMAGE > VIDEO > FILE > VOICE matches openclaw process-message.ts:124-138.
 func pickMediaItem(items []Item) *Item {
 	// IMAGE
@@ -431,9 +423,7 @@ func pickMediaItem(items []Item) *Item {
 	return nil
 }
 
-// downloadMedia downloads, decrypts, and caches the first downloadable media
-// item. Images become file-backed image blocks; documents are parsed inline
-// via fileread. Returns a zero-value block on failure (caller degrades to text-only).
+// Documents are parsed inline via fileread; zero-value block on failure degrades to text-only.
 func (c *WeChatConnector) downloadMedia(ctx context.Context, items []Item) types.ContentBlock {
 	if c.mediaCache == nil {
 		return types.ContentBlock{}
@@ -463,9 +453,6 @@ func (c *WeChatConnector) downloadMedia(ctx context.Context, items []Item) types
 	return types.ContentBlock{}
 }
 
-// downloadImage fetches, decrypts, caches, and wraps an image item as a
-// file-backed image content block. Returns a zero-value block on any failure
-// (the caller degrades to text-only).
 func (c *WeChatConnector) downloadImage(ctx context.Context, img *MediaItemHolder) types.ContentBlock {
 	if img == nil || img.Media == nil {
 		return types.ContentBlock{}
@@ -491,9 +478,6 @@ func (c *WeChatConnector) downloadImage(ctx context.Context, img *MediaItemHolde
 	return types.NewFileImageBlock(mime, path)
 }
 
-// downloadFile fetches, decrypts, caches a document, then parses it inline
-// via fileread so the LLM receives content directly. Returns a zero-value
-// block on failure.
 func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.ContentBlock {
 	if f == nil || f.Media == nil {
 		return types.ContentBlock{}
@@ -539,11 +523,9 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 		return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
 	}
 	slog.Info("wechat: document parsed inline", "file", name, "contentLen", len(content))
-	return types.NewTextBlock(fmt.Sprintf("[Document: %s]\n%s", name, content))
+	return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]\n%s", name, path, content))
 }
 
-// fetchMediaBytes downloads a media reference, decrypting it when an aes_key is
-// present (the common encrypted-CDN case) or fetching it plain otherwise.
 func (c *WeChatConnector) fetchMediaBytes(ctx context.Context, ref *MediaRef) ([]byte, error) {
 	if ref.AesKey != "" {
 		return media.DownloadAndDecrypt(ctx, c.client, ref.FullURL, ref.AesKey)
@@ -551,8 +533,6 @@ func (c *WeChatConnector) fetchMediaBytes(ctx context.Context, ref *MediaRef) ([
 	return media.DownloadPlain(ctx, c.client, ref.FullURL)
 }
 
-// extractText iterates ItemList and returns the first text item's content,
-// handling RefMsg (quoted/forwarded messages) and voice transcriptions.
 func extractText(items []Item) string {
 	for _, item := range items {
 		if item.Type == ItemText && item.TextItem != nil {

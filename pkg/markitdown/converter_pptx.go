@@ -488,7 +488,7 @@ func (c *PptxConverter) tableToMarkdown(rows [][]string) string {
 	htmlConv := NewHTMLConverter(c.markitdown)
 	result, err := htmlConv.ConvertString(htmlBuf.String())
 	if err != nil {
-		return renderMarkdownTable(rows)
+		return renderMarkdownTable(rows, false)
 	}
 	return strings.TrimSpace(result.Markdown) + "\n"
 }
