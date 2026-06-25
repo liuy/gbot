@@ -3,6 +3,8 @@ package short
 import (
 	"encoding/json"
 	"log/slog"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // RestoreSkillStateFromMessages restores skill invocation state from messages.
@@ -129,7 +131,7 @@ func ExtractTodosFromTranscript(messages []*TranscriptMessage) []*TodoItem {
 		}
 
 		blocks := ParseContentBlocks(msg.Content)
-		var todoWriteBlock *ContentBlock
+		var todoWriteBlock *types.ContentBlock
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.Name == "TodoWrite" {
 				todoWriteBlock = &block

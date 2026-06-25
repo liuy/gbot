@@ -4,56 +4,58 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 func TestParseContentBlocks(t *testing.T) {
 	tests := []struct {
 		name     string
 		json     string
-		wantType []string // want block types
-		wantText []string // want text values (for text blocks)
+		wantType []types.ContentType // want block types
+		wantText []string            // want text values (for text blocks)
 	}{
 		{
 			name:     "empty content returns empty slice",
 			json:     "",
-			wantType: []string{},
+			wantType: []types.ContentType{},
 		},
 		{
 			name:     "invalid JSON returns empty slice",
 			json:     "{invalid json",
-			wantType: []string{},
+			wantType: []types.ContentType{},
 		},
 		{
 			name:     "single text block parses text field",
 			json:     `[{"type":"text","text":"hello world"}]`,
-			wantType: []string{"text"},
+			wantType: []types.ContentType{"text"},
 			wantText: []string{"hello world"},
 		},
 		{
 			name:     "tool_use block with name/input fields",
 			json:     `[{"type":"tool_use","id":"tu1","name":"bash","input":{"command":"ls"}}]`,
-			wantType: []string{"tool_use"},
+			wantType: []types.ContentType{"tool_use"},
 		},
 		{
 			name:     "tool_result block with tool_use_id field",
 			json:     `[{"type":"tool_result","tool_use_id":"tu1","content":"output"}]`,
-			wantType: []string{"tool_result"},
+			wantType: []types.ContentType{"tool_result"},
 		},
 		{
 			name:     "multiple mixed blocks parse in order",
 			json:     `[{"type":"text","text":"first"},{"type":"tool_use","id":"tu1"},{"type":"text","text":"second"}]`,
-			wantType: []string{"text", "tool_use", "text"},
+			wantType: []types.ContentType{"text", "tool_use", "text"},
 			wantText: []string{"first", "", "second"},
 		},
 		{
 			name:     "thinking block",
 			json:     `[{"type":"thinking","text":"thinking..."}]`,
-			wantType: []string{"thinking"},
+			wantType: []types.ContentType{"thinking"},
 		},
 		{
 			name:     "empty array returns empty slice",
 			json:     "[]",
-			wantType: []string{},
+			wantType: []types.ContentType{},
 		},
 	}
 

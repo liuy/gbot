@@ -65,8 +65,8 @@ func CreateCompactBoundaryMessage(trigger string, preTokens int, lastPreCompactU
 
 	// Wrap in content block array so ParseContentBlocks can parse it.
 	// TS: messages store content as ContentBlock[] — boundary is no exception.
-	textBlock := ContentBlock{Type: "text", Text: string(contentBytes)}
-	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+	textBlock := types.ContentBlock{Type: "text", Text: string(contentBytes)}
+	blockBytes, _ := json.Marshal([]types.ContentBlock{textBlock})
 
 	return &TranscriptMessage{
 		UUID:       msgUUID,
@@ -289,15 +289,15 @@ func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage
 		}
 
 		modified := false
-		newBlocks := make([]ContentBlock, 0, len(blocks))
+		newBlocks := make([]types.ContentBlock, 0, len(blocks))
 
 		for _, block := range blocks {
 			if block.Type == "image" {
 				modified = true
-				newBlocks = append(newBlocks, ContentBlock{Type: "text", Text: "[image]"})
+				newBlocks = append(newBlocks, types.ContentBlock{Type: "text", Text: "[image]"})
 			} else if block.Type == "document" {
 				modified = true
-				newBlocks = append(newBlocks, ContentBlock{Type: "text", Text: "[document]"})
+				newBlocks = append(newBlocks, types.ContentBlock{Type: "text", Text: "[document]"})
 			} else if block.Type == "tool_result" && len(block.Content) > 0 {
 				stripped, toolHasMedia := stripNestedMediaShort(block.Content)
 				if toolHasMedia {
@@ -329,7 +329,7 @@ func StripImagesFromMessages(messages []*TranscriptMessage) []*TranscriptMessage
 // content JSON array ONE level deep. Source: compact.ts:166-176. Returns the
 // (possibly rewritten) raw JSON and whether any media was replaced.
 func stripNestedMediaShort(raw json.RawMessage) (json.RawMessage, bool) {
-	var blocks []ContentBlock
+	var blocks []types.ContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return raw, false
 	}
@@ -338,10 +338,10 @@ func stripNestedMediaShort(raw json.RawMessage) (json.RawMessage, bool) {
 		switch b.Type {
 		case "image":
 			hasMedia = true
-			blocks[i] = ContentBlock{Type: "text", Text: "[image]"}
+			blocks[i] = types.ContentBlock{Type: "text", Text: "[image]"}
 		case "document":
 			hasMedia = true
-			blocks[i] = ContentBlock{Type: "text", Text: "[document]"}
+			blocks[i] = types.ContentBlock{Type: "text", Text: "[document]"}
 		}
 	}
 	if !hasMedia {
@@ -877,8 +877,8 @@ func annotateBoundaryWithPreservedSegment(boundary *TranscriptMessage, headUUID,
 
 	// Marshal back
 	contentBytes, _ := json.Marshal(contentMap)
-	textBlock := ContentBlock{Type: "text", Text: string(contentBytes)}
-	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+	textBlock := types.ContentBlock{Type: "text", Text: string(contentBytes)}
+	blockBytes, _ := json.Marshal([]types.ContentBlock{textBlock})
 	boundary.Content = string(blockBytes)
 	return nil
 }

@@ -8,54 +8,6 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// EngineBlockToStore converts a types.ContentBlock to a ContentBlock.
-func EngineBlockToStore(eb types.ContentBlock) ContentBlock {
-	sb := ContentBlock{
-		Type:      string(eb.Type),
-		Text:      eb.Text,
-		Thinking:  eb.Thinking,
-		ID:        eb.ID,
-		Name:      eb.Name,
-		Input:     eb.Input,
-		ToolUseID: eb.ToolUseID,
-		Content:   eb.Content,
-		IsError:   eb.IsError,
-		Data:      eb.Data,
-	}
-	if eb.Source != nil {
-		sb.Source = &ImageSource{
-			Type:      eb.Source.Type,
-			MediaType: eb.Source.MediaType,
-			Data:      eb.Source.Data,
-		}
-	}
-	return sb
-}
-
-// StoreBlockToEngine converts a ContentBlock to a types.ContentBlock.
-func StoreBlockToEngine(sb ContentBlock) types.ContentBlock {
-	eb := types.ContentBlock{
-		Type:      types.ContentType(sb.Type),
-		Text:      sb.Text,
-		Thinking:  sb.Thinking,
-		ID:        sb.ID,
-		Name:      sb.Name,
-		Input:     sb.Input,
-		ToolUseID: sb.ToolUseID,
-		Content:   sb.Content,
-		IsError:   sb.IsError,
-		Data:      sb.Data,
-	}
-	if sb.Source != nil {
-		eb.Source = &types.ImageSource{
-			Type:      sb.Source.Type,
-			MediaType: sb.Source.MediaType,
-			Data:      sb.Source.Data,
-		}
-	}
-	return eb
-}
-
 // EngineMessagesToStore converts engine messages to store TranscriptMessages.
 // Preserves UUID from em.ID when available, metadata via MetadataToJSON.
 func EngineMessagesToStore(engineMsgs []types.Message) ([]*TranscriptMessage, error) {
@@ -65,10 +17,8 @@ func EngineMessagesToStore(engineMsgs []types.Message) ([]*TranscriptMessage, er
 
 	result := make([]*TranscriptMessage, 0, len(engineMsgs))
 	for _, em := range engineMsgs {
-		storeBlocks := make([]ContentBlock, 0, len(em.Content))
-		for _, eb := range em.Content {
-			storeBlocks = append(storeBlocks, EngineBlockToStore(eb))
-		}
+		storeBlocks := make([]types.ContentBlock, 0, len(em.Content))
+		storeBlocks = append(storeBlocks, em.Content...)
 
 		contentBytes, err := json.Marshal(storeBlocks)
 		if err != nil {
@@ -98,7 +48,7 @@ func StoreMessageToEngine(m *TranscriptMessage) types.Message {
 		return types.Message{}
 	}
 
-	var blocks []ContentBlock
+	var blocks []types.ContentBlock
 	if err := json.Unmarshal([]byte(m.Content), &blocks); err != nil {
 		msg := types.Message{
 			ID:        m.UUID,
@@ -110,15 +60,10 @@ func StoreMessageToEngine(m *TranscriptMessage) types.Message {
 		return msg
 	}
 
-	engineBlocks := make([]types.ContentBlock, 0, len(blocks))
-	for _, b := range blocks {
-		engineBlocks = append(engineBlocks, StoreBlockToEngine(b))
-	}
-
 	msg := types.Message{
 		ID:        m.UUID,
 		Role:      types.Role(m.Type),
-		Content:   engineBlocks,
+		Content:   blocks,
 		Timestamp: m.CreatedAt,
 	}
 	msg.SetMetadataFromJSON(m.Metadata)

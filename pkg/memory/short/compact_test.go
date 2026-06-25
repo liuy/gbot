@@ -21,8 +21,8 @@ func findByUUID(msgs []*TranscriptMessage, uuid string) *TranscriptMessage {
 
 // wrapAsTextBlock wraps a raw JSON object string into a content block array.
 func wrapAsTextBlock(rawJSON string) string {
-	block := ContentBlock{Type: "text", Text: rawJSON}
-	b, _ := json.Marshal([]ContentBlock{block})
+	block := types.ContentBlock{Type: "text", Text: rawJSON}
+	b, _ := json.Marshal([]types.ContentBlock{block})
 	return string(b)
 }
 
@@ -2364,8 +2364,8 @@ func TestExtractCompactMetadata_MarshalError(t *testing.T) {
 		"compactMetadata": map[string]any{"trigger": "auto"},
 	}
 	innerJSON, _ := json.Marshal(inner)
-	textBlock := ContentBlock{Type: "text", Text: string(innerJSON)}
-	blockBytes, _ := json.Marshal([]ContentBlock{textBlock})
+	textBlock := types.ContentBlock{Type: "text", Text: string(innerJSON)}
+	blockBytes, _ := json.Marshal([]types.ContentBlock{textBlock})
 	msg := &TranscriptMessage{Content: string(blockBytes)}
 	// This should succeed normally
 	meta, err := extractCompactMetadata(msg)

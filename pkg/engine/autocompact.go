@@ -416,7 +416,7 @@ func extractTextFromShortContent(content string) string {
 		return ""
 	}
 
-	var blocks []short.ContentBlock
+	var blocks []types.ContentBlock
 	if err := json.Unmarshal([]byte(content), &blocks); err != nil {
 		// Not JSON — treat as plain text
 		return content

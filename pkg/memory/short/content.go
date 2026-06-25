@@ -4,21 +4,23 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ParseContentBlocks parses the JSON content string into a slice of ContentBlock.
 // Returns empty slice for empty or invalid JSON (logs warning for invalid JSON).
 // TS: Various content[].type parsing logic throughout messages.ts.
-func ParseContentBlocks(contentJSON string) []ContentBlock {
+func ParseContentBlocks(contentJSON string) []types.ContentBlock {
 	if contentJSON == "" {
-		return []ContentBlock{}
+		return []types.ContentBlock{}
 	}
 
-	var blocks []ContentBlock
+	var blocks []types.ContentBlock
 	if err := json.Unmarshal([]byte(contentJSON), &blocks); err != nil {
 		// Invalid JSON - return empty slice (matches TS behavior of graceful handling)
 		slog.Warn("ParseContentBlocks: invalid JSON", "error", err)
-		return []ContentBlock{}
+		return []types.ContentBlock{}
 	}
 
 	return blocks

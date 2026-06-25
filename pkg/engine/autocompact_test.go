@@ -825,7 +825,7 @@ func TestShortMessageToEngine_NonJSONContent(t *testing.T) {
 func TestShortMessageToEngine_ToolBlocks(t *testing.T) {
 	t.Parallel()
 
-	blocks := []short.ContentBlock{
+	blocks := []types.ContentBlock{
 		{Type: "text", Text: "result"},
 		{Type: "tool_use", Name: "Read", ID: "tu_1", Input: json.RawMessage(`{"path":"/a.go"}`)},
 	}

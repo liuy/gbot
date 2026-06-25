@@ -4,7 +4,6 @@
 package short
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/liuy/gbot/pkg/types"
@@ -45,28 +44,6 @@ type Session struct {
 	EngineID        string            // owning EngineManager ID; "" or "main" for legacy
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
-}
-
-// ContentBlock represents a parsed block from a message's content JSON.
-type ContentBlock struct {
-	Type      string          `json:"type"` // "text" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking" | "image"
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`    // thinking block content
-	ID        string          `json:"id,omitempty"`          // tool_use block id
-	Name      string          `json:"name,omitempty"`        // tool name for tool_use
-	Input     json.RawMessage `json:"input,omitempty"`       // tool_use input parameters
-	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result reference to tool_use.id
-	IsError   bool            `json:"is_error,omitempty"`    // tool_result error flag
-	Content   json.RawMessage `json:"content,omitempty"`     // tool_result content (string or array for images)
-	Data      string          `json:"data,omitempty"`        // redacted_thinking data (must be preserved verbatim)
-	Source    *ImageSource    `json:"source,omitempty"`      // image block source (base64 payload)
-}
-
-// ImageSource mirrors types.ImageSource for persistence of image content blocks.
-type ImageSource struct {
-	Type      string `json:"type"`       // "base64"
-	MediaType string `json:"media_type"` // "image/png", "image/jpeg", etc.
-	Data      string `json:"data"`       // base64-encoded bytes
 }
 
 // CompactResult holds the output of a compact operation.
