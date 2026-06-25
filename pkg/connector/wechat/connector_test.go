@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/types"
@@ -256,6 +257,16 @@ func TestWrapCopyFriendlyLines_LongLine(t *testing.T) {
 	for _, l := range lines {
 		if len(l) > weixinCopyLineWidth+5 { // allow small fudge
 			t.Fatalf("line too long: %d chars", len(l))
+		}
+	}
+}
+
+func TestWrapLine_ChineseNotCorrupted(t *testing.T) {
+	input := strings.Repeat("瑞", 100)
+	lines := wrapLine(input, 121)
+	for i, l := range lines {
+		if !utf8.ValidString(l) {
+			t.Errorf("line %d is not valid UTF-8: %q", i, l)
 		}
 	}
 }

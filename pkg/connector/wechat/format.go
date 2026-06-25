@@ -3,6 +3,7 @@ package wechat
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // WeChat copy-friendly line width.
@@ -56,8 +57,6 @@ func normalizeMarkdownBlocks(content string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
-// wrapLine wraps a single line at the given width, preserving leading
-// whitespace and not breaking words.
 func wrapLine(line string, width int) []string {
 	trimmed := strings.TrimLeft(line, " \t")
 	prefix := line[:len(line)-len(trimmed)]
@@ -70,21 +69,33 @@ func wrapLine(line string, width int) []string {
 	var result []string
 	current := trimmed
 	for len(current)+indent > width {
-		// Find a good break point: try to break at a space
 		maxContent := width - indent
 		breakAt := strings.LastIndex(current[:maxContent], " ")
 		if breakAt <= 0 {
-			// No space found, force break at maxContent
-			breakAt = maxContent
+			breakAt = runeBoundary(current, maxContent)
+		}
+		if breakAt <= 0 {
+			breakAt = 1
 		}
 		result = append(result, prefix+current[:breakAt])
-		// Skip the space
 		current = strings.TrimLeft(current[breakAt:], " ")
 	}
 	if current != "" {
 		result = append(result, prefix+current)
 	}
 	return result
+}
+
+func runeBoundary(s string, maxBytes int) int {
+	if maxBytes >= len(s) {
+		return len(s)
+	}
+	for i := maxBytes; i > 0; i-- {
+		if utf8.RuneStart(s[i]) {
+			return i
+		}
+	}
+	return 0
 }
 
 // wrapCopyFriendlyLines wraps long display lines that are hard to copy in
