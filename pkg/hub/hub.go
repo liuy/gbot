@@ -190,6 +190,11 @@ func logEngineEvent(event Event) {
 			slog.Info("engine:permission_ask", "tool", event.Ask.ToolName)
 		}
 
+	case types.EventConnectorUserMessage:
+		if event.Message != nil {
+			slog.Info("engine:connector_user_message")
+		}
+
 	default:
 		slog.Info("engine:unknown", "type", event.Type)
 	}

@@ -432,10 +432,17 @@ func main() {
 		engineID := "wechat-" + state.AccountID
 		engineName := "WeChat " + state.AccountID
 
+		// The shared Hub the TUI handler and connector both subscribe to.
+		// Built once per process for this engine; the handler is stored on
+		// the EngineViewState so switchEngine can flip drain roles.
+		var wcHub *hub.Hub
+		var wcHandler *tui.TUIHandler
+
 		// Check if engine already exists (restored from meta.json)
 		if engineMgr.Get(engineID) == nil {
 			wcTaskList := task.NewList("")
 			refs := engine.CreateTools(deps, wcTaskList)
+			wcHub, wcHandler = tui.NewEngineHubWithHandler(engineID, nil)
 			wcEng := engine.New(&engine.Params{
 				Provider:          provider,
 				Model:             model,
@@ -452,7 +459,7 @@ func main() {
 				TaskList:          wcTaskList,
 				ModelThinking:     modelThinking,
 				EngineID:          engineID,
-				Dispatcher:        hub.NewHub(),
+				Dispatcher:        wcHub,
 				ToolsProvider:     refs.Reg.ToolMapFn(),
 			})
 			engine.WireEngine(wcEng, refs, deps)
@@ -466,8 +473,9 @@ func main() {
 
 			engineMgr.Add(&engine.EngineViewState{
 				Engine:          wcEng,
-				Repl:            nil,
-				Handler:         nil,
+				Repl:            tui.NewReplSnapshot(),
+				Handler:         wcHandler,
+				ReadOnly:        true,
 				History:         nil,
 				ID:              engineID,
 				Name:            engineName,
@@ -476,13 +484,54 @@ func main() {
 				CreatedAt:       time.Now(),
 				LastActiveAt:    time.Now(),
 			})
+		} else {
+			// Restored from meta.json via restoreEngines, which builds the
+			// engine through engineFactory with ReadOnly: false and never
+			// wires the connector's hub. Two things must be restored here:
+			//   1. ReadOnly: true — the TUI input must stay disabled because
+			//      this engine is driven by the WeChat connector, not the TUI.
+			//   2. The connector hub — recovered below from wcEng.Dispatcher()
+			//      so the connector and TUI share the same Hub the factory
+			//      built (engineFactory sets Dispatcher: engineHub).
+			if vs := engineMgr.Get(engineID); vs != nil {
+				vs.ReadOnly = true
+				if h, ok := vs.Handler.(*tui.TUIHandler); ok && h != nil {
+					wcHandler = h
+				}
+			}
+			if wcHandler == nil {
+				// Defensive: view state has no handler (shouldn't happen since
+				// engineFactory always builds one). Build a fresh hub so the
+				// connector still works; the TUI just won't render for this
+				// engine.
+				wcHub = hub.NewHub()
+			}
 		}
 
 		wcEng := engineMgr.Get(engineID).Engine
 		if wcEng == nil {
 			slog.Warn("wechat: engine not found after creation", "id", engineID)
 		} else {
-			wc := wechat.New(wcEng)
+			// The connector needs the same *hub.Hub the engine dispatches to
+			// so it sees the engine's events. In the fresh-build branch wcHub
+			// is set directly. In the restore branch the hub only exists as
+			// the engine's Dispatcher (an interface) — recover it by type
+			// assertion so the connector subscribes to the real hub the TUI
+			// is already on, instead of a detached hub that sees no events.
+			connectorHub := wcHub
+			if connectorHub == nil {
+				if h, ok := wcEng.Dispatcher().(*hub.Hub); ok && h != nil {
+					connectorHub = h
+				}
+			}
+			if connectorHub == nil {
+				// Engine's dispatcher is not a *hub.Hub (shouldn't happen —
+				// engineFactory always sets a *hub.Hub). Fall back to a fresh
+				// hub so the connector doesn't crash; it just won't see TUI.
+				slog.Warn("wechat: engine dispatcher is not a *hub.Hub, using isolated hub", "id", engineID)
+				connectorHub = hub.NewHub()
+			}
+			wc := wechat.New(wcEng, connectorHub)
 			go func() {
 				if err := wc.Start(context.Background()); err != nil {
 					slog.Warn("wechat: start failed", "error", err)
@@ -697,6 +746,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			Model:           em.Model,
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
+			ReadOnly:        false,
 		})
 	}
 

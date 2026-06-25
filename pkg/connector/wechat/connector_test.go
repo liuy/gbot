@@ -3,7 +3,6 @@ package wechat
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -533,74 +533,167 @@ func TestSaveState_CreatesDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleInbound — uses QueryResult.Reply
+// handleInbound — async query + serial gate (queryDone)
 // ---------------------------------------------------------------------------
 
-func TestHandleInbound_QueryError_SendsErrorToUser(t *testing.T) {
-	var sentText string
+// hubSpy is a minimal hub.EventHandler that records events for assertions.
+type hubSpy struct {
+	mu     sync.Mutex
+	events []types.QueryEvent
+}
+
+func (s *hubSpy) Handle(event hub.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+}
+
+func (s *hubSpy) connectorUserMessages() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, e := range s.events {
+		if e.Type == types.EventConnectorUserMessage {
+			n++
+		}
+	}
+	return n
+}
+
+// newHandleInboundConnector builds a connector wired for handleInbound tests:
+// a real Hub with a spy, a stub queryFn that records the call, and a capture
+// sendToUserFn. The caller overrides queryFn (the default is a no-op that
+// does NOT close queryDone, so handleInbound blocks).
+func newHandleInboundConnector() (*WeChatConnector, *hubSpy, *[]string) {
+	h := hub.NewHub()
+	spy := &hubSpy{}
+	h.Subscribe(spy)
+
+	var sentTexts []string
 	c := &WeChatConnector{
+		hub:       h,
 		inboundCh: make(chan inboundMessage, 10),
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sentTexts = append(sentTexts, text)
+			return nil
+		},
 	}
-	// Mock: query fails with error
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Error: fmt.Errorf("API rate limit exceeded")}
-	}
-	// Record what would be sent
-	c.sendToUserFn = func(_ context.Context, _, text string) error {
-		sentText = text
-		return nil
+	// Default: does nothing. Tests override to close queryDone.
+	c.queryFn = func(_ context.Context, _, _ string) {}
+	return c, spy, &sentTexts
+}
+
+func TestHandleInbound_SetsActiveUserAndDispatchesUserMessage(t *testing.T) {
+	c, spy, _ := newHandleInboundConnector()
+	// Override queryFn to record the call and close queryDone so
+	// handleInbound unblocks.
+	called := false
+	c.queryFn = func(_ context.Context, _, _ string) {
+		called = true
+		if c.queryDone != nil {
+			close(c.queryDone)
+			c.queryDone = nil
+		}
 	}
 
-	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hello"})
+	c.handleInbound(context.Background(), inboundMessage{userID: "userA", text: "hello"})
 
-	if sentText == "" {
-		t.Error("handleInbound: error should send a message to user, but sendToUser was not called")
+	if c.activeUserID != "userA" {
+		t.Fatalf("activeUserID = %q, want %q", c.activeUserID, "userA")
 	}
-	if !strings.Contains(sentText, "Error") || !strings.Contains(sentText, "rate limit") {
-		t.Errorf("handleInbound: error message should mention the error, got: %q", sentText)
+	if !called {
+		t.Fatal("queryFn was not called")
+	}
+	if got := spy.connectorUserMessages(); got != 1 {
+		t.Fatalf("connector user messages dispatched = %d, want 1", got)
 	}
 }
 
-func TestHandleInbound_Success_SendsReply(t *testing.T) {
-	var sentText string
-	c := &WeChatConnector{
-		inboundCh: make(chan inboundMessage, 10),
-	}
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Reply: "你好！有什么可以帮你的？"}
-	}
-	c.sendToUserFn = func(_ context.Context, _, text string) error {
-		sentText = text
-		return nil
+func TestHandleInbound_BlocksUntilQueryDoneCloses(t *testing.T) {
+	c, _, _ := newHandleInboundConnector()
+	// queryFn captures the queryDone channel and signals that handleInbound
+	// has reached the query call (and is about to block on queryDone). The
+	// test then closes the captured channel to simulate EventQueryEnd.
+	ready := make(chan struct{})
+	var qDone chan struct{}
+	c.queryFn = func(_ context.Context, _, _ string) {
+		qDone = c.queryDone
+		close(ready)
 	}
 
-	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
+	done := make(chan struct{})
+	go func() {
+		c.handleInbound(context.Background(), inboundMessage{userID: "u1", text: "x"})
+		close(done)
+	}()
 
-	if sentText == "" {
-		t.Fatal("handleInbound: success should send reply, but sendToUser was not called")
+	<-ready // handleInbound has called queryFn and is now blocked on qDone
+	if qDone == nil {
+		t.Fatal("queryDone was not captured")
 	}
-	if !strings.Contains(sentText, "你好") {
-		t.Errorf("handleInbound: sent text should contain the reply, got: %q", sentText)
+	// Closing qDone (as Handle's EventQueryEnd does) must unblock handleInbound.
+	close(qDone)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleInbound did not unblock after queryDone closed")
 	}
 }
 
-func TestHandleInbound_EmptyReply_DoesNotSend(t *testing.T) {
-	sent := false
-	c := &WeChatConnector{
-		inboundCh: make(chan inboundMessage, 10),
-	}
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Reply: ""}
-	}
-	c.sendToUserFn = func(_ context.Context, _, _ string) error {
-		sent = true
-		return nil
+func TestHandleInbound_PreservesSerialOrder(t *testing.T) {
+	// Serial guarantee is enforced by processLoop reading inboundCh one
+	// message at a time. Two messages queued back-to-back must run strictly
+	// in order: the second's queryFn only fires after the first's queryDone
+	// closes. We detect overlap via a gate that fails if two queries run
+	// concurrently.
+	c, _, _ := newHandleInboundConnector()
+	var mu sync.Mutex
+	var order []string
+	inFlight := 0
+	overlap := false
+	processed := make(chan string, 2)
+	c.queryFn = func(_ context.Context, msg, _ string) {
+		mu.Lock()
+		inFlight++
+		if inFlight > 1 {
+			overlap = true
+		}
+		order = append(order, msg)
+		mu.Unlock()
+		// Simulate query completion: close queryDone (as EventQueryEnd does).
+		c.Handle(types.QueryEvent{Type: types.EventQueryEnd})
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		processed <- msg
 	}
 
-	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
+	// Drive through processLoop: queue two messages, run the loop with a
+	// cancellable context, cancel after both are processed.
+	ctx, cancel := context.WithCancel(context.Background())
+	c.pollWg.Add(1)
+	go c.processLoop(ctx)
+	c.inboundCh <- inboundMessage{userID: "u1", text: "first"}
+	c.inboundCh <- inboundMessage{userID: "u2", text: "second"}
 
-	if sent {
-		t.Error("handleInbound: empty reply should not trigger sendToUser")
+	// Wait for both to process via the channel (no polling).
+	for range 2 {
+		select {
+		case <-processed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for messages to process")
+		}
+	}
+	cancel()
+	c.pollWg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if overlap {
+		t.Fatalf("queries overlapped (not serial), order = %v", order)
+	}
+	if len(order) != 2 || order[0] != "first" || order[1] != "second" {
+		t.Fatalf("serial order wrong, got %v", order)
 	}
 }
 
@@ -686,24 +779,20 @@ func firstChars(s string, n int) string {
 	return string(r[:n])
 }
 
-// Chain test: long reply → handleInbound → multiple sendToUserFn calls.
+// sendWeChatReply splits long replies into multiple WeChat messages.
 // This catches the real production issue: WeChat silently truncates or drops
 // messages over ~2000 chars, so the user never sees the full reply.
-func TestHandleInbound_LongReply_SendsMultipleMessages(t *testing.T) {
+func TestSendWeChatReply_LongReply_SendsMultipleMessages(t *testing.T) {
 	var sentTexts []string
 	c := &WeChatConnector{
-		inboundCh: make(chan inboundMessage, 10),
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sentTexts = append(sentTexts, text)
+			return nil
+		},
 	}
 	longReply := strings.Repeat("这是回复内容。", 300) // ~2100 chars
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Reply: longReply}
-	}
-	c.sendToUserFn = func(_ context.Context, _, text string) error {
-		sentTexts = append(sentTexts, text)
-		return nil
-	}
 
-	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "长文"})
+	c.sendWeChatReply(context.Background(), "user1", longReply)
 
 	if len(sentTexts) < 2 {
 		t.Fatalf("long reply should send multiple messages, got %d", len(sentTexts))

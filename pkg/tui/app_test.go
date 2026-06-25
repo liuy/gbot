@@ -1319,6 +1319,29 @@ func TestApp_ReadEvents_AppChClosed(t *testing.T) {
 // updateRepl — turnStartMsg, streamMessageMsg, toolEndMsg
 // ---------------------------------------------------------------------------
 
+// TestApp_Update_RoutesUserMessageMsg — userMessageMsg MUST be routed by
+// App.Update's type switch to updateRepl, which calls AddUserMessage.
+// Regression: userMessageMsg was missing from the type switch case list,
+// so it fell through to the default branch and was silently dropped.
+func TestApp_Update_RoutesUserMessageMsg(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+
+	model, _ := app.Update(userMessageMsg{Text: "from wechat"})
+
+	appModel, ok := model.(*App)
+	if !ok {
+		t.Fatalf("Update returned %T, want *App", model)
+	}
+	msgs := appModel.repl.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message rendered, got %d — userMessageMsg was not routed to updateRepl", len(msgs))
+	}
+	if msgs[0].Role != "user" || len(msgs[0].Blocks) != 1 || msgs[0].Blocks[0].Text != "from wechat" {
+		t.Errorf("message = %+v, want role=user text=from wechat", msgs[0])
+	}
+}
+
 func TestApp_UpdateRepl_TurnStart(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})

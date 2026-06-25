@@ -136,6 +136,14 @@ type submitMsg struct {
 	Text string
 }
 
+// userMessageMsg renders a user message in the TUI that did NOT originate
+// from local input — e.g. a WeChat user message routed through the Hub.
+// Unlike submitMsg, this does not start a query (the connector already
+// called engine.Query separately).
+type userMessageMsg struct {
+	Text string
+}
+
 // errMsg wraps an error for display in the TUI.
 type errMsg struct {
 	Err error

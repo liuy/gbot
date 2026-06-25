@@ -353,6 +353,12 @@ const (
 
 	// Retry: engine is retrying a failed stream attempt.
 	EventRetryAttempt QueryEventType = "retry_attempt"
+
+	// EventConnectorUserMessage carries a user message from an external connector
+	// (WeChat) so the TUI can render it. The connector dispatches this BEFORE
+	// calling engine.Query, because the TUI's own commitInput path already calls
+	// AddUserMessage — reusing QueryStart would double-render.
+	EventConnectorUserMessage QueryEventType = "connector_user_message"
 )
 
 // AgentMeta tags events originating from a sub-agent.

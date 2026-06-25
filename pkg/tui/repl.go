@@ -1427,6 +1427,11 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		a.input.Focus()
 		return true, errCommitCmd
 
+	case userMessageMsg:
+		a.markViewportDirty()
+		a.repl.AddUserMessage(m.Text)
+		return true, a.readEvents()
+
 	case submitMsg:
 		return true, a.handleSubmitRepl(m.Text)
 
@@ -1480,6 +1485,14 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 
 // handleSubmitRepl initiates a streaming query and sets up the REPL state.
 func (a *App) handleSubmitRepl(text string) tea.Cmd {
+	// Read-only engine guard: the engine is driven by an external connector
+	// (WeChat) that calls engine.Query directly; a TUI submit would race
+	// with it. Slash commands (starting with '/') are still allowed so the
+	// user can /engine switch away.
+	if a.inputReadOnly && !strings.HasPrefix(strings.TrimSpace(text), "/") {
+		return a.showInfo("This engine is read-only (driven by WeChat). Use /engine to switch.")
+	}
+
 	slog.Info("tui:query_start", "text", tool.TruncateRunes(text, 100), "text_len", len(text), "committedCount", a.repl.committedCount, "totalMessages", len(a.repl.messages))
 
 	// Dispatch before the streaming check — switching engines mid-stream

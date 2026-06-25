@@ -137,6 +137,12 @@ func (i *Input) SetWidth(w int) {
 	i.width = w
 }
 
+// SetPlaceholder sets the placeholder text shown when the input is empty and
+// blurred. Used by switchEngine to reflect read-only engines.
+func (i *Input) SetPlaceholder(text string) {
+	i.placeholder = text
+}
+
 // wrapLines wraps the input value into visual lines based on display width.
 // Source: Cursor.ts — MeasuredText.measureWrappedText() (simplified rune-based version).
 // All lines wrap at the same width — prompt/indent is handled by the caller.

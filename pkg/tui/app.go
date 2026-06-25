@@ -138,6 +138,11 @@ type App struct {
 	hub        *hub.Hub
 	tuiHandler *TUIHandler
 
+	// inputReadOnly mirrors the active engine's EngineViewState.ReadOnly. Set in
+	// switchEngine. When true, the input box rejects submits and shows a
+	// read-only placeholder (the engine is driven by an external connector).
+	inputReadOnly bool
+
 	// Idle listener stop channel — closed when user submits to abort
 	// an idle readEvents goroutine. Prevents goroutine leak.
 	idleStop chan struct{}
@@ -218,6 +223,7 @@ func NewApp(eng *engine.Engine, systemPrompt string, h *hub.Hub) *App {
 			Model:           eng.Model(),
 			CreatedAt:       time.Now(),
 			LastActiveAt:    time.Now(),
+			ReadOnly:        false,
 		})
 	}
 	return NewAppWithManager(mgr, systemPrompt, h)
@@ -1068,7 +1074,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		attachmentMsg, idleAbortedMsg,
 		infoMsg, errMsg, submitMsg, spinnerTickMsg, bgTickMsg,
 		permissionAskMsg, inputAskMsg, retryAttemptMsg,
-		quotaUpdatedMsg, modelQuotaFetchedMsg:
+		quotaUpdatedMsg, modelQuotaFetchedMsg, userMessageMsg:
 		handled, cmd := a.updateRepl(msg)
 		if handled {
 			return a, cmd

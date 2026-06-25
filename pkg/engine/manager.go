@@ -34,6 +34,13 @@ type EngineViewState struct {
 	Model           string
 	CreatedAt       time.Time
 	LastActiveAt    time.Time
+
+	// ReadOnly marks an engine whose input box must be disabled in the TUI.
+	// The engine is driven exclusively by an external connector (e.g. WeChat)
+	// that calls engine.Query directly; a TUI submit would race with it.
+	// Read by switchEngine to set the input into a read-only state and by
+	// handleSubmitRepl to reject submits defensively.
+	ReadOnly bool
 }
 
 // EngineViewSnapshot is a point-in-time copy of an EngineViewState for

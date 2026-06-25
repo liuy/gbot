@@ -24,6 +24,12 @@ func (a replSnapshotAdapter) CurrentToolName() string {
 	return a.r.CurrentToolName()
 }
 
+// NewReplSnapshot creates a fresh ReplState wrapped as engine.ReplSnapshot,
+// for callers outside the tui package (e.g. main.go creating engine view states).
+func NewReplSnapshot() engine.ReplSnapshot {
+	return replSnapshotAdapter{r: NewReplState()}
+}
+
 // newReplAdapter wraps a *ReplState as an engine.ReplSnapshot.
 func newReplAdapter(r *ReplState) engine.ReplSnapshot {
 	return replSnapshotAdapter{r: r}
@@ -110,6 +116,12 @@ func (a *App) buildBackgroundDrainFn(vs *engine.EngineViewState) func(tea.Msg) {
 	repl := r.r
 	return func(msg tea.Msg) {
 		switch m := msg.(type) {
+		case userMessageMsg:
+			// A connector (e.g. WeChat) dispatched a user message while this
+			// engine is in background. Render it so the conversation is
+			// visible when the user switches to this engine. Does NOT start
+			// a query (the connector already called engine.Query).
+			repl.AddUserMessage(m.Text)
 		case textDeltaMsg:
 			if m.Agent == nil {
 				repl.AppendChunk(m.Text)

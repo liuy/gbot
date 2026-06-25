@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/liuy/gbot/pkg/engine"
+	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -103,24 +104,43 @@ func (m *mockTypingAPI) getCalls() []typingCall {
 	return out
 }
 
-// Chain test: inbound → startTyping → querySync → stopTyping → send reply.
-// Verifies the user sees "typing..." while the engine works, and it stops
-// before the reply arrives.
+// simulateQueryEvents dispatches a full query lifecycle (text reply + end)
+// through the Hub, then closes queryDone so handleInbound unblocks. This
+// mimics what the real engine does on the dispatch goroutine: query failures
+// are delivered as EventQueryEnd{Error: err}, never as a separate EventError.
+func simulateQueryEvents(h *hub.Hub, reply string, queryErr error) {
+	if reply != "" {
+		h.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: reply})
+		h.Dispatch(types.QueryEvent{Type: types.EventTextEnd})
+	}
+	endEvt := types.QueryEvent{Type: types.EventQueryEnd}
+	if queryErr != nil {
+		endEvt.Error = queryErr
+	}
+	h.Dispatch(endEvt)
+}
+
+// Chain test: inbound → startTyping → async query → reply via Handle →
+// stopTyping in QueryEnd. Verifies the user sees "typing..." while the engine
+// works, and it stops when the query ends.
 func TestHandleInbound_TypingIndicator_StartAndStop(t *testing.T) {
 	typingAPI := &mockTypingAPI{}
 	var sentTexts []string
 
+	h := hub.NewHub()
 	c := &WeChatConnector{
+		hub:         h,
 		inboundCh:   make(chan inboundMessage, 10),
 		typingCache: newTypingTicketCache(600 * time.Second),
 		typingAPI:   typingAPI,
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sentTexts = append(sentTexts, text)
+			return nil
+		},
 	}
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Reply: "done"}
-	}
-	c.sendToUserFn = func(_ context.Context, _, text string) error {
-		sentTexts = append(sentTexts, text)
-		return nil
+	h.Subscribe(c)
+	c.queryFn = func(_ context.Context, _, _ string) {
+		simulateQueryEvents(h, "done", nil)
 	}
 
 	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
@@ -149,21 +169,26 @@ func TestHandleInbound_TypingIndicator_StartAndStop(t *testing.T) {
 	}
 }
 
-// Typing must stop even if querySync returns an error — otherwise the
-// WeChat client shows "typing..." forever.
+// Typing must stop even if the query errors — otherwise the WeChat client
+// shows "typing..." forever. On error the engine emits a single
+// EventQueryEnd{Error: err}; Handle sends the error message and stops typing
+// in the same case.
 func TestHandleInbound_TypingStopsOnQueryError(t *testing.T) {
 	typingAPI := &mockTypingAPI{}
 
+	h := hub.NewHub()
 	c := &WeChatConnector{
+		hub:         h,
 		inboundCh:   make(chan inboundMessage, 10),
 		typingCache: newTypingTicketCache(600 * time.Second),
 		typingAPI:   typingAPI,
+		sendToUserFn: func(_ context.Context, _, _ string) error {
+			return nil
+		},
 	}
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Error: context.DeadlineExceeded}
-	}
-	c.sendToUserFn = func(_ context.Context, _, _ string) error {
-		return nil
+	h.Subscribe(c)
+	c.queryFn = func(_ context.Context, _, _ string) {
+		simulateQueryEvents(h, "", context.DeadlineExceeded)
 	}
 
 	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
@@ -185,17 +210,20 @@ func TestHandleInbound_TypingFailure_DoesNotBlock(t *testing.T) {
 	typingAPI := &mockTypingAPI{getErr: context.DeadlineExceeded}
 	sent := false
 
+	h := hub.NewHub()
 	c := &WeChatConnector{
+		hub:         h,
 		inboundCh:   make(chan inboundMessage, 10),
 		typingCache: newTypingTicketCache(600 * time.Second),
 		typingAPI:   typingAPI,
+		sendToUserFn: func(_ context.Context, _, _ string) error {
+			sent = true
+			return nil
+		},
 	}
-	c.querySyncFn = func(_ context.Context, _, _ string) *engine.QueryResult {
-		return &engine.QueryResult{Reply: "ok"}
-	}
-	c.sendToUserFn = func(_ context.Context, _, _ string) error {
-		sent = true
-		return nil
+	h.Subscribe(c)
+	c.queryFn = func(_ context.Context, _, _ string) {
+		simulateQueryEvents(h, "ok", nil)
 	}
 
 	c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})

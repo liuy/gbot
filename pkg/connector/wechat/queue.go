@@ -3,10 +3,11 @@ package wechat
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // processLoop is the serial message processing loop.
@@ -26,32 +27,41 @@ func (c *WeChatConnector) processLoop(ctx context.Context) {
 }
 
 // handleInbound processes a single inbound message through the engine.
+// Sets activeUserID, dispatches EventConnectorUserMessage (so the TUI renders
+// the user message via the shared Hub), calls the async engine query, then
+// blocks on queryDone until Handle's EventQueryEnd closes it — preserving
+// one-query-at-a-time semantics despite the async engine query.
 func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage) {
 	slog.Info("wechat: process inbound", "user", safeID(msg.userID))
 
+	c.activeUserID = msg.userID
+	c.queryDone = make(chan struct{})
+	done := c.queryDone
 	c.startTyping(ctx, msg.userID)
-	defer c.stopTyping(ctx, msg.userID)
 
-	result := c.querySyncFn(ctx, msg.text, "")
+	c.hub.Dispatch(types.QueryEvent{
+		Type: types.EventConnectorUserMessage,
+		Message: &types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{types.NewTextBlock(msg.text)},
+		},
+	})
 
-	if result.Error != nil {
-		slog.Warn("wechat: query error", "user", safeID(msg.userID), "error", result.Error)
-		if err := c.sendToUserFn(ctx, msg.userID, fmt.Sprintf("⚠️ Error: %v", result.Error)); err != nil {
-			slog.Error("wechat: send error message failed", "user", safeID(msg.userID), "error", err)
-		}
-		return
+	// Async — returns immediately. Results arrive via Handle() events.
+	// engine may be nil in unit tests (queryFn is stubbed); guard the
+	// SystemPrompt call so the test seam works without a real engine.
+	sysPrompt := ""
+	if c.engine != nil {
+		sysPrompt = c.engine.SystemPrompt()
 	}
+	c.queryFn(ctx, msg.text, sysPrompt)
 
-	reply := result.Reply
-	slog.Info("wechat: query done", "user", safeID(msg.userID),
-		"msgCount", len(result.Messages), "replyLen", len(reply))
-	if reply != "" {
-		for _, chunk := range splitForWeChat(formatMessage(reply)) {
-			if err := c.sendToUserFn(ctx, msg.userID, chunk); err != nil {
-				slog.Error("wechat: send reply failed", "user", safeID(msg.userID), "error", err)
-				return
-			}
-		}
+	// Block until this query's EventQueryEnd closes queryDone. processLoop
+	// reads the next inboundCh message only after this returns, preserving
+	// one-query-at-a-time semantics despite the async engine query.
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 

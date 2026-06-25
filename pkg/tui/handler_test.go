@@ -119,6 +119,64 @@ func TestConvertEventToMsg_EventQueryStart_NilMessage(t *testing.T) {
 	}
 }
 
+// EventConnectorUserMessage → userMessageMsg carrying the first text block.
+func TestConvertEventToMsg_ConnectorUserMessage(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type: types.EventConnectorUserMessage,
+		Message: &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{
+				types.NewTextBlock("hello from wechat"),
+			},
+		},
+	})
+	if msg == nil {
+		t.Fatal("EventConnectorUserMessage with non-nil Message should not return nil")
+	}
+	um, ok := msg.(userMessageMsg)
+	if !ok {
+		t.Fatalf("expected userMessageMsg, got %T", msg)
+	}
+	if um.Text != "hello from wechat" {
+		t.Errorf("expected text %q, got %q", "hello from wechat", um.Text)
+	}
+}
+
+func TestConvertEventToMsg_ConnectorUserMessage_NilMessage(t *testing.T) {
+	h := NewTUIHandler()
+	msg := h.convertEventToMsg(types.QueryEvent{
+		Type:    types.EventConnectorUserMessage,
+		Message: nil,
+	})
+	if msg != nil {
+		t.Errorf("EventConnectorUserMessage with nil Message should return nil, got %T", msg)
+	}
+}
+
+func TestTextOfFirstTextBlock(t *testing.T) {
+	if got := textOfFirstTextBlock(nil); got != "" {
+		t.Errorf("nil message = %q, want empty", got)
+	}
+	msg := &types.Message{Content: []types.ContentBlock{types.NewTextBlock("abc")}}
+	if got := textOfFirstTextBlock(msg); got != "abc" {
+		t.Errorf("text block = %q, want %q", got, "abc")
+	}
+	// First non-text block is skipped; returns the first text block.
+	msg2 := &types.Message{Content: []types.ContentBlock{
+		{Type: types.ContentTypeToolUse},
+		types.NewTextBlock("real"),
+	}}
+	if got := textOfFirstTextBlock(msg2); got != "real" {
+		t.Errorf("first text block = %q, want %q", got, "real")
+	}
+	// No text block at all.
+	msg3 := &types.Message{Content: []types.ContentBlock{{Type: types.ContentTypeToolUse}}}
+	if got := textOfFirstTextBlock(msg3); got != "" {
+		t.Errorf("no text block = %q, want empty", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Handle — nil msg (unhandled event)
 // ---------------------------------------------------------------------------

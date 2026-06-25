@@ -185,6 +185,12 @@ func (h *TUIHandler) convertEventToMsg(evt types.QueryEvent) tea.Msg {
 		}
 		return nil
 
+	case types.EventConnectorUserMessage:
+		if evt.Message != nil {
+			return userMessageMsg{Text: textOfFirstTextBlock(evt.Message)}
+		}
+		return nil
+
 	case types.EventToolStart:
 		if evt.ToolUse != nil {
 			return toolStartMsg{
@@ -347,4 +353,19 @@ func unescapeXML(s string) string {
 	s = strings.ReplaceAll(s, "&lt;", "<")
 	s = strings.ReplaceAll(s, "&amp;", "&")
 	return s
+}
+
+// textOfFirstTextBlock returns the Text field of the first text content block
+// in msg, or "" if the message is nil or has no text block. Used by the
+// EventConnectorUserMessage converter to extract connector-originated user text.
+func textOfFirstTextBlock(msg *types.Message) string {
+	if msg == nil {
+		return ""
+	}
+	for _, b := range msg.Content {
+		if b.Type == types.ContentTypeText {
+			return b.Text
+		}
+	}
+	return ""
 }

@@ -224,6 +224,12 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 
 	// Sync cached pointers to the newly-active engine.
 	a.engine = target.Engine
+	a.inputReadOnly = target.ReadOnly
+	if target.ReadOnly {
+		a.input.SetPlaceholder("Read-only (driven by WeChat) — use /engine to switch")
+	} else {
+		a.input.SetPlaceholder("Type a message...")
+	}
 	if r, ok := target.Repl.(replSnapshotAdapter); ok && r.r != nil {
 		a.repl = r.r
 	} else if target.Engine != nil {
@@ -385,6 +391,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 		Model:           eng.Model(),
 		CreatedAt:       time.Now(),
 		LastActiveAt:    time.Now(),
+		ReadOnly:        false,
 	}
 	a.engineMgr.Add(vs)
 	// Handler is already subscribed to the engine's own Hub inside the
