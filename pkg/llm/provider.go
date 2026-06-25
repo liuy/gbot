@@ -252,7 +252,7 @@ func DefaultRetryConfig() *RetryConfig {
 
 // BaseProvider holds fields shared by all providers.
 type BaseProvider struct {
-	name        string           // provider identifier (e.g. "zhipu"); set at construction
+	name        string // provider identifier (e.g. "zhipu"); set at construction
 	httpClient  *http.Client
 	retryConfig *RetryConfig
 	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider

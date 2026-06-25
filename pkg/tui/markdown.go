@@ -486,10 +486,7 @@ func (r *ansiRenderer) renderTable() {
 		const minWidth = 3
 		borderCols := numCols + 1
 		paddingCols := 2 * numCols
-		available := r.maxWidth - borderCols - paddingCols
-		if available < numCols*minWidth {
-			available = numCols * minWidth
-		}
+		available := max(r.maxWidth-borderCols-paddingCols, numCols*minWidth)
 		totalContent := 0
 		for _, w := range colWidths {
 			totalContent += w
@@ -500,16 +497,7 @@ func (r *ansiRenderer) renderTable() {
 			scaled := make([]int, numCols)
 			remaining := available
 			for i := range colWidths {
-				w := int(float64(colWidths[i]) * scale)
-				if w < minWidth {
-					w = minWidth
-				}
-				if w > remaining {
-					w = remaining
-				}
-				if w < minWidth {
-					w = minWidth
-				}
+				w := max(min(max(int(float64(colWidths[i])*scale), minWidth), remaining), minWidth)
 				scaled[i] = w
 				remaining -= w
 			}

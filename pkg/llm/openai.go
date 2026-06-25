@@ -56,7 +56,7 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 	}
 	return &OpenAIProvider{
 		BaseProvider: BaseProvider{
-			name:   cfg.Name,
+			name: cfg.Name,
 			httpClient: &http.Client{
 				Timeout:   cfg.Timeout,
 				Transport: newLLMTransport(),
@@ -207,6 +207,12 @@ type toolCallAccumulator struct {
 // ---------------------------------------------------------------------------
 
 func (p *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
+	// Read file-backed image blocks off disk and convert to base64 before
+	// validation/serialization — the wire format has no file-path source.
+	if err := MaterializeFileImages(req); err != nil {
+		return nil, err
+	}
+
 	if err := ValidateImagesForAPI(req.Messages); err != nil {
 		return nil, err
 	}
@@ -300,6 +306,12 @@ var maxToolArgumentsSize = 10 * 1024 * 1024
 // ---------------------------------------------------------------------------
 
 func (p *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
+	// Read file-backed image blocks off disk and convert to base64 before
+	// validation/serialization — the wire format has no file-path source.
+	if err := MaterializeFileImages(req); err != nil {
+		return nil, err
+	}
+
 	if err := ValidateImagesForAPI(req.Messages); err != nil {
 		return nil, err
 	}

@@ -40,11 +40,26 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.lastFlush = time.Now()
 	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
 
+	// Build the display text for the TUI render. The TUI does not render image
+	// blocks arriving via the connector path (it renders its own input), so an
+	// image-only message would otherwise render blank — append a human-readable
+	// placeholder so the attachment is visible. Document-attachment text blocks
+	// already carry their own "[Document attachment: ...]" marker.
+	displayText := msg.text
+	for _, cb := range msg.content {
+		switch cb.Type {
+		case types.ContentTypeImage:
+			if displayText != "" {
+				displayText += " "
+			}
+			displayText += "[image]"
+		}
+	}
 	c.hub.Dispatch(types.QueryEvent{
 		Type: types.EventConnectorUserMessage,
 		Message: &types.Message{
 			Role:    types.RoleUser,
-			Content: []types.ContentBlock{types.NewTextBlock(msg.text)},
+			Content: []types.ContentBlock{types.NewTextBlock(displayText)},
 		},
 	})
 
@@ -55,7 +70,15 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	if c.engine != nil {
 		sysPrompt = c.engine.SystemPrompt()
 	}
-	c.queryFn(ctx, msg.text, sysPrompt)
+	// When content blocks are present, bypass the text-only queryFn and dispatch
+	// the assembled blocks via QueryWithContent (the image/document path).
+	// Existing text-only tests stub queryFn and send no content, so they take
+	// the else branch unchanged.
+	if len(msg.content) > 0 && c.queryWithContentFn != nil {
+		c.queryWithContentFn(ctx, msg.content, sysPrompt)
+	} else {
+		c.queryFn(ctx, msg.text, sysPrompt)
+	}
 
 	// Block until this query's EventQueryEnd closes queryDone. processLoop
 	// reads the next inboundCh message only after this returns, preserving

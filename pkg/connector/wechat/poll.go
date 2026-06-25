@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/liuy/gbot/pkg/types"
 )
 
 // pollLoop is the long-poll loop for inbound messages.
@@ -94,7 +96,7 @@ func (c *WeChatConnector) pollLoop(ctx context.Context) {
 		}
 
 		for _, msg := range resp.Msgs {
-			c.processInbound(msg)
+			c.processInbound(ctx, msg)
 		}
 	}
 }
@@ -108,7 +110,7 @@ func isStaleSession(ret, errcode int, errmsg string) bool {
 }
 
 // processInbound filters and enqueues an inbound message.
-func (c *WeChatConnector) processInbound(msg Message) {
+func (c *WeChatConnector) processInbound(ctx context.Context, msg Message) {
 	// Filter self-messages
 	if msg.FromUserID == c.state.AccountID {
 		return
@@ -119,10 +121,26 @@ func (c *WeChatConnector) processInbound(msg Message) {
 		return
 	}
 
-	// Dedup by message_id only — content dedup blocks legitimate repeat messages
+	// text carries the caption / voice transcription, independent of media
+	// download — a message with BOTH an image and a caption produces an image
+	// block followed by the caption text block.
 	text := extractText(msg.ItemList)
 
-	if text == "" && !hasMedia(msg.ItemList) {
+	var content []types.ContentBlock
+	if c.mediaCache != nil && hasMedia(msg.ItemList) {
+		if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
+			// Build content: [mediaBlock, textBlock] — image first so the model
+			// sees the attachment, text after for the caption (which may include
+			// a voice transcription surfaced by extractText).
+			content = append(content, block)
+			if text != "" {
+				content = append(content, types.NewTextBlock(text))
+			}
+		}
+	}
+
+	// Drop messages with neither text nor a usable media block.
+	if text == "" && len(content) == 0 {
 		return
 	}
 
@@ -131,15 +149,15 @@ func (c *WeChatConnector) processInbound(msg Message) {
 		c.setStateContextToken(msg.FromUserID, msg.ContextToken)
 	}
 
-	// Enqueue for processing
-	c.enqueue(msg.FromUserID, text, msg.ItemList)
+	c.enqueue(msg.FromUserID, text, content)
 }
 
 // enqueue sends an inbound message to the serial processing loop.
-func (c *WeChatConnector) enqueue(userID, text string, _ []Item) {
+func (c *WeChatConnector) enqueue(userID, text string, content []types.ContentBlock) {
 	msg := inboundMessage{
-		userID: userID,
-		text:   text,
+		userID:  userID,
+		text:    text,
+		content: content,
 	}
 	select {
 	case c.inboundCh <- msg:

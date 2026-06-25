@@ -210,15 +210,37 @@ func NewToolResultBlock(toolUseID string, content json.RawMessage, isError bool)
 
 // ImageSource is the source payload of an image content block.
 // Source: Anthropic API image block source — {type:"base64", media_type, data}.
+//
+// Two source types are supported:
+//   - "base64": Data carries inline base64-encoded bytes (the only wire form
+//     the Anthropic/OpenAI APIs accept).
+//   - "file": Path references a local file that providers read and base64-
+//     encode at request time (see llm.MaterializeFileImages). Used by the
+//     WeChat connector to avoid storing large base64 blobs in the message DB.
 type ImageSource struct {
-	Type      string `json:"type"`       // "base64"
-	MediaType string `json:"media_type"` // "image/png", "image/jpeg", etc.
-	Data      string `json:"data"`       // base64-encoded bytes
+	Type      string `json:"type"`           // "base64" | "file"
+	MediaType string `json:"media_type"`     // "image/png", "image/jpeg", etc.
+	Data      string `json:"data,omitempty"` // base64-encoded bytes (Type == "base64")
+	Path      string `json:"path,omitempty"` // local file path (Type == "file")
 }
+
+// IsFileSource returns true if the source references a local file that must be
+// read and base64-encoded at request time (Type == "file").
+func (s *ImageSource) IsFileSource() bool { return s != nil && s.Type == "file" }
 
 // NewImageBlock creates an image content block carrying base64-encoded image data.
 func NewImageBlock(source ImageSource) ContentBlock {
 	return ContentBlock{Type: ContentTypeImage, Source: &source}
+}
+
+// NewFileImageBlock creates an image content block referencing a local file.
+// The provider reads and base64-encodes Path at request time (see
+// llm.MaterializeFileImages). mediaType must be an image/* MIME type.
+func NewFileImageBlock(mediaType, path string) ContentBlock {
+	return ContentBlock{
+		Type:   ContentTypeImage,
+		Source: &ImageSource{Type: "file", MediaType: mediaType, Path: path},
+	}
 }
 
 // ---------------------------------------------------------------------------

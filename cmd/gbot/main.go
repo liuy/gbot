@@ -31,6 +31,7 @@ import (
 	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/lsp"
 	"github.com/liuy/gbot/pkg/mcp"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/memory/dream"
 	"github.com/liuy/gbot/pkg/memory/long"
 	"github.com/liuy/gbot/pkg/memory/session"
@@ -52,6 +53,11 @@ import (
 )
 
 func main() {
+	// mediaStore holds the WeChat media cache so main can Close() it (stopping
+	// the cache's background cleanup goroutine) during shutdown. The cache
+	// package owns the goroutine lifecycle; the connector only Save/Get's.
+	var mediaStore *media.Store
+
 	// Debug logging: write info-level events to log file.
 	// This provides comprehensive observability for diagnosing token stats,
 	// event ordering, and rendering issues.
@@ -532,6 +538,9 @@ func main() {
 				connectorHub = hub.NewHub()
 			}
 			wc := wechat.New(wcEng, connectorHub)
+			// Capture the media cache for shutdown teardown (the cache owns its
+			// cleanup goroutine; main must Close() it to stop that goroutine).
+			mediaStore = wc.MediaCache()
 			go func() {
 				if err := wc.Start(context.Background()); err != nil {
 					slog.Warn("wechat: start failed", "error", err)
@@ -668,6 +677,11 @@ func main() {
 		if vs.Engine != nil {
 			vs.Engine.Close()
 		}
+	}
+	// Stop the WeChat media cache cleanup goroutine (the cache owns it; the
+	// connector only Save/Get's). No-op when no WeChat connector was created.
+	if mediaStore != nil {
+		mediaStore.Close()
 	}
 }
 

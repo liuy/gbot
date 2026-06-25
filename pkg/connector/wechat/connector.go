@@ -5,20 +5,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
 
 // inboundMessage represents a message from WeChat to be processed by the engine.
 type inboundMessage struct {
-	userID string
-	text   string
+	userID  string
+	text    string               // caption / voice transcription, used for TUI render + stat headers
+	content []types.ContentBlock // text + optional image block; nil → text-only fallback
 }
 
 // WeChatConnector manages the WeChat connection lifecycle.
@@ -40,6 +43,12 @@ type WeChatConnector struct {
 
 	dedup *dedupSet
 
+	// mediaCache stores downloaded WeChat media (images, documents). nil when
+	// the cache could not be initialized — downloadMedia nil-checks and falls
+	// back to text-only. Cleanup is owned by the cache package (New starts the
+	// goroutine); main.go captures MediaCache() and calls Close() at shutdown.
+	mediaCache *media.Store
+
 	// Typing indicator support.
 	typingCache *typingTicketCache
 	typingAPI   typingAPI
@@ -48,7 +57,8 @@ type WeChatConnector struct {
 	sendToUserFn func(ctx context.Context, userID, text string) error
 	sendMsgFn    func(ctx context.Context, client *http.Client, baseURL, token,
 		fromUser, toUser, text, contextToken, clientID string) error
-	queryFn func(ctx context.Context, userMessage, systemPrompt string)
+	queryFn            func(ctx context.Context, userMessage, systemPrompt string)
+	queryWithContentFn func(ctx context.Context, content []types.ContentBlock, systemPrompt string)
 
 	activeUserID      string // set in handleInbound, cleared in QueryEnd
 	thinkingSecs      float64
@@ -83,9 +93,25 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	c.queryFn = func(ctx context.Context, userMessage, _ string) {
 		eng.Query(ctx, userMessage, eng.SystemPrompt())
 	}
+	c.queryWithContentFn = func(ctx context.Context, content []types.ContentBlock, _ string) {
+		eng.QueryWithContent(ctx, content, eng.SystemPrompt())
+	}
+	// mediaCache init failure is non-fatal — downloadMedia nil-checks and the
+	// connector degrades to text-only. Do NOT swallow the error silently
+	// (CLAUDE.md): log it so the operator knows media support is disabled.
+	if store, err := media.New(); err != nil {
+		slog.Warn("wechat: media cache init failed, media attachments disabled", "error", err)
+		c.mediaCache = nil
+	} else {
+		c.mediaCache = store
+	}
 	h.Subscribe(c)
 	return c
 }
+
+// MediaCache returns the media cache store so main.go can call Close() on it
+// at shutdown (the cache owns its cleanup goroutine).
+func (c *WeChatConnector) MediaCache() *media.Store { return c.mediaCache }
 
 // Start begins the poll and processing loops.
 func (c *WeChatConnector) Start(ctx context.Context) error {
@@ -354,6 +380,160 @@ func hasMedia(items []Item) bool {
 		}
 	}
 	return false
+}
+
+// downloadableMedia reports whether a media reference carries either a full URL
+// or an encrypted query param — the two signals that the bytes are retrievable.
+// Mirrors openclaw process-message.ts:hasDownloadableMedia.
+func downloadableMedia(m *MediaRef) bool {
+	if m == nil {
+		return false
+	}
+	return m.FullURL != "" || m.EncryptQueryParam != ""
+}
+
+// pickMediaItem finds the first downloadable media item with priority
+// IMAGE > VIDEO > FILE > VOICE. This ordering matches openclaw
+// process-message.ts:124-138 exactly (the earlier draft had FILE and VIDEO
+// swapped). Voice is only picked when it has no transcription text (a voice
+// WITH text is surfaced as text via extractText instead, so its bytes are not
+// needed). Returns nil when no downloadable media is present.
+func pickMediaItem(items []Item) *Item {
+	// IMAGE
+	for i := range items {
+		it := &items[i]
+		if it.Type == ItemImage && it.ImageItem != nil && downloadableMedia(it.ImageItem.Media) {
+			return it
+		}
+	}
+	// VIDEO
+	for i := range items {
+		it := &items[i]
+		if it.Type == ItemVideo && it.VideoItem != nil && downloadableMedia(it.VideoItem.Media) {
+			return it
+		}
+	}
+	// FILE
+	for i := range items {
+		it := &items[i]
+		if it.Type == ItemFile && it.FileItem != nil && downloadableMedia(it.FileItem.Media) {
+			return it
+		}
+	}
+	// VOICE — only when there is no transcription text (otherwise the text path
+	// already carries the content; audio transcoding is out of scope).
+	for i := range items {
+		it := &items[i]
+		if it.Type == ItemVoice && it.VoiceItem != nil && it.VoiceItem.Text == "" &&
+			downloadableMedia(it.VoiceItem.Media) {
+			return it
+		}
+	}
+	return nil
+}
+
+// downloadMedia mirrors openclaw src/messaging/process-message.ts:120-170:
+// pick the first downloadable media item (IMAGE > VIDEO > FILE > VOICE),
+// download+decrypt it, persist it to the media cache, and return a content
+// block (image) or a text hint (document) — or a zero-value block when there
+// is no media or the download failed (graceful degrade to text-only).
+//
+// Images become a file-backed image content block (the provider base64-encodes
+// it at request time). Documents become a TEXT block pointing the LLM at the
+// saved file so it can invoke the Read tool — types.ContentBlock has no native
+// document type, and inventing one would need provider wire-format work beyond
+// scope. Voice transcription flows through extractText as a separate text
+// block; voice audio transcoding is out of scope. Video is out of scope.
+func (c *WeChatConnector) downloadMedia(ctx context.Context, items []Item) types.ContentBlock {
+	if c.mediaCache == nil {
+		return types.ContentBlock{}
+	}
+	item := pickMediaItem(items)
+	if item == nil {
+		return types.ContentBlock{}
+	}
+
+	switch item.Type {
+	case ItemImage:
+		return c.downloadImage(ctx, item.ImageItem)
+	case ItemFile:
+		return c.downloadFile(ctx, item.FileItem)
+	case ItemVideo:
+		// Video is rarely useful to an LLM and unsupported here; log and fall
+		// through to text-only.
+		slog.Info("wechat: video media download not supported, skipping", "type", "video")
+		return types.ContentBlock{}
+	case ItemVoice:
+		// Voice audio transcoding (SILK→WAV) is out of scope. A voice WITH a
+		// transcription was already skipped by pickMediaItem; a voice WITHOUT
+		// one has nothing to surface, so degrade to text-only.
+		slog.Info("wechat: voice media download not supported, skipping", "type", "voice")
+		return types.ContentBlock{}
+	}
+	return types.ContentBlock{}
+}
+
+// downloadImage fetches, decrypts, caches, and wraps an image item as a
+// file-backed image content block. Returns a zero-value block on any failure
+// (the caller degrades to text-only).
+func (c *WeChatConnector) downloadImage(ctx context.Context, img *MediaItemHolder) types.ContentBlock {
+	if img == nil || img.Media == nil {
+		return types.ContentBlock{}
+	}
+	data, err := c.fetchMediaBytes(ctx, img.Media)
+	if err != nil {
+		slog.Warn("wechat: image download failed, falling back to text-only", "error", err)
+		return types.ContentBlock{}
+	}
+	mime := media.SniffImageMime(data)
+	if mime == "" {
+		// The image content block can only carry image/* media; if the bytes
+		// are not a recognized image format we cannot send an image block.
+		slog.Warn("wechat: downloaded media is not a recognized image format, skipping", "len", len(data))
+		return types.ContentBlock{}
+	}
+	ext := media.ExtFromMime(mime)
+	path, err := c.mediaCache.Save(media.CategoryImage, data, ext)
+	if err != nil {
+		slog.Warn("wechat: image cache save failed, falling back to text-only", "error", err)
+		return types.ContentBlock{}
+	}
+	return types.NewFileImageBlock(mime, path)
+}
+
+// downloadFile fetches, decrypts, caches a document, and returns a TEXT block
+// pointing the LLM at the saved file (so it can invoke the Read tool on
+// PDFs/DOCX — there is no native document content block). Returns a zero-value
+// block on any failure.
+func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.ContentBlock {
+	if f == nil || f.Media == nil {
+		return types.ContentBlock{}
+	}
+	data, err := c.fetchMediaBytes(ctx, f.Media)
+	if err != nil {
+		slog.Warn("wechat: file download failed, falling back to text-only", "error", err)
+		return types.ContentBlock{}
+	}
+	ext := media.ExtFromMime(media.MimeFromExt(filepath.Ext(f.FileName)))
+	path, err := c.mediaCache.Save(media.CategoryDocument, data, ext)
+	if err != nil {
+		slog.Warn("wechat: file cache save failed, falling back to text-only", "error", err)
+		return types.ContentBlock{}
+	}
+	name := f.FileName
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+}
+
+// fetchMediaBytes downloads a media reference, decrypting it when an aes_key is
+// present (the common encrypted-CDN case) or fetching it plain otherwise.
+func (c *WeChatConnector) fetchMediaBytes(ctx context.Context, ref *MediaRef) ([]byte, error) {
+	if ref.AesKey != "" {
+		return media.DownloadAndDecrypt(ctx, c.client, ref.FullURL, ref.AesKey)
+	}
+	return media.DownloadPlain(ctx, c.client, ref.FullURL)
 }
 
 // extractText iterates ItemList and returns the first text item's content,

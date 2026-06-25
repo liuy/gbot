@@ -1035,13 +1035,19 @@ func (e *Engine) flushThinkBuf() {
 // queryLoop is the main agentic loop.
 // Source: query.ts — the while(true) loop with 28 stages.
 func (e *Engine) queryLoop(ctx context.Context, userMessage string, systemPrompt string) QueryResult {
-	// Stage 0: Process user input
+	return e.queryLoopWithContent(ctx,
+		[]types.ContentBlock{types.NewTextBlock(userMessage)}, systemPrompt)
+}
+
+// queryLoopWithContent is the shared body of queryLoop / QuerySyncWithContent /
+// QueryWithContent. It assembles a user Message from the given content blocks,
+// appends it, emits EventQueryStart (so subscribers render the assembled
+// message, including any image blocks), and runs the turn loop.
+func (e *Engine) queryLoopWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) QueryResult {
 	userMsg := types.Message{
-		ID:   uuid.New().String(),
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			types.NewTextBlock(userMessage),
-		},
+		ID:        uuid.New().String(),
+		Role:      types.RoleUser,
+		Content:   content,
 		Timestamp: time.Now(),
 	}
 	e.currentTurnMsgID = userMsg.ID
@@ -3966,6 +3972,52 @@ func (e *Engine) QuerySync(ctx context.Context, userMessage string, systemPrompt
 	result := e.queryLoop(ctx, userMessage, systemPrompt)
 	result.Reply = lastAssistantText(result.Messages)
 	return result
+}
+
+// QuerySyncWithContent is the synchronous counterpart of QueryWithContent,
+// mirroring QuerySync (which is the synchronous counterpart of Query). It runs
+// the agentic loop in the caller's goroutine and returns the result directly —
+// no goroutine, no cancel, no panic recover, identical contract to QuerySync.
+// Used by tests and sub-agents that assemble content blocks (text + image).
+func (e *Engine) QuerySyncWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) QueryResult {
+	atomic.StoreInt32(&e.queryActive, 1)
+	defer func() {
+		atomic.StoreInt32(&e.queryActive, 0)
+		e.startProcessAttachmentsIfIdle()
+	}()
+	result := e.queryLoopWithContent(ctx, content, systemPrompt)
+	result.Reply = lastAssistantText(result.Messages)
+	return result
+}
+
+// QueryWithContent runs the agentic loop with the given user content blocks
+// (text + image). Like Query but for callers (the WeChat connector) that have
+// already assembled content blocks rather than a plain string. Emits
+// EventQueryStart with the assembled message so subscribers (TUI, connector)
+// render it. Async — returns immediately; results arrive via the event stream.
+func (e *Engine) QueryWithContent(ctx context.Context, content []types.ContentBlock, systemPrompt string) {
+	ctx, cancel := context.WithCancel(ctx)
+	e.activeCancelMu.Lock()
+	e.activeCancel = cancel
+	e.activeCancelMu.Unlock()
+	go func() {
+		atomic.StoreInt32(&e.queryActive, 1)
+		defer func() {
+			cancel()
+			atomic.StoreInt32(&e.queryActive, 0)
+			e.activeCancelMu.Lock()
+			e.activeCancel = nil
+			e.activeCancelMu.Unlock()
+			e.startProcessAttachmentsIfIdle()
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("engine: panic in queryLoop", "error", r, "stack", string(debug.Stack()))
+				e.emitEvent(types.QueryEvent{Type: types.EventQueryEnd, Error: fmt.Errorf("internal error: %v", r)})
+			}
+		}()
+		e.queryLoopWithContent(ctx, content, systemPrompt)
+	}()
 }
 
 // RunForkedQuery executes the agentic turn loop starting from

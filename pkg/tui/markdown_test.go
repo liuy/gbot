@@ -1295,7 +1295,7 @@ func TestRender_Table_FitsWidth(t *testing.T) {
 	// Width=40 — table must fit within 40 columns.
 	result := RenderWidth(input, 40)
 
-	for _, line := range strings.Split(result, "\n") {
+	for line := range strings.SplitSeq(result, "\n") {
 		w := stringWidth(line)
 		if w > 40 {
 			t.Errorf("line width %d > 40: %q", w, line)

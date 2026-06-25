@@ -1373,7 +1373,7 @@ func hasMarkdownTable(text string) bool {
 func stripFencedCode(text string) string {
 	var b strings.Builder
 	inFence := false
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
