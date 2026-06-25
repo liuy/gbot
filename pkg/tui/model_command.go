@@ -207,6 +207,12 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 	}
 
 	if matched := config.FindClosestMatch(modelName, cfgProvider.ModelNames()); matched != "" {
+		// SetProvider is required even when staying on the "current" provider:
+		// a.currentProvider may have drifted from engine.provider (e.g. on
+		// startup, a.currentProvider is seeded from settings.json while
+		// engine.provider comes from meta.json per-engine). Without this,
+		// SetModel alone leaves the request going to the wrong provider.
+		a.engine.SetProvider(a.providers[a.currentProvider])
 		a.engine.SetModel(matched)
 		a.currentModel = matched
 		a.updateEngineCapabilities(a.currentProvider, matched)

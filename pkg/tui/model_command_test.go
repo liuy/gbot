@@ -20,7 +20,12 @@ import (
 )
 
 // mockLLMProvider is a minimal mock for testing model switching.
-type mockLLMProvider struct{}
+// The name field gives each instance a unique identity so tests can
+// distinguish providers by pointer comparison (empty structs share
+// the same address in Go).
+type mockLLMProvider struct {
+	name string
+}
 
 func (m *mockLLMProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("not implemented")
@@ -80,9 +85,9 @@ func newTestAppWithProviders(t *testing.T) *App {
 	}
 
 	providers := map[string]llm.Provider{
-		"openai":    &mockLLMProvider{},
-		"anthropic": &mockLLMProvider{},
-		"minimax":   &mockLLMProvider{},
+		"openai":    &mockLLMProvider{name: "openai"},
+		"anthropic": &mockLLMProvider{name: "anthropic"},
+		"minimax":   &mockLLMProvider{name: "minimax"},
 	}
 
 	a.SetProviders(providers, cfg)
@@ -356,6 +361,46 @@ func TestHandleModel_SwitchModel_Success(t *testing.T) {
 	}
 	if a.engine.Model() != "glm-max" {
 		t.Errorf("engine model = %q, want %q", a.engine.Model(), "glm-max")
+	}
+}
+
+// TestHandleModel_SwitchModel_SyncsEngineProvider reproduces a bug where
+// switchModel's current-provider-match branch only called SetModel, not
+// SetProvider. When a.currentProvider and engine.provider drift out of sync
+// (e.g. after engine switch, or on startup when a.currentProvider is seeded
+// from settings.json but engine.provider comes from meta.json), /model <name>
+// would SetModel on the wrong provider — the request goes to the old provider
+// with the new model name, producing "model does not exist".
+//
+// Real scenario: engine restored from meta.json with provider=stepfun,
+// model=step-3.7-flash. a.currentProvider seeded from settings.json=zhipu.
+// /model glm52 → fuzzy match in zhipu → SetModel("glm-5.2") only →
+// request goes to stepfun with model=glm-5.2 → "model does not exist".
+//
+// This test simulates the drift by constructing the engine with minimax
+// provider (proxy for stepfun) but leaving a.currentProvider=openai (proxy
+// for zhipu). /model glm-max must switch BOTH model AND provider.
+func TestHandleModel_SwitchModel_SyncsEngineProvider(t *testing.T) {
+	a := newTestAppWithProviders(t)
+
+	// Override the engine's provider to minimax — simulates an engine
+	// restored from meta.json whose provider differs from a.currentProvider
+	// (which SetProviders seeded as "openai" from cfg.Model).
+	minimaxProvider := a.providers["minimax"]
+	a.engine.SetProvider(minimaxProvider)
+	// a.currentProvider is "openai" (from newTestAppWithProviders setup).
+
+	_ = a.handleModel("glm-max", nil)
+
+	// engine.provider must be synced to a.currentProvider (openai), not left
+	// as minimax. Compare by pointer identity — the exact provider object
+	// a.providers["openai"] must be installed after the switch.
+	if a.engine.Provider() != a.providers["openai"] {
+		t.Errorf("engine.provider was not synced to currentProvider: got %p (minimax), want %p (openai)",
+			a.engine.Provider(), a.providers["openai"])
+	}
+	if a.engine.Model() != "glm-max" {
+		t.Errorf("engine.model = %q, want glm-max", a.engine.Model())
 	}
 }
 
