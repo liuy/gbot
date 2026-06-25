@@ -15,8 +15,8 @@ import (
 )
 
 func init() {
-	// Redirect ALL cache-break diffs to a temp dir so tests never
-	// pollute the real ~/.gbot/cache-break. Individual tests that
+	// Redirect ALL cache/break diffs to a temp dir so tests never
+	// pollute the real ~/.gbot/cache/break. Individual tests that
 	// need their own isolated dir can override via cacheBreakDirOverride.
 	cacheBreakDirOverride = filepath.Join(os.TempDir(), "gbot-test-cache-break")
 }
@@ -373,7 +373,7 @@ func TestWriteCacheBreakDiff(t *testing.T) {
 		t.Fatal("writeCacheBreakDiff should return a path")
 	}
 	if !strings.HasPrefix(diffPath, tmpDir) {
-		t.Errorf("diff path should be in cache-break dir, got %s", diffPath)
+		t.Errorf("diff path should be in cache/break dir, got %s", diffPath)
 	}
 	// Verify file exists
 	if _, err := os.Stat(diffPath); os.IsNotExist(err) {

@@ -251,7 +251,7 @@ func getCacheBreakDir() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		dir = filepath.Join(homeDir, ".gbot", "cache-break")
+		dir = filepath.Join(homeDir, ".gbot", "cache", "break")
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
