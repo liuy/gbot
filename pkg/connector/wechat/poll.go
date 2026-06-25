@@ -129,9 +129,6 @@ func (c *WeChatConnector) processInbound(ctx context.Context, msg Message) {
 	var content []types.ContentBlock
 	if c.mediaCache != nil && hasMedia(msg.ItemList) {
 		if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
-			// Build content: [mediaBlock, textBlock] — image first so the model
-			// sees the attachment, text after for the caption (which may include
-			// a voice transcription surfaced by extractText).
 			content = append(content, block)
 			if text != "" {
 				content = append(content, types.NewTextBlock(text))

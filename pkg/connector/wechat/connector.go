@@ -2,6 +2,7 @@ package wechat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
 	"github.com/liuy/gbot/pkg/media"
+	"github.com/liuy/gbot/pkg/tool"
+	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/types"
 	"github.com/liuy/gbot/pkg/utils"
 )
@@ -392,12 +395,8 @@ func downloadableMedia(m *MediaRef) bool {
 	return m.FullURL != "" || m.EncryptQueryParam != ""
 }
 
-// pickMediaItem finds the first downloadable media item with priority
-// IMAGE > VIDEO > FILE > VOICE. This ordering matches openclaw
-// process-message.ts:124-138 exactly (the earlier draft had FILE and VIDEO
-// swapped). Voice is only picked when it has no transcription text (a voice
-// WITH text is surfaced as text via extractText instead, so its bytes are not
-// needed). Returns nil when no downloadable media is present.
+// pickMediaItem selects the first downloadable media item.
+// Priority IMAGE > VIDEO > FILE > VOICE matches openclaw process-message.ts:124-138.
 func pickMediaItem(items []Item) *Item {
 	// IMAGE
 	for i := range items {
@@ -432,18 +431,9 @@ func pickMediaItem(items []Item) *Item {
 	return nil
 }
 
-// downloadMedia mirrors openclaw src/messaging/process-message.ts:120-170:
-// pick the first downloadable media item (IMAGE > VIDEO > FILE > VOICE),
-// download+decrypt it, persist it to the media cache, and return a content
-// block (image) or a text hint (document) — or a zero-value block when there
-// is no media or the download failed (graceful degrade to text-only).
-//
-// Images become a file-backed image content block (the provider base64-encodes
-// it at request time). Documents become a TEXT block pointing the LLM at the
-// saved file so it can invoke the Read tool — types.ContentBlock has no native
-// document type, and inventing one would need provider wire-format work beyond
-// scope. Voice transcription flows through extractText as a separate text
-// block; voice audio transcoding is out of scope. Video is out of scope.
+// downloadMedia downloads, decrypts, and caches the first downloadable media
+// item. Images become file-backed image blocks; documents are parsed inline
+// via fileread. Returns a zero-value block on failure (caller degrades to text-only).
 func (c *WeChatConnector) downloadMedia(ctx context.Context, items []Item) types.ContentBlock {
 	if c.mediaCache == nil {
 		return types.ContentBlock{}
@@ -501,10 +491,9 @@ func (c *WeChatConnector) downloadImage(ctx context.Context, img *MediaItemHolde
 	return types.NewFileImageBlock(mime, path)
 }
 
-// downloadFile fetches, decrypts, caches a document, and returns a TEXT block
-// pointing the LLM at the saved file (so it can invoke the Read tool on
-// PDFs/DOCX — there is no native document content block). Returns a zero-value
-// block on any failure.
+// downloadFile fetches, decrypts, caches a document, then parses it inline
+// via fileread so the LLM receives content directly. Returns a zero-value
+// block on failure.
 func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.ContentBlock {
 	if f == nil || f.Media == nil {
 		return types.ContentBlock{}
@@ -514,7 +503,13 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 		slog.Warn("wechat: file download failed, falling back to text-only", "error", err)
 		return types.ContentBlock{}
 	}
-	ext := media.ExtFromMime(media.MimeFromExt(filepath.Ext(f.FileName)))
+	// Preserve the original filename extension — round-tripping through
+	// MimeFromExt→ExtFromMime loses types like .pptx/.docx that are in the
+	// forward map but not the reverse map, collapsing them to .bin.
+	ext := filepath.Ext(f.FileName)
+	if ext == "" {
+		ext = ".bin"
+	}
 	path, err := c.mediaCache.Save(media.CategoryDocument, data, ext)
 	if err != nil {
 		slog.Warn("wechat: file cache save failed, falling back to text-only", "error", err)
@@ -524,7 +519,27 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 	if name == "" {
 		name = filepath.Base(path)
 	}
-	return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+
+	// Parse the document inline so the LLM gets content, not a path to chase.
+	input, _ := json.Marshal(fileread.Input{FilePath: path})
+	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
+	if err != nil || result == nil {
+		slog.Warn("wechat: document parse failed, sending path as fallback", "file", name, "error", err)
+		return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+	}
+	// ToolResult.Data is `any` — extract text content from TextOutput.
+	content := ""
+	if out, ok := result.Data.(fileread.TextOutput); ok {
+		content = out.Content
+	} else if s, ok := result.Data.(string); ok {
+		content = s
+	}
+	if content == "" {
+		slog.Warn("wechat: document parse returned empty content, sending path as fallback", "file", name)
+		return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+	}
+	slog.Info("wechat: document parsed inline", "file", name, "contentLen", len(content))
+	return types.NewTextBlock(fmt.Sprintf("[Document: %s]\n%s", name, content))
 }
 
 // fetchMediaBytes downloads a media reference, decrypting it when an aes_key is

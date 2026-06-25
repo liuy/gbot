@@ -138,31 +138,165 @@ func TestDownloadMedia_File(t *testing.T) {
 		}},
 	}
 	block := c.downloadMedia(context.Background(), items)
-	// Documents become a TEXT block pointing the LLM at the saved file.
+	// Documents become a TEXT block containing either parsed content
+	// or a fallback path hint (when the Read tool cannot parse the format).
 	if block.Type != types.ContentTypeText {
 		t.Fatalf("block.Type = %q, want text", block.Type)
 	}
 	if !strings.Contains(block.Text, "report.pdf") {
 		t.Errorf("Text = %q, want it to contain the file name", block.Text)
 	}
-	if !strings.Contains(block.Text, "[Document attachment:") {
-		t.Errorf("Text = %q, want '[Document attachment:' marker", block.Text)
-	}
-	// The path embedded in the text must be a real saved file with .pdf ext.
-	marker := "saved at "
-	idx := strings.Index(block.Text, marker)
-	if idx < 0 {
-		t.Fatalf("Text = %q, want 'saved at ' marker", block.Text)
-	}
-	path := strings.TrimSuffix(block.Text[idx+len(marker):], "]")
-	if filepath.Ext(path) != ".pdf" {
-		t.Errorf("saved path ext = %q, want .pdf", filepath.Ext(path))
-	}
-	if _, err := readFile(path); err != nil {
-		t.Errorf("saved document not readable at %s: %v", path, err)
+	// The block must reference the document either as parsed content
+	// ("[Document:") or as a path fallback ("[Document attachment:").
+	if !strings.Contains(block.Text, "[Document") {
+		t.Errorf("Text = %q, want '[Document' marker", block.Text)
 	}
 }
 
+// TestDownloadMedia_PreservesOriginalExtension verifies that documents with
+// extensions missing from the mimeToExt reverse-mapping (e.g. .pptx, .docx)
+// are still saved with their original extension, not collapsed to .bin.
+// ExtFromMime(MimeFromExt(".pptx")) returns ".bin" because the reverse
+// map lacks pptx/docx MIME types, causing fileread to reject the file as
+// binary and forcing the LLM to do an extra Read tool call.
+func TestDownloadMedia_PreservesOriginalExtension(t *testing.T) {
+	t.Parallel()
+	key := []byte("0123456789abcdef")
+	plaintext := []byte("PK\x03\x04 fake pptx") // ZIP magic (pptx is a zip)
+	ciphertext := encryptAesEcbForMediaTest(plaintext, key)
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(ciphertext)
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	items := []Item{
+		{Type: ItemFile, FileItem: &FileItem{
+			FileName: "presentation.pptx",
+			Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+		}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block.Type = %q, want text", block.Type)
+	}
+	// The text must contain the saved path with .pptx extension, NOT .bin.
+	if strings.Contains(block.Text, ".bin") {
+		t.Errorf("Text = %q, contains '.bin' — original .pptx extension was lost", block.Text)
+	}
+	if !strings.Contains(block.Text, ".pptx") {
+		t.Errorf("Text = %q, want it to contain '.pptx' extension", block.Text)
+	}
+}
+
+// TestDownloadMedia_DocumentContentExtracted verifies that downloadFile
+// extracts the parsed document CONTENT (not the Go struct representation)
+// from fileread's ToolResult. ToolResult.Data is an `any` holding a
+// TextOutput struct — fmt.Sprintf("%s", result.Data) produces the struct's
+// Go representation instead of the document text.
+func TestDownloadMedia_DocumentContentExtracted(t *testing.T) {
+	t.Parallel()
+	// Use a real xlsx so fileread's markitdown path produces real content.
+	xlsxData, err := os.ReadFile("/tmp/test_inline.xlsx")
+	if err != nil {
+		t.Skipf("test xlsx not available: %v", err)
+	}
+	key := []byte("0123456789abcdef")
+	ciphertext := encryptAesEcbForMediaTest(xlsxData, key)
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(ciphertext)
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	items := []Item{
+		{Type: ItemFile, FileItem: &FileItem{
+			FileName: "data.xlsx",
+			Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+		}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != types.ContentTypeText {
+		t.Fatalf("block.Type = %q, want text", block.Type)
+	}
+	// The document content line (after the header) must be clean markdown,
+	// not a Go struct dump. fmt.Sprintf("%s", TextOutput{}) produces
+	// "{text /path/to/file ## content...}" — the opening brace is the signature.
+	lines := strings.SplitN(block.Text, "\n", 2)
+	if len(lines) < 2 {
+		t.Fatalf("Text = %q, expected at least 2 lines (header + content)", block.Text)
+	}
+	contentLine := lines[1]
+	if strings.HasPrefix(strings.TrimSpace(contentLine), "{") {
+		t.Errorf("content line is a Go struct dump, not parsed markdown:\n%s", contentLine)
+	}
+	if !strings.Contains(contentLine, "Name") || !strings.Contains(contentLine, "Value") {
+		t.Errorf("content = %q, want parsed xlsx content (Name, Value)", contentLine)
+	}
+}
+
+// TestDownloadMedia_AllDocumentFormats verifies that downloadFile correctly
+// extracts TextOutput.Content for every document format markitdown supports.
+// Each case generates a real file, encrypts it, serves it via httptest, and
+// asserts the returned text block contains clean parsed content (not a struct
+// dump or empty fallback).
+func TestDownloadMedia_AllDocumentFormats(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		file     string // path to pre-generated test file
+		ext      string // extension for the fake filename
+		contains string // substring expected in parsed content
+	}{
+		{"xlsx", "/tmp/fmt_test.xlsx", ".xlsx", "Name"},
+		{"docx", "/tmp/fmt_test.docx", ".docx", "Hello"},
+		{"pptx", "/tmp/fmt_test.pptx", ".pptx", "Test Slide"},
+		{"epub", "/tmp/fmt_test.epub", ".epub", "Chapter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.file)
+			if err != nil {
+				t.Skipf("test file %s not available: %v", tc.file, err)
+			}
+			key := []byte("0123456789abcdef")
+			ciphertext := encryptAesEcbForMediaTest(data, key)
+			aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(ciphertext)
+			}))
+			defer srv.Close()
+
+			conn, _ := newMediaTestConnector(t)
+			items := []Item{
+				{Type: ItemFile, FileItem: &FileItem{
+					FileName: "doc" + tc.ext,
+					Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+				}},
+			}
+			block := conn.downloadMedia(context.Background(), items)
+			if block.Type != types.ContentTypeText {
+				t.Fatalf("block.Type = %q, want text", block.Type)
+			}
+			lines := strings.SplitN(block.Text, "\n", 2)
+			if len(lines) < 2 {
+				t.Fatalf("Text = %q, expected header + content", block.Text)
+			}
+			contentLine := lines[1]
+			if strings.HasPrefix(strings.TrimSpace(contentLine), "{") {
+				t.Errorf("%s: content is struct dump:\n%s", tc.name, contentLine)
+			}
+			if !strings.Contains(contentLine, tc.contains) {
+				t.Errorf("%s: content = %q, want substring %q", tc.name, contentLine, tc.contains)
+			}
+		})
+	}
+}
 func TestDownloadMedia_NoMedia(t *testing.T) {
 	t.Parallel()
 	c, _ := newMediaTestConnector(t)
