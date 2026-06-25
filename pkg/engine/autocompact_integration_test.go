@@ -51,6 +51,8 @@ func (p *integrationProvider) Stream(_ context.Context, _ *llm.Request) (<-chan 
 	return ch, nil
 }
 
+func (p *integrationProvider) Name() string { return "integration" }
+
 func (p *integrationProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	p.mu.Lock()
 	fn := p.completeFn

@@ -23,6 +23,7 @@ func (s *spyProviderForCompact) Name() string { return "spy" }
 func (s *spyProviderForCompact) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
 	return nil, nil
 }
+
 func (s *spyProviderForCompact) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

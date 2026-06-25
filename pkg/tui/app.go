@@ -121,11 +121,11 @@ type App struct {
 	// Active input dialog overlay (interactive PTY input with countdown)
 	activeInput *InputDialog
 
-	// Multi-provider model switching
+	// Multi-provider model switching.
+	// provider/model authoritative state lives on the engine — query via
+	// a.engine.Provider().Name() / a.engine.Model(). No TUI-level cache.
 	providers       map[string]llm.Provider
 	cfg             *config.Config
-	currentProvider string
-	currentModel    string
 	providerConfigs map[string]*config.Provider
 
 	// Quota fetcher for the current provider (nil = no quota display).
@@ -338,34 +338,54 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 	for i := range cfg.Providers {
 		a.providerConfigs[cfg.Providers[i].Name] = &cfg.Providers[i]
 	}
+
+	// Sync the active engine's provider/model to the config's resolved
+	// default. This is only meaningful for the initial engine created in
+	// main.go before any per-engine restore — the engine's own state is
+	// authoritative thereafter.
 	providerName, modelName, err := cfg.ParseModel()
 	if err != nil {
 		slog.Warn("config: invalid model, using first", "model", cfg.Model, "error", err)
 	}
-	if providerName != "" {
-		a.currentProvider = providerName
-	} else if len(cfg.Providers) > 0 {
-		a.currentProvider = cfg.Providers[0].Name
+	if providerName == "" && len(cfg.Providers) > 0 {
+		providerName = cfg.Providers[0].Name
 	}
-	a.currentModel = modelName
-	if a.currentModel == "" && len(cfg.Providers) > 0 {
-		a.currentModel = cfg.Providers[0].FirstModelName()
+	if modelName == "" && len(cfg.Providers) > 0 {
+		modelName = cfg.Providers[0].FirstModelName()
+	}
+	if a.engine != nil {
+		if p, ok := providers[providerName]; ok {
+			a.engine.SetProvider(p)
+		}
+		a.engine.SetModel(modelName)
 	}
 
 	// Build quota fetcher from the resolved provider (nil if unsupported).
-	// Use current provider (from model spec), not Providers[0], since the
-	// resolved model may point to a non-primary provider.
-	if p, ok := a.providerConfigs[a.currentProvider]; ok {
+	if p, ok := a.providerConfigs[providerName]; ok {
 		a.quotaFetcher = quota.Detect(p)
 	} else if len(cfg.Providers) > 0 {
 		a.quotaFetcher = quota.Detect(&cfg.Providers[0])
 	}
 }
 
-// CurrentProvider returns the active provider name for token estimation
-// (CJK providers need different heuristics).
+// CurrentProvider returns the active provider name, read from the engine —
+// the single source of truth. Returns "" if the engine has no provider set.
 func (a *App) CurrentProvider() string {
-	return a.currentProvider
+	if a.engine == nil {
+		return ""
+	}
+	if p := a.engine.Provider(); p != nil {
+		return p.Name()
+	}
+	return ""
+}
+
+// CurrentModel returns the active model name, read from the engine.
+func (a *App) CurrentModel() string {
+	if a.engine == nil {
+		return ""
+	}
+	return a.engine.Model()
 }
 
 // Engine returns the active engine.
@@ -410,7 +430,7 @@ func (a *App) persistModelSelection() {
 	if a.engineMgr == nil {
 		return
 	}
-	fullModel := a.currentProvider + "/" + a.currentModel
+	fullModel := a.CurrentProvider() + "/" + a.CurrentModel()
 	a.engineMgr.SetActiveModel(fullModel)
 	if err := a.engineMgr.PersistMeta(a.projectDir); err != nil {
 		slog.Warn("model: failed to persist per-engine meta", "error", err)

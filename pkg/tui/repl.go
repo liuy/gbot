@@ -1744,7 +1744,7 @@ func (a *App) fetchQuota() tea.Cmd {
 	}
 	seq := a.quotaFetchSeq
 	fetcher := a.quotaFetcher
-	provider := a.currentProvider
+	provider := a.CurrentProvider()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

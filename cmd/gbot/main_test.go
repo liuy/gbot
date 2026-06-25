@@ -154,6 +154,8 @@ func (s *spyProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.St
 	return ch, nil
 }
 
+func (s *spyProvider) Name() string { return "spy" }
+
 func (s *spyProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -76,6 +76,7 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 		switch p.ProviderType() {
 		case ProviderTypeOpenAI:
 			m[p.Name] = llm.NewOpenAIProvider(&llm.OpenAIConfig{
+				Name:        p.Name,
 				APIKey:      apiKey,
 				BaseURL:     p.URL,
 				Model:       model,
@@ -87,6 +88,7 @@ func CreateAllProviders(cfg *Config) (ProviderMap, error) {
 				url = "https://api.anthropic.com"
 			}
 			m[p.Name] = llm.NewAnthropicProvider(&llm.AnthropicConfig{
+				Name:    p.Name,
 				APIKey:  apiKey,
 				BaseURL: url,
 				Model:   model,

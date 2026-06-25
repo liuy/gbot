@@ -26,10 +26,11 @@ type AnthropicProvider struct {
 
 // AnthropicConfig configures the Anthropic provider.
 type AnthropicConfig struct {
-	APIKey      string
-	BaseURL     string
-	Model       string
-	Timeout     time.Duration
+	Name       string
+	APIKey     string
+	BaseURL    string
+	Model      string
+	Timeout    time.Duration
 	RetryConfig *RetryConfig
 }
 
@@ -44,6 +45,7 @@ func NewAnthropicProvider(cfg *AnthropicConfig) *AnthropicProvider {
 
 	return &AnthropicProvider{
 		BaseProvider: BaseProvider{
+			name:        cfg.Name,
 			httpClient:  &http.Client{Timeout: cfg.Timeout, Transport: newLLMTransport()},
 			retryConfig: cfg.RetryConfig,
 			idleTimeout: DefaultSSETimeout,

@@ -16,6 +16,8 @@ import (
 
 type benchMockProvider struct{}
 
+func (m *benchMockProvider) Name() string { return "bench" }
+
 func (m *benchMockProvider) Complete(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return &llm.Response{
 		ID:      "msg_bench",

@@ -21,6 +21,8 @@ type captureProvider struct {
 	events  []llm.StreamEvent
 }
 
+func (c *captureProvider) Name() string { return "capture" }
+
 func (c *captureProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil
 }

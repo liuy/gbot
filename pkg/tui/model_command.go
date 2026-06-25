@@ -53,7 +53,7 @@ func (a *App) openModelPicker(commitCmd tea.Cmd) tea.Cmd {
 		return a.showInfo("A picker is already open")
 	}
 
-	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.CurrentProvider(), a.CurrentModel())
 	a.modelPickerItems = modelItems
 
 	items := make([]PickerItem, len(modelItems))
@@ -142,8 +142,6 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(selected.Model)
-	a.currentProvider = selected.Provider
-	a.currentModel = selected.Model
 	a.updateEngineCapabilities(selected.Provider, selected.Model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
@@ -157,7 +155,7 @@ func (a *App) handleModelPickerDone(d *Dialog, items []ModelItem) (tea.Model, te
 // updates the status bar immediately (clearing the old value if the new
 // provider has no quota endpoint).
 func (a *App) refreshQuotaFromProvider() {
-	if p, ok := a.providerConfigs[a.currentProvider]; ok {
+	if p, ok := a.providerConfigs[a.CurrentProvider()]; ok {
 		a.quotaFetcher = quota.Detect(p)
 	} else {
 		a.quotaFetcher = nil
@@ -186,8 +184,6 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(matched)
-	a.currentProvider = providerName
-	a.currentModel = matched
 	a.updateEngineCapabilities(providerName, matched)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
@@ -201,27 +197,26 @@ func (a *App) switchProviderModel(providerName, modelName string, commitCmd tea.
 // If not found in current provider, searches all providers and switches
 // to the globally closest match (lowest Levenshtein distance).
 func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
-	cfgProvider := a.providerConfigs[a.currentProvider]
+	currentProvider := a.CurrentProvider()
+	cfgProvider := a.providerConfigs[currentProvider]
 	if cfgProvider == nil {
-		return a.showInfo(fmt.Sprintf("no config for provider %s", a.currentProvider))
+		return a.showInfo(fmt.Sprintf("no config for provider %s", currentProvider))
 	}
 
 	if matched := config.FindClosestMatch(modelName, cfgProvider.ModelNames()); matched != "" {
-		// SetProvider is required even when staying on the "current" provider:
-		// a.currentProvider may have drifted from engine.provider (e.g. on
-		// startup, a.currentProvider is seeded from settings.json while
-		// engine.provider comes from meta.json per-engine). Without this,
-		// SetModel alone leaves the request going to the wrong provider.
-		a.engine.SetProvider(a.providers[a.currentProvider])
+		// SetProvider is required: the engine's provider may have drifted
+		// from what the user expects (e.g. restored from meta.json with a
+		// different provider). Sync it to the current provider so the
+		// request goes to the right endpoint.
+		a.engine.SetProvider(a.providers[currentProvider])
 		a.engine.SetModel(matched)
-		a.currentModel = matched
-		a.updateEngineCapabilities(a.currentProvider, matched)
+		a.updateEngineCapabilities(currentProvider, matched)
 		a.status.SetModel(a.engine.Model())
 		a.persistModelSelection()
 		a.refreshQuotaFromProvider()
 
-		slog.Info("model: switched model", "provider", a.currentProvider, "model", matched)
-		return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", a.currentProvider, matched)))
+		slog.Info("model: switched model", "provider", currentProvider, "model", matched)
+		return tea.Batch(commitCmd, a.showInfo(fmt.Sprintf("Switched to %s/%s", currentProvider, matched)))
 	}
 
 	// Cross-provider fallback: pick the globally best (lowest distance) match.
@@ -229,7 +224,7 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 	bestModel := ""
 	bestDistance := -1
 	for providerName := range a.providers {
-		if providerName == a.currentProvider {
+		if providerName == currentProvider {
 			continue
 		}
 		cfg := a.providerConfigs[providerName]
@@ -253,8 +248,6 @@ func (a *App) switchModel(modelName string, commitCmd tea.Cmd) tea.Cmd {
 
 	a.engine.SetProvider(a.providers[bestProvider])
 	a.engine.SetModel(bestModel)
-	a.currentProvider = bestProvider
-	a.currentModel = bestModel
 	a.updateEngineCapabilities(bestProvider, bestModel)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()
@@ -283,8 +276,6 @@ func (a *App) switchProvider(providerName string, commitCmd tea.Cmd) tea.Cmd {
 
 	a.engine.SetProvider(provider)
 	a.engine.SetModel(model)
-	a.currentProvider = providerName
-	a.currentModel = model
 	a.updateEngineCapabilities(providerName, model)
 	a.status.SetModel(a.engine.Model())
 	a.persistModelSelection()

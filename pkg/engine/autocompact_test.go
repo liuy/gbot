@@ -91,6 +91,8 @@ func (m *compactMockProvider) Stream(_ context.Context, _ *llm.Request) (<-chan 
 	return ch, nil
 }
 
+func (m *compactMockProvider) Name() string { return "compact" }
+
 func (m *compactMockProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -924,6 +926,8 @@ func TestAutoCompactor_SummarizeMessages_EmptyResponse(t *testing.T) {
 
 type emptyResponseProvider struct{}
 
+func (e *emptyResponseProvider) Name() string { return "empty" }
+
 func (e *emptyResponseProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
 	ch := make(chan llm.StreamEvent)
 	close(ch)
@@ -1378,6 +1382,8 @@ func TestEngineToShort_PreservesFlagMeta(t *testing.T) {
 type compactCaptureProvider struct {
 	lastReq *llm.Request
 }
+
+func (p *compactCaptureProvider) Name() string { return "compact" }
 
 func (p *compactCaptureProvider) Stream(context.Context, *llm.Request) (<-chan llm.StreamEvent, error) {
 	return nil, errors.New("compactCaptureProvider: Stream not used")

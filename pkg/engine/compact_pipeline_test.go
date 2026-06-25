@@ -36,6 +36,8 @@ type pipelineMockResp struct {
 	err    error
 }
 
+func (p *pipelineProvider) Name() string { return "pipeline" }
+
 func (p *pipelineProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

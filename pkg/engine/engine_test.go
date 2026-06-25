@@ -113,6 +113,8 @@ type mockResponse struct {
 	err    error
 }
 
+func (m *mockProvider) Name() string { return "mock" }
+
 func (m *mockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return &llm.Response{
 		Content: []types.ContentBlock{types.NewTextBlock("Summary of conversation.")},

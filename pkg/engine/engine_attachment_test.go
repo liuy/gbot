@@ -583,6 +583,8 @@ type trackingProvider struct {
 	streamCalls atomic.Int32
 }
 
+func (p *trackingProvider) Name() string { return "tracking" }
+
 func (p *trackingProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil
 }
@@ -846,6 +848,8 @@ type gatedProvider struct {
 	toolName string
 	gate     chan struct{}
 }
+
+func (p *gatedProvider) Name() string { return "gated" }
 
 func (p *gatedProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil

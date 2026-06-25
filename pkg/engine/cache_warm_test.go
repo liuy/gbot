@@ -181,6 +181,8 @@ type doubleCountProvider struct {
 	lastReq       *llm.Request
 }
 
+func (d *doubleCountProvider) Name() string { return "double-count" }
+
 func (d *doubleCountProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -286,6 +288,8 @@ type multiCallProvider struct {
 	cacheReadOnDelta int // if > 0, inject CacheRead in message_delta
 	callIndex        int
 }
+
+func (m *multiCallProvider) Name() string { return "multi-call" }
 
 func (m *multiCallProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("not implemented")

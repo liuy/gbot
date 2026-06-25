@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -303,29 +302,32 @@ func (a *App) switchEngine(id string) (tea.Model, tea.Cmd) {
 		)
 	}
 
-	// Sync currentProvider/currentModel to the new engine so /model picker
-	// highlights the right row and /model fuzzy-match searches the right
-	// provider. engine.Model() is authoritative for the model name; the
-	// provider lookup walks providerConfigs for a matching model.
+	// Sync quota fetcher and capabilities to the new active engine.
+	// The engine is the source of truth for provider/model — query via
+	// Provider().Name() / Model(). When the engine has no provider yet
+	// (just created, factory hasn't run), fall back to looking up the
+	// provider by model name in config so capabilities are still set.
 	if target.Engine != nil {
-		a.currentModel = target.Engine.Model()
-		if a.cfg != nil {
+		providerName := ""
+		if p := target.Engine.Provider(); p != nil {
+			providerName = p.Name()
+		}
+		if providerName == "" && a.cfg != nil {
+			model := target.Engine.Model()
 			for i := range a.cfg.Providers {
-				pc := &a.cfg.Providers[i]
-				if slices.Contains(pc.ModelNames(), a.currentModel) {
-					a.currentProvider = pc.Name
-					a.quotaFetcher = quota.Detect(pc)
+				if a.cfg.Providers[i].Models.Has(model) {
+					providerName = a.cfg.Providers[i].Name
 					break
 				}
 			}
 		}
-		// Only call updateEngineCapabilities when the engine has no context
-		// window set (fresh create or restored from meta.json with
-		// ContextWindow=0). When ContextWindow is already set (engine has
-		// been used before), SetContext above already provides the correct
-		// window from the engine's own state.
-		if a.currentProvider != "" && target.Engine.ContextWindow() == 0 {
-			a.updateEngineCapabilities(a.currentProvider, a.currentModel)
+		if pc, ok := a.providerConfigs[providerName]; ok {
+			a.quotaFetcher = quota.Detect(pc)
+		} else {
+			a.quotaFetcher = nil
+		}
+		if providerName != "" && target.Engine.ContextWindow() == 0 {
+			a.updateEngineCapabilities(providerName, target.Engine.Model())
 		}
 	}
 
@@ -368,7 +370,7 @@ func (a *App) createNewEngine(name string, commitCmd tea.Cmd) tea.Cmd {
 	if a.engine != nil {
 		model = a.engine.Model()
 	}
-	eng, handler, err := a.engineFactory(id, name, a.currentProvider, model)
+	eng, handler, err := a.engineFactory(id, name, a.CurrentProvider(), model)
 	if err != nil {
 		return a.showInfo(fmt.Sprintf("Failed to create engine: %v", err))
 	}

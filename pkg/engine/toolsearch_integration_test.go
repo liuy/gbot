@@ -47,6 +47,8 @@ type sequentialProvider struct {
 	requests  []*llm.Request
 }
 
+func (p *sequentialProvider) Name() string { return "sequential" }
+
 func (p *sequentialProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil
 }

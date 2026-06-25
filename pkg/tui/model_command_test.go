@@ -27,6 +27,8 @@ type mockLLMProvider struct {
 	name string
 }
 
+func (m *mockLLMProvider) Name() string { return m.name }
+
 func (m *mockLLMProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -41,7 +43,7 @@ func newTestAppWithProviders(t *testing.T) *App {
 	// Isolate HOME so persistModelSelection() writes to temp dir
 	_ = os.Setenv("HOME", t.TempDir())
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "openai"},
 		Model:    "glm-5",
 		Logger:   slog.Default(),
 	})
@@ -96,7 +98,7 @@ func newTestAppWithProviders(t *testing.T) *App {
 
 // helperSetupModelPicker creates a ListPicker for model items and sets up the onPickerDone closure.
 func helperSetupModelPicker(a *App) []ModelItem {
-	modelItems := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
+	modelItems := buildModelItems(a.providers, a.providerConfigs, a.CurrentProvider(), a.CurrentModel())
 	items := make([]PickerItem, len(modelItems))
 	for i := range modelItems {
 		items[i] = &modelItems[i]
@@ -248,7 +250,7 @@ func TestHandleModel_StreamingGuard(t *testing.T) {
 
 func TestHandleModel_NoProviders(t *testing.T) {
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "test"},
 		Model:    "test",
 		Logger:   slog.Default(),
 	})
@@ -294,11 +296,11 @@ func TestHandleModel_ProviderModel_Success(t *testing.T) {
 
 	_ = a.handleModel("anthropic/claude-sonnet", nil)
 
-	if a.currentProvider != "anthropic" {
-		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
+	if a.CurrentProvider() != "anthropic" {
+		t.Errorf("currentProvider = %q, want %q", a.CurrentProvider(), "anthropic")
 	}
-	if a.currentModel != "claude-sonnet" {
-		t.Errorf("currentModel = %q, want %q", a.currentModel, "claude-sonnet")
+	if a.CurrentModel() != "claude-sonnet" {
+		t.Errorf("currentModel = %q, want %q", a.CurrentModel(), "claude-sonnet")
 	}
 	if a.engine.Model() != "claude-sonnet" {
 		t.Errorf("engine model = %q, want %q", a.engine.Model(), "claude-sonnet")
@@ -353,11 +355,11 @@ func TestHandleModel_SwitchModel_Success(t *testing.T) {
 
 	_ = a.handleModel("glm-max", nil)
 
-	if a.currentModel != "glm-max" {
-		t.Errorf("currentModel = %q, want %q", a.currentModel, "glm-max")
+	if a.CurrentModel() != "glm-max" {
+		t.Errorf("currentModel = %q, want %q", a.CurrentModel(), "glm-max")
 	}
-	if a.currentProvider != "openai" {
-		t.Errorf("currentProvider should not change, got %q", a.currentProvider)
+	if a.CurrentProvider() != "openai" {
+		t.Errorf("currentProvider should not change, got %q", a.CurrentProvider())
 	}
 	if a.engine.Model() != "glm-max" {
 		t.Errorf("engine model = %q, want %q", a.engine.Model(), "glm-max")
@@ -366,33 +368,33 @@ func TestHandleModel_SwitchModel_Success(t *testing.T) {
 
 // TestHandleModel_SwitchModel_SyncsEngineProvider reproduces a bug where
 // switchModel's current-provider-match branch only called SetModel, not
-// SetProvider. When a.currentProvider and engine.provider drift out of sync
-// (e.g. after engine switch, or on startup when a.currentProvider is seeded
+// SetProvider. When a.CurrentProvider() and engine.provider drift out of sync
+// (e.g. after engine switch, or on startup when a.CurrentProvider() is seeded
 // from settings.json but engine.provider comes from meta.json), /model <name>
 // would SetModel on the wrong provider — the request goes to the old provider
 // with the new model name, producing "model does not exist".
 //
 // Real scenario: engine restored from meta.json with provider=stepfun,
-// model=step-3.7-flash. a.currentProvider seeded from settings.json=zhipu.
+// model=step-3.7-flash. a.CurrentProvider() seeded from settings.json=zhipu.
 // /model glm52 → fuzzy match in zhipu → SetModel("glm-5.2") only →
 // request goes to stepfun with model=glm-5.2 → "model does not exist".
 //
 // This test simulates the drift by constructing the engine with minimax
-// provider (proxy for stepfun) but leaving a.currentProvider=openai (proxy
+// provider (proxy for stepfun) but leaving a.CurrentProvider()=openai (proxy
 // for zhipu). /model glm-max must switch BOTH model AND provider.
 func TestHandleModel_SwitchModel_SyncsEngineProvider(t *testing.T) {
 	a := newTestAppWithProviders(t)
 
 	// Override the engine's provider to minimax — simulates an engine
-	// restored from meta.json whose provider differs from a.currentProvider
+	// restored from meta.json whose provider differs from a.CurrentProvider()
 	// (which SetProviders seeded as "openai" from cfg.Model).
 	minimaxProvider := a.providers["minimax"]
 	a.engine.SetProvider(minimaxProvider)
-	// a.currentProvider is "openai" (from newTestAppWithProviders setup).
+	// a.CurrentProvider() is "openai" (from newTestAppWithProviders setup).
 
 	_ = a.handleModel("glm-max", nil)
 
-	// engine.provider must be synced to a.currentProvider (openai), not left
+	// engine.provider must be synced to a.CurrentProvider() (openai), not left
 	// as minimax. Compare by pointer identity — the exact provider object
 	// a.providers["openai"] must be installed after the switch.
 	if a.engine.Provider() != a.providers["openai"] {
@@ -436,11 +438,11 @@ func TestHandleModel_SwitchModel_CrossProvider(t *testing.T) {
 		cmd() // consume the cmd
 	}
 
-	if a.currentProvider != "minimax" {
-		t.Errorf("currentProvider = %q, want %q (should cross-switch)", a.currentProvider, "minimax")
+	if a.CurrentProvider() != "minimax" {
+		t.Errorf("currentProvider = %q, want %q (should cross-switch)", a.CurrentProvider(), "minimax")
 	}
-	if a.currentModel != "minimax-3" {
-		t.Errorf("currentModel = %q, want %q", a.currentModel, "minimax-3")
+	if a.CurrentModel() != "minimax-3" {
+		t.Errorf("currentModel = %q, want %q", a.CurrentModel(), "minimax-3")
 	}
 }
 
@@ -453,11 +455,11 @@ func TestHandleModel_SwitchProvider_Success(t *testing.T) {
 
 	_ = a.handleModel("anthropic", nil)
 
-	if a.currentProvider != "anthropic" {
-		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "anthropic")
+	if a.CurrentProvider() != "anthropic" {
+		t.Errorf("currentProvider = %q, want %q", a.CurrentProvider(), "anthropic")
 	}
-	if a.currentModel != "claude-sonnet" {
-		t.Errorf("currentModel = %q, want %q", a.currentModel, "claude-sonnet")
+	if a.CurrentModel() != "claude-sonnet" {
+		t.Errorf("currentModel = %q, want %q", a.CurrentModel(), "claude-sonnet")
 	}
 }
 
@@ -568,9 +570,9 @@ func TestHandleModelPickerDone_Select(t *testing.T) {
 
 	_, cmd := a.handleModelPickerDone(p, captured)
 
-	if a.currentProvider != wantProvider || a.currentModel != wantModel {
+	if a.CurrentProvider() != wantProvider || a.CurrentModel() != wantModel {
 		t.Errorf("provider=%q model=%q, want provider=%q model=%q",
-			a.currentProvider, a.currentModel,
+			a.CurrentProvider(), a.CurrentModel(),
 			wantProvider, wantModel)
 	}
 	if cmd == nil {
@@ -606,7 +608,7 @@ func TestHandleModelPickerDone_NilSelected(t *testing.T) {
 	helperSetupModelPicker(a)
 
 	p := a.activeDialog
-	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel))
+	_, cmd := a.handleModelPickerDone(p, buildModelItems(a.providers, a.providerConfigs, a.CurrentProvider(), a.CurrentModel()))
 	if cmd != nil {
 		t.Error("expected nil cmd when no selection")
 	}
@@ -618,7 +620,7 @@ func TestHandleModelPickerDone_NilSelected(t *testing.T) {
 
 func TestHandleModel_ProviderModel_NilConfig(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	a.providers["ghost"] = &mockLLMProvider{}
+	a.providers["ghost"] = &mockLLMProvider{name: "test"}
 
 	cmd := a.handleModel("ghost/some-model", nil)
 	msg := cmd()
@@ -637,16 +639,16 @@ func TestHandleModel_ProviderModel_NilConfig(t *testing.T) {
 
 func TestHandleModel_SwitchModel_NilConfig(t *testing.T) {
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "test"},
 		Model:    "test",
 		Logger:   slog.Default(),
 	})
 	a := &App{
 		engine:    eng,
 		repl:      NewReplState(),
-		providers: map[string]llm.Provider{"openai": &mockLLMProvider{}},
+		providers: map[string]llm.Provider{"openai": &mockLLMProvider{name: "openai"}},
 	}
-	a.currentProvider = "openai"
+	a.engine.SetProvider(a.providers["openai"])
 
 	cmd := a.handleModel("glm-5", nil)
 	msg := cmd()
@@ -665,7 +667,7 @@ func TestHandleModel_SwitchModel_NilConfig(t *testing.T) {
 
 func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	a.providers["ghost"] = &mockLLMProvider{}
+	a.providers["ghost"] = &mockLLMProvider{name: "test"}
 
 	cmd := a.handleModel("ghost", nil)
 	msg := cmd()
@@ -684,7 +686,7 @@ func TestHandleModel_SwitchProvider_NilConfig(t *testing.T) {
 
 func TestBuildModelItems_Items(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
+	items := buildModelItems(a.providers, a.providerConfigs, a.CurrentProvider(), a.CurrentModel())
 
 	// anthropic: 1 model, minimax: 2 models, openai: 3 models = 6 items
 	if len(items) != 6 {
@@ -705,7 +707,7 @@ func TestBuildModelItems_Items(t *testing.T) {
 
 func TestBuildModelItems_CurrentMarked(t *testing.T) {
 	a := newTestAppWithProviders(t)
-	items := buildModelItems(a.providers, a.providerConfigs, a.currentProvider, a.currentModel)
+	items := buildModelItems(a.providers, a.providerConfigs, a.CurrentProvider(), a.CurrentModel())
 
 	found := false
 	for _, item := range items {
@@ -727,7 +729,7 @@ func TestBuildModelItems_CurrentMarked(t *testing.T) {
 
 func TestBuildModelItems_SkipsProviderWithoutImpl(t *testing.T) {
 	providers := map[string]llm.Provider{
-		"openai": &mockLLMProvider{},
+		"openai": &mockLLMProvider{name: "test"},
 	}
 	providerConfigs := map[string]*config.Provider{
 		"openai": {
@@ -885,7 +887,7 @@ func TestPersistModelSelection_WritesPerEngineMeta(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "openai"},
 		Model:    "glm-5",
 		Logger:   slog.Default(),
 	})
@@ -952,7 +954,7 @@ func TestPersistModelSelection_OpenRouterFormat(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "openrouter"},
 		Model:    "openrouter/owl-alpha",
 		Logger:   slog.Default(),
 	})
@@ -968,11 +970,12 @@ func TestPersistModelSelection_OpenRouterFormat(t *testing.T) {
 	})
 
 	a := newTestAppWithProviders(t)
+	a.providers["openrouter"] = &mockLLMProvider{name: "openrouter"}
 	a.engine = eng
 	a.engineMgr = mgr
 	a.projectDir = projectDir
-	a.currentProvider = "openrouter"
-	a.currentModel = "openrouter/owl-alpha"
+	a.engine.SetProvider(a.providers["openrouter"])
+	a.engine.SetModel("openrouter/owl-alpha")
 
 	a.persistModelSelection()
 
@@ -1071,7 +1074,7 @@ func TestPersistModelSelection_PersistsAfterSwitch(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "openai"},
 		Model:    "glm-5",
 		Logger:   slog.Default(),
 	})

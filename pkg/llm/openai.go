@@ -38,6 +38,7 @@ type OpenAIProvider struct {
 
 // OpenAIConfig configures the OpenAI provider.
 type OpenAIConfig struct {
+	Name        string
 	APIKey      string
 	BaseURL     string // defaults to https://api.openai.com/v1
 	Model       string
@@ -55,6 +56,7 @@ func NewOpenAIProvider(cfg *OpenAIConfig) *OpenAIProvider {
 	}
 	return &OpenAIProvider{
 		BaseProvider: BaseProvider{
+			name:   cfg.Name,
 			httpClient: &http.Client{
 				Timeout:   cfg.Timeout,
 				Transport: newLLMTransport(),

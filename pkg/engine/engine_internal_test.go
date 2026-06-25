@@ -985,6 +985,8 @@ type midStreamErrorProvider struct {
 	callCount int
 }
 
+func (p *midStreamErrorProvider) Name() string { return "midstream-error" }
+
 func (p *midStreamErrorProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil
 }
@@ -1356,6 +1358,8 @@ type testResponse struct {
 	err     error
 	channel chan llm.StreamEvent // if non-nil, return this channel directly
 }
+
+func (p *testProvider) Name() string { return "test" }
 
 func (p *testProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil
@@ -7909,6 +7913,8 @@ type blockingProvider struct {
 	started    chan struct{}
 	streamOnce sync.Once
 }
+
+func (p *blockingProvider) Name() string { return "blocking" }
 
 func (p *blockingProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, nil

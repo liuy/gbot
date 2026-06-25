@@ -19,6 +19,12 @@ import (
 // Provider is the interface for LLM backends.
 // Source: services/api/client.ts — abstracts the Anthropic SDK client.
 type Provider interface {
+	// Name returns the provider's identifier (e.g. "zhipu", "openrouter").
+	// Used as the single source of truth for which provider is active —
+	// callers query the engine's provider rather than maintaining a
+	// separate cached name in the TUI layer.
+	Name() string
+
 	// Complete sends a non-streaming request and returns the full response.
 	Complete(ctx context.Context, req *Request) (*Response, error)
 
@@ -246,9 +252,15 @@ func DefaultRetryConfig() *RetryConfig {
 
 // BaseProvider holds fields shared by all providers.
 type BaseProvider struct {
+	name        string           // provider identifier (e.g. "zhipu"); set at construction
 	httpClient  *http.Client
 	retryConfig *RetryConfig
 	idleTimeout time.Duration // SSE idle timeout, used by OpenAI provider
+}
+
+// Name returns the provider's identifier.
+func (b *BaseProvider) Name() string {
+	return b.name
 }
 
 // newLLMTransport returns an http.Transport tuned for LLM API streaming.

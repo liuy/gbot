@@ -40,6 +40,8 @@ type tuiMockResponse struct {
 	err    error
 }
 
+func (m *tuiMockProvider) Name() string { return "test" }
+
 func (m *tuiMockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
 	return nil, errors.New("not implemented")
 }
@@ -8982,20 +8984,20 @@ func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	}
 
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{},
+		Provider: &mockLLMProvider{name: "zhipu"},
 		Model:    "glm-5",
 		Logger:   slog.Default(),
 	})
 	a := &App{engine: eng, repl: NewReplState()}
 
 	providers := map[string]llm.Provider{
-		"minimax": &mockLLMProvider{},
-		"zhipu":   &mockLLMProvider{},
+		"minimax": &mockLLMProvider{name: "minimax"},
+		"zhipu":   &mockLLMProvider{name: "zhipu"},
 	}
 	a.SetProviders(providers, cfg)
 
-	if a.currentProvider != "zhipu" {
-		t.Errorf("currentProvider = %q, want %q", a.currentProvider, "zhipu")
+	if a.CurrentProvider() != "zhipu" {
+		t.Errorf("currentProvider = %q, want %q", a.CurrentProvider(), "zhipu")
 	}
 	if a.quotaFetcher != nil {
 		t.Fatalf("quotaFetcher = %T, want nil — zhipu disabled, must not get minimax fetcher from Providers[0]", a.quotaFetcher)
