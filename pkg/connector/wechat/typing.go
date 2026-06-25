@@ -109,7 +109,9 @@ func (c *WeChatConnector) startTyping(ctx context.Context, userID string) {
 	}
 	if err := c.typingAPI.sendTyping(ctx, userID, ticket, TypingStart); err != nil {
 		slog.Error("wechat: sendTyping start failed", "user", safeID(userID), "error", err)
+		return
 	}
+	c.lastTypingRefresh = time.Now()
 }
 
 // stopTyping hides the typing indicator. Must refresh ticket if expired,

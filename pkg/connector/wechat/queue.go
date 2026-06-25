@@ -38,7 +38,7 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.queryDone = make(chan struct{})
 	done := c.queryDone
 	c.lastFlush = time.Now()
-	c.startTyping(ctx, msg.userID)
+	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
 
 	c.hub.Dispatch(types.QueryEvent{
 		Type: types.EventConnectorUserMessage,

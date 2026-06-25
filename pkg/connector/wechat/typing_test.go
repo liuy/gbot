@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/liuy/gbot/pkg/hub"
@@ -118,6 +119,52 @@ func simulateQueryEvents(h *hub.Hub, reply string, queryErr error) {
 		endEvt.Error = queryErr
 	}
 	h.Dispatch(endEvt)
+}
+
+// Typing indicator must be refreshed every 5s during a query — a single
+// startTyping fades after a few seconds. Events arriving >5s after the last
+// refresh should re-trigger startTyping. Uses synctest for deterministic timing.
+func TestHandleInbound_TypingRefreshedDuringLongQuery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		typingAPI := &mockTypingAPI{}
+		h := hub.NewHub()
+		c := &WeChatConnector{
+			hub:               h,
+			inboundCh:         make(chan inboundMessage, 10),
+			typingCache:       newTypingTicketCache(600 * time.Second),
+			typingAPI:         typingAPI,
+			lastTypingRefresh: time.Now(),
+			sendToUserFn:      func(_ context.Context, _, _ string) error { return nil },
+		}
+		h.Subscribe(c)
+
+		// Simulate engine emitting events with gaps >5s.
+		c.queryFn = func(_ context.Context, _, _ string) {
+			// First event immediately — no refresh yet (<5s).
+			h.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "part1"})
+			// Sleep 6s (virtual time) — next event should trigger refresh.
+			time.Sleep(6 * time.Second)
+			h.Dispatch(types.QueryEvent{Type: types.EventTextDelta, Text: "part2"})
+			// Sleep another 6s — another refresh.
+			time.Sleep(6 * time.Second)
+			h.Dispatch(types.QueryEvent{Type: types.EventTextEnd})
+			h.Dispatch(types.QueryEvent{Type: types.EventQueryEnd})
+		}
+
+		c.handleInbound(context.Background(), inboundMessage{userID: "user1", text: "hi"})
+
+		calls := typingAPI.getCalls()
+		startCount := 0
+		for _, call := range calls {
+			if call.status == TypingStart {
+				startCount++
+			}
+		}
+		// initial startTyping (from handleInbound) + 2 refreshes = 3 starts minimum.
+		if startCount < 3 {
+			t.Errorf("expected >= 3 startTyping calls (1 initial + 2 refreshes), got %d. calls=%v", startCount, calls)
+		}
+	})
 }
 
 // Chain test: inbound → startTyping → async query → reply via Handle →

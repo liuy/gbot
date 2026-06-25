@@ -50,15 +50,16 @@ type WeChatConnector struct {
 		fromUser, toUser, text, contextToken, clientID string) error
 	queryFn func(ctx context.Context, userMessage, systemPrompt string)
 
-	activeUserID string // set in handleInbound, cleared in QueryEnd
-	thinkingSecs float64
-	searchCount  int
-	fileCount    int
-	cmdCount     int
-	agentCount   int
-	textBuffer   strings.Builder
-	toolNames    map[string]string // toolUseID→name: ToolEnd only carries ToolUseID, so we capture name at ToolStart
-	lastFlush    time.Time
+	activeUserID      string // set in handleInbound, cleared in QueryEnd
+	thinkingSecs      float64
+	searchCount       int
+	fileCount         int
+	cmdCount          int
+	agentCount        int
+	textBuffer        strings.Builder
+	toolNames         map[string]string // toolUseID→name: ToolEnd only carries ToolUseID, so we capture name at ToolStart
+	lastFlush         time.Time
+	lastTypingRefresh time.Time
 
 	// processLoop is serial only if handleInbound blocks until the query
 	// finishes. Without this, async Query() would let two queries overlap.
@@ -126,6 +127,14 @@ func (c *WeChatConnector) Stop() {
 }
 
 func (c *WeChatConnector) Handle(event hub.Event) {
+	// Refresh typing indicator if >5s since last refresh. iLink's typing
+	// pulse fades after a few seconds; periodic events keep it alive.
+	if c.activeUserID != "" && c.typingAPI != nil &&
+		!c.lastTypingRefresh.IsZero() &&
+		time.Since(c.lastTypingRefresh) >= 5*time.Second {
+		c.startTyping(context.Background(), c.activeUserID)
+	}
+
 	switch event.Type {
 
 	case types.EventConnectorUserMessage:
