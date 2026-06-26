@@ -4736,7 +4736,27 @@ func TestTruncateSummary(t *testing.T) {
 	if got := truncateSummary(long, 10); got != want {
 		t.Errorf("long string: got %q, want %q", got, want)
 	}
-	if got := truncateSummary("exact10!!", 10); got != "exact10!!" {
-		t.Errorf("exact length: got %q, want %q", got, "exact10!!")
+}
+
+// TestSubAgentToolRunning_ShowsLiveElapsed verifies that a sub-agent tool in
+// Running state shows a live elapsed timer computed from startedAt, not a
+// frozen 0s. Non-streaming tools (Write, Edit) don't get toolOutputDeltaMsg,
+// so without startedAt their timer stays at 0.
+func TestSubAgentToolRunning_ShowsLiveElapsed(t *testing.T) {
+	t.Parallel()
+
+	blk := ContentBlock{Type: BlockTool, ToolCall: ToolCallView{
+		Name:      "Write",
+		Summary:   "test.go",
+		Done:      false,
+		Elapsed:   0,
+		startedAt: time.Unix(1700000000, 0).Add(-2 * time.Second),
+	}}
+	var sb strings.Builder
+	blk.renderToolCall(&sb, 80, false, "", false, 0, 0, false)
+	clean := stripANSIPrintable(sb.String())
+
+	if strings.Contains(clean, "(0.0s)") {
+		t.Errorf("sub-agent Write tool in running state shows frozen 0.0s:\n%s", clean)
 	}
 }

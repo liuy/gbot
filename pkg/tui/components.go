@@ -991,7 +991,15 @@ func (blk ContentBlock) renderToolCall(sb *strings.Builder, availWidth int, expa
 		if tc.Summary != "" {
 			header += fmt.Sprintf("(%s)", highlightSummary(tc.Name, tc.Summary))
 		}
-		header += formatToolSuffix(tc.Name, len(tc.Input), tc.Elapsed)
+		// Running state: compute live elapsed from startedAt so non-streaming
+		// tools (Write, Edit) show a ticking timer instead of frozen 0s.
+		elapsed := tc.Elapsed
+		if !tc.startedAt.IsZero() {
+			if live := time.Since(tc.startedAt); live > elapsed {
+				elapsed = live
+			}
+		}
+		header += formatToolSuffix(tc.Name, len(tc.Input), elapsed)
 		sb.WriteString(indent + wordWrapIndent(header, availWidth, indent+strings.Repeat(" ", 2)))
 		// Render running sub-blocks if present
 		if len(tc.Blocks) > 0 {
