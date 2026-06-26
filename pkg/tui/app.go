@@ -968,7 +968,11 @@ func (a *App) commitPendingMessagesCmd() tea.Cmd {
 // No EnterAltScreen — terminal native scrollback handles scrolling,
 // matching TS behavior where Ink writes content and the terminal scrolls.
 func (a *App) Init() tea.Cmd {
-	return nil
+	// Start the event reader on launch so connector messages (e.g. WeChat)
+	// dispatched before the first user query are picked up. Without this,
+	// events pile up in appCh with no reader when the active engine is a
+	// connector engine and no local query has been submitted yet.
+	return a.readEvents()
 }
 
 // Update handles bubbletea messages.

@@ -190,8 +190,8 @@ func TestApp_Init(t *testing.T) {
 	t.Parallel()
 	app := newTestApp(&tuiMockProvider{})
 	cmd := app.Init()
-	if cmd != nil {
-		t.Error("Init() should return nil (no alt screen)")
+	if cmd == nil {
+		t.Error("Init() should return readEvents cmd so connector events are consumed before first query, got nil")
 	}
 }
 
