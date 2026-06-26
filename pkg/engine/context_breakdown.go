@@ -222,8 +222,8 @@ func (e *Engine) ContextBreakdown() *ContextBreakdown {
 	freeTokens := contextWindow - totalExact
 
 	// Compute expensive data once, shared by estimates and details.
-	sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot)
-	memFiles := context.LoadMemoryFiles(workingDir)
+	sections := estimateSystemPromptSections(systemPromptRaw, workingDir, skillListing, toolsSnapshot, e.memoryDir)
+	memFiles := context.LoadMemoryFiles(workingDir, e.memoryDir)
 
 	estimates := e.estimateComponents(
 		sections, memFiles, toolsSnapshot, toolSearchSnap,
@@ -352,6 +352,7 @@ func estimateSystemPromptSections(
 	workingDir string,
 	skillListing string,
 	toolsSnapshot map[string]tool.Tool,
+	memoryDir string,
 ) sysPromptSections {
 	if systemPromptRaw == "" {
 		return sysPromptSections{}
@@ -362,7 +363,8 @@ func estimateSystemPromptSections(
 	// each section independently, then subtract the per-section estimate.
 	builder := context.NewBuilder(workingDir)
 	builder.GitStatus = context.LoadGitStatus(workingDir)
-	builder.MemoryFiles = context.LoadMemoryFiles(workingDir)
+	builder.MemoryFiles = context.LoadMemoryFiles(workingDir, memoryDir)
+	builder.MemoryDirOverride = memoryDir
 	builder.SkillListing = skillListing
 
 	baseStr := builder.BaseSystemPrompt()

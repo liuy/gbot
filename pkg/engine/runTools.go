@@ -111,6 +111,7 @@ type StreamingToolExecutor struct {
 	emitEvent func(types.QueryEvent)
 	tctx      *tool.ToolUseContext
 	messages  []types.Message // conversation history for tool context (set after assistant msg append)
+	memoryDir string          // per-engine memory override; empty = use workingDir-derived path
 
 	// Three-tier abort (TS: abortController.ts, spec:3750-3810)
 	// rootCtx → siblingCtx via context.WithCancelCause.
@@ -177,6 +178,8 @@ func (e *StreamingToolExecutor) SetMessages(messages []types.Message) {
 	defer e.mu.Unlock()
 	e.messages = messages
 }
+
+func (e *StreamingToolExecutor) SetMemoryDir(dir string) { e.memoryDir = dir }
 
 // SetAssistantContent sets the current assistant message's content blocks.
 func (e *StreamingToolExecutor) SetAssistantContent(blocks []types.ContentBlock) {
@@ -660,7 +663,7 @@ func (e *StreamingToolExecutor) executeTool(tt *TrackedTool) {
 
 	// Memory path bypass: auto-allow writes to the memory directory.
 	// TS: isAutoMemPath (filesystem.ts:1572-1581) — write carve-out for auto-memory.
-	if isMemoryPathWrite(tt.Name, tt.Input) {
+	if isMemoryPathWrite(tt.Name, tt.Input, e.memoryDir) {
 		// Skip permission check — memory dir writes are always allowed.
 	} else if e.permChecker != nil {
 		var decision permission.Decision
@@ -1121,7 +1124,7 @@ func ConcurrentToolLoop(
 // isMemoryPathWrite checks if a tool call is a Write to the auto-memory directory.
 // When true, the permission check is bypassed — memory writes are always allowed.
 // TS: isAutoMemPath bypass (filesystem.ts:1572-1581)
-func isMemoryPathWrite(toolName string, input json.RawMessage) bool {
+func isMemoryPathWrite(toolName string, input json.RawMessage, memoryDirOverride string) bool {
 	if toolName != "Write" || !long.IsAutoMemoryEnabled() {
 		return false
 	}
@@ -1136,6 +1139,14 @@ func isMemoryPathWrite(toolName string, input json.RawMessage) bool {
 	absPath, err := filepath.Abs(writeInput.FilePath)
 	if err != nil {
 		return false
+	}
+
+	if memoryDirOverride != "" {
+		normalized := filepath.Clean(absPath)
+		overrideDir := strings.TrimSuffix(memoryDirOverride, string(filepath.Separator)) + string(filepath.Separator)
+		if strings.HasPrefix(normalized+string(filepath.Separator), overrideDir) {
+			return true
+		}
 	}
 
 	cwd, err := os.Getwd()

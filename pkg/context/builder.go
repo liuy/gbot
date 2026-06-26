@@ -27,6 +27,9 @@ type Builder struct {
 	// MemoryFiles are loaded memory files for the system prompt.
 	MemoryFiles []MemoryFile
 
+	// MemoryDirOverride, when non-empty, replaces the workingDir-derived memory path.
+	MemoryDirOverride string
+
 	// MaxTokens is the token budget for the system prompt.
 	MaxTokens int
 
@@ -62,7 +65,7 @@ func (b *Builder) Build() (string, error) {
 	}
 
 	// 5. Memory — typed-memory prompt with full instructions
-	if memPrompt := FormatMemoryPrompt(b.WorkingDir); memPrompt != "" {
+	if memPrompt := FormatMemoryPrompt(b.WorkingDir, b.MemoryDirOverride); memPrompt != "" {
 		buf.WriteString("\n\n")
 		buf.WriteString(memPrompt)
 	} else if len(b.MemoryFiles) > 0 {

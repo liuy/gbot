@@ -3,6 +3,7 @@ package long
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -11,17 +12,19 @@ import (
 // trusting-recall, MEMORY.md content (truncated if needed).
 // Returns empty string if IsAutoMemoryEnabled() is false.
 // TS: buildMemoryPrompt (memdir.ts:272-316), buildMemoryLines (memdir.ts:199-266)
-func BuildMemoryPrompt(workingDir string) string {
+func BuildMemoryPrompt(workingDir string, memoryDirOverride string) string {
 	if !IsAutoMemoryEnabled() {
 		return ""
 	}
 
 	memoryDir := GetMemoryPath(workingDir)
+	if memoryDirOverride != "" {
+		memoryDir = memoryDirOverride
+	}
 
 	lines := buildMemoryLines("auto memory", memoryDir, false)
 
-	// Read MEMORY.md content
-	entrypoint := GetMemoryEntrypoint(workingDir)
+	entrypoint := filepath.Join(memoryDir, EntrypointName)
 	data, err := readFileOrNull(entrypoint)
 	if err != nil {
 		// Can't read — continue without content

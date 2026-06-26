@@ -289,7 +289,7 @@ func main() {
 			toolPrompts = append(toolPrompts, p)
 		}
 	}
-	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg)
+	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg, "")
 
 	// 6. Initialize short-term memory store
 	var store *short.Store
@@ -483,6 +483,10 @@ func main() {
 			deps:               deps,
 			primaryProviderCfg: primaryProviderCfg,
 			mediaStores:        &mediaStores,
+			daemonMode:         daemonMode,
+			toolPrompts:        toolPrompts,
+			skillListing:       skillListing,
+			lspReg:             lspReg,
 		}); err != nil {
 			slog.Warn("wechat: start connector failed", "account_id", state.AccountID, "error", err)
 			continue
@@ -650,6 +654,10 @@ type startWeChatDeps struct {
 	deps               engine.SharedDeps
 	primaryProviderCfg *config.Provider
 	mediaStores        *[]*media.Store
+	daemonMode         bool
+	toolPrompts        []string
+	skillListing       string
+	lspReg             *lsp.Registry
 }
 
 // startWeChatConnector wires one WeChat account: builds (or adopts a restored)
@@ -767,6 +775,11 @@ func startWeChatConnector(d startWeChatDeps) error {
 	// Both branches (fresh build + restore) stash their ToolRefs on wcEng, so
 	// this single call covers both. The TUI engine never reaches this path.
 	wc.RegisterSendTool(wcEng.ToolRefs().Reg)
+	if d.daemonMode {
+		memDir := filepath.Join(d.projectDir, "memory", engineID)
+		wcEng.SetMemoryDir(memDir)
+		wcEng.SetSystemPrompt(ctxbuild.BuildSystemPrompt(d.workingDir, d.toolPrompts, d.skillListing, d.lspReg, memDir))
+	}
 	// Capture the media cache for shutdown teardown (the cache owns its
 	// cleanup goroutine; main must Close() it to stop that goroutine).
 	*d.mediaStores = append(*d.mediaStores, wc.MediaCache())

@@ -7396,19 +7396,19 @@ func (d *namedTool) MaxResultSize() int      { return 50000 }
 // ---------------------------------------------------------------------------
 
 func TestIsMemoryPathWrite_NotWriteTool(t *testing.T) {
-	if isMemoryPathWrite("Read", json.RawMessage(`{"file_path":"/tmp/test"}`)) {
+	if isMemoryPathWrite("Read", json.RawMessage(`{"file_path":"/tmp/test"}`), "") {
 		t.Error("Read tool should never be a memory write")
 	}
 }
 
 func TestIsMemoryPathWrite_EmptyFilePath(t *testing.T) {
-	if isMemoryPathWrite("Write", json.RawMessage(`{}`)) {
+	if isMemoryPathWrite("Write", json.RawMessage(`{}`), "") {
 		t.Error("empty file_path should not be memory write")
 	}
 }
 
 func TestIsMemoryPathWrite_InvalidJSON(t *testing.T) {
-	if isMemoryPathWrite("Write", json.RawMessage(`{invalid`)) {
+	if isMemoryPathWrite("Write", json.RawMessage(`{invalid`), "") {
 		t.Error("invalid JSON should not be memory write")
 	}
 }
@@ -7416,14 +7416,14 @@ func TestIsMemoryPathWrite_InvalidJSON(t *testing.T) {
 func TestIsMemoryPathWrite_ActualMemoryPath(t *testing.T) {
 	cwd, _ := os.Getwd()
 	memPath := long.GetMemoryPath(cwd)
-	result := isMemoryPathWrite("Write", json.RawMessage(fmt.Sprintf(`{"file_path":"%s/test.md"}`, memPath)))
+	result := isMemoryPathWrite("Write", json.RawMessage(fmt.Sprintf(`{"file_path":"%s/test.md"}`, memPath)), "")
 	if !result {
 		t.Error("Write to memory path should return true")
 	}
 }
 
 func TestIsMemoryPathWrite_NonMemoryPath(t *testing.T) {
-	result := isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"/tmp/not-memory.md"}`))
+	result := isMemoryPathWrite("Write", json.RawMessage(`{"file_path":"/tmp/not-memory.md"}`), "")
 	if result {
 		t.Error("Write to non-memory path should return false")
 	}

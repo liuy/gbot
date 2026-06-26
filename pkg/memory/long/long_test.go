@@ -509,7 +509,7 @@ func TestLoadAllMemoryFiles_NonexistentDir(t *testing.T) {
 
 func TestBuildMemoryPrompt_Disabled(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
-	prompt := BuildMemoryPrompt(t.TempDir())
+	prompt := BuildMemoryPrompt(t.TempDir(), "")
 	if prompt != "" {
 		t.Errorf("expected empty prompt when disabled, got %q", prompt)
 	}
@@ -518,7 +518,7 @@ func TestBuildMemoryPrompt_Disabled(t *testing.T) {
 func TestBuildMemoryPrompt_EmptyDir(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "0")
 	tmp := t.TempDir()
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Error("expected non-empty prompt when enabled")
 	}
@@ -544,7 +544,7 @@ func TestBuildMemoryPrompt_WithContent(t *testing.T) {
 	_ = WriteMemoryFile(memDir, "test", MemoryTypeUser, "Test memory", "Some content")
 	_ = UpdateMemoryIndex(memDir, "test.md", "Test memory")
 
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Error("expected non-empty prompt")
 	}
@@ -660,7 +660,7 @@ func TestBuildMemoryPrompt_WithContentAtComputedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
 	}
@@ -691,7 +691,7 @@ func TestBuildMemoryPrompt_WithTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
 	}
@@ -714,7 +714,7 @@ func TestBuildMemoryPrompt_ReadFileError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt even on read error")
 	}
@@ -736,7 +736,7 @@ func TestBuildMemoryPrompt_EmptyContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := BuildMemoryPrompt(tmp)
+	prompt := BuildMemoryPrompt(tmp, "")
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
 	}
@@ -1495,7 +1495,7 @@ func TestChain_WriteIndexPrompt(t *testing.T) {
 	}
 
 	// Build prompt — this is the entry point the engine calls
-	prompt := BuildMemoryPrompt(workingDir)
+	prompt := BuildMemoryPrompt(workingDir, "")
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
 	}

@@ -22,7 +22,7 @@ func setTempHome(t *testing.T) {
 func TestLoadMemoryFiles_Empty(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files with empty dir, got %d", len(files))
 	}
@@ -41,7 +41,7 @@ func TestLoadMemoryFiles_SingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
@@ -66,7 +66,7 @@ func TestLoadMemoryFiles_MultipleFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(files))
 	}
@@ -97,7 +97,7 @@ func TestLoadMemoryFiles_SkipsNonMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file (skipping non-md), got %d", len(files))
 	}
@@ -121,7 +121,7 @@ func TestLoadMemoryFiles_SkipsEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file (skipping empty), got %d", len(files))
 	}
@@ -143,7 +143,7 @@ func TestLoadMemoryFiles_SkipsDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files (subdir.md is a directory), got %d", len(files))
 	}
@@ -167,7 +167,7 @@ func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(target, 0644) }() // restore for cleanup
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files when file is unreadable, got %d", len(files))
 	}
@@ -176,7 +176,7 @@ func TestLoadMemoryFiles_ReadFileError(t *testing.T) {
 func TestLoadMemoryFiles_NonExistentDir(t *testing.T) {
 	setTempHome(t)
 	// Pass a path that doesn't exist at all — os.ReadDir fails, returns nil
-	files := context.LoadMemoryFiles("/nonexistent/path/that/does/not/exist")
+	files := context.LoadMemoryFiles("/nonexistent/path/that/does/not/exist", "")
 	if len(files) != 0 {
 		t.Errorf("expected 0 files for nonexistent dir, got %d", len(files))
 	}
@@ -195,7 +195,7 @@ func TestLoadMemoryFiles_FilepathAbsError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
@@ -222,7 +222,7 @@ func TestLoadMemoryFiles_MarkdownExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 3 {
 		t.Fatalf("expected 3 files (md, markdown, mdx), got %d", len(files))
 	}
@@ -316,7 +316,7 @@ func TestBuild_WithTypedMemory(t *testing.T) {
 
 func TestLoadMemoryFiles_Disabled(t *testing.T) {
 	t.Setenv("GBOT_AUTO_MEMORY_ENABLED", "1")
-	files := context.LoadMemoryFiles(t.TempDir())
+	files := context.LoadMemoryFiles(t.TempDir(), "")
 	if files != nil {
 		t.Errorf("expected nil when disabled, got %d files", len(files))
 	}
@@ -344,7 +344,7 @@ func TestLoadMemoryFiles_WithIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 2 {
 		t.Fatalf("expected 2 files via index, got %d", len(files))
 	}
@@ -389,7 +389,7 @@ func TestLoadMemoryFiles_IndexSkipsMissingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file (missing skipped), got %d", len(files))
 	}
@@ -415,7 +415,7 @@ func TestLoadMemoryFiles_IndexSkipsEmptyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 0 {
 		t.Fatalf("expected 0 files (empty content skipped), got %d", len(files))
 	}
@@ -438,7 +438,7 @@ func TestLoadMemoryFiles_IndexFallbackToScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := context.LoadMemoryFiles(tmpDir)
+	files := context.LoadMemoryFiles(tmpDir, "")
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file from scan fallback, got %d", len(files))
 	}

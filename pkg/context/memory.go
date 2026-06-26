@@ -18,12 +18,16 @@ type MemoryFile struct {
 
 // LoadMemoryFiles loads memory files from the gbot memory directory.
 // Falls back to scanning .md files if MEMORY.md index doesn't exist.
-func LoadMemoryFiles(workingDir string) []MemoryFile {
+// If memoryDirOverride is non-empty, it replaces the workingDir-derived path.
+func LoadMemoryFiles(workingDir string, memoryDirOverride string) []MemoryFile {
 	if !long.IsAutoMemoryEnabled() {
 		return nil
 	}
 
 	memDir := long.GetMemoryPath(workingDir)
+	if memoryDirOverride != "" {
+		memDir = memoryDirOverride
+	}
 
 	// Try loading via MEMORY.md index first
 	idx, err := long.LoadMemoryIndex(memDir)
@@ -64,8 +68,8 @@ func FormatMemorySection(files []MemoryFile) string {
 // Uses long.BuildMemoryPrompt which includes type taxonomy, save instructions,
 // MEMORY.md content (truncated), and all behavioral guidance.
 // Returns empty string if memory is disabled.
-func FormatMemoryPrompt(workingDir string) string {
-	return long.BuildMemoryPrompt(workingDir)
+func FormatMemoryPrompt(workingDir string, memoryDirOverride string) string {
+	return long.BuildMemoryPrompt(workingDir, memoryDirOverride)
 }
 
 // loadFromIndex loads memory files listed in the MEMORY.md index.

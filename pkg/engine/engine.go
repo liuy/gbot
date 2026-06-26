@@ -114,6 +114,7 @@ type Engine struct {
 	turnCount      int
 	dispatcher     types.EventDispatcher
 	workingDir     string
+	memoryDir      string // override for GetMemoryPath; empty = use workingDir-derived path
 	attachments    *attachment.Queue
 	reminderEngine *attachment.ReminderEngine
 	systemPrompt   string                   // stored system prompt for fork agent access
@@ -2141,6 +2142,7 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 							ctx,
 						)
 						streamingExecutor.SetMessages(e.messages)
+						streamingExecutor.SetMemoryDir(e.memoryDir)
 						streamingExecutor.SetHooks(e.hooks, e.sessionID)
 						streamingExecutor.SetPermissionChecker(e.permissionChecker)
 						streamingExecutor.SetFileHistory(e.fileHistory)
@@ -4073,6 +4075,9 @@ func (e *Engine) SystemPrompt() string { return e.systemPrompt }
 
 // SetSystemPrompt stores the system prompt for later access by fork agents.
 func (e *Engine) SetSystemPrompt(sp string) { e.systemPrompt = sp }
+
+func (e *Engine) SetMemoryDir(dir string) { e.memoryDir = dir }
+func (e *Engine) MemoryDir() string       { return e.memoryDir }
 
 // SetSkillListing stores the formatted skill listing for /context breakdown.
 func (e *Engine) SetSkillListing(sl string) { e.skillListing = sl }
