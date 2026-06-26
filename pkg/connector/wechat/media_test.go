@@ -697,3 +697,58 @@ func TestHandleInbound_ContentImagePlaceholderInDispatch(t *testing.T) {
 		t.Error("EventConnectorUserMessage did not carry an [image] placeholder")
 	}
 }
+
+// TestHandleInbound_DocumentDisplayTextNoDuplicate verifies that the TUI
+// display text for a document with a caption does not repeat the caption.
+// content has [document block, caption block] — displayText starts with
+// msg.text (caption), then the loop must NOT append the caption block's
+// first line again.
+func TestHandleInbound_DocumentDisplayTextNoDuplicate(t *testing.T) {
+	spy := &hubSpy{}
+	h := hub.NewHub()
+	h.Subscribe(spy)
+	c := &WeChatConnector{
+		hub:       h,
+		inboundCh: make(chan inboundMessage, 10),
+		queryFn:   func(context.Context, string, string) {},
+	}
+	c.queryWithContentFn = func(_ context.Context, _ []types.ContentBlock, _ string) {
+		if c.queryDone != nil {
+			close(c.queryDone)
+			c.queryDone = nil
+		}
+	}
+
+	caption := "Summarize this document."
+	docBlock := types.NewTextBlock("[Document: report.pdf saved at /tmp/report.pdf]\nPDF content here")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c.handleInbound(ctx, inboundMessage{
+		userID:  "u1",
+		text:    caption,
+		content: []types.ContentBlock{docBlock, types.NewTextBlock(caption)},
+	})
+
+	var displayText string
+	spy.mu.Lock()
+	for _, evt := range spy.events {
+		if evt.Type == types.EventConnectorUserMessage && evt.Message != nil {
+			for _, cb := range evt.Message.Content {
+				if cb.Type == types.ContentTypeText {
+					displayText = cb.Text
+				}
+			}
+		}
+	}
+	spy.mu.Unlock()
+
+	// Caption must appear exactly once.
+	count := strings.Count(displayText, caption)
+	if count != 1 {
+		t.Errorf("caption appears %d times in displayText %q, want exactly 1", count, displayText)
+	}
+	// Document header must be present.
+	if !strings.Contains(displayText, "[Document:") {
+		t.Errorf("displayText %q missing '[Document:' header", displayText)
+	}
+}

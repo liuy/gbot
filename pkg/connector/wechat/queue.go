@@ -42,7 +42,10 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
 
 	// Image-only messages would render blank in the TUI (it renders its own input, not connector image blocks); append a placeholder.
-	displayText := msg.text
+	// displayText only shows attachment headers (e.g. "[Document: xxx saved at
+	// /path]"), not the caption — the caption is an LLM instruction, not user
+	// text the TUI needs to render.
+	displayText := ""
 	for _, cb := range msg.content {
 		switch cb.Type {
 		case types.ContentTypeImage:
@@ -51,8 +54,6 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 			}
 			displayText += "[image]"
 		case types.ContentTypeText:
-			// Document blocks carry "[Document: xxx saved at /path]..." —
-			// show the first line in TUI so the attachment is visible.
 			if displayText != "" {
 				displayText += " "
 			}
@@ -62,6 +63,10 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 				displayText += cb.Text
 			}
 		}
+	}
+	// For text-only messages (no media), displayText is empty — use msg.text.
+	if displayText == "" {
+		displayText = msg.text
 	}
 	c.hub.Dispatch(types.QueryEvent{
 		Type: types.EventConnectorUserMessage,
