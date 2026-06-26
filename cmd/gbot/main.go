@@ -505,6 +505,9 @@ func main() {
 	// 8. Create TUI App
 	app := tui.NewAppWithManager(engineMgr, systemPrompt, h)
 	app.SetProviders(providerMap, cfg)
+	if daemonMode {
+		app.SetDisableFileHistory(true)
+	}
 	if len(skillCmdsForTUI) > 0 {
 		slashCmds := make(map[string]tui.CommandDef, len(skillCmdsForTUI))
 		for _, sc := range skillCmdsForTUI {

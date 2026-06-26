@@ -90,8 +90,8 @@ func TestExtractText_VoiceTranscription(t *testing.T) {
 	items := []Item{
 		{Type: ItemVoice, VoiceItem: &VoiceItem{Text: "transcribed text"}},
 	}
-	if got := extractText(items); got != "transcribed text" {
-		t.Fatalf("extractText voice = %q, want %q", got, "transcribed text")
+	if got := extractText(items); got != "[voice transcription] transcribed text" {
+		t.Fatalf("extractText voice = %q, want %q", got, "[voice transcription] transcribed text")
 	}
 }
 

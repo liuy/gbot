@@ -103,9 +103,10 @@ type App struct {
 	// sessionID is the active engine's session ID. Kept as a cached mirror of
 	// engineMgr.Active().ActiveSessionID; updated by switchEngine and
 	// createNewSession/forkCurrentSession.
-	sessionID   string
-	projectDir  string // working directory for .gbot/meta.json (shared across engines)
-	fileHistory *filehistory.Tracker
+	sessionID          string
+	projectDir         string // working directory for .gbot/meta.json (shared across engines)
+	fileHistory        *filehistory.Tracker
+	disableFileHistory bool
 
 	// Active dialog overlay (unified for list picking and permission asking)
 	activeDialog *Dialog
@@ -347,6 +348,12 @@ func (a *App) RegisterSkillCommands(cmds map[string]CommandDef) {
 	a.commands.RegisterSkillCommands(cmds)
 }
 
+// SetDisableFileHistory disables the file history tracker (rewind/restore).
+// Used in daemon mode where TakeSnapshot would walk ~/.gbot/ and OOM.
+func (a *App) SetDisableFileHistory(v bool) {
+	a.disableFileHistory = v
+}
+
 // SetProviders configures multi-provider model switching.
 // Called from main.go after createAllProviders().
 func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config) {
@@ -509,8 +516,9 @@ func (a *App) SetStore(store *short.Store, sessionID, projectDir string) {
 	}
 
 	// Create file history tracker for rewind/restore.
-	// Source: TS fileHistory.ts — per-session backup directory.
-	if sessionID != "" {
+	// Disabled in daemon mode — TakeSnapshot walks the working directory and
+	// reads every file into memory, which OOMs when workingDir is ~/.gbot/.
+	if sessionID != "" && !a.disableFileHistory {
 		trackerDir := filepath.Join(filepath.Dir(store.DBPath()), "..", "file-history", sessionID)
 		tracker := filehistory.NewTracker(trackerDir)
 		// Load persisted state (crash recovery / session resume).
