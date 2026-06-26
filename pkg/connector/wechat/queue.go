@@ -41,30 +41,38 @@ func (c *WeChatConnector) handleInbound(ctx context.Context, msg inboundMessage)
 	c.lastFlush = time.Now()
 	c.startTyping(ctx, msg.userID) // sets lastTypingRefresh
 
-	// Image-only messages would render blank in the TUI (it renders its own input, not connector image blocks); append a placeholder.
-	// displayText only shows attachment headers (e.g. "[Document: xxx saved at
-	// /path]"), not the caption — the caption is an LLM instruction, not user
-	// text the TUI needs to render.
-	displayText := ""
+	// Build display text from attachment headers. Multiple documents get a
+	// combined "[Documents: a, b]" header instead of per-file "[Document: ...]".
+	var docNames []string
+	var otherParts []string
 	for _, cb := range msg.content {
 		switch cb.Type {
 		case types.ContentTypeImage:
-			if displayText != "" {
-				displayText += " "
-			}
-			displayText += "[image]"
+			otherParts = append(otherParts, "[image]")
 		case types.ContentTypeText:
-			if displayText != "" {
-				displayText += " "
-			}
+			firstLine := cb.Text
 			if idx := strings.IndexByte(cb.Text, '\n'); idx > 0 {
-				displayText += cb.Text[:idx]
+				firstLine = cb.Text[:idx]
+			}
+			if name, ok := extractDocName(firstLine); ok {
+				docNames = append(docNames, name)
 			} else {
-				displayText += cb.Text
+				otherParts = append(otherParts, firstLine)
 			}
 		}
 	}
-	// For text-only messages (no media), displayText is empty — use msg.text.
+	var displayText string
+	if len(docNames) == 1 {
+		displayText = "[Document: " + docNames[0] + "]"
+	} else if len(docNames) > 1 {
+		displayText = "[Documents: " + strings.Join(docNames, ", ") + "]"
+	}
+	if len(otherParts) > 0 {
+		if displayText != "" {
+			displayText += " "
+		}
+		displayText += strings.Join(otherParts, " ")
+	}
 	if displayText == "" {
 		displayText = msg.text
 	}
@@ -132,6 +140,19 @@ func (c *WeChatConnector) sendToUser(ctx context.Context, userID, text string) e
 		}
 	}
 	return lastErr
+}
+
+// extractDocName parses "[Document: filename saved at /path]" → "filename".
+func extractDocName(header string) (string, bool) {
+	const prefix = "[Document: "
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	rest := header[len(prefix):]
+	if idx := strings.Index(rest, " saved at "); idx > 0 {
+		return rest[:idx], true
+	}
+	return "", false
 }
 
 // isRetriable returns true for transient errors worth retrying: network

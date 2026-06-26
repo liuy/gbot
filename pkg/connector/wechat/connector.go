@@ -371,15 +371,6 @@ func hasMedia(items []Item) bool {
 	return false
 }
 
-func hasFileItem(items []Item) bool {
-	for _, item := range items {
-		if item.Type == ItemFile {
-			return true
-		}
-	}
-	return false
-}
-
 // reports the two retrievable-bytes signals: a full URL or encrypt query param.
 func downloadableMedia(m *MediaRef) bool {
 	if m == nil {

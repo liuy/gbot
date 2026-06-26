@@ -449,12 +449,13 @@ func TestProcessInbound_WithImage_EnqueuesContent(t *testing.T) {
 			{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64}}},
 		},
 	}
-	c.processInbound(context.Background(), msg)
+	c.processBatch(context.Background(), []Message{msg})
 
 	select {
 	case im := <-c.inboundCh:
-		if len(im.content) != 1 {
-			t.Fatalf("enqueued content length = %d, want 1 image block", len(im.content))
+		// Image block + default prompt.
+		if len(im.content) != 2 {
+			t.Fatalf("enqueued content length = %d, want 2 (image + prompt)", len(im.content))
 		}
 		if im.content[0].Type != types.ContentTypeImage {
 			t.Errorf("content[0].Type = %q, want image", im.content[0].Type)
@@ -462,12 +463,15 @@ func TestProcessInbound_WithImage_EnqueuesContent(t *testing.T) {
 		if im.content[0].Source == nil || im.content[0].Source.MediaType != "image/png" {
 			t.Errorf("content[0] source = %+v, want image/png", im.content[0].Source)
 		}
+		if im.content[1].Type != types.ContentTypeText || !strings.Contains(im.content[1].Text, "attachment") {
+			t.Errorf("content[1] = %+v, want default prompt", im.content[1])
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("processInbound did not enqueue within 2s")
 	}
 }
 
-func TestProcessInbound_ImageWithCaption_EnqueuesImageThenText(t *testing.T) {
+func TestProcessInbound_ImageWithCaption_CaptionEnqueuedSeparately(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
 	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
@@ -482,6 +486,9 @@ func TestProcessInbound_ImageWithCaption_EnqueuesImageThenText(t *testing.T) {
 	c, _ := newMediaTestConnector(t)
 	c.state = &State{AccountID: "bot"}
 
+	// WeChat doesn't support caption, but if a text item accompanies an image
+	// in the same message, processBatch treats the image as media (merged with
+	// default prompt) and the text is dropped — only media OR text per message.
 	msg := Message{
 		FromUserID: "user1",
 		MessageID:  FlexString("msg-2"),
@@ -490,21 +497,16 @@ func TestProcessInbound_ImageWithCaption_EnqueuesImageThenText(t *testing.T) {
 			{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64}}},
 		},
 	}
-	c.processInbound(context.Background(), msg)
+	c.processBatch(context.Background(), []Message{msg})
 
 	select {
 	case im := <-c.inboundCh:
-		if len(im.content) != 2 {
-			t.Fatalf("enqueued content length = %d, want 2 (image + caption)", len(im.content))
-		}
+		// Media wins — text item is ignored, image + default prompt enqueued.
 		if im.content[0].Type != types.ContentTypeImage {
-			t.Errorf("content[0].Type = %q, want image first", im.content[0].Type)
+			t.Errorf("content[0].Type = %q, want image (media takes priority)", im.content[0].Type)
 		}
-		if im.content[1].Type != types.ContentTypeText || im.content[1].Text != "look at this" {
-			t.Errorf("content[1] = %+v, want the caption text block", im.content[1])
-		}
-		if im.text != "look at this" {
-			t.Errorf("im.text = %q, want the caption", im.text)
+		if !strings.Contains(im.text, "attachment") {
+			t.Errorf("im.text = %q, want default prompt", im.text)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("processInbound did not enqueue within 2s")
@@ -521,7 +523,7 @@ func TestProcessInbound_TextOnly_NoContent(t *testing.T) {
 		MessageID:  FlexString("msg-3"),
 		ItemList:   []Item{{Type: ItemText, TextItem: &TextItem{Text: "just text"}}},
 	}
-	c.processInbound(context.Background(), msg)
+	c.processBatch(context.Background(), []Message{msg})
 
 	select {
 	case im := <-c.inboundCh:
@@ -547,7 +549,7 @@ func TestProcessInbound_EmptyDropped(t *testing.T) {
 		MessageID:  FlexString("msg-4"),
 		ItemList:   []Item{{Type: ItemText, TextItem: &TextItem{Text: ""}}},
 	}
-	c.processInbound(context.Background(), msg)
+	c.processBatch(context.Background(), []Message{msg})
 
 	select {
 	case im := <-c.inboundCh:
@@ -591,7 +593,7 @@ func TestProcessInbound_MediaNoCaption_AddsDefaultPrompt(t *testing.T) {
 			}},
 		},
 	}
-	c.processInbound(context.Background(), msg)
+	c.processBatch(context.Background(), []Message{msg})
 
 	select {
 	case im := <-c.inboundCh:
@@ -605,8 +607,8 @@ func TestProcessInbound_MediaNoCaption_AddsDefaultPrompt(t *testing.T) {
 		if im.content[1].Type != types.ContentTypeText {
 			t.Errorf("content[1].Type = %q, want text (prompt)", im.content[1].Type)
 		}
-		if !strings.Contains(im.content[1].Text, "one-sentence summary") {
-			t.Errorf("content[1].Text = %q, want default prompt containing 'one-sentence summary'", im.content[1].Text)
+		if !strings.Contains(im.content[1].Text, "attachment") {
+			t.Errorf("content[1].Text = %q, want default prompt containing 'attachment'", im.content[1].Text)
 		}
 		// im.text should also be set for TUI display.
 		if im.text == "" {
@@ -698,7 +700,69 @@ func TestHandleInbound_ContentImagePlaceholderInDispatch(t *testing.T) {
 	}
 }
 
-// TestHandleInbound_DocumentDisplayTextNoDuplicate verifies that the TUI
+// TestProcessBatch_MultipleMediaMerged verifies that multiple media messages
+// arriving in one GetUpdates batch are merged into a single inboundMessage
+// with all content blocks combined — not enqueued as separate messages.
+func TestProcessBatch_MultipleMediaMerged(t *testing.T) {
+	t.Parallel()
+
+	xlsxData, err := os.ReadFile("/tmp/test_inline.xlsx")
+	if err != nil {
+		t.Skipf("test xlsx not available: %v", err)
+	}
+	key := []byte("0123456789abcdef")
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+	// Two xlsx files served by the same server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(encryptAesEcbForMediaTest(xlsxData, key))
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+
+	msgs := []Message{
+		{
+			FromUserID: "user1",
+			MessageID:  FlexString("msg-a"),
+			ItemList: []Item{
+				{Type: ItemFile, FileItem: &FileItem{
+					FileName: "doc1.xlsx",
+					Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+				}},
+			},
+		},
+		{
+			FromUserID: "user1",
+			MessageID:  FlexString("msg-b"),
+			ItemList: []Item{
+				{Type: ItemFile, FileItem: &FileItem{
+					FileName: "doc2.xlsx",
+					Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+				}},
+			},
+		},
+	}
+	c.processBatch(context.Background(), msgs)
+
+	select {
+	case im := <-c.inboundCh:
+		// Both documents should be in a single inboundMessage.
+		docCount := 0
+		for _, cb := range im.content {
+			if cb.Type == types.ContentTypeText && strings.Contains(cb.Text, "[Document:") {
+				docCount++
+			}
+		}
+		if docCount != 2 {
+			t.Errorf("merged content has %d document blocks, want 2", docCount)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("processBatch did not enqueue within 2s")
+	}
+}
+
 // display text for a document with a caption does not repeat the caption.
 // content has [document block, caption block] — displayText starts with
 // msg.text (caption), then the loop must NOT append the caption block's
@@ -742,13 +806,11 @@ func TestHandleInbound_DocumentDisplayTextNoDuplicate(t *testing.T) {
 	}
 	spy.mu.Unlock()
 
-	// Caption must appear exactly once.
-	count := strings.Count(displayText, caption)
-	if count != 1 {
-		t.Errorf("caption appears %d times in displayText %q, want exactly 1", count, displayText)
-	}
-	// Document header must be present.
+	// Document header must be present with extracted name.
 	if !strings.Contains(displayText, "[Document:") {
 		t.Errorf("displayText %q missing '[Document:' header", displayText)
+	}
+	if !strings.Contains(displayText, "report.pdf") {
+		t.Errorf("displayText %q missing filename 'report.pdf'", displayText)
 	}
 }

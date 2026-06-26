@@ -2,6 +2,7 @@ package wechat
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -95,9 +96,7 @@ func (c *WeChatConnector) pollLoop(ctx context.Context) {
 			c.SaveState()
 		}
 
-		for _, msg := range resp.Msgs {
-			c.processInbound(ctx, msg)
-		}
+		c.processBatch(ctx, resp.Msgs)
 	}
 }
 
@@ -109,50 +108,71 @@ func isStaleSession(ret, errcode int, errmsg string) bool {
 	return errmsg == "unknown error"
 }
 
-// processInbound filters and enqueues an inbound message.
-func (c *WeChatConnector) processInbound(ctx context.Context, msg Message) {
-	// Filter self-messages
-	if msg.FromUserID == c.state.AccountID {
-		return
-	}
+// processBatch processes all messages from one GetUpdates response as a group.
+// Media messages from the same user are merged into a single inboundMessage so
+// the engine processes them in one query. Text-only messages are enqueued
+// individually (they represent distinct user turns).
+func (c *WeChatConnector) processBatch(ctx context.Context, msgs []Message) {
+	var mediaBlocks []types.ContentBlock
+	var mergedUserID string
+	var mergedToken string
 
-	// Dedup by message_id
-	if !c.dedup.Add(string(msg.MessageID)) {
-		return
-	}
-
-	// text carries the caption / voice transcription, independent of media
-	// download — a message with BOTH an image and a caption produces an image
-	// block followed by the caption text block.
-	text := extractText(msg.ItemList)
-
-	// When there's a document but no caption, add a default prompt so the LLM
-	// has an instruction. Images don't need this — the LLM can see them directly.
-	if text == "" && hasFileItem(msg.ItemList) {
-		text = "Tell the user you received a document about [one-sentence summary], then ask what the user wants to do with it, in the user's language."
-	}
-
-	var content []types.ContentBlock
-	if c.mediaCache != nil && hasMedia(msg.ItemList) {
-		if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
-			content = append(content, block)
-			if text != "" {
-				content = append(content, types.NewTextBlock(text))
-			}
+	flush := func() {
+		if len(mediaBlocks) == 0 {
+			return
 		}
+		if mergedToken != "" {
+			c.setStateContextToken(mergedUserID, mergedToken)
+		}
+		prompt := mediaPrompt(len(mediaBlocks))
+		content := append(mediaBlocks, types.NewTextBlock(prompt))
+		c.enqueue(mergedUserID, prompt, content)
+		mediaBlocks = nil
+		mergedUserID = ""
+		mergedToken = ""
 	}
 
-	// Drop messages with neither text nor a usable media block.
-	if text == "" && len(content) == 0 {
-		return
+	for _, msg := range msgs {
+		if msg.FromUserID == c.state.AccountID {
+			continue
+		}
+		if !c.dedup.Add(string(msg.MessageID)) {
+			continue
+		}
+
+		if c.mediaCache != nil && hasMedia(msg.ItemList) {
+			if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
+				if mergedUserID == "" {
+					mergedUserID = msg.FromUserID
+				}
+				if msg.ContextToken != "" {
+					mergedToken = msg.ContextToken
+				}
+				mediaBlocks = append(mediaBlocks, block)
+			}
+			continue
+		}
+
+		// Text-only message: flush any pending media first, then enqueue text.
+		flush()
+
+		text := extractText(msg.ItemList)
+		if text == "" {
+			continue
+		}
+		if msg.ContextToken != "" {
+			c.setStateContextToken(msg.FromUserID, msg.ContextToken)
+		}
+		c.enqueue(msg.FromUserID, text, nil)
 	}
 
-	// Save context_token for reply
-	if msg.ContextToken != "" {
-		c.setStateContextToken(msg.FromUserID, msg.ContextToken)
-	}
+	flush()
+}
 
-	c.enqueue(msg.FromUserID, text, content)
+// mediaPrompt returns the default instruction sent to the LLM alongside a
+// batch of media blocks. Works for any mix of documents and images.
+func mediaPrompt(count int) string {
+	return fmt.Sprintf("The user sent %d attachment(s). Tell the user what you received with a one-sentence summary for each, then ask what they want to do, in the user's language.", count)
 }
 
 // enqueue sends an inbound message to the serial processing loop.

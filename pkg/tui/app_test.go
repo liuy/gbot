@@ -9084,7 +9084,9 @@ func TestNewAppWithManager_InactiveEnginesGetBackgroundDrain(t *testing.T) {
 	})
 
 	app := NewAppWithManager(mgr, "", hub.NewHub())
-	_ = app
+	if app == nil {
+		t.Fatal("NewAppWithManager returned nil")
+	}
 
 	// The wechat handler must have a drain fn so its events don't pile
 	// up in appCh with no consumer. drainFn == nil means active mode —
@@ -9097,6 +9099,7 @@ func TestNewAppWithManager_InactiveEnginesGetBackgroundDrain(t *testing.T) {
 		t.Error("active engine (main) handler has non-nil drainFn — events won't reach appCh")
 	}
 }
+
 // does not leak across engines. Without per-engine usage, switching
 // between two engines accumulates both engines' token deltas into the
 // global status.usage — context size balloons past the window (e.g.
