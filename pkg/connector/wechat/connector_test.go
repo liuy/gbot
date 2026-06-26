@@ -279,13 +279,7 @@ func TestSafeID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStatePersistence(t *testing.T) {
-	// Save to a temp dir so we don't pollute ~/.gbot
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", origHome)
-	})
-	tmpHome := t.TempDir()
-	_ = os.Setenv("HOME", tmpHome)
+	projectDir := t.TempDir()
 
 	state := &State{
 		AccountID:     "test-account",
@@ -296,11 +290,17 @@ func TestStatePersistence(t *testing.T) {
 		EngineID:      "wechat-test",
 	}
 
-	if err := SaveState(state); err != nil {
+	if err := SaveState(state, projectDir); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	loaded, err := LoadState()
+	// File must land at the per-account path, not a global one.
+	wantPath := filepath.Join(projectDir, "wechat", "test-account.json")
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("state file not at expected path %s: %v", wantPath, err)
+	}
+
+	loaded, err := LoadState(state.AccountID, projectDir)
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
@@ -325,14 +325,9 @@ func TestStatePersistence(t *testing.T) {
 }
 
 func TestLoadState_NotExists(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", origHome)
-	})
-	tmpHome := t.TempDir()
-	_ = os.Setenv("HOME", tmpHome)
+	projectDir := t.TempDir()
 
-	loaded, err := LoadState()
+	loaded, err := LoadState("nonexistent@im.bot", projectDir)
 	if err != nil {
 		t.Fatalf("LoadState for non-existent file: %v", err)
 	}
@@ -341,20 +336,84 @@ func TestLoadState_NotExists(t *testing.T) {
 	}
 }
 
-func TestStatePath_Format(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", origHome)
-	})
-	_ = os.Setenv("HOME", "/home/testuser")
-
-	path, err := StatePath()
-	if err != nil {
-		t.Fatalf("StatePath: %v", err)
+func TestStateFilePath_Format(t *testing.T) {
+	got := StateFilePath("/home/u/.gbot/projects/foo", "e1cc99a2c914@im.bot")
+	want := "/home/u/.gbot/projects/foo/wechat/e1cc99a2c914@im.bot.json"
+	if got != want {
+		t.Fatalf("StateFilePath = %q, want %q", got, want)
 	}
-	want := "/home/testuser/.gbot/wechat/state.json"
-	if path != want {
-		t.Fatalf("StatePath = %q, want %q", path, want)
+}
+
+func TestLoadAllStates(t *testing.T) {
+	t.Run("multiple accounts", func(t *testing.T) {
+		projectDir := t.TempDir()
+		a := &State{AccountID: "a@im.bot", Token: "ta"}
+		b := &State{AccountID: "b@im.bot", Token: "tb"}
+		if err := SaveState(a, projectDir); err != nil {
+			t.Fatalf("SaveState a: %v", err)
+		}
+		if err := SaveState(b, projectDir); err != nil {
+			t.Fatalf("SaveState b: %v", err)
+		}
+
+		states, err := LoadAllStates(projectDir)
+		if err != nil {
+			t.Fatalf("LoadAllStates: %v", err)
+		}
+		if len(states) != 2 {
+			t.Fatalf("len(states) = %d, want 2", len(states))
+		}
+		ids := map[string]bool{}
+		for _, s := range states {
+			ids[s.AccountID] = true
+		}
+		if !ids["a@im.bot"] || !ids["b@im.bot"] {
+			t.Fatalf("missing accounts, got %v", ids)
+		}
+	})
+
+	t.Run("empty or missing dir returns nil", func(t *testing.T) {
+		states, err := LoadAllStates(t.TempDir())
+		if err != nil {
+			t.Fatalf("LoadAllStates empty dir: %v", err)
+		}
+		if states != nil {
+			t.Fatalf("expected nil states for empty dir, got %v", states)
+		}
+	})
+
+	t.Run("corrupt file skipped", func(t *testing.T) {
+		projectDir := t.TempDir()
+		// Valid account.
+		if err := SaveState(&State{AccountID: "good@im.bot", Token: "t"}, projectDir); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		// Corrupt JSON alongside it.
+		wechatDir := filepath.Join(projectDir, "wechat")
+		if err := os.WriteFile(filepath.Join(wechatDir, "bad@im.bot.json"), []byte("{not json"), 0644); err != nil {
+			t.Fatalf("write corrupt file: %v", err)
+		}
+
+		states, err := LoadAllStates(projectDir)
+		if err != nil {
+			t.Fatalf("LoadAllStates: %v", err)
+		}
+		if len(states) != 1 {
+			t.Fatalf("len(states) = %d, want 1 (corrupt skipped)", len(states))
+		}
+		if states[0].AccountID != "good@im.bot" {
+			t.Fatalf("AccountID = %q, want good@im.bot", states[0].AccountID)
+		}
+	})
+}
+
+func TestSafeFilename(t *testing.T) {
+	got := safeFilename("a/b\\c\x00d")
+	if got != "a_b_c_d" {
+		t.Fatalf("safeFilename separators = %q, want %q", got, "a_b_c_d")
+	}
+	if got := safeFilename(""); got != "account" {
+		t.Fatalf("safeFilename empty = %q, want %q", got, "account")
 	}
 }
 
@@ -431,26 +490,21 @@ func TestCheckSendMessageResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSaveState_CreatesDir(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", origHome)
-	})
-	tmpHome := t.TempDir()
-	_ = os.Setenv("HOME", tmpHome)
+	projectDir := t.TempDir()
 
 	state := &State{AccountID: "test", Token: "tok"}
-	if err := SaveState(state); err != nil {
+	if err := SaveState(state, projectDir); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
 
-	// Verify the file exists
-	path := filepath.Join(tmpHome, ".gbot", "wechat", "state.json")
+	// Verify the file exists at the per-account path.
+	path := filepath.Join(projectDir, "wechat", "test.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Fatal("state file was not created")
 	}
 
 	// Verify the content round-trips
-	loaded, err := LoadState()
+	loaded, err := LoadState("test", projectDir)
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}

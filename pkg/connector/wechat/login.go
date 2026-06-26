@@ -12,9 +12,9 @@ import (
 )
 
 // Login runs the interactive iLink QR login flow.
-// On success, saves state to ~/.gbot/wechat/state.json.
+// On success, saves state to <projectDir>/wechat/<accountID>.json.
 // Returns the account ID on success.
-func Login(ctx context.Context, client *http.Client) (string, error) {
+func Login(ctx context.Context, client *http.Client, projectDir string) (string, error) {
 	// Step 1: Fetch QR code
 	slog.Info("wechat: fetching QR code for login")
 
@@ -111,7 +111,7 @@ func Login(ctx context.Context, client *http.Client) (string, error) {
 				state.ContextTokens["_self_user_id"] = userID
 			}
 
-			if err := SaveState(state); err != nil {
+			if err := SaveState(state, projectDir); err != nil {
 				return "", fmt.Errorf("save state: %w", err)
 			}
 

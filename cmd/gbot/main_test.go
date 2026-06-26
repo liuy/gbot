@@ -207,7 +207,7 @@ func TestRestoreEngines_CompactorUsesCorrectModel(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	deps := restoreEnginesDeps{
 		mgr:        mgr,
-		workingDir: projectDir,
+		projectDir: projectDir,
 		store:      store,
 		model:      "zhipu/glm-5",
 		factory: func(id, name, prov, model string) (*engine.Engine, *tui.TUIHandler, error) {
@@ -308,7 +308,7 @@ func TestRestoreEngines_UsesModelContextWindow(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	deps := restoreEnginesDeps{
 		mgr:        mgr,
-		workingDir: projectDir,
+		projectDir: projectDir,
 		model:      "zhipu/glm-5.2",
 		factory: func(id, name, providerName, modelArg string) (*engine.Engine, *tui.TUIHandler, error) {
 			var providerCfg *config.Provider
@@ -373,7 +373,7 @@ func TestRestoreEngines_StripsProviderPrefix(t *testing.T) {
 	var gotModel string
 	deps := restoreEnginesDeps{
 		mgr:        engine.NewEngineManager(),
-		workingDir: projectDir,
+		projectDir: projectDir,
 		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
 			gotModel = model
 			hub, handler := tui.NewEngineHubWithHandler(id, nil)
@@ -416,7 +416,7 @@ func TestRestoreEngines_StripsOpenRouterNestedPrefix(t *testing.T) {
 	var gotModel string
 	deps := restoreEnginesDeps{
 		mgr:        engine.NewEngineManager(),
-		workingDir: projectDir,
+		projectDir: projectDir,
 		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
 			gotModel = model
 			hub, handler := tui.NewEngineHubWithHandler(id, nil)
@@ -458,7 +458,7 @@ func TestRestoreEngines_VSModelMatchesMetaJson(t *testing.T) {
 	mgr := engine.NewEngineManager()
 	deps := restoreEnginesDeps{
 		mgr:        mgr,
-		workingDir: projectDir,
+		projectDir: projectDir,
 		factory: func(id, name, provider, model string) (*engine.Engine, *tui.TUIHandler, error) {
 			hub, handler := tui.NewEngineHubWithHandler(id, nil)
 			eng := engine.New(&engine.Params{

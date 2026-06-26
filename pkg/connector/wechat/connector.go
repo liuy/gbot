@@ -34,6 +34,9 @@ type WeChatConnector struct {
 	state   *State
 	stateMu sync.Mutex
 
+	// projectDir is where per-account state is written (<projectDir>/wechat/).
+	projectDir string
+
 	pollCancel context.CancelFunc
 	pollWg     sync.WaitGroup
 
@@ -103,16 +106,10 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 
 func (c *WeChatConnector) MediaCache() *media.Store { return c.mediaCache }
 
-// Start begins the poll and processing loops.
-func (c *WeChatConnector) Start(ctx context.Context) error {
-	state, err := LoadState()
-	if err != nil {
-		return fmt.Errorf("wechat: load state: %w", err)
-	}
-	if state == nil {
-		return nil
-	}
+// Start begins the poll and processing loops. state must be non-nil.
+func (c *WeChatConnector) Start(ctx context.Context, state *State, projectDir string) error {
 	c.state = state
+	c.projectDir = projectDir
 	c.restoreContextTokens()
 
 	c.typingAPI = &iLinkTypingAPI{
@@ -315,7 +312,9 @@ func (c *WeChatConnector) SaveState() {
 	if c.state == nil {
 		return
 	}
-	_ = SaveState(c.state)
+	if err := SaveState(c.state, c.projectDir); err != nil {
+		slog.Warn("wechat: save state failed", "account_id", c.state.AccountID, "error", err)
+	}
 }
 
 // getContextToken returns the context_token for a specific WeChat user.
