@@ -9046,7 +9046,57 @@ func TestNewAppWithManager_ActiveHandlerBindsToActiveEngine(t *testing.T) {
 	}
 }
 
-// TestSwitchEngine_UsageIsPerEngine verifies that usage (token counts)
+// TestNewAppWithManager_InactiveEnginesGetBackgroundDrain verifies that
+// engines other than the active one have their TUIHandler set to background
+// drain mode at startup. Without this, inactive engine events flow into
+// appCh with no reader — the channel fills (cap=1024), the engine goroutine
+// blocks on appCh <- msg, EventQueryEnd never dispatches, and the connector's
+// handleInbound deadlocks on <-queryDone.
+func TestNewAppWithManager_InactiveEnginesGetBackgroundDrain(t *testing.T) {
+	t.Parallel()
+
+	mainHub, mainHandler := NewEngineHubWithHandler("main", nil)
+	mainEng := engine.New(&engine.Params{
+		Provider:   &tuiMockProvider{},
+		Model:      "test",
+		Dispatcher: mainHub,
+	})
+
+	wechatHub, wechatHandler := NewEngineHubWithHandler("wechat", nil)
+	wechatEng := engine.New(&engine.Params{
+		Provider:   &tuiMockProvider{},
+		Model:      "test",
+		Dispatcher: wechatHub,
+	})
+
+	mgr := engine.NewEngineManager()
+	mgr.Add(&engine.EngineViewState{
+		Engine:  mainEng,
+		Handler: mainHandler,
+		Repl:    newReplAdapter(NewReplState()),
+		ID:      "main", Name: "main",
+	})
+	mgr.Add(&engine.EngineViewState{
+		Engine:  wechatEng,
+		Handler: wechatHandler,
+		Repl:    newReplAdapter(NewReplState()),
+		ID:      "wechat", Name: "wechat",
+	})
+
+	app := NewAppWithManager(mgr, "", hub.NewHub())
+	_ = app
+
+	// The wechat handler must have a drain fn so its events don't pile
+	// up in appCh with no consumer. drainFn == nil means active mode —
+	// events go to appCh, but app.tuiHandler points at main's handler.
+	if wechatHandler.drainFn == nil {
+		t.Error("inactive engine (wechat) handler has nil drainFn — events will fill appCh with no reader, causing deadlock")
+	}
+	// The active engine's handler must NOT have a drain fn.
+	if mainHandler.drainFn != nil {
+		t.Error("active engine (main) handler has non-nil drainFn — events won't reach appCh")
+	}
+}
 // does not leak across engines. Without per-engine usage, switching
 // between two engines accumulates both engines' token deltas into the
 // global status.usage — context size balloons past the window (e.g.

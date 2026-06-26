@@ -320,6 +320,24 @@ func NewAppWithManager(mgr *engine.EngineManager, systemPrompt string, h *hub.Hu
 		a.status.SetContext(0, a.engine.ContextWindow())
 		a.status.SetModel(a.engine.Model())
 	}
+
+	// Set all non-active engines to background drain mode. Without this,
+	// their handlers stay in active mode (drainFn=nil) — events pile up in
+	// each handler's appCh with no reader, eventually filling the buffer
+	// (cap=1024) and blocking the engine goroutine on appCh <- msg.
+	activeID := ""
+	if mgr != nil {
+		activeID = mgr.ActiveID()
+		for _, vs := range mgr.List() {
+			if vs.ID == activeID {
+				continue
+			}
+			if h, ok := vs.Handler.(*TUIHandler); ok && h != nil {
+				h.SetDrainFn(a.buildBackgroundDrainFn(vs))
+			}
+		}
+	}
+
 	return a
 }
 

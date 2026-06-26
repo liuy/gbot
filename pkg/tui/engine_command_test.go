@@ -211,9 +211,9 @@ func TestSwitchEngine_FlipsDrainRoles(t *testing.T) {
 	e2Handler, _ := a.engineMgr.Get("e2").Handler.(*TUIHandler)
 	a.tuiHandler = mainHandler
 
-	// Before switch: e2 handler has drainFn == nil.
-	if e2Handler.drainFn != nil {
-		t.Fatal("precondition: e2 handler drainFn should be nil")
+	// Before switch: e2 handler (inactive) has drainFn set by NewAppWithManager.
+	if e2Handler.drainFn == nil {
+		t.Fatal("precondition: e2 handler drainFn should be non-nil (background drain)")
 	}
 
 	a.switchEngine("e2")
