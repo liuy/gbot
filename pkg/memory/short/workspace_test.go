@@ -22,11 +22,7 @@ func TestReadWorkspaceMeta_FileNotExist(t *testing.T) {
 
 func TestReadWorkspaceMeta_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	gbotDir := filepath.Join(dir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(gbotDir, "meta.json"), []byte("{bad json"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte("{bad json"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -41,7 +37,6 @@ func TestReadWorkspaceMeta_InvalidJSON(t *testing.T) {
 
 func TestWriteWorkspaceMeta_CreatesDir(t *testing.T) {
 	dir := t.TempDir()
-	// .gbot/ doesn't exist yet
 	meta := &WorkspaceMeta{
 		CurrentSessionID: "sess-123",
 		LastActiveAt:     time.Now().Truncate(time.Millisecond), // REAL-TIME: deterministic timestamp for test data
@@ -51,10 +46,10 @@ func TestWriteWorkspaceMeta_CreatesDir(t *testing.T) {
 		t.Fatalf("WriteWorkspaceMeta error: %v", err)
 	}
 
-	// Verify .gbot/meta.json exists
-	path := filepath.Join(dir, ".gbot", "meta.json")
+	// Verify meta.json exists
+	path := filepath.Join(dir, "meta.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Fatal("expected .gbot/meta.json to exist")
+		t.Fatal("expected meta.json to exist")
 	}
 
 	// Verify content
@@ -109,7 +104,7 @@ func TestRoundTrip_EmptyMeta(t *testing.T) {
 	}
 
 	// Verify the JSON file is valid
-	path := filepath.Join(dir, ".gbot", "meta.json")
+	path := filepath.Join(dir, "meta.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read file: %v", err)
@@ -147,13 +142,9 @@ func TestRoundTrip_FullMeta(t *testing.T) {
 
 func TestReadWorkspaceMeta_LegacyFormat(t *testing.T) {
 	dir := t.TempDir()
-	gbotDir := filepath.Join(dir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	// Pre-multi-engine format: only current_session_id.
 	legacy := `{"current_session_id":"legacy-sess","last_active_at":"2026-04-19T12:00:00Z"}`
-	if err := os.WriteFile(filepath.Join(gbotDir, "meta.json"), []byte(legacy), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(legacy), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	got, err := ReadWorkspaceMeta(dir)
@@ -170,10 +161,6 @@ func TestReadWorkspaceMeta_LegacyFormat(t *testing.T) {
 
 func TestReadWorkspaceMeta_NewFormat(t *testing.T) {
 	dir := t.TempDir()
-	gbotDir := filepath.Join(dir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	raw := `{
 		"current_session_id":"s1",
 		"engines":[
@@ -183,7 +170,7 @@ func TestReadWorkspaceMeta_NewFormat(t *testing.T) {
 		"active_engine_id":"main",
 		"last_active_at":"2026-04-19T12:00:00Z"
 	}`
-	if err := os.WriteFile(filepath.Join(gbotDir, "meta.json"), []byte(raw), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(raw), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	got, err := ReadWorkspaceMeta(dir)
@@ -219,7 +206,7 @@ func TestWriteWorkspaceMeta_DualWrite(t *testing.T) {
 		t.Fatalf("WriteWorkspaceMeta: %v", err)
 	}
 	// Read raw bytes and assert BOTH keys are present.
-	path := filepath.Join(dir, ".gbot", "meta.json")
+	path := filepath.Join(dir, "meta.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/liuy/gbot/pkg/project"
 )
 
 const (
@@ -12,9 +14,6 @@ const (
 	MaxEntrypointLines = 200
 	MaxEntrypointBytes = 25000
 )
-
-// maxSanitizedLength matches TS's MAX_SANITIZED_LENGTH (200 chars).
-const maxSanitizedLength = 200
 
 // IsAutoMemoryEnabled checks if the memory system is enabled.
 // Priority: GBOT_AUTO_MEMORY_ENABLED env var (1/true → OFF, 0/false → ON,
@@ -82,125 +81,11 @@ func ValidateMemoryPath(raw string) string {
 	return normalized + string(filepath.Separator)
 }
 
-// sanitizePath makes a string safe for use as a directory name.
-// Replaces non-alphanumeric with hyphens. Truncates to maxSanitizedLength
-// and appends a hash suffix for uniqueness if needed.
-// TS: sanitizePath (sessionStoragePortable.ts:311-319)
-func sanitizePath(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('-')
-		}
-	}
-	sanitized := b.String()
-
-	if len(sanitized) <= maxSanitizedLength {
-		return sanitized
-	}
-
-	hash := djb2Hash(name)
-	prefix := sanitized[:maxSanitizedLength]
-	return prefix + "-" + hash
-}
-
-// djb2Hash implements the DJB2 hash algorithm.
-// TS: djb2Hash (hash.ts) → Math.abs(result).toString(36)
-func djb2Hash(str string) string {
-	hash := uint32(5381)
-	for _, c := range str {
-		hash = hash*33 + uint32(c)
-	}
-	// Convert to signed int32 for absolute value, matching TS Math.abs
-	signed := int32(hash)
-	if signed < 0 {
-		signed = -signed
-	}
-	return uintToString(uint64(signed), 36)
-}
-
-func uintToString(n uint64, base int) string {
-	if n == 0 {
-		return "0"
-	}
-	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
-	var buf [64]byte
-	pos := len(buf)
-	for n > 0 {
-		pos--
-		buf[pos] = digits[n%uint64(base)]
-		n /= uint64(base)
-	}
-	return string(buf[pos:])
-}
-
-// findGitRoot walks up from dir to find a directory containing .git.
-// Returns empty string if not in a git repo.
-// TS: findGitRoot (git.ts)
-func findGitRoot(dir string) string {
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
-// findCanonicalGitRoot finds the git root and resolves worktrees to the
-// main repository. This ensures all worktrees of the same repo share one
-// memory directory.
-// TS: findCanonicalGitRoot (git.ts:185-195)
-func findCanonicalGitRoot(workingDir string) string {
-	root := findGitRoot(workingDir)
-	if root == "" {
-		return workingDir
-	}
-
-	// Check if .git is a file (worktree) — resolve to main repo
-	gitPath := filepath.Join(root, ".git")
-	info, err := os.Stat(gitPath)
-	if err != nil {
-		return root
-	}
-	if !info.IsDir() {
-		// .git is a file → worktree. Read "gitdir: /path/to/main/.git/worktrees/xxx"
-		data, err := os.ReadFile(gitPath)
-		if err != nil {
-			return root
-		}
-		content := strings.TrimSpace(string(data))
-		if strings.HasPrefix(content, "gitdir: ") {
-			gitdir := content[len("gitdir: "):]
-			// gitdir is like /path/to/main/.git/worktrees/xxx
-			// Walk up to find the main repo root
-			mainGitDir := filepath.Clean(filepath.Join(gitdir, "..", ".."))
-			if _, err := os.Stat(mainGitDir); err == nil {
-				return filepath.Dir(mainGitDir)
-			}
-		}
-		return root
-	}
-
-	return root
-}
-
 // GetMemoryPath returns the memory directory path.
-// Returns ~/.gbot/projects/{sanitized-git-root}/memory/
+// Returns ~/.gbot/projects/{slug}/memory/ where slug is derived from workingDir.
 // TS: getAutoMemPath (paths.ts:223-235)
 func GetMemoryPath(workingDir string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "~"
-	}
-	base := findCanonicalGitRoot(workingDir)
-	slug := sanitizePath(base)
-	return filepath.Join(home, ".gbot", "projects", slug, "memory") + string(filepath.Separator)
+	return filepath.Join(project.Dir(workingDir), "memory") + string(filepath.Separator)
 }
 
 // GetMemoryEntrypoint returns the MEMORY.md path.

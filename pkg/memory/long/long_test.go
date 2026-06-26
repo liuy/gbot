@@ -211,24 +211,6 @@ func TestValidateMemoryPath_RejectsTildeOnly(t *testing.T) {
 	}
 }
 
-func TestSanitizePath(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"/Users/foo/my-project", "-Users-foo-my-project"},
-		{"simple", "simple"},
-		{"path with spaces", "path-with-spaces"},
-	}
-	for _, tc := range tests {
-		got := sanitizePath(tc.input)
-		if got != tc.expected {
-			t.Errorf("sanitizePath(%q) = %q, want %q", tc.input, got, tc.expected)
-		}
-	}
-}
-
 func TestGetMemoryPath_ContainsProjectsDir(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
@@ -647,154 +629,6 @@ func TestValidateMemoryPath_TildeRestIsDot(t *testing.T) {
 	result := ValidateMemoryPath("~/.")
 	if result != "" {
 		t.Errorf("expected rejection for ~/., got %q", result)
-	}
-}
-
-func TestSanitizePath_LongString(t *testing.T) {
-	t.Parallel()
-	input := strings.Repeat("a", 300)
-	result := sanitizePath(input)
-	if len(result) > 250 {
-		t.Errorf("result too long: %d chars", len(result))
-	}
-	// Should contain a hash suffix after truncation
-	if !strings.Contains(result, "-") {
-		t.Error("expected hash suffix separator after truncation")
-	}
-}
-
-func TestDjb2Hash(t *testing.T) {
-	t.Parallel()
-	result := djb2Hash("test")
-	if result == "" {
-		t.Error("expected non-empty hash")
-	}
-	if result == "0" {
-		t.Error("expected non-zero hash for non-empty input")
-	}
-}
-
-func TestUintToString_Zero(t *testing.T) {
-	t.Parallel()
-	if got := uintToString(0, 10); got != "0" {
-		t.Errorf("uintToString(0, 10) = %q, want '0'", got)
-	}
-}
-
-func TestUintToString_Hex(t *testing.T) {
-	t.Parallel()
-	if got := uintToString(255, 16); got != "ff" {
-		t.Errorf("uintToString(255, 16) = %q, want 'ff'", got)
-	}
-}
-
-func TestUintToString_Base36(t *testing.T) {
-	t.Parallel()
-	if got := uintToString(35, 36); got != "z" {
-		t.Errorf("uintToString(35, 36) = %q, want 'z'", got)
-	}
-}
-
-func TestFindGitRoot_NoGit(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	result := findGitRoot(tmp)
-	if result != "" {
-		t.Errorf("expected empty for non-git dir, got %q", result)
-	}
-}
-
-func TestFindGitRoot_HasGit(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(tmp, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	result := findGitRoot(tmp)
-	if result != tmp {
-		t.Errorf("expected %q, got %q", tmp, result)
-	}
-}
-
-func TestFindCanonicalGitRoot_GitDir(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(tmp, ".git"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	result := findCanonicalGitRoot(tmp)
-	if result != tmp {
-		t.Errorf("expected %q (git dir), got %q", tmp, result)
-	}
-}
-
-func TestFindCanonicalGitRoot_Worktree(t *testing.T) {
-	t.Parallel()
-	// Create main repo with .git directory
-	mainRepo := t.TempDir()
-	mainGitDir := filepath.Join(mainRepo, ".git")
-	if err := os.MkdirAll(filepath.Join(mainGitDir, "worktrees", "test-wt"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create worktree with .git FILE pointing to main
-	worktree := t.TempDir()
-	worktreeGit := filepath.Join(worktree, ".git")
-	gitdirContent := "gitdir: " + mainGitDir + "/worktrees/test-wt"
-	if err := os.WriteFile(worktreeGit, []byte(gitdirContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	result := findCanonicalGitRoot(worktree)
-	if result != mainRepo {
-		t.Errorf("expected main repo %q, got %q", mainRepo, result)
-	}
-}
-
-func TestFindCanonicalGitRoot_WorktreeBadPrefix(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	gitFile := filepath.Join(tmp, ".git")
-	if err := os.WriteFile(gitFile, []byte("not a gitdir line"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	result := findCanonicalGitRoot(tmp)
-	if result != tmp {
-		t.Errorf("expected %q for non-gitdir .git file, got %q", tmp, result)
-	}
-}
-
-func TestFindCanonicalGitRoot_WorktreeReadError(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	gitFile := filepath.Join(tmp, ".git")
-	// Create .git as unreadable file
-	if err := os.WriteFile(gitFile, []byte("gitdir: /path"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Make it unreadable
-	if err := os.Chmod(gitFile, 0000); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chmod(gitFile, 0644) }()
-
-	result := findCanonicalGitRoot(tmp)
-	if result != tmp {
-		t.Errorf("expected %q for read error, got %q", tmp, result)
-	}
-}
-
-func TestFindCanonicalGitRoot_WorktreeMissingMain(t *testing.T) {
-	t.Parallel()
-	tmp := t.TempDir()
-	gitFile := filepath.Join(tmp, ".git")
-	content := "gitdir: /nonexistent/path/.git/worktrees/xxx"
-	if err := os.WriteFile(gitFile, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	result := findCanonicalGitRoot(tmp)
-	if result != tmp {
-		t.Errorf("expected %q for missing main repo, got %q", tmp, result)
 	}
 }
 
@@ -1352,29 +1186,6 @@ func TestParseFrontmatter_EmptyLine(t *testing.T) {
 }
 
 // --- Remaining coverage gap tests ---
-
-func TestDjb2Hash_NegativeInt32(t *testing.T) {
-	t.Parallel()
-	// Use high-value runes to force uint32 overflow into negative int32 range
-	for _, input := range []string{
-		strings.Repeat(string(rune(0x7FF)), 50),
-		strings.Repeat(string(rune(0xFFFF)), 50),
-		strings.Repeat("é", 100),
-	} {
-		hash := uint32(5381)
-		for _, c := range input {
-			hash = hash*33 + uint32(c)
-		}
-		if int32(hash) < 0 {
-			result := djb2Hash(input)
-			if result == "" {
-				t.Error("expected non-empty hash")
-			}
-			return // triggered the negative path
-		}
-	}
-	t.Log("none of the test inputs triggered negative int32 path")
-}
 
 func TestLoadMemoryIndex_NoFile(t *testing.T) {
 	t.Parallel()

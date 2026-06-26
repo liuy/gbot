@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os/signal"
+	"syscall"
 
 	"github.com/google/uuid"
 	"os"
@@ -38,6 +40,7 @@ import (
 	"github.com/liuy/gbot/pkg/memory/short"
 	"github.com/liuy/gbot/pkg/permission"
 	"github.com/liuy/gbot/pkg/plugins"
+	"github.com/liuy/gbot/pkg/project"
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
@@ -58,17 +61,48 @@ func main() {
 	// package owns the goroutine lifecycle; the connector only Save/Get's.
 	var mediaStore *media.Store
 
+	// Parse -d/--daemon flag before anything else.
+	var daemonMode bool
+	for _, arg := range os.Args[1:] {
+		if arg == "-d" || arg == "--daemon" {
+			daemonMode = true
+			break
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	workingDir, _ := os.Getwd()
+	projectDir := project.Dir(workingDir)
+	if daemonMode {
+		projectDir = filepath.Join(home, ".gbot", "projects", "daemon")
+	}
+
+	// PID-based single-instance guard
+	pidCleanup, err := acquirePID(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	defer pidCleanup()
+
+	// Clean up PID file on SIGINT/SIGTERM
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		pidCleanup()
+		os.Exit(0)
+	}()
+
 	// Debug logging: write info-level events to log file.
 	// This provides comprehensive observability for diagnosing token stats,
 	// event ordering, and rendering issues.
-	var logPath string
-	if home, err := os.UserHomeDir(); err == nil {
-		logDir := filepath.Join(home, ".gbot")
-		_ = os.MkdirAll(logDir, 0755)
-		logPath = filepath.Join(logDir, "gbot.log")
-	} else {
-		logPath = filepath.Join(os.TempDir(), "gbot.log")
-	}
+	logPath := filepath.Join(projectDir, "gbot.log")
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
 		slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	}
@@ -120,9 +154,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-
-	// 3. Resolve working directory early
-	workingDir, _ := os.Getwd()
 
 	// Skill registry (shared across all engines)
 	skillReg := skills.NewRegistry(workingDir)
@@ -261,10 +292,9 @@ func main() {
 	systemPrompt := ctxbuild.BuildSystemPrompt(workingDir, toolPrompts, skillListing, lspReg)
 
 	// 6. Initialize short-term memory store
-	configDir, _ = config.ConfigDir()
 	var store *short.Store
-	if configDir != "" {
-		dbPath := filepath.Join(configDir, "memory", "memory.db")
+	{
+		dbPath := filepath.Join(projectDir, "memory", "memory.db")
 		s, err := short.NewStore(dbPath)
 		if err != nil {
 			slog.Warn("main: failed to open short-term store, persistence disabled", "error", err)
@@ -378,7 +408,7 @@ func main() {
 				}
 				return result.Error
 			}
-			sm := session.New(smCfg, workingDir, id, smExtractFn, slog.Default())
+			sm := session.New(smCfg, projectDir, id, smExtractFn, slog.Default())
 			sm.SetSystemPromptFn(newEng.SystemPrompt)
 			newEng.SetSessionMemory(sm)
 			slog.Info("session memory: wired", "engine_id", id)
@@ -409,7 +439,7 @@ func main() {
 				return result.Error
 			}
 			memoryDir := long.GetMemoryPath(workingDir)
-			dreamMgr := dream.NewManager(dreamCfg, memoryDir, workingDir, newEng,
+			dreamMgr := dream.NewManager(dreamCfg, memoryDir, projectDir, newEng,
 				store, dreamRunFn, newEng.Dispatcher(), slog.Default())
 			newEng.RegisterPostTurnHook(dreamMgr.RunPostTurn)
 			slog.Info("dream: wired", "engine_id", id)
@@ -428,7 +458,7 @@ func main() {
 			mgr:        engineMgr,
 			factory:    engineFactory,
 			store:      store,
-			workingDir: workingDir,
+			projectDir: projectDir,
 			model:      model,
 		})
 	}
@@ -469,11 +499,11 @@ func main() {
 				ToolsProvider:     refs.Reg.ToolMapFn(),
 			})
 			engine.WireEngine(wcEng, refs, deps)
-			wcEng.SetStore(store, workingDir)
+			wcEng.SetStore(store, projectDir)
 
 			// Create fresh session — ResumeOrInitSession would resume
 			// meta.CurrentSessionID which is shared with other engines.
-			if err := wcEng.NewSession(workingDir, "WeChat"); err != nil {
+			if err := wcEng.NewSession(projectDir, "WeChat"); err != nil {
 				slog.Warn("wechat: new session failed", "error", err)
 			}
 
@@ -547,7 +577,7 @@ func main() {
 				}
 			}()
 		}
-		if err := engineMgr.PersistMeta(workingDir); err != nil {
+		if err := engineMgr.PersistMeta(projectDir); err != nil {
 			slog.Warn("wechat: persist meta failed", "error", err)
 		}
 	}
@@ -574,7 +604,7 @@ func main() {
 		}
 		app.RegisterSkillCommands(slashCmds)
 	}
-	app.SetStore(store, sessionID, workingDir)
+	app.SetStore(store, sessionID, projectDir)
 	app.SetEngineFactory(engineFactory)
 
 	// Estimate initial context usage
@@ -692,7 +722,7 @@ type restoreEnginesDeps struct {
 	mgr        *engine.EngineManager
 	factory    tui.EngineFactoryFn
 	store      *short.Store
-	workingDir string
+	projectDir string
 	model      string
 }
 
@@ -704,7 +734,7 @@ type restoreEnginesDeps struct {
 // fall back to a fresh session via ResumeOrInitSession. Every engine —
 // including main — goes through the factory, so wiring stays uniform.
 func restoreEngines(d restoreEnginesDeps) string {
-	meta, err := short.ReadWorkspaceMeta(d.workingDir)
+	meta, err := short.ReadWorkspaceMeta(d.projectDir)
 	if err != nil {
 		slog.Warn("restore: read workspace meta failed, will synthesize default", "error", err)
 	}
@@ -728,7 +758,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			slog.Error("restore: build engine failed", "id", em.ID, "error", err)
 			continue
 		}
-		eng.SetStore(d.store, d.workingDir)
+		eng.SetStore(d.store, d.projectDir)
 
 		// Resume the engine's last session; fall back to a new session if
 		// the recorded one is missing or unresumable (user deleted DB row,
@@ -741,7 +771,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 			}
 		}
 		if resumeID == "" {
-			id, err := eng.ResumeOrInitSession(d.workingDir, engineModel)
+			id, err := eng.ResumeOrInitSession(d.projectDir, engineModel)
 			if err != nil {
 				slog.Warn("restore: session init failed", "id", em.ID, "error", err)
 			} else {
@@ -767,7 +797,7 @@ func restoreEngines(d restoreEnginesDeps) string {
 	if err := d.mgr.SetActive(activeID); err != nil {
 		slog.Warn("restore: set active engine failed", "id", activeID, "error", err)
 	}
-	if err := d.mgr.PersistMeta(d.workingDir); err != nil {
+	if err := d.mgr.PersistMeta(d.projectDir); err != nil {
 		slog.Warn("restore: write workspace meta failed", "error", err)
 	}
 	if vs := d.mgr.Active(); vs != nil {

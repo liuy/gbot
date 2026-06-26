@@ -821,12 +821,8 @@ func TestResumeOrInitSession_ResumesExisting(t *testing.T) {
 	eng.PersistNewMessages()
 
 	// Write workspace meta pointing to this session
-	metaDir := filepath.Join(dir, ".gbot")
-	if err := os.MkdirAll(metaDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
 	metaData, _ := json.Marshal(short.WorkspaceMeta{CurrentSessionID: session.SessionID})
-	if err := os.WriteFile(filepath.Join(metaDir, "meta.json"), metaData, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), metaData, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

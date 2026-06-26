@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/liuy/gbot/pkg/config"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -32,7 +31,7 @@ type ExtractionFunc func(ctx context.Context, prompt string, notesPath string, m
 // TS source: services/SessionMemory/sessionMemory.ts.
 type SessionMemory struct {
 	config     Config
-	workingDir string
+	projectDir string
 	engineID   string
 	logger     *slog.Logger
 	mu         sync.Mutex
@@ -56,12 +55,12 @@ type SessionMemory struct {
 }
 
 // New creates a new SessionMemory. engineID keys the per-engine notes file
-// ({project}/.gbot/session_notes/{engineID}.md); empty defaults to "main"
+// ({projectDir}/session_notes/{engineID}.md); empty defaults to "main"
 // (matches engine convention at pkg/engine/engine.go:319-321).
-func New(config Config, workingDir string, engineID string, extractFn ExtractionFunc, logger *slog.Logger) *SessionMemory {
+func New(config Config, projectDir string, engineID string, extractFn ExtractionFunc, logger *slog.Logger) *SessionMemory {
 	return &SessionMemory{
 		config:     config,
-		workingDir: workingDir,
+		projectDir: projectDir,
 		engineID:   engineID,
 		extractFn:  extractFn,
 		logger:     logger,
@@ -232,17 +231,13 @@ func (sm *SessionMemory) WaitForExtraction() error {
 }
 
 // NotesPath returns the absolute path to the session memory file.
-// Per-engine layout: ~/.gbot/memory/session_notes/{engineID}.md.
+// Per-engine layout: {projectDir}/session_notes/{engineID}.md.
 func (sm *SessionMemory) NotesPath() string {
 	id := sm.engineID
 	if id == "" {
 		id = "main"
 	}
-	configDir, err := config.ConfigDir()
-	if err != nil {
-		return filepath.Join(sm.workingDir, ".gbot", "memory", "session_notes", id+".md")
-	}
-	return filepath.Join(configDir, "memory", "session_notes", id+".md")
+	return filepath.Join(sm.projectDir, "session_notes", id+".md")
 }
 
 // RecordToolCalls increments the tool call counter.
@@ -309,11 +304,11 @@ func lastAssistantHasToolCalls(messages []types.Message) bool {
 // LoadSessionMemoryContent reads the session memory file content.
 // Returns empty string if file doesn't exist.
 // Used by SM-compact to get content for compaction.
-func LoadSessionMemoryContent(workingDir, engineID string) string {
+func LoadSessionMemoryContent(projectDir, engineID string) string {
 	if engineID == "" {
 		engineID = "main"
 	}
-	notesPath := filepath.Join(workingDir, ".gbot", "session_notes", engineID+".md")
+	notesPath := filepath.Join(projectDir, "session_notes", engineID+".md")
 	data, err := os.ReadFile(notesPath)
 	if err != nil {
 		return ""

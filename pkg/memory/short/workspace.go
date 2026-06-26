@@ -27,11 +27,11 @@ type WorkspaceMeta struct {
 	LastActiveAt     time.Time    `json:"last_active_at"`
 }
 
-// ReadWorkspaceMeta reads .gbot/meta.json from the given project directory.
+// ReadWorkspaceMeta reads meta.json from the given project directory.
 // Returns nil (no error) when the file doesn't exist.
 // Returns an error for invalid JSON or other I/O errors.
 func ReadWorkspaceMeta(projectDir string) (*WorkspaceMeta, error) {
-	path := filepath.Join(projectDir, ".gbot", "meta.json")
+	path := filepath.Join(projectDir, "meta.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -52,12 +52,11 @@ func ReadWorkspaceMeta(projectDir string) (*WorkspaceMeta, error) {
 	return &meta, nil
 }
 
-// WriteWorkspaceMeta writes .gbot/meta.json to the given project directory.
-// Creates the .gbot/ directory if it doesn't exist.
+// WriteWorkspaceMeta writes meta.json to the given project directory.
+// Creates the project directory if it doesn't exist.
 func WriteWorkspaceMeta(projectDir string, meta *WorkspaceMeta) error {
-	gbotDir := filepath.Join(projectDir, ".gbot")
-	if err := os.MkdirAll(gbotDir, 0o755); err != nil {
-		return fmt.Errorf("create .gbot directory: %w", err)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return fmt.Errorf("create project directory: %w", err)
 	}
 
 	data, err := json.MarshalIndent(meta, "", "  ")
@@ -65,7 +64,7 @@ func WriteWorkspaceMeta(projectDir string, meta *WorkspaceMeta) error {
 		return fmt.Errorf("marshal workspace meta: %w", err)
 	}
 
-	path := filepath.Join(gbotDir, "meta.json")
+	path := filepath.Join(projectDir, "meta.json")
 	if err := utils.AtomicWriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write workspace meta: %w", err)
 	}

@@ -263,7 +263,7 @@ func (m *EngineManager) Snapshot() ([]EngineViewSnapshot, string) {
 	return views, m.activeID
 }
 
-// PersistMeta writes .gbot/meta.json reflecting the current state of all
+// PersistMeta writes meta.json reflecting the current state of all
 // engines. Serialized via the manager mutex — safe to call concurrently
 // even when multiple background engines finish queries near-simultaneously.
 // No-op when projectDir == "" (tests, headless runs).

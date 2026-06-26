@@ -422,7 +422,7 @@ func TestIsEmpty_NoFile(t *testing.T) {
 func TestIsEmpty_TemplateOnly(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	notesPath := filepath.Join(tmpDir, ".gbot", "session_notes", "main.md")
+	notesPath := filepath.Join(tmpDir, "session_notes", "main.md")
 	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -514,11 +514,11 @@ func TestReset(t *testing.T) {
 
 func TestNotesPath(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), "/tmp/workdir", "main", nil, nil)
+	tmpDir := t.TempDir()
+	sm := New(DefaultConfig(), tmpDir, "main", nil, nil)
 	path := sm.NotesPath()
 
-	homeDir, _ := os.UserHomeDir()
-	expected := filepath.Join(homeDir, ".gbot", "memory", "session_notes", "main.md")
+	expected := filepath.Join(tmpDir, "session_notes", "main.md")
 	if path != expected {
 		t.Errorf("NotesPath = %q, want %q", path, expected)
 	}
@@ -526,8 +526,9 @@ func TestNotesPath(t *testing.T) {
 
 func TestNotesPath_PerEngine(t *testing.T) {
 	setTempHome(t)
-	smMain := New(DefaultConfig(), "/tmp/workdir", "main", nil, nil)
-	smE2 := New(DefaultConfig(), "/tmp/workdir", "e2", nil, nil)
+	tmpDir := t.TempDir()
+	smMain := New(DefaultConfig(), tmpDir, "main", nil, nil)
+	smE2 := New(DefaultConfig(), tmpDir, "e2", nil, nil)
 
 	mainPath := smMain.NotesPath()
 	e2Path := smE2.NotesPath()
@@ -545,8 +546,7 @@ func TestNotesPath_PerEngine(t *testing.T) {
 		t.Errorf("expected same parent dir, got main=%q e2=%q",
 			filepath.Dir(mainPath), filepath.Dir(e2Path))
 	}
-	homeDir, _ := os.UserHomeDir()
-	wantDir := filepath.Join(homeDir, ".gbot", "memory", "session_notes")
+	wantDir := filepath.Join(tmpDir, "session_notes")
 	if filepath.Dir(mainPath) != wantDir {
 		t.Errorf("parent dir = %q, want %q", filepath.Dir(mainPath), wantDir)
 	}
@@ -554,10 +554,10 @@ func TestNotesPath_PerEngine(t *testing.T) {
 
 func TestNotesPath_EmptyEngineIDDefaultsToMain(t *testing.T) {
 	setTempHome(t)
-	sm := New(DefaultConfig(), "/tmp/workdir", "", nil, nil)
+	tmpDir := t.TempDir()
+	sm := New(DefaultConfig(), tmpDir, "", nil, nil)
 	path := sm.NotesPath()
-	homeDir, _ := os.UserHomeDir()
-	expected := filepath.Join(homeDir, ".gbot", "memory", "session_notes", "main.md")
+	expected := filepath.Join(tmpDir, "session_notes", "main.md")
 	if path != expected {
 		t.Errorf("NotesPath with empty engineID = %q, want %q", path, expected)
 	}
@@ -576,7 +576,7 @@ func TestLoadSessionMemoryContent_NoFile(t *testing.T) {
 func TestLoadSessionMemoryContent_WithFile(t *testing.T) {
 	setTempHome(t)
 	tmpDir := t.TempDir()
-	notesPath := filepath.Join(tmpDir, ".gbot", "session_notes", "main.md")
+	notesPath := filepath.Join(tmpDir, "session_notes", "main.md")
 	if err := os.MkdirAll(filepath.Dir(notesPath), 0755); err != nil {
 		t.Fatal(err)
 	}
