@@ -258,6 +258,12 @@ type Engine struct {
 	// use; SetEngineID by EngineManager.Add when the engine is registered. Used to
 	// bind sessions created via NewSession to their owning engine.
 	engineID string
+
+	// toolRefs holds the ToolRefs the engine's tools were built from. Zero-valued
+	// (nil Reg) for engines not built via CreateTools + SetToolRefs. Stashed so
+	// callers that need the mutable registry post-construction (e.g. main.go
+	// registering WeChat-only tools on a restored engine) can reach it.
+	toolRefs ToolRefs
 }
 
 // Params holds the constructor arguments for Engine.
@@ -454,6 +460,21 @@ func (e *Engine) ProcessAttachments(ctx context.Context, systemPrompt string) {
 // Called by main.go after engine construction. Only the main engine needs this.
 func (e *Engine) SetSharedDeps(deps *SharedDeps) {
 	e.sharedDeps = deps
+}
+
+// SetToolRefs records the ToolRefs the engine's tools were built from. Called
+// by factory wiring (main.go / engineFactory) right after CreateTools so the
+// mutable registry is reachable post-construction.
+func (e *Engine) SetToolRefs(refs ToolRefs) {
+	e.toolRefs = refs
+}
+
+// ToolRefs returns the ToolRefs stashed by SetToolRefs. Reg may be nil if
+// SetToolRefs was never called. Used by callers that need to register
+// additional tools on an already-built engine (e.g. main.go registering the
+// WeChat-only Send tool on a restored engine).
+func (e *Engine) ToolRefs() ToolRefs {
+	return e.toolRefs
 }
 
 // RunAgent creates a sub-engine and executes a sub-agent synchronously.

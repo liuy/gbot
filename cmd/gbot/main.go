@@ -445,6 +445,7 @@ func main() {
 			slog.Info("dream: wired", "engine_id", id)
 		}
 
+		newEng.SetToolRefs(refs)
 		return newEng, handler, nil
 	}
 
@@ -692,6 +693,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 			ToolsProvider:     refs.Reg.ToolMapFn(),
 		})
 		engine.WireEngine(wcEng, refs, d.deps)
+		wcEng.SetToolRefs(refs)
 		wcEng.SetStore(d.store, d.projectDir)
 
 		// Create fresh session — ResumeOrInitSession would resume
@@ -761,6 +763,10 @@ func startWeChatConnector(d startWeChatDeps) error {
 		connectorHub = hub.NewHub()
 	}
 	wc := wechat.New(wcEng, connectorHub)
+	// Register the WeChat-only Send tool on the engine's mutable registry.
+	// Both branches (fresh build + restore) stash their ToolRefs on wcEng, so
+	// this single call covers both. The TUI engine never reaches this path.
+	wc.RegisterSendTool(wcEng.ToolRefs().Reg)
 	// Capture the media cache for shutdown teardown (the cache owns its
 	// cleanup goroutine; main must Close() it to stop that goroutine).
 	*d.mediaStores = append(*d.mediaStores, wc.MediaCache())

@@ -2,7 +2,6 @@ package media
 
 import (
 	"context"
-	"crypto/aes"
 	"encoding/base64"
 	"encoding/hex"
 	"net/http"
@@ -12,33 +11,14 @@ import (
 	"time"
 )
 
-// encryptAesEcbForTest is the encrypt counterpart of DecryptAesEcb, used only
-// to build known ciphertexts in tests (Go's stdlib omits ECB, so we cannot use
-// it to produce test vectors). It applies PKCS7 padding, matching Node's
-// createCipheriv("aes-128-ecb").
-func encryptAesEcbForTest(plaintext, key []byte) []byte {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		panic(err)
-	}
-	padLen := aesBlock - len(plaintext)%aesBlock
-	padded := make([]byte, len(plaintext)+padLen)
-	copy(padded, plaintext)
-	for i := len(plaintext); i < len(padded); i++ {
-		padded[i] = byte(padLen)
-	}
-	out := make([]byte, len(padded))
-	for start := 0; start < len(padded); start += aesBlock {
-		block.Encrypt(out[start:start+aesBlock], padded[start:start+aesBlock])
-	}
-	return out
-}
-
 func TestDecryptAesEcb_RoundTrip(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef") // 16 bytes
 	plaintext := []byte("hello world")
-	ciphertext := encryptAesEcbForTest(plaintext, key)
+	ciphertext, err := EncryptAesEcb(plaintext, key)
+	if err != nil {
+		t.Fatalf("EncryptAesEcb: %v", err)
+	}
 
 	got, err := DecryptAesEcb(ciphertext, key)
 	if err != nil {
@@ -54,7 +34,10 @@ func TestDecryptAesEcb_MultiBlockRoundTrip(t *testing.T) {
 	key := []byte("YELLOW SUBMARINE") // 16 bytes
 	// Spans 3 blocks after padding, exercising the block loop.
 	plaintext := []byte("the quick brown fox jumps over the lazy dog 1234567890")
-	ciphertext := encryptAesEcbForTest(plaintext, key)
+	ciphertext, err := EncryptAesEcb(plaintext, key)
+	if err != nil {
+		t.Fatalf("EncryptAesEcb: %v", err)
+	}
 
 	got, err := DecryptAesEcb(ciphertext, key)
 	if err != nil {
@@ -229,7 +212,10 @@ func TestDownloadAndDecrypt(t *testing.T) {
 	t.Parallel()
 	key := []byte("0123456789abcdef")
 	plaintext := []byte("the eagle lands at dawn")
-	ciphertext := encryptAesEcbForTest(plaintext, key)
+	ciphertext, err := EncryptAesEcb(plaintext, key)
+	if err != nil {
+		t.Fatalf("EncryptAesEcb: %v", err)
+	}
 	aesKeyBase64 := base64.StdEncoding.EncodeToString(key)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

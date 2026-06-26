@@ -216,6 +216,50 @@ func SendMessage(ctx context.Context, client *http.Client, baseURL, token,
 	return checkSendMessageResponse(resp.Ret, resp.ErrCode, resp.ErrMsg)
 }
 
+// SendItemMessage sends a single structured Item (image/video/file/text) to a
+// WeChat user. Port of openclaw src/messaging/send.ts:sendMessageItemWeixin.
+// contextToken and clientID are optional (empty clientID auto-generates one).
+func SendItemMessage(ctx context.Context, client *http.Client, baseURL, token,
+	fromUser, toUser string, item Item, contextToken, clientID string) error {
+
+	if clientID == "" {
+		clientID = fmt.Sprintf("gbot-wechat-%d", time.Now().UnixNano())
+	}
+
+	msg := OutboundMessage{
+		FromUserID:   fromUser,
+		ToUserID:     toUser,
+		ClientID:     clientID,
+		MessageType:  MsgTypeBot,
+		MessageState: MsgStateFinish,
+		ItemList:     []Item{item},
+	}
+	if contextToken != "" {
+		msg.ContextToken = contextToken
+	}
+
+	payload := SendMessageRequest{
+		Msg:      &msg,
+		BaseInfo: baseInfo(),
+	}
+
+	raw, err := apiPost(ctx, client, baseURL, EPSendMessage, payload, token, APITimeoutMs*time.Millisecond)
+	if err != nil {
+		return err
+	}
+
+	var resp struct {
+		Ret     int    `json:"ret"`
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := decodeResponse(raw, &resp); err != nil {
+		return fmt.Errorf("iLink sendmessage decode: %w", err)
+	}
+
+	return checkSendMessageResponse(resp.Ret, resp.ErrCode, resp.ErrMsg)
+}
+
 // checkSendMessageResponse checks the response error codes and returns typed errors.
 func checkSendMessageResponse(ret, errcode int, errmsg string) error {
 	if ret == 0 && errcode == 0 {

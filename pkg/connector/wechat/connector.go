@@ -57,6 +57,10 @@ type WeChatConnector struct {
 	sendToUserFn func(ctx context.Context, userID, text string) error
 	sendMsgFn    func(ctx context.Context, client *http.Client, baseURL, token,
 		fromUser, toUser, text, contextToken, clientID string) error
+	sendItemFn func(ctx context.Context, client *http.Client, baseURL, token,
+		fromUser, toUser string, item Item, contextToken, clientID string) error
+	uploadFn func(ctx context.Context, client *http.Client, baseURL, token, toUserID,
+		filePath string, mediaType int) (*UploadedFileInfo, error)
 	queryFn            func(ctx context.Context, userMessage, systemPrompt string)
 	queryWithContentFn func(ctx context.Context, content []types.ContentBlock, systemPrompt string)
 
@@ -87,6 +91,8 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	}
 	c.sendToUserFn = c.sendToUser
 	c.sendMsgFn = SendMessage
+	c.sendItemFn = SendItemMessage
+	c.uploadFn = UploadFile
 	c.queryFn = func(ctx context.Context, userMessage, _ string) {
 		eng.Query(ctx, userMessage, eng.SystemPrompt())
 	}

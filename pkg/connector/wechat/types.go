@@ -21,6 +21,10 @@ const (
 	ILINKAppID     = "bot"
 	ChannelVersion = "2.2.0"
 	AppClientVer   = (2 << 16) | (2 << 8)
+
+	// CDNBaseURL is the WeChat CDN host for c2c media upload/download.
+	// Source: openclaw src/auth/accounts.ts:13.
+	CDNBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
 )
 
 // iLink message item types
@@ -132,7 +136,9 @@ type TextItem struct {
 
 // MediaItemHolder wraps a media reference for image/video items.
 type MediaItemHolder struct {
-	Media *MediaRef `json:"media,omitempty"`
+	Media     *MediaRef `json:"media,omitempty"`
+	MidSize   int       `json:"mid_size,omitempty"`   // image: ciphertext size
+	VideoSize int       `json:"video_size,omitempty"` // video: ciphertext size
 }
 
 // VoiceItem holds voice media with optional transcribed text.
@@ -176,6 +182,31 @@ type GetUpdatesResponse struct {
 type GetUpdatesRequest struct {
 	GetUpdatesBuf string    `json:"get_updates_buf"`
 	BaseInfo      *BaseInfo `json:"base_info"`
+}
+
+// GetUploadURLRequest is the request body for getuploadurl. Field names and
+// JSON tags are 1:1 with TS GetUploadUrlReq (api/types.ts).
+type GetUploadURLRequest struct {
+	FileKey       string    `json:"filekey,omitempty"`
+	MediaType     int       `json:"media_type,omitempty"`
+	ToUserID      string    `json:"to_user_id,omitempty"`
+	RawSize       int       `json:"rawsize,omitempty"`
+	RawFileMD5    string    `json:"rawfilemd5,omitempty"`
+	FileSize      int       `json:"filesize,omitempty"`         // ciphertext size
+	ThumbRawSize  int       `json:"thumb_rawsize,omitempty"`    // thumbnail plaintext size
+	ThumbRawMD5   string    `json:"thumb_rawfilemd5,omitempty"` // thumbnail plaintext MD5
+	ThumbFileSize int       `json:"thumb_filesize,omitempty"`   // thumbnail ciphertext size
+	NoNeedThumb   bool      `json:"no_need_thumb,omitempty"`
+	AesKey        string    `json:"aeskey,omitempty"` // hex of raw 16 bytes
+	BaseInfo      *BaseInfo `json:"base_info"`
+}
+
+// GetUploadURLResponse is the response from getuploadurl. Field names and JSON
+// tags are 1:1 with TS GetUploadUrlResp (api/types.ts).
+type GetUploadURLResponse struct {
+	UploadParam      string `json:"upload_param,omitempty"`
+	ThumbUploadParam string `json:"thumb_upload_param,omitempty"`
+	UploadFullURL    string `json:"upload_full_url,omitempty"`
 }
 
 // BaseInfo is included in every iLink request.
