@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -377,42 +376,6 @@ func TestCountTotalLines_Empty(t *testing.T) {
 	}
 }
 
-// --- parsePDFPageRange ---
-func TestParsePDFPageRange(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input string
-		want  *PageRange
-	}{
-		{"5", &PageRange{FirstPage: 5, LastPage: 5}},
-		{"1-10", &PageRange{FirstPage: 1, LastPage: 10}},
-		{"3-", &PageRange{FirstPage: 3, LastPage: math.MaxInt}},
-		{"", nil},
-		{"0", nil},
-		{"-1", nil}, // negative page
-		{"1-", &PageRange{FirstPage: 1, LastPage: math.MaxInt}},
-		{"10-5", nil}, // inverted range
-		{"abc", nil},
-		{"  ", nil}, // whitespace only
-		{"  3  ", &PageRange{FirstPage: 3, LastPage: 3}}, // leading/trailing trimmed
-	}
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			t.Parallel()
-			got := parsePDFPageRange(tc.input)
-			if tc.want == nil {
-				if got != nil {
-					t.Errorf("got %v, want nil", got)
-				}
-				return
-			}
-			if got == nil || got.FirstPage != tc.want.FirstPage || got.LastPage != tc.want.LastPage {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 // --- getMimeType ---
 func TestGetMimeType(t *testing.T) {
 	t.Parallel()
@@ -450,80 +413,6 @@ func TestExpandPath(t *testing.T) {
 	}
 }
 
-// --- PDF pdftoppm tests ---
-func TestIsPdftoppmAvailable(t *testing.T) {
-	t.Parallel()
-	// Just verify it returns a boolean without crashing
-	result := isPdftoppmAvailable()
-	t.Logf("isPdftoppmAvailable() = %v", result)
-}
-
-func TestGetPDFPageCount(t *testing.T) {
-	// Requires a PDF file
-	data, err := os.ReadFile("/tmp/test1.pdf")
-	if err != nil {
-		t.Skip("test PDF not available")
-	}
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "test.pdf")
-	if err := os.WriteFile(fp, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-	count := getPDFPageCount(fp)
-	if count < 1 {
-		t.Errorf("getPDFPageCount = %d, want >= 1", count)
-	}
-	// Also verify that a non-existent file returns 0
-	count2 := getPDFPageCount(filepath.Join(dir, "nonexistent.pdf"))
-	if count2 != 0 {
-		t.Errorf("getPDFPageCount(nonexistent) = %d, want 0", count2)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Task #21: PDF magic byte check
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFInvalidMagicBytes(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "fake.pdf")
-	// Write a file with .pdf extension but HTML content (not %PDF-)
-	if err := os.WriteFile(fp, []byte("<html><body>Not a PDF</body></html>"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should reject non-PDF file with .pdf extension")
-	}
-	if !strings.Contains(err.Error(), "not a valid PDF") {
-		t.Errorf("Error = %q, want 'not a valid PDF'", err.Error())
-	}
-}
-
-func TestExecute_PDFEmptyFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "empty.pdf")
-	if err := os.WriteFile(fp, []byte(""), 0644); err != nil {
-		t.Fatal(err)
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should reject empty PDF file")
-	}
-	// Empty file should be caught by "PDF file is empty"
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("Error = %q, want 'empty' message", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// P1 #3: PDF encryption/password detection
-// ---------------------------------------------------------------------------
-
 // ---------------------------------------------------------------------------
 // Coverage: output() interface methods
 // ---------------------------------------------------------------------------
@@ -533,8 +422,6 @@ func TestOutputMethods(t *testing.T) {
 	// Call all output() interface methods to cover the 0% functions
 	TextOutput{}.output()
 	ImageOutput{}.output()
-	PDFOutput{}.output()
-	PartsOutput{}.output()
 	FileUnchangedOutput{}.output()
 }
 
@@ -601,213 +488,6 @@ func TestCountTotalLines_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Coverage: parsePDFPageRange additional cases
-// ---------------------------------------------------------------------------
-
-func TestParsePDFPageRange_MultipleDashes(t *testing.T) {
-	t.Parallel()
-	got := parsePDFPageRange("1-2-3")
-	if got != nil {
-		t.Errorf("parsePDFPageRange(\"1-2-3\") = %v, want nil", got)
-	}
-}
-
-func TestParsePDFPageRange_NegativeLastPage(t *testing.T) {
-	t.Parallel()
-	got := parsePDFPageRange("5--1")
-	if got != nil {
-		t.Errorf("parsePDFPageRange(\"5--1\") = %v, want nil", got)
-	}
-}
-
-func TestParsePDFPageRange_ZeroRange(t *testing.T) {
-	t.Parallel()
-	got := parsePDFPageRange("0-5")
-	if got != nil {
-		t.Errorf("parsePDFPageRange(\"0-5\") = %v, want nil (first page 0)", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// P1 #3: PDF encryption/password detection
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFEncrypted(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "encrypted.pdf")
-	// Create a valid-looking PDF with /Encrypt dictionary
-	pdfContent := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n3 0 obj\n<< /Filter /Standard /V 1 /R 2 /Length 40 >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R /Encrypt 3 0 R >>\nstartxref\n200\n%%EOF\n"
-	if err := os.WriteFile(fp, []byte(pdfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should reject encrypted PDF")
-	}
-	if !strings.Contains(err.Error(), "password") {
-		t.Errorf("Error = %q, want 'password' message", err.Error())
-	}
-}
-
-func TestIsPDFEncrypted(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		content string
-		want    bool
-	}{
-		{"encrypted", "%PDF-1.4\n/Encrypt 3 0 R\n", true},
-		{"encrypted_with_dict", "%PDF-1.4\n<< /Encrypt >>\n", true},
-		{"not_encrypted", "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n", false},
-		{"empty", "", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := isPDFEncrypted([]byte(tc.content))
-			if got != tc.want {
-				t.Errorf("isPDFEncrypted() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Task #21: Open-ended page range always exceeds max (already fixed in #18)
-// Verify it stays correct.
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFPagesOpenEndAlwaysExceedsMax(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "test.pdf")
-	// Write a minimal valid PDF
-	pdfContent := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n109\n%%EOF\n"
-	if err := os.WriteFile(fp, []byte(pdfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Open-ended range "1-" should always be rejected
-	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"1-"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should reject open-ended page range")
-	}
-	if !strings.Contains(err.Error(), "exceeds maximum") {
-		t.Errorf("Error = %q, want 'exceeds maximum'", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// parsePDFPageRange — line 171-173: lastPage part non-numeric
-// ---------------------------------------------------------------------------
-
-func TestParsePDFPageRange_LastPageNonNumeric(t *testing.T) {
-	t.Parallel()
-	got := parsePDFPageRange("1-abc")
-	if got != nil {
-		t.Errorf("parsePDFPageRange(\"1-abc\") = %v, want nil (non-numeric last page)", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// getPDFPageCount — error paths (lines 272-274, 285-286)
-// ---------------------------------------------------------------------------
-
-func TestGetPDFPageCount_InvalidFile(t *testing.T) {
-	t.Parallel()
-	// A non-PDF file: pdfinfo should fail → error path (lines 272-274)
-	count := getPDFPageCount("/dev/null")
-	if count != 0 {
-		t.Errorf("getPDFPageCount(/dev/null) = %d, want 0", count)
-	}
-}
-
-func TestGetPDFPageCount_NonexistentFile(t *testing.T) {
-	t.Parallel()
-	count := getPDFPageCount("/nonexistent/file.pdf")
-	if count != 0 {
-		t.Errorf("getPDFPageCount(nonexistent) = %d, want 0", count)
-	}
-}
-
-func TestGetPDFPageCount_NoPagesLine(t *testing.T) {
-	t.Parallel()
-	// Create a temp file with text that pdfinfo can try to parse but won't have Pages:
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "fake.pdf")
-	// Write content that won't have "Pages:" in pdfinfo output
-	if err := os.WriteFile(fp, []byte("not a pdf at all"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// pdfinfo will error on this, so returns 0 (line 272-274)
-	// or succeeds but no Pages: line → returns 0 (line 285-286)
-	count := getPDFPageCount(fp)
-	if count != 0 {
-		t.Errorf("getPDFPageCount(fake) = %d, want 0", count)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// extractPDFPages — error paths (lines 292-294, 307-316)
-// ---------------------------------------------------------------------------
-
-func TestExtractPDFPages_NonexistentPDF(t *testing.T) {
-	t.Parallel()
-	// pdftoppm will fail on nonexistent file → lines 307-310
-	_, _, err := extractPDFPages("/nonexistent/file.pdf", 1, 5)
-	if err == nil {
-		t.Fatal("extractPDFPages should fail on nonexistent file")
-	}
-	if !strings.Contains(err.Error(), "pdftoppm failed") {
-		t.Errorf("Error = %q, want 'pdftoppm failed'", err.Error())
-	}
-}
-
-func TestExtractPDFPages_InvalidPDF(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "fake.pdf")
-	if err := os.WriteFile(fp, []byte("not a pdf"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// pdftoppm will fail on a non-PDF file → lines 307-310
-	_, _, err := extractPDFPages(fp, 1, 1)
-	if err == nil {
-		t.Fatal("extractPDFPages should fail on invalid PDF")
-	}
-	if !strings.Contains(err.Error(), "pdftoppm failed") {
-		t.Errorf("Error = %q, want 'pdftoppm failed'", err.Error())
-	}
-}
-
-// TestExtractPDFPages_MkdirTempError tests the MkdirTemp error path (line 292-294).
-// NOT parallel because it temporarily changes TMPDIR for the process.
-func TestExtractPDFPages_MkdirTempError(t *testing.T) {
-	// Create a readonly directory to use as TMPDIR
-	roDir := filepath.Join(t.TempDir(), "readonly")
-	if err := os.MkdirAll(roDir, 0555); err != nil {
-		t.Fatal(err)
-	}
-	// Make readonly after creation
-	if err := os.Chmod(roDir, 0555); err != nil {
-		t.Skip("chmod not supported")
-	}
-	defer func() { _ = os.Chmod(roDir, 0755) }()
-
-	// Save and override TMPDIR
-	origTmpdir := os.Getenv("TMPDIR")
-	t.Cleanup(func() { _ = os.Setenv("TMPDIR", origTmpdir) })
-	_ = os.Setenv("TMPDIR", roDir)
-
-	_, _, err := extractPDFPages("/tmp/test1.pdf", 1, 1)
-	if err == nil {
-		t.Fatal("extractPDFPages should fail when MkdirTemp fails")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // renderResult — uncovered type switch branches (lines 389-409)
 // ---------------------------------------------------------------------------
 
@@ -820,50 +500,6 @@ func TestRenderResult_ImageOutputPointer(t *testing.T) {
 	})
 	if result != "Image: /tmp/img.png (800x600)" {
 		t.Errorf("renderResult(*ImageOutput) = %q, want %q", result, "Image: /tmp/img.png (800x600)")
-	}
-}
-
-func TestRenderResult_PDFOutputPointer(t *testing.T) {
-	t.Parallel()
-	result := renderResult(&PDFOutput{
-		FilePath:     "/tmp/doc.pdf",
-		OriginalSize: 12345,
-	})
-	if result != "PDF: /tmp/doc.pdf (12345 bytes)" {
-		t.Errorf("renderResult(*PDFOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (12345 bytes)")
-	}
-}
-
-func TestRenderResult_PDFOutputValue(t *testing.T) {
-	t.Parallel()
-	result := renderResult(PDFOutput{
-		FilePath:     "/tmp/doc.pdf",
-		OriginalSize: 9999,
-	})
-	if result != "PDF: /tmp/doc.pdf (9999 bytes)" {
-		t.Errorf("renderResult(PDFOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (9999 bytes)")
-	}
-}
-
-func TestRenderResult_PartsOutputPointer(t *testing.T) {
-	t.Parallel()
-	result := renderResult(&PartsOutput{
-		FilePath: "/tmp/doc.pdf",
-		Count:    5,
-	})
-	if result != "PDF: /tmp/doc.pdf (5 pages extracted)" {
-		t.Errorf("renderResult(*PartsOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (5 pages extracted)")
-	}
-}
-
-func TestRenderResult_PartsOutputValue(t *testing.T) {
-	t.Parallel()
-	result := renderResult(PartsOutput{
-		FilePath: "/tmp/doc.pdf",
-		Count:    3,
-	})
-	if result != "PDF: /tmp/doc.pdf (3 pages extracted)" {
-		t.Errorf("renderResult(PartsOutput) = %q, want %q", result, "PDF: /tmp/doc.pdf (3 pages extracted)")
 	}
 }
 
@@ -927,58 +563,6 @@ func TestExecute_ImageReadFileError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read file") {
 		t.Errorf("Error = %q, want 'read file' error", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// executePDF — file too large without pages (lines 608-613)
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFTooLargeNoPages(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "large.pdf")
-	// Create a PDF larger than PDFTargetRawSize (20MB) without /Encrypt
-	// Write a valid PDF header followed by padding
-	pdfHeader := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-	padding := strings.Repeat("X", PDFTargetRawSize+100)
-	content := pdfHeader + padding
-	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should reject large PDF without pages param")
-	}
-	if !strings.Contains(err.Error(), "larger than") {
-		t.Errorf("Error = %q, want 'larger than' message", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// executePDF — read PDF file fallback error (lines 676-678)
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFReadFileFallbackError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "noperm.pdf")
-	// Write a valid PDF header then remove permissions
-	pdfContent := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\nxref\n0 3\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n109\n%%EOF\n"
-	if err := os.WriteFile(fp, []byte(pdfContent), 0o000); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	defer func() { _ = os.Chmod(fp, 0o644) }()
-
-	input := json.RawMessage(`{"file_path":"` + fp + `"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should fail for unreadable PDF")
-	}
-	if !strings.Contains(err.Error(), fp) {
-		t.Errorf("Error = %q, should contain path %q", err.Error(), fp)
 	}
 }
 
@@ -1202,129 +786,18 @@ func TestExecute_ImageResizedJpeg(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// executePDF — extractPDFPages error with page range (lines 647-649)
-// Uses a corrupt PDF that passes magic byte and encryption checks but
-// causes pdftoppm to fail.
-// ---------------------------------------------------------------------------
-
-func TestExecute_PDFPagesExtractError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "corrupt.pdf")
-	// Valid %PDF- header, no /Encrypt, but missing xref -> pdftoppm fails
-	content := "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
-	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	input := json.RawMessage(`{"file_path":"` + fp + `","pages":"1"}`)
-	_, err := Execute(context.Background(), input, nil)
-	if err == nil {
-		t.Fatal("Execute() should fail when pdftoppm fails on corrupt PDF")
-	}
-	if !strings.Contains(err.Error(), "extract PDF pages") {
-		t.Errorf("Error = %q, want 'extract PDF pages'", err.Error())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// getPDFPageCount — no Pages: line in output (line 285)
-// We create a text file; pdfinfo may fail or succeed without Pages line.
-// ---------------------------------------------------------------------------
-
-func TestGetPDFPageCount_TextFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "notpdf.txt")
-	if err := os.WriteFile(fp, []byte("hello world\nthis is text\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	count := getPDFPageCount(fp)
-	// Either way, should return 0 (no Pages: line or error)
-	if count != 0 {
-		t.Errorf("getPDFPageCount(text file) = %d, want 0", count)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// isPdftoppmAvailable — error path (line 250-252)
-// NOT parallel because it changes PATH for the process.
-// ---------------------------------------------------------------------------
-
-func TestIsPdftoppmAvailable_ErrorPath(t *testing.T) {
-	// Save and override PATH to make pdftoppm unfindable
-	origPath := os.Getenv("PATH")
-	t.Cleanup(func() { _ = os.Setenv("PATH", origPath) })
-	_ = os.Setenv("PATH", "/nonexistent")
-
-	result := isPdftoppmAvailable()
-	if result {
-		t.Error("isPdftoppmAvailable() = true, want false when pdftoppm not in PATH")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// extractPDFPages — ReadDir error (lines 313-316)
-// Test by calling extractPDFPages and removing the tmpdir between
-// pdftoppm execution and ReadDir. We do this by directly testing the
-// function with a non-PDF that causes pdftoppm to fail first (covered above)
-// and by testing with a valid PDF where pdftoppm succeeds.
-// Since we can't inject a ReadDir failure, we test with a corrupt PDF
-// that pdftoppm can actually process but produces no output files.
-// ---------------------------------------------------------------------------
-
-func TestExtractPDFPages_ReadDirError(t *testing.T) {
-	t.Parallel()
-	// Use a valid PDF to let pdftoppm succeed, then check count
-	data, err := os.ReadFile("/tmp/test1.pdf")
-	if err != nil {
-		t.Skip("test PDF not available")
-	}
-	dir := t.TempDir()
-	fp := filepath.Join(dir, "test.pdf")
-	if err := os.WriteFile(fp, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-	tmpDir, count, err := extractPDFPages(fp, 1, 1)
-	if err != nil {
-		t.Fatalf("extractPDFPages error: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-	if count != 1 {
-		t.Errorf("count = %d, want 1 (extracted pages 1-1)", count)
-	}
-	// Verify output directory contains JPG files
-	entries, err2 := os.ReadDir(tmpDir)
-	if err2 != nil {
-		t.Fatalf("ReadDir error: %v", err2)
-	}
-	jpgCount := 0
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jpg") {
-			jpgCount++
-		}
-	}
-	if jpgCount != 1 {
-		t.Errorf("JPG files in output dir = %d, want 1", jpgCount)
-	}
-}
-
 // TestOutput_InterfaceConformance verifies all output types satisfy the
 // Output interface. This exercises the marker methods that are otherwise
 // never called directly (0% coverage otherwise).
 func TestOutput_InterfaceConformance(t *testing.T) {
 	var _ Output = TextOutput{}
 	var _ Output = ImageOutput{}
-	var _ Output = PDFOutput{}
-	var _ Output = PartsOutput{}
 	var _ Output = FileUnchangedOutput{}
 
 	// Also verify the methods are callable through the interface.
 	out := []Output{
 		TextOutput{Type: "text"},
 		ImageOutput{Type: "image"},
-		PDFOutput{Type: "pdf"},
-		PartsOutput{Type: "parts"},
 		FileUnchangedOutput{},
 	}
 	for _, o := range out {

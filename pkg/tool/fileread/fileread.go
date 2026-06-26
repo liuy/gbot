@@ -17,24 +17,14 @@ import (
 	"image/png"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/liuy/gbot/pkg/markitdown"
 	"github.com/liuy/gbot/pkg/tool"
 	"github.com/liuy/gbot/pkg/tool/toolresult"
 	"github.com/liuy/gbot/pkg/types"
-)
-
-const (
-	PDFMaxPagesPerRead          = 20
-	PDFAtMentionInlineThreshold = 10
-	PDFTargetRawSize            = 20 * 1024 * 1024  // 20 MB
-	PDFMaxExtractSize           = 100 * 1024 * 1024 // 100 MB
 )
 
 // Text file reading limits — TS aligned: FileReadTool/limits.ts
@@ -109,7 +99,7 @@ var binaryExtensions = map[string]bool{
 	".gz":     true,
 	".bz2":    true,
 	".xz":     true,
-	".pdf":    true, // kept in binaryExtensions but has special PDF handling
+	".pdf":    true,
 	".doc":    true,
 	".docx":   true,
 	".xls":    true,
@@ -134,6 +124,7 @@ var binaryExtensions = map[string]bool{
 // omp: CONVERTIBLE_EXTENSIONS = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".epub"]
 // Plus ".ipynb" and ".csv" which markitdown also handles.
 var convertibleExtensions = map[string]bool{
+	".pdf":   true,
 	".doc":   true,
 	".docx":  true,
 	".ppt":   true,
@@ -156,61 +147,6 @@ type Input struct {
 	FilePath string `json:"file_path" validate:"required"`
 	Offset   int    `json:"offset,omitempty"` // 1-indexed line number to start from
 	Limit    int    `json:"limit,omitempty"`  // max number of lines to read
-	Pages    string `json:"pages,omitempty"`  // PDF page range: "5", "1-10", "3-"
-}
-
-// PageRange represents a page range for PDF reading.
-type PageRange struct {
-	FirstPage int
-	LastPage  int
-}
-
-// parsePDFPageRange parses a page range string like "5", "1-10", "3-".
-// Returns nil for invalid ranges.
-func parsePDFPageRange(pages string) *PageRange {
-	if pages == "" {
-		return nil
-	}
-
-	// Single page: "5"
-	if !strings.Contains(pages, "-") {
-		var pageNum int
-		if _, err := fmt.Sscanf(pages, "%d", &pageNum); err != nil || pageNum <= 0 {
-			return nil
-		}
-		return &PageRange{FirstPage: pageNum, LastPage: pageNum}
-	}
-
-	// Range: "1-10" or "3-"
-	parts := strings.Split(pages, "-")
-	if len(parts) != 2 {
-		return nil
-	}
-
-	firstPage := 0
-	lastPage := 0
-
-	if parts[0] != "" {
-		if _, err := fmt.Sscanf(parts[0], "%d", &firstPage); err != nil || firstPage <= 0 {
-			return nil
-		}
-	} else {
-		return nil
-	}
-
-	if parts[1] != "" {
-		if _, err := fmt.Sscanf(parts[1], "%d", &lastPage); err != nil || lastPage <= 0 {
-			return nil
-		}
-		if lastPage < firstPage {
-			return nil
-		}
-	} else {
-		// "3-" means to end of document
-		lastPage = math.MaxInt
-	}
-
-	return &PageRange{FirstPage: firstPage, LastPage: lastPage}
 }
 
 // Output is the file read tool output interface.
@@ -244,106 +180,6 @@ type ImageOutput struct {
 
 func (ImageOutput) output() {}
 
-// PDFOutput represents PDF file output.
-type PDFOutput struct {
-	Type         string `json:"type"`
-	FilePath     string `json:"filePath"`
-	Base64       string `json:"base64"`
-	OriginalSize int64  `json:"originalSize"`
-}
-
-func (PDFOutput) output() {}
-
-// PartsOutput represents extracted PDF page images.
-type PartsOutput struct {
-	Type         string `json:"type"`
-	FilePath     string `json:"filePath"`
-	OriginalSize int64  `json:"originalSize"`
-	Count        int    `json:"count"`
-	OutputDir    string `json:"outputDir"`
-}
-
-func (PartsOutput) output() {}
-
-// PDFError represents a PDF processing error.
-type PDFError struct {
-	Reason  string
-	Message string
-}
-
-func (e *PDFError) Error() string {
-	return e.Message
-}
-
-// isPdftoppmAvailable checks if pdftoppm is available.
-func isPdftoppmAvailable() bool {
-	cmd := exec.Command("pdftoppm", "-v")
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
-}
-
-var checkPdftoppm = sync.OnceValue(isPdftoppmAvailable)
-
-// getPDFPageCount returns page count via pdfinfo command.
-func getPDFPageCount(filePath string) int {
-	cmd := exec.Command("pdfinfo", filePath)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	// Parse "Pages: N" from output
-	for line := range strings.SplitSeq(string(output), "\n") {
-		if strings.HasPrefix(line, "Pages:") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				n, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-				return n
-			}
-		}
-	}
-	return 0
-}
-
-// extractPDFPages extracts PDF pages as JPEG images using pdftoppm.
-// Returns the output directory and count of pages extracted.
-func extractPDFPages(filePath string, firstPage, lastPage int) (string, int, error) {
-	tmpDir, err := os.MkdirTemp("", "pdf-extract-*")
-	if err != nil {
-		return "", 0, err
-	}
-	prefix := filepath.Join(tmpDir, "page")
-	args := []string{"-jpeg", "-r", "100"}
-	if firstPage > 0 {
-		args = append(args, "-f", strconv.Itoa(firstPage))
-	}
-	if lastPage > 0 && lastPage != math.MaxInt {
-		args = append(args, "-l", strconv.Itoa(lastPage))
-	}
-	args = append(args, filePath, prefix)
-
-	cmd := exec.Command("pdftoppm", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", 0, fmt.Errorf("pdftoppm failed: %s", string(output))
-	}
-
-	entries, err := os.ReadDir(tmpDir)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", 0, err
-	}
-	count := 0
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jpg") {
-			count++
-		}
-	}
-	return tmpDir, count, nil
-}
-
 // FileUnchangedOutput represents a deduplication stub when file hasn't changed.
 type FileUnchangedOutput struct {
 	Type     string `json:"type"`
@@ -370,10 +206,6 @@ func New() tool.Tool {
 			"limit": {
 				"type": "integer",
 				"description": "Maximum number of lines to read. Only provide if the file is too large to read at once."
-			},
-			"pages": {
-				"type": "string",
-				"description": "PDF page range: '5' for single page, '1-10' for range, '3-' for from page to end."
 			}
 		}
 	}`)
@@ -429,14 +261,6 @@ func renderResult(data any) string {
 		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
 	case ImageOutput:
 		return fmt.Sprintf("Image: %s (%dx%d)", out.FilePath, out.OriginalWidth, out.OriginalHeight)
-	case *PDFOutput:
-		return fmt.Sprintf("PDF: %s (%d bytes)", out.FilePath, out.OriginalSize)
-	case PDFOutput:
-		return fmt.Sprintf("PDF: %s (%d bytes)", out.FilePath, out.OriginalSize)
-	case *PartsOutput:
-		return fmt.Sprintf("PDF: %s (%d pages extracted)", out.FilePath, out.Count)
-	case PartsOutput:
-		return fmt.Sprintf("PDF: %s (%d pages extracted)", out.FilePath, out.Count)
 	case *FileUnchangedOutput:
 		return fmt.Sprintf("File unchanged: %s", out.FilePath)
 	case FileUnchangedOutput:
@@ -562,8 +386,6 @@ func Execute(ctx context.Context, input json.RawMessage, tctx *tool.ToolUseConte
 	switch {
 	case imageExtensions[ext]:
 		result, execErr = executeImage(in, info)
-	case ext == ".pdf":
-		result, execErr = executePDF(ctx, in, info)
 	case convertibleExtensions[ext]:
 		result, execErr = executeDocument(ctx, in, info)
 	case binaryExtensions[ext]:
@@ -692,122 +514,6 @@ func executeImage(in Input, info os.FileInfo) (*tool.ToolResult, error) {
 			Flags: types.FlagMeta,
 		}},
 	}, nil
-}
-
-// executePDF handles PDF file reading.
-func executePDF(ctx context.Context, in Input, info os.FileInfo) (*tool.ToolResult, error) {
-	if info.Size() == 0 {
-		return nil, &PDFError{
-			Reason:  "empty_file",
-			Message: "PDF file is empty",
-		}
-	}
-
-	// Validate PDF magic bytes — reject files that aren't actually PDFs
-	// Source: pdf.ts — readPDF checks %PDF- header
-	if info.Size() >= 5 {
-		header := make([]byte, 5)
-		f, err := os.Open(in.FilePath)
-		if err == nil {
-			_, _ = f.Read(header)
-			_ = f.Close()
-			if !bytes.HasPrefix(header, []byte("%PDF-")) {
-				return nil, fmt.Errorf("file is not a valid PDF (missing %%PDF- header): %s", in.FilePath)
-			}
-		}
-	}
-
-	// Source: pdf.ts — extractPDFPages checks pdftoppm stderr for "password"
-	if info.Size() >= 20 {
-		data, err := os.ReadFile(in.FilePath)
-		if err == nil && isPDFEncrypted(data) {
-			return nil, &PDFError{
-				Reason:  "password_protected",
-				Message: "PDF is password-protected. Please provide an unprotected version.",
-			}
-		}
-	}
-
-	if info.Size() > PDFTargetRawSize && in.Pages == "" {
-		return nil, &PDFError{
-			Reason:  "file_too_large",
-			Message: fmt.Sprintf("PDF file is larger than %d bytes. Use pages parameter to read specific ranges.", PDFTargetRawSize),
-		}
-	}
-
-	// Parse pages parameter if provided
-	var pageRange *PageRange
-	if in.Pages != "" {
-		pageRange = parsePDFPageRange(in.Pages)
-		if pageRange == nil {
-			return nil, &ToolError{
-				Code:    7,
-				Message: fmt.Sprintf("Invalid pages parameter: %s. Use formats like '1-5', '3', or '10-20'.", in.Pages),
-			}
-		}
-
-		// Clamp last page to PDFMaxPagesPerRead pages
-		if pageRange.LastPage == math.MaxInt {
-			// Open-ended ranges (e.g. "1-") always exceed the max
-			return nil, &ToolError{
-				Code:    8,
-				Message: fmt.Sprintf("Page range '%s' exceeds maximum of 20 pages per request.", in.Pages),
-			}
-		}
-		count := pageRange.LastPage - pageRange.FirstPage + 1
-		if count > PDFMaxPagesPerRead {
-			return nil, &ToolError{
-				Code:    8,
-				Message: fmt.Sprintf("Page range '%s' exceeds maximum of 20 pages per request.", in.Pages),
-			}
-		}
-	}
-
-	// Use pdftoppm for page extraction if available
-	if checkPdftoppm() {
-		if pageRange != nil {
-			tmpDir, count, err := extractPDFPages(in.FilePath, pageRange.FirstPage, pageRange.LastPage)
-			if err != nil {
-				return nil, fmt.Errorf("extract PDF pages: %w", err)
-			}
-			return &tool.ToolResult{Data: PartsOutput{
-				Type:         "parts",
-				FilePath:     in.FilePath,
-				OriginalSize: info.Size(),
-				Count:        count,
-				OutputDir:    tmpDir,
-			}}, nil
-		}
-
-		if info.Size() > PDFTargetRawSize {
-			tmpDir, count, err := extractPDFPages(in.FilePath, 0, math.MaxInt)
-			if err != nil {
-				return nil, fmt.Errorf("extract PDF pages: %w", err)
-			}
-			return &tool.ToolResult{Data: PartsOutput{
-				Type:         "parts",
-				FilePath:     in.FilePath,
-				OriginalSize: info.Size(),
-				Count:        count,
-				OutputDir:    tmpDir,
-			}}, nil
-		}
-	}
-
-	// Fallback: return full PDF as base64
-	data, err := os.ReadFile(in.FilePath)
-	if err != nil {
-		return nil, fmt.Errorf("read PDF file: %w", err)
-	}
-
-	output := PDFOutput{
-		Type:         "pdf",
-		FilePath:     in.FilePath,
-		Base64:       base64.StdEncoding.EncodeToString(data),
-		OriginalSize: info.Size(),
-	}
-
-	return &tool.ToolResult{Data: output}, nil
 }
 
 // executeDocument converts binary documents (docx, xlsx, pptx, epub, csv, ipynb)
@@ -996,16 +702,6 @@ func executeTextFile(ctx context.Context, in Input, info os.FileInfo, tctx *tool
 	return &tool.ToolResult{Data: output}, nil
 }
 
-// ToolError represents a structured tool error with code.
-type ToolError struct {
-	Code    int
-	Message string
-}
-
-func (e *ToolError) Error() string {
-	return e.Message
-}
-
 // resizeImage scales an image to the target dimensions using nearest-neighbor.
 // Source: FileReadTool.ts — imageResizer.ts resize logic (sharp replacement).
 func resizeImage(src image.Image, newWidth, newHeight int) *image.RGBA {
@@ -1020,12 +716,4 @@ func resizeImage(src image.Image, newWidth, newHeight int) *image.RGBA {
 		}
 	}
 	return dst
-}
-
-// isPDFEncrypted checks if PDF raw bytes contain an /Encrypt dictionary,
-// indicating password protection or usage restrictions.
-// Source: pdf.ts — extractPDFPages checks pdftoppm stderr for "password";
-// this provides earlier detection without needing pdftoppm.
-func isPDFEncrypted(data []byte) bool {
-	return bytes.Contains(data, []byte("/Encrypt"))
 }
