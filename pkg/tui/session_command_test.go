@@ -407,6 +407,34 @@ func TestClear_EmitsClearScreen(t *testing.T) {
 	}
 }
 
+// TestClear_RestartsReadEvents verifies that /clear re-includes readEvents in
+// its returned Cmd batch. Without this, the old idleStop goroutine (closed by
+// createNewSession) is gone but no new readEvents is launched — subsequent
+// events from the engine (e.g. WeChat connector messages) pile up in appCh
+// with no consumer, and the TUI never renders them.
+func TestClear_RestartsReadEvents(t *testing.T) {
+	a, _ := newSessionTestApp(t)
+	cmd := a.handleClear(nil)
+	if cmd == nil {
+		t.Fatal("handleClear returned nil cmd")
+	}
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("handleClear cmd produced nil msg")
+	}
+	// The batch should eventually produce a readEvents message — either
+	// directly (from appCh) or an idleAbortedMsg/queryEndMsg (from idleStop).
+	// Verify the batch contains a command whose result is one of these
+	// readEvents-origin types by checking the batch's type.
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) < 3 {
+			t.Errorf("batch has %d cmds, want at least 3 (clearScreen + showInfo + readEvents)", len(batch))
+		}
+	} else {
+		t.Errorf("handleClear should return a tea.Batch, got %T", msg)
+	}
+}
+
 // handleSubmitRepl packages old uncommitted messages as a tea.Println commitCmd
 // before dispatching the slash command. Batch runs concurrently, so Println can
 // land after ClearScreen and re-print old content — visually no clear happened.
@@ -517,6 +545,29 @@ func TestFork_ResetsDisplayStateAndCommittedCount(t *testing.T) {
 	}
 	if !containsClearScreen(t, cmd) {
 		t.Error("fork should emit tea.ClearScreen to wipe old session content")
+	}
+}
+
+// TestFork_RestartsReadEvents verifies that forkCurrentSession includes
+// readEvents in its returned Cmd batch. Without this, engine events after
+// forking pile up in appCh with no consumer.
+func TestFork_RestartsReadEvents(t *testing.T) {
+	a, _ := newSessionTestApp(t)
+	a.engine.SetMessages([]types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{types.NewTextBlock("hello")}},
+	})
+	a.engine.PersistNewMessages()
+	cmd := a.forkCurrentSession("fork-test", nil)
+	if cmd == nil {
+		t.Fatal("forkCurrentSession returned nil cmd")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) < 3 {
+			t.Errorf("batch has %d cmds, want at least 3 (clearScreen + showInfo + readEvents)", len(batch))
+		}
+	} else {
+		t.Errorf("forkCurrentSession should return tea.Batch, got %T", msg)
 	}
 }
 

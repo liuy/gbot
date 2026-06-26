@@ -89,7 +89,7 @@ func (a *App) createNewSession(title, verb string, commitCmd tea.Cmd) tea.Cmd {
 	}
 	slog.Info("session: created new session", "sessionID", a.sessionID, "title", title)
 
-	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)))
+	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("%s new session: %s", verb, displayTitle)), a.readEvents())
 }
 
 // forkCurrentSession forks the current session with the given title.
@@ -137,7 +137,7 @@ func (a *App) forkCurrentSession(title string, commitCmd tea.Cmd) tea.Cmd {
 
 	slog.Info("session: forked session", "parent", parentID, "child", a.sessionID, "title", title)
 
-	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("Forked session: %s", title)))
+	return tea.Batch(commitCmd, tea.ClearScreen, a.showInfo(fmt.Sprintf("Forked session: %s", title)), a.readEvents())
 }
 
 // showInfo returns a tea.Cmd that displays a transient info message.

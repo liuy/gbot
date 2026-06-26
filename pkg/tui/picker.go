@@ -144,7 +144,7 @@ func (a *App) handleSessionPickerDone(d *Dialog, items []SessionItem) (tea.Model
 	if title == "" {
 		title = selected.SessionID[:8]
 	}
-	return a, tea.Batch(tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to session: %s", title)))
+	return a, tea.Batch(tea.ClearScreen, a.showInfo(fmt.Sprintf("Switched to session: %s", title)), a.readEvents())
 }
 
 // NewListPicker creates a Dialog from PickerItem slice with optional functional options.
