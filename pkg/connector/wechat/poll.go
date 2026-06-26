@@ -140,7 +140,10 @@ func (c *WeChatConnector) processBatch(ctx context.Context, msgs []Message) {
 			continue
 		}
 
-		if c.mediaCache != nil && hasMedia(msg.ItemList) {
+		// Voice with transcription is text-only; voice without transcription
+		// can't be processed (SILK decode out of scope), so treat both as text.
+		hasVoiceOnly := hasVoiceItem(msg.ItemList) && !hasNonVoiceMedia(msg.ItemList)
+		if c.mediaCache != nil && hasMedia(msg.ItemList) && !hasVoiceOnly {
 			if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
 				if mergedUserID == "" {
 					mergedUserID = msg.FromUserID

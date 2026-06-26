@@ -814,3 +814,38 @@ func TestHandleInbound_DocumentDisplayTextNoDuplicate(t *testing.T) {
 		t.Errorf("displayText %q missing filename 'report.pdf'", displayText)
 	}
 }
+
+// TestProcessBatch_VoiceWithTranscription_EnqueuedAsText verifies that a voice
+// message with transcription text is enqueued as a text message, not silently
+// dropped by the media-download path (which cannot handle SILK audio).
+func TestProcessBatch_VoiceWithTranscription_EnqueuedAsText(t *testing.T) {
+	t.Parallel()
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+
+	msgs := []Message{
+		{
+			FromUserID: "user1",
+			MessageID:  FlexString("msg-voice-1"),
+			ItemList: []Item{
+				{Type: ItemVoice, VoiceItem: &VoiceItem{
+					Text:  "hello from voice",
+					Media: &MediaRef{FullURL: "http://example.com/voice.silk"},
+				}},
+			},
+		},
+	}
+	c.processBatch(context.Background(), msgs)
+
+	select {
+	case im := <-c.inboundCh:
+		if im.text != "[voice transcription] hello from voice" {
+			t.Errorf("im.text = %q, want %q", im.text, "[voice transcription] hello from voice")
+		}
+		if len(im.content) != 0 {
+			t.Errorf("len(im.content) = %d, want 0 (voice transcription is text-only)", len(im.content))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("voice with transcription was not enqueued within 2s")
+	}
+}

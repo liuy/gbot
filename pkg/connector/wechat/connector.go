@@ -370,6 +370,25 @@ func hasMedia(items []Item) bool {
 	return false
 }
 
+func hasVoiceItem(items []Item) bool {
+	for _, item := range items {
+		if item.Type == ItemVoice {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonVoiceMedia(items []Item) bool {
+	for _, item := range items {
+		switch item.Type {
+		case ItemImage, ItemVideo, ItemFile:
+			return true
+		}
+	}
+	return false
+}
+
 // reports the two retrievable-bytes signals: a full URL or encrypt query param.
 func downloadableMedia(m *MediaRef) bool {
 	if m == nil {
@@ -557,7 +576,7 @@ func extractText(items []Item) string {
 	// Check for voice items with transcribed text
 	for _, item := range items {
 		if item.Type == ItemVoice && item.VoiceItem != nil && item.VoiceItem.Text != "" {
-			return item.VoiceItem.Text
+			return "[voice transcription] " + item.VoiceItem.Text
 		}
 	}
 	return ""
