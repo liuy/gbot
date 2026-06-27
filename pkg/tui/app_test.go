@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9263,4 +9264,43 @@ func TestSwitchEngine_UsageIsPerEngine(t *testing.T) {
 		t.Errorf("main usage InputTokens after switch back = %d, want 10000 (should restore main's per-engine usage, not carry e2's)",
 			a.status.usage.InputTokens)
 	}
+}
+
+// TestApp_SubAgentToolEnd_PreservesPerceivedTime verifies that when a sub-agent
+// tool ends, its Elapsed reflects the perceived wall-clock time from toolStart
+// to toolEnd, not just the system timing from the engine.
+func TestApp_SubAgentToolEnd_PreservesPerceivedTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		app := newTestApp(&tuiMockProvider{})
+		app.repl.StartQuery()
+		app.repl.AppendTextItem()
+
+		app.repl.PendingToolStarted("call_agent1", "Agent", "executor", "{}", tool.SearchReadKind{})
+		agent := &types.AgentMeta{ParentToolUseID: "call_agent1", AgentType: "Executor"}
+
+		app.updateRepl(toolStartMsg{
+			ID:      "sub_write1",
+			Name:    "Write",
+			Summary: "/tmp/test.txt",
+			Input:   `{"file_path":"/tmp/test.txt","content":"hello"}`,
+			Agent:   agent,
+		})
+
+		// Simulate a 90s Write: advance virtual time 90s, system timing is 1ms.
+		time.Sleep(90 * time.Second)
+
+		// Write ends with tiny system timing — perceived time should win
+		app.updateRepl(toolEndMsg{
+			ToolUseID: "sub_write1",
+			Output:    "ok",
+			IsError:   false,
+			Timing:    1 * time.Millisecond,
+			Agent:     agent,
+		})
+
+		writeTool := app.repl.pendingTool["call_agent1"].Blocks[0].ToolCall
+		if writeTool.Elapsed < 80*time.Second {
+			t.Errorf("sub-agent Write Elapsed = %v, want ~90s (perceived time)", writeTool.Elapsed)
+		}
+	})
 }

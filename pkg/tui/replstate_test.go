@@ -1075,8 +1075,10 @@ func TestUpdateRunningToolElapsed_UpdatesRunningBlocks(t *testing.T) {
 	s.AppendTextItem()
 	s.PendingToolStarted("tool-1", "Bash", "make check", "", tool.SearchReadKind{})
 	s.PendingToolStarted("tool-2", "Read", "read.go", "", tool.SearchReadKind{})
-	// Mark tool-2 as done.
-	s.PendingToolDone("tool-2", "done", false, 5*time.Millisecond, tool.SearchReadKind{})
+	// Backdate tool-2 start to simulate a 100ms tool.
+	s.pendingToolStart["tool-2"] = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Mark tool-2 as done — PendingToolDone now uses perceived time.
+	s.PendingToolDone("tool-2", "done", false, 0, tool.SearchReadKind{})
 
 	s.UpdateRunningToolElapsed()
 
@@ -1096,8 +1098,9 @@ func TestUpdateRunningToolElapsed_UpdatesRunningBlocks(t *testing.T) {
 	if running.Elapsed == 0 {
 		t.Error("running tool Elapsed = 0, want non-zero after UpdateRunningToolElapsed")
 	}
-	if done.Elapsed < 5*time.Millisecond {
-		t.Errorf("done tool Elapsed = %v, want >= 5ms (should not be reset)", done.Elapsed)
+	// done tool uses perceived time (100ms backdated start).
+	if done.Elapsed < 90*time.Millisecond {
+		t.Errorf("done tool Elapsed = %v, want >= 90ms (perceived time from backdated start)", done.Elapsed)
 	}
 }
 

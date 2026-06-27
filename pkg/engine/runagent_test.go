@@ -451,3 +451,63 @@ func TestEngine_RunAgent_NestedSubAgent_Allowed(t *testing.T) {
 			got)
 	}
 }
+
+// TestEngine_RunAgent_SubAgentToolTimingPreserved verifies that sub-agent
+// tool_end events carry non-zero Timing when they reach the parent
+// dispatcher. The TUI uses this to display elapsed time for sub-agent
+// tools (Write/Edit). If Timing is lost during taggedDispatcher forwarding,
+// the TUI shows 0.0s for all non-Bash sub-agent tools.
+func TestEngine_RunAgent_SubAgentToolTimingPreserved(t *testing.T) {
+	t.Parallel()
+
+	deps := SharedDeps{
+		WorkingDir: t.TempDir(),
+		SkillReg:   skills.NewRegistry(t.TempDir()),
+		Hooks:      hooks.NewHooks(hooks.HooksConfig{}, &hooks.CommandExecutor{}),
+	}
+
+	const parentToolUseID = "call_parent_timing"
+	const subToolUseID = "call_sub_timing"
+
+	mp := &mockProvider{}
+	mp.addResponse(toolUseStreamEvents("test", subToolUseID, "Bash",
+		`{"command":"echo hi"}`), nil)
+	mp.addResponse(textStreamEvents("test", "done"), nil)
+
+	ec := newEventCollector()
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test",
+		ToolsProvider: func() map[string]tool.Tool {
+			eb := &echoBashStub{}
+			return map[string]tool.Tool{eb.Name(): eb}
+		},
+		Dispatcher: ec,
+	})
+	eng.SetSharedDeps(&deps)
+	defer eng.Close()
+
+	_, err := eng.RunAgent(context.Background(), agenttool.AgentOpts{
+		Prompt:          "run bash",
+		AgentType:       "General",
+		ParentToolUseID: parentToolUseID,
+	})
+	if err != nil {
+		t.Fatalf("RunAgent: %v", err)
+	}
+
+	events := ec.Events()
+	for _, evt := range events {
+		if evt.Type != types.EventToolEnd || evt.ToolResult == nil {
+			continue
+		}
+		if evt.ToolResult.ToolUseID != subToolUseID {
+			continue
+		}
+		if evt.ToolResult.Timing == 0 {
+			t.Errorf("sub-agent tool_end Timing = 0, want non-zero (TUI would show 0.0s)")
+		}
+		return
+	}
+	t.Fatal("no EventToolEnd found for sub-agent tool")
+}

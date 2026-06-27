@@ -347,7 +347,7 @@ func (s *ReplState) PendingToolStarted(id, name, summary, input string, srk tool
 }
 
 // PendingToolDone updates a tool call with its result.
-func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed time.Duration, srk tool.SearchReadKind) {
+func (s *ReplState) PendingToolDone(id, output string, isError bool, _ time.Duration, srk tool.SearchReadKind) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tcv, ok := s.pendingTool[id]
@@ -357,14 +357,15 @@ func (s *ReplState) PendingToolDone(id, output string, isError bool, elapsed tim
 	tcv.Output = output
 	tcv.IsError = isError
 	tcv.Done = true
-	tcv.Elapsed = elapsed
 	if srk.IsCollapsible() {
 		tcv.SearchRead = srk
 	}
+	// Always use perceived time (toolStart→now). System timing from the
+	// engine only covers function execution, not the full perceived duration
+	// (LLM streaming + tool execution). Falls back to system timing only if
+	// startedAt was never set (shouldn't happen in normal flow).
 	if start, ok := s.pendingToolStart[id]; ok {
-		if perceived := time.Since(start); perceived > elapsed {
-			tcv.Elapsed = perceived
-		}
+		tcv.Elapsed = time.Since(start)
 	}
 
 	// Add sub-agent tool count to global stats
@@ -1069,7 +1070,10 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 						parent.Blocks[i].ToolCall.Done = true
 						parent.Blocks[i].ToolCall.IsError = m.IsError
 						parent.Blocks[i].ToolCall.Output = m.Output
-						parent.Blocks[i].ToolCall.Elapsed = m.Timing
+						// Use perceived time (toolStart→now) — same as PendingToolDone.
+						if startedAt := parent.Blocks[i].ToolCall.startedAt; !startedAt.IsZero() {
+							parent.Blocks[i].ToolCall.Elapsed = time.Since(startedAt)
+						}
 						srk := tool.SearchReadKind{IsSearch: m.IsSearch, IsRead: m.IsRead, IsList: m.IsList, IsLsp: m.IsLsp}
 						if srk.IsCollapsible() {
 							parent.Blocks[i].ToolCall.SearchRead = srk
