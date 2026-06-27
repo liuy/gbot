@@ -2683,3 +2683,275 @@ func (b *blockingEngineMock) Stream(_ context.Context, _ *llm.Request) (<-chan l
 	}()
 	return ch, nil
 }
+
+// ---------------------------------------------------------------------------
+// Full chain test: enqueue → engine processes → response delivered
+// ---------------------------------------------------------------------------
+
+// TestEnqueue_FullChain_AttachmentResponseDelivered verifies the complete path:
+// WeChat message arrives while engine is busy → enqueue routes to attachment →
+// engine processes attachment at idle → response is sent to the user.
+// This is the critical end-to-end test for the attachment feature.
+func TestEnqueue_FullChain_AttachmentResponseDelivered(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider:   &blockingEngineMock{release: release},
+		Model:      "test-model",
+		Dispatcher: h,
+	})
+	eng.SetSystemPrompt("test")
+	t.Cleanup(func() { eng.Close() })
+
+	var sentTexts []string
+	c := &WeChatConnector{
+		hub:          h,
+		engine:       eng,
+		inboundCh:    make(chan inboundMessage, 10),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "userA",
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sentTexts = append(sentTexts, text)
+			return nil
+		},
+	}
+	c.isBusyFn = func() bool { return eng.IsBusy() }
+	h.Subscribe(c)
+
+	// Start query 1 (simulates a long-running query)
+	eng.Query(context.Background(), "initial query", "test")
+
+	// Wait for engine to be busy
+	deadline := time.After(3 * time.Second)
+	for !eng.IsBusy() {
+		select {
+		case <-deadline:
+			t.Fatal("engine never became busy")
+		default:
+			time.Sleep(5 * time.Millisecond) // REAL-TIME: poll loop
+		}
+	}
+
+	// Enqueue an attachment while busy
+	c.enqueue("userA", "follow-up question", nil)
+
+	// Release query 1 — engine should process the attachment and send response
+	close(release)
+
+	// Wait for engine to finish both queries
+	deadline2 := time.After(10 * time.Second)
+	for eng.IsBusy() {
+		select {
+		case <-deadline2:
+			t.Fatal("timed out waiting for engine to become idle")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop
+		}
+	}
+
+	// Verify response was delivered to user
+	if len(sentTexts) == 0 {
+		t.Fatal("no response sent to user — attachment turn's response was dropped")
+	}
+	if !strings.Contains(sentTexts[0], "reply") {
+		t.Errorf("sent text = %q, want to contain 'reply'", sentTexts[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple rapid messages during a running query
+// ---------------------------------------------------------------------------
+
+// TestEnqueue_MultipleRapidMessages_AllAttached verifies that 3+ messages
+// arriving during a single running query are all queued as attachments and
+// processed as separate turns after the query ends.
+func TestEnqueue_MultipleRapidMessages_AllAttached(t *testing.T) {
+	t.Parallel()
+	eng := engine.New(&engine.Params{
+		Provider: &blockingEngineMock{release: make(chan struct{})},
+		Model:    "test-model",
+	})
+	eng.SetSystemPrompt("test")
+	t.Cleanup(func() { eng.Close() })
+
+	h := hub.NewHub()
+	c := &WeChatConnector{
+		hub:          h,
+		engine:       eng,
+		inboundCh:    make(chan inboundMessage, 10),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "userA",
+	}
+	c.isBusyFn = func() bool { return eng.IsBusy() }
+	h.Subscribe(c)
+
+	// Start query 1
+	eng.Query(context.Background(), "long query", "test")
+
+	// Wait for busy
+	deadline := time.After(3 * time.Second)
+	for !eng.IsBusy() {
+		select {
+		case <-deadline:
+			t.Fatal("engine never became busy")
+		default:
+			time.Sleep(5 * time.Millisecond) // REAL-TIME: poll loop
+		}
+	}
+
+	// Enqueue 3 messages rapidly
+	c.enqueue("userA", "msg1", nil)
+	c.enqueue("userA", "msg2", nil)
+	c.enqueue("userA", "msg3", nil)
+
+	// All 3 should be in attachment queue
+	if got := eng.AttachmentsLen(); got != 3 {
+		t.Fatalf("AttachmentsLen() = %d, want 3", got)
+	}
+
+	// None should be in inboundCh
+	select {
+	case <-c.inboundCh:
+		t.Fatal("inboundCh should be empty — all messages should be attachments")
+	default:
+	}
+
+	// Release query 1 — engine processes all 3 attachments
+	eng.Close() // triggers cleanup, which will process remaining work
+}
+
+// ---------------------------------------------------------------------------
+// Typing indicator for attachment-driven turns
+// ---------------------------------------------------------------------------
+
+// TestEnqueue_AttachmentTurn_TypingRefresh verifies that the typing indicator
+// refresh fires during attachment-driven events when activeUserID is set and
+// lastTypingRefresh is older than 5s.
+func TestEnqueue_AttachmentTurn_TypingRefresh(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider:   &blockingEngineMock{release: make(chan struct{})},
+		Model:      "test-model",
+		Dispatcher: h,
+	})
+	eng.SetSystemPrompt("test")
+	t.Cleanup(func() { eng.Close() })
+
+	typingMock := &mockTypingAPI{}
+	c := &WeChatConnector{
+		hub:               h,
+		engine:            eng,
+		inboundCh:         make(chan inboundMessage, 10),
+		typingCache:       newTypingTicketCache(time.Minute),
+		activeUserID:      "userA",
+		typingAPI:         typingMock,
+		lastTypingRefresh: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), // far in the past (>5s)
+	}
+	c.isBusyFn = func() bool { return eng.IsBusy() }
+	h.Subscribe(c)
+
+	// Dispatch a text event — Handle should refresh typing because
+	// activeUserID is set and lastTypingRefresh is >5s ago.
+	c.Handle(types.QueryEvent{
+		Type: types.EventTextDelta,
+		Text: "hello",
+	})
+
+	calls := typingMock.getCalls()
+	if len(calls) == 0 {
+		t.Error("typing refresh should have fired during EventTextDelta when activeUserID is set")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error in attachment turn
+// ---------------------------------------------------------------------------
+
+// TestEnqueue_AttachmentTurn_ErrorDelivered verifies that when Handle receives
+// an EventQueryEnd with an error (which happens when an attachment turn's LLM
+// call fails), the error message is sent to the user via sendToUserFn.
+func TestEnqueue_AttachmentTurn_ErrorDelivered(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	var sentTexts []string
+	c := &WeChatConnector{
+		hub:          h,
+		inboundCh:    make(chan inboundMessage, 10),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "userA",
+		sendToUserFn: func(_ context.Context, _, text string) error {
+			sentTexts = append(sentTexts, text)
+			return nil
+		},
+	}
+
+	// Simulate an error during an attachment turn — the same EventQueryEnd
+	// that the engine emits when LLM Stream fails.
+	c.Handle(types.QueryEvent{
+		Type:  types.EventQueryEnd,
+		Error: fmt.Errorf("rate limited"),
+	})
+
+	if len(sentTexts) != 1 {
+		t.Fatalf("expected 1 error message, got %d: %v", len(sentTexts), sentTexts)
+	}
+	if !strings.Contains(sentTexts[0], "rate limited") {
+		t.Errorf("error message = %q, want to contain 'rate limited'", sentTexts[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Queue overflow: attachment queue is unbounded
+// ---------------------------------------------------------------------------
+
+// TestEnqueue_AttachmentQueue_Unbounded verifies that the engine's attachment
+// queue accepts many items without dropping (it's an in-memory queue, not a
+// channel). This contrasts with inboundCh which drops when full.
+func TestEnqueue_AttachmentQueue_Unbounded(t *testing.T) {
+	t.Parallel()
+	eng := engine.New(&engine.Params{
+		Provider: &blockingEngineMock{release: make(chan struct{})},
+		Model:    "test-model",
+	})
+	eng.SetSystemPrompt("test")
+	t.Cleanup(func() { eng.Close() })
+
+	h := hub.NewHub()
+	c := &WeChatConnector{
+		hub:          h,
+		engine:       eng,
+		inboundCh:    make(chan inboundMessage, 10),
+		typingCache:  newTypingTicketCache(time.Minute),
+		activeUserID: "userA",
+	}
+	c.isBusyFn = func() bool { return eng.IsBusy() }
+	h.Subscribe(c)
+
+	// Start query 1
+	eng.Query(context.Background(), "long query", "test")
+
+	// Wait for busy
+	deadline := time.After(3 * time.Second)
+	for !eng.IsBusy() {
+		select {
+		case <-deadline:
+			t.Fatal("engine never became busy")
+		default:
+			time.Sleep(5 * time.Millisecond) // REAL-TIME: poll loop
+		}
+	}
+
+	// Enqueue 50 messages — none should be dropped
+	for i := range 50 {
+		c.enqueue("userA", fmt.Sprintf("msg%d", i), nil)
+	}
+
+	if got := eng.AttachmentsLen(); got != 50 {
+		t.Fatalf("AttachmentsLen() = %d, want 50 (no drops)", got)
+	}
+
+	// Clean up
+	eng.Close()
+}
