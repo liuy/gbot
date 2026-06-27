@@ -11,20 +11,24 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// safeActions mirrors tool.py:48 `_SAFE_ACTIONS` — read-only actions that
-// never go through the destructive-permission gate.
+// safeActions — read-only actions that never go through the
+// destructive-permission gate (list/snapshot/zoom are read-only; wait is a
+// no-op).
 var safeActions = map[string]bool{
-	ActionCapture:  true,
+	ActionList:     true,
+	ActionSnapshot: true,
+	ActionZoom:     true,
 	ActionWait:     true,
-	ActionListApps: true,
 }
 
-// destructiveActions mirrors tool.py:54-57 `_DESTRUCTIVE_ACTIONS` — actions
-// that mutate user-visible state and so require approval.
+// destructiveActions — actions that mutate user-visible state and so require
+// approval.
 var destructiveActions = map[string]bool{
-	ActionClick: true, ActionDoubleClick: true, ActionRightClick: true,
-	ActionMiddleClick: true, ActionDrag: true, ActionScroll: true,
-	ActionType: true, ActionKey: true, ActionSetValue: true, ActionFocusApp: true,
+	ActionClick:  true,
+	ActionType:   true,
+	ActionKey:    true,
+	ActionScroll: true,
+	ActionDrag:   true,
 }
 
 // New constructs the Computer tool, mirroring the Web tool's BuildTool
@@ -88,10 +92,8 @@ func New() tool.Tool {
 	})
 }
 
-// execute is the per-call entry point, translating tool.py:215-282
-// `handle_computer_use`. Safety gates (tool.py:240-260) run BEFORE the
-// backend is touched; backend-unavailable returns the actionable install
-// hint (tool.py:270-276).
+// execute is the per-call entry point. Safety gates run BEFORE the backend is
+// touched; backend-unavailable returns the actionable install hint.
 func execute(ctx context.Context, raw json.RawMessage, backend *Backend) (*tool.ToolResult, error) {
 	in, err := parseInput(raw)
 	if err != nil {
@@ -102,7 +104,7 @@ func execute(ctx context.Context, raw json.RawMessage, backend *Backend) (*tool.
 		return nil, fmt.Errorf("missing `action`")
 	}
 
-	// Safety gates — translate of tool.py:240-260.
+	// Safety gates.
 	if in.Action == ActionType {
 		if pat := isBlockedType(in.Text); pat != "" {
 			return &tool.ToolResult{Data: errorResponse(fmt.Sprintf("blocked pattern in type text: %q", pat))}, nil
@@ -116,8 +118,6 @@ func execute(ctx context.Context, raw json.RawMessage, backend *Backend) (*tool.
 	}
 
 	if err := backend.ensureStarted(ctx); err != nil {
-		// Backend unavailable — translate of tool.py:270-276's
-		// "computer_use backend unavailable" error JSON.
 		slog.Debug("computer: backend unavailable", "err", err)
 		return &tool.ToolResult{Data: errorResponse(fmt.Sprintf("computer_use backend unavailable: %v", err))}, nil
 	}
@@ -125,31 +125,45 @@ func execute(ctx context.Context, raw json.RawMessage, backend *Backend) (*tool.
 	return dispatch(ctx, backend, in)
 }
 
-// summarizeAction is the tool-card summary string. Translate of
-// tool.py:152-186 `_summarize_action`.
+// summarizeAction is the tool-card summary string for each action.
 func summarizeAction(in Input) string {
+	wid := ""
+	if in.Window != nil {
+		wid = fmt.Sprintf(" window=%d", *in.Window)
+	}
 	switch in.Action {
-	case ActionClick, ActionDoubleClick, ActionRightClick, ActionMiddleClick:
+	case ActionList:
+		return "list windows"
+	case ActionSnapshot:
+		suffix := ""
+		if in.Mode != "" && in.Mode != ModeSom {
+			suffix = " mode=" + in.Mode
+		}
+		return fmt.Sprintf("snapshot%s%s", wid, suffix)
+	case ActionClick:
+		target := ""
 		if in.Element != nil {
-			return fmt.Sprintf("%s element #%d", in.Action, *in.Element)
+			target = fmt.Sprintf(" element #%d", *in.Element)
+		} else if x, y, ok := parseCoordinate(in.Coordinate); ok {
+			target = fmt.Sprintf(" at (%d,%d)", x, y)
 		}
-		if x, y, ok := parseCoordinate(in.Coordinate); ok {
-			return fmt.Sprintf("%s at (%d,%d)", in.Action, x, y)
+		extra := ""
+		if in.Button != "" && in.Button != ButtonLeft {
+			extra += " " + in.Button
 		}
-		return in.Action
-	case ActionDrag:
-		src, dst := "?", "?"
-		if in.FromElement != nil {
-			src = fmt.Sprintf("#%d", *in.FromElement)
-		} else if x, y, ok := parseCoordinate(in.FromCoordinate); ok {
-			src = fmt.Sprintf("(%d,%d)", x, y)
+		if in.Count != nil && *in.Count > 1 {
+			extra += fmt.Sprintf(" x%d", *in.Count)
 		}
-		if in.ToElement != nil {
-			dst = fmt.Sprintf("#%d", *in.ToElement)
-		} else if x, y, ok := parseCoordinate(in.ToCoordinate); ok {
-			dst = fmt.Sprintf("(%d,%d)", x, y)
+		return fmt.Sprintf("click%s%s%s", wid, target, extra)
+	case ActionType:
+		text := in.Text
+		suffix := ""
+		if len(text) > 60 {
+			text, suffix = text[:60], "..."
 		}
-		return fmt.Sprintf("drag %s → %s", src, dst)
+		return fmt.Sprintf("type%s %q%s", wid, text, suffix)
+	case ActionKey:
+		return fmt.Sprintf("key%s %q", wid, in.Keys)
 	case ActionScroll:
 		dir := in.Direction
 		if dir == "" {
@@ -159,22 +173,27 @@ func summarizeAction(in Input) string {
 		if in.Amount != nil {
 			amount = *in.Amount
 		}
-		return fmt.Sprintf("scroll %s x%d", dir, amount)
-	case ActionType:
-		text := in.Text
-		suffix := ""
-		if len(text) > 60 {
-			text, suffix = text[:60], "..."
+		return fmt.Sprintf("scroll%s %s x%d", wid, dir, amount)
+	case ActionDrag:
+		src, dst := "?", "?"
+		if x, y, ok := parseCoordinate(in.FromCoordinate); ok {
+			src = fmt.Sprintf("(%d,%d)", x, y)
 		}
-		return fmt.Sprintf("type %q%s", text, suffix)
-	case ActionKey:
-		return fmt.Sprintf("key %q", in.Keys)
-	case ActionFocusApp:
-		suffix := ""
-		if in.RaiseWindow {
-			suffix = " (raise)"
+		if x, y, ok := parseCoordinate(in.ToCoordinate); ok {
+			dst = fmt.Sprintf("(%d,%d)", x, y)
 		}
-		return fmt.Sprintf("focus %q%s", in.App, suffix)
+		return fmt.Sprintf("drag%s %s→%s", wid, src, dst)
+	case ActionZoom:
+		if x1, y1, x2, y2, ok := parseRegion(in.Region); ok {
+			return fmt.Sprintf("zoom%s region [%d,%d,%d,%d]", wid, x1, y1, x2, y2)
+		}
+		return fmt.Sprintf("zoom%s", wid)
+	case ActionWait:
+		s := 1.0
+		if in.Seconds != nil {
+			s = *in.Seconds
+		}
+		return fmt.Sprintf("wait %.2fs", s)
 	}
 	return in.Action
 }

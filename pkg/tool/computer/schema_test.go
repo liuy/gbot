@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// TestInputSchemaEnum verifies every action enum value from schema.py:13-25
-// is present in inputSchema()'s JSON, and that `required` is exactly
-// ["action"].
+// TestInputSchemaEnum verifies every action enum value is present in
+// inputSchema()'s JSON, and that `required` is exactly ["action"].
 func TestInputSchemaEnum(t *testing.T) {
 	schema := inputSchema()
 	var parsed struct {
@@ -34,9 +33,8 @@ func TestInputSchemaEnum(t *testing.T) {
 		t.Fatalf("unmarshal action property: %v", err)
 	}
 	wantActions := []string{
-		"capture", "click", "double_click", "right_click", "middle_click",
-		"drag", "scroll", "type", "key", "set_value", "wait", "list_apps",
-		"focus_app",
+		"list", "snapshot", "click", "type", "key",
+		"scroll", "drag", "zoom", "wait",
 	}
 	if len(actionProp.Enum) != len(wantActions) {
 		t.Fatalf("action enum length = %d, want %d", len(actionProp.Enum), len(wantActions))
@@ -48,9 +46,9 @@ func TestInputSchemaEnum(t *testing.T) {
 	}
 }
 
-// TestInputSchemaAllProperties verifies every property from schema.py:29-211
-// is declared in the schema. Missing properties would silently drop the
-// argument when the model sends it.
+// TestInputSchemaAllProperties verifies every property is declared in the
+// schema. Missing properties would silently drop the argument when the model
+// sends it.
 func TestInputSchemaAllProperties(t *testing.T) {
 	schema := inputSchema()
 	var parsed struct {
@@ -60,20 +58,26 @@ func TestInputSchemaAllProperties(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	wantProps := []string{
-		"action", "mode", "app", "max_elements", "element", "coordinate",
-		"button", "modifiers", "from_element", "to_element", "from_coordinate",
-		"to_coordinate", "direction", "amount", "value", "text", "keys",
-		"seconds", "raise_window", "capture_after",
+		"action", "window", "mode", "max_elements", "element", "coordinate",
+		"count", "button", "modifiers", "from_coordinate", "to_coordinate",
+		"direction", "amount", "text", "keys", "region", "seconds",
 	}
 	for _, name := range wantProps {
 		if _, ok := parsed.Properties[name]; !ok {
 			t.Errorf("missing schema property: %s", name)
 		}
 	}
+	// Removed properties must NOT be present.
+	removed := []string{"app", "from_element", "to_element", "value", "raise_window", "capture_after"}
+	for _, name := range removed {
+		if _, ok := parsed.Properties[name]; ok {
+			t.Errorf("removed property still present in schema: %s", name)
+		}
+	}
 }
 
 // TestInputSchemaMaxElementsDefaults verifies max_elements carries the
-// default/minimum/maximum from schema.py:79-82 (default 100, min 1, max 1000).
+// default/minimum/maximum (default 100, min 1, max 1000).
 func TestInputSchemaMaxElementsDefaults(t *testing.T) {
 	schema := inputSchema()
 	var parsed struct {
@@ -101,62 +105,116 @@ func TestInputSchemaMaxElementsDefaults(t *testing.T) {
 	}
 }
 
+// TestInputSchemaCountDefaults verifies count carries default 1, min 1, max 3.
+func TestInputSchemaCountDefaults(t *testing.T) {
+	schema := inputSchema()
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var c struct {
+		Default int `json:"default"`
+		Minimum int `json:"minimum"`
+		Maximum int `json:"maximum"`
+	}
+	if err := json.Unmarshal(parsed.Properties["count"], &c); err != nil {
+		t.Fatalf("unmarshal count: %v", err)
+	}
+	if c.Default != 1 {
+		t.Errorf("count default = %d, want 1", c.Default)
+	}
+	if c.Minimum != 1 {
+		t.Errorf("count minimum = %d, want 1", c.Minimum)
+	}
+	if c.Maximum != 3 {
+		t.Errorf("count maximum = %d, want 3", c.Maximum)
+	}
+}
+
+// TestInputSchemaRegionMinMaxItems verifies region requires exactly 4 items.
+func TestInputSchemaRegionMinMaxItems(t *testing.T) {
+	schema := inputSchema()
+	var parsed struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var r struct {
+		MinItems int `json:"minItems"`
+		MaxItems int `json:"maxItems"`
+	}
+	if err := json.Unmarshal(parsed.Properties["region"], &r); err != nil {
+		t.Fatalf("unmarshal region: %v", err)
+	}
+	if r.MinItems != 4 {
+		t.Errorf("region minItems = %d, want 4", r.MinItems)
+	}
+	if r.MaxItems != 4 {
+		t.Errorf("region maxItems = %d, want 4", r.MaxItems)
+	}
+}
+
 // TestParseInputRoundTrip parses representative inputs for each action family
 // and asserts the parsed fields match exactly. Catches field name drift.
 func TestParseInputRoundTrip(t *testing.T) {
+	win := 42
 	cases := []struct {
 		name string
 		raw  string
 		want Input
 	}{
 		{
-			name: "capture som",
-			raw:  `{"action":"capture","mode":"som","app":"Terminal","max_elements":50}`,
-			want: Input{Action: "capture", Mode: "som", App: "Terminal"},
+			name: "list",
+			raw:  `{"action":"list"}`,
+			want: Input{Action: "list"},
 		},
 		{
-			name: "click element",
-			raw:  `{"action":"click","element":7}`,
+			name: "snapshot som",
+			raw:  `{"action":"snapshot","window":42,"mode":"som","max_elements":50}`,
+			want: Input{Action: "snapshot", Window: &win, Mode: "som"},
 		},
 		{
-			name: "click coordinate right",
-			raw:  `{"action":"right_click","coordinate":[100,200]}`,
+			name: "click element with window",
+			raw:  `{"action":"click","window":42,"element":7}`,
+			want: Input{Action: "click", Window: &win},
+		},
+		{
+			name: "click coordinate count button",
+			raw:  `{"action":"click","window":42,"coordinate":[100,200],"count":2,"button":"right"}`,
+			want: Input{Action: "click", Window: &win, Button: "right"},
 		},
 		{
 			name: "type text",
-			raw:  `{"action":"type","text":"hello"}`,
+			raw:  `{"action":"type","window":42,"text":"hello"}`,
+			want: Input{Action: "type", Window: &win},
 		},
 		{
 			name: "key combo",
-			raw:  `{"action":"key","keys":"cmd+s"}`,
+			raw:  `{"action":"key","window":42,"keys":"cmd+s"}`,
+			want: Input{Action: "key", Window: &win, Keys: "cmd+s"},
 		},
 		{
-			name: "drag elements",
-			raw:  `{"action":"drag","from_element":1,"to_element":2}`,
+			name: "drag coordinates",
+			raw:  `{"action":"drag","window":42,"from_coordinate":[1,2],"to_coordinate":[3,4]}`,
+			want: Input{Action: "drag", Window: &win},
 		},
 		{
 			name: "scroll direction",
-			raw:  `{"action":"scroll","direction":"down","amount":5}`,
+			raw:  `{"action":"scroll","window":42,"direction":"down","amount":5}`,
+			want: Input{Action: "scroll", Window: &win, Direction: "down"},
 		},
 		{
-			name: "set_value",
-			raw:  `{"action":"set_value","element":3,"value":"Blue"}`,
+			name: "zoom region",
+			raw:  `{"action":"zoom","window":42,"region":[10,20,30,40]}`,
+			want: Input{Action: "zoom", Window: &win},
 		},
 		{
 			name: "wait seconds",
 			raw:  `{"action":"wait","seconds":2.5}`,
-		},
-		{
-			name: "focus_app raise",
-			raw:  `{"action":"focus_app","app":"Safari","raise_window":true}`,
-		},
-		{
-			name: "list_apps",
-			raw:  `{"action":"list_apps"}`,
-		},
-		{
-			name: "capture_after",
-			raw:  `{"action":"click","element":1,"capture_after":true}`,
+			want: Input{Action: "wait"},
 		},
 	}
 	for _, tc := range cases {
@@ -165,21 +223,30 @@ func TestParseInputRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseInput(%s): %v", tc.raw, err)
 			}
-			// Verify action is preserved for every case (the required field).
-			if in.Action == "" {
-				t.Errorf("parsed action is empty for input %s", tc.raw)
+			if in.Action != tc.want.Action {
+				t.Errorf("action = %q, want %q", in.Action, tc.want.Action)
 			}
-			// For the cases where want is fully populated, do exact-match.
-			if tc.want.Action != "" {
-				if in.Action != tc.want.Action {
-					t.Errorf("action = %q, want %q", in.Action, tc.want.Action)
+			if in.Mode != tc.want.Mode {
+				t.Errorf("mode = %q, want %q", in.Mode, tc.want.Mode)
+			}
+			if tc.want.Window != nil {
+				if in.Window == nil {
+					t.Fatalf("window = nil, want %d", *tc.want.Window)
 				}
-				if in.Mode != tc.want.Mode {
-					t.Errorf("mode = %q, want %q", in.Mode, tc.want.Mode)
+				if *in.Window != *tc.want.Window {
+					t.Errorf("window = %d, want %d", *in.Window, *tc.want.Window)
 				}
-				if in.App != tc.want.App {
-					t.Errorf("app = %q, want %q", in.App, tc.want.App)
-				}
+			} else if in.Window != nil {
+				t.Errorf("window = %d, want nil", *in.Window)
+			}
+			if in.Keys != tc.want.Keys {
+				t.Errorf("keys = %q, want %q", in.Keys, tc.want.Keys)
+			}
+			if in.Direction != tc.want.Direction {
+				t.Errorf("direction = %q, want %q", in.Direction, tc.want.Direction)
+			}
+			if in.Button != tc.want.Button {
+				t.Errorf("button = %q, want %q", in.Button, tc.want.Button)
 			}
 		})
 	}

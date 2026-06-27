@@ -118,7 +118,7 @@ func TestDefaultListWindowsParsesStructuredContent(t *testing.T) {
 	// We can't easily invoke defaultListWindows without a cua-driver binary,
 	// so this test documents the parser's expected output shapes by exercising
 	// the JSON-decode paths indirectly. The real coverage comes from the e2e
-	// test (TestCapture_E2E). Here we just verify the function exists and is
+	// test (TestList_E2E / TestSnapshot_E2E). Here we just verify the function exists and is
 	// the default for the package-level var.
 	if listWindowsFn == nil {
 		t.Error("listWindowsFn is nil")

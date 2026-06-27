@@ -32,16 +32,8 @@ const serverName = "cua-driver"
 // cua_backend.py:92 `_CUA_TELEMETRY_ENV_VAR`.
 const telemetryEnv = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
-// screenCaptureSentinels mirrors cua_backend.py:71-72
-// `_SCREEN_CAPTURE_SENTINELS`. When `app` matches one of these (case
-// insensitive), capture() resolves to the OS shell/desktop window.
-var screenCaptureSentinels = map[string]struct{}{
-	"screen": {}, "desktop": {}, "fullscreen": {}, "full screen": {}, "all": {},
-}
-
-// desktopWindowNames mirrors cua_backend.py:80-86 `_DESKTOP_WINDOW_NAMES`.
-// Matched case-insensitively as a substring against the window's app_name
-// and title to pick a desktop/shell surface for whole-screen capture.
+// desktopWindowNames is matched case-insensitively as a substring against a
+// window's title to classify it as a desktop/shell surface in list output.
 var desktopWindowNames = []string{
 	"progman", "workerw", "program manager", // Windows desktop
 	"shell_traywnd", "taskbar", // Windows taskbar
@@ -185,16 +177,14 @@ type Backend struct {
 	mu sync.Mutex
 
 	cmd        string // resolved via resolveDriverCmd once at first start
-	display    string // resolved X11 DISPLAY (Linux only), for activeWindowID
 	mgr        *mcp.ClientManager
 	cfg        mcp.ScopedMcpServerConfig
 	conn       *mcp.ConnectedServer
 	sessionID  string // minted once per Backend instance
 	started    bool
-	activePID  int
-	activeWin  int
-	lastApp    string
-	snapTokens map[int]string // element_index → element_token, refreshed each capture
+	winCache   map[int]int    // window_id → pid, refreshed by list/snapshot
+	snapTokens map[int]string // element_index → element_token, refreshed each snapshot
+	snapshotID string         // last snapshot_id (informational; from get_window_state)
 }
 
 // NewBackend constructs a Backend with a freshly-minted session id.
@@ -202,6 +192,7 @@ type Backend struct {
 func NewBackend() *Backend {
 	return &Backend{
 		sessionID:  "gbot-" + randomHex(12),
+		winCache:   map[int]int{},
 		snapTokens: map[int]string{},
 	}
 }
@@ -242,7 +233,7 @@ func (b *Backend) ensureStarted(ctx context.Context) error {
 
 	// Resolve DISPLAY for Linux before spawning so the child sees it.
 	display, _ := detectDisplay()
-	b.display = display
+	slog.Info("computer: ensureStarted", "display", display, "os_DISPLAY", os.Getenv("DISPLAY"))
 	extra := map[string]string{}
 	if display != "" {
 		extra["DISPLAY"] = display
@@ -370,6 +361,41 @@ func (b *Backend) Stop() {
 	b.started = false
 	b.conn = nil
 	b.mu.Unlock()
+}
+
+// resolvePID returns the process pid for a window_id. It reads the winCache
+// first (warmed by list/snapshot); on a miss it falls back to a list_windows
+// round-trip, repopulating the cache for all returned windows. This is the
+// slow path taken only when the cache is cold or stale.
+func (b *Backend) resolvePID(ctx context.Context, windowID int) (int, error) {
+	b.mu.Lock()
+	if pid, ok := b.winCache[windowID]; ok {
+		b.mu.Unlock()
+		return pid, nil
+	}
+	b.mu.Unlock()
+
+	out, err := b.call(ctx, "list_windows", map[string]any{
+		"on_screen_only": false, // off-screen windows resolve too
+		"session":        b.sessionID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("list_windows: %w", err)
+	}
+	windows := parseWindows(extractResult(out))
+	b.mu.Lock()
+	if b.winCache == nil {
+		b.winCache = map[int]int{}
+	}
+	for _, w := range windows {
+		b.winCache[w.WindowID] = w.PID
+	}
+	pid, ok := b.winCache[windowID]
+	b.mu.Unlock()
+	if !ok {
+		return 0, fmt.Errorf("window_id %d not found; call list to refresh", windowID)
+	}
+	return pid, nil
 }
 
 // extractResult converts an *mcp.MCPToolCallResult into the plain map shape
