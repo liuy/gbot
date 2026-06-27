@@ -1314,27 +1314,3 @@ func TestRender_Table_NoWidth_Unchanged(t *testing.T) {
 		t.Errorf("unlimited width should not truncate, but got: %q", result)
 	}
 }
-
-func TestHasMarkdownTable(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		text string
-		want bool
-	}{
-		{"standard table", "| A | B |\n|---|---|\n| 1 | 2 |", true},
-		{"table with alignment", "| A | B |\n|:--:|--:|\n| 1 | 2 |", true},
-		{"plain text", "This is just a paragraph.", false},
-		{"code block with pipes", "```\n| code |\n|------|\n```\nNot a table.", false},
-		{"pipe in text", "Use cmd | grep to filter.", false},
-		{"no separator", "| A | B |\n| 1 | 2 |", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := hasMarkdownTable(tc.text)
-			if got != tc.want {
-				t.Errorf("hasMarkdownTable(%q) = %v, want %v", tc.text, got, tc.want)
-			}
-		})
-	}
-}

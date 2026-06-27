@@ -197,7 +197,24 @@ func (r *ansiRenderer) renderNode(node ast.Node, entering bool) ast.WalkStatus {
 		}
 
 	case *ast.Paragraph:
-		if !entering {
+		if entering {
+			if r.maxWidth > 0 {
+				r.savedWriter = append(r.savedWriter, r.w)
+				var buf strings.Builder
+				r.w = &buf
+			}
+		} else {
+			if r.maxWidth > 0 {
+				var inner string
+				if buf, ok := r.w.(*strings.Builder); ok {
+					inner = buf.String()
+				}
+				if len(r.savedWriter) > 0 {
+					r.w = r.savedWriter[len(r.savedWriter)-1]
+					r.savedWriter = r.savedWriter[:len(r.savedWriter)-1]
+				}
+				r.write(wordWrap(inner, r.maxWidth))
+			}
 			r.write("\n")
 			if needsBlockSeparator(node) {
 				r.write("\n")

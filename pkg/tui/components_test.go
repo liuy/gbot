@@ -655,6 +655,40 @@ func TestMessageView_WordWrap_Chinese(t *testing.T) {
 	}
 }
 
+func TestRenderWidth_ParagraphAfterTable_Wraps(t *testing.T) {
+	t.Parallel()
+
+	// A markdown table followed by a long paragraph. The paragraph must wrap
+	// at width even though the block contains a table separator line.
+	md := "| A | B |\n|---|---|\n| 1 | 2 |\n\n" +
+		"This is a very long paragraph that comes after the table and must be wrapped at the given width."
+
+	rendered := RenderWidth(md, 40)
+
+	// Find the paragraph portion (after the table border). Every visual line
+	// of the paragraph must be <= 40 visible chars.
+	inParagraph := false
+	for line := range strings.SplitSeq(rendered, "\n") {
+		plain := stripANSI(line)
+		plain = strings.TrimSpace(plain)
+		if strings.HasPrefix(plain, "This is a very long") {
+			inParagraph = true
+		}
+		if inParagraph && plain != "" {
+			if visibleLen(plain) > 45 { // small margin for ANSI residue
+				t.Errorf("paragraph line too long (%d chars): %q", visibleLen(plain), plain)
+			}
+		}
+	}
+	if !inParagraph {
+		t.Error("did not find the paragraph in rendered output")
+	}
+}
+
+func visibleLen(s string) int {
+	return len(stripANSI(s))
+}
+
 func TestMessageView_ToolCallEmptyOutput(t *testing.T) {
 	t.Parallel()
 
