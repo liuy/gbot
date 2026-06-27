@@ -1648,6 +1648,31 @@ func TestApp_UpdateRepl_UsageMsg(t *testing.T) {
 	}
 }
 
+// TestApp_TurnStart_ResetsUsage verifies that starting a new query resets
+// the accumulated usage so the status bar shows only the current query's
+// tokens, not the sum of all previous queries.
+func TestApp_TurnStart_ResetsUsage(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(&tuiMockProvider{})
+
+	// Simulate query 1: accumulate 1000 input tokens
+	app.repl.StartQuery()
+	app.updateRepl(usageMsg{InputTokens: 1000, OutputTokens: 200})
+	app.repl.FinishStream(nil)
+
+	if app.repl.usage.InputTokens != 1000 {
+		t.Fatalf("after query 1: usage.InputTokens = %d, want 1000", app.repl.usage.InputTokens)
+	}
+
+	// Simulate query 2: turnStartMsg should reset usage
+	app.updateRepl(turnStartMsg{})
+	app.updateRepl(usageMsg{InputTokens: 300, OutputTokens: 50})
+
+	if app.repl.usage.InputTokens != 300 {
+		t.Errorf("after query 2: usage.InputTokens = %d, want 300 (not 1300)", app.repl.usage.InputTokens)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // updateRepl — thinkingStartMsg / thinkingEndMsg
 // ---------------------------------------------------------------------------

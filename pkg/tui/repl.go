@@ -957,6 +957,7 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 			a.status.SetStreaming(true)
 			a.spinner.Start()
 			a.status.SetUsage(types.Usage{})
+			a.repl.usage = types.Usage{}
 		}
 		a.markViewportDirty()
 		a.repl.AppendTextItem()
