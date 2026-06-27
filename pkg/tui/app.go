@@ -383,6 +383,7 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 			a.engine.SetProvider(p)
 		}
 		a.engine.SetModel(modelName)
+			a.status.SetModel(modelName)
 	}
 
 	// Build quota fetcher from the resolved provider (nil if unsupported).

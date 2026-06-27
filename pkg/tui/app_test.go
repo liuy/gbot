@@ -8999,6 +8999,44 @@ func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
 // SetProviders: quota fetcher must match the resolved provider, not Providers[0]
 // ---------------------------------------------------------------------------
 
+// TestSetProviders_SyncsStatusBarModel verifies that SetProviders updates the
+// status bar model to match the engine's model after override. Without this,
+// the status bar shows the meta.json model while the engine uses the
+// settings.json default — a confusing mismatch.
+func TestSetProviders_SyncsStatusBarModel(t *testing.T) {
+	eng := engine.New(&engine.Params{
+		Provider: &mockLLMProvider{name: "xiaomi"},
+		Model:    "mimo-v2.5",
+		Logger:   slog.Default(),
+	})
+	a := &App{engine: eng, repl: NewReplState()}
+	a.status = NewStatusBar()
+
+	// Simulate what NewAppWithManager does: status bar shows engine model.
+	a.status.SetModel(a.engine.Model())
+
+	// SetProviders overrides engine model to settings.json default.
+	cfg := &config.Config{
+		Model: config.ModelSpec{"default": "zhipu/glm-5.2"},
+		Providers: []config.Provider{
+			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5.2": {}})},
+		},
+	}
+	a.SetProviders(map[string]llm.Provider{
+		"zhipu": &mockLLMProvider{name: "zhipu"},
+	}, cfg)
+
+	// Engine model should be overridden.
+	if got := a.engine.Model(); got != "glm-5.2" {
+		t.Errorf("engine model = %q, want glm-5.2", got)
+	}
+	// Status bar MUST also be updated — otherwise UI shows stale meta.json model.
+	statusLine := a.status.View()
+	if !strings.Contains(statusLine, "glm-5.2") {
+		t.Errorf("status bar = %q, want contains 'glm-5.2' (must sync after SetProviders override)", statusLine)
+	}
+}
+
 func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5"},
