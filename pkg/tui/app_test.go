@@ -9067,6 +9067,30 @@ func TestTurnStartMsg_ResetsUsage(t *testing.T) {
 	}
 }
 
+// TestHandleSubmitRepl_ResetsUsage verifies that submitting a new query
+// through handleSubmitRepl (the real user flow) resets a.repl.usage so
+// tokens don't accumulate across queries. The first query leaves usage
+// non-zero; after the second submit, usage must be zero.
+func TestHandleSubmitRepl_ResetsUsage(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+
+	// Query 1: simulate tokens accumulating.
+	app.repl.StartQuery()
+	app.updateRepl(usageMsg{InputTokens: 1000, OutputTokens: 200})
+	app.repl.FinishStream(nil)
+
+	if app.repl.usage.InputTokens != 1000 {
+		t.Fatalf("query 1: usage.InputTokens = %d, want 1000", app.repl.usage.InputTokens)
+	}
+
+	// Query 2: handleSubmitRepl should reset usage.
+	app.handleSubmitRepl("second query")
+
+	if app.repl.usage.InputTokens != 0 {
+		t.Errorf("after handleSubmitRepl: usage.InputTokens = %d, want 0 (reset between queries)", app.repl.usage.InputTokens)
+	}
+}
+
 func TestSetProviders_QuotaFetcherUsesResolvedProvider(t *testing.T) {
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5"},

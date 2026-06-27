@@ -1182,7 +1182,8 @@ func (a *App) updateRepl(msg tea.Msg) (bool, tea.Cmd) {
 		return true, a.readEvents()
 
 	case usageMsg:
-		// Accumulate per-engine usage on ReplState (not StatusBar).
+		// Each turn reports its own delta input/output tokens. Accumulate
+		// across turns within a single query. Reset happens in turnStartMsg.
 		a.repl.usage.InputTokens += m.InputTokens
 		a.repl.usage.OutputTokens += m.OutputTokens
 		a.repl.usage.CacheReadInputTokens += m.CacheReadInputTokens
@@ -1627,6 +1628,7 @@ func (a *App) handleSubmitRepl(text string) tea.Cmd {
 	a.status.SetStreaming(true)
 	a.spinner.Start()
 	a.status.SetUsage(types.Usage{})
+	a.repl.usage = types.Usage{}
 	a.repl.displayedInputTokens = 0
 	a.repl.displayedOutputTokens = 0
 	// Estimate input tokens: use engine's precise ContextTokens (from last
