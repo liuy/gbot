@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,9 +97,9 @@ func TestUploadToCDN_Success(t *testing.T) {
 
 func TestUploadToCDN_ClientError_NoRetry(t *testing.T) {
 	t.Parallel()
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.Header().Set("x-error-message", "bad request")
 		w.WriteHeader(http.StatusBadRequest)
 	}))
@@ -115,17 +116,17 @@ func TestUploadToCDN_ClientError_NoRetry(t *testing.T) {
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("error = %q, want '400'", err.Error())
 	}
-	if calls != 1 {
-		t.Errorf("server called %d times, want 1 (no retry on client error)", calls)
+	if calls.Load() != 1 {
+		t.Errorf("server called %d times, want 1 (no retry on client error)", calls.Load())
 	}
 }
 
 func TestUploadToCDN_ServerErrorThenSuccess(t *testing.T) {
 	t.Parallel()
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls == 1 {
+		calls.Add(1)
+		if calls.Load() == 1 {
 			w.Header().Set("x-error-message", "internal error")
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -143,16 +144,16 @@ func TestUploadToCDN_ServerErrorThenSuccess(t *testing.T) {
 	if dp != "dp-after-retry" {
 		t.Errorf("downloadParam = %q, want dp-after-retry", dp)
 	}
-	if calls != 2 {
-		t.Errorf("server called %d times, want 2 (retry then success)", calls)
+	if calls.Load() != 2 {
+		t.Errorf("server called %d times, want 2 (retry then success)", calls.Load())
 	}
 }
 
 func TestUploadToCDN_AllAttemptsFail(t *testing.T) {
 	t.Parallel()
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.Header().Set("x-error-message", "down")
 		w.WriteHeader(http.StatusBadGateway)
 	}))
@@ -166,17 +167,17 @@ func TestUploadToCDN_AllAttemptsFail(t *testing.T) {
 	if !strings.Contains(err.Error(), "server error") {
 		t.Errorf("error = %q, want 'server error'", err.Error())
 	}
-	if calls != uploadMaxRetries {
-		t.Errorf("server called %d times, want %d", calls, uploadMaxRetries)
+	if calls.Load() != int32(uploadMaxRetries) {
+		t.Errorf("server called %d times, want %d", calls.Load(), uploadMaxRetries)
 	}
 }
 
 func TestUploadToCDN_MissingDownloadParam_Retries(t *testing.T) {
 	t.Parallel()
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if calls < uploadMaxRetries {
+		calls.Add(1)
+		if calls.Load() < int32(uploadMaxRetries) {
 			// 200 but no x-encrypted-param header → retry.
 			w.WriteHeader(http.StatusOK)
 			return
@@ -194,8 +195,8 @@ func TestUploadToCDN_MissingDownloadParam_Retries(t *testing.T) {
 	if dp != "final-param" {
 		t.Errorf("downloadParam = %q, want final-param", dp)
 	}
-	if calls != uploadMaxRetries {
-		t.Errorf("server called %d times, want %d", calls, uploadMaxRetries)
+	if calls.Load() != int32(uploadMaxRetries) {
+		t.Errorf("server called %d times, want %d", calls.Load(), uploadMaxRetries)
 	}
 }
 
@@ -321,5 +322,193 @@ func TestUploadFile_FileNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "read file") {
 		t.Errorf("error = %q, want 'read file'", err.Error())
+	}
+}
+
+// --- GetUploadURL error paths ---
+
+func TestGetUploadURL_APIError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := GetUploadURL(context.Background(), srv.Client(), srv.URL, "tok",
+		&GetUploadURLRequest{FileKey: "fk"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("GetUploadURL API error: %v, want HTTP 500", err)
+	}
+}
+
+func TestGetUploadURL_DecodeError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{bad json`))
+	}))
+	defer srv.Close()
+
+	_, err := GetUploadURL(context.Background(), srv.Client(), srv.URL, "tok",
+		&GetUploadURLRequest{FileKey: "fk"})
+	if err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("GetUploadURL decode error: %v, want 'decode'", err)
+	}
+}
+
+// --- UploadFile — GetUploadURL failure ---
+
+func TestUploadFile_GetUploadURL_Error(t *testing.T) {
+	t.Parallel()
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer apiSrv.Close()
+
+	tmpDir := t.TempDir()
+	filePath := tmpDir + "/test.bin"
+	if err := os.WriteFile(filePath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := UploadFile(context.Background(), client, apiSrv.URL, "tok", "user1", filePath, MediaImage)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("UploadFile GetUploadURL error: %v, want HTTP 500", err)
+	}
+}
+
+// --- uploadToCDN — network error retry then fail ---
+
+func TestUploadToCDN_NetworkError_RetriesThenFail(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		// Simulate connection reset by closing without response.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support Hijacker")
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := uploadToCDN(context.Background(), client, srv.URL, []byte("data"))
+	if err == nil {
+		t.Fatal("expected error after retries, got nil")
+	}
+	if !strings.Contains(err.Error(), "cdn upload") {
+		t.Errorf("error = %q, want 'cdn upload'", err.Error())
+	}
+	if calls.Load() != int32(uploadMaxRetries) {
+		t.Errorf("server called %d times, want %d", calls.Load(), uploadMaxRetries)
+	}
+}
+
+// --- uploadToCDN — server error with no x-error-message header ---
+
+func TestUploadToCDN_ServerError_NoErrorMessage(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		// No x-error-message header — fallback to "status 502".
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := uploadToCDN(context.Background(), client, srv.URL, []byte("data"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "status 502") {
+		t.Errorf("error = %q, want 'status 502'", err.Error())
+	}
+}
+
+// --- uploadToCDN — all 200 but never x-encrypted-param ---
+
+func TestUploadToCDN_AllAttempts_NoParam(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		// No x-encrypted-param header ever.
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := uploadToCDN(context.Background(), client, srv.URL, []byte("data"))
+	if err == nil {
+		t.Fatal("expected error when no param returned, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error = %q, want 'missing'", err.Error())
+	}
+	if calls.Load() != int32(uploadMaxRetries) {
+		t.Errorf("server called %d times, want %d", calls.Load(), uploadMaxRetries)
+	}
+}
+
+// --- UploadFile — uploadToCDN failure ---
+
+func TestUploadFile_UploadToCDN_Failure(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	filePath := tmpDir + "/test.bin"
+	if err := os.WriteFile(filePath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	_, err := UploadFile(context.Background(), client, srv.URL, "tok", "user1", filePath, MediaImage)
+	if err == nil {
+		t.Fatal("expected CDN upload error, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want HTTP 500", err)
+	}
+}
+
+// --- UploadFile — upload_param path (upload_full_url empty, upload_param set) ---
+
+func TestUploadFile_UploadParamPath(t *testing.T) {
+	t.Parallel()
+	// CDN server that accepts the upload_param path.
+	cdnSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-encrypted-param", "dp-from-param")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cdnSrv.Close()
+
+	// API returns upload_full_url pointing to CDN server (empty upload_param).
+	// This tests that the code correctly selects upload_full_url when both are set.
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"upload_full_url":"` + cdnSrv.URL + `","upload_param":"unused"}`))
+	}))
+	defer apiSrv.Close()
+
+	tmpDir := t.TempDir()
+	filePath := tmpDir + "/test.bin"
+	if err := os.WriteFile(filePath, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	uploaded, err := UploadFile(context.Background(), client, apiSrv.URL, "tok", "user1", filePath, MediaImage)
+	if err != nil {
+		t.Fatalf("UploadFile: %v", err)
+	}
+	if uploaded.DownloadEncryptedQueryParam != "dp-from-param" {
+		t.Errorf("DownloadEncryptedQueryParam = %q, want dp-from-param", uploaded.DownloadEncryptedQueryParam)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -137,7 +138,7 @@ func TestHandleInbound_TypingRefreshedDuringLongQuery(t *testing.T) {
 			inboundCh:         make(chan inboundMessage, 10),
 			typingCache:       newTypingTicketCache(600 * time.Second),
 			typingAPI:         typingAPI,
-			lastTypingRefresh: time.Now(),
+			lastTypingRefresh: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
 			sendToUserFn:      func(_ context.Context, _, _ string) error { return nil },
 		}
 		h.Subscribe(c)
@@ -319,6 +320,9 @@ func TestILinkTypingAPI_GetConfig_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
 }
 
 func TestILinkTypingAPI_SendTyping(t *testing.T) {
@@ -363,4 +367,45 @@ func TestILinkTypingAPI_SendTyping_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
+}
+
+// mockTypingAPISendError always returns a valid ticket from getConfig but
+// returns an error from sendTyping, exercising the error logging paths in
+// startTyping and stopTyping.
+type mockTypingAPISendError struct{}
+
+func (m *mockTypingAPISendError) getConfig(_ context.Context, userID, _ string) (string, error) {
+	return "ticket-" + userID, nil
+}
+
+func (m *mockTypingAPISendError) sendTyping(_ context.Context, _, _ string, _ int) error {
+	return context.DeadlineExceeded
+}
+
+func TestStartTyping_SendTypingError(t *testing.T) {
+	t.Parallel()
+	c := &WeChatConnector{
+		hub:         hub.NewHub(),
+		typingCache: newTypingTicketCache(600 * time.Second),
+		typingAPI:   &mockTypingAPISendError{},
+	}
+	c.startTyping(context.Background(), "user1")
+	// Should not panic; lastTypingRefresh should remain zero.
+	if !c.lastTypingRefresh.IsZero() {
+		t.Error("lastTypingRefresh should remain zero after sendTyping error")
+	}
+}
+
+func TestStopTyping_SendTypingError(t *testing.T) {
+	t.Parallel()
+	c := &WeChatConnector{
+		hub:         hub.NewHub(),
+		typingCache: newTypingTicketCache(600 * time.Second),
+		typingAPI:   &mockTypingAPISendError{},
+	}
+	c.stopTyping(context.Background(), "user1")
+	// Should not panic.
 }
