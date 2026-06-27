@@ -114,20 +114,27 @@ func splitForWeChat(text string) []string {
 		// Hard-split lines with no break points that exceed the limit.
 		if lineLen > wechatMaxMessageLen {
 			flush()
-			reopenPrefix := ""
-			closeSuffix := ""
 			if inCodeBlock {
-				reopenPrefix = "```" + codeLang + "\n"
-				closeSuffix = "\n```"
-			}
-			overhead := len([]rune(reopenPrefix)) + len([]rune(closeSuffix))
-			budget := wechatMaxMessageLen - overhead
-			if budget < 1 {
-				budget = wechatMaxMessageLen / 2
-			}
-			for start := 0; start < len(lineRunes); start += budget {
-				end := min(start+budget, len(lineRunes))
-				chunks = append(chunks, reopenPrefix+string(lineRunes[start:end])+closeSuffix)
+				reopenPrefix := "```" + codeLang + "\n"
+				closeSuffix := "\n```"
+				overhead := len([]rune(reopenPrefix)) + len([]rune(closeSuffix))
+				budget := wechatMaxMessageLen - overhead
+				if budget < 1 {
+					for start := 0; start < len(lineRunes); start += wechatMaxMessageLen {
+						end := min(start+wechatMaxMessageLen, len(lineRunes))
+						chunks = append(chunks, string(lineRunes[start:end]))
+					}
+					continue
+				}
+				for start := 0; start < len(lineRunes); start += budget {
+					end := min(start+budget, len(lineRunes))
+					chunks = append(chunks, reopenPrefix+string(lineRunes[start:end])+closeSuffix)
+				}
+			} else {
+				for start := 0; start < len(lineRunes); start += wechatMaxMessageLen {
+					end := min(start+wechatMaxMessageLen, len(lineRunes))
+					chunks = append(chunks, string(lineRunes[start:end]))
+				}
 			}
 			continue
 		}

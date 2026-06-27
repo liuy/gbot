@@ -2,6 +2,10 @@ package wechat
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -277,5 +281,86 @@ func TestHandleInbound_TypingFailure_DoesNotBlock(t *testing.T) {
 
 	if !sent {
 		t.Error("typing failure should not block message processing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// iLinkTypingAPI — getConfig / sendTyping via real HTTP
+// ---------------------------------------------------------------------------
+
+func TestILinkTypingAPI_GetConfig(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ret":0,"typing_ticket":"ticket-from-api"}`)
+	}))
+	defer srv.Close()
+
+	api := &iLinkTypingAPI{client: srv.Client(), baseURL: srv.URL, token: "tok"}
+	ticket, err := api.getConfig(context.Background(), "user1", "")
+	if err != nil {
+		t.Fatalf("getConfig: %v", err)
+	}
+	if ticket != "ticket-from-api" {
+		t.Errorf("ticket = %q, want ticket-from-api", ticket)
+	}
+}
+
+func TestILinkTypingAPI_GetConfig_Error(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = fmt.Fprint(w, `{"ret":-1}`)
+	}))
+	defer srv.Close()
+
+	api := &iLinkTypingAPI{client: srv.Client(), baseURL: srv.URL, token: "tok"}
+	_, err := api.getConfig(context.Background(), "user1", "")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestILinkTypingAPI_SendTyping(t *testing.T) {
+	t.Parallel()
+	var gotUserID string
+	var gotStatus int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		gotUserID, _ = payload["ilink_user_id"].(string)
+		if s, ok := payload["status"].(float64); ok {
+			gotStatus = int(s)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ret":0}`)
+	}))
+	defer srv.Close()
+
+	api := &iLinkTypingAPI{client: srv.Client(), baseURL: srv.URL, token: "tok"}
+	err := api.sendTyping(context.Background(), "user1", "ticket-abc", TypingStart)
+	if err != nil {
+		t.Fatalf("sendTyping: %v", err)
+	}
+	if gotUserID != "user1" {
+		t.Errorf("userID = %q, want user1", gotUserID)
+	}
+	if gotStatus != TypingStart {
+		t.Errorf("status = %d, want %d", gotStatus, TypingStart)
+	}
+}
+
+func TestILinkTypingAPI_SendTyping_Error(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = fmt.Fprint(w, `{"ret":-1}`)
+	}))
+	defer srv.Close()
+
+	api := &iLinkTypingAPI{client: srv.Client(), baseURL: srv.URL, token: "tok"}
+	err := api.sendTyping(context.Background(), "user1", "ticket-abc", TypingStop)
+	if err == nil {
+		t.Fatal("expected error for 500 response")
 	}
 }

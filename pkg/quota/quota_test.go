@@ -560,6 +560,137 @@ func TestDetect_NilProvider(t *testing.T) {
 	}
 }
 
+func TestClamp100(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input, want int
+	}{
+		{-1, 0}, {0, 0}, {50, 50}, {100, 100}, {101, 100}, {200, 100},
+	}
+	for _, tc := range tests {
+		if got := clamp100(tc.input); got != tc.want {
+			t.Errorf("clamp100(%d) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+	if got := truncate([]byte("short"), 10); got != "short" {
+		t.Errorf("truncate short = %q, want %q", got, "short")
+	}
+	got := truncate([]byte("abcdefghij"), 5)
+	if got != "abcde..." {
+		t.Errorf("truncate long = %q, want %q", got, "abcde...")
+	}
+}
+
+func TestNewMinimaxFetcher_DefaultsAndTrims(t *testing.T) {
+	t.Parallel()
+	f := NewMinimaxFetcher("", "key")
+	if f.BaseURL != "https://api.minimax.io" {
+		t.Errorf("BaseURL = %q, want default", f.BaseURL)
+	}
+	if f.Client == nil {
+		t.Error("Client is nil")
+	}
+
+	f2 := NewMinimaxFetcher("https://api.minimax.io///", "key")
+	if f2.BaseURL != "https://api.minimax.io" {
+		t.Errorf("BaseURL = %q, want trailing slashes trimmed", f2.BaseURL)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_HTTPError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("Fetch HTTP error = %v, want HTTP 401", err)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "parse JSON") {
+		t.Fatalf("Fetch invalid JSON error = %v, want parse JSON", err)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_APIError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":1001,"status_msg":"invalid key"}}`))
+	}))
+	defer srv.Close()
+
+	f := &MinimaxFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "status=1001") {
+		t.Fatalf("Fetch API error = %v, want status=1001", err)
+	}
+}
+
+func TestMinimaxFetcher_Fetch_RequestError(t *testing.T) {
+	t.Parallel()
+	f := &MinimaxFetcher{BaseURL: "http://[::1", APIKey: "k", Client: &http.Client{}}
+	_, err := f.Fetch(context.Background())
+	if err == nil {
+		t.Fatalf("Fetch malformed URL: got nil error, want request error")
+	}
+}
+
+func TestZhipuFetcher_Fetch_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{bad json`))
+	}))
+	defer srv.Close()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "parse JSON") {
+		t.Fatalf("Fetch invalid JSON = %v, want parse JSON", err)
+	}
+}
+
+func TestZhipuFetcher_Fetch_RequestError(t *testing.T) {
+	t.Parallel()
+	f := &ZhipuFetcher{BaseURL: "http://[::1", APIKey: "k", Client: &http.Client{}}
+	_, err := f.Fetch(context.Background())
+	if err == nil {
+		t.Fatalf("Fetch malformed URL: got nil error, want request error")
+	}
+}
+
+func TestZhipuFetcher_Fetch_ReadBodyError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	f := &ZhipuFetcher{BaseURL: srv.URL, APIKey: "k", Client: srv.Client()}
+	_, err := f.Fetch(context.Background())
+	if err != nil && !strings.Contains(err.Error(), "read") && !strings.Contains(err.Error(), "parse") {
+		t.Errorf("Fetch read-body error = %v, want 'read' or 'parse'", err)
+	}
+}
+
 func mustJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, err := json.Marshal(v)

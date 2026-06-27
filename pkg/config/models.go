@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"slices"
 )
 
@@ -27,7 +28,7 @@ func (m *Models) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
-		return &json.UnmarshalTypeError{Value: "non-object", Type: nil}
+		return fmt.Errorf("models: expected JSON object, got %v", tok)
 	}
 
 	m.keys = m.keys[:0]
@@ -41,7 +42,7 @@ func (m *Models) UnmarshalJSON(b []byte) error {
 		}
 		name, ok := nameTok.(string)
 		if !ok {
-			return &json.UnmarshalTypeError{Value: "non-string key"}
+			return fmt.Errorf("models: expected string key, got %T", nameTok)
 		}
 
 		// Object value — use RawMessage so we can detect duplicates

@@ -38,7 +38,7 @@ func TestNew_CallForwardsFilePathAndCaption(t *testing.T) {
 	}
 
 	input, _ := json.Marshal(Input{FilePath: filePath, Caption: "hello"})
-	_, err := tt.Call(context.Background(), input, &tool.ToolUseContext{})
+	result, err := tt.Call(context.Background(), input, &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -50,6 +50,19 @@ func TestNew_CallForwardsFilePathAndCaption(t *testing.T) {
 	}
 	if fs.lastCaption != "hello" {
 		t.Errorf("SendFile caption = %q, want %q", fs.lastCaption, "hello")
+	}
+	if result == nil {
+		t.Fatal("Call returned nil result")
+	}
+	m, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("result.Data type = %T, want map[string]any", result.Data)
+	}
+	if m["file_path"] != filePath {
+		t.Errorf("result file_path = %q, want %q", m["file_path"], filePath)
+	}
+	if m["status"] != "sent" {
+		t.Errorf("result status = %q, want 'sent'", m["status"])
 	}
 }
 
@@ -210,5 +223,47 @@ func TestNew_NameAndAliases(t *testing.T) {
 	aliases := tt.Aliases()
 	if len(aliases) != 1 || aliases[0] != "send" {
 		t.Errorf("Aliases = %v, want [send]", aliases)
+	}
+}
+
+func TestNew_RenderResult(t *testing.T) {
+	t.Parallel()
+	tt := New(&fakeSender{})
+
+	got := tt.RenderResult(map[string]any{"file_path": "/tmp/x.png", "status": "sent"})
+	if got != "Sent /tmp/x.png" {
+		t.Errorf("RenderResult with path = %q, want 'Sent /tmp/x.png'", got)
+	}
+
+	got = tt.RenderResult(map[string]any{"status": "sent"})
+	if got != "Sent" {
+		t.Errorf("RenderResult without path = %q, want 'Sent'", got)
+	}
+
+	got = tt.RenderResult("not a map")
+	if !strings.Contains(got, "not a map") {
+		t.Errorf("RenderResult fallback = %q, want JSON fallback", got)
+	}
+}
+
+func TestNew_Metadata(t *testing.T) {
+	t.Parallel()
+	tt := New(&fakeSender{})
+
+	if tt.IsReadOnly(json.RawMessage(`{}`)) {
+		t.Error("IsReadOnly = true, want false")
+	}
+	if tt.IsDestructive(json.RawMessage(`{}`)) {
+		t.Error("IsDestructive = true, want false")
+	}
+	if tt.IsConcurrencySafe(json.RawMessage(`{}`)) {
+		t.Error("IsConcurrencySafe = true, want false")
+	}
+	schema := tt.InputSchema()
+	if len(schema) == 0 {
+		t.Error("InputSchema returned empty")
+	}
+	if !strings.Contains(string(schema), "file_path") {
+		t.Errorf("InputSchema = %s, want it to contain 'file_path'", string(schema))
 	}
 }

@@ -3,6 +3,8 @@ package wechat
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -752,6 +755,29 @@ func TestSplitForWeChat_LargeCodeBlock_NoLanguageTag(t *testing.T) {
 	}
 }
 
+func TestSplitForWeChat_LongLangTag_BudgetFallback(t *testing.T) {
+	t.Parallel()
+	longLang := strings.Repeat("a", wechatMaxMessageLen)
+	codeBody := strings.Repeat("x", 5000)
+	code := "```" + longLang + "\n" + codeBody + "\n```"
+	chunks := splitForWeChat(code)
+	if len(chunks) < 2 {
+		t.Fatalf("long lang tag: got %d chunks, want >= 2", len(chunks))
+	}
+	for i, c := range chunks {
+		if len([]rune(c)) > wechatMaxMessageLen {
+			t.Errorf("chunk %d exceeds limit: %d runes (max %d)", i, len([]rune(c)), wechatMaxMessageLen)
+		}
+	}
+}
+
+func TestSplitForWeChat_Empty(t *testing.T) {
+	t.Parallel()
+	if got := splitForWeChat(""); got != nil {
+		t.Errorf("splitForWeChat(\"\") = %v, want nil", got)
+	}
+}
+
 func firstChars(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
@@ -808,5 +834,514 @@ func TestMessageDecode_StringMessageID(t *testing.T) {
 	}
 	if string(msg.MessageID) != "abc-def-123" {
 		t.Errorf("MessageID = %q, want %q", msg.MessageID, "abc-def-123")
+	}
+}
+
+func TestExtractDocName(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		name  string
+		ok    bool
+	}{
+		{"[Document: report.pdf saved at /tmp/x]", "report.pdf", true},
+		{"[Document: a.docx saved at /tmp/a.docx]", "a.docx", true},
+		{"[Document: nope]", "", false},
+		{"[Documents: a, b]", "", false},
+		{"hello", "", false},
+		{"", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := extractDocName(tc.input)
+		if got != tc.name || ok != tc.ok {
+			t.Errorf("extractDocName(%q) = (%q,%v), want (%q,%v)", tc.input, got, ok, tc.name, tc.ok)
+		}
+	}
+}
+
+func TestFlexString_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+		err   bool
+	}{
+		{`"abc123"`, "abc123", false},
+		{`12345`, "12345", false},
+		{`true`, "", true},
+		{`[1,2]`, "", true},
+	}
+	for _, tc := range tests {
+		var f FlexString
+		err := f.UnmarshalJSON([]byte(tc.input))
+		if tc.err {
+			if err == nil {
+				t.Errorf("UnmarshalJSON(%s): expected error, got nil", tc.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("UnmarshalJSON(%s): unexpected error %v", tc.input, err)
+			continue
+		}
+		if string(f) != tc.want {
+			t.Errorf("UnmarshalJSON(%s) = %q, want %q", tc.input, f, tc.want)
+		}
+	}
+}
+
+func TestSaveState_ConcurrentWithStateWrite_NoRace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := New(nil, hub.NewHub())
+	c.projectDir = dir
+	c.state = &State{
+		AccountID: "race@im.bot",
+		Token:     "tok",
+		BaseURL:   "https://api.wechat.com",
+		SyncBuf:   "initial",
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			c.stateMu.Lock()
+			c.state.SyncBuf = "buf-" + json.Number(rune(i)).String()
+			c.stateMu.Unlock()
+		}
+	}()
+
+	for range 200 {
+		c.SaveState()
+	}
+	<-done
+}
+
+func TestEnqueue_ChannelFull_DropsMessage(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.inboundCh = make(chan inboundMessage, 1)
+	c.inboundCh <- inboundMessage{userID: "first"}
+
+	c.enqueue("dropped", "text", nil)
+
+	select {
+	case im := <-c.inboundCh:
+		if im.userID != "first" {
+			t.Errorf("userID = %q, want 'first' (second should be dropped)", im.userID)
+		}
+	default:
+		t.Error("channel should still have the first message")
+	}
+}
+
+func TestNew_InitializesFields(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	c := New(nil, h)
+	if c.hub != h {
+		t.Error("hub not set")
+	}
+	if cap(c.inboundCh) != 100 {
+		t.Errorf("inboundCh cap = %d, want 100", cap(c.inboundCh))
+	}
+}
+
+func TestRestoreContextTokens_FromState(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.state = &State{
+		ContextTokens: map[string]string{
+			"u1": "tok1",
+			"u2": "tok2",
+		},
+	}
+	c.restoreContextTokens()
+	if got := c.getContextToken("u1"); got != "tok1" {
+		t.Errorf("u1 token = %q, want tok1", got)
+	}
+	if got := c.getContextToken("u2"); got != "tok2" {
+		t.Errorf("u2 token = %q, want tok2", got)
+	}
+}
+
+func TestRestoreContextTokens_NilState(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.restoreContextTokens()
+}
+
+func TestSend_Delegates(t *testing.T) {
+	t.Parallel()
+	var got string
+	c := New(nil, hub.NewHub())
+	c.state = &State{AccountID: "bot@im"}
+	c.sendToUserFn = func(ctx context.Context, userID, text string) error {
+		got = text
+		return nil
+	}
+	if err := c.Send("user@im", "hello"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("Send text = %q, want hello", got)
+	}
+}
+
+func TestStateFilePath_NoPathTraversal(t *testing.T) {
+	t.Parallel()
+	p := StateFilePath("/tmp/proj", "../../etc/passwd")
+	if strings.Contains(p, "/etc/passwd") {
+		t.Errorf("path traversal not blocked: %s", p)
+	}
+	if !strings.HasSuffix(p, ".json") {
+		t.Errorf("path should end with .json: %s", p)
+	}
+}
+
+func TestLoadAllStates_MultipleFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, acc := range []string{"a@im", "b@im"} {
+		if err := SaveState(&State{AccountID: acc}, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	states, err := LoadAllStates(dir)
+	if err != nil {
+		t.Fatalf("LoadAllStates: %v", err)
+	}
+	if len(states) != 2 {
+		t.Errorf("states count = %d, want 2", len(states))
+	}
+}
+
+func TestLoadAllStates_EmptyDir(t *testing.T) {
+	t.Parallel()
+	states, err := LoadAllStates(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadAllStates: %v", err)
+	}
+	if states != nil {
+		t.Errorf("states = %v, want nil", states)
+	}
+}
+
+func TestLoadAllStates_CorruptFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	wechatDir := filepath.Join(dir, "wechat")
+	if err := os.MkdirAll(wechatDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wechatDir, "bad.json"), []byte(`{not json`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(&State{AccountID: "good@im"}, dir); err != nil {
+		t.Fatal(err)
+	}
+	states, err := LoadAllStates(dir)
+	if err != nil {
+		t.Fatalf("LoadAllStates: %v", err)
+	}
+	if len(states) != 1 {
+		t.Errorf("states count = %d, want 1 (corrupt skipped)", len(states))
+	}
+	if states[0].AccountID != "good@im" {
+		t.Errorf("AccountID = %q, want good@im", states[0].AccountID)
+	}
+}
+
+func TestSendWeChatReply_EmptyText(t *testing.T) {
+	t.Parallel()
+	called := false
+	c := New(nil, hub.NewHub())
+	c.sendToUserFn = func(ctx context.Context, userID, text string) error {
+		called = true
+		return nil
+	}
+	c.sendWeChatReply(context.Background(), "user@im", "")
+	if called {
+		t.Error("sendToUserFn should not be called for empty text")
+	}
+}
+
+// TestStartStop_Lifecycle verifies Start launches poll/process goroutines
+// and Stop cleanly cancels them without hanging.
+func TestStartStop_Lifecycle(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ret":0,"get_updates_buf":"cursor","msgs":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(nil, hub.NewHub())
+	c.client = srv.Client()
+	dir := t.TempDir()
+	state := &State{
+		AccountID: "test@im.bot",
+		Token:     "tok",
+		BaseURL:   srv.URL,
+	}
+
+	ctx := t.Context()
+
+	if err := c.Start(ctx, state, dir); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if c.state == nil || c.state.AccountID != "test@im.bot" {
+		t.Error("state not set after Start")
+	}
+	if c.typingAPI == nil {
+		t.Error("typingAPI not initialized")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return within 5s")
+	}
+}
+
+// TestStartStop_PreservesContextTokens verifies that context tokens from the
+// state are restored into the sync.Map after Start.
+func TestStartStop_RestoresContextTokens(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ret":0,"get_updates_buf":"cursor","msgs":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New(nil, hub.NewHub())
+	c.client = srv.Client()
+	state := &State{
+		AccountID:     "test@im.bot",
+		Token:         "tok",
+		BaseURL:       srv.URL,
+		ContextTokens: map[string]string{"userA@im": "tokA"},
+	}
+
+	ctx := t.Context()
+
+	if err := c.Start(ctx, state, t.TempDir()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := c.getContextToken("userA@im"); got != "tokA" {
+		t.Errorf("restored token = %q, want tokA", got)
+	}
+	c.Stop()
+}
+
+func TestMediaCache_ReturnsStore(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	store, err := media.NewAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mediaCache = store
+	if c.MediaCache() != store {
+		t.Error("MediaCache did not return the set store")
+	}
+	c.mediaCache = nil
+	if c.MediaCache() != nil {
+		t.Error("MediaCache did not return nil after clear")
+	}
+}
+
+func TestPollLoop_MockSuccess_ProcessesMessages(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.typingCache = newTypingTicketCache(time.Minute)
+	c.state = &State{AccountID: "bot", Token: "t", BaseURL: "http://x"}
+
+	c.processBatch(context.Background(), []Message{
+		{FromUserID: "userA@im", MessageID: FlexString("m1"),
+			ItemList: []Item{{Type: ItemText, TextItem: &TextItem{Text: "hello"}}}},
+	})
+
+	select {
+	case im := <-c.inboundCh:
+		if im.userID != "userA@im" {
+			t.Errorf("userID = %q, want userA@im", im.userID)
+		}
+		if im.text != "hello" {
+			t.Errorf("text = %q, want hello", im.text)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("message not enqueued within 100ms")
+	}
+}
+
+func TestPollLoop_SessionExpired_Pauses(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.typingCache = newTypingTicketCache(time.Minute)
+	c.queryFn = func(ctx context.Context, userMessage, systemPrompt string) {}
+	c.queryWithContentFn = func(ctx context.Context, content []types.ContentBlock, systemPrompt string) {}
+
+	called := make(chan struct{}, 1)
+	c.getUpdatesFn = func(ctx context.Context, client *http.Client, baseURL, token, syncBuf string,
+		timeout time.Duration) (*GetUpdatesResponse, error) {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return &GetUpdatesResponse{Ret: SessionExpiredErrCode}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &State{AccountID: "bot", Token: "t", BaseURL: "http://x"}
+	if err := c.Start(ctx, state, t.TempDir()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(3 * time.Second):
+		t.Fatal("getUpdatesFn not called within 3s")
+	}
+	cancel()
+	c.pollWg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// setStateContextToken
+// ---------------------------------------------------------------------------
+
+func TestSetStateContextToken(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.setStateContextToken("user1", "tok1")
+	c.setStateContextToken("user2", "tok2")
+
+	if got := c.getContextToken("user1"); got != "tok1" {
+		t.Errorf("user1 token = %q, want tok1", got)
+	}
+	if got := c.getContextToken("user2"); got != "tok2" {
+		t.Errorf("user2 token = %q, want tok2", got)
+	}
+	// Overwrite
+	c.setStateContextToken("user1", "new-tok")
+	if got := c.getContextToken("user1"); got != "new-tok" {
+		t.Errorf("user1 token after overwrite = %q, want new-tok", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveState error paths
+// ---------------------------------------------------------------------------
+
+func TestSaveState_WriteError(t *testing.T) {
+	t.Parallel()
+	state := &State{AccountID: "test", Token: "tok"}
+	err := SaveState(state, "/nonexistent/impossible/path")
+	if err == nil {
+		t.Fatal("expected error writing to impossible path, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveState method — nil state path
+// ---------------------------------------------------------------------------
+
+func TestSaveStateMethod_NilState(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.state = nil
+	c.SaveState() // should not panic
+}
+
+// ---------------------------------------------------------------------------
+// downloadableMedia
+// ---------------------------------------------------------------------------
+
+func TestDownloadableMedia(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		ref  *MediaRef
+		want bool
+	}{
+		{"nil", nil, false},
+		{"empty", &MediaRef{}, false},
+		{"fullurl", &MediaRef{FullURL: "https://x"}, true},
+		{"encrypt", &MediaRef{EncryptQueryParam: "key=val"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := downloadableMedia(tt.ref); got != tt.want {
+				t.Errorf("downloadableMedia = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sendWeChatReply — empty text
+// ---------------------------------------------------------------------------
+
+func TestSendWeChatReply_EmptyText_NoError(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.sendToUserFn = func(_ context.Context, _, _ string) error {
+		t.Fatal("sendToUserFn should not be called for empty text")
+		return nil
+	}
+	c.sendWeChatReply(context.Background(), "user1", "")
+}
+
+// ---------------------------------------------------------------------------
+// pickMediaItem
+// ---------------------------------------------------------------------------
+
+func TestPickMediaItem(t *testing.T) {
+	t.Parallel()
+	dl := &MediaRef{FullURL: "https://example.com/media"}
+	tests := []struct {
+		name  string
+		items []Item
+		want  int
+	}{
+		{"image", []Item{{Type: ItemImage, ImageItem: &MediaItemHolder{Media: dl}}}, ItemImage},
+		{"video", []Item{{Type: ItemVideo, VideoItem: &MediaItemHolder{Media: dl}}}, ItemVideo},
+		{"file", []Item{{Type: ItemFile, FileItem: &FileItem{Media: dl}}}, ItemFile},
+		{"voice", []Item{{Type: ItemVoice, VoiceItem: &VoiceItem{Media: dl}}}, ItemVoice},
+		{"empty", nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pickMediaItem(tt.items)
+			if tt.want == 0 {
+				if got != nil {
+					t.Errorf("pickMediaItem = %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("pickMediaItem = nil, want item")
+			}
+			if got.Type != tt.want {
+				t.Errorf("got type %d, want %d", got.Type, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fallbackMsg
+// ---------------------------------------------------------------------------
+
+func TestFallbackMsg(t *testing.T) {
+	t.Parallel()
+	got := fallbackMsg("user1", 0)
+	if got == "" {
+		t.Error("fallbackMsg should not be empty")
 	}
 }

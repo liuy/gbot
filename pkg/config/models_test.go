@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,96 @@ func TestModels_ZeroValue(t *testing.T) {
 	}
 	if len(m.Ordered()) != 0 {
 		t.Errorf("zero Ordered() len = %d, want 0", len(m.Ordered()))
+	}
+}
+
+func TestModels_UnmarshalNonObject(t *testing.T) {
+	t.Parallel()
+	var m Models
+	err := m.UnmarshalJSON([]byte(`[1,2,3]`))
+	if err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("UnmarshalJSON non-object error = %v, want 'JSON object'", err)
+	}
+}
+
+func TestModels_UnmarshalInvalidValue(t *testing.T) {
+	t.Parallel()
+	var m Models
+	err := m.UnmarshalJSON([]byte(`{"m": 123}`))
+	if err == nil {
+		t.Fatalf("UnmarshalJSON invalid value: got nil error, want type error")
+	}
+}
+
+func TestModels_MarshalEmpty(t *testing.T) {
+	t.Parallel()
+	var m Models
+	b, err := m.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	if string(b) != "{}" {
+		t.Errorf("empty MarshalJSON = %q, want {}", string(b))
+	}
+}
+
+func TestModels_MarshalRoundTrip(t *testing.T) {
+	t.Parallel()
+	var m Models
+	if err := json.Unmarshal([]byte(`{"a":{"context":8000},"b":{"context":16000}}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m2 Models
+	if err := json.Unmarshal(b, &m2); err != nil {
+		t.Fatal(err)
+	}
+	if m2.Len() != 2 {
+		t.Fatalf("roundtrip Len = %d, want 2", m2.Len())
+	}
+	keys := m2.Ordered()
+	if keys[0] != "a" || keys[1] != "b" {
+		t.Errorf("roundtrip keys = %v, want [a b]", keys)
+	}
+}
+
+func TestFindClosestMatchRank(t *testing.T) {
+	t.Parallel()
+	candidates := []string{"gpt-4", "gpt-3.5", "claude-3"}
+	model, dist := FindClosestMatchRank("gpt4", candidates)
+	if model != "gpt-4" {
+		t.Errorf("model = %q, want gpt-4", model)
+	}
+	if dist < 0 {
+		t.Errorf("distance = %d, want >= 0", dist)
+	}
+
+	// Empty input or candidates.
+	if m, d := FindClosestMatchRank("", candidates); m != "" || d != -1 {
+		t.Errorf("empty input: model=%q dist=%d, want empty/-1", m, d)
+	}
+	if m, d := FindClosestMatchRank("gpt", nil); m != "" || d != -1 {
+		t.Errorf("empty candidates: model=%q dist=%d, want empty/-1", m, d)
+	}
+}
+
+func TestCreateAllProviders_NoFreeProviders(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Providers: []Provider{
+			{Name: "test", URL: "https://api.test.com", Keys: []string{"k"}, Models: Models{}},
+		},
+	}
+	cfg.Providers[0].Models.Set("model-1", ModelConfig{Context: IntOrHuman(8000)})
+
+	pm, err := CreateAllProviders(cfg)
+	if err != nil {
+		t.Fatalf("CreateAllProviders: %v", err)
+	}
+	if len(pm) != 1 {
+		t.Errorf("ProviderMap len = %d, want 1", len(pm))
 	}
 }

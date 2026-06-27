@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,8 +147,7 @@ func GetUpdates(ctx context.Context, client *http.Client, baseURL, token, syncBu
 
 	raw, err := apiPost(ctx, client, baseURL, EPGetUpdates, payload, token, timeout)
 	if err != nil {
-		// Check for context deadline exceeded (timeout) - not an error
-		if ctx.Err() == context.DeadlineExceeded {
+		if errors.Is(err, context.DeadlineExceeded) {
 			return &GetUpdatesResponse{
 				Ret:           0,
 				Msgs:          nil,

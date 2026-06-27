@@ -139,3 +139,12 @@ func TestAesEcbPaddedSize(t *testing.T) {
 		}
 	}
 }
+
+func TestPkcs7Pad_TooLarge(t *testing.T) {
+	t.Parallel()
+	huge := make([]byte, maxPlaintextSize+1)
+	_, err := pkcs7Pad(huge)
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
+		t.Fatalf("pkcs7Pad oversize error = %v, want 'exceeds maximum'", err)
+	}
+}

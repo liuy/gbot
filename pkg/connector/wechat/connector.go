@@ -63,6 +63,8 @@ type WeChatConnector struct {
 		filePath string, mediaType int) (*UploadedFileInfo, error)
 	queryFn            func(ctx context.Context, userMessage, systemPrompt string)
 	queryWithContentFn func(ctx context.Context, content []types.ContentBlock, systemPrompt string)
+	getUpdatesFn       func(ctx context.Context, client *http.Client, baseURL, token, syncBuf string,
+		timeout time.Duration) (*GetUpdatesResponse, error)
 
 	activeUserID      string // set in handleInbound, cleared in QueryEnd
 	thinkingSecs      float64
@@ -99,6 +101,7 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 	c.queryWithContentFn = func(ctx context.Context, content []types.ContentBlock, _ string) {
 		eng.QueryWithContent(ctx, content, eng.SystemPrompt())
 	}
+	c.getUpdatesFn = GetUpdates
 	// Init failure is non-fatal; log so the operator knows media is disabled.
 	if store, err := media.New(); err != nil {
 		slog.Warn("wechat: media cache init failed, media attachments disabled", "error", err)
@@ -315,11 +318,15 @@ func (c *WeChatConnector) sendWeChatReplyErr(ctx context.Context, userID, text s
 
 // SaveState persists the connector state to disk.
 func (c *WeChatConnector) SaveState() {
+	c.stateMu.Lock()
 	if c.state == nil {
+		c.stateMu.Unlock()
 		return
 	}
-	if err := SaveState(c.state, c.projectDir); err != nil {
-		slog.Warn("wechat: save state failed", "account_id", c.state.AccountID, "error", err)
+	snapshot := *c.state
+	c.stateMu.Unlock()
+	if err := SaveState(&snapshot, c.projectDir); err != nil {
+		slog.Warn("wechat: save state failed", "account_id", snapshot.AccountID, "error", err)
 	}
 }
 
@@ -524,9 +531,8 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 	result, err := fileread.Execute(ctx, input, &tool.ToolUseContext{UncappedOutput: true})
 	if err != nil || result == nil {
 		slog.Warn("wechat: document parse failed, sending path as fallback", "file", name, "error", err)
-		return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
 	}
-	// ToolResult.Data is `any` — extract text content from TextOutput.
 	content := ""
 	if out, ok := result.Data.(fileread.TextOutput); ok {
 		content = out.Content
@@ -535,7 +541,7 @@ func (c *WeChatConnector) downloadFile(ctx context.Context, f *FileItem) types.C
 	}
 	if content == "" {
 		slog.Warn("wechat: document parse returned empty content, sending path as fallback", "file", name)
-		return types.NewTextBlock(fmt.Sprintf("[Document attachment: %s saved at %s]", name, path))
+		return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]", name, path))
 	}
 	slog.Info("wechat: document parsed inline", "file", name, "contentLen", len(content))
 	return types.NewTextBlock(fmt.Sprintf("[Document: %s saved at %s]\n%s", name, path, content))

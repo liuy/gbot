@@ -42,6 +42,9 @@ func reloadServer(ctx context.Context, reg *lsp.Registry, spec lsp.ServerSpec) s
 
 	// 1. rust-analyzer's explicit reload request.
 	if _, err := c.Request(ctx, "rust-analyzer/reloadWorkspace", nil); err == nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Sprintf("Failed to reload %s: %v", spec.Name, ctxErr)
+		}
 		return fmt.Sprintf("Reloaded %s", spec.Name)
 	} else if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Sprintf("Failed to reload %s: %v", spec.Name, ctxErr)
@@ -52,6 +55,9 @@ func reloadServer(ctx context.Context, reg *lsp.Registry, spec lsp.ServerSpec) s
 	if err := c.Notify(ctx, "workspace/didChangeConfiguration", map[string]any{
 		"settings": struct{}{},
 	}); err == nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Sprintf("Failed to reload %s: %v", spec.Name, ctxErr)
+		}
 		return fmt.Sprintf("Reloaded %s", spec.Name)
 	} else if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Sprintf("Failed to reload %s: %v", spec.Name, ctxErr)

@@ -24,7 +24,7 @@ func (c *WeChatConnector) pollLoop(ctx context.Context) {
 		default:
 		}
 
-		resp, err := GetUpdates(ctx, c.client, c.state.BaseURL,
+		resp, err := c.getUpdatesFn(ctx, c.client, c.state.BaseURL,
 			c.state.Token, syncBuf, time.Duration(timeout)*time.Millisecond)
 		if err != nil {
 			consecutiveFailures++
@@ -145,6 +145,9 @@ func (c *WeChatConnector) processBatch(ctx context.Context, msgs []Message) {
 		hasVoiceOnly := hasVoiceItem(msg.ItemList) && !hasNonVoiceMedia(msg.ItemList)
 		if c.mediaCache != nil && hasMedia(msg.ItemList) && !hasVoiceOnly {
 			if block := c.downloadMedia(ctx, msg.ItemList); block.Type != "" {
+				if mergedUserID != "" && mergedUserID != msg.FromUserID {
+					flush()
+				}
 				if mergedUserID == "" {
 					mergedUserID = msg.FromUserID
 				}

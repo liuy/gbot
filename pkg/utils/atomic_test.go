@@ -62,3 +62,26 @@ func TestAtomicWriteFile_ParentDirNotExist(t *testing.T) {
 		t.Errorf("error = %q, want 'write temp file'", err.Error())
 	}
 }
+
+func TestAtomicWriteFile_TempFileCleanedUpOnRenameFail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Make the target path a directory — rename to an existing directory
+	// fails with "file exists" on Linux when the target is a non-empty dir.
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := AtomicWriteFile(target, []byte("data"), 0o644)
+	if err == nil {
+		t.Fatal("expected rename error (target is a directory)")
+	}
+	// Temp file should have been cleaned up.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".tmp") {
+			t.Errorf("temp file %s not cleaned up after rename failure", name)
+		}
+	}
+}

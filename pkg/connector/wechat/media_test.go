@@ -849,3 +849,226 @@ func TestProcessBatch_VoiceWithTranscription_EnqueuedAsText(t *testing.T) {
 		t.Fatal("voice with transcription was not enqueued within 2s")
 	}
 }
+
+// TestProcessBatch_MultiUserMedia_NotMergedAcrossUsers verifies that media
+// from different users in one batch is NOT merged into a single message
+// addressed to only the first user — that would route A's reply to B.
+func TestProcessBatch_MultiUserMedia_NotMergedAcrossUsers(t *testing.T) {
+	t.Parallel()
+	key := []byte("0123456789abcdef")
+	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	ciphertext := encryptAesEcbForMediaTest(pngHeader, key)
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(ciphertext)
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+
+	msgs := []Message{
+		{
+			FromUserID: "userA@im",
+			MessageID:  FlexString("msg-a"),
+			ItemList: []Item{
+				{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64}}},
+			},
+		},
+		{
+			FromUserID: "userB@im",
+			MessageID:  FlexString("msg-b"),
+			ItemList: []Item{
+				{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64}}},
+			},
+		},
+	}
+	c.processBatch(context.Background(), msgs)
+
+	var received []inboundMessage
+	for range 2 {
+		select {
+		case im := <-c.inboundCh:
+			received = append(received, im)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only received %d messages, want 2", len(received))
+		}
+	}
+
+	if len(received) != 2 {
+		t.Fatalf("got %d messages, want 2 (one per user)", len(received))
+	}
+	for _, im := range received {
+		if im.userID != "userA@im" && im.userID != "userB@im" {
+			t.Errorf("userID = %q, want userA@im or userB@im", im.userID)
+		}
+	}
+	seenA, seenB := false, false
+	for _, im := range received {
+		if im.userID == "userA@im" {
+			seenA = true
+		}
+		if im.userID == "userB@im" {
+			seenB = true
+		}
+	}
+	if !seenA || !seenB {
+		t.Errorf("expected messages for both users, got A=%v B=%v", seenA, seenB)
+	}
+}
+
+func TestDownloadMedia_VideoSkipped(t *testing.T) {
+	t.Parallel()
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemVideo, VideoItem: &MediaItemHolder{Media: &MediaRef{FullURL: "http://x"}}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != "" {
+		t.Errorf("video download should return empty block, got type=%s", block.Type)
+	}
+}
+
+func TestDownloadMedia_VoiceWithoutTranscriptionSkipped(t *testing.T) {
+	t.Parallel()
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemVoice, VoiceItem: &VoiceItem{Media: &MediaRef{FullURL: "http://x"}}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != "" {
+		t.Errorf("voice download should return empty block, got type=%s", block.Type)
+	}
+}
+
+func TestDownloadMedia_NilMediaCache(t *testing.T) {
+	t.Parallel()
+	c := New(nil, hub.NewHub())
+	c.mediaCache = nil
+	items := []Item{
+		{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: "http://x"}}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != "" {
+		t.Errorf("nil cache should return empty block, got type=%s", block.Type)
+	}
+}
+
+func TestDownloadMedia_ImageDownloadFail(t *testing.T) {
+	t.Parallel()
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: "http://127.0.0.1:0/nonexistent"}}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != "" {
+		t.Errorf("failed download should return empty block, got type=%s", block.Type)
+	}
+}
+
+func TestDownloadMedia_NonImageFormat(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("this is not an image"))
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemImage, ImageItem: &MediaItemHolder{Media: &MediaRef{FullURL: srv.URL}}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != "" {
+		t.Errorf("non-image data should return empty block, got type=%s", block.Type)
+	}
+}
+
+func TestDownloadMedia_FileParseFail_ReturnsPathHeader(t *testing.T) {
+	t.Parallel()
+	key := []byte("0123456789abcdef")
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(encryptAesEcbForMediaTest([]byte("binary\x00data"), key))
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemFile, FileItem: &FileItem{
+			FileName: "unknown.bin",
+			Media:    &MediaRef{FullURL: srv.URL, AesKey: aesKeyB64},
+		}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != types.ContentTypeText {
+		t.Errorf("file parse fail should return text block, got type=%s", block.Type)
+	}
+	if !strings.Contains(block.Text, "[Document:") {
+		t.Errorf("block.Text = %q, want '[Document:' header", block.Text)
+	}
+}
+
+func TestDownloadMedia_FileEmptyContent_ReturnsPathHeader(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(""))
+	}))
+	defer srv.Close()
+
+	key := []byte("0123456789abcdef")
+	aesKeyB64 := base64.StdEncoding.EncodeToString(key)
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(encryptAesEcbForMediaTest([]byte(""), key))
+	}))
+	defer srv2.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	items := []Item{
+		{Type: ItemFile, FileItem: &FileItem{
+			FileName: "empty.txt",
+			Media:    &MediaRef{FullURL: srv2.URL, AesKey: aesKeyB64},
+		}},
+	}
+	block := c.downloadMedia(context.Background(), items)
+	if block.Type != types.ContentTypeText {
+		t.Errorf("empty file should return text block, got type=%s", block.Type)
+	}
+	if !strings.Contains(block.Text, "[Document:") {
+		t.Errorf("block.Text = %q, want '[Document:' header", block.Text)
+	}
+}
+
+func TestFetchMediaBytes_NoAesKey_DownloadsPlain(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("plain data"))
+	}))
+	defer srv.Close()
+
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	data, err := c.fetchMediaBytes(context.Background(), &MediaRef{FullURL: srv.URL})
+	if err != nil {
+		t.Fatalf("fetchMediaBytes: %v", err)
+	}
+	if string(data) != "plain data" {
+		t.Errorf("data = %q, want 'plain data'", string(data))
+	}
+}
+
+func TestFetchMediaBytes_PlainDownloadFail(t *testing.T) {
+	t.Parallel()
+	c, _ := newMediaTestConnector(t)
+	c.state = &State{AccountID: "bot"}
+	_, err := c.fetchMediaBytes(context.Background(), &MediaRef{FullURL: "http://127.0.0.1:0/none"})
+	if err == nil || !strings.Contains(err.Error(), "connect") {
+		t.Fatalf("fetchMediaBytes error = %v, want 'connect'", err)
+	}
+}
