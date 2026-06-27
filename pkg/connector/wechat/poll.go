@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/liuy/gbot/pkg/types"
 )
 
@@ -181,8 +183,28 @@ func mediaPrompt(count int) string {
 	return fmt.Sprintf("The user sent %d attachment(s). Tell the user what you received with a one-sentence summary for each, then ask what they want to do, in the user's language.", count)
 }
 
-// enqueue sends an inbound message to the serial processing loop.
+// enqueue routes an inbound message. When the engine is mid-query, the
+// message attaches to the running query via EnqueueAttachment (the engine
+// auto-drains and runs the next turn when it next goes idle). When idle, it
+// enters the serial inboundCh for the normal Query path. Content blocks
+// (images/documents) are carried verbatim through the attachment queue.
 func (c *WeChatConnector) enqueue(userID, text string, content []types.ContentBlock) {
+	if c.isBusyFn != nil && c.isBusyFn() {
+		value := text
+		if len(content) > 0 {
+			value = attachmentValue(text, content)
+		}
+		c.engine.EnqueueAttachment(types.QueuedItem{
+			Value:     value,
+			Content:   content,
+			Mode:      types.ItemModePrompt,
+			Priority:  types.PriorityNext,
+			Origin:    &types.MessageOrigin{Kind: types.OriginHuman},
+			UUID:      uuid.NewString(),
+			Timestamp: time.Now(),
+		})
+		return
+	}
 	msg := inboundMessage{
 		userID:  userID,
 		text:    text,
@@ -193,4 +215,31 @@ func (c *WeChatConnector) enqueue(userID, text string, content []types.ContentBl
 	default:
 		slog.Warn("wechat: inbound channel full, dropping message", "user", safeID(userID))
 	}
+}
+
+// attachmentValue serializes a message into the string Value carried by a
+// QueuedItem. Text-only messages pass through. Document text blocks are
+// concatenated. Image blocks degrade to "[image]" because the Value string is
+// what the LLM sees in the Attachment.Prompt metadata; the actual image block
+// is delivered via Content so the degradation only affects the metadata label.
+func attachmentValue(text string, content []types.ContentBlock) string {
+	if len(content) == 0 {
+		return text
+	}
+	var parts []string
+	for _, cb := range content {
+		switch cb.Type {
+		case types.ContentTypeText:
+			if cb.Text != "" {
+				parts = append(parts, cb.Text)
+			}
+		case types.ContentTypeImage:
+			parts = append(parts, "[image]")
+		}
+	}
+	joined := strings.Join(parts, "\n\n")
+	if joined == "" {
+		return text
+	}
+	return joined
 }

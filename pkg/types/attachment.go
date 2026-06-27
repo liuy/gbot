@@ -46,6 +46,7 @@ type QueuedItem struct {
 	IsMeta    bool           // true = system-generated, hidden from rewind/brief
 	Origin    *MessageOrigin // source context
 	Timestamp time.Time
+	Content   []ContentBlock // non-empty = use these blocks instead of Value
 }
 
 // ---------------------------------------------------------------------------

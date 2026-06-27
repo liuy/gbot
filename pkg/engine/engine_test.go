@@ -4968,3 +4968,194 @@ func TestDumpAPIRequest_SystemPromptDynamicLoad(t *testing.T) {
 		t.Error("DumpAPIRequest {{SYSTEM}} stub should be replaced")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IsBusy + AttachmentsLen
+// ---------------------------------------------------------------------------
+
+// blockingMockProvider holds Stream open until release is closed, keeping
+// queryActive == 1 mid-flight for IsBusy testing.
+type blockingMockProvider struct {
+	mu      sync.Mutex
+	release chan struct{}
+	called  bool
+}
+
+func (b *blockingMockProvider) Name() string { return "blocking-mock" }
+
+func (b *blockingMockProvider) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return &llm.Response{Content: []types.ContentBlock{types.NewTextBlock("ok")}}, nil
+}
+
+func (b *blockingMockProvider) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	b.mu.Lock()
+	b.called = true
+	b.mu.Unlock()
+	ch := make(chan llm.StreamEvent, 6)
+	go func() {
+		defer close(ch)
+		<-b.release
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "m", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "reply"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 3}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+	}()
+	return ch, nil
+}
+
+func (b *blockingMockProvider) wasCalled() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.called
+}
+
+func TestEngine_IsBusy(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	bmp := &blockingMockProvider{release: release}
+	eng := New(&Params{Provider: bmp, Model: "test-model", Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+
+	// Fresh engine is not busy.
+	if eng.IsBusy() {
+		t.Fatal("fresh engine should not be busy")
+	}
+
+	// Start a query in the background — Stream blocks on release.
+	go eng.Query(context.Background(), "hi", "")
+
+	// Wait for Stream to be called (queryActive is now 1).
+	deadline := time.After(3 * time.Second)
+	for !bmp.wasCalled() {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Stream to be called")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+	// Small extra sleep to ensure queryActive is set (atomic store happens in Query after Stream returns).
+	time.Sleep(50 * time.Millisecond) // REAL-TIME: wait for atomic store to propagate
+
+	if !eng.IsBusy() {
+		t.Fatal("engine should be busy while Stream is blocked")
+	}
+
+	// Release the stream — query ends, queryActive goes back to 0.
+	close(release)
+	deadline2 := time.After(5 * time.Second)
+	for eng.IsBusy() {
+		select {
+		case <-deadline2:
+			t.Fatal("timed out waiting for engine to become idle")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+	if eng.IsBusy() {
+		t.Fatal("engine should not be busy after query ends")
+	}
+}
+
+func TestEngine_AttachmentsLen(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model", Logger: slog.Default()})
+	t.Cleanup(func() { eng.Close() })
+
+	if got := eng.AttachmentsLen(); got != 0 {
+		t.Fatalf("AttachmentsLen() = %d, want 0", got)
+	}
+
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "item-1",
+		Mode:      types.ItemModePrompt,
+		Priority:  types.PriorityNext,
+		Timestamp: time.Now(), // REAL-TIME: test setup timestamp
+	})
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Fatalf("AttachmentsLen() = %d, want 1", got)
+	}
+
+	eng.EnqueueAttachment(types.QueuedItem{
+		Value:     "item-2",
+		Mode:      types.ItemModeJob,
+		Priority:  types.PriorityNext,
+		Timestamp: time.Now(), // REAL-TIME: test setup timestamp
+	})
+	if got := eng.AttachmentsLen(); got != 2 {
+		t.Fatalf("AttachmentsLen() = %d, want 2", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// createAttachmentMessages — Content pass-through
+// ---------------------------------------------------------------------------
+
+func TestCreateAttachmentMessages_WithContent(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+
+	imgBlock := types.NewFileImageBlock("image/png", "/tmp/x.png")
+	item := types.QueuedItem{
+		Value:     "metadata-text",
+		Mode:      types.ItemModePrompt,
+		Priority:  types.PriorityNext,
+		UUID:      "test-uuid",
+		Timestamp: time.Now(), // REAL-TIME: test setup timestamp
+		Content:   []types.ContentBlock{imgBlock},
+	}
+
+	msgs := eng.createAttachmentMessages([]types.QueuedItem{item})
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	msg := msgs[0]
+
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(msg.Content) = %d, want 1", len(msg.Content))
+	}
+	if msg.Content[0].Type != types.ContentTypeImage {
+		t.Fatalf("Content[0].Type = %q, want %q", msg.Content[0].Type, types.ContentTypeImage)
+	}
+	if msg.Content[0].Source == nil {
+		t.Fatal("Content[0].Source should not be nil for image block")
+	}
+	// Attachment.Prompt still uses Value, not Content.
+	if msg.Attachment == nil {
+		t.Fatal("msg.Attachment should not be nil")
+	}
+	if msg.Attachment.Prompt != "metadata-text" {
+		t.Fatalf("Attachment.Prompt = %q, want %q", msg.Attachment.Prompt, "metadata-text")
+	}
+}
+
+func TestCreateAttachmentMessages_TextFallback(t *testing.T) {
+	t.Parallel()
+	eng := New(&Params{Provider: &mockProvider{}, Model: "test-model"})
+
+	item := types.QueuedItem{
+		Value:     "hello",
+		Mode:      types.ItemModePrompt,
+		Priority:  types.PriorityNext,
+		UUID:      "test-uuid-2",
+		Timestamp: time.Now(), // REAL-TIME: test setup timestamp
+		Content:   nil,
+	}
+
+	msgs := eng.createAttachmentMessages([]types.QueuedItem{item})
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	msg := msgs[0]
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(msg.Content) = %d, want 1", len(msg.Content))
+	}
+	if msg.Content[0].Type != types.ContentTypeText {
+		t.Fatalf("Content[0].Type = %q, want %q", msg.Content[0].Type, types.ContentTypeText)
+	}
+	if msg.Content[0].Text != "hello" {
+		t.Fatalf("Content[0].Text = %q, want %q", msg.Content[0].Text, "hello")
+	}
+}

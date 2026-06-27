@@ -65,8 +65,9 @@ type WeChatConnector struct {
 	queryWithContentFn func(ctx context.Context, content []types.ContentBlock, systemPrompt string)
 	getUpdatesFn       func(ctx context.Context, client *http.Client, baseURL, token, syncBuf string,
 		timeout time.Duration) (*GetUpdatesResponse, error)
+	isBusyFn func() bool
 
-	activeUserID      string // set in handleInbound, cleared in QueryEnd
+	activeUserID      string // set in handleInbound; persists across turn boundaries for attachment-driven turns
 	thinkingSecs      float64
 	searchCount       int
 	fileCount         int
@@ -102,6 +103,12 @@ func New(eng *engine.Engine, h *hub.Hub) *WeChatConnector {
 		eng.QueryWithContent(ctx, content, eng.SystemPrompt())
 	}
 	c.getUpdatesFn = GetUpdates
+	c.isBusyFn = func() bool {
+		if c.engine == nil {
+			return false
+		}
+		return c.engine.IsBusy()
+	}
 	// Init failure is non-fatal; log so the operator knows media is disabled.
 	if store, err := media.New(); err != nil {
 		slog.Warn("wechat: media cache init failed, media attachments disabled", "error", err)
@@ -224,7 +231,6 @@ func (c *WeChatConnector) Handle(event hub.Event) {
 		if userID != "" {
 			c.stopTyping(context.Background(), userID)
 		}
-		c.activeUserID = ""
 		c.toolNames = nil
 		slog.Info("wechat: query done", "user", safeID(userID), "error", event.Error)
 		if c.queryDone != nil {

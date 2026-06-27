@@ -9,12 +9,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/liuy/gbot/pkg/engine"
 	"github.com/liuy/gbot/pkg/hub"
+	"github.com/liuy/gbot/pkg/llm"
 	"github.com/liuy/gbot/pkg/media"
 	"github.com/liuy/gbot/pkg/types"
 )
@@ -1868,8 +1871,8 @@ func TestHandle_QueryEnd_SendError(t *testing.T) {
 	default:
 		// After Handle, queryDone is reset to nil. If it's nil, that's correct.
 	}
-	if c.activeUserID != "" {
-		t.Errorf("activeUserID = %q, want empty after QueryEnd", c.activeUserID)
+	if c.activeUserID != "user1" {
+		t.Errorf("activeUserID = %q, want %q (retained across turn boundary)", c.activeUserID, "user1")
 	}
 }
 
@@ -2430,4 +2433,253 @@ func TestSplitForWeChat_HardSplit_InCodeBlock(t *testing.T) {
 			t.Errorf("chunk %d: %d runes, exceeds limit", i, len([]rune(c)))
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// enqueue — busy branch routing
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_EngineBusy_RoutesToAttachment(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider: &blockingEngineMock{},
+		Model:    "test-model",
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	c := New(nil, h)
+	c.engine = eng
+	c.isBusyFn = func() bool { return true }
+
+	c.enqueue("userA", "follow-up", nil)
+
+	// Should NOT go to inboundCh.
+	select {
+	case <-c.inboundCh:
+		t.Fatal("inboundCh should be empty when engine is busy")
+	default:
+	}
+
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Fatalf("AttachmentsLen() = %d, want 1", got)
+	}
+}
+
+func TestEnqueue_EngineIdle_RoutesToInboundCh(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	c := New(nil, h)
+	// isBusyFn default returns false (engine == nil).
+
+	c.enqueue("userB", "hello", nil)
+
+	select {
+	case msg := <-c.inboundCh:
+		if msg.userID != "userB" {
+			t.Errorf("userID = %q, want %q", msg.userID, "userB")
+		}
+		if msg.text != "hello" {
+			t.Errorf("text = %q, want %q", msg.text, "hello")
+		}
+	default:
+		t.Fatal("inboundCh should have one message")
+	}
+}
+
+func TestEnqueue_ImageContent_PassesToAttachment(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	eng := engine.New(&engine.Params{
+		Provider: &blockingEngineMock{},
+		Model:    "test-model",
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	c := New(nil, h)
+	c.engine = eng
+	c.isBusyFn = func() bool { return true }
+
+	content := []types.ContentBlock{
+		types.NewFileImageBlock("image/png", "/tmp/x.png"),
+		types.NewTextBlock("caption"),
+	}
+	c.enqueue("userA", "caption", content)
+
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Fatalf("AttachmentsLen() = %d, want 1", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// attachmentValue
+// ---------------------------------------------------------------------------
+
+func TestAttachmentValue_TextOnly(t *testing.T) {
+	t.Parallel()
+	got := attachmentValue("hi", nil)
+	if got != "hi" {
+		t.Fatalf("attachmentValue = %q, want %q", got, "hi")
+	}
+}
+
+func TestAttachmentValue_DocContent(t *testing.T) {
+	t.Parallel()
+	docText := "[Document: x.pdf saved at /p]\nBODY"
+	content := []types.ContentBlock{types.NewTextBlock(docText)}
+	got := attachmentValue("ignored", content)
+	if got != docText {
+		t.Fatalf("attachmentValue = %q, want %q", got, docText)
+	}
+}
+
+func TestAttachmentValue_MultiBlock(t *testing.T) {
+	t.Parallel()
+	content := []types.ContentBlock{
+		types.NewFileImageBlock("image/png", "/tmp/x.png"),
+		types.NewTextBlock("caption"),
+	}
+	got := attachmentValue("ignored", content)
+	want := "[image]\n\ncaption"
+	if got != want {
+		t.Fatalf("attachmentValue = %q, want %q", got, want)
+	}
+}
+
+func TestAttachmentValue_EmptyContentFallsBackToText(t *testing.T) {
+	t.Parallel()
+	got := attachmentValue("fallback", []types.ContentBlock{})
+	if got != "fallback" {
+		t.Fatalf("attachmentValue = %q, want %q", got, "fallback")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EventQueryEnd keeps activeUserID
+// ---------------------------------------------------------------------------
+
+func TestHandle_EventQueryEnd_KeepsActiveUserID(t *testing.T) {
+	t.Parallel()
+	h := hub.NewHub()
+	c := &WeChatConnector{
+		hub:          h,
+		activeUserID: "userA",
+		typingCache:  newTypingTicketCache(time.Minute),
+	}
+	c.queryDone = make(chan struct{})
+
+	c.sendToUserFn = func(_ context.Context, _, _ string) error {
+		return nil
+	}
+
+	c.Handle(types.QueryEvent{
+		Type:  types.EventQueryEnd,
+		Error: nil,
+	})
+
+	if c.activeUserID != "userA" {
+		t.Errorf("activeUserID = %q, want %q (retained across turn boundary)", c.activeUserID, "userA")
+	}
+	if c.toolNames != nil {
+		t.Errorf("toolNames = %v, want nil", c.toolNames)
+	}
+	if c.queryDone != nil {
+		t.Errorf("queryDone should be nil after close, got %v", c.queryDone)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Race detector integration test
+// ---------------------------------------------------------------------------
+
+func TestEnqueue_RealEngine_RaceDetector(t *testing.T) {
+	t.Parallel()
+	if runtime.NumCPU() < 2 {
+		t.Skip("need at least 2 CPUs for concurrent test")
+	}
+
+	release := make(chan struct{})
+	bmp := &blockingEngineMock{release: release}
+	eng := engine.New(&engine.Params{
+		Provider: bmp,
+		Model:    "test-model",
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	h := hub.NewHub()
+	c := New(nil, h)
+	c.engine = eng
+
+	// Start a query that blocks on the release channel.
+	go eng.Query(context.Background(), "q1", "")
+
+	// Wait for the engine to be busy.
+	deadline := time.After(3 * time.Second)
+	for !eng.IsBusy() {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for engine to become busy")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+
+	const N = 10
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := range N {
+		go func(i int) {
+			defer wg.Done()
+			c.enqueue("userA", fmt.Sprintf("m%d", i), nil)
+		}(i)
+	}
+	wg.Wait()
+
+	if got := eng.AttachmentsLen(); got != N {
+		t.Fatalf("AttachmentsLen() = %d, want %d", got, N)
+	}
+
+	// inboundCh should be empty.
+	select {
+	case msg := <-c.inboundCh:
+		t.Fatalf("inboundCh should be empty, got %+v", msg)
+	default:
+	}
+
+	close(release)
+	deadline2 := time.After(5 * time.Second)
+	for eng.IsBusy() {
+		select {
+		case <-deadline2:
+			t.Fatal("timed out waiting for engine to become idle")
+		default:
+			time.Sleep(10 * time.Millisecond) // REAL-TIME: poll loop waiting for async state
+		}
+	}
+}
+
+// blockingEngineMock holds Stream open until release is closed.
+type blockingEngineMock struct {
+	release chan struct{}
+}
+
+func (b *blockingEngineMock) Name() string { return "blocking-engine-mock" }
+
+func (b *blockingEngineMock) Complete(_ context.Context, _ *llm.Request) (*llm.Response, error) {
+	return &llm.Response{}, nil
+}
+
+func (b *blockingEngineMock) Stream(_ context.Context, _ *llm.Request) (<-chan llm.StreamEvent, error) {
+	ch := make(chan llm.StreamEvent, 6)
+	go func() {
+		defer close(ch)
+		<-b.release
+		ch <- llm.StreamEvent{Type: "message_start", Message: &llm.MessageStart{Model: "m", Usage: types.Usage{InputTokens: 5}}}
+		ch <- llm.StreamEvent{Type: "content_block_start", Index: 0, ContentBlock: &types.ContentBlock{Type: types.ContentTypeText}}
+		ch <- llm.StreamEvent{Type: "content_block_delta", Index: 0, Delta: &llm.StreamDelta{Type: "text_delta", Text: "reply"}}
+		ch <- llm.StreamEvent{Type: "content_block_stop", Index: 0}
+		ch <- llm.StreamEvent{Type: "message_delta", DeltaMsg: &llm.MessageDelta{StopReason: "end_turn"}, Usage: &types.Usage{OutputTokens: 3}}
+		ch <- llm.StreamEvent{Type: "message_stop"}
+	}()
+	return ch, nil
 }

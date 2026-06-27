@@ -900,9 +900,12 @@ func (e *Engine) createAttachmentMessages(items []types.QueuedItem) []types.Mess
 			ID:          item.UUID,
 			Role:        types.RoleUser,
 			MessageType: types.MessageTypeAttachment,
-			Content: []types.ContentBlock{
-				types.NewTextBlock(item.Value),
-			},
+			Content: func() []types.ContentBlock {
+				if len(item.Content) > 0 {
+					return item.Content
+				}
+				return []types.ContentBlock{types.NewTextBlock(item.Value)}
+			}(),
 			Attachment: &attachment,
 			Timestamp:  item.Timestamp,
 		}
@@ -4072,6 +4075,16 @@ func (e *Engine) Model() string { return e.model }
 
 // SystemPrompt returns the stored system prompt bytes.
 func (e *Engine) SystemPrompt() string { return e.systemPrompt }
+
+// IsBusy reports whether a query or attachment-processing turn is running.
+func (e *Engine) IsBusy() bool {
+	return atomic.LoadInt32(&e.queryActive) != 0
+}
+
+// AttachmentsLen returns the number of items in the attachment queue.
+func (e *Engine) AttachmentsLen() int {
+	return e.attachments.Len()
+}
 
 // SetSystemPrompt stores the system prompt for later access by fork agents.
 func (e *Engine) SetSystemPrompt(sp string) { e.systemPrompt = sp }
