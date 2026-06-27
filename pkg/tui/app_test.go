@@ -8999,11 +8999,10 @@ func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
 // SetProviders: quota fetcher must match the resolved provider, not Providers[0]
 // ---------------------------------------------------------------------------
 
-// TestSetProviders_SyncsStatusBarModel verifies that SetProviders updates the
-// status bar model to match the engine's model after override. Without this,
-// the status bar shows the meta.json model while the engine uses the
-// settings.json default — a confusing mismatch.
-func TestSetProviders_SyncsStatusBarModel(t *testing.T) {
+// TestSetProviders_DoesNotOverrideRestoredModel verifies that SetProviders
+// does NOT override the engine model when it was already set (e.g. restored
+// from meta.json). Only the provider should be updated.
+func TestSetProviders_DoesNotOverrideRestoredModel(t *testing.T) {
 	eng := engine.New(&engine.Params{
 		Provider: &mockLLMProvider{name: "xiaomi"},
 		Model:    "mimo-v2.5",
@@ -9011,11 +9010,9 @@ func TestSetProviders_SyncsStatusBarModel(t *testing.T) {
 	})
 	a := &App{engine: eng, repl: NewReplState()}
 	a.status = NewStatusBar()
-
-	// Simulate what NewAppWithManager does: status bar shows engine model.
 	a.status.SetModel(a.engine.Model())
 
-	// SetProviders overrides engine model to settings.json default.
+	// SetProviders with a different default model — must NOT override.
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5.2"},
 		Providers: []config.Provider{
@@ -9026,14 +9023,14 @@ func TestSetProviders_SyncsStatusBarModel(t *testing.T) {
 		"zhipu": &mockLLMProvider{name: "zhipu"},
 	}, cfg)
 
-	// Engine model should be overridden.
-	if got := a.engine.Model(); got != "glm-5.2" {
-		t.Errorf("engine model = %q, want glm-5.2", got)
+	// Engine model must remain the restored value.
+	if got := a.engine.Model(); got != "mimo-v2.5" {
+		t.Errorf("engine model = %q, want mimo-v2.5 (must not override restored model)", got)
 	}
-	// Status bar MUST also be updated — otherwise UI shows stale meta.json model.
+	// Status bar must also show the restored value.
 	statusLine := a.status.View()
-	if !strings.Contains(statusLine, "glm-5.2") {
-		t.Errorf("status bar = %q, want contains 'glm-5.2' (must sync after SetProviders override)", statusLine)
+	if !strings.Contains(statusLine, "mimo-v2.5") {
+		t.Errorf("status bar = %q, want contains 'mimo-v2.5'", statusLine)
 	}
 }
 
