@@ -8999,38 +8999,71 @@ func (c *countingFetcher) Fetch(ctx context.Context) (quota.Info, error) {
 // SetProviders: quota fetcher must match the resolved provider, not Providers[0]
 // ---------------------------------------------------------------------------
 
-// TestSetProviders_DoesNotOverrideRestoredModel verifies that SetProviders
-// does NOT override the engine model when it was already set (e.g. restored
-// from meta.json). Only the provider should be updated.
-func TestSetProviders_DoesNotOverrideRestoredModel(t *testing.T) {
+// TestSetProviders_DoesNotOverrideRestoredEngine verifies that SetProviders
+// does NOT override the engine's provider or model. The engine is restored
+// from meta.json with a specific provider/model; SetProviders should only
+// populate the provider registry and quota fetcher, not touch the engine.
+func TestSetProviders_DoesNotOverrideRestoredEngine(t *testing.T) {
+	xiaomiProv := &mockLLMProvider{name: "xiaomi"}
 	eng := engine.New(&engine.Params{
-		Provider: &mockLLMProvider{name: "xiaomi"},
-		Model:    "mimo-v2.5",
+		Provider: xiaomiProv,
+		Model:    "deepseek-v4-flash",
 		Logger:   slog.Default(),
 	})
 	a := &App{engine: eng, repl: NewReplState()}
 	a.status = NewStatusBar()
 	a.status.SetModel(a.engine.Model())
 
-	// SetProviders with a different default model — must NOT override.
+	// Simulate SetProviders with a DIFFERENT default (zhipu/glm-5.2).
+	zhipuProv := &mockLLMProvider{name: "zhipu"}
 	cfg := &config.Config{
 		Model: config.ModelSpec{"default": "zhipu/glm-5.2"},
 		Providers: []config.Provider{
 			{Name: "zhipu", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"glm-5.2": {}})},
+			{Name: "deepseek", Models: config.NewModelsFromMap(map[string]config.ModelConfig{"deepseek-v4-flash": {}})},
 		},
 	}
 	a.SetProviders(map[string]llm.Provider{
-		"zhipu": &mockLLMProvider{name: "zhipu"},
+		"zhipu":    zhipuProv,
+		"deepseek": xiaomiProv,
 	}, cfg)
 
-	// Engine model must remain the restored value.
-	if got := a.engine.Model(); got != "mimo-v2.5" {
-		t.Errorf("engine model = %q, want mimo-v2.5 (must not override restored model)", got)
+	// Engine must keep its restored provider — SetProviders must NOT call SetProvider.
+	if a.engine.Provider() != xiaomiProv {
+		t.Errorf("engine provider changed after SetProviders — must not override restored provider")
 	}
-	// Status bar must also show the restored value.
+	// Engine must keep its restored model.
+	if got := a.engine.Model(); got != "deepseek-v4-flash" {
+		t.Errorf("engine model = %q, want deepseek-v4-flash", got)
+	}
+	// Status bar must show engine's model.
 	statusLine := a.status.View()
-	if !strings.Contains(statusLine, "mimo-v2.5") {
-		t.Errorf("status bar = %q, want contains 'mimo-v2.5'", statusLine)
+	if !strings.Contains(statusLine, "deepseek-v4-flash") {
+		t.Errorf("status bar = %q, want contains 'deepseek-v4-flash'", statusLine)
+	}
+}
+
+// TestTurnStartMsg_ResetsUsage verifies that turnStartMsg (fired on each
+// new query) resets a.repl.usage so the status bar only shows the current
+// query's tokens, not the accumulated total from all previous queries.
+func TestTurnStartMsg_ResetsUsage(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+
+	// Query 1: accumulate tokens.
+	app.repl.StartQuery()
+	app.updateRepl(usageMsg{InputTokens: 1000, OutputTokens: 200})
+	app.repl.FinishStream(nil)
+
+	if app.repl.usage.InputTokens != 1000 {
+		t.Fatalf("query 1: usage.InputTokens = %d, want 1000", app.repl.usage.InputTokens)
+	}
+
+	// Query 2: turnStartMsg must reset usage.
+	app.updateRepl(turnStartMsg{})
+	app.updateRepl(usageMsg{InputTokens: 300, OutputTokens: 50})
+
+	if app.repl.usage.InputTokens != 300 {
+		t.Errorf("query 2: usage.InputTokens = %d, want 300 (not 1300)", app.repl.usage.InputTokens)
 	}
 }
 

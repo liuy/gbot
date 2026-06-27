@@ -364,23 +364,13 @@ func (a *App) SetProviders(providers map[string]llm.Provider, cfg *config.Config
 		a.providerConfigs[cfg.Providers[i].Name] = &cfg.Providers[i]
 	}
 
-	// Sync the active engine's provider/model to the config's resolved
-	// default. This is only meaningful for the initial engine created in
-	// main.go before any per-engine restore — the engine's own state is
-	// authoritative thereafter.
+	// Resolve provider name for quota fetcher.
 	providerName, _, err := cfg.ParseModel()
 	if err != nil {
 		slog.Warn("config: invalid model, using first", "model", cfg.Model, "error", err)
 	}
 	if providerName == "" && len(cfg.Providers) > 0 {
 		providerName = cfg.Providers[0].Name
-	}
-	if a.engine != nil {
-		if p, ok := providers[providerName]; ok {
-			a.engine.SetProvider(p)
-		}
-		// Do NOT override the engine model here — the model set during
-		// engine creation (restoreEngines / factory) is authoritative.
 	}
 
 	// Build quota fetcher from the resolved provider (nil if unsupported).
