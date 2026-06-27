@@ -1,13 +1,13 @@
-// Package computer implements the Computer tool. It drives the desktop in
-// the background via cua-driver (over a long-lived stdio MCP session) and
-// returns screenshots to the LLM as image content blocks. The model-facing
-// API is the explicit-window model: every action except `list` and `wait`
-// takes a `window` (X11 window_id from `list`/`snapshot`).
+// Package computer implements the Computer tool. On macOS/Windows it drives
+// the desktop via cua-driver (over a long-lived stdio MCP session); on Linux
+// it drives the desktop directly via a pure-Go X11 backend built on
+// github.com/jezek/xgb. The model-facing API is the explicit-window model:
+// every action except `list` takes a `window` (window_id from `list`/`snapshot`).
 package computer
 
 import "encoding/json"
 
-// Action names — the 9-action explicit-window model.
+// Action names — the 7-action explicit-window model.
 const (
 	ActionList     = "list"
 	ActionSnapshot = "snapshot"
@@ -16,14 +16,12 @@ const (
 	ActionKey      = "key"
 	ActionScroll   = "scroll"
 	ActionDrag     = "drag"
-	ActionZoom     = "zoom"
-	ActionWait     = "wait"
 )
 
 // actionList is the exact enum list, in order.
 var actionList = []string{
 	ActionList, ActionSnapshot, ActionClick, ActionType, ActionKey,
-	ActionScroll, ActionDrag, ActionZoom, ActionWait,
+	ActionScroll, ActionDrag,
 }
 
 // Capture modes for snapshot.
@@ -33,9 +31,7 @@ const (
 	ModeAx     = "ax"
 )
 
-// ModeZoom labels a CaptureResult produced by the zoom action (distinct from
-// snapshot modes so zoomResponse can render its own header).
-const ModeZoom = "zoom"
+// ModeZoom is removed (R2): the zoom action is dropped from all platforms.
 
 // Mouse button enum.
 const (
@@ -62,20 +58,18 @@ func inputSchema() json.RawMessage {
 			"action": map[string]any{
 				"type": "string",
 				"enum": actionList,
-				"description": "Which action to perform. Every action except `list` and `wait` requires `window` (X11 window_id from list/snapshot).\n\n" +
+				"description": "Which action to perform. Every action except `list` requires `window` (window_id from list/snapshot).\n\n" +
 					"• list — List all on-screen windows. Returns window_id + title + bounds + type (app/desktop/panel) for each. Use this first to discover window_ids.\n\n" +
-					"• snapshot — Capture a window's screenshot + numbered element list (SOM mode by default). Returns an image and a list of interactable elements with their indices, roles, labels, and bounds. Use `element` indices from the snapshot for precise clicks.\n\n" +
-					"• click — Click at an element index (preferred) or [x,y] coordinate. Use `count` for double/triple click, `button` for right/middle click.\n\n" +
+					"• snapshot — Capture a window's screenshot + numbered element list (SOM mode by default). Returns an image and a list of interactable elements with their indices, roles, labels, and bounds. Coordinates passed to click/scroll are window-relative.\n\n" +
+					"• click — Click at a window-relative [x,y] coordinate. Use `count` for double/triple click, `button` for right/middle click.\n\n" +
 					"• type — Type a text string into the window (via keyboard input injection).\n\n" +
 					"• key — Press a key or key combination (e.g. 'Return', 'ctrl+c', 'cmd+s'). Use '+' to combine modifier+key.\n\n" +
-					"• scroll — Scroll the window in a direction (up/down/left/right) by `amount` ticks.\n\n" +
-					"• drag — Press-drag-release from `from_coordinate` to `to_coordinate`.\n\n" +
-					"• zoom — Capture a high-detail screenshot of a sub-region [x1,y1,x2,y2] of a window. Use when you need to read small text or inspect a tight area.\n\n" +
-					"• wait — Sleep for `seconds` (max 30). Use between actions when waiting for UI to update.",
+					"• scroll — Scroll the window in a direction (up/down/left/right) by `amount` ticks. Optionally pass `coordinate` to position the cursor first.\n\n" +
+					"• drag — Press-drag-release from `from_coordinate` to `to_coordinate`.",
 			},
 			"window": map[string]any{
 				"type":        "integer",
-				"description": "X11 window_id from `list` or `snapshot`. Required for all actions except `list` and `wait`.",
+				"description": "X11 window_id from `list` or `snapshot`. Required for all actions except `list`.",
 			},
 			"mode": map[string]any{
 				"type":        "string",
@@ -89,16 +83,12 @@ func inputSchema() json.RawMessage {
 				"minimum":     1,
 				"maximum":     1000,
 			},
-			"element": map[string]any{
-				"type":        "integer",
-				"description": "[click, scroll] The 1-based SOM index returned by the last `snapshot` of this window. Strongly preferred over raw coordinates.",
-			},
 			"coordinate": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "integer"},
 				"minItems":    2,
 				"maxItems":    2,
-				"description": "[click, scroll] Pixel coordinates [x, y] in logical screen space (as returned by snapshot width/height). Only use this if no element index is available.",
+				"description": "[click, scroll] Window-relative [x, y] from the window's top-left corner, matching the width/height returned by snapshot.",
 			},
 			"count": map[string]any{
 				"type":        "integer",
@@ -148,17 +138,7 @@ func inputSchema() json.RawMessage {
 				"type":        "string",
 				"description": "[key] Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine.",
 			},
-			"region": map[string]any{
-				"type":        "array",
-				"items":       map[string]any{"type": "integer"},
-				"minItems":    4,
-				"maxItems":    4,
-				"description": "[zoom] Region [x1,y1,x2,y2] to capture.",
-			},
-			"seconds": map[string]any{
-				"type":        "number",
-				"description": "[wait] Seconds to wait. Max 30.",
-			},
+			// region and seconds properties removed (R2/R1): zoom and wait dropped.
 		},
 		"required": []string{"action"},
 	}

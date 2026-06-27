@@ -9,16 +9,19 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// testBackend is a cuaBackend stub for dispatch tests. It records every call
+// testBackend is a backend stub for dispatch tests. It records every call
 // and returns canned results, so dispatch routing is testable without a live
-// cua-driver binary.
+// driver.
 type testBackend struct {
 	calls          []string
 	snapshotCalls  int
 	snapshotResult *CaptureResult
-	zoomResult     *CaptureResult
 	clickResult    *ActionResult
 	err            error
+}
+
+func (t *testBackend) ensureStarted(_ context.Context) error {
+	return nil
 }
 
 func (t *testBackend) list(_ context.Context) (*ActionResult, error) {
@@ -70,21 +73,7 @@ func (t *testBackend) drag(_ context.Context, _ Input) (*ActionResult, error) {
 	return t.actionResult("drag"), nil
 }
 
-func (t *testBackend) zoom(_ context.Context, _ Input) (*CaptureResult, error) {
-	t.calls = append(t.calls, "zoom")
-	if t.err != nil {
-		return nil, t.err
-	}
-	if t.zoomResult != nil {
-		return t.zoomResult, nil
-	}
-	return &CaptureResult{Mode: ModeZoom}, nil
-}
-
-func (t *testBackend) wait(_ context.Context, _ Input) (*ActionResult, error) {
-	t.calls = append(t.calls, "wait")
-	return &ActionResult{OK: true, Action: "wait", Message: "waited 1.00s"}, nil
-}
+// zoom and wait methods removed (R2/R1): both actions dropped from all platforms.
 
 // actionResult returns the canned result for an action.
 func (t *testBackend) actionResult(action string) *ActionResult {
@@ -109,13 +98,11 @@ func TestDispatchRoutesEachAction(t *testing.T) {
 	}{
 		{"list", "list", ``},
 		{"snapshot", "snapshot", `,"window":42`},
-		{"click", "click", `,"window":42,"element":1`},
+		{"click", "click", `,"window":42,"coordinate":[10,10]`},
 		{"type", "type", `,"window":42,"text":"hi"`},
 		{"key", "key", `,"window":42,"keys":"return"`},
 		{"scroll", "scroll", `,"window":42,"direction":"down"`},
 		{"drag", "drag", `,"window":42,"from_coordinate":[1,2],"to_coordinate":[3,4]`},
-		{"zoom", "zoom", `,"window":42,"region":[10,20,30,40]`},
-		{"wait", "wait", ``},
 	}
 	for _, tc := range cases {
 		t.Run(tc.action, func(t *testing.T) {
@@ -155,7 +142,7 @@ func TestDispatchUnknownAction(t *testing.T) {
 	}
 }
 
-// TestDispatchWindowRequired verifies every action except list/wait errors
+// TestDispatchWindowRequired verifies every action except list errors
 // without a window parameter.
 func TestDispatchWindowRequired(t *testing.T) {
 	cases := []struct {
@@ -163,12 +150,11 @@ func TestDispatchWindowRequired(t *testing.T) {
 		extra  string
 	}{
 		{"snapshot", ``},
-		{"click", `,"element":1`},
+		{"click", ``},
 		{"type", `,"text":"hi"`},
 		{"key", `,"keys":"return"`},
 		{"scroll", `,"direction":"down"`},
 		{"drag", `,"from_coordinate":[1,2],"to_coordinate":[3,4]`},
-		{"zoom", `,"region":[10,20,30,40]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.action, func(t *testing.T) {
@@ -199,32 +185,27 @@ func TestDispatchWindowRequired(t *testing.T) {
 	}
 }
 
-// TestDispatchListWaitNoWindow verifies list and wait succeed WITHOUT a window.
-func TestDispatchListWaitNoWindow(t *testing.T) {
-	for _, action := range []string{"list", "wait"} {
-		t.Run(action, func(t *testing.T) {
-			tb := &testBackend{}
-			in, _ := parseInput(json.RawMessage(`{"action":"` + action + `"}`))
-			res, err := dispatch(context.Background(), tb, in)
-			if err != nil {
-				t.Fatalf("dispatch(%s): %v", action, err)
-			}
-			if len(tb.calls) != 1 {
-				t.Fatalf("dispatch(%s) calls = %v, want 1", action, tb.calls)
-			}
-			data, ok := res.Data.(string)
-			if !ok {
-				t.Fatalf("Data type = %T, want string", res.Data)
-			}
-			if strings.Contains(data, `"error"`) {
-				t.Errorf("dispatch(%s) returned error: %s", action, data)
-			}
-		})
+// TestDispatchListNoWindow verifies list succeeds WITHOUT a window.
+func TestDispatchListNoWindow(t *testing.T) {
+	tb := &testBackend{}
+	in, _ := parseInput(json.RawMessage(`{"action":"list"}`))
+	res, err := dispatch(context.Background(), tb, in)
+	if err != nil {
+		t.Fatalf("dispatch(list): %v", err)
+	}
+	if len(tb.calls) != 1 {
+		t.Fatalf("dispatch(list) calls = %v, want 1", tb.calls)
+	}
+	data, ok := res.Data.(string)
+	if !ok {
+		t.Fatalf("Data type = %T, want string", res.Data)
+	}
+	if strings.Contains(data, `"error"`) {
+		t.Errorf("dispatch(list) returned error: %s", data)
 	}
 }
 
-// TestDispatchClickMissingTarget verifies click without element/coordinate
-// errors.
+// TestDispatchClickMissingTarget verifies click without coordinate errors.
 func TestDispatchClickMissingTarget(t *testing.T) {
 	tb := &testBackend{}
 	in, _ := parseInput(json.RawMessage(`{"action":"click","window":42}`))
@@ -236,8 +217,8 @@ func TestDispatchClickMissingTarget(t *testing.T) {
 		t.Fatalf("calls = %v, want 0 (no target)", tb.calls)
 	}
 	data := res.Data.(string)
-	if !strings.Contains(data, "requires element= or coordinate=") {
-		t.Errorf("data %q missing target hint", data)
+	if !strings.Contains(data, "requires coordinate=") {
+		t.Errorf("data %q missing coordinate hint", data)
 	}
 }
 
@@ -259,22 +240,7 @@ func TestDispatchDragMissingCoords(t *testing.T) {
 	}
 }
 
-// TestDispatchZoomMissingRegion verifies zoom without region errors.
-func TestDispatchZoomMissingRegion(t *testing.T) {
-	tb := &testBackend{}
-	in, _ := parseInput(json.RawMessage(`{"action":"zoom","window":42}`))
-	res, err := dispatch(context.Background(), tb, in)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(tb.calls) != 0 {
-		t.Fatalf("calls = %v, want 0 (no region)", tb.calls)
-	}
-	data := res.Data.(string)
-	if !strings.Contains(data, "requires region=") {
-		t.Errorf("data %q missing region hint", data)
-	}
-}
+// TestDispatchZoomMissingRegion removed (R2): the zoom action is dropped.
 
 // TestDispatchSnapshotBadMode verifies an invalid mode is rejected.
 func TestDispatchSnapshotBadMode(t *testing.T) {
@@ -457,55 +423,8 @@ func TestSnapshotResponseTruncationWithImage(t *testing.T) {
 	}
 }
 
-// TestDispatchZoomResponse verifies zoom returns an image in NewMessages with
-// a "zoom region" header.
-func TestDispatchZoomResponse(t *testing.T) {
-	png := makeMinimalPNG(8, 8)
-	tb := &testBackend{
-		zoomResult: &CaptureResult{Mode: ModeZoom, Width: 8, Height: 8, PngB64: png},
-	}
-	in, _ := parseInput(json.RawMessage(`{"action":"zoom","window":42,"region":[10,20,30,40]}`))
-	res, err := dispatch(context.Background(), tb, in)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(res.NewMessages) != 1 {
-		t.Fatalf("NewMessages length = %d, want 1 (zoom image)", len(res.NewMessages))
-	}
-	msg := res.NewMessages[0]
-	if len(msg.Content) != 2 {
-		t.Fatalf("content length = %d, want 2 [text, image]", len(msg.Content))
-	}
-	if msg.Content[0].Type != types.ContentTypeText {
-		t.Errorf("content[0] type = %q, want text", msg.Content[0].Type)
-	}
-	if msg.Content[1].Type != types.ContentTypeImage {
-		t.Errorf("content[1] type = %q, want image", msg.Content[1].Type)
-	}
-	summary := res.Data.(string)
-	if !strings.Contains(summary, "zoom region") {
-		t.Errorf("summary %q missing 'zoom region' header", summary)
-	}
-}
-
-// TestDispatchZoomNoImage verifies zoom without an image returns text-only.
-func TestDispatchZoomNoImage(t *testing.T) {
-	tb := &testBackend{
-		zoomResult: &CaptureResult{Mode: ModeZoom},
-	}
-	in, _ := parseInput(json.RawMessage(`{"action":"zoom","window":42,"region":[10,20,30,40]}`))
-	res, err := dispatch(context.Background(), tb, in)
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if len(res.NewMessages) != 0 {
-		t.Errorf("NewMessages length = %d, want 0 (no image)", len(res.NewMessages))
-	}
-	summary := res.Data.(string)
-	if !strings.Contains(summary, "zoom region") {
-		t.Errorf("summary %q missing 'zoom region' header", summary)
-	}
-}
+// TestDispatchZoomResponse and TestDispatchZoomNoImage removed (R2): the zoom
+// action is dropped from all platforms.
 
 // TestDispatchListResponse verifies list returns a text result with count.
 func TestDispatchListResponse(t *testing.T) {

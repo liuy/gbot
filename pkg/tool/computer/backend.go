@@ -1,3 +1,5 @@
+//go:build !linux
+
 package computer
 
 import (
@@ -22,7 +24,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// serverName is the constant MCP server name the Backend registers its
+// serverName is the constant MCP server name the CuaBackend registers its
 // cua-driver stdio connection under. Mirror of cua_backend.py's hardcoded
 // "cua-driver" reference used throughout the lifecycle.
 const serverName = "cua-driver"
@@ -32,28 +34,12 @@ const serverName = "cua-driver"
 // cua_backend.py:92 `_CUA_TELEMETRY_ENV_VAR`.
 const telemetryEnv = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
-// desktopWindowNames is matched case-insensitively as a substring against a
-// window's title to classify it as a desktop/shell surface in list output.
-var desktopWindowNames = []string{
-	"progman", "workerw", "program manager", // Windows desktop
-	"shell_traywnd", "taskbar", // Windows taskbar
-	"finder", "desktop", "dock", // macOS desktop / shell
-}
-
 // fallbackMCPArgs is the default cua-driver stdio MCP subcommand, used when
 // `cua-driver manifest` discovery fails or returns nothing usable.
 var fallbackMCPArgs = []string{"mcp"}
 
-// timeAfter is the timer channel constructor used by Backend.wait. A
-// package-level indirection (not time.After directly) so unit tests can
-// substitute an instant-return variant and avoid real sleeping.
-var timeAfter = time.After
-
-// timeDuration converts a seconds float into time.Duration. Indirection so
-// tests don't reach into the time package directly.
-var timeDuration = func(seconds float64) time.Duration {
-	return time.Duration(seconds * float64(time.Second))
-}
+// timeAfter/timeDuration package vars removed (R1): the wait action and its
+// sleep indirection are dropped from all platforms.
 
 // cuaDriverInstallHint returns the actionable install hint shown when the
 // cua-driver binary cannot be found. Translate of
@@ -168,32 +154,32 @@ func mapToEnvSlice(m map[string]string) []string {
 	return out
 }
 
-// Backend owns a single long-lived cua-driver stdio MCP session, lazily
-// connected on first call and kept alive for the process lifetime.
-// Translate of cua_backend.py:339-470 `_CuaDriverSession` +
-// `CuaDriverBackend.__init__`/`start`/`stop`, re-implemented against gbot's
-// existing MCP client stack (pkg/mcp/) instead of the Python `mcp` SDK.
-type Backend struct {
+// CuaBackend owns a single long-lived cua-driver stdio MCP session, lazily
+// connected on first call and kept alive for the process lifetime. mac/windows
+// only — linux uses X11Backend. Translate of cua_backend.py:339-470
+// `_CuaDriverSession` + `CuaDriverBackend.__init__`/`start`/`stop`,
+// re-implemented against gbot's existing MCP client stack (pkg/mcp/) instead
+// of the Python `mcp` SDK.
+type CuaBackend struct {
 	mu sync.Mutex
 
-	cmd        string // resolved via resolveDriverCmd once at first start
-	mgr        *mcp.ClientManager
-	cfg        mcp.ScopedMcpServerConfig
-	conn       *mcp.ConnectedServer
-	sessionID  string // minted once per Backend instance
-	started    bool
-	winCache   map[int]int    // window_id → pid, refreshed by list/snapshot
-	snapTokens map[int]string // element_index → element_token, refreshed each snapshot
-	snapshotID string         // last snapshot_id (informational; from get_window_state)
+	cmd       string // resolved via resolveDriverCmd once at first start
+	mgr       *mcp.ClientManager
+	cfg       mcp.ScopedMcpServerConfig
+	conn      *mcp.ConnectedServer
+	sessionID string // minted once per CuaBackend instance
+	started   bool
+	winCache  map[int]int // window_id → pid, refreshed by list/snapshot
+	// snapTokens/snapshotID removed (R3): element-based click dropped, so the
+	// per-snapshot token cache is no longer needed.
 }
 
-// NewBackend constructs a Backend with a freshly-minted session id.
+// NewCuaBackend constructs a CuaBackend with a freshly-minted session id.
 // Translate of CuaDriverBackend.__init__'s `self._session_id = f"hermes-{uuid.uuid4().hex[:12]}"`.
-func NewBackend() *Backend {
-	return &Backend{
-		sessionID:  "gbot-" + randomHex(12),
-		winCache:   map[int]int{},
-		snapTokens: map[int]string{},
+func NewCuaBackend() *CuaBackend {
+	return &CuaBackend{
+		sessionID: "gbot-" + randomHex(12),
+		winCache:  map[int]int{},
 	}
 }
 
@@ -218,7 +204,7 @@ func randomHex(n int) string {
 // connect, and call `start_session` so cua-driver owns this run's
 // agent-cursor + per-session state. A failed start clears state so the next
 // call retries cleanly (Hermes `_get_backend` semantics).
-func (b *Backend) ensureStarted(ctx context.Context) error {
+func (b *CuaBackend) ensureStarted(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.started {
@@ -266,7 +252,7 @@ func (b *Backend) ensureStarted(ctx context.Context) error {
 }
 
 // connectLocked opens the MCP session. Caller must hold b.mu.
-func (b *Backend) connectLocked(ctx context.Context) error {
+func (b *CuaBackend) connectLocked(ctx context.Context) error {
 	result, err := b.mgr.ConnectToServer(ctx, serverName, b.cfg)
 	if err != nil {
 		return fmt.Errorf("computer: connect cua-driver: %w", err)
@@ -285,13 +271,13 @@ func (b *Backend) connectLocked(ctx context.Context) error {
 // reconnects, and retries exactly once. Translate of
 // cua_backend.py:536-548 `call_tool` (the reconnect-once path).
 // Callers that already hold b.mu use callLocked.
-func (b *Backend) call(ctx context.Context, toolName string, args map[string]any) (*mcp.MCPToolCallResult, error) {
+func (b *CuaBackend) call(ctx context.Context, toolName string, args map[string]any) (*mcp.MCPToolCallResult, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.callLocked(ctx, toolName, args)
 }
 
-func (b *Backend) callLocked(ctx context.Context, toolName string, args map[string]any) (*mcp.MCPToolCallResult, error) {
+func (b *CuaBackend) callLocked(ctx context.Context, toolName string, args map[string]any) (*mcp.MCPToolCallResult, error) {
 	res, err := mcp.CallMCPTool(ctx, mcp.CallMCPToolParams{
 		Server:   b.conn,
 		ToolName: toolName,
@@ -341,7 +327,7 @@ func isClosedSessionError(err error) bool {
 // Stop tears the cua-driver session down (best-effort end_session), then
 // drops the MCP connection. Translate of cua_backend.py:472-486
 // `CuaDriverBackend.stop`.
-func (b *Backend) Stop() {
+func (b *CuaBackend) Stop() {
 	b.mu.Lock()
 	conn := b.conn
 	started := b.started
@@ -367,7 +353,7 @@ func (b *Backend) Stop() {
 // first (warmed by list/snapshot); on a miss it falls back to a list_windows
 // round-trip, repopulating the cache for all returned windows. This is the
 // slow path taken only when the cache is cold or stale.
-func (b *Backend) resolvePID(ctx context.Context, windowID int) (int, error) {
+func (b *CuaBackend) resolvePID(ctx context.Context, windowID int) (int, error) {
 	b.mu.Lock()
 	if pid, ok := b.winCache[windowID]; ok {
 		b.mu.Unlock()

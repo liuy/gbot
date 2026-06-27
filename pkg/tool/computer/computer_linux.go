@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build linux
 
 package computer
 
@@ -13,17 +13,14 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// safeActions — read-only actions that never go through the
-// destructive-permission gate (list/snapshot are read-only).
-var safeActions = map[string]bool{
+// safeActionsLinux — read-only actions on Linux (mirrors the !linux safeActions).
+// Kept as a per-platform var so New() on each platform references the right map.
+var safeActionsLinux = map[string]bool{
 	ActionList:     true,
 	ActionSnapshot: true,
-	// ActionZoom/ActionWait removed (R2/R1): both actions dropped.
 }
 
-// destructiveActions — actions that mutate user-visible state and so require
-// approval.
-var destructiveActions = map[string]bool{
+var destructiveActionsLinux = map[string]bool{
 	ActionClick:  true,
 	ActionType:   true,
 	ActionKey:    true,
@@ -31,11 +28,11 @@ var destructiveActions = map[string]bool{
 	ActionDrag:   true,
 }
 
-// New constructs the Computer tool. The single CuaBackend instance is owned
-// inside the closure and lazily started on first Call — zero config. On linux
-// the equivalent is computer_linux.go with NewX11Backend.
+// New constructs the Computer tool backed by the pure-Go X11Backend (no
+// cua-driver, no xdotool, no CGO). The single X11Backend instance is owned
+// inside the closure and lazily connected on first Call.
 func New() tool.Tool {
-	b := NewCuaBackend()
+	b := NewX11Backend()
 	schema := inputSchema()
 
 	return tool.BuildTool(tool.ToolDef{
@@ -59,14 +56,14 @@ func New() tool.Tool {
 			if err != nil {
 				return false
 			}
-			return safeActions[in.Action]
+			return safeActionsLinux[in.Action]
 		},
 		IsDestructive_: func(input json.RawMessage) bool {
 			in, err := parseInput(input)
 			if err != nil {
 				return false
 			}
-			return destructiveActions[in.Action]
+			return destructiveActionsLinux[in.Action]
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool {
 			return false // drives real desktop state
@@ -75,8 +72,6 @@ func New() tool.Tool {
 		MaxResultSizeChars: 50000,
 		Prompt_:            computerPrompt(),
 		RenderResult_: func(data any) string {
-			// captureResponse returns the summary text in Data; action text
-			// results are JSON strings. Both render as their string form.
 			switch v := data.(type) {
 			case string:
 				return v
@@ -87,14 +82,13 @@ func New() tool.Tool {
 				return string(b)
 			}
 		},
-		// ShouldDefer_ defaults to false — keep loaded. It's a primary
-		// interaction tool like Bash/Web, not a niche MCP tool.
 	})
 }
 
-// execute is the per-call entry point on mac/windows. Safety gates run BEFORE
-// the backend is touched; backend-unavailable returns the actionable install
-// hint. The signature matches the linux execute (C4): both take `b backend`.
+// execute is the per-call entry point on Linux. Safety gates run before the
+// backend is touched; an X11 connection failure is surfaced as an actionable
+// error message, matching the CuaBackend contract. Signature is IDENTICAL to
+// the !linux execute (C4): both take `b backend`.
 func execute(ctx context.Context, raw json.RawMessage, b backend) (*tool.ToolResult, error) {
 	in, err := parseInput(raw)
 	if err != nil {
@@ -126,11 +120,8 @@ func execute(ctx context.Context, raw json.RawMessage, b backend) (*tool.ToolRes
 	return dispatch(ctx, b, in)
 }
 
-// summarizeAction and captureSummary live in dispatch_core.go (shared by both
-// platforms' New() / RenderResult).
+// Compile-time check: *X11Backend satisfies backend (linux path).
+var _ backend = (*X11Backend)(nil)
 
-// Compile-time check: *CuaBackend satisfies backend (mac/windows path).
-var _ backend = (*CuaBackend)(nil)
-
-// Compile-time check: the unused types import is real (NewMessages).
+// Compile-time check: the unused types import is real (RenderResult / NewMessages).
 var _ types.Role = types.RoleUser

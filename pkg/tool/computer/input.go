@@ -8,15 +8,14 @@ import (
 )
 
 // Input is the parsed tool input. Go fields mirror the JSON schema 1:1.
-// Coordinate/region arrays use json.RawMessage so callers can distinguish
-// absent from `[0,0]`; optional element/window indices use *int so absent is
-// distinguishable from the valid value 0.
+// Coordinate arrays use json.RawMessage so callers can distinguish absent
+// from `[0,0]`; optional window indices use *int so absent is distinguishable
+// from the valid value 0.
 type Input struct {
 	Action         string          `json:"action"`
 	Window         *int            `json:"window,omitempty"` // window_id; *int so 0 is distinguishable from absent
 	Mode           string          `json:"mode,omitempty"`
 	MaxElements    json.RawMessage `json:"max_elements,omitempty"` // raw — coerceMaxElements parses nil/0/-1/"abc"
-	Element        *int            `json:"element,omitempty"`
 	Coordinate     json.RawMessage `json:"coordinate,omitempty"`
 	Count          *int            `json:"count,omitempty"`
 	Button         string          `json:"button,omitempty"`
@@ -27,8 +26,7 @@ type Input struct {
 	Amount         *int            `json:"amount,omitempty"`
 	Text           string          `json:"text,omitempty"`
 	Keys           string          `json:"keys,omitempty"`
-	Region         json.RawMessage `json:"region,omitempty"` // [x1,y1,x2,y2]
-	Seconds        *float64        `json:"seconds,omitempty"`
+	// Element, Region, Seconds fields removed (R3/R2/R1): element/zoom/wait dropped.
 }
 
 // parseInput unmarshals the raw tool input and validates it against the
@@ -112,19 +110,5 @@ func parseCoordinate(raw json.RawMessage) (x, y int, ok bool) {
 	return pair[0], pair[1], true
 }
 
-// parseRegion extracts [x1, y1, x2, y2] from a raw JSON array. Returns
-// ok=false when the input is absent, malformed, or not exactly 4 ints.
-// Used by zoom dispatch.
-func parseRegion(raw json.RawMessage) (x1, y1, x2, y2 int, ok bool) {
-	if len(raw) == 0 {
-		return 0, 0, 0, 0, false
-	}
-	var quad []int
-	if err := json.Unmarshal(raw, &quad); err != nil {
-		return 0, 0, 0, 0, false
-	}
-	if len(quad) != 4 {
-		return 0, 0, 0, 0, false
-	}
-	return quad[0], quad[1], quad[2], quad[3], true
-}
+// parseRegion is removed (R2): the zoom action and its region input are dropped
+// from all platforms.

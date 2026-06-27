@@ -34,7 +34,7 @@ func TestInputSchemaEnum(t *testing.T) {
 	}
 	wantActions := []string{
 		"list", "snapshot", "click", "type", "key",
-		"scroll", "drag", "zoom", "wait",
+		"scroll", "drag",
 	}
 	if len(actionProp.Enum) != len(wantActions) {
 		t.Fatalf("action enum length = %d, want %d", len(actionProp.Enum), len(wantActions))
@@ -58,9 +58,9 @@ func TestInputSchemaAllProperties(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	wantProps := []string{
-		"action", "window", "mode", "max_elements", "element", "coordinate",
+		"action", "window", "mode", "max_elements", "coordinate",
 		"count", "button", "modifiers", "from_coordinate", "to_coordinate",
-		"direction", "amount", "text", "keys", "region", "seconds",
+		"direction", "amount", "text", "keys",
 	}
 	for _, name := range wantProps {
 		if _, ok := parsed.Properties[name]; !ok {
@@ -68,7 +68,7 @@ func TestInputSchemaAllProperties(t *testing.T) {
 		}
 	}
 	// Removed properties must NOT be present.
-	removed := []string{"app", "from_element", "to_element", "value", "raise_window", "capture_after"}
+	removed := []string{"app", "from_element", "to_element", "value", "raise_window", "capture_after", "region", "seconds", "element"}
 	for _, name := range removed {
 		if _, ok := parsed.Properties[name]; ok {
 			t.Errorf("removed property still present in schema: %s", name)
@@ -133,29 +133,8 @@ func TestInputSchemaCountDefaults(t *testing.T) {
 	}
 }
 
-// TestInputSchemaRegionMinMaxItems verifies region requires exactly 4 items.
-func TestInputSchemaRegionMinMaxItems(t *testing.T) {
-	schema := inputSchema()
-	var parsed struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	}
-	if err := json.Unmarshal(schema, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	var r struct {
-		MinItems int `json:"minItems"`
-		MaxItems int `json:"maxItems"`
-	}
-	if err := json.Unmarshal(parsed.Properties["region"], &r); err != nil {
-		t.Fatalf("unmarshal region: %v", err)
-	}
-	if r.MinItems != 4 {
-		t.Errorf("region minItems = %d, want 4", r.MinItems)
-	}
-	if r.MaxItems != 4 {
-		t.Errorf("region maxItems = %d, want 4", r.MaxItems)
-	}
-}
+// TestInputSchemaRegionMinMaxItems removed (R2): the zoom action and its
+// region property are dropped from all platforms.
 
 // TestParseInputRoundTrip parses representative inputs for each action family
 // and asserts the parsed fields match exactly. Catches field name drift.
@@ -175,11 +154,6 @@ func TestParseInputRoundTrip(t *testing.T) {
 			name: "snapshot som",
 			raw:  `{"action":"snapshot","window":42,"mode":"som","max_elements":50}`,
 			want: Input{Action: "snapshot", Window: &win, Mode: "som"},
-		},
-		{
-			name: "click element with window",
-			raw:  `{"action":"click","window":42,"element":7}`,
-			want: Input{Action: "click", Window: &win},
 		},
 		{
 			name: "click coordinate count button",
@@ -206,16 +180,7 @@ func TestParseInputRoundTrip(t *testing.T) {
 			raw:  `{"action":"scroll","window":42,"direction":"down","amount":5}`,
 			want: Input{Action: "scroll", Window: &win, Direction: "down"},
 		},
-		{
-			name: "zoom region",
-			raw:  `{"action":"zoom","window":42,"region":[10,20,30,40]}`,
-			want: Input{Action: "zoom", Window: &win},
-		},
-		{
-			name: "wait seconds",
-			raw:  `{"action":"wait","seconds":2.5}`,
-			want: Input{Action: "wait"},
-		},
+		// zoom/wait cases removed (R2/R1): both actions dropped from all platforms.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

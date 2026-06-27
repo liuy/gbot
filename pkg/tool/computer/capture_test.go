@@ -278,6 +278,28 @@ func TestParseKeyComboTable(t *testing.T) {
 	}
 }
 
+// TestParseKeyComboWinModifier covers the C8 change: win/super/meta/windows
+// are recognized as modifiers (previously dropped, silently mis-parsing
+// combos like win+r). Each must yield a modifier in the returned set and the
+// main key 'r'.
+func TestParseKeyComboWinModifier(t *testing.T) {
+	for _, in := range []string{"win+r", "super+r", "meta+r", "windows+r"} {
+		t.Run(in, func(t *testing.T) {
+			key, mods := parseKeyCombo(in)
+			if key != "r" {
+				t.Errorf("key = %q, want r", key)
+			}
+			if len(mods) != 1 {
+				t.Fatalf("modifiers = %v, want exactly 1", mods)
+			}
+			m := strings.ToLower(mods[0])
+			if m != "win" && m != "super" && m != "meta" && m != "windows" {
+				t.Errorf("modifier = %q, want one of win/super/meta/windows", mods[0])
+			}
+		})
+	}
+}
+
 // TestExtractWindowTitle verifies the window title regex for both macOS
 // (AXWindow "...") and Linux AT-SPI (frame = "...") tree formats.
 func TestExtractWindowTitle(t *testing.T) {

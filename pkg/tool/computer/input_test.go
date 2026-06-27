@@ -93,33 +93,5 @@ func TestParseCoordinate(t *testing.T) {
 	}
 }
 
-// TestParseRegion verifies the region array parser handles 4-int arrays,
-// rejects malformed/wrong-length input, and returns ok=false on absent.
-func TestParseRegion(t *testing.T) {
-	cases := []struct {
-		name           string
-		raw            string
-		x1, y1, x2, y2 int
-		ok             bool
-	}{
-		{"four ints", `[10,20,30,40]`, 10, 20, 30, 40, true},
-		{"absent", ``, 0, 0, 0, 0, false},
-		{"three ints", `[1,2,3]`, 0, 0, 0, 0, false},
-		{"five ints", `[1,2,3,4,5]`, 0, 0, 0, 0, false},
-		{"two ints", `[1,2]`, 0, 0, 0, 0, false},
-		{"string elements", `["a","b","c","d"]`, 0, 0, 0, 0, false},
-		{"not an array", `"abc"`, 0, 0, 0, 0, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			x1, y1, x2, y2, ok := parseRegion(json.RawMessage(tc.raw))
-			if ok != tc.ok {
-				t.Errorf("parseRegion(%s) ok = %v, want %v", tc.raw, ok, tc.ok)
-			}
-			if ok && (x1 != tc.x1 || y1 != tc.y1 || x2 != tc.x2 || y2 != tc.y2) {
-				t.Errorf("parseRegion(%s) = (%d,%d,%d,%d), want (%d,%d,%d,%d)",
-					tc.raw, x1, y1, x2, y2, tc.x1, tc.y1, tc.x2, tc.y2)
-			}
-		})
-	}
-}
+// TestParseRegion removed (R2): the zoom action and its region input are
+// dropped from all platforms.
