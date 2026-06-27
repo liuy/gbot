@@ -385,3 +385,38 @@ func TestEncodeMessage(t *testing.T) {
 		t.Errorf("missing Content-Length header: %q", bytes[:20])
 	}
 }
+
+func TestRpcError_Error(t *testing.T) {
+	e := &rpcError{Code: -32601, Message: "method not found"}
+	if s := e.Error(); s != "lsp error -32601: method not found" {
+		t.Errorf("Error = %q", s)
+	}
+}
+
+func TestWaitLoop_CmdNil(t *testing.T) {
+	c := &Client{}
+	c.waitLoop() // in-process path: just returns
+}
+
+func TestInitialize_DeadClient(t *testing.T) {
+	c, _, cleanup := newInProcessServer(t)
+	c.teardownOnce.Do(func() { close(c.done); close(c.dead) })
+	cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := c.Initialize(ctx, "file:///repo"); err == nil {
+		t.Error("Initialize: expected error on dead client")
+	}
+}
+
+func TestNotify_DeadClient(t *testing.T) {
+	c, _, cleanup := newInProcessServer(t)
+	c.teardownOnce.Do(func() { close(c.done); close(c.dead) })
+	cleanup()
+
+	err := c.Notify(context.Background(), "textDocument/didOpen", nil)
+	if err == nil {
+		t.Error("Notify: expected error on dead client")
+	}
+}

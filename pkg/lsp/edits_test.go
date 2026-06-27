@@ -312,3 +312,11 @@ func TestURIToPath(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeLocations_BadFirstChar(t *testing.T) {
+	_, err := decodeLocations([]byte(`"this is a string"`))
+	if err == nil {
+		t.Fatal("expected error for string input")
+	}
+	_ = err.Error()
+}
