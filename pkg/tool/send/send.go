@@ -21,7 +21,6 @@ type FileSender interface {
 // Input is the send tool input schema.
 type Input struct {
 	FilePath string `json:"file_path" validate:"required"`
-	Caption  string `json:"caption,omitempty"`
 }
 
 const staticDescription = "Send a file (image, document, or video) to the user."
@@ -35,10 +34,6 @@ func New(sender FileSender) tool.Tool {
 			"file_path": {
 				"type": "string",
 				"description": "Path to the local file to send."
-			},
-			"caption": {
-				"type": "string",
-				"description": "Optional message to send with the file."
 			}
 		}
 	}`)
@@ -70,7 +65,7 @@ func New(sender FileSender) tool.Tool {
 			if _, err := os.Stat(in.FilePath); err != nil {
 				return nil, fmt.Errorf("send: file not found: %s", in.FilePath)
 			}
-			if err := sender.SendFile(ctx, in.FilePath, in.Caption); err != nil {
+			if err := sender.SendFile(ctx, in.FilePath, ""); err != nil {
 				return nil, err
 			}
 			return &tool.ToolResult{

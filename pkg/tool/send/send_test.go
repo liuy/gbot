@@ -37,7 +37,7 @@ func TestNew_CallForwardsFilePathAndCaption(t *testing.T) {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	input, _ := json.Marshal(Input{FilePath: filePath, Caption: "hello"})
+	input, _ := json.Marshal(Input{FilePath: filePath})
 	result, err := tt.Call(context.Background(), input, &tool.ToolUseContext{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -48,8 +48,8 @@ func TestNew_CallForwardsFilePathAndCaption(t *testing.T) {
 	if fs.lastPath != filePath {
 		t.Errorf("SendFile path = %q, want %q", fs.lastPath, filePath)
 	}
-	if fs.lastCaption != "hello" {
-		t.Errorf("SendFile caption = %q, want %q", fs.lastCaption, "hello")
+	if fs.lastCaption != "" {
+		t.Errorf("SendFile caption = %q, want empty", fs.lastCaption)
 	}
 	if result == nil {
 		t.Fatal("Call returned nil result")
@@ -256,8 +256,8 @@ func TestNew_Metadata(t *testing.T) {
 	if tt.IsDestructive(json.RawMessage(`{}`)) {
 		t.Error("IsDestructive = true, want false")
 	}
-	if tt.IsConcurrencySafe(json.RawMessage(`{}`)) {
-		t.Error("IsConcurrencySafe = true, want false")
+	if !tt.IsConcurrencySafe(json.RawMessage(`{}`)) {
+		t.Error("IsConcurrencySafe = false, want true")
 	}
 	schema := tt.InputSchema()
 	if len(schema) == 0 {

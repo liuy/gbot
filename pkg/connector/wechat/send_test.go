@@ -133,40 +133,16 @@ func TestSendFile_File(t *testing.T) {
 	}
 }
 
-func TestSendFile_CaptionThenMedia_Ordering(t *testing.T) {
+func TestSendFile_CaptionIgnored_SingleCall(t *testing.T) {
 	t.Parallel()
 	c, _, sent := newSendTestConnector(t)
 	err := c.SendFile(context.Background(), "/tmp/photo.png", "check this out")
 	if err != nil {
 		t.Fatalf("SendFile: %v", err)
 	}
-	if len(*sent) != 2 {
-		t.Fatalf("sendItemFn calls = %d, want 2 (caption + media)", len(*sent))
-	}
-	// First call: TEXT item with the caption.
-	first := (*sent)[0].item
-	if first.Type != ItemText {
-		t.Errorf("first item.Type = %d, want %d (ItemText)", first.Type, ItemText)
-	}
-	if first.TextItem == nil || first.TextItem.Text != "check this out" {
-		t.Errorf("first item text = %v, want 'check this out'", first.TextItem)
-	}
-	// Second call: the image item.
-	second := (*sent)[1].item
-	if second.Type != ItemImage {
-		t.Errorf("second item.Type = %d, want %d (ItemImage)", second.Type, ItemImage)
-	}
-}
-
-func TestSendFile_NoCaption_SingleCall(t *testing.T) {
-	t.Parallel()
-	c, _, sent := newSendTestConnector(t)
-	err := c.SendFile(context.Background(), "/tmp/photo.png", "")
-	if err != nil {
-		t.Fatalf("SendFile: %v", err)
-	}
+	// Caption is ignored — only the media item is sent.
 	if len(*sent) != 1 {
-		t.Errorf("sendItemFn calls = %d, want 1 (no caption = media only)", len(*sent))
+		t.Fatalf("sendItemFn calls = %d, want 1 (caption ignored, media only)", len(*sent))
 	}
 	if (*sent)[0].item.Type != ItemImage {
 		t.Errorf("item.Type = %d, want ItemImage", (*sent)[0].item.Type)
@@ -214,34 +190,8 @@ func TestSendFile_UploadError(t *testing.T) {
 	}
 }
 
-func TestSendFile_CaptionSendError(t *testing.T) {
-	t.Parallel()
-	c := &WeChatConnector{
-		client:       &http.Client{},
-		state:        &State{AccountID: "bot"},
-		activeUserID: "user",
-		uploadFn: func(ctx context.Context, client *http.Client, baseURL, token, toUserID,
-			filePath string, mediaType int) (*UploadedFileInfo, error) {
-			return &UploadedFileInfo{AesKey: "abcdef", DownloadEncryptedQueryParam: "dl", FileSize: 100, FileSizeCiphertext: 112}, nil
-		},
-		sendItemFn: func(ctx context.Context, client *http.Client, baseURL, token,
-			fromUser, toUser string, item Item, contextToken, clientID string) error {
-			if item.Type == ItemText {
-				return errors.New("caption send failed")
-			}
-			t.Error("media sendItemFn should not be called when caption fails")
-			return nil
-		},
-	}
-	err := c.SendFile(context.Background(), "/tmp/photo.png", "look at this")
-	if err == nil || !strings.Contains(err.Error(), "caption") {
-		t.Fatalf("error = %v, want 'caption'", err)
-	}
-}
-
 func TestSendFile_MediaSendError(t *testing.T) {
 	t.Parallel()
-	var sentItems []Item
 	c := &WeChatConnector{
 		client:       &http.Client{},
 		state:        &State{AccountID: "bot"},
@@ -252,25 +202,12 @@ func TestSendFile_MediaSendError(t *testing.T) {
 		},
 		sendItemFn: func(ctx context.Context, client *http.Client, baseURL, token,
 			fromUser, toUser string, item Item, contextToken, clientID string) error {
-			sentItems = append(sentItems, item)
-			if item.Type != ItemText {
-				return errors.New("media send failed")
-			}
-			return nil
+			return errors.New("media send failed")
 		},
 	}
 	err := c.SendFile(context.Background(), "/tmp/doc.pdf", "here is the report")
 	if err == nil || !strings.Contains(err.Error(), "media") {
 		t.Fatalf("error = %v, want 'media'", err)
-	}
-	if len(sentItems) != 2 {
-		t.Errorf("sentItems = %d, want 2 (caption then media attempt)", len(sentItems))
-	}
-	if sentItems[0].Type != ItemText {
-		t.Errorf("first item type = %v, want ItemText (caption first)", sentItems[0].Type)
-	}
-	if sentItems[1].Type != ItemFile {
-		t.Errorf("second item type = %v, want ItemFile", sentItems[1].Type)
 	}
 }
 
