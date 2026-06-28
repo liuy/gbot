@@ -1,337 +1,1126 @@
-//go:build !linux
-
 package computer
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/liuy/gbot/pkg/types"
+	"github.com/liuy/gbot/pkg/tool"
 )
 
-// TestNewToolIdentity verifies New() returns a tool named "Computer" with the
-// "computer" alias.
-func TestNewToolIdentity(t *testing.T) {
-	tt := New()
+// newTestTool builds a Computer tool over a backend with an injectable fake
+// dialer, plus the recorded dialer so tests can inspect connect args.
+func newTestTool() (tool.Tool, *AndroidBackend, *dialRecorder) {
+	rec, dial := newFakeDialer()
+	b := newAndroidBackendForTest(dial)
+	return New(b), b, rec
+}
+
+func mustMarshal(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return data
+}
+
+func TestComputer_NameAndAliases(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
 	if tt.Name() != "Computer" {
-		t.Errorf("Name() = %q, want Computer", tt.Name())
+		t.Errorf("Name = %q, want Computer", tt.Name())
 	}
 	aliases := tt.Aliases()
 	if len(aliases) != 1 || aliases[0] != "computer" {
-		t.Errorf("Aliases() = %v, want [computer]", aliases)
+		t.Errorf("Aliases = %v, want [computer]", aliases)
 	}
 }
 
-// TestNewToolPrompt verifies the prompt is non-empty, mentions the window-
-// relative coordinate convention, and no longer mentions element (R3 removed it).
-func TestNewToolPrompt(t *testing.T) {
-	tt := New()
-	prompt := tt.Prompt()
-	if prompt == "" {
-		t.Fatal("Prompt is empty")
+func TestComputer_PromptNonEmpty(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	if tt.Prompt() == "" {
+		t.Error("Prompt is empty")
 	}
-	for _, want := range []string{"list", "snapshot", "window", "coordinate"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("Prompt missing %q", want)
+	if !contains(tt.Prompt(), "connect") {
+		t.Errorf("Prompt missing 'connect' keyword")
+	}
+}
+
+func TestComputer_InputSchema(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	schema := tt.InputSchema()
+	if len(schema) == 0 {
+		t.Error("InputSchema returned empty")
+	}
+	if !contains(string(schema), "device_info") {
+		t.Errorf("InputSchema missing 'device_info' action")
+	}
+}
+
+func TestComputer_IsReadOnly_PerAction(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	readOnly := []string{"screen", "screenshot", "device_info"}
+	for _, a := range readOnly {
+		input := mustMarshal(t, map[string]any{"action": a})
+		if !tt.IsReadOnly(input) {
+			t.Errorf("IsReadOnly(%s) = false, want true", a)
 		}
 	}
-	if strings.Contains(prompt, "element") {
-		t.Errorf("Prompt still mentions 'element' (R3 should have removed it): %s", prompt)
-	}
-}
-
-// TestIsReadOnlyPerAction verifies IsReadOnly flips correctly per action
-// (true only for list/snapshot).
-func TestIsReadOnlyPerAction(t *testing.T) {
-	tt := New()
-	readOnly := []string{"list", "snapshot"}
-	mutating := []string{"click", "drag", "scroll", "type", "key"}
-	for _, action := range readOnly {
-		raw := json.RawMessage(`{"action":"` + action + `"}`)
-		if !tt.IsReadOnly(raw) {
-			t.Errorf("IsReadOnly(%q) = false, want true", action)
+	notReadOnly := []string{"click", "type", "scroll", "connect", "disconnect"}
+	for _, a := range notReadOnly {
+		input := mustMarshal(t, map[string]any{"action": a})
+		if tt.IsReadOnly(input) {
+			t.Errorf("IsReadOnly(%s) = true, want false", a)
 		}
 	}
-	for _, action := range mutating {
-		raw := json.RawMessage(`{"action":"` + action + `"}`)
-		if tt.IsReadOnly(raw) {
-			t.Errorf("IsReadOnly(%q) = true, want false", action)
+}
+
+func TestComputer_IsDestructive_PerAction(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	destructive := []string{
+		"click", "click_element", "open_menu", "open_menu_element",
+		"type", "send_key", "scroll", "zoom", "open_app",
+	}
+	for _, a := range destructive {
+		input := mustMarshal(t, map[string]any{"action": a})
+		if !tt.IsDestructive(input) {
+			t.Errorf("IsDestructive(%s) = false, want true", a)
 		}
 	}
-	if len(readOnly) != 2 {
-		t.Errorf("readOnly actions = %d, want 2", len(readOnly))
-	}
-	if len(mutating) != 5 {
-		t.Errorf("mutating actions = %d, want 5", len(mutating))
-	}
-}
-
-// TestIsDestructivePerAction verifies IsDestructive is true for all mutating
-// actions and false for read-only ones.
-func TestIsDestructivePerAction(t *testing.T) {
-	tt := New()
-	readOnly := []string{"list", "snapshot"}
-	mutating := []string{"click", "drag", "scroll", "type", "key"}
-	for _, action := range readOnly {
-		raw := json.RawMessage(`{"action":"` + action + `"}`)
-		if tt.IsDestructive(raw) {
-			t.Errorf("IsDestructive(%q) = true, want false", action)
+	// connect and disconnect must NOT be destructive — connect flows at session
+	// start and must not trip the destructive-confirmation gate.
+	nonDestructive := []string{"connect", "disconnect", "screen", "screenshot", "device_info"}
+	for _, a := range nonDestructive {
+		input := mustMarshal(t, map[string]any{"action": a})
+		if tt.IsDestructive(input) {
+			t.Errorf("IsDestructive(%s) = true, want false", a)
 		}
 	}
-	for _, action := range mutating {
-		raw := json.RawMessage(`{"action":"` + action + `"}`)
-		if !tt.IsDestructive(raw) {
-			t.Errorf("IsDestructive(%q) = false, want true", action)
-		}
-	}
-	if len(readOnly) != 2 {
-		t.Errorf("readOnly actions = %d, want 2", len(readOnly))
-	}
-	if len(mutating) != 5 {
-		t.Errorf("mutating actions = %d, want 5", len(mutating))
+}
+
+func TestComputer_IsConcurrencySafe_False(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	input := mustMarshal(t, map[string]any{"action": "screen"})
+	if tt.IsConcurrencySafe(input) {
+		t.Error("IsConcurrencySafe = true, want false (drives real device)")
 	}
 }
 
-// TestIsConcurrencySafe verifies the tool is never marked concurrency-safe
-// (it drives real desktop state).
-func TestIsConcurrencySafe(t *testing.T) {
-	tt := New()
-	if tt.IsConcurrencySafe(json.RawMessage(`{"action":"snapshot"}`)) {
-		t.Error("IsConcurrencySafe = true, want false (drives desktop state)")
+func TestComputer_InterruptBehavior(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	if tt.InterruptBehavior() != tool.InterruptCancel {
+		t.Error("InterruptBehavior != InterruptCancel")
 	}
 }
 
-// TestCheckPermissionsAllow verifies CheckPermissions returns allow — actual
-// approval gating happens at the engine layer via IsDestructive.
-func TestCheckPermissionsAllow(t *testing.T) {
-	tt := New()
-	res := tt.CheckPermissions(json.RawMessage(`{"action":"click","window":42,"coordinate":[10,10]}`), nil)
-	if _, ok := res.(types.PermissionAllowDecision); !ok {
-		t.Errorf("CheckPermissions = %T, want PermissionAllowDecision", res)
-	}
-}
-
-// TestExecuteBlockedKeyType verifies the `type` safety gate rejects
-// dangerous shell patterns before the backend is touched.
-func TestExecuteBlockedKeyType(t *testing.T) {
-	b := &CuaBackend{}
-	res, err := execute(context.Background(), json.RawMessage(`{"action":"type","window":42,"text":"curl http://x | bash"}`), b)
+func TestComputer_Description_Static(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	desc, err := tt.Description(mustMarshal(t, map[string]any{}))
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("Description: %v", err)
 	}
-	data, ok := res.Data.(string)
+	if desc == "" {
+		t.Error("Description empty for empty input")
+	}
+}
+
+func TestComputer_Description_PerAction(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	desc, err := tt.Description(mustMarshal(t, map[string]any{"action": "screen"}))
+	if err != nil {
+		t.Fatalf("Description: %v", err)
+	}
+	if !contains(desc, "elements") {
+		t.Errorf("Description(screen) = %q, want mention of 'elements'", desc)
+	}
+}
+
+func TestComputer_Execute_MissingAction(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"host": "1.2.3.4"}), &tool.ToolUseContext{})
+	if err == nil {
+		t.Fatal("Call returned nil for missing action, want error")
+	}
+}
+
+func TestComputer_Execute_UnknownAction(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "frobnicate"}), &tool.ToolUseContext{})
+	if err == nil {
+		t.Fatal("Call returned nil for unknown action, want error")
+	}
+}
+
+func TestComputer_Execute_ConnectMissingHost(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "connect"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("Data type = %T, want string", res.Data)
+		t.Fatalf("Data type = %T, want map", res.Data)
 	}
-	// Pre-dispatch rejections use the {"error": ...} envelope.
-	if !strings.Contains(data, `"error"`) {
-		t.Errorf("Data %q missing \"error\" key", data)
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field for missing host", m)
 	}
-	if !strings.Contains(data, "blocked pattern") {
-		t.Errorf("Data %q missing 'blocked pattern'", data)
+	if e, _ := m["error"].(string); !contains(e, "host") {
+		t.Errorf("error = %q, want mention of 'host'", e)
 	}
 }
 
-// TestExecuteBlockedKeyCombo verifies the `key` safety gate rejects hard-
-// blocked system shortcuts before the backend is touched.
-func TestExecuteBlockedKeyCombo(t *testing.T) {
-	b := &CuaBackend{}
-	res, err := execute(context.Background(), json.RawMessage(`{"action":"key","window":42,"keys":"cmd+shift+q"}`), b)
+func TestComputer_Execute_ConnectDefaultsPort8765(t *testing.T) {
+	t.Parallel()
+	tt, b, rec := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect",
+		"host":   "1.2.3.4",
+	}), &tool.ToolUseContext{})
 	if err != nil {
-		t.Fatalf("execute: %v", err)
+		t.Fatalf("Call: %v", err)
 	}
-	data := res.Data.(string)
-	if !strings.Contains(data, `"error"`) {
-		t.Errorf("Data %q missing \"error\" key", data)
+	if !b.IsConnected() {
+		t.Error("not connected after connect")
 	}
-	if !strings.Contains(data, "blocked key combo") {
-		t.Errorf("Data %q missing 'blocked key combo'", data)
+	lc := rec.lastConnect()
+	if lc.host != "1.2.3.4" {
+		t.Errorf("connect host = %q, want 1.2.3.4", lc.host)
+	}
+	if lc.port != 8765 {
+		t.Errorf("connect port = %d, want 8765 (default)", lc.port)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["host"] != "1.2.3.4" {
+		t.Errorf("result host = %v, want 1.2.3.4", m["host"])
+	}
+	if port := numAsInt(m["port"]); port != 8765 {
+		t.Errorf("result port = %v, want 8765", m["port"])
 	}
 }
 
-// TestExecuteSafeType verifies benign type text does NOT trip the safety gate.
-// The safety gate runs before any backend call; a subsequent backend error
-// (no such window / no cua-driver) is acceptable as long as it is NOT the
-// blocked-pattern safety rejection.
-func TestExecuteSafeType(t *testing.T) {
-	b := &CuaBackend{}
-	res, err := execute(context.Background(), json.RawMessage(`{"action":"type","window":42,"text":"hello world"}`), b)
+func TestComputer_Execute_ConnectExplicitPort(t *testing.T) {
+	t.Parallel()
+	tt, _, rec := newTestTool()
+	_, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect",
+		"host":   "1.2.3.4",
+		"port":   9999,
+	}), &tool.ToolUseContext{})
 	if err != nil {
-		// A Go-level error from the backend (e.g. window resolution) is fine —
-		// the safety gate runs before the backend and would have returned a
-		// ToolResult, not an error.
-		if strings.Contains(err.Error(), "blocked pattern") {
-			t.Errorf("benign type text tripped safety gate: %v", err)
-		}
-		return
+		t.Fatalf("Call: %v", err)
 	}
-	data := res.Data.(string)
-	if strings.Contains(data, "blocked pattern") {
-		t.Errorf("benign type text tripped safety gate: %s", data)
+	lc := rec.lastConnect()
+	if lc.port != 9999 {
+		t.Errorf("connect port = %d, want 9999", lc.port)
 	}
 }
 
-// TestSummarizeAction verifies the tool-card summary string for each action.
-func TestSummarizeAction(t *testing.T) {
-	win := 42
-	count := 2
-	amount := 5
+func TestComputer_Execute_Disconnect(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	// Connect first so disconnect has something to close.
+	_, _ = tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect", "host": "h",
+	}), &tool.ToolUseContext{})
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "disconnect"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if b.IsConnected() {
+		t.Error("still connected after disconnect")
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "disconnect" {
+		t.Errorf("action = %v, want disconnect", m["action"])
+	}
+	if ok2, _ := m["ok"].(bool); !ok2 {
+		t.Error("ok = false, want true")
+	}
+}
+
+func TestComputer_Execute_DisconnectWhenNeverConnected(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "disconnect"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if ok2, _ := m["ok"].(bool); !ok2 {
+		t.Error("ok = false, want true (idempotent disconnect)")
+	}
+}
+
+func TestComputer_Execute_ScreenBeforeConnect(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "screen"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "not connected; call connect first") {
+		t.Errorf("error = %q, want 'not connected; call connect first'", e)
+	}
+}
+
+func TestComputer_Execute_ScreenRenders(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"get_ui_tree": json.RawMessage(`{"tree":{
+			"className":"root","children":[
+				{"className":"android.widget.Button","isClickable":true,"text":"OK","bounds":{"left":0,"top":0,"right":10,"bottom":20}}
+			]
+		}}`),
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screen"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	sr, ok := res.Data.(*ScreenResult)
+	if !ok {
+		t.Fatalf("Data type = %T, want *ScreenResult", res.Data)
+	}
+	if len(sr.Elements) != 1 {
+		t.Fatalf("elements = %d, want 1", len(sr.Elements))
+	}
+	// renderResult should produce the numbered list.
+	rendered := tt.RenderResult(res.Data)
+	if !contains(rendered, "#1 Button") {
+		t.Errorf("RenderResult = %q, want #1 Button", rendered)
+	}
+}
+
+func TestComputer_Execute_ScreenshotAttachesImageBlock(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"screenshot": json.RawMessage(`{"image":"BASE64","format":"jpeg","width":1080,"height":2400}`),
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screenshot"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if len(res.NewMessages) != 1 {
+		t.Fatalf("NewMessages len = %d, want 1", len(res.NewMessages))
+	}
+	msg := res.NewMessages[0]
+	if len(msg.Content) != 2 {
+		t.Fatalf("Content blocks = %d, want 2 (text + image)", len(msg.Content))
+	}
+	if msg.Content[1].Type != "image" {
+		t.Errorf("Content[1] Type = %q, want image", msg.Content[1].Type)
+	}
+	if msg.Content[1].Source == nil {
+		t.Fatal("Content[1] Source = nil")
+	}
+	if msg.Content[1].Source.MediaType != "image/jpeg" {
+		t.Errorf("MediaType = %q, want image/jpeg", msg.Content[1].Source.MediaType)
+	}
+	if msg.Content[1].Source.Data != "BASE64" {
+		t.Errorf("Data = %q, want BASE64", msg.Content[1].Source.Data)
+	}
+}
+
+func TestComputer_Execute_TypeEmptyText(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	callsBefore := fc.callCount()
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "type", "text": ""}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "non-empty text") {
+		t.Errorf("error = %q, want 'non-empty text'", e)
+	}
+	if fc.callCount() != callsBefore {
+		t.Errorf("wire calls changed from %d to %d (empty type must not reach wire)", callsBefore, fc.callCount())
+	}
+}
+
+func TestComputer_Execute_TypeBlockedText(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "type",
+		"text":   "sudo rm -rf /",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "blocked") {
+		t.Errorf("error = %q, want 'blocked'", e)
+	}
+	// set_text must not have been issued.
+	last := fc.lastCall()
+	if last.Command == "set_text" {
+		t.Error("set_text was issued for blocked text, want rejection before wire")
+	}
+}
+
+func TestComputer_Execute_TypeSuccess(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "type", "text": "hello",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	last := fc.lastCall()
+	if last.Command != "set_text" {
+		t.Errorf("command = %q, want set_text", last.Command)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "type" {
+		t.Errorf("action = %v, want type", m["action"])
+	}
+}
+
+func TestComputer_Execute_SendKeyUnknown(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	callsBefore := fc.callCount()
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "send_key", "key": "escape",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "unknown key") {
+		t.Errorf("error = %q, want 'unknown key'", e)
+	}
+	if fc.callCount() != callsBefore {
+		t.Errorf("wire calls changed from %d to %d (unknown key must not reach wire)", callsBefore, fc.callCount())
+	}
+}
+
+func TestComputer_Execute_SendKeyValid(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "send_key", "key": "BACK",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	last := fc.lastCall()
+	if last.Command != "press_key" {
+		t.Errorf("command = %q, want press_key", last.Command)
+	}
+	if last.Params["key"] != "back" {
+		t.Errorf("key param = %v, want back (lowercased)", last.Params["key"])
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["key"] != "back" {
+		t.Errorf("result key = %v, want back", m["key"])
+	}
+}
+
+func TestComputer_Execute_ClickRequiresCoordinate(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "click"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "coordinate") {
+		t.Errorf("error = %q, want mention of 'coordinate'", e)
+	}
+}
+
+func TestComputer_Execute_ClickElementRequiresRef(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "click_element"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "ref") {
+		t.Errorf("error = %q, want mention of 'ref'", e)
+	}
+}
+
+func TestComputer_Execute_ScrollBadDirection(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "scroll", "direction": "diagonal",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "direction") {
+		t.Errorf("error = %q, want mention of 'direction'", e)
+	}
+}
+
+func TestComputer_Execute_DeviceInfo(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"get_device_info": json.RawMessage(`{"manufacturer":"Google","model":"Pixel 8","sdk":34,"release":"14","screenWidth":1080,"screenHeight":2400,"density":2.625,"densityDpi":420}`),
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "device_info"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	info, ok := res.Data.(*DeviceInfo)
+	if !ok {
+		t.Fatalf("Data type = %T, want *DeviceInfo", res.Data)
+	}
+	if info.Model != "Pixel 8" {
+		t.Errorf("Model = %q, want Pixel 8", info.Model)
+	}
+	rendered := tt.RenderResult(res.Data)
+	if !contains(rendered, "Pixel 8") {
+		t.Errorf("RenderResult = %q, want 'Pixel 8'", rendered)
+	}
+}
+
+func TestComputer_Execute_ClickWithCoordinate(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "click", "coordinate": []int{100, 200},
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	last := fc.lastCall()
+	if last.Command != "tap" {
+		t.Errorf("command = %q, want tap", last.Command)
+	}
+	if x := numAsInt(last.Params["x"]); x != 100 {
+		t.Errorf("tap x = %v, want 100", last.Params["x"])
+	}
+	if y := numAsInt(last.Params["y"]); y != 200 {
+		t.Errorf("tap y = %v, want 200", last.Params["y"])
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if ok2, _ := m["ok"].(bool); !ok2 {
+		t.Error("ok = false, want true")
+	}
+}
+
+func TestComputer_RenderResult_ErrorMap(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	got := tt.RenderResult(map[string]any{"error": "bad thing"})
+	if !strings.HasPrefix(got, "error:") {
+		t.Errorf("RenderResult = %q, want 'error:' prefix", got)
+	}
+	if !contains(got, "bad thing") {
+		t.Errorf("RenderResult = %q, want 'bad thing'", got)
+	}
+}
+
+func TestComputer_RenderResult_OkMap(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	got := tt.RenderResult(map[string]any{"action": "click", "ok": true})
+	if got != "click: ok" {
+		t.Errorf("RenderResult = %q, want 'click: ok'", got)
+	}
+}
+
+func TestComputer_RenderResult_ScreenshotType(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	shot := &Screenshot{MIMEType: "image/jpeg", Width: 1080, Height: 2400}
+	got := tt.RenderResult(shot)
+	if !contains(got, "1080x2400") {
+		t.Errorf("RenderResult = %q, want '1080x2400'", got)
+	}
+	if !contains(got, "image/jpeg") {
+		t.Errorf("RenderResult = %q, want 'image/jpeg'", got)
+	}
+}
+
+func TestComputer_Execute_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	_, err := tt.Call(context.Background(), json.RawMessage(`{bad`), &tool.ToolUseContext{})
+	if err == nil {
+		t.Fatal("Call returned nil for invalid JSON, want error")
+	}
+}
+
+func TestComputer_SummarizeAction_AllBranches(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
 	cases := []struct {
-		name string
-		in   Input
-		want string
+		action string
+		want   string
 	}{
-		{"list", Input{Action: "list"}, "list windows"},
-		{"snapshot", Input{Action: "snapshot", Window: &win}, "snapshot window=42"},
-		{"snapshot mode", Input{Action: "snapshot", Window: &win, Mode: "ax"}, "snapshot window=42 mode=ax"},
-		{"click coord", Input{Action: "click", Window: &win, Coordinate: json.RawMessage(`[100,200]`)}, "click window=42 at (100,200)"},
-		{"click count button", Input{Action: "click", Window: &win, Coordinate: json.RawMessage(`[100,200]`), Count: &count, Button: "right"}, "click window=42 at (100,200) right x2"},
-		{"type", Input{Action: "type", Window: &win, Text: "hi"}, `type window=42 "hi"`},
-		{"type long", Input{Action: "type", Window: &win, Text: strings.Repeat("x", 100)}, `type window=42 "` + strings.Repeat("x", 60) + `"...`},
-		{"key", Input{Action: "key", Window: &win, Keys: "cmd+s"}, `key window=42 "cmd+s"`},
-		{"scroll", Input{Action: "scroll", Window: &win, Direction: "down", Amount: &amount}, "scroll window=42 down x5"},
-		{"drag", Input{Action: "drag", Window: &win, FromCoordinate: json.RawMessage(`[1,2]`), ToCoordinate: json.RawMessage(`[3,4]`)}, "drag window=42 (1,2)→(3,4)"},
-		// element/zoom/wait cases removed (R3/R2/R1).
+		{"connect", "connect to"},
+		{"disconnect", "disconnect from device"},
+		{"screen", "elements"},
+		{"screenshot", "screenshot"},
+		{"click", "tap coordinate"},
+		{"click_element", "tap element ref"},
+		{"open_menu", "long-press coordinate"},
+		{"open_menu_element", "long-press element ref"},
+		{"type", "type text"},
+		{"send_key", "send key"},
+		{"scroll", "scroll"},
+		{"zoom", "pinch zoom"},
+		{"device_info", "device info"},
+		{"open_app", "open app"},
+		{"unknown", "computer action"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := summarizeAction(tc.in)
-			if got != tc.want {
-				t.Errorf("summarizeAction(%+v) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestMaxResultSize verifies MaxResultSize is the plan's 50000.
-func TestMaxResultSize(t *testing.T) {
-	tt := New()
-	if got := tt.MaxResultSize(); got != 50000 {
-		t.Errorf("MaxResultSize = %d, want 50000", got)
-	}
-}
-
-// TestInterruptBehavior verifies the tool uses InterruptCancel.
-func TestInterruptBehavior(t *testing.T) {
-	tt := New()
-	if got := tt.InterruptBehavior(); got != 0 { // 0 == InterruptCancel
-		t.Errorf("InterruptBehavior = %d, want InterruptCancel (0)", got)
-	}
-}
-
-// TestNewBackendSessionID verifies the session id has the right prefix and length.
-func TestNewBackendSessionID(t *testing.T) {
-	b := NewCuaBackend()
-	if !strings.HasPrefix(b.sessionID, "gbot-") {
-		t.Errorf("sessionID = %q, want gbot- prefix", b.sessionID)
-	}
-	// "gbot-" + 12 hex chars = 17.
-	if len(b.sessionID) != 17 {
-		t.Errorf("sessionID length = %d, want 17 (gbot- + 12 hex)", len(b.sessionID))
-	}
-	// Two backends get distinct session ids.
-	b2 := NewCuaBackend()
-	if b.sessionID == b2.sessionID {
-		t.Errorf("two backends share sessionID %q", b.sessionID)
-	}
-}
-
-// TestChildEnvTelemetryOff verifies childEnv injects telemetryEnv=0 by default.
-func TestChildEnvTelemetryOff(t *testing.T) {
-	env := childEnv(nil)
-	if v := env[telemetryEnv]; v != "0" {
-		t.Errorf("childEnv[%s] = %q, want 0 (telemetry disabled by default)", telemetryEnv, v)
-	}
-}
-
-// TestChildEnvMerge verifies childEnv merges in extra entries.
-func TestChildEnvMerge(t *testing.T) {
-	env := childEnv(map[string]string{"DISPLAY": ":10", "FOO": "bar"})
-	if env["DISPLAY"] != ":10" {
-		t.Errorf("DISPLAY = %q, want :10", env["DISPLAY"])
-	}
-	if env["FOO"] != "bar" {
-		t.Errorf("FOO = %q, want bar", env["FOO"])
-	}
-	if env[telemetryEnv] != "0" {
-		t.Errorf("telemetry var overridden by extra")
-	}
-}
-
-// TestMapToEnvSlice verifies env map → key=value slice, sorted for determinism.
-func TestMapToEnvSlice(t *testing.T) {
-	m := map[string]string{"B": "2", "A": "1", "C": "3"}
-	got := mapToEnvSlice(m)
-	want := []string{"A=1", "B=2", "C=3"}
-	if len(got) != 3 {
-		t.Fatalf("len = %d, want 3", len(got))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("env[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// TestRandomHex verifies randomHex returns the requested number of hex chars.
-func TestRandomHex(t *testing.T) {
-	cases := []int{1, 6, 12, 24}
-	for _, n := range cases {
-		s := randomHex(n)
-		if len(s) != n {
-			t.Errorf("randomHex(%d) length = %d, want %d", n, len(s), n)
-		}
-		for _, c := range s {
-			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-				t.Errorf("randomHex(%d) = %q with non-hex char %q", n, s, c)
-			}
-		}
-	}
-}
-
-// TestEncodeBase64 verifies encodeBase64 round-trips against the std lib.
-func TestEncodeBase64(t *testing.T) {
-	nonEmptyCases := [][]byte{
-		[]byte("a"),
-		[]byte("ab"),
-		[]byte("abc"),
-		[]byte("Hello, World!"),
-		bytes99(),
-	}
-	for _, in := range nonEmptyCases {
-		got := encodeBase64(in)
-		decoded, err := decodeStd(got)
+	for _, c := range cases {
+		desc, err := tt.Description(mustMarshal(t, map[string]any{"action": c.action}))
 		if err != nil {
-			t.Errorf("encodeBase64(%v): decode failed: %v", in, err)
-			continue
+			t.Fatalf("Description(%s): %v", c.action, err)
 		}
-		if string(decoded) != string(in) {
-			t.Errorf("encodeBase64(%v) round-trip = %v, want %v", in, decoded, in)
+		if !contains(desc, c.want) {
+			t.Errorf("Description(%s) = %q, want it to contain %q", c.action, desc, c.want)
 		}
-	}
-
-	if encodeBase64(nil) != "" {
-		t.Errorf("encodeBase64(nil) = %q, want empty", encodeBase64(nil))
-	}
-	if encodeBase64([]byte{}) != "" {
-		t.Errorf("encodeBase64(empty) = %q, want empty", encodeBase64([]byte{}))
 	}
 }
 
-// bytes99 returns a 99-byte slice (tests the unaligned tail padding path).
-func bytes99() []byte {
-	b := make([]byte, 99)
-	for i := range b {
-		b[i] = byte(i)
+func TestComputer_Description_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// Invalid JSON must fall back to the static description, not error.
+	desc, err := tt.Description(json.RawMessage(`{bad json`))
+	if err != nil {
+		t.Fatalf("Description invalid JSON should not error: %v", err)
 	}
-	return b
+	if desc == "" {
+		t.Error("Description invalid JSON returned empty")
+	}
 }
 
-// decodeStd is std-lib base64 decode, kept in a helper so the test reads as
-// "decode what encodeBase64 produced".
-func decodeStd(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
+func TestComputer_Execute_ClickElementSuccess(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"get_ui_tree": json.RawMessage(`{"tree":{
+			"className":"root","children":[
+				{"className":"android.widget.Button","isClickable":true,"bounds":{"left":0,"top":0,"right":100,"bottom":100}}
+			]
+		}}`),
+	}
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screen"}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "click_element", "ref": 1,
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "click_element" {
+		t.Errorf("action = %v, want click_element", m["action"])
+	}
+	if ref := numAsInt(m["ref"]); ref != 1 {
+		t.Errorf("ref = %v, want 1", m["ref"])
+	}
+}
+
+func TestComputer_Execute_ScrollSuccess(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "scroll", "direction": "down",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["direction"] != "down" {
+		t.Errorf("direction = %v, want down", m["direction"])
+	}
+	// Confirm the scroll command reached the wire with direction down.
+	last := b.client.(*fakeCaller).lastCall()
+	if last.Command != "scroll" {
+		t.Errorf("wire command = %q, want scroll", last.Command)
+	}
+	if last.Params["direction"] != "down" {
+		t.Errorf("wire direction = %v, want down", last.Params["direction"])
+	}
+}
+
+func TestComputer_Execute_ZoomSuccess(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "zoom", "coordinate": []int{540, 1200}, "scale": 2.0,
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "zoom" {
+		t.Errorf("action = %v, want zoom", m["action"])
+	}
+}
+
+func TestComputer_Execute_OpenMenuSuccess(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "open_menu", "coordinate": []int{10, 20},
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "open_menu" {
+		t.Errorf("action = %v, want open_menu", m["action"])
+	}
+}
+
+func TestComputer_Execute_ConnectBackendError(t *testing.T) {
+	t.Parallel()
+	rec, dial := newFakeDialer()
+	b := newAndroidBackendForTest(dial)
+	tt := New(b)
+	rec.failNext = context.DeadlineExceeded
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "connect", "host": "h",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field for dial failure", m)
+	}
+}
+
+func TestComputer_PortOr(t *testing.T) {
+	t.Parallel()
+	p := 9000
+	if got := portOr(&p, 8765); got != 9000 {
+		t.Errorf("portOr(&9000) = %d, want 9000", got)
+	}
+	if got := portOr(nil, 8765); got != 8765 {
+		t.Errorf("portOr(nil) = %d, want 8765", got)
+	}
+}
+
+func TestComputer_RefOr(t *testing.T) {
+	t.Parallel()
+	r := 5
+	if got := refOr(&r); got != 5 {
+		t.Errorf("refOr(&5) = %d, want 5", got)
+	}
+	if got := refOr(nil); got != 0 {
+		t.Errorf("refOr(nil) = %d, want 0", got)
+	}
+}
+
+func TestComputer_RenderResult_NilSafe(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// nil data must not panic — falls to the default JSON branch.
+	got := tt.RenderResult(nil)
+	if got != "null" {
+		t.Errorf("RenderResult(nil) = %q, want 'null'", got)
+	}
+}
+
+func TestComputer_RenderResult_UnknownType(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// A non-handled type falls to the default JSON marshal branch.
+	got := tt.RenderResult(42)
+	if got != "42" {
+		t.Errorf("RenderResult(42) = %q, want '42'", got)
+	}
+}
+
+func TestComputer_Execute_DisconnectBackendError(t *testing.T) {
+	t.Parallel()
+	// Disconnect never errors in the current implementation, but the
+	// doDisconnect error branch must still be exercised by a test that
+	// disconnects successfully — this confirms the ok path.
+	tt, _, _ := newTestTool()
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{"action": "disconnect"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if ok2, _ := m["ok"].(bool); !ok2 {
+		t.Error("ok = false, want true")
+	}
+}
+
+func TestComputer_Execute_ScreenBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"get_ui_tree": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screen"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field for backend failure", m)
+	}
+}
+
+func TestComputer_Execute_ScreenshotBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"screenshot": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screenshot"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_DeviceInfoBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"get_device_info": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "device_info"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_ClickElementBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).responses = map[string]json.RawMessage{
+		"get_ui_tree": json.RawMessage(`{"tree":{"className":"root","children":[{"className":"B","isClickable":true,"bounds":{"left":0,"top":0,"right":10,"bottom":10}}]}}`),
+	}
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "screen"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"tap": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "click_element", "ref": 1}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_ScrollBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"scroll": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "scroll", "direction": "up"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_TypeBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"set_text": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "type", "text": "hi"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_SendKeyBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"press_key": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "send_key", "key": "home"}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_ClickBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"tap": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{"action": "click", "coordinate": []int{1, 2}}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_OpenAppSuccess(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "open_app", "package": "com.android.chrome",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "open_app" {
+		t.Errorf("action = %v, want open_app", m["action"])
+	}
+	if m["package"] != "com.android.chrome" {
+		t.Errorf("package = %v, want com.android.chrome", m["package"])
+	}
+	last := b.client.(*fakeCaller).lastCall()
+	if last.Command != "open_app" {
+		t.Errorf("wire command = %q, want open_app", last.Command)
+	}
+	if last.Params["package"] != "com.android.chrome" {
+		t.Errorf("wire package = %v, want com.android.chrome", last.Params["package"])
+	}
+}
+
+func TestComputer_Execute_OpenAppEmptyPackage(t *testing.T) {
+	t.Parallel()
+	tt, _, rec := newTestTool()
+	// Validation runs pre-connect, so no connect is needed and no wire
+	// traffic should occur.
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "open_app",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "package") {
+		t.Errorf("error = %q, want mention of 'package'", e)
+	}
+	if rec.clientCount() != 0 {
+		t.Errorf("clients dialed = %d, want 0 (validation must run pre-connect)", rec.clientCount())
+	}
+}
+
+func TestComputer_Execute_OpenAppBackendError(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	b.client.(*fakeCaller).errs = map[string]error{
+		"open_app": context.DeadlineExceeded,
+	}
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "open_app", "package": "com.android.chrome",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Errorf("Data = %+v, want 'error' field", m)
+	}
+}
+
+func TestComputer_Execute_OpenAppNotConnected(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// A valid package but no connect: ensureConnected fires and surfaces the
+	// canonical not-connected error.
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "open_app", "package": "com.android.chrome",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "connect first") {
+		t.Errorf("error = %q, want 'connect first'", e)
+	}
 }
