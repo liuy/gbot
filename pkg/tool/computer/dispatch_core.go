@@ -437,51 +437,6 @@ func parseElementsFromTree(markdown string) []UIElement {
 // Helpers shared by both backends.
 // ---------------------------------------------------------------------------
 
-// actionErr is a convenience constructor for an ActionResult failure that is
-// not a Go-level error.
-func actionErr(action, message string) *ActionResult {
-	return &ActionResult{OK: false, Action: action, Message: message}
-}
-
-// windowInfo is a normalized list entry. Both CuaBackend (cua-driver
-// structured payload) and X11Backend (EWMH property walk) produce these.
-type windowInfo struct {
-	AppName   string
-	PID       int
-	WindowID  int
-	OffScreen bool
-	Title     string
-	ZIndex    int
-	X, Y      int
-	Width     int
-	Height    int
-}
-
-// desktopWindowNames is matched case-insensitively as a substring against a
-// window's title to classify it as a desktop/shell surface in list output.
-// Shared by both backends' list classification.
-var desktopWindowNames = []string{
-	"progman", "workerw", "program manager", // Windows desktop
-	"shell_traywnd", "taskbar", // Windows taskbar
-	"finder", "desktop", "dock", // macOS desktop / shell
-}
-
-// formatWindowLine renders a single window list line. Shared by both
-// backends so list output is identical regardless of platform.
-func formatWindowLine(w windowInfo) string {
-	wtype := "app"
-	hay := strings.ToLower(w.Title + " " + w.AppName)
-	if containsAny(hay, desktopWindowNames) {
-		wtype = "desktop"
-	} else if strings.Contains(hay, "panel") {
-		wtype = "panel"
-	}
-	return fmt.Sprintf(
-		"window_id=%d pid=%d title=%q bounds=[%d,%d,%d,%d] type=%s",
-		w.WindowID, w.PID, w.Title, w.X, w.Y, w.Width, w.Height, wtype,
-	)
-}
-
 // parseWindows and parseElementsFromResult live in dispatch.go (!linux): they
 // consume the cua-driver structured payload shape, which the X11Backend path
 // never produces.
@@ -574,17 +529,6 @@ func parseKeyCombo(keys string) (string, []string) {
 	return key, modifiers
 }
 
-// containsAny reports whether s contains any of subs (case-insensitive
-// already assumed — caller lowercases).
-func containsAny(s string, subs []string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
-
 // optSuffix / optQuotedSuffix format optional app/window suffixes on the
 // capture summary header.
 func optSuffix(prefix, value string) string {
@@ -629,84 +573,4 @@ func rawAny(raw json.RawMessage) any {
 		return nil
 	}
 	return v
-}
-
-// summarizeAction is the tool-card summary string for each action. Shared by
-// both platforms' New() Description_ callback.
-func summarizeAction(in Input) string {
-	wid := ""
-	if in.Window != nil {
-		wid = fmt.Sprintf(" window=%d", *in.Window)
-	}
-	switch in.Action {
-	case ActionList:
-		return "list windows"
-	case ActionSnapshot:
-		suffix := ""
-		if in.Mode != "" && in.Mode != ModeSom {
-			suffix = " mode=" + in.Mode
-		}
-		return fmt.Sprintf("snapshot%s%s", wid, suffix)
-	case ActionClick:
-		// R3: element-based click removed — coordinate-only targeting.
-		target := ""
-		if x, y, ok := parseCoordinate(in.Coordinate); ok {
-			target = fmt.Sprintf(" at (%d,%d)", x, y)
-		}
-		extra := ""
-		if in.Button != "" && in.Button != ButtonLeft {
-			extra += " " + in.Button
-		}
-		if in.Count != nil && *in.Count > 1 {
-			extra += fmt.Sprintf(" x%d", *in.Count)
-		}
-		return fmt.Sprintf("click%s%s%s", wid, target, extra)
-	case ActionType:
-		text := in.Text
-		suffix := ""
-		if len(text) > 60 {
-			text, suffix = text[:60], "..."
-		}
-		return fmt.Sprintf("type%s %q%s", wid, text, suffix)
-	case ActionKey:
-		return fmt.Sprintf("key%s %q", wid, in.Keys)
-	case ActionScroll:
-		dir := in.Direction
-		if dir == "" {
-			dir = "?"
-		}
-		amount := 3
-		if in.Amount != nil {
-			amount = *in.Amount
-		}
-		return fmt.Sprintf("scroll%s %s x%d", wid, dir, amount)
-	case ActionDrag:
-		src, dst := "?", "?"
-		if x, y, ok := parseCoordinate(in.FromCoordinate); ok {
-			src = fmt.Sprintf("(%d,%d)", x, y)
-		}
-		if x, y, ok := parseCoordinate(in.ToCoordinate); ok {
-			dst = fmt.Sprintf("(%d,%d)", x, y)
-		}
-		return fmt.Sprintf("drag%s %s→%s", wid, src, dst)
-		// ActionZoom/ActionWait cases removed (R2/R1): both actions dropped.
-	}
-	return in.Action
-}
-
-// captureSummary is the RenderResult string for a *CaptureResult. Mirrors
-// the summary header captureResponse builds (mode + size + app + window),
-// minus the element index (the full summary is in the ToolResult.Data).
-func captureSummary(cap *CaptureResult) string {
-	if cap == nil {
-		return ""
-	}
-	header := fmt.Sprintf("capture mode=%s %dx%d", cap.Mode, cap.Width, cap.Height)
-	if cap.App != "" {
-		header += " app=" + cap.App
-	}
-	if cap.WindowTitle != "" {
-		header += fmt.Sprintf(" window=%q", cap.WindowTitle)
-	}
-	return header
 }

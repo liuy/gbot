@@ -82,7 +82,7 @@ func New(sender FileSender) tool.Tool {
 		},
 		IsReadOnly_:        func(json.RawMessage) bool { return false },
 		IsDestructive_:     func(json.RawMessage) bool { return false },
-		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
+		IsConcurrencySafe_: func(json.RawMessage) bool { return true },
 		InterruptBehavior_: tool.InterruptCancel,
 		Prompt_:            "Send a file (image, document, or video) to the user.",
 		RenderResult_: func(data any) string {
