@@ -229,14 +229,20 @@ func (b *AndroidBackend) OpenMenuElement(ctx context.Context, ref int) error {
 	return b.OpenMenu(ctx, x, y)
 }
 
-// Type replaces the focused field's text. Uses DroidPilot's set_text (REPLACE
-// semantics) to match Anthropic computer-use conventions and avoid a
-// double-type hazard on retry — type_text would append.
-func (b *AndroidBackend) Type(ctx context.Context, text string) error {
+// Type sets text on the focused field. Mode "replace" (default) uses
+// DroidPilot's set_text (ACTION_SET_TEXT); "append" uses type_text which
+// appends to existing content via the focused EditText. set_text fails on
+// custom Views that don't implement ACTION_SET_TEXT — append (type_text)
+// works in those cases because it dispatches key events instead.
+func (b *AndroidBackend) Type(ctx context.Context, text, mode string) error {
 	if err := b.ensureConnected(ctx); err != nil {
 		return err
 	}
-	_, err := b.client.call(ctx, "set_text", map[string]any{"text": text})
+	command := "set_text"
+	if mode == "append" {
+		command = "type_text"
+	}
+	_, err := b.client.call(ctx, command, map[string]any{"text": text})
 	return err
 }
 

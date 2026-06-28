@@ -238,7 +238,7 @@ func TestAndroidBackend_ActionsBeforeConnect_NoWireCalls(t *testing.T) {
 	// even if it had, no call() would have been issued.
 	_, _ = b.Screen(context.Background(), 15)
 	_ = b.Click(context.Background(), 1, 1)
-	_ = b.Type(context.Background(), "hi")
+	_ = b.Type(context.Background(), "hi", "")
 	if rec.clientCount() != 0 {
 		t.Errorf("fake dialer client count = %d, want 0 (no connect happened)", rec.clientCount())
 	}
@@ -491,7 +491,7 @@ func TestAndroidBackend_Type_IssuesSetText(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 	fc := b.client.(*fakeCaller)
-	if err := b.Type(ctx, "hello"); err != nil {
+	if err := b.Type(ctx, "hello", ""); err != nil {
 		t.Fatalf("Type: %v", err)
 	}
 	last := fc.lastCall()
@@ -761,7 +761,7 @@ func TestAndroidBackend_AllMethodsBeforeConnect(t *testing.T) {
 	if err := b.OpenMenuElement(ctx, 1); err == nil {
 		t.Error("OpenMenuElement before connect returned nil")
 	}
-	if err := b.Type(ctx, "x"); err == nil {
+	if err := b.Type(ctx, "x", ""); err == nil {
 		t.Error("Type before connect returned nil")
 	}
 	if err := b.SendKey(ctx, "back"); err == nil {

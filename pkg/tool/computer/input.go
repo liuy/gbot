@@ -21,6 +21,7 @@ type Input struct {
 	Coordinate json.RawMessage `json:"coordinate,omitempty"` // [click, open_menu, zoom] [x,y]
 	Direction  string          `json:"direction,omitempty"`  // [scroll] up|down|left|right
 	Text       string          `json:"text,omitempty"`       // [type]
+	Mode       string          `json:"mode,omitempty"`       // [type] "replace" (default) or "append"
 	Key        string          `json:"key,omitempty"`        // [send_key]
 	Scale      *float64        `json:"scale,omitempty"`      // [zoom]
 	Package    string          `json:"package,omitempty"`    // [open_app]

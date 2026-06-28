@@ -50,7 +50,12 @@ func inputSchema() json.RawMessage {
     },
     "text": {
       "type": "string",
-      "description": "[type] text to replace the focused field with (non-empty)."
+      "description": "[type] text to type into the focused field (non-empty)."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["replace", "append"],
+      "description": "[type] replace (default) overwrites the field; append adds to existing text. Use append for custom Views that reject set_text."
     },
     "key": {
       "type": "string",

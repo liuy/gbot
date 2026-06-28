@@ -112,7 +112,7 @@ type Backend interface {
 	ClickElement(ctx context.Context, ref int) error
 	OpenMenu(ctx context.Context, x, y int) error
 	OpenMenuElement(ctx context.Context, ref int) error
-	Type(ctx context.Context, text string) error
+	Type(ctx context.Context, text, mode string) error
 	SendKey(ctx context.Context, key string) error
 	Scroll(ctx context.Context, direction string) error
 	Zoom(ctx context.Context, x, y int, scale float64) error

@@ -273,7 +273,11 @@ func doType(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResult,
 	if pat := isBlockedType(in.Text); pat != "" {
 		return errorResponse(fmt.Sprintf("type blocked by safety pattern: %s", pat)), nil
 	}
-	if err := b.Type(ctx, in.Text); err != nil {
+	mode := strings.TrimSpace(strings.ToLower(in.Mode))
+	if mode != "" && mode != "replace" && mode != "append" {
+		return errorResponse("type mode must be \"replace\" or \"append\""), nil
+	}
+	if err := b.Type(ctx, in.Text, mode); err != nil {
 		return notConnectedOrError(err), nil
 	}
 	return okResponse(map[string]any{"action": ActionType}), nil
