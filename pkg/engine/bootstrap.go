@@ -16,7 +16,6 @@ import (
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
 	"github.com/liuy/gbot/pkg/tool/bash"
-	"github.com/liuy/gbot/pkg/tool/computer"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
@@ -102,7 +101,6 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 	reg.MustRegister(webtool.New(proxyClient, webOpts...))
 
 	reg.MustRegister(lsptool.New(deps.LSPReg))
-	reg.MustRegister(computer.New())
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }
