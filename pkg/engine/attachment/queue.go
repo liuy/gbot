@@ -23,6 +23,22 @@ func (q *Queue) Enqueue(item types.QueuedItem) {
 	q.mu.Unlock()
 }
 
+// RemoveByUUID removes the first item with the given UUID from the queue.
+// Returns true if found and removed; false if absent or queue is empty.
+// Source: TS messageQueueManager popAllEditable clears the editable subset —
+// gbot keys by UUID and (queue is all-editable) so this removes any matched item.
+func (q *Queue) RemoveByUUID(uuid string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for i, item := range q.items {
+		if item.UUID == uuid {
+			q.items = append(q.items[:i], q.items[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // Len returns the number of pending items.
 func (q *Queue) Len() int {
 	q.mu.Lock()

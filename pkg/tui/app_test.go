@@ -8056,6 +8056,146 @@ func TestHandleEnqueueMessage_EmptyText(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// popAllQueuedToInput tests
+// ---------------------------------------------------------------------------
+
+func TestPopAllQueuedToInput_EmptyQueue_ReturnsFalse(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.input.SetValue("draft")
+
+	if got := app.popAllQueuedToInput(); got {
+		t.Error("popAllQueuedToInput on empty queue = true, want false")
+	}
+	if v := app.input.Value(); v != "draft" {
+		t.Errorf("input should be unchanged, got %q, want %q", v, "draft")
+	}
+}
+
+func TestPopAllQueuedToInput_AllItemsConcatenated(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.pendingQueue = []pendingQueueItem{
+		{ID: "u-1", Text: "first"},
+		{ID: "u-2", Text: "second"},
+	}
+	// Match the engine attachment queue so RemoveAttachment has targets.
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-1", Value: "first", Mode: types.ItemModePrompt})
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-2", Value: "second", Mode: types.ItemModePrompt})
+	app.input.SetValue("draft")
+	app.input.SetCursor(2) // inside "draft"
+
+	if got := app.popAllQueuedToInput(); !got {
+		t.Fatal("popAllQueuedToInput = false, want true (queue non-empty)")
+	}
+	if v := app.input.Value(); v != "first\nsecond\ndraft" {
+		t.Errorf("input.Value() = %q, want %q", v, "first\\nsecond\\ndraft")
+	}
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be cleared, got %d items", len(app.repl.pendingQueue))
+	}
+	if n := app.engine.AttachmentsLen(); n != 0 {
+		t.Errorf("engine attachments should be cleared, got %d", n)
+	}
+	// TS cursor: len("first\nsecond") + 1 + cursorWithinDraft(2) = 12 + 1 + 2 = 15
+	// "first\nsecond\ndraft" rune indices: draft starts at rune 13, +2 = 15
+	if c := app.input.Cursor(); c != 15 {
+		t.Errorf("input.Cursor() = %d, want 15", c)
+	}
+}
+
+func TestPopAllQueuedToInput_EmptyInputNoTrailingSegment(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "u-1", Text: "only"}}
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-1", Value: "only", Mode: types.ItemModePrompt})
+	// input empty
+
+	if got := app.popAllQueuedToInput(); !got {
+		t.Fatal("popAllQueuedToInput = false, want true")
+	}
+	if v := app.input.Value(); v != "only" {
+		t.Errorf("input.Value() = %q, want %q (no trailing newline)", v, "only")
+	}
+}
+
+// TestPopAllQueuedToInput_AllEmptyText_ClearsAndReturnsFalse verifies the
+// defensive clear: if every queued item has empty text, the queue must still
+// be drained (so it doesn't leak as a future turn) and the call returns false.
+func TestPopAllQueuedToInput_AllEmptyText_ClearsAndReturnsFalse(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.pendingQueue = []pendingQueueItem{
+		{ID: "u-1", Text: ""},
+		{ID: "u-2", Text: ""},
+	}
+	app.input.SetValue("draft")
+
+	if got := app.popAllQueuedToInput(); got {
+		t.Error("popAllQueuedToInput = true, want false (all text empty)")
+	}
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be cleared, got %d items", len(app.repl.pendingQueue))
+	}
+	// Input untouched when nothing was popped.
+	if v := app.input.Value(); v != "draft" {
+		t.Errorf("input.Value() = %q, want %q (unchanged)", v, "draft")
+	}
+}
+
+// TestPopAllQueuedToInput_MultibyteCursor_RuneNotByte verifies the cursor
+// offset is computed in rune units, not bytes. With a 2-rune (6-byte) queued
+// prefix, a byte-count would land 6 - 2 = 4 runes too far.
+func TestPopAllQueuedToInput_MultibyteCursor_RuneNotByte(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	// "你好" = 2 runes, 6 bytes. Joined queue = "你好".
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "u-1", Text: "你好"}}
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-1", Value: "你好", Mode: types.ItemModePrompt})
+	app.input.SetValue("abc")
+	app.input.SetCursor(1) // inside "abc"
+
+	if got := app.popAllQueuedToInput(); !got {
+		t.Fatal("popAllQueuedToInput = false, want true")
+	}
+	if v := app.input.Value(); v != "你好\nabc" {
+		t.Errorf("input.Value() = %q, want %q", v, "你好\\nabc")
+	}
+	// Rune offset: len("你好")=2 + 1 (newline) + 1 (cursor in "abc") = 4.
+	// A byte-based count would be 6 + 1 + 1 = 8.
+	if c := app.input.Cursor(); c != 4 {
+		t.Errorf("input.Cursor() = %d, want 4 (rune count). byte-count bug would give 8", c)
+	}
+}
+
+// TestKeyUp_PopsQueueBeforeHistory verifies that Up key empties the queue into
+// the input, and a subsequent Up (queue now empty) falls through to history.
+func TestKeyUp_PopsQueueBeforeHistory(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.pendingQueue = []pendingQueueItem{{ID: "u-1", Text: "queued msg"}}
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-1", Value: "queued msg", Mode: types.ItemModePrompt})
+	// Seed history so the second Up has somewhere to navigate.
+	app.history.Add("history entry")
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	a := model.(*App)
+
+	if v := a.input.Value(); v != "queued msg" {
+		t.Errorf("after first Up: input = %q, want %q", v, "queued msg")
+	}
+	if len(a.repl.pendingQueue) != 0 {
+		t.Errorf("after first Up: pendingQueue = %d, want 0", len(a.repl.pendingQueue))
+	}
+
+	// Second Up: queue empty → falls through to history navigation.
+	historyBefore := a.input.Value()
+	model2, _ := a.Update(tea.KeyMsg{Type: tea.KeyUp})
+	a2 := model2.(*App)
+	after := a2.input.Value()
+	if after == historyBefore {
+		t.Errorf("after second Up: input unchanged (%q) — expected history navigation", after)
+	}
+	if after != "history entry" {
+		t.Errorf("after second Up: input = %q, want %q", after, "history entry")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Call chain tests — enqueue → drain → render full path
 // ---------------------------------------------------------------------------
 
@@ -8225,6 +8365,39 @@ func TestQueueMessage_CallChain_UUIDMismatchDoesNotRemove(t *testing.T) {
 	}
 	if lastMsg.Blocks[0].Text != "wrong message" {
 		t.Errorf("conversation should contain the drained text, got %q", lastMsg.Blocks[0].Text)
+	}
+}
+
+// TestPopAllQueuedToInput_EngineAlreadyDrained_NoDuplicateText verifies the
+// core invariant: an item is either popped into the input OR drained by the
+// engine as a turn — never both.
+//
+// Scenario: engine already drained u-1 (RemoveAttachment returns false), but
+// the TUI's pendingQueue still holds it because the attachmentMsg hasn't been
+// processed yet. popAllQueuedToInput must NOT put u-1's text into the input.
+// Only u-2 (still in engine) should appear.
+func TestPopAllQueuedToInput_EngineAlreadyDrained_NoDuplicateText(t *testing.T) {
+	app := newTestApp(&tuiMockProvider{})
+	app.repl.pendingQueue = []pendingQueueItem{
+		{ID: "u-1", Text: "already-drained"},
+		{ID: "u-2", Text: "still-queued"},
+	}
+	// Only u-2 is in the engine; u-1 was already drained.
+	app.engine.EnqueueAttachment(types.QueuedItem{UUID: "u-2", Value: "still-queued", Mode: types.ItemModePrompt})
+	app.input.SetValue("draft")
+
+	if got := app.popAllQueuedToInput(); !got {
+		t.Fatal("popAllQueuedToInput = false, want true (u-2 still queued)")
+	}
+
+	// u-1 was drained by engine → must NOT appear in input.
+	// u-2 was popped → must appear. draft → must appear.
+	want := "still-queued\ndraft"
+	if v := app.input.Value(); v != want {
+		t.Errorf("input.Value() = %q, want %q (drained item must not leak into input)", v, want)
+	}
+	if len(app.repl.pendingQueue) != 0 {
+		t.Errorf("pendingQueue should be cleared, got %d items", len(app.repl.pendingQueue))
 	}
 }
 

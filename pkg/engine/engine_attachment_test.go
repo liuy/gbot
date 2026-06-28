@@ -313,6 +313,70 @@ func TestMarshalMessages_AttachmentStandalone(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------
+// RemoveAttachment
+// -----------------------------------------------------------------------
+
+// TestEngine_RemoveAttachment_RemovesByUUID verifies that RemoveAttachment
+// drops the matching item from the queue so it is never drained as a turn.
+func TestEngine_RemoveAttachment_RemovesByUUID(t *testing.T) {
+	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "keep-1", Value: "first", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "drop-2", Value: "second", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 1, 0, time.UTC)})
+
+	if got := eng.AttachmentsLen(); got != 2 {
+		t.Fatalf("AttachmentsLen before remove = %d, want 2", got)
+	}
+
+	if !eng.RemoveAttachment("drop-2") {
+		t.Fatal("RemoveAttachment should return true for existing UUID")
+	}
+
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Fatalf("AttachmentsLen after remove = %d, want 1", got)
+	}
+	survivor := eng.attachments.DrainAll()
+	if len(survivor) != 1 {
+		t.Fatalf("survivor drain = %d items, want 1", len(survivor))
+	}
+	if survivor[0].UUID != "keep-1" {
+		t.Errorf("survivor UUID = %q, want keep-1", survivor[0].UUID)
+	}
+	if survivor[0].Value != "first" {
+		t.Errorf("survivor Value = %q, want first", survivor[0].Value)
+	}
+}
+
+// TestEngine_RemoveAttachment_EmptyUUID_Noop verifies the empty-uuid guard
+// does not remove anything and does not panic.
+func TestEngine_RemoveAttachment_EmptyUUID_Noop(t *testing.T) {
+	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "keep", Value: "v", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+
+	eng.RemoveAttachment("")
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Errorf("AttachmentsLen after empty-uuid remove = %d, want 1 (unchanged)", got)
+	}
+}
+
+// TestEngine_RemoveAttachment_AbsentUUID_Noop verifies removing a UUID that
+// was already drained (or never existed) is a no-op.
+func TestEngine_RemoveAttachment_AbsentUUID_Noop(t *testing.T) {
+	eng := New(&Params{})
+	t.Cleanup(func() { eng.Close() })
+
+	eng.EnqueueAttachment(types.QueuedItem{UUID: "keep", Value: "v", Mode: types.ItemModePrompt, Timestamp: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+
+	eng.RemoveAttachment("never-queued")
+	if got := eng.AttachmentsLen(); got != 1 {
+		t.Errorf("AttachmentsLen after absent-uuid remove = %d, want 1 (unchanged)", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Multi-prompt attachment merge chain test
 // ---------------------------------------------------------------------------

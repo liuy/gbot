@@ -1433,6 +1433,11 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.input.CursorUp() {
 			return a, nil
 		}
+		// Source: TS PromptInput.handleHistoryUp — pop queued messages into
+		// the input before falling through to history navigation.
+		if a.popAllQueuedToInput() {
+			return a, nil
+		}
 		return a.handleHistoryUp(), nil
 
 	case tea.KeyCtrlN, tea.KeyDown:

@@ -75,3 +75,65 @@ func TestQueue_UnknownPriority(t *testing.T) {
 		t.Errorf("expected later to remain, got %v", items2)
 	}
 }
+
+// -----------------------------------------------------------------------
+// RemoveByUUID
+// -----------------------------------------------------------------------
+
+func TestQueue_RemoveByUUID_FoundMiddlePreservesOrder(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{UUID: "u-1", Value: "a"})
+	q.Enqueue(types.QueuedItem{UUID: "u-2", Value: "b"})
+	q.Enqueue(types.QueuedItem{UUID: "u-3", Value: "c"})
+
+	if ok := q.RemoveByUUID("u-2"); !ok {
+		t.Fatal("RemoveByUUID(u-2) = false, want true (item exists)")
+	}
+	if got := q.Len(); got != 2 {
+		t.Fatalf("Len after remove = %d, want 2", got)
+	}
+	remaining := q.DrainAll()
+	if len(remaining) != 2 {
+		t.Fatalf("remaining = %d items, want 2", len(remaining))
+	}
+	if remaining[0].UUID != "u-1" || remaining[0].Value != "a" {
+		t.Errorf("remaining[0] = {%s, %q}, want {u-1, a}", remaining[0].UUID, remaining[0].Value)
+	}
+	if remaining[1].UUID != "u-3" || remaining[1].Value != "c" {
+		t.Errorf("remaining[1] = {%s, %q}, want {u-3, c}", remaining[1].UUID, remaining[1].Value)
+	}
+}
+
+func TestQueue_RemoveByUUID_NotFoundReturnsFalse(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{UUID: "u-1", Value: "a"})
+
+	if ok := q.RemoveByUUID("missing"); ok {
+		t.Error("RemoveByUUID(missing) = true, want false")
+	}
+	if got := q.Len(); got != 1 {
+		t.Errorf("Len after not-found remove = %d, want 1 (unchanged)", got)
+	}
+}
+
+func TestQueue_RemoveByUUID_EmptyUUIDReturnsFalse(t *testing.T) {
+	var q Queue
+	q.Enqueue(types.QueuedItem{UUID: "u-1", Value: "a"})
+
+	if ok := q.RemoveByUUID(""); ok {
+		t.Error("RemoveByUUID(\"\") = true, want false")
+	}
+	if got := q.Len(); got != 1 {
+		t.Errorf("Len after empty-uuid remove = %d, want 1 (unchanged)", got)
+	}
+}
+
+func TestQueue_RemoveByUUID_EmptyQueueReturnsFalse(t *testing.T) {
+	var q Queue
+	if ok := q.RemoveByUUID("u-1"); ok {
+		t.Error("RemoveByUUID on empty queue = true, want false")
+	}
+	if got := q.Len(); got != 0 {
+		t.Errorf("Len after remove on empty = %d, want 0", got)
+	}
+}

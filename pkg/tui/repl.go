@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1677,6 +1678,52 @@ func (a *App) handleEnqueueMessage(text string) tea.Cmd {
 	a.restoreStash()
 	a.history.Add(text)
 	return nil
+}
+
+// popAllQueuedToInput pulls every pending queue item into the input buffer
+// (newline-joined, queued items first then any existing input text), clears
+// the queue, and removes the corresponding items from the engine attachment
+// queue so they are never drained as a turn.
+// Source: TS messageQueueManager.popAllEditable + PromptInput.popAllCommandsFromQueue.
+// Returns false when the queue is empty or contained only empty-text items;
+// in both cases the pending queue is left empty. Returns true otherwise.
+func (a *App) popAllQueuedToInput() bool {
+	if len(a.repl.pendingQueue) == 0 {
+		return false
+	}
+
+	// Atomically claim items from the engine attachment queue. If
+	// RemoveAttachment returns false the engine already drained it — skip
+	// that item's text to avoid duplicating it as both an input edit and a
+	// conversation turn.
+	var queuedTexts []string
+	for _, item := range a.repl.pendingQueue {
+		if a.engine.RemoveAttachment(item.ID) && item.Text != "" {
+			queuedTexts = append(queuedTexts, item.Text)
+		}
+	}
+	a.repl.pendingQueue = nil
+	if len(queuedTexts) == 0 {
+		return false
+	}
+
+	// TS: [...queuedTexts, currentInput].filter(Boolean).join('\n').
+	parts := make([]string, 0, len(queuedTexts)+1)
+	parts = append(parts, queuedTexts...)
+	if v := a.input.Value(); v != "" {
+		parts = append(parts, v)
+	}
+	newInput := strings.Join(parts, "\n")
+
+	// TS: cursorOffset = queuedTexts.join('\n').length + 1 + currentCursorOffset.
+	// TS uses UTF-16 code-unit .length; gbot's Input tracks cursor in rune
+	// units, so we count runes to keep them aligned for multibyte text.
+	joined := strings.Join(queuedTexts, "\n")
+	offset := utf8.RuneCountInString(joined) + 1 + a.input.Cursor()
+
+	a.input.SetValue(newInput)
+	a.input.SetCursor(offset)
+	return true
 }
 
 // readEvents reads the next event from TUIHandler.appCh.

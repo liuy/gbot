@@ -413,6 +413,21 @@ func (e *Engine) EnqueueAttachment(item types.QueuedItem) {
 	e.startProcessAttachmentsIfIdle()
 }
 
+// RemoveAttachment removes a queued attachment by UUID. No-op if uuid is empty
+// or the item is no longer queued (already drained).
+// Source: TS messageQueueManager popAllEditable — popped items must be removed
+// from the queue so they are never drained as a turn.
+func (e *Engine) RemoveAttachment(uuid string) bool {
+	if uuid == "" {
+		return false
+	}
+	if e.attachments.RemoveByUUID(uuid) {
+		e.logger.Info("engine:attachment_removed", "uuid", uuid)
+		return true
+	}
+	return false
+}
+
 // Abort cancels the currently active query or attachment processing.
 // Safe to call from any goroutine; no-op if nothing is active.
 func (e *Engine) Abort() {
