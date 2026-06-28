@@ -106,7 +106,8 @@ func New(client *http.Client, opts ...Option) tool.Tool {
 			return true
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool {
-			return false
+			// Web is read-only HTTP; concurrent searches/fetches are safe.
+			return true
 		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 50000,

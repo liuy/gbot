@@ -77,6 +77,7 @@ type TrackedTool struct {
 	Input             json.RawMessage
 	Status            ToolStatus
 	IsConcurrencySafe bool
+	FilePath          string // file path for Edit/Write; empty for other tools
 	Duration          time.Duration
 	Result            *tool.ToolResult
 	Err               error
@@ -369,6 +370,7 @@ func (e *StreamingToolExecutor) AddTool(block types.ContentBlock) {
 		Input:             block.Input,
 		Status:            StatusQueued,
 		IsConcurrencySafe: isSafe,
+		FilePath:          extractFilePath(block.Name, block.Input),
 		done:              make(chan struct{}),
 	}
 	e.mu.Lock()
@@ -465,6 +467,20 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 // Concurrency control — source: StreamingToolExecutor.ts:129-151
 // ---------------------------------------------------------------------------
 
+// extractFilePath returns the file_path from Edit/Write tool inputs.
+func extractFilePath(name string, input json.RawMessage) string {
+	if name != "Edit" && name != "Write" {
+		return ""
+	}
+	var in struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return ""
+	}
+	return in.FilePath
+}
+
 // canExecuteTool checks if a tool can start based on current concurrency state.
 // Source: StreamingToolExecutor.ts:129-135 — canExecuteTool().
 //
@@ -473,9 +489,10 @@ func (e *StreamingToolExecutor) ExecuteAll(blocks []types.ContentBlock) *Execute
 //	executing.length == 0 → any tool can start
 //	executing all safe + new tool safe → parallel OK
 //	new tool unsafe → only when nothing else running
+//	same-file Edit/Write conflict → serialize (wait for the running one)
 //
 // Must be called with e.mu held.
-func (e *StreamingToolExecutor) canExecuteTool(isSafe bool) bool {
+func (e *StreamingToolExecutor) canExecuteTool(tt *TrackedTool) bool {
 	var executing []*TrackedTool
 	for _, t := range e.tools {
 		if t.Status == StatusExecuting {
@@ -485,8 +502,17 @@ func (e *StreamingToolExecutor) canExecuteTool(isSafe bool) bool {
 	if len(executing) == 0 {
 		return true
 	}
-	if !isSafe {
+	if !tt.IsConcurrencySafe {
 		return false
+	}
+	// File-level conflict: if the new tool is an Edit/Write and any executing
+	// tool is an Edit/Write on the same file, serialize to prevent corruption.
+	if tt.FilePath != "" {
+		for _, t := range executing {
+			if t.FilePath != "" && t.FilePath == tt.FilePath {
+				return false
+			}
+		}
 	}
 	for _, t := range executing {
 		if !t.IsConcurrencySafe {
@@ -506,7 +532,7 @@ func (e *StreamingToolExecutor) processQueue() {
 		if tt.Status != StatusQueued {
 			continue
 		}
-		if e.canExecuteTool(tt.IsConcurrencySafe) {
+		if e.canExecuteTool(tt) {
 			tt.Status = StatusExecuting
 			go e.executeTool(tt)
 		} else if !tt.IsConcurrencySafe {

@@ -30,8 +30,8 @@ func TestNew(t *testing.T) {
 	if tt.Prompt() == "" {
 		t.Error("Prompt() is empty, want non-empty")
 	}
-	if tt.IsConcurrencySafe(nil) {
-		t.Error("IsConcurrencySafe() = true, want false")
+	if !tt.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe() = false, want true (LLM sequences dependencies)")
 	}
 	if tt.IsEnabled() != true {
 		t.Error("IsEnabled() = false, want true")

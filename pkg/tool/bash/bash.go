@@ -131,12 +131,9 @@ func New(registry *BackgroundJobRegistry) tool.Tool {
 			return isDestructiveCommand(in.Command)
 		},
 		IsConcurrencySafe_: func(input json.RawMessage) bool {
-			// Source: BashTool.tsx:434-435 — isConcurrencySafe delegates to isReadOnly.
-			var in Input
-			if err := json.Unmarshal(input, &in); err != nil {
-				return false
-			}
-			return isReadOnlyCommand(in.Command)
+			// LLM already sequences dependent Bash commands; allow parallel
+			// execution so independent reads/writes don't block each other.
+			return true
 		},
 		IsSearchOrRead_:    IsSearchOrRead,
 		InterruptBehavior_: tool.InterruptCancel,

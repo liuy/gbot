@@ -173,10 +173,14 @@ func New() tool.Tool {
 			}
 			return in.FilePath, nil
 		},
-		Call_:              Execute,
-		IsReadOnly_:        func(json.RawMessage) bool { return false },
-		IsDestructive_:     func(json.RawMessage) bool { return false },
-		IsConcurrencySafe_: func(json.RawMessage) bool { return false },
+		Call_:          Execute,
+		IsReadOnly_:    func(json.RawMessage) bool { return false },
+		IsDestructive_: func(json.RawMessage) bool { return false },
+		IsConcurrencySafe_: func(json.RawMessage) bool {
+			// Edit is concurrency-safe; file-level conflict detection is
+			// handled by StreamingToolExecutor (same-file edits serialize).
+			return true
+		},
 		InterruptBehavior_: tool.InterruptCancel,
 		MaxResultSizeChars: 100000,
 		Prompt_:            fileEditPrompt(),

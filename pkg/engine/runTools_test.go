@@ -1275,3 +1275,999 @@ func TestChain_BashFileBackup_WithWorkingDir_BackupRecorded(t *testing.T) {
 		t.Errorf("backup content = %q, want %q", string(data), string(originalContent))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// File-level conflict detection tests
+// ---------------------------------------------------------------------------
+
+// editTool is a concurrentTool registered under name "Edit" so that
+// extractFilePath parses file_path from the JSON input.
+type editTool struct {
+	concurrentTool
+}
+
+func (t *editTool) Name() string      { return "Edit" }
+func (t *editTool) Aliases() []string { return nil }
+
+// writeTool is a concurrentTool registered under name "Write".
+type writeTool struct {
+	concurrentTool
+}
+
+func (t *writeTool) Name() string      { return "Write" }
+func (t *writeTool) Aliases() []string { return nil }
+
+// editInput builds a JSON input with file_path for Edit tools.
+func editInput(file string) json.RawMessage {
+	return json.RawMessage(`{"file_path":"` + file + `","old_string":"x","new_string":"y"}`)
+}
+
+// writeInput builds a JSON input with file_path for Write tools.
+func writeInput(file string) json.RawMessage {
+	return json.RawMessage(`{"file_path":"` + file + `","content":"data"}`)
+}
+
+// TestFileConflict_SameFile_EditEdit_Serializes verifies two Edit tools on the
+// same file execute sequentially (not in parallel).
+func TestFileConflict_SameFile_EditEdit_Serializes(t *testing.T) {
+	t.Parallel()
+
+	// If conflict detection is removed, both Edits start simultaneously.
+	// We detect this by having each Edit send to a channel; if 2 values
+	// arrive before context cancel, they ran in parallel.
+	started := make(chan struct{}, 2)
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				started <- struct{}{}
+				// Block until context cancels — exposes parallelism
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		ConcurrentToolLoop(ctx, tools, blocks, nil, func(types.QueryEvent) {})
+		close(done)
+	}()
+
+	// Wait for first Edit to start, then cancel.
+	select {
+	case <-started:
+	case <-done:
+		t.Fatal("ConcurrentToolLoop returned before any Edit started")
+	}
+	cancel()
+	<-done // tools return ctx.Err() on cancel, ConcurrentToolLoop finishes
+
+	// If conflict detection works, only 1 Edit entered callFn.
+	select {
+	case <-started:
+		t.Error("second Edit started on same file — conflict detection broken")
+	default:
+	}
+}
+
+// TestFileConflict_DifferentFile_EditEdit_Parallel verifies two Edit tools on
+// different files run concurrently.
+func TestFileConflict_DifferentFile_EditEdit_Parallel(t *testing.T) {
+	t.Parallel()
+
+	started1, started2 := make(chan struct{}), make(chan struct{})
+	release1, release2 := make(chan struct{}), make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				if in.FilePath == "a.go" {
+					close(started1)
+					<-release1
+				} else {
+					close(started2)
+					<-release2
+				}
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("b.go")},
+	}
+
+	go func() {
+		// Wait for both to start, then release both
+		<-started1
+		<-started2
+		close(release1)
+		close(release2)
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_SameFile_EditWrite_Serializes verifies Edit and Write on the
+// same file serialize across tool types.
+func TestFileConflict_SameFile_EditWrite_Serializes(t *testing.T) {
+	t.Parallel()
+
+	editStarted, editRelease := make(chan struct{}), make(chan struct{})
+	writeStarted, writeRelease := make(chan struct{}), make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(editStarted)
+				<-editRelease
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+		"Write": &writeTool{concurrentTool{
+			name:   "Write",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(writeStarted)
+				<-writeRelease
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "w1", Name: "Write", Input: writeInput("a.go")},
+	}
+
+	// Release Write only after Edit has started, proving serialization.
+	go func() {
+		<-editStarted
+		close(editRelease)
+		<-writeStarted
+		close(writeRelease)
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_UnsafeTool_BlocksAll verifies an unsafe tool blocks all
+// queued tools regardless of file path.
+func TestFileConflict_UnsafeTool_BlocksAll(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var order []string
+
+	bashStarted := make(chan struct{})
+	bashRelease := make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name:   "Bash",
+			isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(bashStarted)
+				<-bashRelease
+				mu.Lock()
+				order = append(order, "Bash")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				order = append(order, "Edit")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"echo hi"}`)},
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	go func() {
+		<-bashStarted
+		close(bashRelease)
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 || order[0] != "Bash" || order[1] != "Edit" {
+		t.Errorf("execution order = %v, want [Bash Edit]", order)
+	}
+}
+
+// TestFileConflict_UnsafeThenSameFile serializes: unsafe runs first, then
+// same-file Edit and Write serialize after it.
+func TestFileConflict_UnsafeThenSameFile(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var order []string
+
+	editStarted := make(chan struct{})
+	editRelease := make(chan struct{})
+	writeStarted := make(chan struct{})
+	writeRelease := make(chan struct{})
+	bashStarted := make(chan struct{})
+	bashRelease := make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name:   "Bash",
+			isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(bashStarted)
+				<-bashRelease
+				mu.Lock()
+				order = append(order, "Bash")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(editStarted)
+				<-editRelease
+				mu.Lock()
+				order = append(order, "Edit")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+		"Write": &writeTool{concurrentTool{
+			name:   "Write",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(writeStarted)
+				<-writeRelease
+				mu.Lock()
+				order = append(order, "Write")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"echo"}`)},
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "w1", Name: "Write", Input: writeInput("a.go")},
+	}
+
+	go func() {
+		<-bashStarted
+		close(bashRelease)
+		<-editStarted
+		close(editRelease)
+		<-writeStarted
+		close(writeRelease)
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 || order[0] != "Bash" || order[1] != "Edit" || order[2] != "Write" {
+		t.Errorf("execution order = %v, want [Bash Edit Write]", order)
+	}
+}
+
+// TestFileConflict_ThreeTool_FanOut verifies mixed parallel+serial: two Edits
+// on different files run parallel, a third Edit on same file as first serializes.
+func TestFileConflict_ThreeTool_FanOut(t *testing.T) {
+	t.Parallel()
+
+	startedA, startedB, startedA2 := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release1, release2 := make(chan struct{}), make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				switch in.FilePath {
+				case "a.go":
+					select {
+					case <-startedA:
+						close(startedA2) // second a.go
+						<-release2
+					default:
+						close(startedA) // first a.go
+						<-release1
+					}
+				case "b.go":
+					close(startedB)
+					<-release1
+				}
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("b.go")},
+		{Type: types.ContentTypeToolUse, ID: "e3", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	go func() {
+		// a.go and b.go should start in parallel; a.go#2 must wait
+		<-startedA
+		<-startedB
+		close(release1) // release first a.go + b.go
+		<-startedA2
+		close(release2) // release second a.go
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_QueuedTool_ResumesAfterConflictClears verifies that when a
+// file-conflict tool finishes, the waiting tool starts.
+func TestFileConflict_QueuedTool_ResumesAfterConflictClears(t *testing.T) {
+	t.Parallel()
+
+	editRelease := make(chan struct{})
+	writeStarted := make(chan struct{})
+	done := make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				<-editRelease
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+		"Write": &writeTool{concurrentTool{
+			name:   "Write",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(writeStarted)
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "w1", Name: "Write", Input: writeInput("a.go")},
+	}
+
+	go func() {
+		ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+		close(done)
+	}()
+
+	// Let Edit start, then release it. Write should follow.
+	close(editRelease)
+
+	select {
+	case <-writeStarted:
+		<-done
+	case <-done:
+		t.Error("ConcurrentToolLoop finished before Write started — file conflict not resolved")
+	}
+}
+
+// TestFileConflict_NonEditWrite_NoFilePath verifies tools that aren't Edit/Write
+// have empty FilePath and never trigger file conflict.
+func TestFileConflict_NonEditWrite_NoFilePath(t *testing.T) {
+	t.Parallel()
+
+	startedG1, startedE, startedG2 := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releases := make(chan struct{}, 3)
+
+	tools := map[string]tool.Tool{
+		"Grep": &concurrentTool{
+			name:   "Grep",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				select {
+				case <-startedG1:
+					close(startedG2)
+				default:
+					close(startedG1)
+				}
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(startedE)
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "g1", Name: "Grep", Input: json.RawMessage(`{"pattern":"foo"}`)},
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "g2", Name: "Grep", Input: json.RawMessage(`{"pattern":"bar"}`)},
+	}
+
+	go func() {
+		<-startedG1
+		<-startedE
+		<-startedG2
+		releases <- struct{}{}
+		releases <- struct{}{}
+		releases <- struct{}{}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_InvalidJSON_NoConflict verifies Edit with invalid JSON input
+// has empty FilePath and doesn't conflict with other Edits.
+func TestFileConflict_InvalidJSON_NoConflict(t *testing.T) {
+	t.Parallel()
+
+	started1, started2 := make(chan struct{}), make(chan struct{})
+	releases := make(chan struct{}, 2)
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				select {
+				case <-started1:
+					close(started2)
+				default:
+					close(started1)
+				}
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: json.RawMessage(`{broken json`)},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	go func() {
+		<-started1
+		<-started2
+		releases <- struct{}{}
+		releases <- struct{}{}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_AllSameFile_FullSerialization verifies four Edits on the same
+// file execute strictly sequentially.
+func TestFileConflict_AllSameFile_FullSerialization(t *testing.T) {
+	t.Parallel()
+
+	const n = 4
+	var mu sync.Mutex
+	var order []string
+	started := make([]chan struct{}, n)
+	for i := range started {
+		started[i] = make(chan struct{})
+	}
+	releases := make(chan struct{}, n)
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				mu.Lock()
+				idx := len(order)
+				order = append(order, in.FilePath)
+				mu.Unlock()
+				close(started[idx])
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	var blocks []types.ContentBlock
+	for i := range n {
+		blocks = append(blocks, types.ContentBlock{
+			Type:  types.ContentTypeToolUse,
+			ID:    "e" + string(rune('0'+i)),
+			Name:  "Edit",
+			Input: editInput("a.go"),
+		})
+	}
+
+	go func() {
+		for i := range n {
+			<-started[i]
+			releases <- struct{}{}
+		}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != n {
+		t.Fatalf("expected %d results, got %d", n, len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != n {
+		t.Fatalf("execution count = %d, want %d", len(order), n)
+	}
+	for _, f := range order {
+		if f != "a.go" {
+			t.Errorf("execution on wrong file: %q", f)
+		}
+	}
+}
+
+// TestFileConflict_ErrorClearsConflict verifies that when an Edit errors on a
+// file, a queued Edit on the SAME file can start afterward (no deadlock).
+func TestFileConflict_ErrorClearsConflict(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var callCount int
+	var order []string
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				mu.Lock()
+				n := callCount
+				callCount++
+				order = append(order, in.FilePath)
+				mu.Unlock()
+				if n == 0 {
+					return nil, errors.New("injected error")
+				}
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+	if !result.ToolResultBlocks[0].IsError {
+		t.Error("first Edit should have errored")
+	}
+	if result.ToolResultBlocks[1].IsError {
+		t.Error("second Edit should have succeeded (error cleared conflict)")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 2 {
+		t.Fatalf("execution count = %d, want 2", len(order))
+	}
+}
+
+// TestFileConflict_ColdStart_EmptyBlocks verifies the executor handles empty
+// input without panic or events.
+func TestFileConflict_ColdStart_EmptyBlocks(t *testing.T) {
+	t.Parallel()
+
+	var eventCount int
+	result := ConcurrentToolLoop(context.Background(), map[string]tool.Tool{}, nil, nil, func(types.QueryEvent) {
+		eventCount++
+	})
+	if len(result.ToolResultBlocks) != 0 {
+		t.Errorf("expected 0 results, got %d", len(result.ToolResultBlocks))
+	}
+	if eventCount != 0 {
+		t.Errorf("expected 0 events, got %d", eventCount)
+	}
+}
+
+// TestFileConflict_MixedQueue_SafeAndUnsafe_ResumeAfterUnsafe verifies that after
+// an unsafe tool completes, queued safe tools are properly re-evaluated.
+func TestFileConflict_MixedQueue_SafeAndUnsafe_ResumeAfterUnsafe(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var order []string
+	var editCounter int
+
+	editStarted := make([]chan struct{}, 2)
+	for i := range editStarted {
+		editStarted[i] = make(chan struct{})
+	}
+	editReleases := make(chan struct{}, 2)
+	bashStarted := make(chan struct{})
+	bashRelease := make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name:   "Bash",
+			isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(bashStarted)
+				<-bashRelease
+				mu.Lock()
+				order = append(order, "Bash")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				mu.Lock()
+				editIdx := editCounter
+				editCounter++
+				order = append(order, "Edit:"+in.FilePath)
+				mu.Unlock()
+				close(editStarted[editIdx])
+				<-editReleases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"echo"}`)},
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("a.go")},
+	}
+
+	go func() {
+		<-bashStarted
+		close(bashRelease)
+		<-editStarted[0]
+		editReleases <- struct{}{}
+		<-editStarted[1]
+		editReleases <- struct{}{}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 {
+		t.Fatalf("execution count = %d, want 3", len(order))
+	}
+	if order[0] != "Bash" {
+		t.Errorf("first = %q, want Bash", order[0])
+	}
+	if order[1] != "Edit:a.go" || order[2] != "Edit:a.go" {
+		t.Errorf("order = %v, want [Bash Edit:a.go Edit:a.go]", order)
+	}
+}
+
+// TestFileConflict_DifferentFile_WriteWrite_Parallel verifies two Write tools on
+// different files run in parallel.
+func TestFileConflict_DifferentFile_WriteWrite_Parallel(t *testing.T) {
+	t.Parallel()
+
+	started1, started2 := make(chan struct{}), make(chan struct{})
+	releases := make(chan struct{}, 2)
+
+	tools := map[string]tool.Tool{
+		"Write": &writeTool{concurrentTool{
+			name:   "Write",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				if in.FilePath == "a.go" {
+					close(started1)
+				} else {
+					close(started2)
+				}
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "w1", Name: "Write", Input: writeInput("a.go")},
+		{Type: types.ContentTypeToolUse, ID: "w2", Name: "Write", Input: writeInput("b.go")},
+	}
+
+	go func() {
+		<-started1
+		<-started2
+		releases <- struct{}{}
+		releases <- struct{}{}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result.ToolResultBlocks))
+	}
+}
+
+// TestFileConflict_SameFile_RaceDetector stress-tests the file conflict path
+// under high concurrency — adds many tools simultaneously to expose races.
+func TestFileConflict_SameFile_RaceDetector(t *testing.T) {
+	t.Parallel()
+
+	const n = 8
+	var mu sync.Mutex
+	var execCount int
+
+	started := make([]chan struct{}, n)
+	for i := range started {
+		started[i] = make(chan struct{})
+	}
+	releases := make(chan struct{}, n)
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				mu.Lock()
+				idx := execCount
+				execCount++
+				mu.Unlock()
+				close(started[idx])
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+
+	var blocks []types.ContentBlock
+	for i := range n {
+		blocks = append(blocks, types.ContentBlock{
+			Type:  types.ContentTypeToolUse,
+			ID:    "e" + string(rune('0'+i)),
+			Name:  "Edit",
+			Input: editInput("same.go"),
+		})
+	}
+
+	go func() {
+		for i := range n {
+			<-started[i]
+			releases <- struct{}{}
+		}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != n {
+		t.Fatalf("expected %d results, got %d", n, len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if execCount != n {
+		t.Fatalf("only %d/%d tools executed — deadlock", execCount, n)
+	}
+}
+
+// TestFileConflict_FilePathRace_TwoFiles interleaved verifies no race between
+// file-conflict detection and concurrent AddTool calls for different files.
+func TestFileConflict_FilePathRace_TwoFiles(t *testing.T) {
+	t.Parallel()
+
+	const n = 6
+	var mu sync.Mutex
+	var counts = map[string]int{}
+
+	started := make([]chan struct{}, n)
+	for i := range started {
+		started[i] = make(chan struct{})
+	}
+	releases := make(chan struct{}, n)
+
+	tools := map[string]tool.Tool{
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				mu.Lock()
+				idx := len(counts)
+				counts[in.FilePath]++
+				mu.Unlock()
+				close(started[idx])
+				<-releases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+
+	var blocks []types.ContentBlock
+	for i := range n {
+		file := "a.go"
+		if i%2 == 1 {
+			file = "b.go"
+		}
+		blocks = append(blocks, types.ContentBlock{
+			Type:  types.ContentTypeToolUse,
+			ID:    "e" + string(rune('0'+i)),
+			Name:  "Edit",
+			Input: editInput(file),
+		})
+	}
+
+	go func() {
+		for i := range n {
+			<-started[i]
+			releases <- struct{}{}
+		}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != n {
+		t.Fatalf("expected %d results, got %d", n, len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if counts["a.go"] != 3 || counts["b.go"] != 3 {
+		t.Errorf("counts = %v, want a.go=3 b.go=3", counts)
+	}
+}
+
+// TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes verifies
+// the full lifecycle: unsafe blocks → completes → safe tools start → same-file
+// tools serialize.
+func TestFileConflict_UnsafeBlocksQueuedSafe_ThenFileConflictSerializes(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var order []string
+	var editCounter int
+
+	editStarted := make([]chan struct{}, 3)
+	for i := range editStarted {
+		editStarted[i] = make(chan struct{})
+	}
+	editReleases := make(chan struct{}, 3)
+	bashStarted := make(chan struct{})
+	bashRelease := make(chan struct{})
+
+	tools := map[string]tool.Tool{
+		"Bash": &concurrentTool{
+			name:   "Bash",
+			isSafe: false,
+			callFn: func(_ context.Context, _ json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				close(bashStarted)
+				<-bashRelease
+				mu.Lock()
+				order = append(order, "Bash")
+				mu.Unlock()
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		},
+		"Edit": &editTool{concurrentTool{
+			name:   "Edit",
+			isSafe: true,
+			callFn: func(_ context.Context, input json.RawMessage, _ *tool.ToolUseContext) (*tool.ToolResult, error) {
+				var in struct {
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal(input, &in)
+				mu.Lock()
+				editIdx := editCounter
+				editCounter++
+				order = append(order, "Edit:"+in.FilePath)
+				mu.Unlock()
+				close(editStarted[editIdx])
+				<-editReleases
+				return &tool.ToolResult{Data: "ok"}, nil
+			},
+		}},
+	}
+
+	blocks := []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ID: "b1", Name: "Bash", Input: json.RawMessage(`{"command":"echo"}`)},
+		{Type: types.ContentTypeToolUse, ID: "e1", Name: "Edit", Input: editInput("shared.go")},
+		{Type: types.ContentTypeToolUse, ID: "e2", Name: "Edit", Input: editInput("other.go")},
+		{Type: types.ContentTypeToolUse, ID: "e3", Name: "Edit", Input: editInput("shared.go")},
+	}
+
+	go func() {
+		<-bashStarted
+		close(bashRelease)
+		<-editStarted[0] // e1 (shared)
+		editReleases <- struct{}{}
+		<-editStarted[1] // e2 (other)
+		editReleases <- struct{}{}
+		<-editStarted[2] // e3 (shared, after e1)
+		editReleases <- struct{}{}
+	}()
+
+	result := ConcurrentToolLoop(context.Background(), tools, blocks, nil, func(types.QueryEvent) {})
+	if len(result.ToolResultBlocks) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(result.ToolResultBlocks))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 4 {
+		t.Fatalf("execution count = %d, want 4", len(order))
+	}
+	if order[0] != "Bash" {
+		t.Errorf("first = %q, want Bash", order[0])
+	}
+	if order[3] != "Edit:shared.go" {
+		t.Errorf("last = %q, want Edit:shared.go", order[3])
+	}
+	sharedCount := 0
+	for _, o := range order {
+		if o == "Edit:shared.go" {
+			sharedCount++
+		}
+	}
+	if sharedCount != 2 {
+		t.Errorf("shared.go count = %d, want 2", sharedCount)
+	}
+}

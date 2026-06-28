@@ -426,7 +426,9 @@ func New() tool.Tool {
 			return true
 		},
 		IsConcurrencySafe_: func(json.RawMessage) bool {
-			return false
+			// Write is concurrency-safe; file-level conflict detection is
+			// handled by StreamingToolExecutor (same-file writes serialize).
+			return true
 		},
 		MaxResultSizeChars: 100000,
 		InterruptBehavior_: tool.InterruptCancel,

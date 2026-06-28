@@ -32,8 +32,8 @@ func TestNew(t *testing.T) {
 	if !tt.IsDestructive(nil) {
 		t.Error("IsDestructive() = false, want true")
 	}
-	if tt.IsConcurrencySafe(nil) {
-		t.Error("IsConcurrencySafe() = true, want false")
+	if !tt.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe() = false, want true (file-level conflict detection in executor)")
 	}
 	if tt.InterruptBehavior() != tool.InterruptCancel {
 		t.Errorf("InterruptBehavior() = %d, want %d", tt.InterruptBehavior(), tool.InterruptCancel)

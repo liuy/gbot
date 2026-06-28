@@ -28,8 +28,8 @@ func TestNew(t *testing.T) {
 	if tt.IsDestructive(nil) {
 		t.Error("IsDestructive() = true, want false")
 	}
-	if tt.IsConcurrencySafe(nil) {
-		t.Error("IsConcurrencySafe() = true, want false")
+	if !tt.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe() = false, want true (file-level conflict detection in executor)")
 	}
 	if !tt.IsEnabled() {
 		t.Error("IsEnabled() = false, want true")

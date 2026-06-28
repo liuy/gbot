@@ -232,8 +232,8 @@ func TestNew_ToolProperties(t *testing.T) {
 	if !tool.IsReadOnly(nil) {
 		t.Error("IsReadOnly() = false, want true")
 	}
-	if tool.IsConcurrencySafe(nil) {
-		t.Error("IsConcurrencySafe() = true, want false")
+	if !tool.IsConcurrencySafe(nil) {
+		t.Error("IsConcurrencySafe() = false, want true (read-only HTTP)")
 	}
 
 	// Verify schema is valid JSON
