@@ -1,4 +1,4 @@
-.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install
+.PHONY: all build build-debug build-all debug test lint check clean agent-start agent-stop install app-check
 
 BINARY := gbot
 BINARY_DEBUG := gbot-debug
@@ -81,3 +81,7 @@ install: build
 		fi; \
 	done
 	@echo "Done. Run 'gbot' to use /plan, /execute, /review, /goal."
+
+# Android app checks (lint + test)
+app-check:
+	$(MAKE) -C app/android check
