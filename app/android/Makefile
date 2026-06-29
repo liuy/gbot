@@ -8,7 +8,7 @@ lint:
 	./gradlew lint
 
 test:
-	@echo "No Android tests yet (placeholder for future test suite)"
+	./gradlew testDebugUnitTest
 
 build:
 	./gradlew assembleDebug
