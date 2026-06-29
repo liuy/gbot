@@ -382,7 +382,7 @@ func main() {
 		// live from engine at extract time (NewSubEngine copies parent state).
 		// Dream needs SessionID() for NewManager — empty on fresh engines,
 		// filled after SwitchSession on restore.
-		if cfg.SessionNotes != "off" && store != nil && contextWindow > 0 {
+		if !cfg.SessionNotes.Disabled && store != nil && contextWindow > 0 {
 			smCfg := session.DefaultConfig()
 			smExtractFn := func(ctx context.Context, prompt string, notesPath string, messages []types.Message, sysPrompt string) error {
 				editTool := fileedit.New()
@@ -390,12 +390,27 @@ func main() {
 				subEng := newEng.NewSubEngine(engine.SubEngineOptions{
 					SystemPrompt:    sysPrompt,
 					Tools:           map[string]tool.Tool{"Edit": editTool, "Read": readTool},
-					MaxTurns:        0,  // unlimited
-					Model:           "", // inherit from parent
+					MaxTurns:        0, // unlimited
+					Model:           "",
 					ParentToolUseID: "",
 					AgentType:       "session_memory",
 				})
 				defer subEng.Close()
+
+				// Resolve session notes model: "provider/model" or "model" (fuzzy).
+				// Empty = inherit parent engine's provider+model.
+				if smName := cfg.SessionNotes.Model; smName != "" {
+					if smProv, smModel, err := cfg.ResolveModelByName(smName); err != nil {
+						slog.Warn("session memory: resolve model failed, inheriting parent", "model", smName, "error", err)
+					} else if smProv != nil {
+						if prov, ok := providerMap[smProv.Name]; ok {
+							subEng.SetProvider(prov)
+							subEng.SetModel(smModel)
+						} else {
+							slog.Warn("session memory: provider not in providerMap, inheriting parent", "provider", smProv.Name)
+						}
+					}
+				}
 				extractionUserMsg := types.Message{
 					ID:      uuid.New().String(),
 					Role:    types.RoleUser,

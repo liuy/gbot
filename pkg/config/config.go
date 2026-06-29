@@ -51,10 +51,16 @@ type Config struct {
 	Hooks json.RawMessage `json:"hooks,omitempty"`
 
 	// SessionNotes controls the background session memory agent that
-	// extracts SESSION_NOTES.md.
-	//   "" (default) or "on": SM agent runs.
-	//   "off": SM agent is skipped entirely.
-	SessionNotes string `json:"session_notes,omitempty"`
+	// extracts SESSION_NOTES.md. Disabled defaults to false (enabled).
+	// Model is optional: "provider/model" or "model" (fuzzy search);
+	// empty = inherit parent engine's model.
+	SessionNotes SessionNotesConfig `json:"session_notes,omitempty"`
+}
+
+// SessionNotesConfig configures the session memory sub-agent.
+type SessionNotesConfig struct {
+	Disabled bool   `json:"disabled,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // ModelConfig holds per-model metadata.
@@ -243,7 +249,28 @@ func (c *Config) ResolveModel() (*Provider, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	return c.resolveProviderModel(providerName, modelName)
+}
 
+// ResolveModelByName resolves an arbitrary "provider/model" or "model" string
+// into a Provider + model name, reusing the same fuzzy search logic as
+// ResolveModel. Empty name returns nil provider (caller inherits parent).
+func (c *Config) ResolveModelByName(name string) (*Provider, string, error) {
+	if name == "" {
+		return nil, "", nil
+	}
+	var providerName, modelName string
+	if before, after, ok := strings.Cut(name, "/"); ok {
+		providerName, modelName = before, after
+	} else {
+		modelName = name
+	}
+	return c.resolveProviderModel(providerName, modelName)
+}
+
+// resolveProviderModel is the shared resolution core for ResolveModel and
+// ResolveModelByName.
+func (c *Config) resolveProviderModel(providerName, modelName string) (*Provider, string, error) {
 	// Empty model → first provider's first model.
 	if modelName == "" {
 		if len(c.Providers) == 0 {
