@@ -53,6 +53,7 @@ func TestContentTypeConstants(t *testing.T) {
 		{"tool_result", types.ContentTypeToolResult, "tool_result"},
 		{"thinking", types.ContentTypeThinking, "thinking"},
 		{"image", types.ContentTypeImage, "image"},
+		{"video", types.ContentTypeVideo, "video"},
 	}
 
 	for _, tc := range tests {

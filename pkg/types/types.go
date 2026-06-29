@@ -142,6 +142,7 @@ const (
 	ContentTypeThinking   ContentType = "thinking"
 	ContentTypeRedacted   ContentType = "redacted_thinking"
 	ContentTypeImage      ContentType = "image"
+	ContentTypeVideo      ContentType = "video"
 )
 
 // CacheControlConfig carries cache control settings for Anthropic API.

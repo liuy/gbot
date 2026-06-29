@@ -149,6 +149,13 @@ type Engine struct {
 	// translate between modes.
 	modelThinking map[string]llm.ThinkingMode
 
+	// inputModalities lists the input types the current model accepts
+	// (e.g. ["text"], ["text", "image", "video"]). Set by TUI on model switch
+	// from config.Provider.ResolveInput. When "image"/"video" is absent,
+	// callLLM strips media blocks before sending to avoid API errors on
+	// text-only models.
+	inputModalities []string
+
 	// retryConfig controls retry behavior for stream-level failures.
 	// nil means use llm.DefaultRetryConfig(). Tests can override for faster backoff.
 	retryConfig *llm.RetryConfig
@@ -1830,6 +1837,13 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// Source: TS normalizeMessagesForAPI — called before API call in claude.ts:1266.
 	apiMessages = NormalizeMessagesForAPI(apiMessages)
 
+	// Strip media blocks the current model can't accept. Text-only models
+	// (e.g. glm-5.2) reject image/video content blocks with API errors.
+	// Non-destructive: operates on the marshaled copy, not e.messages.
+	if !e.SupportsModality("image") || !e.SupportsModality("video") {
+		apiMessages = StripMediaFromMessages(apiMessages)
+	}
+
 	// Repair tool_use/tool_result pairing mismatches before sending to API.
 	// Source: TS claude.ts:1301 — ensureToolResultPairing(messagesForAPI).
 	apiMessages = EnsureToolResultPairing(apiMessages)
@@ -2689,15 +2703,15 @@ func NormalizeMessagesForAPI(messages []types.Message) []types.Message {
 // path future-proofs by replacing any such block with [document].
 const ContentTypeDocumentLiteral types.ContentType = "document"
 
-// StripImagesFromMessages replaces image/document content blocks with [image]/
-// [document] text placeholders so the summarizer does not feed media payloads to
-// the model. Source: services/compact/compact.ts:145-200.
+// StripMediaFromMessages replaces image/video/document content blocks with
+// [image]/[video]/[document] text placeholders so text-only models don't
+// receive unsupported media payloads. Source: services/compact/compact.ts:145-200.
 //
 // Only user messages carry media (directly attached or nested inside
 // tool_result content). Nested replacement is ONE level deep inside
 // tool_result.content, matching the TS implementation exactly — no recursion.
 // The input slice is not mutated; a new slice is returned.
-func StripImagesFromMessages(messages []types.Message) []types.Message {
+func StripMediaFromMessages(messages []types.Message) []types.Message {
 	result := make([]types.Message, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Role != types.RoleUser {
@@ -2712,6 +2726,9 @@ func StripImagesFromMessages(messages []types.Message) []types.Message {
 			case block.Type == types.ContentTypeImage:
 				hasMediaBlock = true
 				newContent = append(newContent, types.NewTextBlock("[image]"))
+			case block.Type == types.ContentTypeVideo:
+				hasMediaBlock = true
+				newContent = append(newContent, types.NewTextBlock("[video]"))
 			case block.Type == ContentTypeDocumentLiteral:
 				hasMediaBlock = true
 				newContent = append(newContent, types.NewTextBlock("[document]"))
@@ -2737,8 +2754,8 @@ func StripImagesFromMessages(messages []types.Message) []types.Message {
 	return result
 }
 
-// stripNestedMedia replaces image/document blocks inside a tool_result content
-// JSON array ONE level deep. Source: compact.ts:166-176.
+// stripNestedMedia replaces image/video/document blocks inside a tool_result
+// content JSON array ONE level deep. Source: compact.ts:166-176.
 func stripNestedMedia(raw json.RawMessage) (json.RawMessage, bool) {
 	var blocks []types.ContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -2750,6 +2767,9 @@ func stripNestedMedia(raw json.RawMessage) (json.RawMessage, bool) {
 		case types.ContentTypeImage:
 			hasMedia = true
 			blocks[i] = types.NewTextBlock("[image]")
+		case types.ContentTypeVideo:
+			hasMedia = true
+			blocks[i] = types.NewTextBlock("[video]")
 		case ContentTypeDocumentLiteral:
 			hasMedia = true
 			blocks[i] = types.NewTextBlock("[document]")
@@ -3807,6 +3827,24 @@ func (e *Engine) SetMaxTokens(n int) {
 	e.mu.Lock()
 	e.maxTokens = n
 	e.mu.Unlock()
+}
+
+func (e *Engine) SetInputModalities(modalities []string) {
+	e.mu.Lock()
+	e.inputModalities = modalities
+	e.mu.Unlock()
+}
+
+// SupportsModality returns true if the current model accepts the given input
+// type (e.g. "image", "video"). Returns true when inputModalities is unset
+// (no model switch yet — conservative default).
+func (e *Engine) SupportsModality(modality string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.inputModalities) == 0 {
+		return true
+	}
+	return slices.Contains(e.inputModalities, modality)
 }
 
 // ---------------------------------------------------------------------------

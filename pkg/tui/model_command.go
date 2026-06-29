@@ -293,7 +293,10 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 	}
 	cw := cfgProvider.ResolveContext(model)
 	mt := cfgProvider.ResolveMaxTokens(model)
+	inputs := cfgProvider.ResolveInput(model)
 	a.engine.SetMaxTokens(mt)
+	a.engine.SetInputModalities(inputs)
+	a.refreshQuotaFromProvider()
 	a.engine.UpdateAutoCompactConfig(engine.AutoCompactConfig{
 		ContextWindow:          cw,
 		MaxConsecutiveFailures: 3,
@@ -303,5 +306,5 @@ func (a *App) updateEngineCapabilities(providerName, model string) {
 	// estimating it here produces wrong values that exceed the window.
 	a.status.SetContextWindow(cw)
 	slog.Info("ui:setContext", "used", a.status.contextUsed, "window", cw, "source", "engineCapabilities",
-		"provider", providerName, "model", model)
+		"provider", providerName, "model", model, "inputs", inputs)
 }

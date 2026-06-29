@@ -351,7 +351,7 @@ func TestEnsureToolResultPairing(t *testing.T) {
 	})
 }
 
-func TestStripImagesFromMessages_TopLevelImage(t *testing.T) {
+func TestStripMediaFromMessages_TopLevelImage(t *testing.T) {
 	t.Parallel()
 
 	msgs := []types.Message{{
@@ -362,7 +362,7 @@ func TestStripImagesFromMessages_TopLevelImage(t *testing.T) {
 		},
 	}}
 
-	result := StripImagesFromMessages(msgs)
+	result := StripMediaFromMessages(msgs)
 	if len(result) != 1 {
 		t.Fatalf("len = %d, want 1", len(result))
 	}
@@ -382,7 +382,31 @@ func TestStripImagesFromMessages_TopLevelImage(t *testing.T) {
 	}
 }
 
-func TestStripImagesFromMessages_AssistantUntouched(t *testing.T) {
+func TestStripMediaFromMessages_TopLevelVideo(t *testing.T) {
+	t.Parallel()
+
+	msgs := []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{
+			types.NewTextBlock("watch"),
+			{Type: types.ContentTypeVideo, Source: &types.ImageSource{Type: "base64", MediaType: "video/mp4", Data: "xyz"}},
+		},
+	}}
+
+	result := StripMediaFromMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("len = %d, want 1", len(result))
+	}
+	blocks := result[0].Content
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2", len(blocks))
+	}
+	if blocks[1].Type != types.ContentTypeText || blocks[1].Text != "[video]" {
+		t.Errorf("blocks[1] = %+v, want text '[video]'", blocks[1])
+	}
+}
+
+func TestStripMediaFromMessages_AssistantUntouched(t *testing.T) {
 	t.Parallel()
 
 	// Assistant messages are not processed even if they somehow hold an image.
@@ -392,7 +416,7 @@ func TestStripImagesFromMessages_AssistantUntouched(t *testing.T) {
 			types.NewImageBlock(types.ImageSource{Type: "base64", MediaType: "image/png", Data: "abc"}),
 		},
 	}}
-	result := StripImagesFromMessages(msgs)
+	result := StripMediaFromMessages(msgs)
 	if len(result) != 1 || len(result[0].Content) != 1 {
 		t.Fatalf("assistant message should be untouched, got %+v", result)
 	}
@@ -401,7 +425,7 @@ func TestStripImagesFromMessages_AssistantUntouched(t *testing.T) {
 	}
 }
 
-func TestStripImagesFromMessages_NestedToolResultImage(t *testing.T) {
+func TestStripMediaFromMessages_NestedToolResultImage(t *testing.T) {
 	t.Parallel()
 
 	// tool_result.content is a JSON array containing a nested image block.
@@ -416,7 +440,7 @@ func TestStripImagesFromMessages_NestedToolResultImage(t *testing.T) {
 		},
 	}}
 
-	result := StripImagesFromMessages(msgs)
+	result := StripMediaFromMessages(msgs)
 	if len(result) != 1 {
 		t.Fatalf("len = %d, want 1", len(result))
 	}
@@ -439,14 +463,14 @@ func TestStripImagesFromMessages_NestedToolResultImage(t *testing.T) {
 	}
 }
 
-func TestStripImagesFromMessages_NoMutatesWhenNoMedia(t *testing.T) {
+func TestStripMediaFromMessages_NoMutatesWhenNoMedia(t *testing.T) {
 	t.Parallel()
 
 	msgs := []types.Message{{
 		Role:    types.RoleUser,
 		Content: []types.ContentBlock{types.NewTextBlock("just text")},
 	}}
-	result := StripImagesFromMessages(msgs)
+	result := StripMediaFromMessages(msgs)
 	if len(result) != 1 {
 		t.Fatalf("len = %d, want 1", len(result))
 	}

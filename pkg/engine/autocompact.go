@@ -206,9 +206,9 @@ func (c *AutoCompactor) summarizeMessages(ctx context.Context, messages []*short
 	for _, m := range messages {
 		apiMsgs = append(apiMsgs, short.StoreMessageToEngine(m))
 	}
-	// Strip images before summarization so media payloads do not reach the
+	// Strip media before summarization so media payloads do not reach the
 	// summarizer. Source: compact.ts:1294.
-	apiMsgs = StripImagesFromMessages(apiMsgs)
+	apiMsgs = StripMediaFromMessages(apiMsgs)
 	// Normalize + repair tool_use/tool_result pairing. The main callLLM
 	// path does this (engine.go ~line 2665-2670); without it here, an
 	// orphan tool_use reaches the provider and triggers errors like
