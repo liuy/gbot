@@ -30,7 +30,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
-        <!-- Status Card -->
+        <!-- Status + Config Card (merged, with WiFi/SSH tabs) -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -46,15 +46,14 @@
                 android:orientation="vertical"
                 android:padding="20dp">
 
-                <TextView
-                    android:layout_width="wrap_content"
+                <com.google.android.material.tabs.TabLayout
+                    android:id="@+id/tabLayout"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Server Status"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp"
-                    android:textAllCaps="true"
-                    android:letterSpacing="0.1" />
+                    app:tabMode="fixed"
+                    app:tabGravity="fill" />
 
+                <!-- Status section (shared) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -134,50 +133,170 @@
                     </LinearLayout>
                 </LinearLayout>
 
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Port Setting -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            app:cardBackgroundColor="@color/surface_card"
-            app:cardCornerRadius="16dp"
-            app:cardElevation="0dp"
-            app:strokeWidth="0dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:padding="20dp">
-
-                <TextView
-                    android:layout_width="0dp"
+                <!-- WiFi config group -->
+                <LinearLayout
+                    android:id="@+id/wifiConfigGroup"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/label_port"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp" />
+                    android:layout_marginTop="16dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/etPort"
-                    android:layout_width="120dp"
-                    android:layout_height="48dp"
-                    android:background="@drawable/edit_text_bg"
-                    android:gravity="center"
-                    android:inputType="number"
-                    android:maxLength="5"
-                    android:padding="8dp"
-                    android:text="8765"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp"
-                    android:fontFamily="monospace" />
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/label_port"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etPort"
+                        android:layout_width="120dp"
+                        android:layout_height="48dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:gravity="center"
+                        android:inputType="number"
+                        android:maxLength="5"
+                        android:padding="8dp"
+                        android:text="8765"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp"
+                        android:fontFamily="monospace" />
+
+                </LinearLayout>
+
+                <!-- SSH config group -->
+                <LinearLayout
+                    android:id="@+id/sshConfigGroup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_server"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etServer"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:hint="@string/hint_server"
+                        android:inputType="text"
+                        android:padding="8dp"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/label_ssh_port"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etSshPort"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:inputType="number"
+                        android:padding="8dp"
+                        android:text="22"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/label_ssh_user"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etSshUser"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:inputType="text"
+                        android:padding="8dp"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/label_ssh_password"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etSshPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:inputType="textPassword"
+                        android:padding="8dp"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/label_remote_port"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etRemotePort"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:inputType="number"
+                        android:padding="8dp"
+                        android:text="8765"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/label_local_port"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etLocalPort"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/edit_text_bg"
+                        android:inputType="number"
+                        android:padding="8dp"
+                        android:text="8765"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp" />
+
+                </LinearLayout>
 
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
 
         <!-- Accessibility Service Status -->
         <com.google.android.material.card.MaterialCardView

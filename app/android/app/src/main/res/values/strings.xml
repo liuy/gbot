@@ -15,4 +15,18 @@
     <string name="notification_channel_description">Shows when GBot server is running</string>
     <string name="notification_title">GBot is running</string>
     <string name="notification_text">WebSocket server active on port %d</string>
+
+    <string name="tab_wifi">WiFi</string>
+    <string name="tab_ssh_tunnel">SSH Tunnel</string>
+    <string name="label_server">Server</string>
+    <string name="label_ssh_port">SSH Port</string>
+    <string name="label_ssh_user">User</string>
+    <string name="label_ssh_password">Password</string>
+    <string name="label_remote_port">Remote Port</string>
+    <string name="label_local_port">Local Port</string>
+    <string name="hint_server">192.168.1.100</string>
+    <string name="ssh_invalid_config">Please fill Server, User, and Password</string>
+    <string name="ssh_tunnel_starting">SSH tunnel starting…</string>
+    <string name="ssh_tunnel_connected">SSH tunnel connected</string>
+    <string name="ssh_tunnel_disconnected">SSH tunnel disconnected</string>
 </resources>
