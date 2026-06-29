@@ -1,13 +1,17 @@
 package com.gbot.android
 
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
+import android.widget.TextView
 import android.view.accessibility.AccessibilityManager
+import android.view.animation.AccelerateDecelerateInterpolator
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.gbot.android.databinding.ActivityMainBinding
@@ -16,11 +20,16 @@ import com.gbot.android.service.ConnectionForegroundService
 import com.gbot.android.service.MobileAccessibilityService
 import com.gbot.android.tunnel.SshTunnelConfig
 import com.gbot.android.tunnel.SshTunnelState
-import com.google.android.material.tabs.TabLayout
 import java.text.SimpleDateFormat
 import java.util.*
 
 enum class Mode { WIFI, SSH }
+
+enum class StatusState(val textResId: Int, val colorResId: Int) {
+    CONNECTED(R.string.status_connected, R.color.status_green),
+    WAITING(R.string.status_waiting, R.color.status_orange),
+    DISCONNECTED(R.string.status_disconnected, R.color.status_red)
+}
 
 class MainActivity : AppCompatActivity() {
 
@@ -29,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private var isServerRunning = false
     private var currentMode = Mode.WIFI
     private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private var pulseAnimator: ObjectAnimator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +49,7 @@ class MainActivity : AppCompatActivity() {
         setupTabs()
         loadSshConfigToFields()
         updateAccessibilityStatus()
+        updateStatus(StatusState.DISCONNECTED)
     }
 
     override fun onResume() {
@@ -60,20 +71,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupTabs() {
-        binding.tabLayout.addTab(binding.tabLayout.newTab().setText(R.string.tab_wifi))
-        binding.tabLayout.addTab(binding.tabLayout.newTab().setText(R.string.tab_ssh_tunnel))
+        fun selectTab(selected: TextView, deselected: TextView) {
+            selected.isSelected = true
+            selected.setTextColor(getColor(R.color.text_value))
+            deselected.isSelected = false
+            deselected.setTextColor(getColor(R.color.text_label))
+        }
 
-        binding.tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab) {
-                currentMode = if (tab.position == 1) Mode.SSH else Mode.WIFI
-                applyModeVisibility()
-                updateIPAddress()
-            }
+        binding.tabWifi.setOnClickListener {
+            selectTab(binding.tabWifi, binding.tabSsh)
+            currentMode = Mode.WIFI
+            applyModeVisibility()
+            updateIPAddress()
+        }
 
-            override fun onTabUnselected(tab: TabLayout.Tab) {}
-            override fun onTabReselected(tab: TabLayout.Tab) {}
-        })
+        binding.tabSsh.setOnClickListener {
+            selectTab(binding.tabSsh, binding.tabWifi)
+            currentMode = Mode.SSH
+            applyModeVisibility()
+            updateIPAddress()
+        }
 
+        // Default to WiFi
+        selectTab(binding.tabWifi, binding.tabSsh)
         applyModeVisibility()
     }
 
@@ -149,7 +169,14 @@ class MainActivity : AppCompatActivity() {
                 port = port,
                 onLog = { message -> runOnUiThread { appendLog(message) } },
                 onConnectionChange = { count ->
-                    runOnUiThread { binding.tvConnections.text = count.toString() }
+                    runOnUiThread {
+                        binding.tvConnections.text = count.toString()
+                        if (count > 0 && isServerRunning) {
+                            updateStatus(StatusState.CONNECTED)
+                        } else if (isServerRunning) {
+                            updateStatus(StatusState.WAITING)
+                        }
+                    }
                 }
             )
             wsServer?.start()
@@ -172,7 +199,6 @@ class MainActivity : AppCompatActivity() {
             if (useSsh) {
                 appendLog(getString(R.string.ssh_tunnel_starting))
             }
-            appendLog("Server started on port $port")
 
         } catch (e: Exception) {
             appendLog("Failed to start server: ${e.message}")
@@ -182,14 +208,14 @@ class MainActivity : AppCompatActivity() {
     private fun handleTunnelState(state: SshTunnelState) {
         when (state) {
             SshTunnelState.Connected -> {
-                binding.tvStatus.text = getString(R.string.status_connected)
-                setStatusColor(R.color.status_connected)
                 appendLog(getString(R.string.ssh_tunnel_connected))
+                if (binding.tvConnections.text.toString().toIntOrNull() == 0) {
+                    updateStatus(StatusState.WAITING)
+                }
             }
             SshTunnelState.Connecting,
             is SshTunnelState.Reconnecting -> {
-                binding.tvStatus.text = getString(R.string.status_waiting)
-                setStatusColor(R.color.status_waiting)
+                updateStatus(StatusState.WAITING)
             }
             SshTunnelState.Stopped -> {
                 appendLog(getString(R.string.ssh_tunnel_disconnected))
@@ -220,8 +246,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateServerUI() {
         if (isServerRunning) {
             binding.btnToggleServer.text = getString(R.string.btn_stop_server)
-            binding.tvStatus.text = getString(R.string.status_waiting)
-            setStatusColor(R.color.status_waiting)
+            updateStatus(StatusState.WAITING)
             if (currentMode == Mode.SSH) {
                 binding.etPort.isEnabled = false
                 binding.etServer.isEnabled = false
@@ -235,8 +260,7 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             binding.btnToggleServer.text = getString(R.string.btn_start_server)
-            binding.tvStatus.text = getString(R.string.status_disconnected)
-            setStatusColor(R.color.status_disconnected)
+            updateStatus(StatusState.DISCONNECTED)
             binding.tvConnections.text = "0"
             binding.etPort.isEnabled = true
             binding.etServer.isEnabled = true
@@ -255,10 +279,12 @@ class MainActivity : AppCompatActivity() {
 
         if (isEnabled) {
             indicator.setColor(ContextCompat.getColor(this, R.color.status_connected))
-            binding.tvAccessibilityStatus.text = "Accessibility Service: ON"
+            binding.tvAccessibilityStatus.text = getString(R.string.accessibility_status_on)
+            binding.btnOpenAccessibility.visibility = View.GONE
         } else {
             indicator.setColor(ContextCompat.getColor(this, R.color.status_disconnected))
-            binding.tvAccessibilityStatus.text = "Accessibility Service: OFF"
+            binding.tvAccessibilityStatus.text = getString(R.string.accessibility_status_off)
+            binding.btnOpenAccessibility.visibility = View.VISIBLE
         }
     }
 
@@ -272,21 +298,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setStatusColor(colorRes: Int) {
-        val color = ContextCompat.getColor(this, colorRes)
+    private fun updateStatus(state: StatusState) {
+        binding.tvStatus.text = getString(state.textResId)
+        val color = ContextCompat.getColor(this, state.colorResId)
         val indicator = binding.statusIndicator.background as? GradientDrawable
             ?: GradientDrawable().also {
                 it.shape = GradientDrawable.OVAL
                 binding.statusIndicator.background = it
             }
         indicator.setColor(color)
+        if (state == StatusState.CONNECTED || state == StatusState.WAITING) {
+            startPulse()
+        } else {
+            stopPulse()
+        }
+    }
+
+    private fun startPulse() {
+        if (pulseAnimator?.isRunning == true) return
+        pulseAnimator = ObjectAnimator.ofFloat(
+            binding.statusIndicator, View.ALPHA, 1.0f, 0.4f
+        ).apply {
+            duration = 1200
+            repeatMode = ObjectAnimator.REVERSE
+            repeatCount = ObjectAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+            start()
+        }
+    }
+
+    private fun stopPulse() {
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        binding.statusIndicator.alpha = 1.0f
     }
 
     private fun updateIPAddress() {
         if (currentMode == Mode.SSH) {
             val cfg = readSshConfigFromFields()
             binding.tvIpAddress.text = if (cfg.host.isNotBlank()) {
-                "${cfg.host}:${cfg.remotePort}"
+                cfg.host
             } else {
                 getString(R.string.status_disconnected)
             }
@@ -318,8 +369,8 @@ class MainActivity : AppCompatActivity() {
         binding.tvLog.append(logLine)
 
         // Auto-scroll
-        binding.logScrollView.post {
-            binding.logScrollView.fullScroll(android.view.View.FOCUS_DOWN)
+        binding.mainScrollView.post {
+            binding.mainScrollView.fullScroll(android.view.View.FOCUS_DOWN)
         }
 
         // Keep log size reasonable
@@ -334,5 +385,6 @@ class MainActivity : AppCompatActivity() {
         if (isServerRunning) {
             stopServer()
         }
+        stopPulse()
     }
 }

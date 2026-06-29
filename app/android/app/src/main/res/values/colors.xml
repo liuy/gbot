@@ -1,14 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#1B6EF3</color>
-    <color name="primary_container">#D6E3FF</color>
-    <color name="on_primary">#FFFFFF</color>
-    <color name="secondary">#00C853</color>
-    <color name="status_connected">#00C853</color>
-    <color name="status_waiting">#FF9800</color>
-    <color name="status_disconnected">#F44336</color>
-    <color name="surface_dark">#1A1A2E</color>
-    <color name="surface_card">#16213E</color>
-    <color name="text_primary">#E0E0E0</color>
-    <color name="text_secondary">#9E9E9E</color>
+    <!-- Background -->
+    <color name="bg_dark">#101010</color>
+    <color name="bg_dark_end">#1A1033</color>
+
+    <!-- Card -->
+    <color name="card_dark">#26101010</color>
+    <color name="card_border">#00000000</color>
+
+    <!-- Text -->
+    <color name="text_white">#C6C6C6</color>
+    <color name="text_light">#9E9E9E</color>
+    <color name="text_muted">#607D8B</color>
+
+    <!-- Status -->
+    <color name="status_green">#00E676</color>
+    <color name="status_orange">#FF9800</color>
+    <color name="status_red">#F44336</color>
+
+    <!-- Accent -->
+    <color name="accent_blue">#448AFF</color>
+    <color name="accent_purple">#7C4DFF</color>
+
+    <!-- Backward-compatible aliases for MainActivity references -->
+    <color name="text_value">@color/text_white</color>
+    <color name="text_label">@color/text_light</color>
+    <color name="status_connected">@color/status_green</color>
+    <color name="status_disconnected">@color/status_red</color>
 </resources>

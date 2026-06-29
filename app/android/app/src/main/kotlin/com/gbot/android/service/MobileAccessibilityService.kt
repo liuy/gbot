@@ -256,10 +256,8 @@ class MobileAccessibilityService : AccessibilityService() {
             "quick_settings" -> GLOBAL_ACTION_QUICK_SETTINGS
             "power_dialog" -> GLOBAL_ACTION_POWER_DIALOG
             "split_screen" -> GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN
-            "lock_screen" -> if (Build.VERSION.SDK_INT >= 28) GLOBAL_ACTION_LOCK_SCREEN else
-                return CommandResponse.error(null, "lock_screen requires API 28+")
-            "take_screenshot" -> if (Build.VERSION.SDK_INT >= 28) GLOBAL_ACTION_TAKE_SCREENSHOT else
-                return CommandResponse.error(null, "take_screenshot requires API 28+")
+            "lock_screen" -> GLOBAL_ACTION_LOCK_SCREEN
+            "take_screenshot" -> GLOBAL_ACTION_TAKE_SCREENSHOT
             else -> return CommandResponse.error(null, "Unknown key: $key")
         }
 
@@ -413,10 +411,6 @@ class MobileAccessibilityService : AccessibilityService() {
     // --- Screenshot ---
 
     private fun executeScreenshot(params: JsonObject?): CommandResponse {
-        if (Build.VERSION.SDK_INT < 30) {
-            return CommandResponse.error(null, "Screenshot requires API 30+")
-        }
-
         val quality = params?.get("quality")?.asInt ?: 80
         val latch = CountDownLatch(1)
         var resultBitmap: Bitmap? = null
