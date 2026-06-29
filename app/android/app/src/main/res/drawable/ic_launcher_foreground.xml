@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Phone outline -->
+    <path
+        android:fillColor="#1B6EF3"
+        android:pathData="M38,24h32c2.2,0 4,1.8 4,4v52c0,2.2 -1.8,4 -4,4h-32c-2.2,0 -4,-1.8 -4,-4v-52c0,-2.2 1.8,-4 4,-4zM38,28v48h32v-48h-32z" />
+
+    <!-- Signal waves -->
+    <path
+        android:fillColor="#00C853"
+        android:pathData="M54,44m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0"
+        android:strokeWidth="0" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M54,44m-10,0a10,10 0,0 1,10,-10a10,10 0,0 1,10,10"
+        android:strokeColor="#00C853"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M54,44m-16,0a16,16 0,0 1,16,-16a16,16 0,0 1,16,16"
+        android:strokeColor="#00C853"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.5" />
+
+    <!-- MCP text -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,58h4l2,4 2,-4h4v8h-2.5v-5l-2.5,4 -2.5,-4v5h-2.5z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M57,58h5c1.7,0 3,1.3 3,3v2c0,1.7 -1.3,3 -3,3h-5zM59.5,60.5v3h2.5c0.3,0 0.5,-0.2 0.5,-0.5v-2c0,-0.3 -0.2,-0.5 -0.5,-0.5z" />
+</vector>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GBot</string>
+    <string name="accessibility_service_description">GBot uses accessibility features to provide AI-powered device automation. This service allows remote control of your device through the MCP protocol for testing and automation purposes.</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_waiting">Waiting for connection...</string>
+    <string name="status_connected">Connected</string>
+    <string name="btn_start_server">Start Server</string>
+    <string name="btn_stop_server">Stop Server</string>
+    <string name="btn_open_accessibility">Open Accessibility Settings</string>
+    <string name="label_port">Port</string>
+    <string name="label_ip_address">Device IP</string>
+    <string name="label_connections">Active Connections</string>
+    <string name="notification_channel_name">GBot Server</string>
+    <string name="notification_channel_description">Shows when GBot server is running</string>
+    <string name="notification_title">GBot is running</string>
+    <string name="notification_text">WebSocket server active on port %d</string>
+</resources>
