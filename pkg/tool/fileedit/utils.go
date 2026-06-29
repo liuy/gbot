@@ -38,10 +38,10 @@ func FindActualString(fileContent, searchString string) (string, bool) {
 	// Try with normalized quotes. Must use rune-level indexing because
 	// curly quotes (3 bytes UTF-8) normalize to straight quotes (1 byte),
 	// so byte offsets differ between normalized and original content.
-	normalizedSearch := NormalizeQuotes(searchString)
-	normalizedFile := NormalizeQuotes(fileContent)
+	nqSearch := NormalizeQuotes(searchString)
+	nqFile := NormalizeQuotes(fileContent)
 
-	before, _, ok := strings.Cut(normalizedFile, normalizedSearch)
+	before, _, ok := strings.Cut(nqFile, nqSearch)
 	if ok {
 		// Convert byte offset in normalized → rune offset
 		runeIdx := utf8.RuneCountInString(before)
@@ -51,6 +51,59 @@ func FindActualString(fileContent, searchString string) (string, bool) {
 		return string(fileRunes[runeIdx : runeIdx+searchRuneLen]), true
 	}
 
+	// Try with whitespace-normalized matching (tab ≈ space). Normalizes
+	// each line's leading whitespace to a single space for comparison,
+	// then maps the match back to the file's original (tab/space) text.
+	return findWhitespaceNormalized(fileContent, searchString)
+}
+
+// normalizeLeadingWhitespace converts runs of tabs and spaces at the start
+// of each line to a single space, preserving the rest of the line verbatim.
+// Used for whitespace-insensitive matching only — never written to disk.
+func normalizeLeadingWhitespace(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		indentLen := len(line) - len(trimmed)
+		if indentLen > 0 {
+			lines[i] = " " + trimmed
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// findWhitespaceNormalized attempts a whitespace-insensitive match by
+// normalizing leading whitespace on both sides, finding the match offset,
+// then extracting the original (un-normalized) text from the file.
+func findWhitespaceNormalized(fileContent, searchString string) (string, bool) {
+	nwFile := normalizeLeadingWhitespace(fileContent)
+	nwSearch := normalizeLeadingWhitespace(searchString)
+
+	if !strings.Contains(nwFile, nwSearch) {
+		return "", false
+	}
+
+	// Find the match position in normalized content, then map back to
+	// original content line by line.
+	fileLines := strings.Split(fileContent, "\n")
+	nwFileLines := strings.Split(nwFile, "\n")
+	nwSearchLines := strings.Split(nwSearch, "\n")
+	nSearchLines := len(nwSearchLines)
+
+	for i := 0; i+nSearchLines <= len(nwFileLines); i++ {
+		match := true
+		for j := 0; j < nSearchLines; j++ {
+			if nwFileLines[i+j] != nwSearchLines[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			// Extract the original lines from the file
+			original := strings.Join(fileLines[i:i+nSearchLines], "\n")
+			return original, true
+		}
+	}
 	return "", false
 }
 

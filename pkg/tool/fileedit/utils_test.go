@@ -344,3 +344,50 @@ func TestCurlyQuoteConstants(t *testing.T) {
 		t.Errorf("RightDoubleCurlyQuote = %U, want U+201D", RightDoubleCurlyQuote)
 	}
 }
+
+// TestFindActualString_WhitespaceMismatch_TabInFile_SpaceInSearch covers the
+// exact scenario that caused repeated Edit failures today: file uses tabs for
+// indentation but the old_string used spaces. The match must still succeed
+// and return the file's actual (tab-indented) text.
+func TestFindActualString_WhitespaceMismatch_TabInFile_SpaceInSearch(t *testing.T) {
+	t.Parallel()
+	fileContent := "func main() {\n\t\t\tsubEng := newEng.NewSubEngine()\n\t\t\tdefer subEng.Close()\n\t}"
+	search := "            subEng := newEng.NewSubEngine()\n            defer subEng.Close()"
+	got, ok := FindActualString(fileContent, search)
+	if !ok {
+		t.Fatal("FindActualString ok = false for tab/space mismatch, want true")
+	}
+	if got != "\t\t\tsubEng := newEng.NewSubEngine()\n\t\t\tdefer subEng.Close()" {
+		t.Errorf("FindActualString = %q, want tab-indented version from file", got)
+	}
+}
+
+// TestFindActualString_WhitespaceMismatch_SpaceInFile_TabInSearch is the
+// reverse: file uses spaces, old_string uses tabs.
+func TestFindActualString_WhitespaceMismatch_SpaceInFile_TabInSearch(t *testing.T) {
+	t.Parallel()
+	fileContent := "line1\n    body\n"
+	search := "\tbody\n"
+	got, ok := FindActualString(fileContent, search)
+	if !ok {
+		t.Fatal("FindActualString ok = false for space/tab mismatch, want true")
+	}
+	if got != "    body\n" {
+		t.Errorf("FindActualString = %q, want space-indented version from file", got)
+	}
+}
+
+// TestFindActualString_WhitespaceMismatch_MixedIndent verifies that mixed
+// tab+space indentation in the file still matches a pure-space search.
+func TestFindActualString_WhitespaceMismatch_MixedIndent(t *testing.T) {
+	t.Parallel()
+	fileContent := "foo {\n\t  inner\n}\n"
+	search := "    inner"
+	got, ok := FindActualString(fileContent, search)
+	if !ok {
+		t.Fatal("FindActualString ok = false for mixed indent mismatch, want true")
+	}
+	if got != "\t  inner" {
+		t.Errorf("FindActualString = %q, want original mixed-indent from file", got)
+	}
+}
