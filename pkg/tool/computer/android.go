@@ -98,6 +98,11 @@ func (b *AndroidBackend) IsConnected() bool {
 // the new device or still on the old one — never half-open and never
 // accidentally disconnected.
 func (b *AndroidBackend) Connect(ctx context.Context, host string, port int, password string) error {
+	// Already connected to the same device — skip the dial and return immediately.
+	if b.IsConnected() && b.host == host && b.port == port {
+		return nil
+	}
+
 	newClient, err := b.dial(ctx, host, port, password)
 	if err != nil {
 		// Old connection stays live — the model is still driving the prior device.
