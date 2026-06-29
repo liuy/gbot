@@ -92,7 +92,7 @@ func findWhitespaceNormalized(fileContent, searchString string) (string, bool) {
 
 	for i := 0; i+nSearchLines <= len(nwFileLines); i++ {
 		match := true
-		for j := 0; j < nSearchLines; j++ {
+		for j := range nSearchLines {
 			if nwFileLines[i+j] != nwSearchLines[j] {
 				match = false
 				break

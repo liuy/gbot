@@ -968,7 +968,7 @@ func (a *App) Init() tea.Cmd {
 	// dispatched before the first user query are picked up. Without this,
 	// events pile up in appCh with no reader when the active engine is a
 	// connector engine and no local query has been submitted yet.
-	return a.readEvents()
+	return tea.Batch(a.readEvents(), tea.ClearScreen, tea.Println(renderLogo()))
 }
 
 // Update handles bubbletea messages.

@@ -54,7 +54,7 @@ type Config struct {
 	// extracts SESSION_NOTES.md. Disabled defaults to false (enabled).
 	// Model is optional: "provider/model" or "model" (fuzzy search);
 	// empty = inherit parent engine's model.
-	SessionNotes SessionNotesConfig `json:"session_notes,omitempty"`
+	SessionNotes SessionNotesConfig `json:"session_notes"`
 }
 
 // SessionNotesConfig configures the session memory sub-agent.
