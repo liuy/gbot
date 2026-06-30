@@ -1,5 +1,6 @@
 package com.gbot.android.server
 
+import android.content.Intent
 import com.google.common.truth.Truth.assertThat
 import com.gbot.android.service.MobileAccessibilityService
 import org.junit.After
@@ -8,7 +9,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.io.File
+import java.nio.ByteBuffer
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -17,6 +22,7 @@ class WebSocketCommandServerTest {
 	private val logs = mutableListOf<String>()
 	private val connCounts = mutableListOf<Int>()
 	private val server = WebSocketCommandServer(
+		appContext = RuntimeEnvironment.getApplication(),
 		port = 0,
 		onLog = { logs += it },
 		onConnectionChange = { connCounts += it }
@@ -164,6 +170,119 @@ class WebSocketCommandServerTest {
 	}
 
 	@Test
+	fun onMessage_receiveFileBegin_opensOutputAndAcks() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+
+		server.onMessage(conn, """{"id":"b1","command":"receive_file_begin","params":{"path":"x.apk","size":10}}""")
+		awaitSent(conn)
+
+		val ack = conn.sent.last()
+		assertThat(ack).contains(""""success":true""")
+		assertThat(ack).contains(""""path":"x.apk"""")
+	}
+
+	@Test
+	fun onMessage_binaryFrame_writesToOutput() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b2","command":"receive_file_begin","params":{"path":"x.bin","size":5}}""")
+		awaitSent(conn)
+
+		server.onMessage(conn, ByteBuffer.wrap("hello".toByteArray()))
+
+		server.onMessage(conn, """{"id":"e2","command":"receive_file_end","params":{}}""")
+		awaitSentCount(conn, 2)
+
+		val file = File(RuntimeEnvironment.getApplication().getExternalFilesDir(null), "x.bin")
+		val content = file.readBytes().decodeToString()
+		assertThat(content).isEqualTo("hello")
+	}
+
+	@Test
+	fun onMessage_receiveFileEnd_sizeMismatch_sendsError() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b3","command":"receive_file_begin","params":{"path":"m.bin","size":100}}""")
+		awaitSent(conn)
+		server.onMessage(conn, ByteBuffer.wrap(ByteArray(5)))
+		server.onMessage(conn, """{"id":"e3","command":"receive_file_end","params":{}}""")
+		awaitSentCount(conn, 2)
+
+		assertThat(conn.sent.last()).contains("size mismatch")
+	}
+
+	@Test
+	fun onMessage_receiveFileEnd_apk_firesInstallIntent() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b4","command":"receive_file_begin","params":{"path":"y.apk","size":5}}""")
+		awaitSent(conn)
+		server.onMessage(conn, ByteBuffer.wrap(ByteArray(5)))
+		server.onMessage(conn, """{"id":"e4","command":"receive_file_end","params":{}}""")
+		awaitSentCount(conn, 2)
+
+		val intent = shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+		assertThat(intent).isNotNull()
+		assertThat(intent.action).isEqualTo(Intent.ACTION_VIEW)
+		assertThat(intent.type).isEqualTo("application/vnd.android.package-archive")
+	}
+
+	@Test
+	fun onMessage_receiveFileEnd_nonApk_noInstallIntent() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b5","command":"receive_file_begin","params":{"path":"z.txt","size":3}}""")
+		awaitSent(conn)
+		server.onMessage(conn, ByteBuffer.wrap("abc".toByteArray()))
+		server.onMessage(conn, """{"id":"e5","command":"receive_file_end","params":{}}""")
+		awaitSentCount(conn, 2)
+
+		val intent = shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+		assertThat(intent == null || intent.action != Intent.ACTION_VIEW).isTrue()
+	}
+
+	@Test
+	fun onMessage_receiveFileBegin_missingPath_sendsError() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+
+		server.onMessage(conn, """{"id":"b6","command":"receive_file_begin","params":{}}""")
+		awaitSent(conn)
+
+		assertThat(conn.sent.last()).contains("path")
+	}
+
+	@Test
+	fun onMessage_receiveFileEnd_withoutBegin_sendsError() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+
+		server.onMessage(conn, """{"id":"e7","command":"receive_file_end","params":{}}""")
+		awaitSent(conn)
+
+		assertThat(conn.sent.last()).contains("active transfer")
+	}
+
+	@Test
+	fun onClose_midTransfer_removesSession() {
+		val conn = FakeWebSocket()
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b8","command":"receive_file_begin","params":{"path":"c.bin","size":4}}""")
+		awaitSent(conn)
+
+		// A dropped connection mid-transfer must free the session.
+		server.onClose(conn, 1000, "bye", false)
+
+		// After onClose, a fresh begin on the SAME conn must succeed (session cleared),
+		// not report a stale transfer.
+		server.onOpen(conn, FakeHandshake())
+		server.onMessage(conn, """{"id":"b8b","command":"receive_file_begin","params":{"path":"c.bin","size":4}}""")
+		awaitSent(conn)
+		assertThat(conn.sent.last()).contains(""""success":true""")
+	}
+
+	@Test
 	fun onStart_setsTimeoutAndLogs() {
 		server.onStart()
 
@@ -178,6 +297,18 @@ class WebSocketCommandServerTest {
 			Thread.sleep(20)
 		}
 		assertThat(conn.sent).isNotEmpty()
+	}
+
+	private fun awaitSentCount(conn: FakeWebSocket, expected: Int, timeoutMs: Long = 3000) {
+		// Multi-step flows (begin + end) populate conn.sent more than once; the
+		// plain awaitSent returns as soon as the first ack lands, so a follow-up
+		// await after end would not actually wait for the end handler. Poll until
+		// the expected number of messages has been sent.
+		val start = System.currentTimeMillis()
+		while (conn.sent.size < expected && System.currentTimeMillis() - start < timeoutMs) {
+			Thread.sleep(20)
+		}
+		assertThat(conn.sent.size).isAtLeast(expected)
 	}
 }
 

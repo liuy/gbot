@@ -118,4 +118,5 @@ type Backend interface {
 	Zoom(ctx context.Context, x, y int, scale float64) error
 	DeviceInfo(ctx context.Context) (*DeviceInfo, error)
 	OpenApp(ctx context.Context, packageName string) error
+	SendFile(ctx context.Context, path string) error
 }

@@ -31,8 +31,9 @@ Call ` + "`disconnect`" + ` when done, or to switch devices — connecting a new
 - ` + "`scroll`" + ` takes direction up|down|left|right.
 - ` + "`zoom`" + ` pinches at a coordinate with a scale factor (>1 zoom in, <1 zoom out).
 - ` + "`open_app`" + ` launches an installed app by package name (e.g. ` + "`com.android.chrome`" + `).
+- ` + "`send_file`" + ` pushes a server-local file (e.g. ` + "`/tmp/app.apk`" + `) to the device's external files dir; ` + "`.apk`" + ` files bring up the package installer automatically.
 
 ## Workflow
 
-connect → device_info → screen → click_element (or type/send_key/scroll/zoom/open_app) → screen (re-read after a change) → ... → disconnect. Re-call screen after any action that changes the UI, because refs from a stale screen are invalid.`
+connect → device_info → screen → click_element (or type/send_key/scroll/zoom/open_app/send_file) → screen (re-read after a change) → ... → disconnect. Re-call screen after any action that changes the UI, because refs from a stale screen are invalid.`
 }

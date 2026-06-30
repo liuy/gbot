@@ -175,6 +175,7 @@ class MainActivity : AppCompatActivity() {
             wsServer?.shutdown()
 
             wsServer = WebSocketCommandServer(
+                appContext = this,
                 port = port,
                 onLog = { message -> runOnUiThread { appendLog(message) } },
                 onConnectionChange = { count ->

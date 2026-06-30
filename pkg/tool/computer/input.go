@@ -25,6 +25,7 @@ type Input struct {
 	Key        string          `json:"key,omitempty"`        // [send_key]
 	Scale      *float64        `json:"scale,omitempty"`      // [zoom]
 	Package    string          `json:"package,omitempty"`    // [open_app]
+	Path       string          `json:"path,omitempty"`       // [send_file]
 }
 
 // parseInput unmarshals the raw tool input and validates it against the

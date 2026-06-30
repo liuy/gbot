@@ -21,7 +21,7 @@ func TestInputSchema_RequiredIsActionOnly(t *testing.T) {
 	}
 }
 
-func TestInputSchema_ActionEnumHasFourteen(t *testing.T) {
+func TestInputSchema_ActionEnumHasFifteen(t *testing.T) {
 	t.Parallel()
 	var s struct {
 		Properties struct {
@@ -37,9 +37,10 @@ func TestInputSchema_ActionEnumHasFourteen(t *testing.T) {
 		"connect", "disconnect", "screen", "screenshot",
 		"click", "click_element", "open_menu", "open_menu_element",
 		"type", "send_key", "scroll", "zoom", "device_info", "open_app",
+		"send_file",
 	}
-	if len(s.Properties.Action.Enum) != 14 {
-		t.Fatalf("action enum len = %d, want 14", len(s.Properties.Action.Enum))
+	if len(s.Properties.Action.Enum) != 15 {
+		t.Fatalf("action enum len = %d, want 15", len(s.Properties.Action.Enum))
 	}
 	for i, a := range s.Properties.Action.Enum {
 		if a != want[i] {
@@ -102,7 +103,7 @@ func TestInputSchema_AllPropertiesPresent(t *testing.T) {
 	}
 	want := []string{
 		"action", "host", "port", "password", "max_depth",
-		"ref", "coordinate", "direction", "text", "key", "scale", "package",
+		"ref", "coordinate", "direction", "text", "key", "scale", "package", "path",
 	}
 	for _, p := range want {
 		if _, ok := s.Properties[p]; !ok {

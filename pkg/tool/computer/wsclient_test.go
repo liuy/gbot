@@ -495,6 +495,75 @@ func TestDPClient_Call_AfterClose(t *testing.T) {
 	}
 }
 
+func TestDPClient_SendBinary_WritesBinaryFrame(t *testing.T) {
+	t.Parallel()
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	received := make(chan []byte, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			mt, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				return
+			}
+			if mt == websocket.BinaryMessage {
+				// Copy so the assertion sees a stable snapshot; gorilla
+				// reuses the buffer after ReadMessage returns.
+				dup := make([]byte, len(data))
+				copy(dup, data)
+				select {
+				case received <- dup:
+				default:
+				}
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	if err != nil {
+		t.Fatalf("newDPClient: %v", err)
+	}
+	defer connClose(c)
+
+	payload := []byte{1, 2, 3, 250, 0, 7}
+	if err := c.sendBinary(payload); err != nil {
+		t.Fatalf("sendBinary: %v", err)
+	}
+	select {
+	case got := <-received:
+		if len(got) != len(payload) {
+			t.Fatalf("received len = %d, want %d", len(got), len(payload))
+		}
+		for i, b := range payload {
+			if got[i] != b {
+				t.Fatalf("byte[%d] = %d, want %d", i, got[i], b)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the server to receive the binary frame")
+	}
+}
+
+func TestDPClient_SendBinary_AfterClose(t *testing.T) {
+	t.Parallel()
+	url := startWSServer(t, func(req rpcRequest) rpcResponse {
+		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
+	})
+	c, err := newDPClient(hostFromURL(url), portFromURL(url), "")
+	if err != nil {
+		t.Fatalf("newDPClient: %v", err)
+	}
+	connClose(c)
+	if err := c.sendBinary([]byte{1, 2, 3}); err == nil {
+		t.Fatal("sendBinary after close returned nil, want errConnectionClosed")
+	}
+}
+
 func TestDecodeScreenResult_MalformedJSON(t *testing.T) {
 	t.Parallel()
 	_, err := decodeScreenResult(json.RawMessage(`{bad json`))

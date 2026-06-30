@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -18,6 +21,7 @@ var errNotConnected = errors.New("computer: not connected; call connect first")
 // the backend is its only consumer.
 type rpcCaller interface {
 	call(ctx context.Context, command string, params map[string]any) (json.RawMessage, error)
+	sendBinary(data []byte) error
 	IsClosed() bool
 	close() error
 }
@@ -300,6 +304,68 @@ func (b *AndroidBackend) OpenApp(ctx context.Context, packageName string) error 
 		return err
 	}
 	_, err := b.client.call(ctx, "open_app", map[string]any{"package": packageName})
+	return err
+}
+
+// sendFileChunkSize is the max payload per binary frame. 256 KiB balances
+// frame count (fewer round-trips) against memory + the GBot app's receive
+// buffer.
+const sendFileChunkSize = 256 * 1024
+
+// SendFile reads the local file at path and pushes it to the device over the
+// WebSocket as ordered binary frames bracketed by receive_file_begin/end.
+// The device-side filename is the local path's basename; the device resolves
+// it under its external files dir. APKs (suffix .apk) trigger an install
+// intent on the device after receive_file_end.
+func (b *AndroidBackend) SendFile(ctx context.Context, path string) error {
+	if err := b.ensureConnected(ctx); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("computer: stat %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("computer: %s is a directory", path)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("computer: %s is empty", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("computer: open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	// receive_file_begin: announce basename + total size, wait for ack.
+	_, err = b.client.call(ctx, "receive_file_begin", map[string]any{
+		"path": filepath.Base(path),
+		"size": info.Size(),
+	})
+	if err != nil {
+		return err
+	}
+
+	// Stream 256 KiB binary frames. ReadFull returns (n, io.EOF) at EOF;
+	// only flush a partial chunk when n > 0.
+	buf := make([]byte, sendFileChunkSize)
+	for {
+		n, rerr := io.ReadFull(f, buf)
+		if n > 0 {
+			if err := b.client.sendBinary(buf[:n]); err != nil {
+				return err
+			}
+		}
+		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+			break
+		}
+		if rerr != nil {
+			return fmt.Errorf("computer: read %s: %w", path, rerr)
+		}
+	}
+
+	// receive_file_end: close device stream, get back the byte count.
+	_, err = b.client.call(ctx, "receive_file_end", nil)
 	return err
 }
 

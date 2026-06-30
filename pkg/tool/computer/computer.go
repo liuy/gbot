@@ -11,7 +11,7 @@ import (
 	"github.com/liuy/gbot/pkg/types"
 )
 
-// Action constants — the 14 actions routed by the Computer tool. connect and
+// Action constants — the 15 actions routed by the Computer tool. connect and
 // disconnect are the only actions that bypass the connection gate (they must
 // work when disconnected); every other action flows through the Backend
 // methods, which call ensureConnected themselves.
@@ -30,6 +30,7 @@ const (
 	ActionZoom            = "zoom"
 	ActionDeviceInfo      = "device_info"
 	ActionOpenApp         = "open_app"
+	ActionSendFile        = "send_file"
 )
 
 // readOnlyActions are pure perception: they read device/scratch state without
@@ -56,6 +57,7 @@ var destructiveActions = map[string]bool{
 	ActionScroll:          true,
 	ActionZoom:            true,
 	ActionOpenApp:         true,
+	ActionSendFile:        true,
 }
 
 // validScrollDirections is the exact set the GBot app's scroll command accepts.
@@ -140,6 +142,8 @@ func dispatch(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResul
 		return doDeviceInfo(ctx, b, in)
 	case ActionOpenApp:
 		return doOpenApp(ctx, b, in)
+	case ActionSendFile:
+		return doSendFile(ctx, b, in)
 	default:
 		return nil, fmt.Errorf("computer: unknown action %q", in.Action)
 	}
@@ -319,6 +323,19 @@ func doOpenApp(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResu
 	return okResponse(map[string]any{"action": ActionOpenApp, "package": in.Package}), nil
 }
 
+// doSendFile validates non-empty path BEFORE ensureConnected (mirrors
+// doType/doSendKey/doOpenApp's pre-connect declarative validation) so a
+// malformed request fails with no wire traffic.
+func doSendFile(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResult, error) {
+	if strings.TrimSpace(in.Path) == "" {
+		return errorResponse("send_file requires a path"), nil
+	}
+	if err := b.SendFile(ctx, in.Path); err != nil {
+		return notConnectedOrError(err), nil
+	}
+	return okResponse(map[string]any{"action": ActionSendFile, "path": in.Path}), nil
+}
+
 // notConnectedOrError maps errNotConnected onto the single canonical
 // "not connected; call connect first" tool error and propagates all other
 // errors with their concrete text.
@@ -373,6 +390,8 @@ func summarizeAction(in Input) string {
 		return "device info"
 	case ActionOpenApp:
 		return fmt.Sprintf("open app %q", in.Package)
+	case ActionSendFile:
+		return fmt.Sprintf("send file %q", in.Path)
 	default:
 		return "computer action"
 	}

@@ -3,6 +3,7 @@ package computer
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestComputer_IsDestructive_PerAction(t *testing.T) {
 	tt, _, _ := newTestTool()
 	destructive := []string{
 		"click", "click_element", "open_menu", "open_menu_element",
-		"type", "send_key", "scroll", "zoom", "open_app",
+		"type", "send_key", "scroll", "zoom", "open_app", "send_file",
 	}
 	for _, a := range destructive {
 		input := mustMarshal(t, map[string]any{"action": a})
@@ -1122,5 +1123,106 @@ func TestComputer_Execute_OpenAppNotConnected(t *testing.T) {
 	}
 	if e, _ := m["error"].(string); !contains(e, "connect first") {
 		t.Errorf("error = %q, want 'connect first'", e)
+	}
+}
+
+func TestComputer_Execute_SendFileSuccess(t *testing.T) {
+	t.Parallel()
+	tt, b, _ := newTestTool()
+	ctx := context.Background()
+	_, _ = tt.Call(ctx, mustMarshal(t, map[string]any{"action": "connect", "host": "h"}), &tool.ToolUseContext{})
+	fc := b.client.(*fakeCaller)
+	tmpPath := writeSendFileTemp(t, 512)
+	res, err := tt.Call(ctx, mustMarshal(t, map[string]any{
+		"action": "send_file", "path": tmpPath,
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if m["action"] != "send_file" {
+		t.Errorf("action = %v, want send_file", m["action"])
+	}
+	if m["path"] != tmpPath {
+		t.Errorf("path = %v, want %q", m["path"], tmpPath)
+	}
+	// The first wire call must be receive_file_begin with the basename param.
+	if got := len(fc.calls); got != 2 {
+		t.Fatalf("wire calls = %d, want 2 (begin + end)", got)
+	}
+	if fc.calls[0].Command != "receive_file_begin" {
+		t.Errorf("calls[0] = %q, want receive_file_begin", fc.calls[0].Command)
+	}
+	if fc.calls[0].Params["path"] != filepath.Base(tmpPath) {
+		t.Errorf("begin path = %v, want %q", fc.calls[0].Params["path"], filepath.Base(tmpPath))
+	}
+}
+
+func TestComputer_Execute_SendFileEmptyPath(t *testing.T) {
+	t.Parallel()
+	tt, _, rec := newTestTool()
+	// Validation runs pre-connect: no connect needed, no wire traffic.
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "send_file",
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "path") {
+		t.Errorf("error = %q, want mention of 'path'", e)
+	}
+	if rec.clientCount() != 0 {
+		t.Errorf("clients dialed = %d, want 0 (validation must run pre-connect)", rec.clientCount())
+	}
+}
+
+func TestComputer_Execute_SendFileNotConnected(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	// A valid path but no connect: ensureConnected surfaces the canonical
+	// not-connected error. Use a real temp path so the validation gate passes
+	// and we reach ensureConnected.
+	tmpPath := writeSendFileTemp(t, 64)
+	res, err := tt.Call(context.Background(), mustMarshal(t, map[string]any{
+		"action": "send_file", "path": tmpPath,
+	}), &tool.ToolUseContext{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	m, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data type = %T, want map", res.Data)
+	}
+	if e, _ := m["error"].(string); !contains(e, "connect first") {
+		t.Errorf("error = %q, want 'connect first'", e)
+	}
+}
+
+// TestComputer_SummarizeAction_SendFilePath is a dedicated sub-test because the
+// shared SummarizeAction table marshals only {action:...}, but the send_file
+// branch reads in.Path. Asserting both "send file" and "x.apk" proves the path
+// reached the branch (it would fail if the branch dropped Path or returned a
+// static literal).
+func TestComputer_SummarizeAction_SendFilePath(t *testing.T) {
+	t.Parallel()
+	tt, _, _ := newTestTool()
+	desc, err := tt.Description(mustMarshal(t, map[string]any{
+		"action": "send_file", "path": "x.apk",
+	}))
+	if err != nil {
+		t.Fatalf("Description: %v", err)
+	}
+	if !contains(desc, "send file") {
+		t.Errorf("Description = %q, want it to contain 'send file'", desc)
+	}
+	if !contains(desc, "x.apk") {
+		t.Errorf("Description = %q, want it to contain 'x.apk' (in.Path)", desc)
 	}
 }

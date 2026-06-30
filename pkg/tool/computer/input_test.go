@@ -60,7 +60,8 @@ func TestParseInput_DecodesAllFields(t *testing.T) {
 		"direction":"up",
 		"text":"hi",
 		"key":"back",
-		"scale":1.5
+		"scale":1.5,
+		"path":"/tmp/x.apk"
 	}`))
 	if err != nil {
 		t.Fatalf("parseInput: %v", err)
@@ -85,6 +86,9 @@ func TestParseInput_DecodesAllFields(t *testing.T) {
 	}
 	if in.Scale == nil || *in.Scale != scale {
 		t.Errorf("Scale = %v, want %g", in.Scale, scale)
+	}
+	if in.Path != "/tmp/x.apk" {
+		t.Errorf("Path = %q, want /tmp/x.apk", in.Path)
 	}
 }
 

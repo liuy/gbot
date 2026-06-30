@@ -13,8 +13,8 @@ func inputSchema() json.RawMessage {
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["connect", "disconnect", "screen", "screenshot", "click", "click_element", "open_menu", "open_menu_element", "type", "send_key", "scroll", "zoom", "device_info", "open_app"],
-      "description": "Computer-use action. connect: open a WebSocket to a GBot Android app (params: host, port?, password?). disconnect: close it. screen: list on-screen elements with refs (token-cheap). screenshot: capture a JPEG. click/click_element: tap a coordinate or ref. open_menu/open_menu_element: long-press a coordinate or ref. type: replace focused field text. send_key: press a system key (back, home, recents, notifications, quick_settings, power_dialog, split_screen, lock_screen, take_screenshot). scroll: direction up|down|left|right. zoom: pinch at coordinate. device_info: report manufacturer/model/screen. open_app: launch an installed app by package name."
+      "enum": ["connect", "disconnect", "screen", "screenshot", "click", "click_element", "open_menu", "open_menu_element", "type", "send_key", "scroll", "zoom", "device_info", "open_app", "send_file"],
+      "description": "Computer-use action. connect: open a WebSocket to a GBot Android app (params: host, port?, password?). disconnect: close it. screen: list on-screen elements with refs (token-cheap). screenshot: capture a JPEG. click/click_element: tap a coordinate or ref. open_menu/open_menu_element: long-press a coordinate or ref. type: replace focused field text. send_key: press a system key (back, home, recents, notifications, quick_settings, power_dialog, split_screen, lock_screen, take_screenshot). scroll: direction up|down|left|right. zoom: pinch at coordinate. device_info: report manufacturer/model/screen. open_app: launch an installed app by package name. send_file: push a server-local file to the device (params: path); APKs auto-install."
     },
     "host": {
       "type": "string",
@@ -68,6 +68,10 @@ func inputSchema() json.RawMessage {
     "package": {
       "type": "string",
       "description": "[open_app] app package name, e.g. com.android.chrome."
+    },
+    "path": {
+      "type": "string",
+      "description": "[send_file] server-local file path to push to the device. APKs auto-install."
     }
   }
 }`)

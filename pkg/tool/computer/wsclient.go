@@ -166,6 +166,36 @@ func (c *dpClient) call(ctx context.Context, command string, params map[string]a
 	}
 }
 
+// sendBinary writes one WebSocket binary frame (opcode 0x2). Binary frames
+// are fire-and-forget (no ack from the phone) and ordered by the WebSocket
+// guarantee, so callers stream chunks back-to-back between receive_file_begin
+// and receive_file_end.
+//
+// CONCURRENCY: c.mu here does NOT serialize against call()'s WriteJSON —
+// call() releases c.mu BEFORE calling c.ws.WriteJSON(req) (call() takes
+// c.mu.Lock(), registers the pending channel, then c.mu.Unlock() runs BEFORE
+// WriteJSON). So taking c.mu in sendBinary does not prevent a call()'s
+// WriteJSON from running concurrently.
+//
+// Safety today is flow-based, not lock-based: SendFile calls begin/stream/end
+// sequentially from ONE goroutine (the tool handler), and the Computer tool
+// declares IsConcurrencySafe_ = false, so the engine never invokes two
+// actions concurrently. The c.mu in sendBinary therefore only (a) guards the
+// closed.Load() check and (b) orders consecutive sendBinary calls against
+// each other. sendBinary and call() MUST NEVER be invoked concurrently from
+// different goroutines — doing so would race gorilla's internal writer.
+func (c *dpClient) sendBinary(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return errConnectionClosed
+	}
+	if err := c.ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return fmt.Errorf("computer: write binary: %w", err)
+	}
+	return nil
+}
+
 // IsClosed reports whether the read loop has terminated (peer close, read
 // error, or explicit close()). AndroidBackend.ensureConnected polls it so an
 // async drop is detected without the read loop reaching back into the backend.
