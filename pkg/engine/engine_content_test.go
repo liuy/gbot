@@ -17,9 +17,10 @@ func TestQuerySyncWithContent_TextAndImage(t *testing.T) {
 	mp.addResponse(textStreamEvents("test-model", "I see the image."), nil)
 
 	eng := New(&Params{
-		Provider: mp,
-		Model:    "test-model",
-		Logger:   slog.Default(),
+		Provider:        mp,
+		Model:           "test-model",
+		Logger:          slog.Default(),
+		InputModalities: []string{"text", "image"},
 	})
 	t.Cleanup(func() { eng.Close() })
 
@@ -193,5 +194,72 @@ func TestQueryWithContent_EmitsQueryStartWithBlocks(t *testing.T) {
 	}
 	if !foundImage {
 		t.Error("EventQueryStart message missing the image block")
+	}
+}
+
+// TestEngineImageCapableModelRetainsImage is the positive counterpart to
+// TestEngineDefaultModalitiesStripsImage and the engine-layer mirror of the
+// WeChat engine regression (cmd/gbot/main.go startWeChatConnector). An engine
+// explicitly initialized with InputModalities=["text","image"] must NOT strip
+// image blocks, even after the root-cause fix removes SupportsModality's
+// empty-value branch. If a future change makes New() drop InputModalities back
+// to empty (or flips callLLM's strip condition), SupportsModality("image")
+// becomes false and this test goes red before the WeChat path regresses.
+func TestEngineImageCapableModelRetainsImage(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "ok"), nil)
+
+	eng := New(&Params{
+		Provider:        mp,
+		Model:           "test-model",
+		Logger:          slog.Default(),
+		InputModalities: []string{"text", "image"},
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	content := []types.ContentBlock{
+		types.NewTextBlock("q"),
+		types.NewFileImageBlock("image/png", "/x.png"),
+	}
+	result := eng.QuerySyncWithContent(ctx, content, "")
+	if result.Error != nil {
+		t.Fatalf("QuerySyncWithContent error: %v", result.Error)
+	}
+
+	msgs := mp.lastRequestMessages()
+	if len(msgs) == 0 {
+		t.Fatal("provider received no messages")
+	}
+	var userMsg *types.Message
+	for i := range msgs {
+		if msgs[i].Role == types.RoleUser {
+			userMsg = &msgs[i]
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("no user message in provider request")
+	}
+
+	hasImageBlock := false
+	hasImagePlaceholder := false
+	for _, cb := range userMsg.Content {
+		switch {
+		case cb.Type == types.ContentTypeImage:
+			hasImageBlock = true
+		case cb.Type == types.ContentTypeText && cb.Text == "[image]":
+			hasImagePlaceholder = true
+		}
+	}
+	if !hasImageBlock {
+		t.Error("image-capable model: user message missing the ContentTypeImage block; modalities=[\"text\",\"image\"] must retain it")
+	}
+	if hasImagePlaceholder {
+		t.Error("image-capable model: user message wrongly carries the \"[image]\" placeholder; stripping must not run when image is supported")
 	}
 }

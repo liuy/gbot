@@ -5159,3 +5159,68 @@ func TestCreateAttachmentMessages_TextFallback(t *testing.T) {
 		t.Fatalf("Content[0].Text = %q, want %q", msg.Content[0].Text, "hello")
 	}
 }
+
+// TestEngineDefaultModalitiesStripsImage guards the root-cause fix for the
+// inputModalities initialization bug. An engine created with NO InputModalities
+// must default to ["text"] (the most conservative value), so image blocks in a
+// tool-less user turn are stripped to a "[image]" text placeholder before being
+// sent to a text-only model. The red phase: before the fix New() left
+// inputModalities empty, SupportsModality returned true on the empty branch,
+// callLLM skipped stripping, and the image block reached the provider verbatim.
+func TestEngineDefaultModalitiesStripsImage(t *testing.T) {
+	t.Parallel()
+
+	mp := &mockProvider{}
+	mp.addResponse(textStreamEvents("test-model", "ok"), nil)
+
+	eng := New(&Params{
+		Provider: mp,
+		Model:    "test-model",
+		Logger:   slog.Default(),
+	})
+	t.Cleanup(func() { eng.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	content := []types.ContentBlock{
+		types.NewTextBlock("q"),
+		types.NewFileImageBlock("image/png", "/x.png"),
+	}
+	result := eng.QuerySyncWithContent(ctx, content, "")
+	if result.Error != nil {
+		t.Fatalf("QuerySyncWithContent error: %v", result.Error)
+	}
+
+	msgs := mp.lastRequestMessages()
+	if len(msgs) == 0 {
+		t.Fatal("provider received no messages")
+	}
+	var userMsg *types.Message
+	for i := range msgs {
+		if msgs[i].Role == types.RoleUser {
+			userMsg = &msgs[i]
+			break
+		}
+	}
+	if userMsg == nil {
+		t.Fatal("no user message in provider request")
+	}
+
+	hasImagePlaceholder := false
+	hasImageBlock := false
+	for _, cb := range userMsg.Content {
+		switch {
+		case cb.Type == types.ContentTypeText && cb.Text == "[image]":
+			hasImagePlaceholder = true
+		case cb.Type == types.ContentTypeImage:
+			hasImageBlock = true
+		}
+	}
+	if hasImageBlock {
+		t.Error("user message still carries a ContentTypeImage block; default [\"text\"] modalities should have stripped it")
+	}
+	if !hasImagePlaceholder {
+		t.Error("user message missing the \"[image]\" text placeholder that StripMediaFromMessages substitutes for stripped image blocks")
+	}
+}

@@ -343,6 +343,7 @@ func main() {
 		}
 		engCtxWindow := providerCfg.ResolveContext(modelArg)
 		engMaxTokens := providerCfg.ResolveMaxTokens(modelArg)
+		engInputs := providerCfg.ResolveInput(modelArg)
 		newEng := engine.New(&engine.Params{
 			Provider:      engineProvider,
 			ToolsProvider: refs.Reg.ToolMapFn(),
@@ -364,6 +365,7 @@ func main() {
 			TaskList:          engTaskList,
 			ModelThinking:     modelThinking,
 			EngineID:          id,
+			InputModalities:   engInputs,
 		})
 		newEng.SetOnClose(func(sessionID string) {
 			refs.REPL.CleanSession(sessionID)
@@ -699,6 +701,7 @@ func startWeChatConnector(d startWeChatDeps) error {
 		wcEng := engine.New(&engine.Params{
 			Provider:          d.provider,
 			Model:             d.model,
+			InputModalities:   d.primaryProviderCfg.ResolveInput(d.model),
 			MaxTokens:         d.maxTokens,
 			TokenBudget:       d.contextWindow,
 			MaxTurns:          0,

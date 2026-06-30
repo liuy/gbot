@@ -150,10 +150,11 @@ type Engine struct {
 	modelThinking map[string]llm.ThinkingMode
 
 	// inputModalities lists the input types the current model accepts
-	// (e.g. ["text"], ["text", "image", "video"]). Set by TUI on model switch
-	// from config.Provider.ResolveInput. When "image"/"video" is absent,
-	// callLLM strips media blocks before sending to avoid API errors on
-	// text-only models.
+	// (e.g. ["text"], ["text", "image", "video"]). Initialized by New() from
+	// Params.InputModalities (default ["text"], the most conservative value)
+	// and updated by SetInputModalities on a /model switch. When "image"/"video"
+	// is absent, callLLM strips media blocks before sending to avoid API errors
+	// on text-only models.
 	inputModalities []string
 
 	// retryConfig controls retry behavior for stream-level failures.
@@ -297,6 +298,12 @@ type Params struct {
 	// gbot does not translate between modes — values are passed through to the API.
 	ModelThinking map[string]llm.ThinkingMode
 
+	// InputModalities lists the input types the model accepts (e.g. ["text"],
+	// ["text","image","video"]). Empty defaults to ["text"] in New() — the
+	// most conservative value, which strips image/video for text-only models.
+	// Resolved from config.Provider.ResolveInput at engine creation.
+	InputModalities []string
+
 	// EngineID is the owning EngineManager ID. Defaults to "main" when empty.
 	// Used to bind sessions created via NewSession to a specific engine.
 	EngineID string
@@ -354,6 +361,14 @@ func New(p *Params) *Engine {
 		engineID = "main"
 	}
 
+	// inputModalities defaults to ["text"] — the most conservative value — so a
+	// text-only model built without explicit modalities strips media before it
+	// reaches the API. Callers override with config.Provider.ResolveInput.
+	inputModalities := p.InputModalities
+	if len(inputModalities) == 0 {
+		inputModalities = []string{"text"}
+	}
+
 	// Each engine gets its own task list. Callers that inject via Params.TaskList
 	// (the factory, tests) supply their own; engines built without a list (test
 	// helpers) get a fresh one whose dir is resolved by setTaskDirForSession.
@@ -368,6 +383,7 @@ func New(p *Params) *Engine {
 		toolOrder:               toolOrder,
 		toolsProvider:           toolsProvider,
 		model:                   p.Model,
+		inputModalities:         inputModalities,
 		maxTokens:               p.MaxTokens,
 		logger:                  p.Logger,
 		tokenBudget:             p.TokenBudget,
@@ -1840,7 +1856,10 @@ func (e *Engine) callLLM(ctx context.Context, systemPrompt string) (*types.Messa
 	// Strip media blocks the current model can't accept. Text-only models
 	// (e.g. glm-5.2) reject image/video content blocks with API errors.
 	// Non-destructive: operates on the marshaled copy, not e.messages.
-	if !e.SupportsModality("image") || !e.SupportsModality("video") {
+	// Only strip when BOTH image and video are unsupported: a model that
+	// accepts either should let that media through rather than have it
+	// replaced by a placeholder.
+	if !e.SupportsModality("image") && !e.SupportsModality("video") {
 		apiMessages = StripMediaFromMessages(apiMessages)
 	}
 
@@ -3836,14 +3855,11 @@ func (e *Engine) SetInputModalities(modalities []string) {
 }
 
 // SupportsModality returns true if the current model accepts the given input
-// type (e.g. "image", "video"). Returns true when inputModalities is unset
-// (no model switch yet — conservative default).
+// type (e.g. "image", "video"). Never returns true for an unknown modality:
+// every engine is initialized with at least ["text"] by New()/NewSubEngine().
 func (e *Engine) SupportsModality(modality string) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	if len(e.inputModalities) == 0 {
-		return true
-	}
 	return slices.Contains(e.inputModalities, modality)
 }
 
@@ -3932,22 +3948,23 @@ func (e *Engine) NewSubEngine(opts SubEngineOptions) *Engine {
 	}
 
 	return &Engine{
-		provider:       e.provider,
-		tools:          opts.Tools,
-		toolOrder:      toolOrder,
-		model:          model,
-		maxTokens:      e.maxTokens,
-		logger:         e.logger,
-		messages:       []types.Message{},
-		tokenBudget:    0, // sub-agents bypass budget checks via isSubagent
-		turnCount:      0,
-		dispatcher:     dispatcher,
-		attachments:    &attachment.Queue{},
-		reminderEngine: attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
-		isSubagent:     true,
-		agentMetaDepth: e.agentMetaDepth + 1,
-		agentType:      opts.AgentType,
-		maxTurns:       subMaxTurns(opts.MaxTurns),
+		provider:        e.provider,
+		tools:           opts.Tools,
+		toolOrder:       toolOrder,
+		model:           model,
+		inputModalities: e.inputModalities,
+		maxTokens:       e.maxTokens,
+		logger:          e.logger,
+		messages:        []types.Message{},
+		tokenBudget:     0, // sub-agents bypass budget checks via isSubagent
+		turnCount:       0,
+		dispatcher:      dispatcher,
+		attachments:     &attachment.Queue{},
+		reminderEngine:  attachment.NewReminderEngine(attachment.NewTaskReminderProvider()),
+		isSubagent:      true,
+		agentMetaDepth:  e.agentMetaDepth + 1,
+		agentType:       opts.AgentType,
+		maxTurns:        subMaxTurns(opts.MaxTurns),
 		// sharedDeps propagates so sub-agents can themselves spawn
 		// sub-agents (grandchildren). Without this, AgentTool.Call inside
 		// a sub-agent hits RunAgent's "sharedDeps is nil" guard and the
