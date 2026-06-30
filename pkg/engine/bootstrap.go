@@ -40,6 +40,10 @@ type SharedDeps struct {
 	Hooks      *hooks.Hooks
 	Cfg        *config.Config
 	LSPReg     *lsp.Registry
+	// WSRegistry is the daemon's inbound-device connection registry. nil in
+	// TUI mode / sub-agent-only contexts — regDial then returns "daemon not
+	// running". Set only by the daemon entrypoint (cmd/gbot).
+	WSRegistry *computer.ConnectionRegistry
 }
 
 // ToolRefs holds one engine's independent tool instances.
@@ -103,10 +107,12 @@ func CreateTools(deps SharedDeps, taskList *task.List) ToolRefs {
 
 	reg.MustRegister(lsptool.New(deps.LSPReg))
 
-	// Computer tool (Android via DroidPilot). Always registered — inert
+	// Computer tool (Android via gbot app). Always registered — inert
 	// (returns "not connected; call connect first") until the model drives a
-	// connect action. No env gating.
-	reg.MustRegister(computer.New(computer.NewAndroidBackend()))
+	// connect action. With a nil WSRegistry (TUI mode) connect surfaces the
+	// "daemon not running" error; with a registry (daemon mode) it resolves
+	// against the inbound device pool.
+	reg.MustRegister(computer.New(computer.NewAndroidBackendWithRegistry(deps.WSRegistry)))
 
 	return ToolRefs{Reg: reg, BashReg: bashReg, Agent: at, REPL: replTool, JobReg: jobReg}
 }

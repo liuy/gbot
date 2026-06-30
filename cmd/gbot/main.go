@@ -44,6 +44,7 @@ import (
 	skills "github.com/liuy/gbot/pkg/skills"
 	"github.com/liuy/gbot/pkg/tool"
 	agenttool "github.com/liuy/gbot/pkg/tool/agent"
+	"github.com/liuy/gbot/pkg/tool/computer"
 	"github.com/liuy/gbot/pkg/tool/fileedit"
 	"github.com/liuy/gbot/pkg/tool/fileread"
 	"github.com/liuy/gbot/pkg/tool/filewrite"
@@ -252,6 +253,25 @@ func main() {
 
 	// Construct shared dependencies (immutable across all engines)
 	gitStatus := ctxbuild.LoadGitStatus(workingDir)
+
+	// Daemon mode: start the inbound WebSocket listener before any engine
+	// is built so an inbound device conn can register before the model calls
+	// connect. TUI mode leaves wsRegistry nil — the Computer tool then
+	// surfaces "daemon not running" on connect, same inert behavior as today.
+	var wsRegistry *computer.ConnectionRegistry
+	if daemonMode {
+		wsRegistry = computer.NewConnectionRegistry()
+		wsAddr := ":8765"
+		if env := os.Getenv("GBOT_WS_ADDR"); env != "" {
+			wsAddr = env
+		}
+		if _, err := computer.StartWSServer(wsRegistry, wsAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "ws server: %v\n", err)
+			os.Exit(1)
+		}
+		slog.Info("ws:listen", "addr", wsAddr)
+	}
+
 	deps := engine.SharedDeps{
 		WorkingDir: workingDir,
 		GitStatus:  gitStatus,
@@ -260,6 +280,7 @@ func main() {
 		Hooks:      hookSystem,
 		Cfg:        cfg,
 		LSPReg:     lspReg,
+		WSRegistry: wsRegistry,
 	}
 
 	// mainRefs is only used for tool enumeration and closures (JobReg, REPL),
