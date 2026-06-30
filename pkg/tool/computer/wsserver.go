@@ -1,6 +1,7 @@
 package computer
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -98,6 +99,12 @@ func StartWSServer(reg *ConnectionRegistry, addr string) (*http.Server, error) {
 		reg.Register(hostOnly(r.RemoteAddr), ws)
 	})
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(ln)
+	go func() {
+		// Serve always returns a non-nil error; ErrServerClosed is the expected
+		// shutdown path (daemon owns srv.Close). Anything else is logged.
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Warn("ws:serve_failed", "error", err)
+		}
+	}()
 	return srv, nil
 }

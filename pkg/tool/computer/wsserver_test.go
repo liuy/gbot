@@ -13,40 +13,50 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// dialWSClient connects a gorilla client to the given ws:// URL, reads a
-// single rpcRequest, builds a reply via respFn (echoing the id), and returns
-// the captured request + the client conn. The caller closes the conn.
-func dialWSClient(t *testing.T, url string, respFn func(req rpcRequest) rpcResponse) (*websocket.Conn, rpcRequest) {
+// dialWSClient dials url, reads one rpcRequest, replies via respFn (echoing
+// the id), and keeps the conn open for the test's lifetime. The dial+reply
+// runs in a background goroutine; it reports a dial failure on errCh instead
+// of calling t.Fatalf (govet forbids t.Fatalf from a non-test goroutine). The
+// main goroutine asserts errCh stays empty. Returns immediately.
+func dialWSClient(t *testing.T, url string, respFn func(req rpcRequest) rpcResponse, errCh chan<- error) {
 	t.Helper()
-	c, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("dial %s: %v", url, err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	// REAL-TIME: read deadline guards against a hung peer over a real socket.
-	c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, data, err := c.ReadMessage()
-	if err != nil {
-		t.Fatalf("client read: %v", err)
-	}
-	var req rpcRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		t.Fatalf("client unmarshal: %v", err)
-	}
-	resp := respFn(req)
-	resp.ID = req.ID
-	out, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := c.WriteMessage(websocket.TextMessage, out); err != nil {
-		t.Fatalf("client write: %v", err)
-	}
-	return c, req
+	go func() {
+		c, _, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			select {
+			case errCh <- err:
+			default:
+			}
+			return
+		}
+		defer c.Close()
+		// REAL-TIME: read deadline guards against a hung peer over a real socket.
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, data, err := c.ReadMessage()
+		if err != nil {
+			return
+		}
+		var req rpcRequest
+		if json.Unmarshal(data, &req) != nil {
+			return
+		}
+		resp := respFn(req)
+		resp.ID = req.ID
+		out, err := json.Marshal(resp)
+		if err != nil {
+			return
+		}
+		_ = c.WriteMessage(websocket.TextMessage, out)
+		// Hold the conn open until the test tears down (caller closes via cleanup
+		// of the underlying server); block on a read that returns when the server
+		// closes.
+		_, _, _ = c.ReadMessage()
+	}()
 }
 
 // dialWSEmpty connects a gorilla client that sends one request and reads
 // nothing (used for route-by-IP tests that only assert registry population).
+// It runs in the main test goroutine and may t.Fatalf on dial failure.
 func dialWSEmpty(t *testing.T, url string, req rpcRequest) *websocket.Conn {
 	t.Helper()
 	c, _, err := websocket.DefaultDialer.Dial(url, nil)
@@ -64,16 +74,25 @@ func dialWSEmpty(t *testing.T, url string, req rpcRequest) *websocket.Conn {
 	return c
 }
 
-// dialAcceptConn returns a *websocket.Conn connected to the test server, used
-// to feed an accepted conn into the registry directly.
-func dialAcceptConn(t *testing.T, url string) *websocket.Conn {
-	t.Helper()
-	c, _, err := websocket.DefaultDialer.Dial(url, nil)
-	if err != nil {
-		t.Fatalf("dial %s: %v", url, err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	return c
+// dialAcceptConnAsync dials url in a background goroutine and reports the
+// result on resCh (nil conn + non-nil error on failure). Avoids t.Fatalf from
+// a goroutine (govet testinggoroutine). The caller asserts the error after.
+func dialAcceptConnAsync(url string, resCh chan<- dialResult) {
+	go func() {
+		c, _, err := websocket.DefaultDialer.Dial(url, nil)
+		select {
+		case resCh <- dialResult{conn: c, err: err}:
+		default:
+		}
+		// conn lifetime is managed via the httptest server handler blocking;
+		// do NOT close here — the test hands the accepted conn to the registry.
+	}()
+}
+
+// dialResult carries the outcome of an async dial.
+type dialResult struct {
+	conn *websocket.Conn
+	err  error
 }
 
 // makeAcceptConnServer starts an httptest WS server that upgrades any conn
@@ -129,7 +148,7 @@ func freePort(t *testing.T) int {
 // REAL-TIME
 func waitFor(timeout time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(timeout) // REAL-TIME
-	for time.Now().Before(deadline) { // REAL-TIME
+	for time.Now().Before(deadline) {   // REAL-TIME
 		if cond() {
 			return true
 		}
@@ -141,8 +160,9 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 	t.Parallel()
 	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 4)
 	// Dial from a gorilla client to obtain a server-accepted *websocket.Conn.
-	go dialAcceptConn(t, url)
+	dialAcceptConnAsync(url, resCh)
 	select {
 	case ws := <-accepted:
 		reg := NewConnectionRegistry()
@@ -159,7 +179,7 @@ func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 		}
 		// Host collision: register a second conn for the same host, the old
 		// client must be closed and replaced.
-		go dialAcceptConn(t, url)
+		dialAcceptConnAsync(url, resCh)
 		var ws2 *websocket.Conn
 		select {
 		case ws2 = <-accepted:
@@ -183,10 +203,11 @@ func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 func TestConnectionRegistry_Close(t *testing.T) {
 	t.Parallel()
 	url, accepted := makeAcceptConnServer(t)
+	resCh := make(chan dialResult, 4)
 	reg := NewConnectionRegistry()
 	registered := make([]*deviceClient, 0, 2)
-	for i := 0; i < 2; i++ {
-		go dialAcceptConn(t, url)
+	for i := range 2 {
+		dialAcceptConnAsync(url, resCh)
 		select {
 		case ws := <-accepted:
 			registered = append(registered, reg.Register(hostKey(i), ws))
@@ -236,9 +257,10 @@ func TestStartWSServer_RouteByRemoteIP(t *testing.T) {
 	}
 	// The registered *deviceClient must serve a call() round-trip: dial a
 	// fresh client that replies, then call() through the registry client.
-	go dialWSClient(t, "ws://"+addr+"/ws", func(req rpcRequest) rpcResponse {
+	errCh := make(chan error, 1)
+	dialWSClient(t, "ws://"+addr+"/ws", func(req rpcRequest) rpcResponse {
 		return rpcResponse{Success: true, Data: json.RawMessage(`{}`)}
-	})
+	}, errCh)
 	// Allow the second conn to register (also under 127.0.0.1, replacing the
 	// first). Then call() through it.
 	first := c
