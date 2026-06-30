@@ -23,6 +23,7 @@ func dialWSClient(t *testing.T, url string, respFn func(req rpcRequest) rpcRespo
 		t.Fatalf("dial %s: %v", url, err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
+	// REAL-TIME: read deadline guards against a hung peer over a real socket.
 	c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, data, err := c.ReadMessage()
 	if err != nil {
@@ -119,6 +120,24 @@ func freePort(t *testing.T) int {
 	return addr
 }
 
+// waitFor polls cond until it returns true or the timeout elapses, returning
+// whether cond ever held. The poll loop uses a real wall-clock deadline and a
+// short sleep — the registry is populated by the server's network goroutine,
+// so there is no channel to select on and synctest cannot model the real TCP
+// round-trip.
+//
+// REAL-TIME
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout) // REAL-TIME
+	for time.Now().Before(deadline) { // REAL-TIME
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond) // REAL-TIME
+	}
+	return cond()
+}
+
 func TestConnectionRegistry_RegisterAndGet(t *testing.T) {
 	t.Parallel()
 	url, accepted := makeAcceptConnServer(t)
@@ -202,12 +221,11 @@ func TestStartWSServer_RouteByRemoteIP(t *testing.T) {
 	// must be registered under 127.0.0.1.
 	dialWSEmpty(t, "ws://"+addr+"/ws", rpcRequest{ID: "x", Command: "tap", Params: map[string]any{"x": 1, "y": 2}})
 	// Wait for the registry to populate (Upgrade + Register is async-ish).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := reg.Get("127.0.0.1"); ok {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waitFor(2*time.Second, func() bool {
+		_, ok := reg.Get("127.0.0.1")
+		return ok
+	}) {
+		t.Fatal("timed out waiting for inbound client to register under 127.0.0.1")
 	}
 	c, ok := reg.Get("127.0.0.1")
 	if !ok {
@@ -223,15 +241,14 @@ func TestStartWSServer_RouteByRemoteIP(t *testing.T) {
 	})
 	// Allow the second conn to register (also under 127.0.0.1, replacing the
 	// first). Then call() through it.
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	first := c
+	if !waitFor(2*time.Second, func() bool {
 		cur, ok := reg.Get("127.0.0.1")
-		if ok && cur != c {
-			c = cur
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+		return ok && cur != first
+	}) {
+		t.Fatal("timed out waiting for second conn to replace the first")
 	}
+	c, _ = reg.Get("127.0.0.1")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := c.call(ctx, "tap", map[string]any{"x": 1, "y": 2}); err != nil {

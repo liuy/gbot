@@ -150,12 +150,12 @@ func dispatch(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResul
 }
 
 // doConnect handles the connect action. host is required; port defaults to
-// 8765 when absent so the model can send just host.
+// DefaultWSPort when absent so the model can send just host.
 func doConnect(ctx context.Context, b *AndroidBackend, in Input) (*tool.ToolResult, error) {
 	if strings.TrimSpace(in.Host) == "" {
 		return errorResponse("connect requires a host"), nil
 	}
-	port := 8765
+	port := DefaultWSPort
 	if in.Port != nil {
 		port = *in.Port
 	}
@@ -363,7 +363,7 @@ func errorResponse(msg string) *tool.ToolResult {
 func summarizeAction(in Input) string {
 	switch strings.TrimSpace(strings.ToLower(in.Action)) {
 	case ActionConnect:
-		return fmt.Sprintf("connect to %s:%d", in.Host, portOr(in.Port, 8765))
+		return fmt.Sprintf("connect to %s:%d", in.Host, portOr(in.Port, DefaultWSPort))
 	case ActionDisconnect:
 		return "disconnect from device"
 	case ActionScreen:
