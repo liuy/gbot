@@ -98,12 +98,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyModeVisibility() {
+        // Server running: both config groups stay hidden (set in updateServerUI).
+        if (isServerRunning) {
+            binding.wifiConfigGroup.visibility = View.GONE
+            binding.sshConfigGroup.visibility = View.GONE
+            return
+        }
         if (currentMode == Mode.SSH) {
-            binding.wifiConfigGroup.visibility = android.view.View.GONE
-            binding.sshConfigGroup.visibility = android.view.View.VISIBLE
+            binding.wifiConfigGroup.visibility = View.GONE
+            binding.sshConfigGroup.visibility = View.VISIBLE
         } else {
-            binding.wifiConfigGroup.visibility = android.view.View.VISIBLE
-            binding.sshConfigGroup.visibility = android.view.View.GONE
+            binding.wifiConfigGroup.visibility = View.VISIBLE
+            binding.sshConfigGroup.visibility = View.GONE
         }
     }
 
@@ -247,28 +253,13 @@ class MainActivity : AppCompatActivity() {
         if (isServerRunning) {
             binding.btnToggleServer.text = getString(R.string.btn_stop_server)
             updateStatus(StatusState.WAITING)
-            if (currentMode == Mode.SSH) {
-                binding.etPort.isEnabled = false
-                binding.etServer.isEnabled = false
-                binding.etSshPort.isEnabled = false
-                binding.etSshUser.isEnabled = false
-                binding.etSshPassword.isEnabled = false
-                binding.etRemotePort.isEnabled = false
-                binding.etLocalPort.isEnabled = false
-            } else {
-                binding.etPort.isEnabled = false
-            }
+            binding.wifiConfigGroup.visibility = View.GONE
+            binding.sshConfigGroup.visibility = View.GONE
         } else {
             binding.btnToggleServer.text = getString(R.string.btn_start_server)
             updateStatus(StatusState.DISCONNECTED)
             binding.tvConnections.text = "0"
-            binding.etPort.isEnabled = true
-            binding.etServer.isEnabled = true
-            binding.etSshPort.isEnabled = true
-            binding.etSshUser.isEnabled = true
-            binding.etSshPassword.isEnabled = true
-            binding.etRemotePort.isEnabled = true
-            binding.etLocalPort.isEnabled = true
+            applyModeVisibility()
         }
     }
 
@@ -368,9 +359,10 @@ class MainActivity : AppCompatActivity() {
         val logLine = "[$timestamp] $message\n"
         binding.tvLog.append(logLine)
 
-        // Auto-scroll
-        binding.mainScrollView.post {
-            binding.mainScrollView.fullScroll(android.view.View.FOCUS_DOWN)
+        // Auto-scroll the log's own container, not the outer mainScrollView —
+        // the log lives inside its own NestedScrollView so it scrolls independently.
+        binding.logScrollView.post {
+            binding.logScrollView.fullScroll(android.view.View.FOCUS_DOWN)
         }
 
         // Keep log size reasonable

@@ -171,7 +171,8 @@ class MainActivityTest {
 		assertThat(serviceIntent.component!!.className).isEqualTo(ConnectionForegroundService::class.java.name)
 		assertThat(serviceIntent.getIntExtra(ConnectionForegroundService.EXTRA_PORT, -1)).isEqualTo(localPort)
 		assertThat(serviceIntent.getBooleanExtra(ConnectionForegroundService.EXTRA_USE_SSH, true)).isFalse()
-		assertThat(binding.etPort.isEnabled).isFalse()
+		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Waiting for connection…")
 	}
 
@@ -197,9 +198,40 @@ class MainActivityTest {
 
 		assertThat(binding.btnToggleServer.text.toString()).isEqualTo("Start Server")
 		assertThat(binding.tvConnections.text.toString()).isEqualTo("0")
-		assertThat(binding.etPort.isEnabled).isTrue()
+		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.VISIBLE)
+		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
 		assertThat(binding.tvStatus.text.toString()).isEqualTo("Disconnected")
 		assertThat(binding.tvLog.text.toString()).contains("Server stopped")
+	}
+
+	@Test
+	fun switchTab_whileServerRunning_keepsConfigGroupsHidden() {
+		setAccessibilityRunning()
+		binding.etPort.setText(freePort().toString())
+		binding.btnToggleServer.performClick()
+		// Sanity: both groups hidden after start (WiFi mode).
+		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
+
+		// Switch to SSH tab while running — groups must STAY hidden.
+		binding.tabSsh.performClick()
+
+		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
+		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.GONE)
+	}
+
+	@Test
+	fun switchTab_afterStop_showsActiveConfigGroup() {
+		setAccessibilityRunning()
+		binding.etPort.setText(freePort().toString())
+		binding.btnToggleServer.performClick()
+		binding.btnToggleServer.performClick()
+
+		// After stop, switch to SSH — SSH group should show.
+		binding.tabSsh.performClick()
+
+		assertThat(binding.sshConfigGroup.visibility).isEqualTo(View.VISIBLE)
+		assertThat(binding.wifiConfigGroup.visibility).isEqualTo(View.GONE)
 	}
 
 	// --- handleTunnelState (private, reflective) ---
