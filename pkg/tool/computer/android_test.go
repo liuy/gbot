@@ -299,8 +299,8 @@ func TestAndroidBackend_AutoDisconnectOnReconnect(t *testing.T) {
 	if err := b.Connect(ctx, "deviceB", 8765, ""); err != nil {
 		t.Fatalf("Connect B: %v", err)
 	}
-	if clientA.closedCount != 1 {
-		t.Errorf("client A close count = %d, want 1 (auto-disconnected)", clientA.closedCount)
+	if clientA.closedCount != 0 {
+		t.Errorf("client A close count = %d, want 0 (registry owns conn lifetime)", clientA.closedCount)
 	}
 	if !b.IsConnected() {
 		t.Error("IsConnected = false after reconnect, want true")
@@ -1136,8 +1136,8 @@ func TestAndroidBackend_ConnectLockDiscipline(t *testing.T) {
 	if err := b.Connect(ctx, "B", 8765, ""); err != nil {
 		t.Fatalf("Connect B: %v", err)
 	}
-	if clientA.closedCount != 1 {
-		t.Errorf("client A close count = %d, want 1 (exactly one close on reconnect)", clientA.closedCount)
+	if clientA.closedCount != 0 {
+		t.Errorf("client A close count = %d, want 0 (registry owns conn lifetime, never closed)", clientA.closedCount)
 	}
 	// B must be the active client.
 	if len(rec.clients) != 2 {
